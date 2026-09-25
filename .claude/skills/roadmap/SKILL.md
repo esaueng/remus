@@ -177,6 +177,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   a mesh-fallback solid with only a log line; B21 now makes those paths exact-only. Read `BooleanOutcome` or use
   `ExactOnly` in any verification, never the bare handle.
 - **Pin fleet workflows to a commit reachable from `main`, never the PR branch head;** squash-merge plus branch deletion leaves the pin dangling and the Classify Changes routing tests fail on every later PR (`scripts/test-ubuntu-ci-routing.py`, PR #499).
+- **The mutation oracle is per package, so a kernel helper pinned only by `operations` or `io` regressions is unmeasured:** the B32/B33/B39 phase-FF helpers surfaced 172 weekly survivors until algo-level tests with closed-form oracles pinned them (`crates/algo/src/pave_filler/phase_ff/helper_oracle_tests.rs`, `docs/kernel-maturity/mutants-algo-ff-2026-09-25.md`).
 - **cargo-mutants 27 discovers `.cargo/mutants.toml`, not a root-level config;** verify real default selection and stale-path refusals with `scripts/test-mutants-scope.py` before claiming mutation scope (B19).
 - **Deterministic STEP emission sorts unordered face, void-shell, and hole-loop aggregates by arena ID but never sorts coedges;** coedge sequence carries boundary traversal semantics (`crates/io/src/step/writer.rs`).
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
