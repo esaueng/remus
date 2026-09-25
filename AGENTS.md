@@ -476,6 +476,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
+| Fillet/chamfer Detailed twin contract tests (O4.7) | `bindings/fillet_chamfer_detailed_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |

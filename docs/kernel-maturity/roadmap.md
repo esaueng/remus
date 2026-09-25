@@ -586,7 +586,7 @@ Wave labels are interpreted by the scheduling constraints above.
 | <a id="o-o4-4"></a>O4.4 Stable error-code registry (e5b) | A | Pending — survey complete, no code changes | [Survey](o44-error-survey.md) ([csv](o44-error-survey.csv)) |
 | <a id="o-o4-5"></a>O4.5 Stable C ABI decision record | owner-gated | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.4) | — |
 | <a id="o-o4-6"></a>O4.6 Serialization compatibility and migration policy | A | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.7, IP-12.5, IP-12.7) | — |
-| <a id="o-o4-7"></a>O4.7 Typed direct-method WASM results | A | Partial — additive typed result envelopes cover the README's two-solid boolean family (`fuseDetailed`, `cutDetailed`, `intersectDetailed`) with direct/`executeBatchV2` code parity and unchanged legacy methods; remaining mutating families, the generated twin-coverage gate, typed replacements for 13 JSON-string returns, and the OpenZCAD regex acceptance list remain pending | `crates/wasm/src/bindings/booleans.rs` |
+| <a id="o-o4-7"></a>O4.7 Typed direct-method WASM results | A | Partial — additive typed result envelopes cover the README's two-solid boolean family (`fuseDetailed`, `cutDetailed`, `intersectDetailed`) and the ordinary fillet/chamfer family (`filletDetailed`, `chamferDetailed`) with direct/`executeBatchV2` code parity and unchanged legacy methods; remaining mutating families, the generated twin-coverage gate, typed replacements for 13 JSON-string returns, and the OpenZCAD regex acceptance list remain pending | `crates/wasm/src/bindings/booleans.rs`, `crates/wasm/src/bindings/operations.rs`, `crates/wasm/src/bindings/fillet_chamfer_detailed_tests.rs` |
 
 </details>
 

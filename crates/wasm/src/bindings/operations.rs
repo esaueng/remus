@@ -14,8 +14,8 @@ use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 
 use crate::error::{
-    WasmError, validate_finite, validate_move_faces_work, validate_positive, validate_work_count,
-    validate_work_product,
+    StructuredWasmError, WasmError, validate_finite, validate_move_faces_work, validate_positive,
+    validate_work_count, validate_work_product,
 };
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
@@ -28,7 +28,7 @@ use crate::helpers::{
     parse_points, try_chamfer_with_origins, try_fillet_with_origins,
 };
 use crate::kernel::BrepKernel;
-use crate::types::FaceEvolutionPayloadV1;
+use crate::types::{FaceEvolutionPayloadV1, SolidOperationDetailedResult};
 use tsify::Tsify as _;
 
 use remus_operations::extrude::extrude;
@@ -466,6 +466,32 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    /// Chamfer edges and return success or failure as typed data.
+    ///
+    /// Additive twin of [`chamfer_solid`](Self::chamfer_solid); the legacy
+    /// method keeps its existing return value and thrown-error behavior.
+    ///
+    /// The twin traces the exact production dispatch (`try_chamfer`: planar
+    /// bevel first, then the walking builder) with the same panic guard as
+    /// the batch `chamfer` arm. Scalar validation reaches the engines rather
+    /// than the direct-method `validate_positive` gate, so a zero, negative,
+    /// or non-finite distance carries the same native `kernelCode` the batch
+    /// path reports (`invalid-input`, `fillet-failed`, …) instead of a
+    /// distinct wire-only code. Handle errors (`invalid_handle`) keep the
+    /// stable batch-v2 wire code, which has no finer native entry.
+    #[wasm_bindgen(js_name = "chamferDetailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn chamfer_detailed(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .chamfer_detailed_impl(solid, edge_handles, distance)
+            .into_ts()?)
+    }
+
     /// Chamfer edges and return versioned face-evolution tracking data.
     ///
     /// This runs the same production engine cascade as [`chamfer`](Self::chamfer_solid):
@@ -544,6 +570,35 @@ impl BrepKernel {
         }
     }
 
+    /// Fillet edges and return success or failure as typed data.
+    ///
+    /// Additive twin of [`fillet_solid`](Self::fillet_solid); the legacy
+    /// method keeps its existing return value and thrown-error behavior.
+    ///
+    /// The twin traces the exact production dispatch
+    /// (`fillet_whole_selection`: whole-selection rule, engine cascade,
+    /// transactional rollback) with the same panic guard as the `fillet`
+    /// binding and the batch `fillet` arm. It is not v2-only: a planar-line
+    /// selection still reaches the rolling-ball rebuild through the shared
+    /// cascade. Scalar validation reaches the engines rather than the
+    /// direct-method `validate_positive` gate, so a zero, negative, or
+    /// non-finite radius carries the same native `kernelCode` the batch path
+    /// reports (`invalid-input`, `blend-failed`, `cliff-encountered`, …)
+    /// instead of a distinct wire-only code. Handle errors keep the stable
+    /// batch-v2 wire code, which has no finer native entry.
+    #[wasm_bindgen(js_name = "filletDetailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn fillet_detailed(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        radius: f64,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .fillet_detailed_impl(solid, edge_handles, radius)
+            .into_ts()?)
+    }
+
     /// Apply a constant-radius fillet and return face-evolution tracking data.
     ///
     /// Returns a validated [`FaceEvolutionPayloadV1`] object. Blend faces
@@ -579,8 +634,113 @@ impl BrepKernel {
     }
 }
 
-/// Natively-testable evolution bodies (`Ts` cannot be inspected off-wasm).
+/// Natively-testable evolution and detailed bodies (`Ts` cannot be inspected
+/// off-wasm).
 impl BrepKernel {
+    /// Shared natively-testable body for the additive `chamferDetailed` twin.
+    ///
+    /// Traces the exact production dispatch (`try_chamfer`) with the same
+    /// panic guard as the batch `chamfer` arm, so the twin cannot drift into
+    /// a v2-only or bevel-only path. Engine failures map through
+    /// `blend_failure` (native `kernelCode`); handle failures map through the
+    /// stable batch-v2 wire code, which has no finer native entry.
+    pub(crate) fn chamfer_detailed_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+    ) -> SolidOperationDetailedResult {
+        if self.poisoned {
+            return SolidOperationDetailedResult::error(
+                StructuredWasmError::internal(
+                    "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                )
+                .with_direct_operation("chamfer"),
+            );
+        }
+        let result = (|| -> Result<u32, StructuredWasmError> {
+            let solid_id = self
+                .resolve_solid(solid)
+                .map_err(StructuredWasmError::from)?;
+            let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
+                .iter()
+                .map(|&handle| self.resolve_edge(handle).map_err(StructuredWasmError::from))
+                .collect::<Result<Vec<_>, _>>()?;
+            let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::helpers::try_chamfer(self.topo_mut(), solid_id, &edge_ids, distance)
+            }));
+            match attempt {
+                Ok(Ok(result)) => Ok(solid_id_to_u32(result)),
+                Ok(Err(error)) => Err(StructuredWasmError::blend_failure(error)),
+                Err(panic_info) => {
+                    self.poisoned = true;
+                    Err(StructuredWasmError::operation_failed(panic_message(
+                        &panic_info,
+                        "Chamfer",
+                    )))
+                }
+            }
+        })();
+        match result {
+            Ok(value) => SolidOperationDetailedResult::success(value),
+            Err(error) => {
+                SolidOperationDetailedResult::error(error.with_direct_operation("chamfer"))
+            }
+        }
+    }
+
+    /// Shared natively-testable body for the additive `filletDetailed` twin.
+    ///
+    /// Traces the exact production dispatch (`fillet_whole_selection`:
+    /// whole-selection rule, shared cascade, transactional rollback) with the
+    /// same panic guard as the `fillet` binding and the batch `fillet` arm.
+    /// See [`chamfer_detailed_impl`](Self::chamfer_detailed_impl) for the
+    /// error-mapping contract.
+    pub(crate) fn fillet_detailed_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        radius: f64,
+    ) -> SolidOperationDetailedResult {
+        if self.poisoned {
+            return SolidOperationDetailedResult::error(
+                StructuredWasmError::internal(
+                    "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                )
+                .with_direct_operation("fillet"),
+            );
+        }
+        let result = (|| -> Result<u32, StructuredWasmError> {
+            let solid_id = self
+                .resolve_solid(solid)
+                .map_err(StructuredWasmError::from)?;
+            let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
+                .iter()
+                .map(|&handle| self.resolve_edge(handle).map_err(StructuredWasmError::from))
+                .collect::<Result<Vec<_>, _>>()?;
+            let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::helpers::fillet_whole_selection(self.topo_mut(), solid_id, &edge_ids, radius)
+            }));
+            match attempt {
+                Ok(Ok(result)) => Ok(solid_id_to_u32(result)),
+                Ok(Err(error)) => Err(StructuredWasmError::blend_failure(error)),
+                Err(panic_info) => {
+                    self.poisoned = true;
+                    Err(StructuredWasmError::operation_failed(panic_message(
+                        &panic_info,
+                        "Fillet",
+                    )))
+                }
+            }
+        })();
+        match result {
+            Ok(value) => SolidOperationDetailedResult::success(value),
+            Err(error) => {
+                SolidOperationDetailedResult::error(error.with_direct_operation("fillet"))
+            }
+        }
+    }
+
     pub(crate) fn chamfer_with_evolution_impl(
         &mut self,
         solid: u32,
