@@ -392,7 +392,13 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         // there; a section clipped to the opposing face's true extent ends
         // ON the chord instead and registers nothing.
         let sections = if is_plane_face {
-            sections
+            split_plane_curved_sections_at_boundary_junctions(
+                topo,
+                face_id,
+                sections,
+                edge_images,
+                tol.linear,
+            )
         } else {
             let boundary_vertices = face_wire_vertex_positions(topo, face_id);
             if section_split_registry.is_empty() && boundary_vertices.is_empty() {
@@ -3747,6 +3753,105 @@ fn clip_line_to_face_extent(
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// Split a plane face's CURVED sections where they touch the face's own
+/// boundary at an interior point (B53).
+///
+/// Degeneracy: a section arc TANGENT to a boundary line of the face. The
+/// finding-17 coplanar-cap cut puts the cone's top rim in the box's top plane
+/// tangent to the box's `y = dy` edge; the box-top × cone-lateral section is
+/// that rim, clipped to the face, and it only touches the edge at the tangency
+/// (it neither ends nor crosses there). EE already paves the tangency on the
+/// edge and on the rim, but the section keeps running through it, so the
+/// splitter sees one region pinched at a point that is no vertex of its
+/// arrangement and emits both lobes as a single figure-eight face.
+///
+/// Only pave junctions of the face's boundary edges (the interior image
+/// vertices the pave machinery minted) are split points: they are exactly the
+/// places an operand edge meets this face's boundary. Line sections are left
+/// to their calibrated boundary clip, and CLOSED curved sections (a full
+/// circle touching the outline, e.g. a cylinder inscribed in a box wall) to
+/// the closed-loop machinery that already treats them as holes.
+fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
+    topo: &Topology,
+    face_id: FaceId,
+    sections: Vec<crate::builder::split_types::SectionEdge>,
+    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+    tol: f64,
+) -> Vec<crate::builder::split_types::SectionEdge> {
+    let splittable = |s: &crate::builder::split_types::SectionEdge| {
+        !matches!(s.curve_3d, EdgeCurve::Line) && (s.end - s.start).length() > tol
+    };
+    if !sections.iter().any(splittable) {
+        return sections;
+    }
+    let junctions = face_boundary_image_junctions(topo, face_id, edge_images);
+    if junctions.is_empty() {
+        return sections;
+    }
+    let empty = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(sections.len());
+    for s in sections {
+        if splittable(&s) {
+            // A junction within the weld band of the section's own endpoint
+            // is that endpoint, reached twice: a grazing contact solved to
+            // sqrt-of-residual accuracy (the tangent-boss rim ends at the
+            // exact tangency while EF paved the wall edge 1.6e-6 away).
+            // Splitting there would mint a micro-edge, not a junction.
+            let weld = tol * 100.0;
+            let interior: Vec<Point3> = junctions
+                .iter()
+                .copied()
+                .filter(|p| (*p - s.start).length() > weld && (*p - s.end).length() > weld)
+                .collect();
+            out.extend(presplit_sections_at_registry(
+                std::slice::from_ref(&s),
+                &empty,
+                &interior,
+                tol,
+            ));
+        } else {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Interior pave junctions of a face's boundary edges: every vertex shared by
+/// two consecutive images of one split boundary edge.
+fn face_boundary_image_junctions<S: BuildHasher>(
+    topo: &Topology,
+    face_id: FaceId,
+    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+) -> Vec<Point3> {
+    let Ok(face) = topo.face(face_id) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else {
+            continue;
+        };
+        for oe in wire.edges() {
+            let Some(imgs) = edge_images.get(&oe.edge()) else {
+                continue;
+            };
+            for pair in imgs.windows(2) {
+                let (Ok(e0), Ok(e1)) = (topo.edge(pair[0]), topo.edge(pair[1])) else {
+                    continue;
+                };
+                for vid in [e0.start(), e0.end()] {
+                    if (vid == e1.start() || vid == e1.end())
+                        && let Ok(v) = topo.vertex(vid)
+                    {
+                        out.push(v.point());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Positions of every vertex on a face's outer and inner wires (empty when
 /// the face or a wire cannot be resolved).
 fn face_wire_vertex_positions(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
@@ -5559,3 +5664,6 @@ mod tests {
         assert!(instantiate_test_edge(&mut topo, &transient).is_err());
     }
 }
+
+#[cfg(test)]
+mod helper_oracle_tests;
