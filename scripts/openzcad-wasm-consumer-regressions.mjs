@@ -261,6 +261,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadCylindricalFaceResizeRegression(exports);
   runPartialCylinderResizeRegression(exports);
   runDirectEditHistoryRegression(exports);
+  runLinearPatternHistoryRegression(exports);
   runSurfaceReplacementHistoryRegression(exports);
   runCylindricalRadiusHistoryRegression(exports);
   runBlendResizeHistoryRegression(exports);
@@ -280,6 +281,9 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runTangencyBandRegression(exports);
   runBooleanScaleRegression(exports);
   runAnisotropicBooleanRegression(exports);
+  runCylinderSeamNotchRegression(exports);
+  runCurvedCornerBlendRegression(exports);
+  runFreeformRulingRegression(exports);
   runZeroAreaMeshExportRegression(exports);
 };
 
@@ -324,6 +328,219 @@ export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
     io.free();
   }
   console.log('ok - wide spherical cap preserves closed-form volume and direct/batch mesh quality');
+};
+
+export const runFreeformRulingRegression = ({ BrepKernel }) => {
+  for (const batch of [false, true])
+    for (const operation of ['cut', 'intersect']) {
+      const kernel = new BrepKernel();
+      try {
+        const corners = [
+          [-2, -2],
+          [2, -2],
+          [2, 2],
+          [-2, 2],
+        ].map(([x, y]) => [x, y, 0.1 * x * y]);
+        const edges = corners.map((p, i) => kernel.makeLineEdge(...p, ...corners[(i + 1) % 4]));
+        const face = kernel.makeFaceFromWire(kernel.makeWire(Uint32Array.from(edges), true));
+        assert.equal(kernel.getSurfaceType(face), 'bspline');
+        const source = kernel.sweep(
+          face,
+          1,
+          new Float64Array([0, 0, 1, 1]),
+          new Float64Array([0, 0, 0, 0, 0, 6]),
+          new Float64Array([1, 1]),
+        );
+        const cutter = kernel.makeBox(4, 6, 9);
+        kernel.transformSolid(
+          cutter,
+          new Float64Array([1, 0, 0, 0.5, 0, 1, 0, -3, 0, 0, 1, -1, 0, 0, 0, 1]),
+        );
+        const result = batch
+          ? JSON.parse(
+              kernel.executeBatchV2(
+                JSON.stringify([
+                  {
+                    op: 'booleanWithQuality',
+                    args: { operation, solidA: source, solidB: cutter, exactOnly: true },
+                  },
+                ]),
+              ),
+            )[0].ok
+          : kernel.booleanWithQuality(operation, source, cutter, true);
+        assert.equal(result?.quality, 'exact');
+        assert.equal(kernel.validateSolid(result.solid), 0);
+        const kinds = Array.from(kernel.getSolidFaces(result.solid), (f) =>
+          kernel.getSurfaceType(f),
+        );
+        assert.equal(kinds.filter((kind) => kind === 'bspline').length, 2);
+        assert.ok(
+          kinds.length <= 20 && kinds.every((kind) => kind === 'bspline' || kind === 'plane'),
+        );
+        assert.equal(JSON.parse(kernel.meshQuality(result.solid, 0.01)).isWatertight, true);
+        const expected = operation === 'cut' ? 60 : 36;
+        assert.ok(
+          Math.abs(kernel.massProperties(result.solid).volume - expected) / expected < 1e-6,
+        );
+        for (const x of [-1, 1]) {
+          const inside = operation === 'cut' ? x < 0.5 : x > 0.5;
+          assert.equal(
+            kernel.classifyPoint(result.solid, x, 0, 3, 1e-7),
+            inside ? 'inside' : 'outside',
+          );
+        }
+      } finally {
+        kernel.free();
+      }
+    }
+  console.log(
+    'ok - freeform saddle ruling: exact direct/batch cut/intersection retain two NURBS caps',
+  );
+};
+
+export const runCurvedCornerBlendRegression = ({ BrepKernel }) => {
+  const r = 0.25,
+    radius = 5,
+    height = 10;
+  const x = Math.sqrt(radius * radius - 2 * radius * r);
+  const sine = r / (radius - r),
+    cosine = x / (radius - r),
+    angle = Math.asin(sine);
+  const tail = radius * radius * (Math.PI / 4 - 0.5 * (sine * cosine + angle));
+  const constant = tail + ((0.5 * x) / r) * ((radius * sine) ** 2 - r * r);
+  const area = constant + x * r + 0.5 * r * r * (angle + Math.PI / 2);
+  const expected =
+    area * height - x * r * r * (1 - Math.PI / 4) - (r ** 3 * (angle + Math.PI / 2)) / 6;
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const boundary = [
+        kernel.makeLineEdge(0, 0, 0, 5, 0, 0),
+        kernel.makeCircleArc3d(5, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1),
+        kernel.makeLineEdge(0, 5, 0, 0, 0, 0),
+      ];
+      const face = kernel.makeFaceFromWire(kernel.makeWire(Uint32Array.from(boundary), true));
+      const source = kernel.extrude(face, 0, 0, 1, height);
+      const edges = Array.from(kernel.getSolidEdges(source)).filter((edge) => {
+        if (kernel.getEdgeCurveType(edge) !== 'LINE') return false;
+        const points = kernel.getEdgeVertices(edge);
+        return [0, 3].some(
+          (i) => Math.hypot(points[i] - 5, points[i + 1], points[i + 2] - 10) < 1e-7,
+        );
+      });
+      assert.equal(edges.length, 2);
+      const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(source)));
+      let solid;
+      if (batch) {
+        const [response] = JSON.parse(
+          kernel.executeBatchV2(
+            JSON.stringify([{ op: 'filletV2', args: { solid: source, edges, radius: r } }]),
+          ),
+        );
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        solid = response.ok;
+      } else {
+        const result = kernel.filletWithEvolution(source, Uint32Array.from(edges), r);
+        assertCompleteEvolution(result, 'curved corner');
+        assert.equal(result.evolution.provenance, 'construction');
+        solid = result.solid;
+      }
+      const kinds = Array.from(kernel.getSolidFaces(solid), (face) => kernel.getSurfaceType(face));
+      assert.deepEqual(
+        ['plane', 'cylinder', 'sphere'].map((kind) => kinds.filter((v) => v === kind).length),
+        [5, 3, 1],
+      );
+      assert.equal(kernel.validateSolid(solid), 0);
+      assert.equal(JSON.parse(kernel.meshQuality(solid, 0.005)).isWatertight, true);
+      assert.ok(Math.abs(kernel.volume(solid, 0.005) - expected) / expected < 1e-5);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before);
+      const journal = kernel.journalSummary();
+      if (batch) {
+        const [response] = JSON.parse(
+          kernel.executeBatchV2(
+            JSON.stringify([{ op: 'filletV2', args: { solid: source, edges, radius: 2.6 } }]),
+          ),
+        );
+        assert.ok(response.error);
+      } else assert.throws(() => kernel.filletV2(source, Uint32Array.from(edges), 2.6));
+      assert.equal(kernel.journalSummary(), journal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before);
+    } finally {
+      kernel.free();
+    }
+  }
+  console.log(
+    'ok - curved two-ridge corner: analytic carriers, face history, volume and atomic refusal',
+  );
+};
+
+export const runCylinderSeamNotchRegression = ({ BrepKernel }) => {
+  for (const batch of [false, true])
+    for (const angle of [0.3, 2.0]) {
+      const volumes = {};
+      for (const operation of ['fuse', 'cut', 'intersect']) {
+        const kernel = new BrepKernel();
+        try {
+          const box = kernel.makeBox(2.5, 1, 1);
+          const cylinder = kernel.makeCylinder(2, 1);
+          const c = Math.cos(angle),
+            s = Math.sin(angle);
+          kernel.transformSolid(
+            cylinder,
+            new Float64Array([c, -s, 0, 0.5, s, c, 0, -1.5, 0, 0, 1, -0.5, 0, 0, 0, 1]),
+          );
+          const result = batch
+            ? JSON.parse(
+                kernel.executeBatchV2(
+                  JSON.stringify([
+                    {
+                      op: 'booleanWithQuality',
+                      args: { operation, solidA: box, solidB: cylinder, exactOnly: true },
+                    },
+                  ]),
+                ),
+              )[0].ok
+            : kernel.booleanWithQuality(operation, box, cylinder, true);
+          assert.equal(result?.quality, 'exact', `${operation}, seam=${angle}, batch=${batch}`);
+          assert.equal(kernel.validateSolid(result.solid), 0);
+          const kinds = Array.from(kernel.getSolidFaces(result.solid), (face) =>
+            kernel.getSurfaceType(face),
+          );
+          assert.ok(kinds.length <= 20 && kinds.includes('cylinder'));
+          assert.ok(kinds.every((kind) => kind === 'plane' || kind === 'cylinder'));
+          const quality = JSON.parse(kernel.meshQuality(result.solid, 0.01));
+          assert.equal(quality.isWatertight, true);
+          assert.equal(quality.nonManifoldEdges, 0);
+          for (const [point, inBox, inCylinder] of [
+            [[0.5, 0.2, 0.25], true, true],
+            [[2, 0.8, 0.8], true, false],
+            [[0.5, -1.5, -0.25], false, true],
+            [[3, 2, 0.25], false, false],
+          ]) {
+            const inside =
+              operation === 'fuse'
+                ? inBox || inCylinder
+                : operation === 'cut'
+                  ? inBox && !inCylinder
+                  : inBox && inCylinder;
+            assert.equal(
+              kernel.classifyPoint(result.solid, ...point, 1e-7),
+              inside ? 'inside' : 'outside',
+            );
+          }
+          volumes[operation] = kernel.massProperties(result.solid).volume;
+        } finally {
+          kernel.free();
+        }
+      }
+      assert.ok(Math.abs(volumes.cut + volumes.intersect - 2.5) <= 2.5e-6);
+      assert.ok(
+        Math.abs(volumes.fuse + volumes.intersect - 2.5 - 4 * Math.PI) <= volumes.fuse * 1e-6,
+      );
+    }
+  console.log(
+    'ok - cylinder seam notch: exact direct/batch fuse/cut/intersect with material and volume identities',
+  );
 };
 
 export const runOffsetConeSphereRegression = ({ BrepKernel }) => {
@@ -762,6 +979,82 @@ export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
   console.log('ok - quarter-cylinder direct/batch: 8 exact resizes with STEP round trips, 4 collision refusals with rollback');
 };
 
+
+export const runLinearPatternHistoryRegression = ({ BrepKernel }) => {
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const source = kernel.makeBox(2, 3, 4);
+      const pattern = (spacing, count) => {
+        if (!batch)
+          return JSON.parse(kernel.linearPatternJournaled(source, 1, 0, 0, spacing, count));
+        const [response] = JSON.parse(
+          kernel.executeBatchV2(
+            JSON.stringify([
+              {
+                op: 'linearPatternJournaled',
+                args: { solid: source, direction: [1, 0, 0], spacing, count },
+              },
+            ]),
+          ),
+        );
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const anchor = pattern(10, 1);
+      const kinds = [
+        ['face', 'getSolidFaces', 6],
+        ['edge', 'getSolidEdges', 12],
+        ['vertex', 'getSolidVertices', 8],
+      ];
+      const originals = kinds.map(([kind]) => kernel.resolveOperationOutput(anchor.op, kind, 0));
+      const result = pattern(10, 3);
+      assert.deepEqual(Object.keys(result).sort(), ['compound', 'op']);
+      const solids = Array.from(kernel.getCompoundSolids(result.compound));
+      assert.equal(solids.length, 3);
+      for (const [kind, query, perSolid] of kinds) {
+        const actual = new Set(solids.flatMap((solid) => Array.from(kernel[query](solid))));
+        assert.equal(actual.size, perSolid * 3);
+        const resolved = new Set();
+        for (let index = 0; index < actual.size; index++) {
+          const reference = JSON.parse(kernel.resolveOperationOutput(result.op, kind, index));
+          assert.equal(reference.status, 'bound', JSON.stringify(reference));
+          assert.equal(reference.provenance, 'construction');
+          assert.equal(reference.entities.length, 1);
+          assert.equal(reference.entities[0].kind, kind);
+          resolved.add(reference.entities[0].handle);
+        }
+        assert.deepEqual(resolved, actual, `linear pattern ${kind} coverage, batch=${batch}`);
+      }
+      assert.deepEqual(
+        kinds.map(([kind]) => kernel.resolveOperationOutput(anchor.op, kind, 0)),
+        originals,
+      );
+      const journal = kernel.journalSummary();
+      const bytes = Uint8Array.from(kernel.serializeSolids(Uint32Array.from(solids)));
+      if (batch) {
+        const [response] = JSON.parse(
+          kernel.executeBatchV2(
+            JSON.stringify([
+              {
+                op: 'linearPatternJournaled',
+                args: { solid: source, direction: [1, 0, 0], spacing: 1, count: 3 },
+              },
+            ]),
+          ),
+        );
+        assert.ok(response.error, 'overlapping pattern must refuse');
+      } else assert.throws(() => kernel.linearPatternJournaled(source, 1, 0, 0, 1, 3));
+      assert.equal(kernel.journalSummary(), journal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.from(solids)), bytes);
+    } finally {
+      kernel.free();
+    }
+  }
+  console.log(
+    'ok - linear pattern direct/batch: complete face/edge/vertex output refs and rollback',
+  );
+};
 
 export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
   for (const batch of [false, true]) {

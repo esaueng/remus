@@ -104,9 +104,11 @@ pub fn offset_solid_v2(
     solid: SolidId,
     distance: f64,
 ) -> Result<SolidId, OperationsError> {
-    let result = remus_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
-        .map_err(map_offset_error)?;
-    validate_offset_postcondition(topo, "offset", result)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result = remus_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
+            .map_err(map_offset_error)?;
+        validate_offset_postcondition(topo, "offset", result)
+    })
 }
 
 /// Offset every face and return its construction-derived face evolution.
@@ -152,10 +154,12 @@ pub fn shell_v2(
     thickness: f64,
     exclude: &[FaceId],
 ) -> Result<SolidId, OperationsError> {
-    let result =
-        remus_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
-            .map_err(map_offset_error)?;
-    validate_offset_postcondition(topo, "shell", result)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result =
+            remus_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
+                .map_err(map_offset_error)?;
+        validate_offset_postcondition(topo, "shell", result)
+    })
 }
 
 /// Offset with arc joints (V2 pipeline).
@@ -172,9 +176,11 @@ pub fn offset_solid_arc_v2(
         joint: JointType::Arc,
         ..Default::default()
     };
-    let result =
-        remus_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
-    validate_offset_postcondition(topo, "arc offset", result)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result =
+            remus_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
+        validate_offset_postcondition(topo, "arc offset", result)
+    })
 }
 
 #[cfg(test)]

@@ -7,6 +7,118 @@ use crate::vec::Vec3;
 use super::chaining::build_curves_from_points;
 use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER};
 
+/// Certify one transverse constant-parameter ruling of a bilinear patch.
+///
+/// Only unit-weight, clamped, single-span degree-(1,1) patches qualify.
+/// Opposite boundary directions must be plane-parallel to roundoff. A
+/// merely modeling-tolerance-sized slope does not qualify as an exact ruling.
+/// Coincident, boundary-only, degenerate, and unproved intersections return
+/// `None` so callers can retain their general intersection path.
+#[must_use]
+pub fn plane_bilinear_ruling(
+    surface: &NurbsSurface,
+    plane_normal: Vec3,
+    plane_d: f64,
+    tolerance: crate::tolerance::Tolerance,
+) -> Option<(crate::vec::Point3, crate::vec::Point3)> {
+    let points = surface.control_points();
+    if surface.degree_u() != 1
+        || surface.degree_v() != 1
+        || points.len() != 2
+        || points.iter().any(|row| row.len() != 2)
+        || surface.is_rational()
+    {
+        return None;
+    }
+    // Knot equality is structural multiplicity, not a geometric tolerance.
+    let clamped = |knots: &[f64]| {
+        knots.len() == 4
+            && knots[0].to_bits() == knots[1].to_bits()
+            && knots[2].to_bits() == knots[3].to_bits()
+            && knots[1] < knots[2]
+    };
+    if !clamped(surface.knots_u()) || !clamped(surface.knots_v()) {
+        return None;
+    }
+    let length = plane_normal.length();
+    if !length.is_finite()
+        || length <= f64::MIN_POSITIVE
+        || !plane_d.is_finite()
+        || !tolerance.linear.is_finite()
+        || tolerance.linear <= 0.0
+    {
+        return None;
+    }
+    let normal = plane_normal * (1.0 / length);
+    let distance = plane_d / length;
+    let signed = |p: crate::vec::Point3| normal.dot(Vec3::new(p.x(), p.y(), p.z())) - distance;
+    let distances = [
+        [signed(points[0][0]), signed(points[0][1])],
+        [signed(points[1][0]), signed(points[1][1])],
+    ];
+    if distances.iter().flatten().any(|d| !d.is_finite()) {
+        return None;
+    }
+    // Modeling tolerance alone would certify a near-ruling curved section.
+    let constant = |a: crate::vec::Point3, b: crate::vec::Point3| {
+        let delta = b - a;
+        let magnitude = (normal.x() * delta.x()).abs()
+            + (normal.y() * delta.y()).abs()
+            + (normal.z() * delta.z()).abs();
+        normal.dot(delta).abs() <= (16.0 * f64::EPSILON * magnitude).min(tolerance.linear)
+    };
+    let u = surface.domain_u();
+    let v = surface.domain_v();
+    for along_u in [true, false] {
+        let (a, b, proven) = if along_u {
+            (
+                distances[0][0],
+                distances[1][0],
+                constant(points[0][0], points[0][1]) && constant(points[1][0], points[1][1]),
+            )
+        } else {
+            (
+                distances[0][0],
+                distances[0][1],
+                constant(points[0][0], points[1][0]) && constant(points[0][1], points[1][1]),
+            )
+        };
+        if !proven
+            || a.abs() <= tolerance.linear
+            || b.abs() <= tolerance.linear
+            || a.is_sign_positive() == b.is_sign_positive()
+        {
+            continue;
+        }
+        let fraction = a / (a - b);
+        if !fraction.is_finite() || !(0.0..1.0).contains(&fraction) {
+            continue;
+        }
+        let (start, end) = if along_u {
+            let parameter = u.0 + (u.1 - u.0) * fraction;
+            (
+                surface.evaluate(parameter, v.0),
+                surface.evaluate(parameter, v.1),
+            )
+        } else {
+            let parameter = v.0 + (v.1 - v.0) * fraction;
+            (
+                surface.evaluate(u.0, parameter),
+                surface.evaluate(u.1, parameter),
+            )
+        };
+        let chord_length = (end - start).length();
+        if chord_length.is_finite()
+            && chord_length > tolerance.linear
+            && signed(start).abs() <= tolerance.linear
+            && signed(end).abs() <= tolerance.linear
+        {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
 /// Intersect a plane with a NURBS surface.
 ///
 /// Returns a list of intersection curves (there may be multiple
@@ -400,5 +512,200 @@ fn refine_plane_surface_point(
         })
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod ruling_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::{tolerance::Tolerance, vec::Point3};
+
+    fn saddle(scale: f64, offset: Vec3) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![2.0, 2.0, 5.0, 5.0],
+            vec![-7.0, -7.0, -3.0, -3.0],
+            [-2.0, 2.0]
+                .into_iter()
+                .map(|x| {
+                    [-2.0, 2.0]
+                        .into_iter()
+                        .map(|y| Point3::new(x * scale, y * scale, 0.1 * x * y * scale) + offset)
+                        .collect()
+                })
+                .collect(),
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn plane_bilinear_ruling_preserves_both_directions_scale_and_translation() {
+        let tolerance = Tolerance::default();
+        for scale in [1e-3, 1.0, 1e3] {
+            for offset in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(13.0, -7.0, 5.0)] {
+                let surface = saddle(scale, offset);
+                for normal in [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)] {
+                    for multiplier in [-3.0, 1.0] {
+                        let (start, end) = plane_bilinear_ruling(
+                            &surface,
+                            normal * multiplier,
+                            (0.5 * scale + normal.dot(offset)) * multiplier,
+                            tolerance,
+                        )
+                        .unwrap();
+                        for i in 0..=16 {
+                            let p = start + (end - start) * (f64::from(i) / 16.0);
+                            let local = p - offset;
+                            assert!(
+                                (normal.dot(Vec3::new(local.x(), local.y(), local.z()))
+                                    - 0.5 * scale)
+                                    .abs()
+                                    < tolerance.linear
+                            );
+                            assert!(
+                                (local.z() - 0.1 * local.x() * local.y() / scale).abs()
+                                    < tolerance.linear
+                            );
+                        }
+                        assert!((end - start).length() > 4.0 * scale);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plane_bilinear_ruling_declines_overflowing_chord() {
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            [-1.0, 1.0]
+                .into_iter()
+                .map(|x| {
+                    [-1e200, 1e200]
+                        .into_iter()
+                        .map(|y| Point3::new(x, y, 0.0))
+                        .collect()
+                })
+                .collect(),
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        assert!(
+            plane_bilinear_ruling(
+                &surface,
+                Vec3::new(1.0, 0.0, 0.0),
+                0.0,
+                Tolerance::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn plane_bilinear_ruling_declines_nonrulings_contacts_and_rational_patches() {
+        let surface = saddle(1.0, Vec3::new(0.0, 0.0, 0.0));
+        let tolerance = Tolerance::default();
+        for (normal, distance) in [
+            (Vec3::new(0.0, 0.0, 1.0), 0.1),
+            (Vec3::new(0.0, 0.0, 1.0), 0.0),
+            (Vec3::new(1.0, 0.0, 1e-9), 0.5),
+            (Vec3::new(1.0, 0.0, 0.0), 2.0),
+            (Vec3::new(1.0, 0.0, 0.0), 3.0),
+            (Vec3::new(0.0, 0.0, 0.0), 0.0),
+            (Vec3::new(1.0, 0.0, 0.0), f64::NAN),
+        ] {
+            assert!(plane_bilinear_ruling(&surface, normal, distance, tolerance).is_none());
+        }
+        let mut weights = surface.weights().to_vec();
+        weights[0][0] = 1.0 + f64::EPSILON;
+        let rational = NurbsSurface::new(
+            1,
+            1,
+            surface.knots_u().to_vec(),
+            surface.knots_v().to_vec(),
+            surface.control_points().to_vec(),
+            weights,
+        )
+        .unwrap();
+        assert!(
+            plane_bilinear_ruling(&rational, Vec3::new(1.0, 0.0, 0.0), 0.5, tolerance).is_none()
+        );
+        let unclamped = NurbsSurface::new(
+            1,
+            1,
+            vec![1.0, 2.0, 5.0, 6.0],
+            surface.knots_v().to_vec(),
+            surface.control_points().to_vec(),
+            surface.weights().to_vec(),
+        )
+        .unwrap();
+        assert!(
+            plane_bilinear_ruling(&unclamped, Vec3::new(1.0, 0.0, 0.0), 0.5, tolerance).is_none()
+        );
+        let mut planar = surface.control_points().to_vec();
+        for p in planar.iter_mut().flatten() {
+            *p = Point3::new(p.x(), p.y(), 0.0);
+        }
+        let planar = NurbsSurface::new(
+            1,
+            1,
+            surface.knots_u().to_vec(),
+            surface.knots_v().to_vec(),
+            planar,
+            surface.weights().to_vec(),
+        )
+        .unwrap();
+        assert!(plane_bilinear_ruling(&planar, Vec3::new(0.0, 0.0, 1.0), 0.0, tolerance).is_none());
+    }
+
+    #[test]
+    fn plane_bilinear_ruling_declines_multispan_degree_and_degenerate_sections() {
+        let surface = saddle(1.0, Vec3::new(0.0, 0.0, 0.0));
+        let mut points = surface.control_points().to_vec();
+        points.insert(
+            1,
+            vec![Point3::new(0.0, -2.0, 0.0), Point3::new(0.0, 2.0, 0.0)],
+        );
+        for (degree, knots) in [
+            (1, vec![0.0, 0.0, 0.5, 1.0, 1.0]),
+            (2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+        ] {
+            let patch = NurbsSurface::new(
+                degree,
+                1,
+                knots,
+                surface.knots_v().to_vec(),
+                points.clone(),
+                vec![vec![1.0; 2]; 3],
+            )
+            .unwrap();
+            assert!(
+                plane_bilinear_ruling(&patch, Vec3::new(1.0, 0.0, 0.0), 0.5, Tolerance::default())
+                    .is_none()
+            );
+        }
+        let points = vec![
+            vec![Point3::new(-2.0, 0.0, 0.0); 2],
+            vec![Point3::new(2.0, 0.0, 0.0); 2],
+        ];
+        let patch = NurbsSurface::new(
+            1,
+            1,
+            surface.knots_u().to_vec(),
+            surface.knots_v().to_vec(),
+            points,
+            surface.weights().to_vec(),
+        )
+        .unwrap();
+        assert!(
+            plane_bilinear_ruling(&patch, Vec3::new(1.0, 0.0, 0.0), 0.5, Tolerance::default())
+                .is_none()
+        );
     }
 }

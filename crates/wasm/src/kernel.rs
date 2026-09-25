@@ -75,9 +75,35 @@ impl Default for BrepKernel {
 // ── Private helpers ────────────────────────────────────────────────
 
 impl BrepKernel {
+    /// Native diagnostic census; absent from the shipped JS interface.
+    #[cfg(feature = "perf-counters")]
+    #[must_use]
+    pub fn performance_topology_census(&self) -> serde_json::Value {
+        let topo = self.topo();
+        let live = [
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.num_compounds(),
+            topo.num_compsolids(),
+            topo.num_loops(),
+            topo.num_coedges(),
+        ];
+        serde_json::json!({"live_entities": live.iter().sum::<usize>(),
+            "allocated_slots": topo.allocated_slot_count(), "solids": topo.num_solids(),
+            "pcurves": topo.num_pcurves()})
+    }
+
     /// Returns a mutable reference to the topology, cloning if shared
     /// with any checkpoints (copy-on-write).
     pub(crate) fn topo_mut(&mut self) -> &mut Topology {
+        #[cfg(feature = "perf-counters")]
+        if Rc::strong_count(&self.topo) > 1 {
+            remus_topology::transaction::perf::record_cow_copy();
+        }
         Rc::make_mut(&mut self.topo)
     }
 
@@ -100,6 +126,8 @@ impl BrepKernel {
         &mut self,
         operation: impl FnOnce(&mut Topology) -> Result<T, E>,
     ) -> Result<T, E> {
+        #[cfg(feature = "perf-counters")]
+        let _scope = remus_topology::transaction::perf::Scope::enter(true);
         let snapshot = self.topo().clone();
         let result = operation(self.topo_mut());
         if result.is_err() {

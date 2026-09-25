@@ -29,6 +29,8 @@
 //! length-valued in it (some are `PRODUCT`/`COLOUR_RGB` only) still imports,
 //! as zero solids.
 
+pub mod assembly;
+
 use std::collections::{HashMap, HashSet};
 
 use remus_math::aabb::Aabb2;
@@ -8269,10 +8271,7 @@ fn representation_model_tolerances(
             });
         }
         let transformation_slots = split_attr_slots(&transformation.attrs);
-        // ITEM_DEFINED_TRANSFORMATION names the rep_2 (assembly) placement
-        // first and the rep_1 (component) placement second. The Hammer corpus
-        // occurrence uses this canonical ordering.
-        let assembly_item = transformation_slots
+        let first_item = transformation_slots
             .get(2)
             .and_then(AttrSlot::as_ref_id)
             .ok_or_else(|| IoError::ParseError {
@@ -8280,7 +8279,7 @@ fn representation_model_tolerances(
                     "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} has no first placement"
                 ),
             })?;
-        let component_item = transformation_slots
+        let second_item = transformation_slots
             .get(3)
             .and_then(AttrSlot::as_ref_id)
             .ok_or_else(|| IoError::ParseError {
@@ -8288,6 +8287,15 @@ fn representation_model_tolerances(
                     "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} has no second placement"
                 ),
             })?;
+        // ISO 10303-43 WR2 orders items like representations. Retain the
+        // historical reverse convention only when both memberships prove it.
+        let standard_order = representation_items[&component_rep].contains(&first_item)
+            && representation_items[&assembly_rep].contains(&second_item);
+        let (component_item, assembly_item) = if standard_order {
+            (first_item, second_item)
+        } else {
+            (second_item, first_item)
+        };
         for placement_ref in [component_item, assembly_item] {
             let placement = entities.get(&placement_ref).ok_or_else(|| IoError::ParseError {
                 reason: format!(
@@ -11185,12 +11193,28 @@ mod tests {
                     #44=(REPRESENTATION_RELATIONSHIP('','',#43,#54)\
                     REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
                     SHAPE_REPRESENTATION_RELATIONSHIP());";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
-        let units = required_unit_scale(&entities).unwrap();
-        let mut topo = Topology::new();
-        let builder =
-            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
-        assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
+        for body in [body.to_string(), body.replace("#48,#15", "#15,#48")] {
+            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            let builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+            assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
+        }
+        for placements in ["#15,#15", "#48,#48", "#70,#71"] {
+            let body = format!(
+                "{}\n#70=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n#71=AXIS2_PLACEMENT_3D('',#45,#46,#47);",
+                body.replace("#48,#15", placements)
+            );
+            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            assert!(matches!(
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()),
+                Err(IoError::ParseError { .. })
+            ));
+            assert_eq!(topo.num_vertices(), 0);
+        }
     }
 
     #[test]

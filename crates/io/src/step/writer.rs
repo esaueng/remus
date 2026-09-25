@@ -3,6 +3,8 @@
 //! Exports B-Rep solids to ISO 10303-21 (STEP Part 21) format.
 //! Supports planar faces with line edges and NURBS curves/surfaces.
 
+pub mod assembly;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -148,72 +150,7 @@ pub fn write_step_bodies_with_options(
         });
     }
 
-    let mut uncertainty = 1e-7_f64;
-    for &solid_id in solids {
-        for face_id in remus_topology::explorer::solid_faces(topo, solid_id)? {
-            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
-        }
-        for vertex_id in solid_vertices(topo, solid_id)? {
-            let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
-            if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
-                return Err(IoError::InvalidTopology {
-                    reason: format!(
-                        "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
-                    ),
-                });
-            }
-            uncertainty = uncertainty.max(vertex_tolerance);
-        }
-        for edge_id in solid_edges(topo, solid_id)? {
-            if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
-                if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
-                    return Err(IoError::InvalidTopology {
-                        reason: format!(
-                            "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
-                        ),
-                    });
-                }
-                uncertainty = uncertainty.max(edge_tolerance);
-            }
-        }
-    }
-    for &sheet_id in sheets {
-        let actual = topo.body_class_of(BodyId::Shell(sheet_id))?;
-        if actual != BodyClass::Sheet {
-            return Err(remus_topology::TopologyError::BodyClassMismatch {
-                entity: "STEP sheet root",
-                expected: BodyClass::Sheet.as_str(),
-                actual: actual.as_str(),
-            }
-            .into());
-        }
-        for &face_id in topo.shell(sheet_id)?.faces() {
-            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
-            for vertex_id in face_vertices(topo, face_id)? {
-                let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
-                if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
-                    return Err(IoError::InvalidTopology {
-                        reason: format!(
-                            "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
-                        ),
-                    });
-                }
-                uncertainty = uncertainty.max(vertex_tolerance);
-            }
-            for edge_id in face_edges(topo, face_id)? {
-                if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
-                    if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
-                        return Err(IoError::InvalidTopology {
-                            reason: format!(
-                                "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
-                            ),
-                        });
-                    }
-                    uncertainty = uncertainty.max(edge_tolerance);
-                }
-            }
-        }
-    }
+    let uncertainty = export_uncertainty(topo, solids, sheets)?;
 
     let mut ctx = StepWriteContext::new(options.clone());
 
@@ -307,6 +244,81 @@ pub fn write_step_bodies_with_options(
     }
 
     Ok(ctx.finish())
+}
+
+fn export_uncertainty(
+    topo: &Topology,
+    solids: &[SolidId],
+    sheets: &[remus_topology::shell::ShellId],
+) -> Result<f64, IoError> {
+    let mut uncertainty = 1e-7_f64;
+    for &solid_id in solids {
+        for face_id in remus_topology::explorer::solid_faces(topo, solid_id)? {
+            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
+        }
+        for vertex_id in solid_vertices(topo, solid_id)? {
+            let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
+            if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+                return Err(IoError::InvalidTopology {
+                    reason: format!(
+                        "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
+                    ),
+                });
+            }
+            uncertainty = uncertainty.max(vertex_tolerance);
+        }
+        for edge_id in solid_edges(topo, solid_id)? {
+            if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
+                if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
+                        ),
+                    });
+                }
+                uncertainty = uncertainty.max(edge_tolerance);
+            }
+        }
+    }
+    for &sheet_id in sheets {
+        let actual = topo.body_class_of(BodyId::Shell(sheet_id))?;
+        if actual != BodyClass::Sheet {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "STEP sheet root",
+                expected: BodyClass::Sheet.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        for &face_id in topo.shell(sheet_id)?.faces() {
+            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
+            for vertex_id in face_vertices(topo, face_id)? {
+                let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
+                if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
+                        ),
+                    });
+                }
+                uncertainty = uncertainty.max(vertex_tolerance);
+            }
+            for edge_id in face_edges(topo, face_id)? {
+                if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
+                    if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
+                        return Err(IoError::InvalidTopology {
+                            reason: format!(
+                                "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
+                            ),
+                        });
+                    }
+                    uncertainty = uncertainty.max(edge_tolerance);
+                }
+            }
+        }
+    }
+
+    Ok(uncertainty)
 }
 
 /// Maximum distance of a planar face's boundary vertices from its carrier.

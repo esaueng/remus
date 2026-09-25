@@ -36,7 +36,7 @@ def cpu_model():
 
 def build_environment(env):
     keys = {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET", "CARGO_TARGET_DIR",
-            "CARGO_BUILD_JOBS", "RAYON_NUM_THREADS", "RUSTUP_TOOLCHAIN", "RUSTC", "RUSTC_WRAPPER",
+            "CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "RAYON_NUM_THREADS", "RUSTUP_TOOLCHAIN", "RUSTC", "RUSTC_WRAPPER",
             "RUSTC_WORKSPACE_WRAPPER", "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS"}
     keys.update(k for k in env if k.startswith("CARGO_PROFILE_") or
                 (k.startswith("CARGO_TARGET_") and k.endswith(("_RUSTFLAGS", "_LINKER"))))
@@ -91,6 +91,7 @@ def summarize(rows):
     return {
         "samples": len(values), "unit": "ms per named operation", "min": min(values),
         "median": statistics.median(values), "max": max(values),
+        "sample_stdev": statistics.stdev(values) if len(values) > 1 else None,
         "process_medians": [statistics.median(r["operation_ns"] / 1e6 for r in retained
                              if r["process"] == process) for process in processes],
         "tail_percentiles": None,
@@ -167,7 +168,7 @@ def run(args):
         wasm = any(c["scenario"].startswith("wasm_") for c in selected)
         binary = None
         if native:
-            build = ["cargo", "build", "--locked", "--profile", "profiling", "--no-default-features", "--features", "io",
+            build = ["cargo", "build", "--locked", "--profile", "profiling", "--no-default-features", "--features", "io,perf-counters",
                      "-p", "remus-wasm", "--example", "performance_baseline", "--message-format=json"]
             if args.offline:
                 build.append("--offline")

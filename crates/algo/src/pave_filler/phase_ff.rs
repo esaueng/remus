@@ -4869,7 +4869,7 @@ fn longest_inboth_run(inb: &[bool], closed: bool) -> (usize, usize) {
     (b0, b1)
 }
 
-/// Compute AABB for a face by sampling its boundary edges.
+/// Compute face bounds with exact conic boundary extrema and sampled other edges.
 fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result<Aabb3, AlgoError> {
     let edges = remus_topology::explorer::face_edges(topo, face_id)?;
     let mut points = Vec::new();
@@ -4881,11 +4881,47 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         let (t0, t1) =
             super::helpers::authoritative_edge_domain(edge, eid, "face bounding-box sampling")?;
 
-        let n: usize = 8;
-        for i in 0..=n {
-            let t = t0 + (t1 - t0) * (i as f64 / n as f64);
-            let pt = edge.curve().evaluate_with_endpoints(t, start_pos, end_pos);
-            points.push(pt);
+        let axes = match edge.curve() {
+            EdgeCurve::Circle(c) => Some((c.u_axis() * c.radius(), c.v_axis() * c.radius())),
+            EdgeCurve::Ellipse(e) => {
+                Some((e.u_axis() * e.semi_major(), e.v_axis() * e.semi_minor()))
+            }
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
+        };
+        if let Some((cosine, sine)) = axes {
+            // Rim samples underestimate the extent when a seam moves between
+            // samples. Coordinate extrema bound the actual stored arc instead.
+            let lo = t0.min(t1);
+            let hi = t0.max(t1);
+            let mut parameters = vec![lo, hi];
+            for (a, b) in [
+                (cosine.x(), sine.x()),
+                (cosine.y(), sine.y()),
+                (cosine.z(), sine.z()),
+            ] {
+                let extremum = b.atan2(a);
+                for phase in [extremum, extremum + std::f64::consts::PI] {
+                    let t = lo + (phase - lo).rem_euclid(std::f64::consts::TAU);
+                    if t <= hi {
+                        parameters.push(t);
+                    }
+                }
+            }
+            points.extend(
+                parameters
+                    .into_iter()
+                    .map(|t| edge.curve().evaluate_with_endpoints(t, start_pos, end_pos)),
+            );
+        } else {
+            let n: usize = 8;
+            for i in 0..=n {
+                let t = t0 + (t1 - t0) * (i as f64 / n as f64);
+                let pt = edge.curve().evaluate_with_endpoints(t, start_pos, end_pos);
+                points.push(pt);
+            }
         }
     }
 
@@ -4912,7 +4948,7 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         }
         // B24: exhaustive over `FaceSurface` — spheres and full tori
         // widen the AABB above; planes, cylinders, cones, NURBS, and
-        // trimmed tori are bounded by their boundary samples alone.
+        // trimmed tori use their boundary bounds alone.
         FaceSurface::Plane { .. }
         | FaceSurface::Nurbs(_)
         | FaceSurface::Cylinder(_)
@@ -5761,7 +5797,7 @@ fn compute_raw_curves(
                 // (see the function docs for why the march is unusable here).
                 Ok(vec![exact])
             } else {
-                plane_nurbs_intersection(*normal, *d, nurbs)
+                plane_nurbs_intersection(*normal, *d, nurbs, context.tolerance)
             }
         }
 
@@ -6189,7 +6225,18 @@ fn plane_nurbs_intersection(
     normal: Vec3,
     d: f64,
     nurbs: &remus_math::nurbs::surface::NurbsSurface,
+    tolerance: Tolerance,
 ) -> Result<Vec<RawCurve>, AlgoError> {
+    if let Some((p_start, p_end)) = nurbs_isect::plane_bilinear_ruling(nurbs, normal, d, tolerance)
+    {
+        return Ok(vec![RawCurve {
+            curve: EdgeCurve::Line,
+            bbox: Aabb3::from_points([p_start, p_end]),
+            t_range: (0.0, (p_end - p_start).length()),
+            p_start,
+            p_end,
+        }]);
+    }
     let isect_curves = nurbs_isect::intersect_plane_nurbs(nurbs, normal, d, NURBS_SAMPLES)?;
 
     let mut results = Vec::new();
@@ -7920,6 +7967,84 @@ fn clip_line_to_polygon_general(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn conic_face_bounds_preserve_seam_extrema_and_stored_trims() {
+        use remus_math::curves::{Circle3D, Ellipse3D};
+        use remus_topology::{
+            face::Face,
+            wire::{OrientedEdge, Wire},
+        };
+        for scale in [0.01, 1.0, 100.0] {
+            for center in [Point3::new(0.0, 0.0, 0.0), Point3::new(13.0, -7.0, 5.0)] {
+                for rotation in [0.0_f64, 0.3, 2.0] {
+                    let direction = Vec3::new(rotation.cos(), rotation.sin(), 0.0);
+                    for normal in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 2.0, 3.0)] {
+                        let curves = [
+                            EdgeCurve::Circle(
+                                Circle3D::new_with_ref(center, normal, 2.0 * scale, direction)
+                                    .unwrap(),
+                            ),
+                            EdgeCurve::Ellipse(
+                                Ellipse3D::new_with_ref(
+                                    center,
+                                    normal,
+                                    2.0 * scale,
+                                    scale,
+                                    direction,
+                                )
+                                .unwrap(),
+                            ),
+                        ];
+                        for curve in curves {
+                            for domain in [
+                                (0.0, std::f64::consts::TAU),
+                                (0.3, 1.9),
+                                (1.9, 0.3),
+                                (6.1, 6.7),
+                            ] {
+                                let mut topo = Topology::new();
+                                let point = |t| curve.evaluate_with_endpoints(t, center, center);
+                                let start = topo.add_vertex(Vertex::new(point(domain.0), 1e-7));
+                                let end = topo.add_vertex(Vertex::new(point(domain.1), 1e-7));
+                                let mut edge = Edge::new(start, end, curve.clone());
+                                edge.set_trim(Some(domain));
+                                let edge = topo.add_edge(edge);
+                                let wire = topo.add_wire(
+                                    Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap(),
+                                );
+                                let face = topo.add_face(Face::new(
+                                    wire,
+                                    vec![],
+                                    FaceSurface::Plane { normal, d: 0.0 },
+                                ));
+                                let bounds =
+                                    compute_face_bbox(&topo, face, Tolerance::default()).unwrap();
+                                let samples: Vec<_> = (0..=4096)
+                                    .map(|i| {
+                                        point(
+                                            domain.0
+                                                + (domain.1 - domain.0) * f64::from(i) / 4096.0,
+                                        )
+                                    })
+                                    .collect();
+                                assert!(
+                                    samples
+                                        .iter()
+                                        .all(|p| bounds.expanded(scale * 1e-12).contains_point(*p)),
+                                    "lost arc at rotation={rotation}, domain={domain:?}"
+                                );
+                                // A bounded arc must not inherit extrema from omitted carrier arcs.
+                                let sampled = Aabb3::from_points(samples);
+                                assert!((bounds.min - sampled.min).length() < scale * 1e-5);
+                                assert!((bounds.max - sampled.max).length() < scale * 1e-5);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn opposed_torus_cylinder_end_planes_preserve_real_curves_and_overlap() {
