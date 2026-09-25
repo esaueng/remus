@@ -1217,12 +1217,12 @@ fn one_wall_and_lidded_box_split_faceted_hemisphere_exactly() {
     }
 }
 
-/// B59: with the walls close under the lid the collar's classification
+/// B62: with the walls close under the lid the collar's classification
 /// sample (the lid latitude nudged a fixed amount toward the equator) lands
 /// beyond a wall, in a wall cap.
 #[test]
-#[ignore = "open: B59 — collar interior sample overshoots a wall close under the lid"]
-fn b59_collar_sample_stays_inside_walls_close_under_the_lid() {
+#[ignore = "open: B62 — collar interior sample overshoots a wall close under the lid"]
+fn b62_collar_sample_stays_inside_walls_close_under_the_lid() {
     for rad in [2.0, 50.0] {
         check_one_wall_and_lid(rad, 0.75);
     }

@@ -150,8 +150,8 @@ and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Added since that snapshot: the B55 curved-offset scale witness
 (`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), and
-the B58/B59 lidded box–sphere witnesses
-(`crates/operations/tests/regress_sphere_lidded_box_collar.rs`, plus the B59
+the B61/B62 lidded box–sphere witnesses
+(`crates/operations/tests/regress_sphere_lidded_box_collar.rs`, plus the B62
 collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`;
 both fail on `main`).
 Current work lives in the master roadmap; closed narratives live in

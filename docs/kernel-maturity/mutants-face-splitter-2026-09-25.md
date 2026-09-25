@@ -82,14 +82,14 @@ ends under the cylinder map.
   boundary as the sibling periodic shortcuts read it. Regression:
   `one_ruling_splits_lateral_into_two_sectors_of_closed_form_area` (one
   region before, two sectors of the closed-form areas after).
-- **Filed — [B58](roadmap.md#b58).** Found while pinning the collar's lid
+- **Filed — [B61](roadmap.md#b61).** Found while pinning the collar's lid
   route: sphere ∖ lidded box silently drops the lid-cap lump (raw GFA
   already lacks it). Ready-repro in
   `crates/operations/tests/regress_sphere_lidded_box_collar.rs`.
-- **Filed — [B59](roadmap.md#b59).** The collar's classification sample
+- **Filed — [B62](roadmap.md#b62).** The collar's classification sample
   overshoots a wall close under the lid and the exact boolean is refused.
   A bounded nudge fixes the intersect but would turn the cut from refused
-  into B58's wrong result, so it waits on B58. Ready-repros in both test
+  into B61's wrong result, so it waits on B61. Ready-repros in both test
   files named above.
 
 ### (b) Survivor rows
