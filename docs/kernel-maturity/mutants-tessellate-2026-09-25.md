@@ -302,9 +302,9 @@ lines after the fixes. "Killed" names the first failing test in the cargo-mutant
 
 ## Verification
 
-After merging `origin/main` (with #624, #646 and the other B19 tranches):
+After merging `origin/main` at `8972565` (with #624, #646, #664, #674 and the other B19 tranches):
 
-- `cargo nextest run --workspace --cargo-profile ci-test`: 5,955 passed, 0 failed.
+- `cargo nextest run --workspace --cargo-profile ci-test`: 6,012 passed, 0 failed.
 - `cargo test -p remus-wasm`: 584 + 1 passed.
 - `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --all -- --check`,
   `taplo fmt --check`, `cargo machete` (pre-commit, every commit).
