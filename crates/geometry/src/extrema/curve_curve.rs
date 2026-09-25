@@ -15,8 +15,11 @@ const N_SAMPLES: usize = 32;
 /// Maximum Newton iterations for refinement.
 const MAX_ITER: usize = 50;
 
-/// Convergence tolerance on the parameter step magnitude.
-const PARAM_TOL: f64 = 1e-10;
+/// Convergence tolerance on the parameter step, relative to each range.
+const PARAM_TOL_REL: f64 = 1e-14;
+
+/// Maximum step halvings per Newton iteration.
+const MAX_BACKTRACK: usize = 40;
 
 // ── Analytic fast path: line-to-line ────────────────────────────────────────
 
@@ -204,74 +207,94 @@ pub fn curve_to_curve<C1: ParametricCurve, C2: ParametricCurve>(
         }
     }
 
-    // ── Phase 2: Newton-Raphson refinement ────────────────────────────────────
-    // Variables: x = [t1, t2]
-    // f1(t1,t2) = dot(C1(t1) - C2(t2),  C1'(t1)) = 0
-    // f2(t1,t2) = dot(C1(t1) - C2(t2), -C2'(t2)) = 0
+    // ── Phase 2: safeguarded Newton refinement ────────────────────────────────
+    // Minimise g(t1, t2) = ½|C1(t1) − C2(t2)|² with d = C1 − C2:
+    //   ∇g  = [ d·C1',  −d·C2' ]
+    //   H11 = |C1'|² + d·C1'',  H22 = |C2'|² − d·C2'',  H12 = −C1'·C2'
     //
-    // Jacobian (Gauss-Newton approximation):
-    //   J11 ≈  |C1'(t1)|²,  J12 = -dot(C1'(t1), C2'(t2))
-    //   J21 = -dot(C1'(t1), C2'(t2)),  J22 ≈ |C2'(t2)|²
-    let h1 = ((t1_end - t1_start) * 1e-6).max(1e-9);
-    let h2 = ((t2_end - t2_start) * 1e-6).max(1e-9);
+    // The FULL Hessian is used when it is positive definite. The
+    // Gauss-Newton form drops the d·C'' terms, which are not small at a
+    // positive distance: its steps overshoot on curved pairs and its
+    // matrix is exactly singular when the closest points have parallel
+    // tangents (a line against a parabola's vertex tangent), while the
+    // full Hessian stays positive definite there (B10). Otherwise the
+    // Gauss-Newton step, and failing that a diagonally scaled gradient
+    // step, is taken; every step is backtracked until the distance does
+    // not increase (or the gradient halves), and convergence is judged
+    // relative to each range.
+    let tol1 = (t1_end - t1_start) * PARAM_TOL_REL;
+    let tol2 = (t2_end - t2_start) * PARAM_TOL_REL;
+    let dist_sq_at = |t1: f64, t2: f64| (c1.evaluate(t1) - c2.evaluate(t2)).length_squared();
 
     let mut t1 = best_t1;
     let mut t2 = best_t2;
+    let mut g = dist_sq_at(t1, t2);
 
     for _ in 0..MAX_ITER {
-        let p1 = c1.evaluate(t1);
-        let p2 = c2.evaluate(t2);
+        let (p1, vel1, acc1) = super::curve_derivatives(c1, t1, t1_start, t1_end);
+        let (p2, vel2, acc2) = super::curve_derivatives(c2, t2, t2_start, t2_end);
         let diff = p1 - p2;
-
-        // Finite-difference velocities.
-        let t1_fwd = (t1 + h1).min(t1_end);
-        let t1_bwd = (t1 - h1).max(t1_start);
-        let inv2h1 = 1.0 / (t1_fwd - t1_bwd);
-        let p1f = c1.evaluate(t1_fwd);
-        let p1b = c1.evaluate(t1_bwd);
-        let vel1 = remus_math::vec::Vec3::new(
-            (p1f.x() - p1b.x()) * inv2h1,
-            (p1f.y() - p1b.y()) * inv2h1,
-            (p1f.z() - p1b.z()) * inv2h1,
-        );
-
-        let t2_fwd = (t2 + h2).min(t2_end);
-        let t2_bwd = (t2 - h2).max(t2_start);
-        let inv2h2 = 1.0 / (t2_fwd - t2_bwd);
-        let p2f = c2.evaluate(t2_fwd);
-        let p2b = c2.evaluate(t2_bwd);
-        let vel2 = remus_math::vec::Vec3::new(
-            (p2f.x() - p2b.x()) * inv2h2,
-            (p2f.y() - p2b.y()) * inv2h2,
-            (p2f.z() - p2b.z()) * inv2h2,
-        );
 
         let f1 = diff.dot(vel1);
         let f2 = -diff.dot(vel2);
+        if f1 == 0.0 && f2 == 0.0 {
+            break;
+        }
 
-        // Jacobian entries.
         let j11 = vel1.dot(vel1);
         let j12 = -vel1.dot(vel2);
         let j22 = vel2.dot(vel2);
-        let det = j11 * j22 - j12 * j12;
+        let h11 = j11 + diff.dot(acc1);
+        let h22 = j22 - diff.dot(acc2);
 
-        if det.abs() < f64::EPSILON {
+        let solve = |a11: f64, a12: f64, a22: f64| -> Option<(f64, f64)> {
+            let det = a11 * a22 - a12 * a12;
+            (det.is_finite() && a11 > 0.0 && det > f64::EPSILON * a11 * a22)
+                .then(|| ((f1 * a22 - f2 * a12) / det, (f2 * a11 - f1 * a12) / det))
+        };
+        let (mut dt1, mut dt2) = if let Some(step) = solve(h11, j12, h22) {
+            step
+        } else if let Some(step) = solve(j11, j12, j22) {
+            step
+        } else if j11 > 0.0 && j22 > 0.0 {
+            (f1 / j11, f2 / j22)
+        } else {
             break;
+        };
+
+        // Backtrack until the squared distance does not increase, or the
+        // gradient at least halves. Near the minimum g is flat to second
+        // order, so comparing g values alone can only locate the closest
+        // pair to ~sqrt(eps); the gradient is accurate to eps.
+        let grad = f1.hypot(f2);
+        let grad_at = |t1: f64, t2: f64| {
+            let (p1, v1, _) = super::curve_derivatives(c1, t1, t1_start, t1_end);
+            let (p2, v2, _) = super::curve_derivatives(c2, t2, t2_start, t2_end);
+            let d = p1 - p2;
+            d.dot(v1).hypot(d.dot(v2))
+        };
+        let mut accepted = None;
+        for _ in 0..MAX_BACKTRACK {
+            let t1_new = (t1 - dt1).clamp(t1_start, t1_end);
+            let t2_new = (t2 - dt2).clamp(t2_start, t2_end);
+            let g_new = dist_sq_at(t1_new, t2_new);
+            if g_new <= g || grad_at(t1_new, t2_new) <= 0.5 * grad {
+                accepted = Some((t1_new, t2_new, g_new));
+                break;
+            }
+            dt1 *= 0.5;
+            dt2 *= 0.5;
         }
-
-        let dt1 = (f1 * j22 - f2 * j12) / det;
-        let dt2 = (f2 * j11 - f1 * j12) / det;
-
-        let t1_new = (t1 - dt1).clamp(t1_start, t1_end);
-        let t2_new = (t2 - dt2).clamp(t2_start, t2_end);
-
-        if (t1_new - t1).abs() < PARAM_TOL && (t2_new - t2).abs() < PARAM_TOL {
-            t1 = t1_new;
-            t2 = t2_new;
+        let Some((t1_new, t2_new, g_new)) = accepted else {
             break;
-        }
+        };
+        let (moved1, moved2) = ((t1_new - t1).abs(), (t2_new - t2).abs());
         t1 = t1_new;
         t2 = t2_new;
+        g = g.min(g_new);
+        if moved1 <= tol1 && moved2 <= tol2 {
+            break;
+        }
     }
 
     let pa = c1.evaluate(t1);
@@ -632,16 +655,16 @@ mod tests {
     #[test]
     fn second_domain_narrower_than_param_tol_still_refines_the_first() {
         // Same contact geometry, but c2 is restricted to a window of width
-        // 6e-11 centred on its contact parameter 3π/2 — narrower than
-        // PARAM_TOL. Every clamped step in t2 is therefore already below the
-        // convergence threshold, while t1 starts a fifth of a grid cell away
+        // 6e-11 centred on its contact parameter 3π/2 — narrower than the
+        // former absolute 1e-10 step tolerance. Every clamped step in t2 is
+        // therefore tiny from the start, while t1 starts a fifth of a grid cell away
         // and needs several Newton steps to reach π. The answer is still the
         // closed-form closest approach of 0.6.
         let (c1, c2) = tilted_circle_pair();
         let half = 3e-11;
         let t1_range = (0.35, 5.8);
         let t2_range = (1.5 * PI - half, 1.5 * PI + half);
-        assert!(t2_range.1 - t2_range.0 < PARAM_TOL);
+        assert!(t2_range.1 - t2_range.0 < 1e-10);
         let sol = curve_to_curve(&c1, t1_range, &c2, t2_range);
 
         assert!(approx(sol.distance, 0.6, 1e-9), "dist={}", sol.distance);
@@ -660,13 +683,13 @@ mod tests {
     fn first_domain_narrower_than_param_tol_still_refines_the_second() {
         // The mirror image of the test above: this time c1 is pinned inside a
         // 6e-11 window around its contact parameter π, so its clamped steps
-        // are below PARAM_TOL from the start while t2 still has to walk in
+        // are tiny from the start while t2 still has to walk in
         // from the grid. The closest approach is again 0.6, at t2 = 3π/2.
         let (c1, c2) = tilted_circle_pair();
         let half = 3e-11;
         let t1_range = (PI - half, PI + half);
         let t2_range = (0.0, TAU);
-        assert!(t1_range.1 - t1_range.0 < PARAM_TOL);
+        assert!(t1_range.1 - t1_range.0 < 1e-10);
         let sol = curve_to_curve(&c1, t1_range, &c2, t2_range);
 
         assert!(approx(sol.distance, 0.6, 1e-9), "dist={}", sol.distance);

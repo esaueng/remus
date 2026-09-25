@@ -11,7 +11,7 @@
 
 use super::{
     Accumulator, CheckError, DerivativeScratch, FaceContribution, ParametricSurface, PatchScale,
-    PropertiesOptions, gauss_legendre_points, patch_count,
+    Point3, PropertiesOptions, gauss_legendre_points, patch_count,
 };
 
 // Counts tensor-rule evaluations, independently of caller depth; each rule has
@@ -157,6 +157,7 @@ impl Work {
 struct Integrator<'a, S> {
     surface: &'a S,
     options: &'a PropertiesOptions,
+    reference: Point3,
     scratch: DerivativeScratch,
     work: Work,
 }
@@ -176,6 +177,7 @@ impl<S: ParametricSurface> Integrator<'_, S> {
                     uh.mul_add(gu.x, f64::midpoint(u.0, u.1)),
                     vh.mul_add(gv.x, f64::midpoint(v.0, v.1)),
                     gu.w * gv.w * uh * vh,
+                    self.reference,
                     &mut self.scratch,
                 );
                 for (i, x) in values(&a).into_iter().enumerate() {
@@ -232,11 +234,11 @@ impl<S: ParametricSurface> Integrator<'_, S> {
 #[allow(clippy::cast_precision_loss)]
 pub(super) fn integrate<S: ParametricSurface>(
     surface: &S,
-    u: (f64, f64),
-    v: (f64, f64),
+    (u, v): Rect,
     sign: f64,
     scale: PatchScale,
     options: &PropertiesOptions,
+    reference: Point3,
 ) -> Result<FaceContribution, CheckError> {
     if ![u.0, u.1, v.0, v.1].iter().all(|x| x.is_finite()) || u.0 >= u.1 || v.0 >= v.1 {
         return Err(CheckError::IntegrationFailed(
@@ -248,6 +250,7 @@ pub(super) fn integrate<S: ParametricSurface>(
     let mut integrator = Integrator {
         surface,
         options,
+        reference,
         scratch: DerivativeScratch::new(),
         work: Work::new(options.gauss_order),
     };
@@ -354,6 +357,7 @@ impl SpanModel {
 
 struct SlicedIntegrator<'a> {
     surface: &'a dyn ParametricSurface,
+    reference: Point3,
     domain: &'a Sliced<'a>,
     options: &'a PropertiesOptions,
     scratch: DerivativeScratch,
@@ -443,6 +447,7 @@ impl SlicedIntegrator<'_> {
                             u,
                             v,
                             g.w * h.w * half.abs() * step * 0.5,
+                            self.reference,
                             &mut self.scratch,
                         );
                         for (i, x) in values(&acc).into_iter().enumerate() {
@@ -551,6 +556,7 @@ pub(super) fn integrate_sliced(
     domain: &Sliced<'_>,
     sign: f64,
     options: &PropertiesOptions,
+    reference: Point3,
 ) -> Result<FaceContribution, CheckError> {
     if domain.breaks.iter().any(|x| !x.is_finite()) {
         return Err(CheckError::IntegrationFailed(
@@ -559,6 +565,7 @@ pub(super) fn integrate_sliced(
     }
     let mut integrator = SlicedIntegrator {
         surface,
+        reference,
         domain,
         options,
         scratch: DerivativeScratch::new(),

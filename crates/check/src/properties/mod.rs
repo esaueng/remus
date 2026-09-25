@@ -98,11 +98,70 @@ pub fn bounding_box(topo: &Topology, solid: SolidId) -> Result<Aabb3, CheckError
     bbox::bounding_box(topo, solid)
 }
 
+/// The point a solid's boundary integrals are taken about: the centre of its
+/// boundary vertices' bounding box, or the world origin for a solid with no
+/// vertices.
+///
+/// Every positional integrand (P·n, and the first and second moments) is a
+/// polynomial in the position. About the world origin, a small body far from
+/// it cancels terms of order |offset|·L², |offset|²·L³ against its L³, L⁴ and
+/// L⁵ answers, and the error of the large terms survives: a 1e-3 frustum moved
+/// 1.5e4 body lengths read its inertia tensor several times off (B58). Any
+/// point within a few body lengths keeps every term at the body's own scale;
+/// the vertex box is the cheapest such point and does not depend on how the
+/// faces are listed. A solid whose faces carry no vertex (none of the shipped
+/// primitives) keeps the historic origin.
+///
+/// A trimmed curved face integrates over its sampled UV outline, so a body
+/// with such faces does not close exactly and its volume moves with the
+/// reference by the reference dotted with that chord-sized residual. Callers
+/// that must reproduce [`solid_properties`]' volume to round-off sum
+/// [`face_integrator::integrate_face_about`] about this same point.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity is missing.
+pub fn integration_reference(topo: &Topology, solid: SolidId) -> Result<Point3, CheckError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    faces_reference(topo, &faces)
+}
+
+/// [`integration_reference`] over an already collected face list.
+fn faces_reference(topo: &Topology, faces: &[FaceId]) -> Result<Point3, CheckError> {
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for &fid in faces {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                for vid in [edge.start(), edge.end()] {
+                    let p = topo.vertex(vid)?.point();
+                    bounds = Some(bounds.map_or((p, p), |(lo, hi)| {
+                        (
+                            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+                            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+                        )
+                    }));
+                }
+            }
+        }
+    }
+    Ok(bounds.map_or(Point3::new(0.0, 0.0, 0.0), |(lo, hi)| {
+        Point3::new(
+            f64::midpoint(lo.x(), hi.x()),
+            f64::midpoint(lo.y(), hi.y()),
+            f64::midpoint(lo.z(), hi.z()),
+        )
+    }))
+}
+
 /// Compute the volume of a solid via face integration.
 ///
-/// Uses the divergence theorem: V = (1/3) sum of integral P dot N dA
-/// over all faces of the outer and inner shells. Reversed inner-shell faces
-/// subtract cavity volume through their signed contributions.
+/// Uses the divergence theorem: V = (1/3) sum of integral (P - r) dot N dA
+/// over all faces of the outer and inner shells, about a reference point `r`
+/// on the body (see [`solid_properties`]); a closed boundary encloses the
+/// same volume about every point. Reversed inner-shell faces subtract cavity
+/// volume through their signed contributions.
 ///
 /// # Errors
 ///
@@ -114,10 +173,11 @@ pub fn solid_volume(
 ) -> Result<f64, CheckError> {
     options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let reference = faces_reference(topo, &faces)?;
 
     let mut total_volume = 0.0;
     for fid in faces {
-        let contrib = face_integrator::integrate_face_with_options(topo, fid, options)?;
+        let contrib = face_integrator::integrate_face_about(topo, fid, options, reference)?;
         total_volume += contrib.volume;
     }
     Ok(total_volume)
@@ -151,7 +211,9 @@ pub fn solid_area(
 ///
 /// Uses the divergence theorem: for each coordinate axis, integrates
 /// `(1/2) x_i^2 * n_i` over the solid's boundary, then divides by total
-/// volume to obtain the volumetric centroid (solid CoM).
+/// volume to obtain the volumetric centroid (solid CoM). Coordinates are
+/// taken about a reference point on the body and the centroid is shifted
+/// back afterwards (see [`solid_properties`]).
 ///
 /// # Errors
 ///
@@ -164,6 +226,7 @@ pub fn center_of_mass(
 ) -> Result<Point3, CheckError> {
     options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let reference = faces_reference(topo, &faces)?;
 
     let mut total_volume = 0.0;
     let mut mx = 0.0;
@@ -171,7 +234,7 @@ pub fn center_of_mass(
     let mut mz = 0.0;
 
     for fid in faces {
-        let contrib = face_integrator::integrate_face_with_options(topo, fid, options)?;
+        let contrib = face_integrator::integrate_face_about(topo, fid, options, reference)?;
         total_volume += contrib.volume;
         mx += contrib.volume_moment_x;
         my += contrib.volume_moment_y;
@@ -184,11 +247,7 @@ pub fn center_of_mass(
         ));
     }
 
-    Ok(Point3::new(
-        mx / total_volume,
-        my / total_volume,
-        mz / total_volume,
-    ))
+    Ok(reference + Vec3::new(mx / total_volume, my / total_volume, mz / total_volume))
 }
 
 /// Compute volume, center of mass, and inertia for a uniform-density solid.
@@ -197,6 +256,12 @@ pub fn center_of_mass(
 /// tensor is expressed about the center of mass in the kernel's global axes.
 /// With the canonical millimetre length unit, mass has units of `mm^3` and
 /// inertia has units of `mm^5`.
+///
+/// Every boundary integral is taken about a reference point on the body (the
+/// centre of its vertices' bounding box), not the world origin, so the
+/// result does not depend on where the body sits (B58). The raw moments are
+/// moved to the centroid about that point, and only the centroid is shifted
+/// back into world coordinates.
 ///
 /// # Errors
 ///
@@ -209,6 +274,7 @@ pub fn solid_properties(
 ) -> Result<GProps, CheckError> {
     options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let reference = faces_reference(topo, &faces)?;
 
     let mut volume = 0.0;
     let mut mx = 0.0;
@@ -222,7 +288,7 @@ pub fn solid_properties(
     let mut qyz = 0.0;
 
     for fid in faces {
-        let contribution = face_integrator::integrate_face_with_options(topo, fid, options)?;
+        let contribution = face_integrator::integrate_face_about(topo, fid, options, reference)?;
         volume += contribution.volume;
         mx += contribution.volume_moment_x;
         my += contribution.volume_moment_y;
@@ -241,17 +307,18 @@ pub fn solid_properties(
         ));
     }
 
-    let center = Point3::new(mx / volume, my / volume, mz / volume);
-    let centered_xx = qxx - volume * center.x() * center.x();
-    let centered_yy = qyy - volume * center.y() * center.y();
-    let centered_zz = qzz - volume * center.z() * center.z();
-    let centered_xy = qxy - volume * center.x() * center.y();
-    let centered_xz = qxz - volume * center.x() * center.z();
-    let centered_yz = qyz - volume * center.y() * center.z();
+    // Centroid relative to `reference`; the second moments are about it too.
+    let local = Vec3::new(mx / volume, my / volume, mz / volume);
+    let centered_xx = qxx - volume * local.x() * local.x();
+    let centered_yy = qyy - volume * local.y() * local.y();
+    let centered_zz = qzz - volume * local.z() * local.z();
+    let centered_xy = qxy - volume * local.x() * local.y();
+    let centered_xz = qxz - volume * local.x() * local.z();
+    let centered_yz = qyz - volume * local.y() * local.z();
 
     Ok(GProps {
         mass: volume,
-        center,
+        center: reference + local,
         inertia: [
             centered_yy + centered_zz,
             centered_xx + centered_zz,
