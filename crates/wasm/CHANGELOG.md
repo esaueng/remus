@@ -51,6 +51,15 @@
   shell stays exact-only unless `approximationSpacing` is given. The batch
   ops return the same envelope as their `ok` value. Legacy methods are
   unchanged.
+* `offsetJournaled` (direct, `executeBatch`, `executeBatchV2`) adds an
+  `evolution` field beside `solid` and `op`. It lists every result face,
+  edge and vertex as `modified`, `merged`, `generated`, or `unresolved`
+  with `candidates` and a typed `reason` (`ambiguous_incidence`,
+  `unmapped_incident_face`, `unresolved_face_origin`). It also carries a
+  `completeness` report (`accounted`, `resolved`, per-kind `omitted`,
+  `phantom` and `unresolved` lists) checked against the actual result. The
+  journal entry now records edges and vertices, so a box offset journals
+  26 events instead of 6, and edge and vertex references resolve across it.
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
   result solid and operation id while recording total construction-derived
   face evolution instead of an offset barrier.

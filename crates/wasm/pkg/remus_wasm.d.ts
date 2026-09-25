@@ -920,6 +920,16 @@ export class BrepKernel {
      */
     chamfer2d(coords: Float64Array, distance: number): Float64Array;
     /**
+     * Chamfer edges and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`chamfer`](Self::chamfer_solid): the planar bevel
+     * first, then the walking builder, with the legacy method unchanged.
+     * `details.engine` is `planarBevel`, `walking`, or `mixed`; quality and
+     * `exactOnly` follow [`filletDetailed`](Self::fillet_detailed).
+     */
+    chamferDetailed(solid: number, edge_handles: Uint32Array, distance: number, exact_only?: boolean | null): SolidOperationDetailedResult;
+    /**
      * Chamfer edges with distance and angle using the v2 blend engine.
      *
      * Returns a new solid handle.
@@ -1509,6 +1519,20 @@ export class BrepKernel {
      * Returns a flat array of the filleted polygon coordinates.
      */
     fillet2d(coords: Float64Array, radius: number): Float64Array;
+    /**
+     * Fillet edges and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`fillet`](Self::fillet_solid): the same engine
+     * cascade and whole-selection rule, with the legacy method's return
+     * value and thrown errors unchanged. On success `details.engine` names
+     * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
+     * that introduces a NURBS face — a sampled blend wall with no closed
+     * form — reports `quality: "approximate"` and lists those faces under
+     * `approximateFaces`. With `exactOnly: true` such a result is rolled
+     * back and refused (`quality_refused` / `exact_only_unattainable`).
+     */
+    filletDetailed(solid: number, edge_handles: Uint32Array, radius: number, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
      * V2 fillet journaled as one evolution entry (kind `fillet`).
      *
@@ -2839,6 +2863,20 @@ export class BrepKernel {
      */
     constructor();
     /**
+     * Offset every face of a solid and return exact, disclosed-approximate,
+     * or refused results as typed data.
+     *
+     * Additive twin of [`offsetSolid`](Self::offset_solid), on the same
+     * engine. Analytic faces offset exactly. A NURBS input face would be
+     * offset by a sampled refit, so a result reports `quality:
+     * "approximate"` and lists those input faces under `sampledFaces`; with
+     * `exactOnly: true` the call refuses before touching topology
+     * (`quality_refused` / `exact_only_unattainable`). The offset
+     * intersector does not yet join a NURBS face to any neighbour, so a
+     * permissive NURBS offset currently ends in that engine's own refusal.
+     */
+    offsetDetailed(solid: number, distance: number, exact_only?: boolean | null): SolidOperationDetailedResult;
+    /**
      * Offset a face by a distance along its surface normal.
      *
      * Returns the new offset face handle.
@@ -2869,8 +2907,15 @@ export class BrepKernel {
      */
     offsetFaceWithQuality(face: number, distance: number, approximation_samples?: number | null): FaceOffsetQualityResult;
     /**
-     * V2 offset journaled as one construction-derived face-evolution entry
-     * (kind `offset`). Returns JSON `{"solid", "op"}`.
+     * V2 offset journaled as one construction-derived face, edge and vertex
+     * evolution entry (kind `offset`).
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+     * result face, edge and vertex as `modified`, `merged`, `generated` or
+     * `unresolved` (with `candidates` and a typed `reason`, such as
+     * `ambiguous_incidence` for a torus seam), plus a `completeness` report
+     * (`accounted`, `resolved`, and per-kind `omitted`/`phantom`/`unresolved`
+     * lists) checked against the actual result.
      */
     offsetJournaled(solid: number, distance: number): string;
     /**
@@ -3405,6 +3450,19 @@ export class BrepKernel {
      * Returns an error if thickness is non-positive or the solid is invalid.
      */
     shell(solid: number, thickness: number, open_faces: Uint32Array): number;
+    /**
+     * Hollow a solid and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`shell`](Self::shell_solid). Like the legacy method
+     * it is exact-only by default: a kept NURBS face is refused with the
+     * legacy refusal (`operation_failed` / `internal`, message naming the
+     * NURBS face) and the topology rolled back. A positive finite
+     * `approximation_spacing` opts into the sampled NURBS inner skin, which
+     * is then disclosed as `quality: "approximate"` with the model-unit
+     * `deflection` and the `sampledFaces` handles of the input solid.
+     */
+    shellDetailed(solid: number, thickness: number, open_faces: Uint32Array, approximation_spacing?: number | null): SolidOperationDetailedResult;
     /**
      * Hollow a solid with disclosed inner-skin quality.
      *
