@@ -154,7 +154,7 @@ fn split(topo: &Topology, face: FaceId, sections: &[SectionEdge]) -> Vec<SplitSu
         &remus_math::tolerance::Tolerance::default(),
         None,
         Some(&cylinder_info()),
-        &std::collections::HashMap::new(),
+        &remus_math::det_hash::DetHashMap::default(),
         None,
     )
     .unwrap()
@@ -227,7 +227,9 @@ fn edge_polyline(e: &OrientedPCurveEdge) -> Vec<Point3> {
             );
             pts
         }
-        other => panic!("unexpected wire curve {}", other.type_tag()),
+        EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            panic!("unexpected wire curve {}", e.curve_3d.type_tag())
+        }
     }
 }
 
@@ -387,7 +389,16 @@ fn assert_chart_consistent(region: &SplitSubFace, surface: &FaceSurface, scale: 
                     "{ctx}: seam pcurve runs away from the seam's end"
                 );
             }
-            _ => {}
+            // Rim pieces carry their circle's own UV chart (see the module
+            // docs); a seam with a non-line pcurve is not synthesized here.
+            (
+                EdgeCurve::Line
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            ) => {}
         }
     }
 }
