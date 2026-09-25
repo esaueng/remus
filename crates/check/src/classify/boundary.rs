@@ -163,6 +163,171 @@ fn point_in_uv_boundary(
     point_in_polygon(test, &poly)
 }
 
+/// Crossings closer together than this along a ray, in parameter units, are
+/// one crossing seen twice: a sampled vertex both its segments reach, or the
+/// two traversals of a doubled seam.
+const CROSSING_GROUP_EPS: f64 = 1e-9;
+
+/// The closing step of a loop from its last sample back to its first,
+/// unwrapped on each periodic axis the same way `build_uv_boundary` unwraps
+/// the steps between samples.
+fn closing_point(
+    uv_loop: &[(f64, f64)],
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> Option<(f64, f64)> {
+    let (&(lu, lv), &(fu, fv)) = (uv_loop.last()?, uv_loop.first()?);
+    Some((
+        u_period.map_or(fu, |p| unwrap_periodic(lu, fu, p)),
+        v_period.map_or(fv, |p| unwrap_periodic(lv, fv, p)),
+    ))
+}
+
+/// True when a closed UV loop winds around a periodic axis instead of
+/// closing on itself.
+///
+/// Unwrapped sample by sample, a contractible loop comes back to where it
+/// started; one that runs once around the torus tube (or the cylinder's
+/// axis) comes back shifted by a whole period. Such a loop encloses no patch
+/// of the plane — it separates the surface into bands — so no
+/// point-in-polygon test can say which side belongs to the face.
+fn uv_loop_wraps(uv_loop: &[(f64, f64)], u_period: Option<f64>, v_period: Option<f64>) -> bool {
+    let Some(&(fu, fv)) = uv_loop.first() else {
+        return false;
+    };
+    let Some((cu, cv)) = closing_point(uv_loop, u_period, v_period) else {
+        return false;
+    };
+    let turns =
+        |shift: f64, period: Option<f64>| period.is_some_and(|p| (shift / p).round().abs() >= 1.0);
+    turns(cu - fu, u_period) || turns(cv - fv, v_period)
+}
+
+/// Decide whether `(hit_u, hit_v)` lies in the face bounded by `loops`, from
+/// the ORIENTATION of the nearest boundary crossing rather than from parity.
+///
+/// Built for faces whose boundary loops wrap a periodic axis: the band a
+/// fuse leaves on a torus between the two loops where a tool pierces the tube
+/// (`regress_torus_pierce_band.rs`), or the band between a tool's cap oval
+/// and its composite wall-and-cap loop. Each such loop, unwrapped, is an open
+/// curve shifted by a period, so the polygon it makes is degenerate or
+/// arbitrary, and parity cannot say which of the two bands it separates is
+/// the face. Measured on the B45 fused band, every hit on the torus face was
+/// rejected and 12 % of grid points near it classified wrongly.
+///
+/// The loops are read as segments on the periodic domain. A ray leaves the
+/// hit along `+u` (once around `u` when `u` closes); at its nearest crossing
+/// the boundary is traversed with the face on its LEFT in the surface's own
+/// `(u, v)` frame, so a boundary running toward `+v` there has the hit on its
+/// face side. That is the convention the face's wires already follow — the
+/// torus band volume in `properties::face_integrator` selects the band the
+/// same way — and it holds for reversed faces too, because a boolean flips a
+/// face's normal flag, not its wires' traversal. When no loop crosses the
+/// `u` ray (loops that wrap `u`, like a latitude band's rims), a ray along
+/// `+v` decides instead, where a boundary running toward `-u` has the hit on
+/// its face side.
+///
+/// Returns `None` only when neither ray meets any boundary, which cannot
+/// happen once some loop wraps a periodic axis.
+fn oriented_periodic_containment(
+    loops: &[&[(f64, f64)]],
+    hit_u: f64,
+    hit_v: f64,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> Option<bool> {
+    let periods = (u_period, v_period);
+    // Ray along +u, then along +v when no loop crosses the first.
+    nearest_oriented_crossing(loops, (hit_u, hit_v), periods, false)
+        .or_else(|| nearest_oriented_crossing(loops, (hit_u, hit_v), periods, true))
+        .map(|direction| direction > 0.0)
+}
+
+/// Net orientation of the nearest boundary crossing along a ray from `hit`.
+///
+/// The ray runs toward `+u`, or toward `+v` when `along_v`. Each crossing
+/// contributes the sign of the segment's step across the ray (its `v` step for
+/// the `u` ray; its `u` step, negated, for the `v` ray), so a positive result
+/// always means the hit is on the face side. Crossings at one place along the
+/// ray are summed first: the doubled traversal of a seam (up and back down at
+/// the same `u`) cancels and the ray looks past it, and a sampled vertex
+/// reached by both of its segments is not counted twice. The first group with
+/// a non-zero sum decides; `None` when the ray meets no boundary at all.
+fn nearest_oriented_crossing(
+    loops: &[&[(f64, f64)]],
+    hit: (f64, f64),
+    periods: (Option<f64>, Option<f64>),
+    along_v: bool,
+) -> Option<f64> {
+    // Work in (s, t): `s` runs along the ray, `t` across it.
+    let st = |(u, v): (f64, f64)| if along_v { (v, u) } else { (u, v) };
+    let (s0, t0) = st(hit);
+    let (s_period, t_period) = if along_v {
+        (periods.1, periods.0)
+    } else {
+        periods
+    };
+    // Transposing the axes mirrors the plane, which reverses orientation.
+    let face_side = if along_v { -1.0 } else { 1.0 };
+
+    let mut crossings: Vec<(f64, f64)> = Vec::new();
+    for uv_loop in loops {
+        let n = uv_loop.len();
+        if n < 2 {
+            continue;
+        }
+        let Some(close) = closing_point(uv_loop, periods.0, periods.1) else {
+            continue;
+        };
+        for i in 0..n {
+            let a = st(uv_loop[i]);
+            let b = st(if i + 1 < n { uv_loop[i + 1] } else { close });
+            let (lo, hi) = (a.1.min(b.1), a.1.max(b.1));
+            if hi <= lo {
+                continue;
+            }
+            // Every copy of the ray's line `t = t0 + k * period` the segment
+            // spans, half-open so a vertex shared by two segments counts once.
+            let mut lines: SmallVec<[f64; 2]> = SmallVec::new();
+            match t_period {
+                Some(p) => {
+                    let first = ((lo - t0) / p).ceil().mul_add(p, t0);
+                    lines.extend(
+                        (0_u32..)
+                            .map(|k| f64::from(k).mul_add(p, first))
+                            .take_while(|&t| t < hi)
+                            .filter(|&t| t >= lo),
+                    );
+                }
+                None if (lo..hi).contains(&t0) => lines.push(t0),
+                None => {}
+            }
+            for t in lines {
+                let s = (t - a.1).mul_add((b.0 - a.0) / (b.1 - a.1), a.0);
+                let distance = s_period.map_or(s - s0, |p| (s - s0).rem_euclid(p));
+                if distance >= 0.0 {
+                    crossings.push((distance, face_side * (b.1 - a.1).signum()));
+                }
+            }
+        }
+    }
+
+    crossings.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut i = 0;
+    while i < crossings.len() {
+        let start = crossings[i].0;
+        let mut sum = 0.0;
+        while i < crossings.len() && crossings[i].0 - start <= CROSSING_GROUP_EPS {
+            sum += crossings[i].1;
+            i += 1;
+        }
+        if sum != 0.0 {
+            return Some(sum);
+        }
+    }
+    None
+}
+
 /// Compute the normal of a polygon via Newell's method.
 ///
 /// Returns a unit-length normal, or `(0,0,1)` for degenerate polygons.
@@ -251,6 +416,32 @@ where
     let uv_boundary =
         (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
     let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
+
+    // A loop that wraps a period bounds no polygon: decide by orientation.
+    // Only on the torus. Booleans bound cylinder and cone walls with doubled
+    // seams, whose loops close in `(u, v)`, so parity stays exact there; a
+    // seamless two-ring wall (outer rim, inner rim) still reads as empty.
+    if v_periodic
+        && uv_boundary
+            .iter()
+            .chain(&holes)
+            .any(|uv_loop| uv_loop_wraps(uv_loop, u_period, v_period))
+    {
+        let loops: Vec<&[(f64, f64)]> = uv_boundary
+            .iter()
+            .chain(&holes)
+            .map(Vec::as_slice)
+            .collect();
+        let mut crossings = 0u32;
+        for &hit in hits {
+            let (hit_u, hit_v) = project(hit);
+            if oriented_periodic_containment(&loops, hit_u, hit_v, u_period, v_period) == Some(true)
+            {
+                crossings += 1;
+            }
+        }
+        return Ok(crossings);
+    }
 
     let mut crossings = 0u32;
     for &hit in hits {
