@@ -234,6 +234,9 @@ Quick reference — find the right file for any task:
 | PCurves for split edges on their faces | `pave_filler/make_pcurves.rs` |
 | Deterministic work counters (complexity guards) | `perf.rs` |
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
+| Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
+| Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
+| Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
 ### L2: blend (`crates/blend/src/`)
 | Task | File(s) |
@@ -465,7 +468,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape construction (vertices, edges, wires, faces) | `bindings/shapes.rs` |
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
-| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`) | `bindings/modifier_detailed.rs` |
+| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
