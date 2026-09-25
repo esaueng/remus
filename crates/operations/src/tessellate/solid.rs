@@ -240,6 +240,31 @@ pub fn tessellate_sheet_with_tolerance(
     .map(|(mesh, _, _)| mesh)
 }
 
+/// Watertight tessellation of a closed face set that is not itself a solid:
+/// one edge-connected component of a solid's shell.
+///
+/// Runs the same shared-edge-pool pipeline as [`tessellate_solid_with_tolerance`]
+/// over just `faces`, so every face mesh honours its trim. The standalone
+/// per-face mesher (`tessellate_with_uvs`) skins a trimmed cone wall's whole
+/// parametric rectangle instead, which is no surface to ray-cast or clash
+/// against (B53).
+pub fn tessellate_closed_face_set(
+    topo: &Topology,
+    faces: &[FaceId],
+    deflection: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_faces_core(
+        topo,
+        faces,
+        deflection,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        MeshBoundaryMode::ClosedSolid,
+        false,
+        false,
+    )
+    .map(|(mesh, _, _)| mesh)
+}
+
 /// Tessellate any currently supported body class.
 ///
 /// Solid and sheet bodies are supported. Wire bodies refuse typed rather than
