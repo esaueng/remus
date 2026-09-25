@@ -307,7 +307,8 @@ After merging `origin/main` at `8972565` (with #624, #646, #664, #674 and the ot
 - `cargo nextest run --workspace --cargo-profile ci-test`: 6,012 passed, 0 failed.
 - `cargo test -p remus-wasm`: 584 + 1 passed.
 - `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --all -- --check`,
-  `taplo fmt --check`, `cargo machete` (pre-commit, every commit).
+  `taplo fmt --check`, `cargo machete` (pre-commit hook on every commit but the first, which predates
+  installing the hooks in this clone; each hook run checks the whole tree).
 - `scripts/check-boundaries.sh`, `check-det-hash.sh`, `check-doc-paths.sh`,
   `check-wildcard-arms.sh`, `check-apache-lineage.sh`, `check-remus-rename.sh`,
   `check-doc-module-map.py`, `check-edge-domain-authority.py`,
