@@ -3791,15 +3791,26 @@ fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
     let empty = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
-        if !splittable(&s) {
-            out.push(s);
-        } else {
+        if splittable(&s) {
+            // A junction within the weld band of the section's own endpoint
+            // is that endpoint, reached twice: a grazing contact solved to
+            // sqrt-of-residual accuracy (the tangent-boss rim ends at the
+            // exact tangency while EF paved the wall edge 1.6e-6 away).
+            // Splitting there would mint a micro-edge, not a junction.
+            let weld = tol * 100.0;
+            let interior: Vec<Point3> = junctions
+                .iter()
+                .copied()
+                .filter(|p| (*p - s.start).length() > weld && (*p - s.end).length() > weld)
+                .collect();
             out.extend(presplit_sections_at_registry(
                 std::slice::from_ref(&s),
                 &empty,
-                &junctions,
+                &interior,
                 tol,
             ));
+        } else {
+            out.push(s);
         }
     }
     out
