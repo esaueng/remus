@@ -2,7 +2,7 @@
 
 use super::{
     Accumulator, CheckError, DerivativeScratch, FaceContribution, ParametricSurface, PatchScale,
-    PropertiesOptions, gauss_legendre_points, patch_count,
+    Point3, PropertiesOptions, gauss_legendre_points, patch_count,
 };
 
 // Counts rule evaluations, independently of caller depth; each rule has at most
@@ -106,6 +106,7 @@ fn quadrants((u, v): Rect) -> Result<[Rect; 4], CheckError> {
 struct Integrator<'a, S> {
     surface: &'a S,
     options: &'a PropertiesOptions,
+    reference: Point3,
     scratch: DerivativeScratch,
     rules: usize,
 }
@@ -129,6 +130,7 @@ impl<S: ParametricSurface> Integrator<'_, S> {
                     uh.mul_add(gu.x, f64::midpoint(u.0, u.1)),
                     vh.mul_add(gv.x, f64::midpoint(v.0, v.1)),
                     gu.w * gv.w * uh * vh,
+                    self.reference,
                     &mut self.scratch,
                 );
                 for (i, x) in values(&a).into_iter().enumerate() {
@@ -185,11 +187,11 @@ impl<S: ParametricSurface> Integrator<'_, S> {
 #[allow(clippy::cast_precision_loss)]
 pub(super) fn integrate<S: ParametricSurface>(
     surface: &S,
-    u: (f64, f64),
-    v: (f64, f64),
+    (u, v): Rect,
     sign: f64,
     scale: PatchScale,
     options: &PropertiesOptions,
+    reference: Point3,
 ) -> Result<FaceContribution, CheckError> {
     if ![u.0, u.1, v.0, v.1].iter().all(|x| x.is_finite()) || u.0 >= u.1 || v.0 >= v.1 {
         return Err(CheckError::IntegrationFailed(
@@ -201,6 +203,7 @@ pub(super) fn integrate<S: ParametricSurface>(
     let mut integrator = Integrator {
         surface,
         options,
+        reference,
         scratch: DerivativeScratch::new(),
         rules: 0,
     };
