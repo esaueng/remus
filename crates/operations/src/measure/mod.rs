@@ -19,6 +19,62 @@ pub use volume::{
 };
 pub(crate) use volume::{negligible_volume, shell_signed_volume};
 
+/// Gauss order [`mass_properties`] integrates at.
+///
+/// The cubic second-moment integrands carry one polynomial degree more than
+/// the volume and centroid terms; order 8 keeps curved-surface inertia at
+/// ~1e-9 relative where the check-crate default order 5 leaves ~3e-8.
+pub const MASS_PROPERTIES_GAUSS_ORDER: usize = 8;
+
+/// The numerical controls [`mass_properties`] uses: Gauss order
+/// [`MASS_PROPERTIES_GAUSS_ORDER`] with the default adaptive controls
+/// (`adaptive_eps = 1e-6`, `max_depth = 8`).
+///
+/// [`mass_properties_with_options`] with these options returns the same bits
+/// as [`mass_properties`].
+#[must_use]
+pub fn mass_properties_default_options() -> remus_check::properties::PropertiesOptions {
+    remus_check::properties::PropertiesOptions {
+        gauss_order: MASS_PROPERTIES_GAUSS_ORDER,
+        ..Default::default()
+    }
+}
+
+/// [`mass_properties`] with caller-chosen numerical controls.
+///
+/// Every field of [`remus_check::properties::PropertiesOptions`] is honoured
+/// within its documented meaning:
+///
+/// * `gauss_order` (`1..=20`) is the tensor Gauss rule on every quadrature
+///   cell.
+/// * `adaptive_eps` and `max_depth` drive bounded h-refinement. Untrimmed
+///   analytic patches always refine. Trimmed curved faces, NURBS faces and
+///   torus tube bands keep the fixed composite rule when both controls are at
+///   their defaults (so default results never move) and refine with any other
+///   pair. Refinement converges the quadrature over the face's resolved domain;
+///   a sampled trim outline is part of that domain, so its chord error is not
+///   reduced by a tighter `adaptive_eps`. Exact planar faces and the sampled
+///   planar polygon fallback integrate in closed form and need no refinement.
+/// * A request the estimator cannot satisfy within `max_depth` (capped at 32)
+///   or the per-face work budget refuses; it never returns an unconverged
+///   result.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError::Check`] wrapping
+/// [`remus_check::CheckError::IntegrationFailed`] for invalid options,
+/// exhausted depth or work, non-finite integrals, or zero volume, and the
+/// usual topology errors for an invalid handle.
+pub fn mass_properties_with_options(
+    topo: &remus_topology::Topology,
+    solid: remus_topology::solid::SolidId,
+    options: &remus_check::properties::PropertiesOptions,
+) -> Result<remus_check::properties::GProps, crate::OperationsError> {
+    Ok(remus_check::properties::solid_properties(
+        topo, solid, options,
+    )?)
+}
+
 /// Compute volume through the body-level dispatch contract.
 ///
 /// # Errors
