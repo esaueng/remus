@@ -529,6 +529,178 @@ pub fn fillet_variable_with_setbacks(
     })
 }
 
+/// Refuse a variable-radius stripe whose contact would land on or past the far
+/// boundary of one of its planar support faces (B63).
+///
+/// This engine places each contact `r(t)` away from the spine along the
+/// support face, perpendicular to the spine, and trims the face there. When
+/// the face is not that wide the trim walks off it, yet the assembled shell
+/// still closes and validates: a 10³ box with a radius-11 stripe used to
+/// return a solid measuring 474 mm³. The rolling-ball and walking engines
+/// refuse the same request with [`remus_blend::BlendError::CliffEncountered`],
+/// and so does this one now, reporting the width the face actually has.
+///
+/// At each of a fixed set of stations along the active stripe interval, a ray
+/// cast within the support plane from the spine along the contact direction
+/// finds the nearest crossing with the rest of the face boundary (outer and
+/// inner loops, the stripe's own edge excluded). Boundary segments parallel
+/// to the ray are skipped: the ray runs along them rather than out through
+/// them, and the next loop edge is met at their far end. The stations are
+/// sampled. For a constant or linear law on a straight spine over a convex
+/// face that is exact — the face's width is concave along the spine, so the
+/// radius overruns it first at an endpoint station — and a sampled bound
+/// otherwise; curved loop edges are polylines of 32 chords. Curved supports
+/// are not checked here.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::CliffEncountered`] naming the edge, the
+/// support face, and the worst station's requested radius and available
+/// width.
+fn reject_variable_support_cliffs(
+    topo: &Topology,
+    edge_laws: &[(EdgeId, FilletRadiusLaw)],
+    active_intervals: &HashMap<usize, (f64, f64)>,
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
+    tol: Tolerance,
+) -> Result<(), crate::OperationsError> {
+    const STATIONS: u32 = 33;
+    const CURVE_CHORDS: u32 = 32;
+
+    for (edge_id, law) in edge_laws {
+        let Some(faces) = edge_to_faces.get(&edge_id.index()) else {
+            continue;
+        };
+        if faces.len() != 2 {
+            continue;
+        }
+        let (Some(surf1), Some(surf2)) = (
+            face_surfaces.get(&faces[0].index()),
+            face_surfaces.get(&faces[1].index()),
+        ) else {
+            continue;
+        };
+        let edge = topo.edge(*edge_id)?;
+        let p_start = topo.vertex(edge.start())?.point();
+        let p_end = topo.vertex(edge.end())?.point();
+        let Some(&(t_start, t_end)) = active_intervals.get(&edge_id.index()) else {
+            continue;
+        };
+        let curve = edge.curve().clone();
+
+        for (side, &face_id) in faces.iter().enumerate() {
+            let Some(FaceSurface::Plane { normal, .. }) = face_surfaces.get(&face_id.index())
+            else {
+                continue;
+            };
+            let Ok(plane_normal) = normal.normalize() else {
+                continue;
+            };
+
+            // Every boundary segment of the support except the stripe's own
+            // edge, whichever loop it belongs to.
+            let face = topo.face(face_id)?;
+            let mut segments: Vec<(Point3, Point3)> = Vec::new();
+            for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().to_vec()) {
+                for oriented in topo.wire(wire_id)?.edges() {
+                    if oriented.edge() == *edge_id {
+                        continue;
+                    }
+                    let boundary = topo.edge(oriented.edge())?;
+                    let a = topo.vertex(boundary.start())?.point();
+                    let b = topo.vertex(boundary.end())?.point();
+                    if matches!(boundary.curve(), EdgeCurve::Line) {
+                        segments.push((a, b));
+                        continue;
+                    }
+                    let (d0, d1) =
+                        crate::authoritative_edge_domain(boundary, "variable fillet support")?;
+                    let points: Vec<Point3> = (0..=CURVE_CHORDS)
+                        .map(|i| {
+                            let t = (d1 - d0).mul_add(f64::from(i) / f64::from(CURVE_CHORDS), d0);
+                            boundary.curve().evaluate_with_endpoints(t, a, b)
+                        })
+                        .collect();
+                    segments.extend(points.windows(2).map(|pair| (pair[0], pair[1])));
+                }
+            }
+
+            // Worst station: (requested radius, available width).
+            let mut worst: Option<(f64, f64)> = None;
+            for station in 0..STATIONS {
+                let fraction = f64::from(station) / f64::from(STATIONS - 1);
+                let geometry_t = (t_end - t_start).mul_add(fraction, t_start);
+                let radius = law.evaluate(fraction);
+                let p = geometry::sample_edge_point(&curve, p_start, p_end, geometry_t);
+                let Ok(tangent) =
+                    geometry::sample_edge_tangent(&curve, p_start, p_end, geometry_t).normalize()
+                else {
+                    continue;
+                };
+                let (Some(n1), Some(n2)) = (
+                    face_surface_normal_at(surf1, p),
+                    face_surface_normal_at(surf2, p),
+                ) else {
+                    continue;
+                };
+                let cs = geometry::cross_section_dirs(tangent, n1, n2, tangent, tangent);
+                let direction = if side == 0 { cs.ld1 } else { cs.ld2 };
+                let width = support_ray_exit(p, direction, plane_normal, &segments, tol);
+                if radius >= width - tol.linear && worst.is_none_or(|(r, w)| radius * w > r * width)
+                {
+                    worst = Some((radius, width));
+                }
+            }
+            if let Some((requested_radius, available_radius)) = worst {
+                return Err(crate::OperationsError::Blend(
+                    remus_blend::BlendError::CliffEncountered {
+                        edge: *edge_id,
+                        face: face_id,
+                        requested_radius,
+                        available_radius,
+                    },
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Distance from `origin` along the in-plane unit `direction` to the first
+/// crossing with any of `segments`, ignoring the origin itself and segments
+/// parallel to the ray. `f64::INFINITY` when the ray leaves every segment
+/// behind.
+fn support_ray_exit(
+    origin: Point3,
+    direction: Vec3,
+    plane_normal: Vec3,
+    segments: &[(Point3, Point3)],
+    tol: Tolerance,
+) -> f64 {
+    // `across` is the in-plane normal to the ray: a segment crosses the ray
+    // where its signed `across` offset changes sign.
+    let across = plane_normal.cross(direction);
+    let mut exit = f64::INFINITY;
+    for &(a, b) in segments {
+        let span = b - a;
+        let denominator = span.dot(across);
+        if denominator.abs() <= 1.0e-12 * span.length() {
+            continue;
+        }
+        let u = (origin - a).dot(across) / denominator;
+        if !(-1.0e-9..=1.0 + 1.0e-9).contains(&u) {
+            continue;
+        }
+        let hit = a + span * u;
+        let distance = (hit - origin).dot(direction);
+        if distance > 10.0 * tol.linear {
+            exit = exit.min(distance);
+        }
+    }
+    exit
+}
+
 /// Transaction body of [`fillet_variable`]: builds the canal surfaces, then
 /// proves coverage and result validity before committing.
 #[allow(clippy::too_many_lines)]
@@ -698,6 +870,15 @@ fn fillet_variable_transacted(
             },
         );
     }
+
+    reject_variable_support_cliffs(
+        topo,
+        edge_laws,
+        &active_intervals,
+        &edge_to_faces,
+        &face_surfaces,
+        tol,
+    )?;
 
     // Build a map from edge index to radius law for per-vertex radius lookup.
     // Each vertex adjacent to a filleted edge uses that edge's actual radius
