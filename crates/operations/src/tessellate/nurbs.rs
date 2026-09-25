@@ -57,6 +57,42 @@ pub(super) fn compute_v_param_range(
     }
 }
 
+/// Chart radius for a cone face meshed by `tessellate_revolved_with_holes`:
+/// the largest ring radius among its outer-wire vertices.
+///
+/// This is `radius_at` of the far end of [`compute_v_param_range`] whenever
+/// the outer wire spans two levels. A pointed cone whose only outer wire is
+/// its base rim (the face closes on the apex and carries holes as inner
+/// wires) has every vertex at one level, and the range's `(-1, 1)` fallback
+/// read `radius_at(1)`, a unit-scale constant: the chart's column count
+/// stopped following the model, so the same body at 10× and 1000× meshed
+/// its cone with rows growing linearly in scale, chords sagging up to 12×
+/// the (scaled) deflection, and its mesh volume 1 % low at 1000×.
+pub(super) fn cone_chart_radius(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    cone: &remus_math::surfaces::ConicalSurface,
+) -> f64 {
+    let mut radius = 0.0_f64;
+    if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        for oe in wire.edges() {
+            if let Ok(edge) = topo.edge(oe.edge()) {
+                for vid in [edge.start(), edge.end()] {
+                    if let Ok(vertex) = topo.vertex(vid) {
+                        let v = cone.project_point(vertex.point()).1;
+                        radius = radius.max(cone.radius_at(v.abs()));
+                    }
+                }
+            }
+        }
+    }
+    if radius > 0.0 {
+        radius
+    } else {
+        cone.radius_at(1.0)
+    }
+}
+
 /// Compute the tube-angle (v) range for a toroidal face from its wire boundary.
 ///
 /// A full torus has no boundary constraint on v, so the default is the full

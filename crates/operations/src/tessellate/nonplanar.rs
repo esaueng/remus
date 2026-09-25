@@ -5431,10 +5431,7 @@ pub(super) fn tessellate_nonplanar_snap(
                 .mesh
             }
             FaceSurface::Cone(cone) => {
-                let range = super::nurbs::compute_v_param_range(topo, face_data, |p| {
-                    cone.project_point(p).1
-                });
-                let radius = cone.radius_at(range.0.abs().max(range.1.abs()));
+                let radius = super::nurbs::cone_chart_radius(topo, face_data, cone);
                 super::planar::tessellate_revolved_with_holes(
                     topo,
                     face_data,
