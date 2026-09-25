@@ -16,6 +16,19 @@
 //! | `face_split_probes` | face-splitter section/loop scans | grid index → near-constant candidates per query |
 //! | `local_vertex_inserts` | `build_topology_face` vertex pool | layered lookup → only genuinely-new vertices materialized |
 //!
+//! A second family counts vertex-on-edge (VE) projection work (PERF-B01 /
+//! PERF-M04): every cross-solid vertex/edge pair that survives the AABB
+//! broad-phase and endpoint rejection runs a closest-point projection. The
+//! generic path samples the curve (33 evaluations) and refines with 20 ternary
+//! steps (40 more). A future analytic fast path would serve `Line` edges in
+//! closed form with no evaluations.
+//!
+//! | Counter | Hot path | Meaning |
+//! |---|---|---|
+//! | `ve_line_projections` | VE analytic fast path | `Line` pairs projected in closed form |
+//! | `ve_sampled_projections` | VE generic path | non-`Line` (or degenerate) pairs that sampled |
+//! | `ve_projection_evals` | VE curve evaluations | `evaluate` calls inside the projection only |
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
@@ -36,6 +49,9 @@ std::thread_local! {
     static LOCAL_VERTEX_INSERTS: Cell<u64> = const { Cell::new(0) };
     static EF_NURBS_PAIR_PROBES: Cell<u64> = const { Cell::new(0) };
     static DISTANCE_FACE_PROBES: Cell<u64> = const { Cell::new(0) };
+    static VE_LINE_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
+    static VE_SAMPLED_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
+    static VE_PROJECTION_EVALS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(feature = "perf-counters")]
@@ -114,6 +130,35 @@ pub(crate) fn bump_local_vertex_insert() {
     increment(&LOCAL_VERTEX_INSERTS);
 }
 
+/// Count one closest-point projection of a vertex onto a `Line` edge that took
+/// the analytic closed-form path (PERF-B01). Crate-internal: only
+/// `reset`/`snapshot` cross the crate boundary (for the scaling guard).
+/// Reserved for the future fast path; the current sampler never bumps it.
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn bump_ve_line_projection() {
+    #[cfg(feature = "perf-counters")]
+    increment(&VE_LINE_PROJECTIONS);
+}
+
+/// Count one closest-point projection that took the generic sampled path
+/// (33 samples + 20 ternary refinement steps): every non-`Line` pair, plus
+/// degenerate `Line` segments that cannot project analytically. Crate-internal.
+#[inline]
+pub(crate) fn bump_ve_sampled_projection() {
+    #[cfg(feature = "perf-counters")]
+    increment(&VE_SAMPLED_PROJECTIONS);
+}
+
+/// Count one curve evaluation inside the VE closest-point projection.
+/// A generic-path projection performs exactly 73 (33 samples + 2 × 20 ternary
+/// steps); an analytic `Line` projection performs none. Crate-internal.
+#[inline]
+pub(crate) fn bump_ve_projection_eval() {
+    #[cfg(feature = "perf-counters")]
+    increment(&VE_PROJECTION_EVALS);
+}
+
 /// A snapshot of every work counter since the last [`reset`]. Only available
 /// with `perf-counters`.
 #[cfg(feature = "perf-counters")]
@@ -136,6 +181,12 @@ pub struct PerfSnapshot {
     /// Vertex x face distance evaluations in `solid_to_solid_distance`
     /// after bounding-box pruning.
     pub distance_face_probes: u64,
+    /// VE `Line` pairs projected by the analytic closed form.
+    pub ve_line_projections: u64,
+    /// VE pairs that ran the generic sampled projection.
+    pub ve_sampled_probes: u64,
+    /// Curve evaluations performed inside VE projections.
+    pub ve_projection_evals: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -148,6 +199,9 @@ pub fn reset() {
     LOCAL_VERTEX_INSERTS.set(0);
     EF_NURBS_PAIR_PROBES.set(0);
     DISTANCE_FACE_PROBES.set(0);
+    VE_LINE_PROJECTIONS.set(0);
+    VE_SAMPLED_PROJECTIONS.set(0);
+    VE_PROJECTION_EVALS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -163,6 +217,9 @@ pub fn snapshot() -> PerfSnapshot {
         local_vertex_inserts: LOCAL_VERTEX_INSERTS.get(),
         ef_nurbs_pair_probes: EF_NURBS_PAIR_PROBES.get(),
         distance_face_probes: DISTANCE_FACE_PROBES.get(),
+        ve_line_projections: VE_LINE_PROJECTIONS.get(),
+        ve_sampled_probes: VE_SAMPLED_PROJECTIONS.get(),
+        ve_projection_evals: VE_PROJECTION_EVALS.get(),
     }
 }
 

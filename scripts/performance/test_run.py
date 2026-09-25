@@ -101,12 +101,14 @@ class ProtocolTests(unittest.TestCase):
             self.assertFalse((args.output / "summary.json").exists())
             self.assertTrue((args.output / "samples.jsonl").exists())
 
-    def test_manifest_preserves_all_three_families_and_artifact_separation(self):
+    def test_manifest_preserves_all_four_families_and_artifact_separation(self):
         manifest = json.loads(baseline.MANIFEST.read_text())
         cases = manifest["cases"]
         self.assertEqual(len(cases), len({c["id"] for c in cases}))
-        self.assertEqual({c["family"] for c in cases}, {"nurbs", "transform", "chain"})
+        self.assertEqual({c["family"] for c in cases}, {"nurbs", "transform", "chain", "boolean"})
         for path in ["native_transform_direct", "native_transform_batch", "wasm_transform_direct", "wasm_transform_batch"]:
+            self.assertEqual([c["size"] for c in cases if c["scenario"] == path], [50, 200, 400])
+        for path in ["native_bool_fuse", "native_bool_refused", "wasm_bool_fuse", "wasm_bool_refused"]:
             self.assertEqual([c["size"] for c in cases if c["scenario"] == path], [50, 200, 400])
         for fixture in manifest["fixtures"]:
             self.assertEqual(baseline.digest(baseline.ROOT / fixture["path"]), fixture["sha256"])
