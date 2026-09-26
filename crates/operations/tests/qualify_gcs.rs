@@ -370,6 +370,24 @@ fn line_orient_horizontal_vertical_perp_parallel_angle_equallength() {
     assert!(r.converged, "T perp: {}", r.max_residual);
     let (vx, _) = pt(&sys, v);
     assert_len_abs("T perp x", vx, TX, 1e-8);
+
+    // Translated Angle F: same fixed-length construction as above at T.
+    let mut sys = GcsSystem::new();
+    let o = fixed_pt(&mut sys, TX, TY);
+    let x = fixed_pt(&mut sys, TX + 4.0, TY);
+    let q = free_pt(&mut sys, TX + 1.0, TY + 1.0);
+    let l1 = sys.add_line(o, x).unwrap();
+    let l2 = sys.add_line(o, q).unwrap();
+    sys.add_constraint(Constraint::Angle(l1, l2, 0.5)).unwrap();
+    sys.add_constraint(Constraint::Distance(o, q, 3.0)).unwrap();
+    let r = sys.solve(300, TOL).unwrap();
+    assert!(r.converged, "T angle: {}", r.max_residual);
+    let (qx, qy) = pt(&sys, q);
+    let got_len = ((qx - TX).hypot(qy - TY) - 3.0).abs();
+    assert!(got_len <= 1e-8, "T angle radius: {got_len:.3e}");
+    let ang = (qy - TY).atan2(qx - TX);
+    let err = (ang - 0.5).abs().min((ang + 0.5).abs());
+    assert!(err < 1e-8, "T angle got {ang:.9e}");
 }
 
 // ── F4 point-line ─────────────────────────────────────────────────────────
@@ -492,25 +510,28 @@ fn circle_point_on_radius_equal_radii() {
         let got = dist(pt(&sys, p), pt(&sys, c));
         assert_len("pointoncircle dist", got, rad, scale);
 
-        // EqualRadiusCircleCircle F: c1 pinned radius, c2 free radius.
+        // EqualRadiusCircleCircle F: pin circ1 via CircleRadius, EqualRadius
+        // drives circ2 to match. 2 params (r1,r2), 2 equations → dof 0.
         let mut sys = GcsSystem::new();
         let c1 = fixed_pt(&mut sys, 0.0, 0.0);
         let c2 = fixed_pt(&mut sys, 20.0 * scale, 0.0);
         let circ1 = sys.add_circle(c1, 2.0 * scale).unwrap();
         let circ2 = sys.add_circle(c2, 7.0 * scale).unwrap();
+        sys.add_constraint(Constraint::CircleRadius(circ1, 2.0 * scale))
+            .unwrap();
         sys.add_constraint(Constraint::EqualRadiusCircleCircle(circ1, circ2))
             .unwrap();
-        // Pin c2's radius via a CircleRadius so the system is determinate and
-        // the equal-radii constraint is the one under test alongside it.
-        // Instead use FixX on an on-circle point: simpler is to pin circ1 and
-        // check circ2 follows.
         let r = sys.solve(200, tol_len(scale)).unwrap();
         assert!(r.converged, "equalradii {scale}: {}", r.max_residual);
         let r1 = sys.circle(circ1).expect("c1").radius;
         let r2 = sys.circle(circ2).expect("c2").radius;
-        // Both radii are free params with one equality: underconstrained in
-        // general; the solver converges with r1 == r2 (both ~midpoint of inits).
-        assert_len("equal radii agree", (r1 - r2).abs(), 0.0, scale);
+        assert_len("equal radii r1 pinned", r1, 2.0 * scale, scale);
+        assert_len("equal radii r2 follows", r2, 2.0 * scale, scale);
+        let d = sys.dof();
+        assert_eq!(d.num_params, 2);
+        assert_eq!(d.num_equations, 2);
+        assert_eq!(d.rank, 2, "equalradii rank {scale}");
+        assert_eq!(d.dof, 0);
     }
     // Translation spot-check for PointOnCircle.
     let mut sys = GcsSystem::new();
