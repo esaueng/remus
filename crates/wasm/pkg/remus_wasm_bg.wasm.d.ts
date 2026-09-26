@@ -44,6 +44,7 @@ export const brepkernel_chamferWithEvolution: (a: number, b: number, c: number, 
 export const brepkernel_checkpoint: (a: number) => number;
 export const brepkernel_checkpointCount: (a: number) => number;
 export const brepkernel_circularPattern: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const brepkernel_circularPatternJournaled: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const brepkernel_classifyPoint: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const brepkernel_classifyPointRobust: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const brepkernel_classifyPointWinding: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
