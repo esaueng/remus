@@ -5,7 +5,7 @@
 //! builds that [`crate::classify::PreparedSolid`] performs once per solid
 //! instead of once per ray. A test can therefore assert the preparation
 //! reduction deterministically: classifying `n` points through the one-shot
-//! path bumps `classify_bvh_builds` once per ray (two to three per point, plus
+//! path bumps `bvh_builds` once per ray (two to three per point, plus
 //! perturbed recovery rays), while the prepared path bumps it exactly once.
 //!
 //! The counters are gated behind the `perf-counters` feature. With the feature
@@ -68,11 +68,11 @@ pub(crate) fn bump_classify_trim_build() {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PerfSnapshot {
     /// BVH constructions over the solid's face bounds.
-    pub classify_bvh_builds: u64,
+    pub bvh_builds: u64,
     /// Face-bound evaluations feeding those BVHs.
-    pub classify_face_aabb_evals: u64,
+    pub face_aabb_evals: u64,
     /// Per-face trim-polygon builds.
-    pub classify_trim_builds: u64,
+    pub trim_builds: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -89,9 +89,9 @@ pub fn reset() {
 #[must_use]
 pub fn snapshot() -> PerfSnapshot {
     PerfSnapshot {
-        classify_bvh_builds: CLASSIFY_BVH_BUILDS.get(),
-        classify_face_aabb_evals: CLASSIFY_FACE_AABB_EVALS.get(),
-        classify_trim_builds: CLASSIFY_TRIM_BUILDS.get(),
+        bvh_builds: CLASSIFY_BVH_BUILDS.get(),
+        face_aabb_evals: CLASSIFY_FACE_AABB_EVALS.get(),
+        trim_builds: CLASSIFY_TRIM_BUILDS.get(),
     }
 }
 
@@ -110,10 +110,10 @@ mod tests {
             reset();
             bump_classify_bvh_build();
             bump_classify_bvh_build();
-            snapshot().classify_bvh_builds
+            snapshot().bvh_builds
         });
 
         assert_eq!(worker.join().expect("worker counter test panicked"), 2);
-        assert_eq!(snapshot().classify_bvh_builds, 1);
+        assert_eq!(snapshot().bvh_builds, 1);
     }
 }

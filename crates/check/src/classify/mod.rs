@@ -58,7 +58,7 @@ impl Default for ClassifyOptions {
 /// This is the one-shot convenience path: it gathers the face list and
 /// rebuilds the BVH and trim polygons on every call. For repeated queries
 /// against the same solid, prepare once with [`PreparedSolid`] instead —
-/// both paths run the same [`classify_point_with_source`] vote loop over
+/// both paths run the same `classify_point_with_source` vote loop over
 /// the same faces, bounds and trims.
 ///
 /// # Errors
@@ -79,7 +79,7 @@ pub fn classify_point(
 ///
 /// The one-shot path answers from a freshly gathered face list; the prepared
 /// path answers from its once-built bounds, BVH and trim cache. Both run the
-/// same [`classify_point_with_source`] loop, so ray ordering, recovery
+/// same `classify_point_with_source` loop, so ray ordering, recovery
 /// sequence, tolerance handling and determinism are identical by construction.
 pub(crate) trait ClassifySource {
     /// The same boundary test [`classify_point`] applies.

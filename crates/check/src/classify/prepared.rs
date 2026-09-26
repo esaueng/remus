@@ -46,7 +46,7 @@ struct PreparedFace {
 /// `face_aabb` the one-shot path filters with, the BVH is the same `Bvh` over
 /// the same `(face-index, bound)` pairs, trim polygons come from the same
 /// `face_polygon` / `face_hole_polygons` builders, and queries run the shared
-/// [`super::classify_point_with_source`] vote loop. A prepared query and a
+/// `classify_point_with_source` vote loop. A prepared query and a
 /// one-shot query over the same topology state therefore admit exactly the
 /// same candidates and reach exactly the same verdicts.
 #[derive(Debug, Clone)]
@@ -478,25 +478,25 @@ mod tests {
             .iter()
             .filter(|result| **result != PointClassification::OnBoundary)
             .count() as u64;
-        assert_eq!(prepared_counts.classify_bvh_builds, 1);
+        assert_eq!(prepared_counts.bvh_builds, 1);
         assert!(
-            oneshot.classify_bvh_builds >= 2 * queried,
+            oneshot.bvh_builds >= 2 * queried,
             "one-shot built {} BVHs for {queried} queried points",
-            oneshot.classify_bvh_builds
+            oneshot.bvh_builds
         );
         // Six face bounds evaluated once vs per ray.
-        assert_eq!(prepared_counts.classify_face_aabb_evals, 6);
+        assert_eq!(prepared_counts.face_aabb_evals, 6);
         assert!(
-            oneshot.classify_face_aabb_evals >= 2 * queried * 6,
+            oneshot.face_aabb_evals >= 2 * queried * 6,
             "one-shot evaluated {} bounds for {queried} queried points",
-            oneshot.classify_face_aabb_evals
+            oneshot.face_aabb_evals
         );
         // Six trim builds once vs per near/candidate face per query.
-        assert_eq!(prepared_counts.classify_trim_builds, 6);
+        assert_eq!(prepared_counts.trim_builds, 6);
         assert!(
-            oneshot.classify_trim_builds > prepared_counts.classify_trim_builds,
+            oneshot.trim_builds > prepared_counts.trim_builds,
             "one-shot built {} trims for {n} points",
-            oneshot.classify_trim_builds
+            oneshot.trim_builds
         );
     }
 }
