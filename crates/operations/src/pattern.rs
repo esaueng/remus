@@ -255,17 +255,33 @@ pub fn circular_pattern_with_evolution(
     axis_direction: Vec3,
     count: usize,
 ) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
-        circular_pattern_impl(topo, solid, axis_direction, count)
-    })
+    circular_pattern_with_entity_history(topo, solid, axis_direction, count)
+        .map(|(compound, history)| (compound, history.map))
 }
 
-fn circular_pattern_impl(
+/// [`circular_pattern`] with total copy-time lineage: the legacy face map plus
+/// the edge/vertex `(source, copy)` correspondence the journal needs.
+///
+/// `source_edges` / `source_vertices` are the pre-build source indices;
+/// `edge_copies` / `vertex_copies` are sorted `(source, copy)` pairs by
+/// construction, never by coordinate matching.
+pub(crate) fn circular_pattern_with_entity_history(
     topo: &mut Topology,
     solid: SolidId,
     axis_direction: Vec3,
     count: usize,
-) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        circular_pattern_full_impl(topo, solid, axis_direction, count)
+    })
+}
+
+fn circular_pattern_full_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    axis_direction: Vec3,
+    count: usize,
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
     if count < 2 {
         return Err(crate::OperationsError::InvalidInput {
             reason: "circular pattern needs at least 2 copies".into(),
@@ -293,7 +309,7 @@ fn circular_pattern_impl(
         solids.push(copy);
     }
 
-    finish_pattern(topo, solids, tracker).map(|(compound, history)| (compound, history.map))
+    finish_pattern(topo, solids, tracker)
 }
 
 /// Create a 2D grid pattern of a solid.
@@ -500,7 +516,7 @@ fn refuse_material_overlap(
 }
 
 /// Build a rotation matrix for a given axis and angle (Rodrigues' formula).
-fn rotation_matrix(axis: Vec3, angle: f64) -> Mat4 {
+pub(crate) fn rotation_matrix(axis: Vec3, angle: f64) -> Mat4 {
     let cos_a = angle.cos();
     let sin_a = angle.sin();
     let omc = 1.0 - cos_a;
