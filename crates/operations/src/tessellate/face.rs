@@ -285,8 +285,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     )
                 }
             } else {
-                let range = compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
-                let radius = cone.radius_at(range.0.abs().max(range.1.abs()));
+                let radius = super::nurbs::cone_chart_radius(topo, face_data, cone);
                 tessellate_revolved_with_holes(
                     topo,
                     face_data,

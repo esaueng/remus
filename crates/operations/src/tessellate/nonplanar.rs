@@ -3200,19 +3200,26 @@ pub(super) fn tessellate_nonplanar_cdt(
                 let lo = (curved_v_min - dense_dv).max(v_min);
                 let hi = (curved_v_max + dense_dv).min(v_max);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
+                let wanted = (((hi - lo) / dense_dv).ceil() as usize).max(1);
                 // This loop includes both end rows and scans the complete
                 // boundary once for containment and (for interior points)
                 // once more for clearance. Bound that multiplicative work
-                // before doing any classification or allocation.
+                // before doing any classification or allocation: take as
+                // many of the wanted rows as the polygon classification
+                // budget admits (see `dense_trim_rows_within_budget`).
+                let rows = dense_trim_rows_within_budget(wanted, n_u, boundary_uv_ref.len());
                 let dense_candidates = n_u.saturating_sub(1).checked_mul(rows.saturating_add(1));
-                // If the dense refinement alone would exceed the polygon
-                // classification budget, keep the already-bounded base grid
-                // and let the CDT triangulate from the shared boundary. Do
-                // not fail the whole face here: that routes valid cylinder
+                // If not even one row fits, keep the already-bounded base
+                // grid and let the CDT triangulate from the shared boundary.
+                // Do not fail the whole face here: that routes valid cylinder
                 // walls to the independent snap fallback, which can crack at
                 // shared rims.
-                if validate_interior_polygon_work(dense_candidates, Some(boundary_uv_ref.len()), 2)
+                if rows > 0
+                    && validate_interior_polygon_work(
+                        dense_candidates,
+                        Some(boundary_uv_ref.len()),
+                        2,
+                    )
                     .is_ok()
                 {
                     let boundary_cdt: Vec<Point2> =
@@ -3819,6 +3826,28 @@ fn stepped_rim_interior_points(
         }
     }
     Ok((!points.is_empty()).then_some(points))
+}
+
+/// Dense trim-band rows, capped to what the interior polygon budget admits.
+///
+/// The band's `rows + 1` lines of `n_u - 1` columns each scan the
+/// `boundary`-sample trim twice, so they cost `(n_u - 1)(rows + 1)·2·boundary`
+/// tests against [`MAX_INTERIOR_POLYGON_TESTS`]. Past that budget the whole
+/// band used to be dropped, leaving the trim valley to the base grid's
+/// single mid-height row whenever `interior_rows_for_boundary` keeps its
+/// two-row default (a 33–127-sample run): a cylinder cut by a slab tilted
+/// 30° then bridged its ellipse trim with chords spanning a quarter of the
+/// wall at 0.005–0.002 deflection, reading 4.9 % low in volume on a closed,
+/// manifold mesh. Fewer rows still support the valley, so keep as many as
+/// fit; zero only when not even one row does.
+fn dense_trim_rows_within_budget(wanted: usize, n_u: usize, boundary: usize) -> usize {
+    let per_row = n_u
+        .saturating_sub(1)
+        .saturating_mul(boundary)
+        .saturating_mul(2);
+    MAX_INTERIOR_POLYGON_TESTS
+        .checked_div(per_row)
+        .map_or(wanted, |fit| wanted.min(fit.saturating_sub(1)))
 }
 
 /// Estimate the effective radius of a surface for sample density calculation.
@@ -5465,10 +5494,7 @@ pub(super) fn tessellate_nonplanar_snap(
                 .mesh
             }
             FaceSurface::Cone(cone) => {
-                let range = super::nurbs::compute_v_param_range(topo, face_data, |p| {
-                    cone.project_point(p).1
-                });
-                let radius = cone.radius_at(range.0.abs().max(range.1.abs()));
+                let radius = super::nurbs::cone_chart_radius(topo, face_data, cone);
                 super::planar::tessellate_revolved_with_holes(
                     topo,
                     face_data,
@@ -5694,5 +5720,175 @@ mod interior_grid_limit_tests {
     fn rejects_polygon_work_overflow() {
         assert!(validate_interior_polygon_work(Some(usize::MAX), Some(2), 2).is_err());
         assert!(validate_interior_polygon_work(Some(2), None, 2).is_err());
+    }
+}
+
+/// B19 mutation oracles for the interior-grid budget gates, at exactly
+/// their documented limits (the limit itself is accepted; "exceeds" is
+/// strictly greater).
+#[cfg(test)]
+mod interior_grid_limit_edge_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{
+        MAX_INTERIOR_GRID_POINTS, MAX_INTERIOR_POLYGON_TESTS, validate_interior_polygon_work,
+        validate_stepped_rim_level_count,
+    };
+
+    #[test]
+    fn polygon_work_at_exactly_the_limit_is_accepted() {
+        let candidates = MAX_INTERIOR_GRID_POINTS;
+        let segments = MAX_INTERIOR_POLYGON_TESTS / candidates;
+        assert_eq!(candidates * segments, MAX_INTERIOR_POLYGON_TESTS);
+        validate_interior_polygon_work(Some(candidates), Some(segments), 1).unwrap();
+        assert!(validate_interior_polygon_work(Some(candidates), Some(segments + 1), 1).is_err());
+    }
+
+    /// Nine rows per level over `n_u - 1` columns must fit the grid budget:
+    /// the gate accepts exactly the level counts whose rows fit.
+    #[test]
+    fn stepped_rim_levels_are_budgeted_against_the_column_count() {
+        for n_u in [11_usize, 1_112, 40_001] {
+            let columns = n_u - 1;
+            let max_rows = MAX_INTERIOR_GRID_POINTS / columns;
+            let fits = max_rows / 9;
+            validate_stepped_rim_level_count(fits, n_u).unwrap();
+            assert!(
+                validate_stepped_rim_level_count(fits + 1, n_u).is_err(),
+                "{} levels over {columns} columns exceed the grid budget",
+                fits + 1
+            );
+        }
+        // 1111 columns leave exactly 900 = 9 × 100 rows: 100 levels fit.
+        validate_stepped_rim_level_count(100, 1_112).unwrap();
+    }
+}
+
+/// B19 mutation oracles for [`interior_rows_for_boundary`]. The row count is
+/// a sampling density, so it must not depend on where the face sits along
+/// its axis or on the model's scale (radius, height and the rim noise all
+/// scaling together); the documented sample-count bounds (8 rim samples, the
+/// 32/128 run sizes) decide whether rows grow; grown rows never exceed the
+/// run's own samples or the isotropic spacing; and the grid always fits the
+/// caller's own budget gate, [`validate_interior_grid_size`].
+#[cfg(test)]
+mod interior_rows_oracle_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::face::FaceSurface;
+    use std::f64::consts::TAU;
+
+    use super::{interior_rows_for_boundary, validate_interior_grid_size};
+
+    fn cylinder(radius: f64) -> FaceSurface {
+        FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius)
+                .unwrap(),
+        )
+    }
+
+    /// `per_rim` samples on each rim (the bottom rim `noise` above `v0`),
+    /// then `run` samples strictly inside: spanning `v0 + 0.2 dv .. v0 +
+    /// 0.8 dv`, or all at mid-height when `flat`.
+    fn boundary(
+        v0: f64,
+        dv: f64,
+        per_rim: usize,
+        run: usize,
+        flat: bool,
+        noise: f64,
+    ) -> Vec<(f64, f64)> {
+        let mut uv = Vec::new();
+        for i in 0..per_rim {
+            #[allow(clippy::cast_precision_loss)]
+            let u = TAU * i as f64 / per_rim as f64;
+            uv.push((u, v0 + noise));
+            uv.push((u, v0 + dv));
+        }
+        for i in 0..run {
+            #[allow(clippy::cast_precision_loss)]
+            let s = i as f64 / (run - 1).max(1) as f64;
+            let v = if flat { 0.5 } else { 0.6f64.mul_add(s, 0.2) };
+            uv.push((TAU * s, dv.mul_add(v, v0)));
+        }
+        uv
+    }
+
+    /// Rows for a radius-`r`, height-`dv` wall at `v0`, 64 columns, with
+    /// rim noise `1e-10 dv` (inside the documented `1e-9 dv` rim band).
+    fn rows(r: f64, v0: f64, dv: f64, per_rim: usize, run: usize, flat: bool) -> usize {
+        let uv = boundary(v0, dv, per_rim, run, flat, 1e-10 * dv);
+        interior_rows_for_boundary(&cylinder(r), &uv, (v0, v0 + dv), TAU, 64, 2)
+    }
+
+    #[test]
+    fn rows_are_translation_and_scale_invariant() {
+        // A dense run between rails: isotropic rows, ceil(10 / (2π/64)) = 102.
+        let reference = rows(1.0, 0.0, 10.0, 4, 200, false);
+        assert_eq!(reference, 102);
+        let spacing = TAU / 64.0;
+        #[allow(clippy::cast_precision_loss)]
+        let rows_f = reference as f64;
+        assert!(10.0 / rows_f <= spacing && 10.0 / (rows_f - 1.0) > spacing);
+        for v0 in [1_000.0, -250.5, 0.125] {
+            for k in [1e-3, 1.0, 1e3] {
+                assert_eq!(
+                    rows(k, v0 * k, 10.0 * k, 4, 200, false),
+                    reference,
+                    "wall moved to v0 = {} at scale {k}",
+                    v0 * k
+                );
+            }
+        }
+    }
+
+    /// A constant-`v` run (a mid-wall section circle) is a rail itself and
+    /// keeps the two-row default wherever the wall sits.
+    #[test]
+    fn a_constant_v_run_keeps_two_rows_anywhere_on_the_axis() {
+        for v0 in [0.0, 1_000.0, -250.5] {
+            assert_eq!(rows(1.0, v0, 10.0, 4, 200, true), 2, "v0 = {v0}");
+        }
+    }
+
+    /// Rows grow only against at least 8 rim samples, and only for tiny
+    /// (≤ 32) or dense (≥ 128) runs; a grown count never exceeds the run.
+    #[test]
+    fn documented_sample_count_bounds_decide_growth() {
+        assert_eq!(rows(1.0, 0.0, 10.0, 4, 200, false), 102);
+        // Seven rim samples: one short of a rail.
+        let mut uv = boundary(0.0, 10.0, 4, 200, false, 0.0);
+        uv.remove(0);
+        assert_eq!(
+            interior_rows_for_boundary(&cylinder(1.0), &uv, (0.0, 10.0), TAU, 64, 2),
+            2
+        );
+
+        for (run, expected) in [(31, 31), (32, 32), (33, 2), (127, 2), (128, 102)] {
+            assert_eq!(
+                rows(1.0, 0.0, 10.0, 4, run, false),
+                expected,
+                "run of {run}"
+            );
+        }
+    }
+
+    /// On a huge face the grown rows are capped to exactly what the caller's
+    /// grid budget admits, and a single column never divides by zero.
+    #[test]
+    fn grown_rows_fill_but_never_exceed_the_grid_budget() {
+        let uv = boundary(0.0, 10.0, 4, 600, false, 0.0);
+        for n_u in [2_001, 10_001, 250_001] {
+            let rows = interior_rows_for_boundary(&cylinder(1.0), &uv, (0.0, 10.0), TAU, n_u, 2);
+            validate_interior_grid_size(n_u, rows).unwrap();
+            assert!(
+                validate_interior_grid_size(n_u, rows + 1).is_err(),
+                "{rows} rows over {n_u} columns leave budget unused"
+            );
+        }
+        let rows = interior_rows_for_boundary(&cylinder(1.0), &uv, (0.0, 10.0), TAU, 1, 2);
+        assert!((2..=600).contains(&rows));
     }
 }
