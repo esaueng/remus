@@ -365,7 +365,10 @@ fn rectangles(
                     let b = fraction_bound(range[1], c.domain());
                     bernstein::restrict(&curve_h(c, origin)?, a, b)
                 }
-                _ => return Err(ClipError::UnsupportedDomain),
+                EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => return Err(ClipError::UnsupportedDomain),
             };
             if matches!(edge.curve(), EdgeCurve::Line) && !coedge.is_forward() {
                 for p in &mut h {
