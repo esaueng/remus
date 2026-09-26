@@ -1481,6 +1481,17 @@ export class BrepKernel {
      */
     extrude(face: number, dir_x: number, dir_y: number, dir_z: number, distance: number): number;
     /**
+     * Extrude a planar face along a direction vector, as typed data.
+     *
+     * Additive twin of [`extrude`](Self::extrude_face): the same validation
+     * order (finite `dir_x`, `dir_y`, `dir_z`, `distance`, then the face
+     * handle) and the same engine, with the legacy method unchanged. On
+     * success `details.quality` is `"exact"`; there is no approximate
+     * extrusion to disclose. A refusal carries the legacy failure's code
+     * and category with `details.operation: "extrude"`.
+     */
+    extrudeDetailed(face: number, dir_x: number, dir_y: number, dir_z: number, distance: number): SolidOperationDetailedResult;
+    /**
      * Compute the area of a single face.
      *
      * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
@@ -3342,6 +3353,18 @@ export class BrepKernel {
      * invalid, or the revolve operation fails.
      */
     revolve(face: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, angle_degrees: number): number;
+    /**
+     * Revolve a planar face around an axis, as typed data.
+     *
+     * Additive twin of [`revolve`](Self::revolve_face): the same validation
+     * order (finite `ox`, `oy`, `oz`, `dx`, `dy`, `dz`, `angle_degrees`,
+     * then the `(0, 360]` range check, then the face handle), the same
+     * degrees-to-radians conversion, and the same engine, with the legacy
+     * method unchanged. On success `details.quality` is `"exact"`. A
+     * refusal carries the legacy failure's code and category with
+     * `details.operation: "revolve"`.
+     */
+    revolveDetailed(face: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, angle_degrees: number): SolidOperationDetailedResult;
     /**
      * Run a custom sequence of healing operators on a solid.
      *

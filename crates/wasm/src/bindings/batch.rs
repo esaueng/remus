@@ -283,7 +283,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "moveFaces"
         | "resizeCylindricalFace"
         | "extrude"
+        | "extrudeDetailed"
         | "revolve"
+        | "revolveDetailed"
         | "sweep"
         | "sweepWire"
         | "sweepWithOptions"
@@ -1640,6 +1642,44 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
+            }
+            // O4.7 construction twins: the `ok` value is the same typed
+            // envelope the direct `*Detailed` method returns, from the same
+            // body, so a refusal is data here too. Direction/distance
+            // defaults and the degrees-to-radians conversion match the
+            // legacy `extrude`/`revolve` arms above; the shared body adds
+            // the direct methods' finite-value checks, so a non-finite
+            // batch argument refuses as `invalid_argument` where the legacy
+            // arm forwards it to the engine.
+            "extrudeDetailed" => {
+                let f = get_u32(args, "face")?;
+                let dx = get_f64(args, "dx").unwrap_or(0.0);
+                let dy = get_f64(args, "dy").unwrap_or(0.0);
+                let dz = get_f64(args, "dz").unwrap_or(1.0);
+                let dist = get_f64(args, "distance").unwrap_or(1.0);
+                serde_json::to_value(self.extrude_detailed_impl(f, dx, dy, dz, dist))
+                    .map_err(StructuredWasmError::from)
+            }
+            "revolveDetailed" => {
+                let f = get_u32(args, "face")?;
+                let angle_degrees = get_f64(args, "angle")?;
+                let ox = get_f64(args, "originX").unwrap_or(0.0);
+                let oy = get_f64(args, "originY").unwrap_or(0.0);
+                let oz = get_f64(args, "originZ").unwrap_or(0.0);
+                let ax = get_f64(args, "axisX").unwrap_or(0.0);
+                let ay = get_f64(args, "axisY").unwrap_or(0.0);
+                let az = get_f64(args, "axisZ").unwrap_or(1.0);
+                serde_json::to_value(self.revolve_detailed_impl(
+                    f,
+                    ox,
+                    oy,
+                    oz,
+                    ax,
+                    ay,
+                    az,
+                    angle_degrees,
+                ))
+                .map_err(StructuredWasmError::from)
             }
             "sweep" => {
                 let f = get_u32(args, "face")?;
