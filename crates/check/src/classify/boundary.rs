@@ -354,6 +354,21 @@ where
         .collect()
 }
 
+/// Test a point against an outer trim polygon only (no hole sampling).
+///
+/// Full-surface polygons (fewer than 3 points, like a torus with seam edges
+/// only) contain every point. This is the cheap first half of
+/// [`crate::classify::trim_contains_point`]: callers sample holes only when
+/// it passes.
+#[must_use]
+pub fn outer_contains_point(outer: &[Point3], point: Point3) -> bool {
+    if outer.len() < 3 {
+        return true;
+    }
+    let normal = polygon_normal(outer);
+    point_in_polygon_3d(&point, outer, &normal)
+}
+
 /// True when a hit lands in one of the face's holes, where the trimmed face
 /// has no material and therefore no crossing.
 fn hit_in_hole_uv(
@@ -397,6 +412,39 @@ impl FaceTrimData {
             outer: face_polygon(topo, face_id)?,
             holes: face_hole_polygons(topo, face_id)?,
         })
+    }
+
+    /// Sample the outer-wire polygon only.
+    ///
+    /// Call sites that test outer containment before paying for hole sampling
+    /// (the pre-refactor lazy order of the plane crossing and boundary tests)
+    /// start here and complete with [`FaceTrimData::build_holes`] only on a hit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any topology entity referenced by the face is missing.
+    pub fn build_outer(topo: &Topology, face_id: FaceId) -> Result<Vec<Point3>, CheckError> {
+        crate::perf::bump_classify_trim_build();
+        face_polygon(topo, face_id)
+    }
+
+    /// Sample one polygon per inner (hole) wire.
+    ///
+    /// Completes an outer-only trim; see [`FaceTrimData::build_outer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any topology entity referenced by the face is missing.
+    pub fn build_holes(topo: &Topology, face_id: FaceId) -> Result<Vec<Vec<Point3>>, CheckError> {
+        crate::perf::bump_classify_trim_build();
+        face_hole_polygons(topo, face_id)
+    }
+
+    /// Assemble a trim from separately built parts (no extra counting: the
+    /// parts already counted when sampled).
+    #[must_use]
+    pub fn from_parts(outer: Vec<Point3>, holes: Vec<Vec<Point3>>) -> Self {
+        Self { outer, holes }
     }
 }
 
@@ -944,8 +992,9 @@ pub fn count_face_ray_crossings_with_trim(
 
 /// Ray-plane intersection with point-in-polygon boundary test.
 ///
-/// Takes caller-supplied trim data (`None` builds it on demand, exactly as
-/// the one-shot path always has).
+/// Takes caller-supplied trim data. `None` rebuilds it on demand in the
+/// pre-refactor lazy order: the outer polygon first, hole polygons only when
+/// the hit survives outer containment.
 fn ray_plane_crossings_with_trim(
     topo: &Topology,
     face_id: FaceId,
@@ -961,28 +1010,44 @@ fn ray_plane_crossings_with_trim(
     };
 
     let hit = origin + direction * t;
-    let owned_trim;
-    let trim_data = if let Some(cached) = trim {
-        cached
-    } else {
-        owned_trim = FaceTrimData::build(topo, face_id)?;
-        &owned_trim
-    };
-    let verts = &trim_data.outer;
-    if verts.len() < 3 {
+    if let Some(cached) = trim {
+        return Ok(ray_plane_crossings_with_cached(hit, cached, normal));
+    }
+    // One-shot order: holes sample only on an outer hit, so rejected
+    // candidates within a wide face AABB never pay for hole edges.
+    let outer = FaceTrimData::build_outer(topo, face_id)?;
+    if outer.len() < 3 {
         return Ok(0);
     }
-
-    if !point_in_polygon_3d(&hit, verts, &normal) {
+    if !point_in_polygon_3d(&hit, &outer, &normal) {
         return Ok(0);
     }
     // A ray through a hole (bolt hole, absorbed hub circle) passes through
     // empty space, not material — the face contributes no crossing there.
-    let holes = &trim_data.holes;
-    if hit_in_hole_3d(holes, hit, normal) {
+    let holes = FaceTrimData::build_holes(topo, face_id)?;
+    if hit_in_hole_3d(&holes, hit, normal) {
         return Ok(0);
     }
     Ok(1)
+}
+
+/// [`ray_plane_crossings_with_trim`] over already-prepared trim data.
+fn ray_plane_crossings_with_cached(hit: Point3, trim: &FaceTrimData, normal: Vec3) -> u32 {
+    let verts = &trim.outer;
+    if verts.len() < 3 {
+        return 0;
+    }
+
+    if !point_in_polygon_3d(&hit, verts, &normal) {
+        return 0;
+    }
+    // A ray through a hole (bolt hole, absorbed hub circle) passes through
+    // empty space, not material — the face contributes no crossing there.
+    let holes = &trim.holes;
+    if hit_in_hole_3d(holes, hit, normal) {
+        return 0;
+    }
+    1
 }
 
 /// Count ray crossings for a NURBS face using ray-surface intersection.
