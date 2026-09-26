@@ -2377,6 +2377,156 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
             check_jacobian_central(&Constraint::EqualLength(l1, l2), &snap, &params, fd_scale);
             check_jacobian_central(&Constraint::Midpoint(c, l1), &snap, &params, fd_scale);
         }
+        // Symmetric + TangentLineCircle + SymmetricAboutPoint at the same
+        // placements (review: these three were missing from the 1e3/T close).
+        {
+            use super::super::entity::{CircleData, GenArena, LineData, PointData};
+            let mut pts = GenArena::new();
+            let ax = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: -scale + oy,
+                fixed: false,
+            });
+            let bx = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 5.0 * scale + oy,
+                fixed: false,
+            });
+            let p1 = pts.insert(PointData {
+                x: -3.0 * scale + ox,
+                y: 4.0 * scale + oy,
+                fixed: false,
+            });
+            let p2 = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let mut lines = GenArena::new();
+            let axis = lines.insert(LineData { p1: ax, p2: bx });
+            let snap = EntitySnapshot {
+                points: [
+                    (ax, (2.0 * scale + ox, -scale + oy)),
+                    (bx, (2.0 * scale + ox, 5.0 * scale + oy)),
+                    (p1, (-3.0 * scale + ox, 4.0 * scale + oy)),
+                    (p2, (0.0 * scale + ox, 0.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: [(axis, (ax, bx))].into_iter().collect(),
+                circles: HashMap::new(),
+                arcs: HashMap::new(),
+            };
+            let params = vec![
+                ParamRef::PointX(ax),
+                ParamRef::PointY(ax),
+                ParamRef::PointX(bx),
+                ParamRef::PointY(bx),
+                ParamRef::PointX(p1),
+                ParamRef::PointY(p1),
+                ParamRef::PointX(p2),
+                ParamRef::PointY(p2),
+            ];
+            check_jacobian_central(
+                &Constraint::Symmetric(p1, p2, axis),
+                &snap,
+                &params,
+                fd_scale,
+            );
+        }
+        {
+            use super::super::entity::{CircleData, GenArena, LineData, PointData};
+            let mut pts = GenArena::new();
+            let a = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let b = pts.insert(PointData {
+                x: 4.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let cc = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 5.0 * scale + oy,
+                fixed: false,
+            });
+            let mut lines = GenArena::new();
+            let line = lines.insert(LineData { p1: a, p2: b });
+            let mut circles = GenArena::new();
+            let circ = circles.insert(CircleData {
+                center: cc,
+                radius: 2.0 * scale,
+            });
+            let snap = EntitySnapshot {
+                points: [
+                    (a, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (b, (4.0 * scale + ox, 0.0 * scale + oy)),
+                    (cc, (1.0 * scale + ox, 5.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: [(line, (a, b))].into_iter().collect(),
+                circles: [(circ, (cc, 2.0 * scale))].into_iter().collect(),
+                arcs: HashMap::new(),
+            };
+            check_jacobian_central(
+                &Constraint::TangentLineCircle(line, circ),
+                &snap,
+                &[
+                    ParamRef::PointX(a),
+                    ParamRef::PointY(a),
+                    ParamRef::PointX(b),
+                    ParamRef::PointY(b),
+                    ParamRef::PointX(cc),
+                    ParamRef::PointY(cc),
+                    ParamRef::CircleRadius(circ),
+                ],
+                fd_scale,
+            );
+        }
+        {
+            use super::super::entity::{GenArena, PointData};
+            let mut pts = GenArena::new();
+            let p1 = pts.insert(PointData {
+                x: -2.0 * scale + ox,
+                y: 3.0 * scale + oy,
+                fixed: false,
+            });
+            let p2 = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let cc = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let snap = EntitySnapshot {
+                points: [
+                    (p1, (-2.0 * scale + ox, 3.0 * scale + oy)),
+                    (p2, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (cc, (1.0 * scale + ox, 1.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: HashMap::new(),
+                circles: HashMap::new(),
+                arcs: HashMap::new(),
+            };
+            let params: Vec<ParamRef> = [p1, p2, cc]
+                .iter()
+                .flat_map(|&id| [ParamRef::PointX(id), ParamRef::PointY(id)])
+                .collect();
+            check_jacobian_central(
+                &Constraint::SymmetricAboutPoint(p1, p2, cc),
+                &snap,
+                &params,
+                fd_scale,
+            );
+        }
     }
     // b16_translate helper must be exercised (translation invariance is asserted
     // cell-by-cell above via offset snaps); keep the helper live for the audit.
