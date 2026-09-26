@@ -4,7 +4,7 @@
 //!
 //! Provides a production-grade GCS (Geometric Constraint System) with:
 //! - **Entities**: Points, Lines, Circles with generational arena handles
-//! - **Constraints**: 24 constraint types with analytic Jacobians
+//! - **Constraints**: 26 constraint types with analytic Jacobians
 //! - **Solver**: DogLeg trust-region (globally convergent)
 //! - **DOF analysis**: QR-based rank detection
 //! - **Diagnostics**: transactional [`GcsSystem::solve_detailed`], reporting
