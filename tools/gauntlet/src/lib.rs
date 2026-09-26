@@ -1,6 +1,7 @@
 //! Isolated, per-model robustness gauntlet.
 
 pub mod manifest;
+pub mod p85;
 pub mod trend;
 
 use std::collections::BTreeMap;
