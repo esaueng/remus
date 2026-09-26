@@ -71,6 +71,9 @@ const AMBIGUOUS_BAND: f64 = 0.1;
 /// ray caster needs no tessellation.
 /// `tolerance` is the distance threshold for "on boundary" classification.
 ///
+/// This is the one-shot convenience path (bounds, BVH and trims rebuilt per
+/// call). For repeated queries against the same solid, use [`classify_points`].
+///
 /// # Errors
 /// Returns an error if the solid or its faces are invalid.
 pub fn classify_point(
@@ -86,6 +89,38 @@ pub fn classify_point(
         ..Default::default()
     };
     Ok(remus_check::classify::classify_point(topo, solid, point, &options)?.into())
+}
+
+/// Classifies many points relative to one solid, preparing once (PERF-Q01).
+///
+/// Builds a single [`remus_check::classify::PreparedSolid`] — face list,
+/// conservative bounds with their BVH, and trim polygons — and amortizes it
+/// over every point. Results are identical to calling [`classify_point`] per
+/// point: both run the same vote loop over the same faces, bounds and trims.
+///
+/// `deflection` is accepted for API compatibility and ignored, as in
+/// [`classify_point`].
+///
+/// # Errors
+/// Returns an error if the solid or its faces are invalid.
+pub fn classify_points(
+    topo: &Topology,
+    solid: SolidId,
+    points: &[Point3],
+    deflection: f64,
+    tolerance: f64,
+) -> Result<Vec<PointClassification>, OperationsError> {
+    let _ = deflection;
+    let options = remus_check::classify::ClassifyOptions {
+        tolerance,
+        ..Default::default()
+    };
+    let prepared = remus_check::classify::PreparedSolid::prepare(topo, solid)?;
+    Ok(prepared
+        .classify_points(points, &options)?
+        .into_iter()
+        .map(PointClassification::from)
+        .collect())
 }
 
 /// Generalized winding number of `point` with respect to `solid`.
@@ -184,6 +219,11 @@ pub(crate) struct RobustClassifier<'a> {
     deflection: f64,
     tolerance: f64,
     mesh: Option<crate::tessellate::TriangleMesh>,
+    /// Lazily built on the first ambiguous point, then reused across every
+    /// later point and every ray within each point (PERF-Q01): the winding
+    /// fallback used to rebuild bounds, BVH and trims per ray via the
+    /// one-shot path.
+    prepared: Option<remus_check::classify::PreparedSolid<'a>>,
 }
 
 impl<'a> RobustClassifier<'a> {
@@ -199,6 +239,7 @@ impl<'a> RobustClassifier<'a> {
             deflection,
             tolerance,
             mesh: None,
+            prepared: None,
         }
     }
 
@@ -229,13 +270,43 @@ impl<'a> RobustClassifier<'a> {
         if w < INSIDE_THRESHOLD - AMBIGUOUS_BAND {
             return Ok(PointClassification::Outside);
         }
-        classify_point(
-            self.topo,
-            self.solid,
-            point,
-            self.deflection,
-            self.tolerance,
-        )
+        // Ambiguous winding: fall back to analytic ray casting over the
+        // lazily prepared context (see `fallback_ray_cast`).
+        self.fallback_ray_cast(point)
+    }
+
+    /// Analytic ray-cast fallback for ambiguous winding numbers.
+    ///
+    /// Prepares once per classifier (face list, bounds/BVH, trims) and reuses
+    /// the preparation across every later point and every ray within each
+    /// point. If preparation itself fails (invalid solid) the one-shot path
+    /// surfaces the original typed error.
+    pub(crate) fn fallback_ray_cast(
+        &mut self,
+        point: Point3,
+    ) -> Result<PointClassification, OperationsError> {
+        if self.prepared.is_none()
+            && let Ok(prepared) =
+                remus_check::classify::PreparedSolid::prepare(self.topo, self.solid)
+        {
+            self.prepared = Some(prepared);
+        }
+        match &self.prepared {
+            Some(prepared) => {
+                let options = remus_check::classify::ClassifyOptions {
+                    tolerance: self.tolerance,
+                    ..Default::default()
+                };
+                Ok(prepared.classify_point(point, &options)?.into())
+            }
+            None => classify_point(
+                self.topo,
+                self.solid,
+                point,
+                self.deflection,
+                self.tolerance,
+            ),
+        }
     }
 }
 
@@ -296,6 +367,55 @@ mod tests {
             assert_eq!(
                 classify_point_robust(&topo, cylinder, point, 0.05, 1e-6).unwrap(),
                 expected
+            );
+        }
+    }
+
+    /// The ambiguous-winding fallback answers through one lazily prepared
+    /// context: preparation happens on the first fallback and is then reused,
+    /// with verdicts identical to the one-shot path.
+    #[test]
+    fn fallback_ray_cast_prepares_once_and_matches_one_shot() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let mut classifier = RobustClassifier::new(&topo, solid, 0.1, 1e-6);
+        assert!(classifier.prepared.is_none());
+
+        for point in [
+            Point3::new(1.0, 1.0, 1.0),
+            Point3::new(5.0, 5.0, 5.0),
+            Point3::new(1.0, 1.0, 2.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.999_999, 1.0, 1.0),
+        ] {
+            assert_eq!(
+                classifier.fallback_ray_cast(point).unwrap(),
+                classify_point(&topo, solid, point, 0.1, 1e-6).unwrap(),
+                "probe {point:?}"
+            );
+        }
+        let prepared = classifier.prepared.as_ref().unwrap();
+        assert_eq!(prepared.face_count(), 6);
+        assert_eq!(prepared.bounded_face_count(), 6);
+        assert_eq!(prepared.cached_trim_count(), 6);
+    }
+
+    #[test]
+    fn batch_classify_points_matches_scalar_calls() {
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+        let points = [
+            Point3::new(0.0, 0.0, 2.5),
+            Point3::new(10.0, 0.0, 2.5),
+            Point3::new(2.0, 0.0, 2.5),
+            Point3::new(0.0, 0.0, 0.0),
+        ];
+        let batch = classify_points(&topo, solid, &points, 0.1, 1e-6).unwrap();
+        for (index, point) in points.iter().enumerate() {
+            assert_eq!(
+                batch[index],
+                classify_point(&topo, solid, *point, 0.1, 1e-6).unwrap(),
+                "probe {point:?}"
             );
         }
     }

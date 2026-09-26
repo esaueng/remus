@@ -58,5 +58,9 @@ name = "fuse_perf"
 harness = false
 name = "boolean_tracking"
 
+[[bench]]
+harness = false
+name = "classify_perf"
+
 [lints]
 workspace = true

@@ -16,6 +16,7 @@ pub mod analyze;
 pub mod classify;
 pub mod distance;
 pub mod error;
+pub mod perf;
 pub mod properties;
 pub mod util;
 pub mod validate;
