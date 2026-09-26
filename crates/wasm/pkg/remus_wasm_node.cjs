@@ -2548,7 +2548,7 @@ class BrepKernel {
      * Create a new typed GCS sketch. Returns a sketch handle.
      *
      * This is the successor to the legacy `sketch*` API: the constraint
-     * system persists across calls, entities are typed handles, all 24
+     * system persists across calls, entities are typed handles, all 26
      * constraint types are available, and constraints can be removed.
      * @returns {number}
      */
