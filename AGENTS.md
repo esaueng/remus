@@ -194,6 +194,7 @@ Quick reference — find the right file for any task:
 | Coedge — one directed use of an edge by a face boundary | `coedge.rs` |
 | Loop — ordered cycle of coedges bounding a face | `face_loop.rs` |
 | Transactional mutation (`run_transacted`, `run_validated`) | `transaction.rs` |
+| Nested savepoint state, failure injection, and stale-handle contract tests | `transaction/savepoint_tests.rs` |
 | Attribute store (names, colors, app ids) | `attributes.rs` |
 | Append-only evolution journal | `journal.rs` |
 | Persistent references and their resolver | `naming.rs` |
@@ -480,6 +481,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
+| Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
 | Assembly management | `bindings/assembly.rs` |
 | 2D polygon operations | `bindings/polygon2d.rs` |
