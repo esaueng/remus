@@ -479,15 +479,23 @@ impl BrepKernel {
 
     /// Runs one batch operation, undoing its topology changes if it fails.
     ///
-    /// The two arms differ only in what taking the rollback snapshot costs;
-    /// both restore the exact pre-operation state. See [`batch_op_kind`].
+    /// The qualified boolean family coordinates its entry snapshot with native
+    /// savepoints. Other operation families retain their existing dispatch
+    /// policy until separately qualified. See [`batch_op_kind`].
     fn dispatch_with_rollback(
         &mut self,
         kind: BatchOpKind,
         op: &str,
         args: &serde_json::Value,
     ) -> BatchItemResult {
-        if kind == BatchOpKind::ReadOnly {
+        if matches!(op, "fuse" | "cut" | "intersect") {
+            let snapshot = remus_topology::transaction::RollbackSnapshot::capture(self.topo_mut());
+            let result = self.dispatch_op(op, args);
+            if result.is_err() {
+                snapshot.restore(self.topo_mut());
+            }
+            result
+        } else if kind == BatchOpKind::ReadOnly {
             // O(1). Still correct if the op does mutate: `Rc::make_mut` in
             // `topo_mut` sees the extra reference and copies the pre-op arenas
             // aside before the first mutation lands.

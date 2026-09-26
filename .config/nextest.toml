@@ -4,6 +4,10 @@ fail-fast = false
 # Start the known long tail first so it overlaps the rest of the suite instead
 # of extending the end of every Linux, macOS, and coverage run.
 [[profile.default.overrides]]
+filter = 'test(exposed_boss_wall_matches_geometry_across_half_radius) | test(b53_tangent_rim_general_position_neighbours)'
+priority = 100
+
+[[profile.default.overrides]]
 filter = 'test(offset_torus_sphere_cut_matches_annulus_overlap) | test(offset_torus_sphere_fuse_retains_both_operands)'
 priority = 100
 
