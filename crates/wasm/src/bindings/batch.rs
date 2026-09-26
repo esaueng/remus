@@ -248,6 +248,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "filletJournaled"
         | "chamferJournaled"
         | "linearPatternJournaled"
+        | "circularPatternJournaled"
         | "imprint"
         | "draftJournaled"
         | "resizeBlendJournaled"
