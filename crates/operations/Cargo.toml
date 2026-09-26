@@ -36,6 +36,7 @@ env_logger.workspace = true
 proptest.workspace = true
 remus-io = {path = "../io"}
 remus-topology = {workspace = true, features = ["test-utils"]}
+serde_json.workspace = true
 
 [[bench]]
 harness = false
