@@ -420,6 +420,63 @@ mod tests {
         }
     }
 
+    /// Complexity guard for PERF-Q01, executed by the CI `Complexity guards`
+    /// step (`nextest -p remus-operations --features perf-counters -E
+    /// 'test(scaling_)'`, which is the only configured run enabling the
+    /// counters): preparation happens once per solid, not once per ray.
+    /// A reintroduced per-ray rebuild turns the constant counts linear and
+    /// trips the bounds with no timing flakiness.
+    #[cfg(feature = "perf-counters")]
+    #[test]
+    fn scaling_prepared_classification_reuses_preparation() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        // Deterministic sweep over the box neighborhood; large enough that
+        // per-ray rebuilds separate clearly from the one-per-face preparation.
+        let points: Vec<Point3> = (0..64)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let t = i as f64 / 64.0;
+                Point3::new(
+                    4.0f64.mul_add(t, -1.0),
+                    4.0f64.mul_add((7.0 * t).fract(), -1.0),
+                    4.0f64.mul_add((13.0 * t).fract(), -1.0),
+                )
+            })
+            .collect();
+
+        remus_check::perf::reset();
+        let oneshot: Vec<_> = points
+            .iter()
+            .map(|&point| classify_point(&topo, solid, point, 0.1, 1e-6).unwrap())
+            .collect();
+        let oneshot_counts = remus_check::perf::snapshot();
+
+        remus_check::perf::reset();
+        let prepared = classify_points(&topo, solid, &points, 0.1, 1e-6).unwrap();
+        let prepared_counts = remus_check::perf::snapshot();
+
+        assert_eq!(prepared, oneshot);
+
+        let queried = oneshot
+            .iter()
+            .filter(|result| **result != PointClassification::OnBoundary)
+            .count() as u64;
+        assert_eq!(prepared_counts.bvh_builds, 1);
+        assert!(
+            oneshot_counts.bvh_builds >= 2 * queried,
+            "one-shot built {} BVHs for {queried} queried points",
+            oneshot_counts.bvh_builds
+        );
+        assert_eq!(prepared_counts.face_aabb_evals, 6);
+        assert_eq!(prepared_counts.trim_builds, 6);
+        assert!(
+            oneshot_counts.trim_builds > prepared_counts.trim_builds,
+            "one-shot built {} trims",
+            oneshot_counts.trim_builds
+        );
+    }
+
     #[test]
     fn point_inside_box() {
         let mut topo = Topology::new();
