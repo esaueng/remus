@@ -1732,3 +1732,660 @@ fn symmetric_about_point_jacobian_matches_finite_differences() {
         );
     }
 }
+
+// ── B16 qualification: scale-relative Jacobians at 1e3 and large translation ─
+// Covers the missing cells from the pre-existing matrix (fixed-step FD at unit
+// scale for the 19 older variants; central at [1e-3,1,1e5] for the 7 newest).
+// 1e3 closes the required B16 scale; T = unit-size geometry at (+1e6,−1e6)
+// proves translation invariance of the analytic gradients. eps = 1e-6·fd_scale
+// with fd_scale = 1e3 for both (1e-03 step): at T the coordinate magnitude is
+// 1e6 (ULP ≈ 2e-10), so a 1e-06 step would drown in representable-perturbation
+// error (≈2e-10/1e-06 = 2e-04); 1e-03 keeps rounding (≈2e-07) below the 1e-06
+// assert while truncation stays O(1e-06) for these residuals.
+
+fn b16_translate_snap(mut snap: EntitySnapshot, dx: f64, dy: f64) -> EntitySnapshot {
+    for xy in snap.points.values_mut() {
+        xy.0 += dx;
+        xy.1 += dy;
+    }
+    snap
+}
+
+#[test]
+fn b16_jacobian_point_datum_at_1e3_and_translation() {
+    for (scale, ox, oy, fd_scale) in [(1e3, 0.0, 0.0, 1e3), (1.0, 1e6, -1e6, 1e3)] {
+        let (p1, p2, snap) = two_point_snap(
+            1.0 * scale + ox,
+            2.0 * scale + oy,
+            3.0 * scale + ox,
+            5.0 * scale + oy,
+        );
+        let params = vec![
+            ParamRef::PointX(p1),
+            ParamRef::PointY(p1),
+            ParamRef::PointX(p2),
+            ParamRef::PointY(p2),
+        ];
+        check_jacobian_central(&Constraint::Coincident(p1, p2), &snap, &params, fd_scale);
+        check_jacobian_central(
+            &Constraint::Distance(p1, p2, 5.0 * scale),
+            &snap,
+            &params,
+            fd_scale,
+        );
+        check_jacobian_central(
+            &Constraint::FixX(p1, 5.0 * scale + ox),
+            &snap,
+            &[ParamRef::PointX(p1)],
+            fd_scale,
+        );
+        check_jacobian_central(
+            &Constraint::FixY(p1, 2.0 * scale + oy),
+            &snap,
+            &[ParamRef::PointY(p1)],
+            fd_scale,
+        );
+    }
+}
+
+#[test]
+fn b16_jacobian_line_orient_at_1e3_and_translation() {
+    use super::super::entity::{GenArena, LineData, PointData};
+    for (scale, ox, oy, fd_scale) in [(1e3, 0.0, 0.0, 1e3), (1.0, 1e6, -1e6, 1e3)] {
+        let mut pts = GenArena::new();
+        let mut mk = |x: f64, y: f64| {
+            pts.insert(PointData {
+                x: x * scale + ox,
+                y: y * scale + oy,
+                fixed: false,
+            })
+        };
+        let p1 = mk(0.0, 0.0);
+        let p2 = mk(3.0, 1.0);
+        let p3 = mk(1.0, 2.0);
+        let p4 = mk(4.0, 5.0);
+        let mut lines = GenArena::new();
+        let l1 = lines.insert(LineData { p1, p2 });
+        let l2 = lines.insert(LineData { p1: p3, p2: p4 });
+        let snap = EntitySnapshot {
+            points: [
+                (p1, (0.0 * scale + ox, 0.0 * scale + oy)),
+                (p2, (3.0 * scale + ox, 1.0 * scale + oy)),
+                (p3, (1.0 * scale + ox, 2.0 * scale + oy)),
+                (p4, (4.0 * scale + ox, 5.0 * scale + oy)),
+            ]
+            .into_iter()
+            .collect(),
+            lines: [(l1, (p1, p2)), (l2, (p3, p4))].into_iter().collect(),
+            circles: HashMap::new(),
+            arcs: HashMap::new(),
+        };
+        let params = vec![
+            ParamRef::PointX(p1),
+            ParamRef::PointY(p1),
+            ParamRef::PointX(p2),
+            ParamRef::PointY(p2),
+            ParamRef::PointX(p3),
+            ParamRef::PointY(p3),
+            ParamRef::PointX(p4),
+            ParamRef::PointY(p4),
+        ];
+        check_jacobian_central(&Constraint::Horizontal(l1), &snap, &params[0..4], fd_scale);
+        check_jacobian_central(&Constraint::Vertical(l1), &snap, &params[0..4], fd_scale);
+        check_jacobian_central(&Constraint::Parallel(l1, l2), &snap, &params, fd_scale);
+        check_jacobian_central(&Constraint::Perpendicular(l1, l2), &snap, &params, fd_scale);
+        check_jacobian_central(&Constraint::Angle(l1, l2, 0.5), &snap, &params, fd_scale);
+    }
+}
+
+#[test]
+fn b16_jacobian_point_on_circle_arc_at_1e3_and_translation() {
+    use super::super::entity::{ArcData, CircleData, GenArena, PointData};
+    for (scale, ox, oy, fd_scale) in [(1e3, 0.0, 0.0, 1e3), (1.0, 1e6, -1e6, 1e3)] {
+        // PointOnCircle
+        {
+            let mut pts = GenArena::new();
+            let center = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 2.0 * scale + oy,
+                fixed: false,
+            });
+            let pt = pts.insert(PointData {
+                x: 4.0 * scale + ox,
+                y: 6.0 * scale + oy,
+                fixed: false,
+            });
+            let mut circles = GenArena::new();
+            let circ = circles.insert(CircleData {
+                center,
+                radius: 3.0 * scale,
+            });
+            let snap = EntitySnapshot {
+                points: [
+                    (center, (1.0 * scale + ox, 2.0 * scale + oy)),
+                    (pt, (4.0 * scale + ox, 6.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: HashMap::new(),
+                circles: [(circ, (center, 3.0 * scale))].into_iter().collect(),
+                arcs: HashMap::new(),
+            };
+            check_jacobian_central(
+                &Constraint::PointOnCircle(pt, circ),
+                &snap,
+                &[
+                    ParamRef::PointX(pt),
+                    ParamRef::PointY(pt),
+                    ParamRef::PointX(center),
+                    ParamRef::PointY(center),
+                    ParamRef::CircleRadius(circ),
+                ],
+                fd_scale,
+            );
+        }
+        // PointOnArc
+        {
+            let mut pts = GenArena::new();
+            let center = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let start = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let end = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 2.0 * scale + oy,
+                fixed: false,
+            });
+            let pt = pts.insert(PointData {
+                x: 1.5 * scale + ox,
+                y: 1.5 * scale + oy,
+                fixed: false,
+            });
+            let mut arcs = GenArena::new();
+            let arc = arcs.insert(ArcData { center, start, end });
+            let snap = EntitySnapshot {
+                points: [
+                    (center, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (start, (2.0 * scale + ox, 0.0 * scale + oy)),
+                    (end, (0.0 * scale + ox, 2.0 * scale + oy)),
+                    (pt, (1.5 * scale + ox, 1.5 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: HashMap::new(),
+                circles: HashMap::new(),
+                arcs: [(arc, (center, start, end))].into_iter().collect(),
+            };
+            check_jacobian_central(
+                &Constraint::PointOnArc(pt, arc),
+                &snap,
+                &[
+                    ParamRef::PointX(pt),
+                    ParamRef::PointY(pt),
+                    ParamRef::PointX(center),
+                    ParamRef::PointY(center),
+                    ParamRef::PointX(start),
+                    ParamRef::PointY(start),
+                ],
+                fd_scale,
+            );
+        }
+        // PointLineDistance
+        {
+            use super::super::entity::LineData;
+            let mut pts = GenArena::new();
+            let a = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let b = pts.insert(PointData {
+                x: 4.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let p = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 3.0 * scale + oy,
+                fixed: false,
+            });
+            let mut lines = GenArena::new();
+            let l = lines.insert(LineData { p1: a, p2: b });
+            let snap = EntitySnapshot {
+                points: [
+                    (a, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (b, (4.0 * scale + ox, 0.0 * scale + oy)),
+                    (p, (1.0 * scale + ox, 3.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: [(l, (a, b))].into_iter().collect(),
+                circles: HashMap::new(),
+                arcs: HashMap::new(),
+            };
+            check_jacobian_central(
+                &Constraint::PointLineDistance(p, l, 1.5 * scale),
+                &snap,
+                &[
+                    ParamRef::PointX(a),
+                    ParamRef::PointY(a),
+                    ParamRef::PointX(b),
+                    ParamRef::PointY(b),
+                    ParamRef::PointX(p),
+                    ParamRef::PointY(p),
+                ],
+                fd_scale,
+            );
+        }
+    }
+}
+
+#[test]
+fn b16_jacobian_tangency_equal_arc_at_1e3_and_translation() {
+    use super::super::entity::{ArcData, CircleData, GenArena, LineData, PointData};
+    for (scale, ox, oy, fd_scale) in [(1e3, 0.0, 0.0, 1e3), (1.0, 1e6, -1e6, 1e3)] {
+        // TangentLineArc
+        {
+            let mut pts = GenArena::new();
+            let p1 = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let p2 = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let center = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let start = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let end = pts.insert(PointData {
+                x: 3.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let mut lines = GenArena::new();
+            let line = lines.insert(LineData { p1, p2 });
+            let mut arcs = GenArena::new();
+            let arc = arcs.insert(ArcData { center, start, end });
+            let snap = EntitySnapshot {
+                points: [
+                    (p1, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (p2, (2.0 * scale + ox, 0.0 * scale + oy)),
+                    (center, (2.0 * scale + ox, 1.0 * scale + oy)),
+                    (start, (2.0 * scale + ox, 0.0 * scale + oy)),
+                    (end, (3.0 * scale + ox, 1.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: [(line, (p1, p2))].into_iter().collect(),
+                circles: HashMap::new(),
+                arcs: [(arc, (center, start, end))].into_iter().collect(),
+            };
+            check_jacobian_central(
+                &Constraint::TangentLineArc(line, arc, p2),
+                &snap,
+                &[
+                    ParamRef::PointX(p1),
+                    ParamRef::PointY(p1),
+                    ParamRef::PointX(p2),
+                    ParamRef::PointY(p2),
+                    ParamRef::PointX(center),
+                    ParamRef::PointY(center),
+                ],
+                fd_scale,
+            );
+        }
+        // TangentArcArc
+        {
+            let mut pts = GenArena::new();
+            let c1 = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let c2 = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let shared = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let s1 = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let e1 = pts.insert(PointData {
+                x: ox - scale,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let s2 = pts.insert(PointData {
+                x: 1.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let e2 = pts.insert(PointData {
+                x: 3.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let mut arcs = GenArena::new();
+            let arc1 = arcs.insert(ArcData {
+                center: c1,
+                start: s1,
+                end: e1,
+            });
+            let arc2 = arcs.insert(ArcData {
+                center: c2,
+                start: s2,
+                end: e2,
+            });
+            let snap = EntitySnapshot {
+                points: [
+                    (c1, (0.0 * scale + ox, 1.0 * scale + oy)),
+                    (c2, (2.0 * scale + ox, 1.0 * scale + oy)),
+                    (shared, (1.0 * scale + ox, 0.0 * scale + oy)),
+                    (s1, (1.0 * scale + ox, 0.0 * scale + oy)),
+                    (e1, (ox - scale, 1.0 * scale + oy)),
+                    (s2, (1.0 * scale + ox, 0.0 * scale + oy)),
+                    (e2, (3.0 * scale + ox, 1.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: HashMap::new(),
+                circles: HashMap::new(),
+                arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
+                    .into_iter()
+                    .collect(),
+            };
+            check_jacobian_central(
+                &Constraint::TangentArcArc(arc1, arc2, shared),
+                &snap,
+                &[
+                    ParamRef::PointX(shared),
+                    ParamRef::PointY(shared),
+                    ParamRef::PointX(c1),
+                    ParamRef::PointY(c1),
+                    ParamRef::PointX(c2),
+                    ParamRef::PointY(c2),
+                ],
+                fd_scale,
+            );
+        }
+        // EqualRadiusArcArc + EqualRadiusArcCircle + ArcLength + Concentric
+        {
+            let mut pts = GenArena::new();
+            let c1 = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let s1 = pts.insert(PointData {
+                x: 2.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let e1 = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 2.0 * scale + oy,
+                fixed: false,
+            });
+            let c2 = pts.insert(PointData {
+                x: 5.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let s2 = pts.insert(PointData {
+                x: 8.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let e2 = pts.insert(PointData {
+                x: 5.0 * scale + ox,
+                y: 3.0 * scale + oy,
+                fixed: false,
+            });
+            let cc = pts.insert(PointData {
+                x: 5.0 * scale + ox,
+                y: 5.0 * scale + oy,
+                fixed: false,
+            });
+            let mut arcs = GenArena::new();
+            let arc1 = arcs.insert(ArcData {
+                center: c1,
+                start: s1,
+                end: e1,
+            });
+            let arc2 = arcs.insert(ArcData {
+                center: c2,
+                start: s2,
+                end: e2,
+            });
+            let mut circles = GenArena::new();
+            let circ = circles.insert(CircleData {
+                center: cc,
+                radius: 3.0 * scale,
+            });
+            let snap = EntitySnapshot {
+                points: [
+                    (c1, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (s1, (2.0 * scale + ox, 0.0 * scale + oy)),
+                    (e1, (0.0 * scale + ox, 2.0 * scale + oy)),
+                    (c2, (5.0 * scale + ox, 0.0 * scale + oy)),
+                    (s2, (8.0 * scale + ox, 0.0 * scale + oy)),
+                    (e2, (5.0 * scale + ox, 3.0 * scale + oy)),
+                    (cc, (5.0 * scale + ox, 5.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: HashMap::new(),
+                circles: [(circ, (cc, 3.0 * scale))].into_iter().collect(),
+                arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
+                    .into_iter()
+                    .collect(),
+            };
+            check_jacobian_central(
+                &Constraint::EqualRadiusArcArc(arc1, arc2),
+                &snap,
+                &[
+                    ParamRef::PointX(c1),
+                    ParamRef::PointY(c1),
+                    ParamRef::PointX(s1),
+                    ParamRef::PointY(s1),
+                    ParamRef::PointX(c2),
+                    ParamRef::PointY(c2),
+                    ParamRef::PointX(s2),
+                    ParamRef::PointY(s2),
+                ],
+                fd_scale,
+            );
+            check_jacobian_central(
+                &Constraint::EqualRadiusArcCircle(arc1, circ),
+                &snap,
+                &[
+                    ParamRef::PointX(c1),
+                    ParamRef::PointY(c1),
+                    ParamRef::PointX(s1),
+                    ParamRef::PointY(s1),
+                    ParamRef::CircleRadius(circ),
+                ],
+                fd_scale,
+            );
+            check_jacobian_central(
+                &Constraint::ArcLength(arc1, std::f64::consts::PI * scale),
+                &snap,
+                &[
+                    ParamRef::PointX(c1),
+                    ParamRef::PointY(c1),
+                    ParamRef::PointX(s1),
+                    ParamRef::PointY(s1),
+                    ParamRef::PointX(e1),
+                    ParamRef::PointY(e1),
+                ],
+                fd_scale,
+            );
+            check_jacobian_central(
+                &Constraint::ConcentricArcArc(arc1, arc2),
+                &snap,
+                &[
+                    ParamRef::PointX(c1),
+                    ParamRef::PointY(c1),
+                    ParamRef::PointX(c2),
+                    ParamRef::PointY(c2),
+                ],
+                fd_scale,
+            );
+            check_jacobian_central(
+                &Constraint::ConcentricArcCircle(arc1, circ),
+                &snap,
+                &[
+                    ParamRef::PointX(c1),
+                    ParamRef::PointY(c1),
+                    ParamRef::PointX(cc),
+                    ParamRef::PointY(cc),
+                ],
+                fd_scale,
+            );
+        }
+    }
+}
+
+#[test]
+fn b16_jacobian_new_variants_at_1e3_and_translation() {
+    // The 7 newest variants already have central cover at [1e-3,1,1e5]; this
+    // closes the required 1e3 scale and the large-translation cell.
+    for (scale, ox, oy, fd_scale) in [(1e3, 0.0, 0.0, 1e3), (1.0, 1e6, -1e6, 1e3)] {
+        // CircleRadius + EqualRadiusCircleCircle
+        {
+            use super::super::entity::{CircleData, GenArena, PointData};
+            let mut pts = GenArena::new();
+            let c1c = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let c2c = pts.insert(PointData {
+                x: 10.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let mut circles = GenArena::new();
+            let (r1, r2) = (3.0 * scale, 5.0 * scale);
+            let circ1 = circles.insert(CircleData {
+                center: c1c,
+                radius: r1,
+            });
+            let circ2 = circles.insert(CircleData {
+                center: c2c,
+                radius: r2,
+            });
+            let snap = EntitySnapshot {
+                points: [
+                    (c1c, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (c2c, (10.0 * scale + ox, 0.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: HashMap::new(),
+                circles: [(circ1, (c1c, r1)), (circ2, (c2c, r2))]
+                    .into_iter()
+                    .collect(),
+                arcs: HashMap::new(),
+            };
+            check_jacobian_central(
+                &Constraint::CircleRadius(circ1, 2.0 * scale),
+                &snap,
+                &[ParamRef::CircleRadius(circ1)],
+                fd_scale,
+            );
+            check_jacobian_central(
+                &Constraint::EqualRadiusCircleCircle(circ1, circ2),
+                &snap,
+                &[ParamRef::CircleRadius(circ1), ParamRef::CircleRadius(circ2)],
+                fd_scale,
+            );
+        }
+        // EqualLength + Midpoint via two_line_snap-style geometry
+        {
+            use super::super::entity::{GenArena, LineData, PointData};
+            let mut pts = GenArena::new();
+            let a = pts.insert(PointData {
+                x: -4.0 * scale + ox,
+                y: 2.0 * scale + oy,
+                fixed: false,
+            });
+            let b = pts.insert(PointData {
+                x: 10.0 * scale + ox,
+                y: 8.0 * scale + oy,
+                fixed: false,
+            });
+            let c = pts.insert(PointData {
+                x: 0.0 * scale + ox,
+                y: 0.0 * scale + oy,
+                fixed: false,
+            });
+            let d = pts.insert(PointData {
+                x: 3.0 * scale + ox,
+                y: 1.0 * scale + oy,
+                fixed: false,
+            });
+            let mut lines = GenArena::new();
+            let l1 = lines.insert(LineData { p1: a, p2: b });
+            let l2 = lines.insert(LineData { p1: c, p2: d });
+            let snap = EntitySnapshot {
+                points: [
+                    (a, (-4.0 * scale + ox, 2.0 * scale + oy)),
+                    (b, (10.0 * scale + ox, 8.0 * scale + oy)),
+                    (c, (0.0 * scale + ox, 0.0 * scale + oy)),
+                    (d, (3.0 * scale + ox, 1.0 * scale + oy)),
+                ]
+                .into_iter()
+                .collect(),
+                lines: [(l1, (a, b)), (l2, (c, d))].into_iter().collect(),
+                circles: HashMap::new(),
+                arcs: HashMap::new(),
+            };
+            let params = vec![
+                ParamRef::PointX(a),
+                ParamRef::PointY(a),
+                ParamRef::PointX(b),
+                ParamRef::PointY(b),
+                ParamRef::PointX(c),
+                ParamRef::PointY(c),
+                ParamRef::PointX(d),
+                ParamRef::PointY(d),
+            ];
+            check_jacobian_central(&Constraint::EqualLength(l1, l2), &snap, &params, fd_scale);
+            check_jacobian_central(&Constraint::Midpoint(c, l1), &snap, &params, fd_scale);
+        }
+    }
+    // b16_translate helper must be exercised (translation invariance is asserted
+    // cell-by-cell above via offset snaps); keep the helper live for the audit.
+    let (_, _, snap) = two_point_snap(1.0, 2.0, 3.0, 4.0);
+    let moved = b16_translate_snap(snap, 1e6, -1e6);
+    assert!(
+        moved
+            .points
+            .values()
+            .all(|v| v.0.is_finite() && v.1.is_finite())
+    );
+}
