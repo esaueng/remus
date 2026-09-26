@@ -252,31 +252,29 @@ pub(crate) fn face_surface_distance(
 /// trims (outer wire minus inner hole wires).
 #[must_use]
 pub(crate) fn trim_contains_point(trim: &boundary::FaceTrimData, point: Point3) -> bool {
-    let polygon = &trim.outer;
-    if polygon.len() >= 3 {
-        let normal = boundary::polygon_normal(polygon);
-        if crate::util::point_in_polygon_3d(&point, polygon, &normal) {
-            // A point in one of the face's holes lies in open space,
-            // not on the trimmed face.
-            let in_hole = trim
-                .holes
-                .iter()
-                .any(|hole| crate::util::point_in_polygon_3d(&point, hole, &normal));
-            return !in_hole;
-        }
-        false
-    } else {
-        // Full-surface face (like torus with seam edges only).
-        true
+    if !boundary::outer_contains_point(&trim.outer, point) {
+        return false;
     }
+    if trim.outer.len() < 3 {
+        // Full-surface face (like torus with seam edges only).
+        return true;
+    }
+    // A point in one of the face's holes lies in open space,
+    // not on the trimmed face.
+    let normal = boundary::polygon_normal(&trim.outer);
+    !trim
+        .holes
+        .iter()
+        .any(|hole| crate::util::point_in_polygon_3d(&point, hole, &normal))
 }
 
 /// Checks if a point is within `tolerance` of any face boundary.
 ///
 /// Uses analytic point-to-surface distance for all surface types, then
 /// verifies the projection falls within the face polygon. Trim polygons are
-/// built lazily — only for faces the point is already near — exactly as the
-/// pre-PERF-Q01 code built them.
+/// built lazily — outer wires only for faces the point is already near, hole
+/// wires only when the point survives outer containment — exactly the
+/// pre-PERF-Q01 order.
 fn is_on_boundary(
     topo: &Topology,
     faces: &[FaceId],
@@ -285,9 +283,12 @@ fn is_on_boundary(
 ) -> Result<bool, CheckError> {
     for &fid in faces {
         if face_surface_distance(topo, fid, point, tolerance)? < tolerance {
-            let trim = boundary::FaceTrimData::build(topo, fid)?;
-            if trim_contains_point(&trim, point) {
-                return Ok(true);
+            let outer = boundary::FaceTrimData::build_outer(topo, fid)?;
+            if boundary::outer_contains_point(&outer, point) {
+                let holes = boundary::FaceTrimData::build_holes(topo, fid)?;
+                if trim_contains_point(&boundary::FaceTrimData::from_parts(outer, holes), point) {
+                    return Ok(true);
+                }
             }
         }
     }

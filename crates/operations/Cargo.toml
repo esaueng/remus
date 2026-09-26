@@ -8,9 +8,11 @@ rust-version.workspace = true
 version = "0.1.0"
 
 [features]
-# Pass-through to remus-algo's deterministic work counters, enabled by the
-# complexity-regression scaling guard (`boolean::tests::scaling_*`).
-perf-counters = ["remus-algo/perf-counters"]
+# Pass-through to the deterministic work counters, enabled by the
+# complexity-regression scaling guard (`scaling_*` tests): `remus-algo` for
+# the boolean hot paths, `remus-check` for the PERF-Q01 classification
+# preparation counts.
+perf-counters = ["remus-algo/perf-counters", "remus-check/perf-counters"]
 
 [dependencies]
 log.workspace = true
