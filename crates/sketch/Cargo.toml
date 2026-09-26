@@ -11,7 +11,12 @@ version = "0.1.0"
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
+
+[[bench]]
+harness = false
+name = "gcs_perf"
 
 [lints]
 workspace = true
