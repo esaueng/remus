@@ -335,21 +335,23 @@ pub fn polygon_normal(verts: &[Point3]) -> Vec3 {
     crate::util::polygon_normal(verts)
 }
 
-/// Build the UV boundary of every hole (inner wire) of a face.
-fn hole_uv_boundaries<F>(
-    topo: &Topology,
-    face_id: FaceId,
+/// Build the UV boundary of every hole from already-sampled 3D hole polygons.
+///
+/// Infallible: the topology lookups already happened when the caller built
+/// its [`FaceTrimData`].
+fn hole_uv_boundaries_from_cached<F>(
+    holes_3d: &[Vec<Point3>],
     project: &F,
     u_period: Option<f64>,
     v_period: Option<f64>,
-) -> Result<Vec<Vec<(f64, f64)>>, CheckError>
+) -> Vec<Vec<(f64, f64)>>
 where
     F: Fn(Point3) -> (f64, f64),
 {
-    Ok(face_hole_polygons(topo, face_id)?
+    holes_3d
         .iter()
         .map(|poly| build_uv_boundary(poly, project, u_period, v_period))
-        .collect())
+        .collect()
 }
 
 /// True when a hit lands in one of the face's holes, where the trimmed face
@@ -364,6 +366,38 @@ fn hit_in_hole_uv(
     holes
         .iter()
         .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, u_period, v_period))
+}
+
+/// Per-face trim data reused across rays and query points (PERF-Q01).
+///
+/// Built once from the borrowed topology: the sampled outer-wire polygon plus
+/// one sampled polygon per inner (hole) wire. Building it performs no surface
+/// queries, so the same value feeds the plane, analytic-UV, sphere-cap,
+/// 3D-polygon and NURBS crossing tests unchanged. The narrow-phase
+/// `*_with_trim` variants below take `Some(trim)` for the prepared path and
+/// `None` for the one-shot path, which builds exactly what the pre-refactor
+/// code built, at exactly the point it built it.
+#[derive(Debug, Clone)]
+pub struct FaceTrimData {
+    /// Sampled outer-wire polygon (`face_polygon`).
+    pub outer: Vec<Point3>,
+    /// One sampled polygon per inner wire (`face_hole_polygons`).
+    pub holes: Vec<Vec<Point3>>,
+}
+
+impl FaceTrimData {
+    /// Build the trim polygons for a face.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any topology entity referenced by the face is missing.
+    pub fn build(topo: &Topology, face_id: FaceId) -> Result<Self, CheckError> {
+        crate::perf::bump_classify_trim_build();
+        Ok(Self {
+            outer: face_polygon(topo, face_id)?,
+            holes: face_hole_polygons(topo, face_id)?,
+        })
+    }
 }
 
 /// True when a hit lands in one of the face's holes (3D polygon variant).
@@ -395,11 +429,36 @@ fn count_analytic_crossings<F>(
 where
     F: Fn(Point3) -> (f64, f64),
 {
+    count_analytic_crossings_with_trim(topo, face_id, None, hits, project, v_periodic)
+}
+
+/// [`count_analytic_crossings`] with caller-supplied trim data.
+///
+/// `trim` carries the prepared polygons; `None` builds them on demand exactly
+/// as the one-shot path always has (preserving its early-outs and errors).
+fn count_analytic_crossings_with_trim<F>(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    hits: &[Point3],
+    project: F,
+    v_periodic: bool,
+) -> Result<u32, CheckError>
+where
+    F: Fn(Point3) -> (f64, f64),
+{
     if hits.is_empty() {
         return Ok(0);
     }
 
-    let verts = face_polygon(topo, face_id)?;
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let verts = &trim_data.outer;
 
     // Detect degenerate boundary: a "full-surface" face whose wire has fewer
     // than 3 distinct vertices. Every positive-t root outside a hole counts.
@@ -414,8 +473,8 @@ where
     let u_period = Some(std::f64::consts::TAU);
     let v_period = v_periodic.then_some(std::f64::consts::TAU);
     let uv_boundary =
-        (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
-    let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
+        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period));
+    let holes = hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period);
 
     // A loop that wraps a period bounds no polygon: decide by orientation.
     // Only on the torus. Booleans bound cylinder and cone walls with doubled
@@ -507,16 +566,35 @@ fn count_sphere_cap_crossings(
     hits: &[Point3],
     sph: &remus_math::surfaces::SphericalSurface,
 ) -> Result<Option<u32>, CheckError> {
+    count_sphere_cap_crossings_with_trim(topo, face_id, None, hits, sph)
+}
+
+/// [`count_sphere_cap_crossings`] with caller-supplied trim data (`None`
+/// builds it on demand, exactly as the one-shot path always has).
+fn count_sphere_cap_crossings_with_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    hits: &[Point3],
+    sph: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
     if hits.is_empty() {
         return Ok(Some(0));
     }
 
-    let verts = face_polygon(topo, face_id)?;
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let verts = &trim_data.outer;
     if verts.len() < 3 {
         return Ok(None);
     }
 
-    let plane_normal = polygon_normal(&verts);
+    let plane_normal = polygon_normal(verts);
     let n_len = plane_normal.length();
     if n_len < 1e-12 {
         return Ok(None); // degenerate or self-intersecting boundary
@@ -572,14 +650,14 @@ fn count_sphere_cap_crossings(
     // +1 when the face lies on the +plane_normal side, -1 otherwise.
     let cap_sign = if inward_side > 0.0 { 1.0 } else { -1.0 };
 
-    let holes = face_hole_polygons(topo, face_id)?;
+    let holes = &trim_data.holes;
     let mut crossings = 0u32;
     for &hit in hits {
         // Exact: the cap is every point of the sphere on this side of the plane.
         if (hit - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
             continue;
         }
-        if hit_in_hole_3d(&holes, hit, plane_normal) {
+        if hit_in_hole_3d(holes, hit, plane_normal) {
             continue;
         }
         crossings += 1;
@@ -703,22 +781,40 @@ fn count_3d_polygon_crossings(
     face_id: FaceId,
     hits: &[Point3],
 ) -> Result<u32, CheckError> {
+    count_3d_polygon_crossings_with_trim(topo, face_id, None, hits)
+}
+
+/// [`count_3d_polygon_crossings`] with caller-supplied trim data (`None`
+/// builds it on demand, exactly as the one-shot path always has).
+fn count_3d_polygon_crossings_with_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    hits: &[Point3],
+) -> Result<u32, CheckError> {
     if hits.is_empty() {
         return Ok(0);
     }
 
-    let verts = face_polygon(topo, face_id)?;
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let verts = &trim_data.outer;
     if verts.len() < 3 {
         return Ok(0);
     }
-    let mut normal = polygon_normal(&verts);
+    let mut normal = polygon_normal(verts);
     // If the face is reversed, the surface normal is flipped.
     let face = topo.face(face_id)?;
     if face.is_reversed() {
         normal = -normal;
     }
     let ref_pt = verts[0];
-    let holes = face_hole_polygons(topo, face_id)?;
+    let holes = &trim_data.holes;
 
     let mut crossings = 0u32;
     for &hit in hits {
@@ -728,7 +824,7 @@ fn count_3d_polygon_crossings(
             continue;
         }
 
-        if point_in_polygon_3d(&hit, &verts, &normal) && !hit_in_hole_3d(&holes, hit, normal) {
+        if point_in_polygon_3d(&hit, verts, &normal) && !hit_in_hole_3d(holes, hit, normal) {
             crossings += 1;
         }
     }
@@ -753,17 +849,32 @@ pub fn count_face_ray_crossings(
     origin: Point3,
     direction: Vec3,
 ) -> Result<u32, CheckError> {
+    count_face_ray_crossings_with_trim(topo, face_id, None, origin, direction)
+}
+
+/// [`count_face_ray_crossings`] with caller-supplied trim data.
+///
+/// `trim` carries the prepared polygons; `None` builds them on demand exactly
+/// as the one-shot path always has (preserving its early-outs and errors).
+pub fn count_face_ray_crossings_with_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    origin: Point3,
+    direction: Vec3,
+) -> Result<u32, CheckError> {
     let face = topo.face(face_id)?;
     match face.surface() {
         FaceSurface::Plane { normal, d } => {
-            ray_plane_crossings(topo, face_id, origin, direction, *normal, *d)
+            ray_plane_crossings_with_trim(topo, face_id, trim, origin, direction, *normal, *d)
         }
         FaceSurface::Cylinder(cyl) => {
             let cyl = cyl.clone();
             let roots = ray_surface::ray_cylinder(origin, direction, &cyl);
-            count_analytic_crossings(
+            count_analytic_crossings_with_trim(
                 topo,
                 face_id,
+                trim,
                 &ray_hit_points(origin, direction, &roots),
                 |p| cyl.project_point(p),
                 false,
@@ -772,9 +883,10 @@ pub fn count_face_ray_crossings(
         FaceSurface::Cone(cone) => {
             let cone = cone.clone();
             let roots = ray_surface::ray_cone(origin, direction, &cone);
-            count_analytic_crossings(
+            count_analytic_crossings_with_trim(
                 topo,
                 face_id,
+                trim,
                 &ray_hit_points(origin, direction, &roots),
                 |p| cone.project_point(p),
                 false,
@@ -788,9 +900,10 @@ pub fn count_face_ray_crossings(
             // lune or a boolean-made spherical triangle, whose boundary is not.
             let sph = sph.clone();
             let roots = ray_surface::ray_sphere(origin, direction, &sph);
-            if let Some(count) = count_sphere_cap_crossings(
+            if let Some(count) = count_sphere_cap_crossings_with_trim(
                 topo,
                 face_id,
+                trim,
                 &ray_hit_points(origin, direction, &roots),
                 &sph,
             )? {
@@ -803,9 +916,10 @@ pub fn count_face_ray_crossings(
             )? {
                 Ok(count)
             } else {
-                count_3d_polygon_crossings(
+                count_3d_polygon_crossings_with_trim(
                     topo,
                     face_id,
+                    trim,
                     &ray_hit_points(origin, direction, &roots),
                 )
             }
@@ -813,24 +927,29 @@ pub fn count_face_ray_crossings(
         FaceSurface::Torus(tor) => {
             let tor = tor.clone();
             let roots = ray_surface::ray_torus(origin, direction, &tor);
-            count_analytic_crossings(
+            count_analytic_crossings_with_trim(
                 topo,
                 face_id,
+                trim,
                 &ray_hit_points(origin, direction, &roots),
                 |p| tor.project_point(p),
                 true,
             )
         }
         FaceSurface::Nurbs(surface) => {
-            ray_crossings_nurbs(topo, face_id, origin, direction, surface)
+            ray_crossings_nurbs_with_trim(topo, face_id, trim, origin, direction, surface)
         }
     }
 }
 
 /// Ray-plane intersection with point-in-polygon boundary test.
-fn ray_plane_crossings(
+///
+/// Takes caller-supplied trim data (`None` builds it on demand, exactly as
+/// the one-shot path always has).
+fn ray_plane_crossings_with_trim(
     topo: &Topology,
     face_id: FaceId,
+    trim: Option<&FaceTrimData>,
     origin: Point3,
     direction: Vec3,
     normal: Vec3,
@@ -842,27 +961,38 @@ fn ray_plane_crossings(
     };
 
     let hit = origin + direction * t;
-    let verts = face_polygon(topo, face_id)?;
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let verts = &trim_data.outer;
     if verts.len() < 3 {
         return Ok(0);
     }
 
-    if !point_in_polygon_3d(&hit, &verts, &normal) {
+    if !point_in_polygon_3d(&hit, verts, &normal) {
         return Ok(0);
     }
     // A ray through a hole (bolt hole, absorbed hub circle) passes through
     // empty space, not material — the face contributes no crossing there.
-    let holes = face_hole_polygons(topo, face_id)?;
-    if hit_in_hole_3d(&holes, hit, normal) {
+    let holes = &trim_data.holes;
+    if hit_in_hole_3d(holes, hit, normal) {
         return Ok(0);
     }
     Ok(1)
 }
 
 /// Count ray crossings for a NURBS face using ray-surface intersection.
-fn ray_crossings_nurbs(
+///
+/// Takes caller-supplied trim data (`None` builds it on demand, exactly as
+/// the one-shot path always has).
+fn ray_crossings_nurbs_with_trim(
     topo: &Topology,
     face_id: FaceId,
+    trim: Option<&FaceTrimData>,
     origin: Point3,
     direction: Vec3,
     surface: &remus_math::nurbs::surface::NurbsSurface,
@@ -872,20 +1002,37 @@ fn ray_crossings_nurbs(
         return Ok(0);
     }
 
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
     let points: Vec<_> = hits
         .iter()
         .map(|&(t, u, v)| (origin + direction * t, u, v))
         .collect();
-    count_nurbs_hits(topo, face_id, surface, &points)
+    count_nurbs_hits_with_trim(topo, face_id, Some(trim_data), surface, &points)
 }
 
-fn count_nurbs_hits(
+/// UV-trimmed NURBS hit counting with caller-supplied trim data (`None`
+/// builds it on demand, exactly as the one-shot path always has).
+fn count_nurbs_hits_with_trim(
     topo: &Topology,
     face_id: FaceId,
+    trim: Option<&FaceTrimData>,
     surface: &remus_math::nurbs::surface::NurbsSurface,
     hits: &[(Point3, f64, f64)],
 ) -> Result<u32, CheckError> {
-    let verts = face_polygon(topo, face_id)?;
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let verts = &trim_data.outer;
     let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
     // A full-surface face counts every forward hit that does not land in a
     // hole. `count_analytic_crossings` tests this two ways -- too few boundary
@@ -914,7 +1061,7 @@ fn count_nurbs_hits(
         .is_periodic_v()
         .then(|| surface.domain_v().1 - surface.domain_v().0);
     let uv_boundary =
-        (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period));
 
     // A boundary that encloses no UV area does not bound a patch -- it splits
     // the surface, and which half this face takes is carried by the WINDING of
@@ -932,10 +1079,10 @@ fn count_nurbs_hits(
         && uv_boundary_is_degenerate(boundary)
     {
         let points: Vec<_> = hits.iter().map(|(point, _, _)| *point).collect();
-        return count_3d_polygon_crossings(topo, face_id, &points);
+        return count_3d_polygon_crossings_with_trim(topo, face_id, Some(trim_data), &points);
     }
 
-    let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
+    let holes = hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period);
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in hits {
@@ -977,10 +1124,9 @@ pub fn surface_point_in_face(
     let hits = [point];
     let count = match topo.face(face_id)?.surface() {
         FaceSurface::Plane { normal, .. } => {
-            let outer = face_polygon(topo, face_id)?;
-            let holes = face_hole_polygons(topo, face_id)?;
-            return Ok(point_in_polygon_3d(&point, &outer, normal)
-                && !hit_in_hole_3d(&holes, point, *normal));
+            let trim = FaceTrimData::build(topo, face_id)?;
+            return Ok(point_in_polygon_3d(&point, &trim.outer, normal)
+                && !hit_in_hole_3d(&trim.holes, point, *normal));
         }
         FaceSurface::Cylinder(surface) => {
             count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), false)?
@@ -1004,7 +1150,7 @@ pub fn surface_point_in_face(
         }
         FaceSurface::Nurbs(surface) => {
             let (u, v) = surface.project_point(point);
-            count_nurbs_hits(topo, face_id, surface, &[(point, u, v)])?
+            count_nurbs_hits_with_trim(topo, face_id, None, surface, &[(point, u, v)])?
         }
     };
     Ok(count > 0)
