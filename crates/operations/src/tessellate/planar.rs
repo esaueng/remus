@@ -2302,3 +2302,238 @@ mod hole_seed_tests {
         assert_eq!(seeds.len(), wire_count / 2);
     }
 }
+
+/// B19 mutation oracles for the 2D helpers. Every oracle is computed here,
+/// independently of the code under test: shoelace area, per-triangle
+/// orientation, and a crossing-number point-in-polygon for the centroids.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod polygon_oracle_tests {
+    use remus_math::vec::Point2;
+
+    use super::{
+        ConstraintIndex, MAX_EAR_CLIP_POINT_TESTS, ear_clip_triangulate,
+        triangulation_covers_polygon,
+    };
+
+    fn shoelace_twice(points: &[Point2]) -> f64 {
+        let n = points.len();
+        (0..n)
+            .map(|i| {
+                let (a, b) = (points[i], points[(i + 1) % n]);
+                a.x() * b.y() - b.x() * a.y()
+            })
+            .sum()
+    }
+
+    fn tri_twice(a: Point2, b: Point2, c: Point2) -> f64 {
+        (b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())
+    }
+
+    fn inside(polygon: &[Point2], p: Point2) -> bool {
+        let n = polygon.len();
+        let mut odd = false;
+        for i in 0..n {
+            let (a, b) = (polygon[i], polygon[(i + 1) % n]);
+            if (a.y() > p.y()) != (b.y() > p.y()) {
+                let x = a.x() + (p.y() - a.y()) / (b.y() - a.y()) * (b.x() - a.x());
+                if p.x() < x {
+                    odd = !odd;
+                }
+            }
+        }
+        odd
+    }
+
+    /// A simple polygon's triangulation tiles it: n - 2 triangles, all wound
+    /// like the polygon, areas summing to its area, centroids inside it.
+    fn assert_tiles(polygon: &[Point2], indices: &[u32]) {
+        assert_eq!(indices.len(), 3 * (polygon.len() - 2));
+        let area = shoelace_twice(polygon);
+        let mut sum = 0.0;
+        for t in indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| polygon[t[k] as usize]);
+            let twice = tri_twice(a, b, c);
+            assert!(
+                twice * area > 0.0,
+                "triangle {t:?} is wound against the polygon"
+            );
+            sum += twice;
+            let centroid =
+                Point2::new((a.x() + b.x() + c.x()) / 3.0, (a.y() + b.y() + c.y()) / 3.0);
+            assert!(
+                inside(polygon, centroid),
+                "triangle {t:?} lies outside the polygon"
+            );
+        }
+        assert!(
+            (sum - area).abs() <= 1e-12 * area.abs(),
+            "triangles cover {sum}, polygon {area}"
+        );
+    }
+
+    /// An arrow whose first vertex is reflex, then a comb: both have ears
+    /// that contain other vertices, which the ear test must refuse.
+    fn concave_ccw_polygons() -> Vec<Vec<Point2>> {
+        let arrow = vec![
+            Point2::new(2.0, 1.0),
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(0.0, 4.0),
+            Point2::new(2.0, 3.0),
+            Point2::new(1.0, 2.0),
+        ];
+        let mut comb = vec![Point2::new(0.0, 0.0), Point2::new(9.0, 0.0)];
+        for k in (0..4).rev() {
+            let x = 2.0 * f64::from(k) + 1.0;
+            comb.extend([
+                Point2::new(x + 1.0, 5.0),
+                Point2::new(x + 0.5, 5.0),
+                Point2::new(x + 0.5, 1.0),
+                Point2::new(x, 1.0),
+            ]);
+        }
+        comb.push(Point2::new(0.0, 5.0));
+        vec![arrow, comb]
+    }
+
+    #[test]
+    fn ear_clipping_tiles_concave_polygons_in_both_windings() {
+        for ccw in concave_ccw_polygons() {
+            assert!(shoelace_twice(&ccw) > 0.0);
+            let indices = ear_clip_triangulate(&ccw).expect("simple CCW polygon must clip");
+            assert_tiles(&ccw, &indices);
+
+            let cw: Vec<Point2> = ccw.iter().rev().copied().collect();
+            let indices = ear_clip_triangulate(&cw).expect("simple CW polygon must clip");
+            assert_tiles(&cw, &indices);
+        }
+    }
+
+    /// Past the documented point-test budget the clipper hands back to the
+    /// constant-work fallback instead of running on: a convex n-gon costs
+    /// about n²/2 containment tests.
+    #[test]
+    fn ear_clipping_declines_past_its_work_budget() {
+        let n = 4_600_usize;
+        assert!(n * n / 2 > MAX_EAR_CLIP_POINT_TESTS);
+        #[allow(clippy::cast_precision_loss)]
+        let polygon: Vec<Point2> = (0..n)
+            .map(|i| {
+                let t = std::f64::consts::TAU * i as f64 / n as f64;
+                Point2::new(t.cos(), t.sin())
+            })
+            .collect();
+        assert!(ear_clip_triangulate(&polygon).is_none());
+        // Well inside the budget the same shape clips.
+        let small: Vec<Point2> = polygon.iter().step_by(100).copied().collect();
+        assert_tiles(&small, &ear_clip_triangulate(&small).unwrap());
+    }
+
+    #[test]
+    fn coverage_check_rejects_malformed_and_partial_triangulations() {
+        let square = [
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(1.0, 1.0),
+            Point2::new(0.0, 1.0),
+        ];
+        assert!(triangulation_covers_polygon(&square, &[0, 1, 2, 0, 2, 3]));
+        // Half the square: consistent winding, half the area.
+        assert!(!triangulation_covers_polygon(&square, &[0, 1, 2]));
+        // An index past the polygon, in a well-formed triple.
+        assert!(!triangulation_covers_polygon(&square, &[0, 1, 2, 0, 2, 4]));
+        // A dangling index.
+        assert!(!triangulation_covers_polygon(
+            &square,
+            &[0, 1, 2, 0, 2, 3, 1]
+        ));
+    }
+
+    /// A polygon that crosses itself has no tiling; the clipper must say so
+    /// rather than hand back triangles that overlap or leave its lobes.
+    #[test]
+    fn ear_clipping_refuses_a_self_crossing_polygon() {
+        // A bow tie with unequal lobes, so its signed area is not zero.
+        let bow = [
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 3.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(0.0, 2.0),
+        ];
+        if let Some(indices) = ear_clip_triangulate(&bow) {
+            let area = shoelace_twice(&bow);
+            let sum: f64 = indices
+                .chunks_exact(3)
+                .map(|t| {
+                    tri_twice(bow[t[0] as usize], bow[t[1] as usize], bow[t[2] as usize]).abs()
+                })
+                .sum();
+            panic!(
+                "self-crossing polygon clipped: |triangles| {sum} vs |shoelace| {}",
+                area.abs()
+            );
+        }
+    }
+
+    /// Points exactly one tolerance from a segment, on each side, and on a
+    /// zero-length segment, are on the constraint (`<=` in the distance
+    /// test). Offsets are dyadic so every coordinate is exact.
+    #[test]
+    fn constraint_index_counts_points_at_exactly_the_tolerance() {
+        let tol = 0.25;
+        let vertical = (Point2::new(1.0, 2.0), Point2::new(1.0, 3.0));
+        let horizontal = (Point2::new(4.0, 6.0), Point2::new(5.0, 6.0));
+        let degenerate = (Point2::new(7.0, 5.0), Point2::new(7.0, 5.0));
+        let index =
+            ConstraintIndex::new(vec![vertical, horizontal, degenerate], (2.0, 6.0), tol).unwrap();
+        for p in [
+            Point2::new(0.75, 2.5),
+            Point2::new(1.25, 2.5),
+            Point2::new(4.5, 5.75),
+            Point2::new(4.5, 6.25),
+            Point2::new(7.0, 5.0),
+            Point2::new(7.25, 5.0),
+        ] {
+            assert!(index.contains(p), "{p:?} is within {tol} of a constraint");
+        }
+        for p in [
+            Point2::new(0.5, 2.5),
+            Point2::new(4.5, 5.5),
+            Point2::new(7.5, 5.0),
+        ] {
+            assert!(
+                !index.contains(p),
+                "{p:?} is farther than {tol} from every constraint"
+            );
+        }
+    }
+
+    /// Bucketing is an acceleration only: the answer must not change when
+    /// the whole configuration moves in `v`, including a point on the top
+    /// rim of the range, which falls exactly on the last bucket's far edge.
+    #[test]
+    fn constraint_index_answer_is_translation_invariant_in_v() {
+        for shift in [0.0, 10.0, -37.5] {
+            let segments: Vec<_> = (0..64)
+                .map(|k| {
+                    let v = f64::from(k) + shift;
+                    (Point2::new(0.0, v), Point2::new(1.0, v))
+                })
+                .collect();
+            let index = ConstraintIndex::new(segments, (shift, 63.0 + shift), 1e-9).unwrap();
+            for k in [0, 17, 40, 63] {
+                let v = f64::from(k) + shift;
+                assert!(
+                    index.contains(Point2::new(0.5, v)),
+                    "shift {shift}: row {k}"
+                );
+                assert!(
+                    !index.contains(Point2::new(0.5, v + 0.5)),
+                    "shift {shift}: gap above {k}"
+                );
+            }
+        }
+    }
+}

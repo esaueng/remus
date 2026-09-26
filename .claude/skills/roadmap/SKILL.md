@@ -156,7 +156,8 @@ B64/B65 lidded box–sphere witnesses
 collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`),
 the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
 two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
-`closed_rim_oracles`), all failing on `main`.
+`closed_rim_oracles`), and the B69, B70 and B71 tessellation witnesses
+(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`.
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -275,6 +276,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **A position-only `FaceSpec` mints `Line` edges, so a curved wall bounded by one carries chords that still validate:** the variable fillet's exact wall measured 824.4 against 826.2 because its end edges were chords, not because the fit was loose — sample the wall's boundary edges against the wall before calling a volume gap fit tolerance (B61, `crates/operations/tests/regress_variable_fillet_chord_end_trim.rs`).
 - **A seam that stops a blend chain walk is either a genuine surface transition (cross it) or a same-surface split (stop):** check outward normals pairwise plus an actual surface change before refusing; the equal-radius corner degenerates to a sphere with a singular Jacobian and needs the closed form (sequential fillet, `crates/blend/src/g1_chain.rs`, PR #496).
 - **Pin reusable-workflow callers only to main-reachable commits, never pre-squash branch SHAs:** a deleted source branch turns every PR's Classify Changes job into `fatal: path ... exists on disk, but not in ...` (`fuzz.yml` fleet-fuzz pin, PR #499, still OPEN).
+- **A loose mesh oracle hides load-bearing densification:** at twice the deflection the curved-trim rows, NURBS-rail rows and torus rim densify all looked optional, and a 2 % volume band hid a bore wall sagging 397 × the deflection; hold each wall to the deflection its mesher promises and a closed mesh's volume to a closed form within the chord slab (B19 tessellate tranche, B69/B71, `tessellate/tests/mutation_oracles.rs`).
 
 ## Subsystem trap notes
 
