@@ -566,6 +566,29 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Distance-angle chamfer on the v2 blend engine, as typed data.
+     *
+     * Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
+     * unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {number} angle
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    chamferDistanceAngleDetailed(solid, edge_handles, distance, angle, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_chamferDistanceAngleDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, angle, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Distance-angle chamfer with versioned face-evolution tracking data.
      *
      * Runs the same engine routing as
@@ -646,6 +669,28 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Two-distance chamfer on the v2 blend engine, as typed data.
+     *
+     * Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} d1
+     * @param {number} d2
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    chamferV2Detailed(solid, edge_handles, d1, d2, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_chamferV2Detailed(this.__wbg_ptr, solid, ptr0, len0, d1, d2, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Chamfer edges and return versioned face-evolution tracking data.
@@ -1995,6 +2040,28 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Fillet edges on the v2 walking engine alone and return exact,
+     * disclosed-approximate, or refused results as typed data.
+     *
+     * Additive twin of [`filletV2`](Self::fillet_v2), unchanged. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletV2Detailed(solid, edge_handles, radius, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_filletV2Detailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Apply variable-radius fillets to edges.
      *
      * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
@@ -2021,6 +2088,29 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Variable-radius fillet, as typed data.
+     *
+     * Additive twin of [`filletVariable`](Self::fillet_variable), unchanged:
+     * `json` is the same spec array. That engine carries no engine tag, so
+     * success details hold `quality` (and `approximateFaces`) but no
+     * `engine`; `exactOnly` follows
+     * [`filletDetailed`](Self::fillet_detailed). Malformed JSON is an
+     * `invalid_argument` refusal, not a thrown error.
+     * @param {number} solid
+     * @param {string} json
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletVariableDetailed(solid, json, exact_only) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_filletVariableDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Apply a constant-radius fillet and return face-evolution tracking data.
@@ -2458,7 +2548,7 @@ class BrepKernel {
      * Create a new typed GCS sketch. Returns a sketch handle.
      *
      * This is the successor to the legacy `sketch*` API: the constraint
-     * system persists across calls, entities are typed handles, all 24
+     * system persists across calls, entities are typed handles, all 26
      * constraint types are available, and constraints can be removed.
      * @returns {number}
      */
@@ -4578,15 +4668,40 @@ class BrepKernel {
      * Integration runs on the exact face geometry (analytic and NURBS
      * surfaces, no tessellation), so there is no deflection parameter.
      *
+     * # Numerical controls (optional)
+     *
+     * Omitting all three reproduces the historical call exactly
+     * (`gaussOrder = 8`, `adaptiveEps = 1e-6`, `maxDepth = 8`).
+     *
+     * * `adaptiveEps` — positive finite relative tolerance of the
+     *   coarse-versus-refined quadrature estimator, applied to every area,
+     *   volume and moment component per initial patch.
+     * * `maxDepth` — integer `0..=32`: refinement levels beyond the initial
+     *   patches. Larger values are rejected, not clamped.
+     * * `gaussOrder` — integer `1..=20`: the Gauss rule per quadrature cell.
+     *
+     * Untrimmed analytic patches always refine. Trimmed curved faces, NURBS
+     * faces and torus tube bands keep the historical fixed rule while
+     * `adaptiveEps` and `maxDepth` are both at their defaults and refine with
+     * any other pair; passing the default values explicitly is the same as
+     * omitting them. Refinement converges the quadrature over the face's
+     * resolved domain; it does not reduce the chord error of a sampled trim
+     * outline. Exact and sampled planar faces integrate in closed form.
+     *
      * # Errors
      *
-     * Returns an error if the solid handle is invalid, integration fails,
-     * or the solid has zero volume.
+     * Returns an error if the solid handle is invalid, a control is out of
+     * range, the requested tolerance cannot be met within `maxDepth` or the
+     * per-face work budget (never an unconverged result), integration
+     * fails, or the solid has zero volume.
      * @param {number} solid
+     * @param {number | null} [adaptive_eps]
+     * @param {number | null} [max_depth]
+     * @param {number | null} [gauss_order]
      * @returns {any}
      */
-    massProperties(solid) {
-        const ret = wasm.brepkernel_massProperties(this.__wbg_ptr, solid);
+    massProperties(solid, adaptive_eps, max_depth, gauss_order) {
+        const ret = wasm.brepkernel_massProperties(this.__wbg_ptr, solid, !isLikeNone(adaptive_eps), isLikeNone(adaptive_eps) ? 0 : adaptive_eps, !isLikeNone(max_depth), isLikeNone(max_depth) ? 0 : max_depth, !isLikeNone(gauss_order), isLikeNone(gauss_order) ? 0 : gauss_order);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
