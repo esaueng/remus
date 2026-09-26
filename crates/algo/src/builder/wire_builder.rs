@@ -342,16 +342,15 @@ pub fn build_wire_loops_dcel(
     // Successor: the outgoing half CLOCKWISE-next from twin(h) in the
     // circular order at h's end node (twin(h) starts there). Clockwise-next
     // in an angle-ascending list is the PREVIOUS entry, wrapping.
-    let succ: Vec<usize> = (0..n_all)
-        .map(|i| {
-            let t = twin_all[i];
-            let node = key_of(halves[t].start_uv);
-            let list = &node_out[&node];
-            let pos = list.iter().position(|&(_, j)| j == t).unwrap_or(0);
-            let prev = (pos + list.len() - 1) % list.len();
-            list[prev].1
-        })
+    let rotations: Vec<Vec<usize>> = node_out
+        .values()
+        .map(|list| list.iter().map(|&(_, h)| h).collect())
         .collect();
+    let Ok(Some(succ)) = super::rotation_system::successors(&rotations, &twin_all, &mut || {
+        Ok::<(), std::convert::Infallible>(())
+    }) else {
+        return Vec::new();
+    };
 
     // Orbits of the successor bijection = faces of the subdivision. The
     // single unbounded (outer) face is the orbit with the most NEGATIVE
