@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790392653607,
+  "lastUpdate": 1790394161108,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -66895,6 +66895,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 83986,
             "range": "± 1330",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bc19670650b0ac43864a6ec2251bfde2d61c3bdd",
+          "message": "perf(heal): index vertex-merge candidate discovery (PERF-H01) (#689)\n\n* perf(heal): index vertex-merge candidate discovery with a conservative grid\n\nBoth native healing (fix/solid.rs) and the operations wrapper scanned\nall vertex pairs for coincident merges, scaling quadratically on sparse\nmodels (9k sparse vertices: ~300ms, ~99% pair checks).\n\nAdd heal::fix::vertex_merge::plan_coincident_merges: a uniform grid\n(cell = tolerance, 27-neighborhood, streaming k-way scan with early\nexit) that generates a conservative superset of eligible pairs and\nre-checks each with the exact predicate. Predicate (dist^2 < tol^2,\nstrict), tolerance policy, canonical representative, deterministic\norder, and nontransitive semantics are bit-identical to the legacy\nscan; degenerate inputs fall back to the exact all-pairs loop.\n\nWire both call sites to the shared planner; ReShape/edge-update\napplication, disclosure counts, and collection scope are unchanged.\n\nEquivalence: 13 unit tests (cell boundaries, negative/large coords,\nmixed stored tolerances, coincident, nontransitive chain, non-finite\nand degenerate fallbacks, determinism, randomized fixtures vs a\ntest-only all-pairs reference) plus 4 soup-level tests comparing\nmerged counts, edge endpoints, survivor positions, and face\nattributes old-vs-new.\n\n* docs(roadmap): mark PERF-H01 done with measured evidence (#689)\n\n* docs(agents): add the heal vertex-merge index to the module map\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XmUrsvhcEH4mLLT5UfB162\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T20:34:31-07:00",
+          "tree_id": "4589397d41c94994f940ce517ec57371647906d3",
+          "url": "https://github.com/esaueng/remus/commit/bc19670650b0ac43864a6ec2251bfde2d61c3bdd"
+        },
+        "date": 1790394159352,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 764927,
+            "range": "± 12666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 861562,
+            "range": "± 2353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 16902,
+            "range": "± 78",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7216815,
+            "range": "± 119796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7256269,
+            "range": "± 131638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6939346,
+            "range": "± 25363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 648220,
+            "range": "± 5911",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 10404593,
+            "range": "± 270028",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 18942006,
+            "range": "± 469090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 131,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 103,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 434,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 125,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 188,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 174,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 308,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 586,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2032,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 320955,
+            "range": "± 385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 5582412,
+            "range": "± 81873",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 95743,
+            "range": "± 161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 299949,
+            "range": "± 2496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 39353,
+            "range": "± 12406",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 606121,
+            "range": "± 54612",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7040448,
+            "range": "± 149593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 450745,
+            "range": "± 1520",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 649990,
+            "range": "± 17009",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 57029,
+            "range": "± 233",
             "unit": "ns/iter"
           }
         ]
