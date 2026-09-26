@@ -570,14 +570,14 @@ fn stepped_rim_wall_stays_within_the_chord_bound() {
     }
 }
 
-/// Ready-repro (B68): with the densification capped to its budget, the
+/// Ready-repro (B69): with the densification capped to its budget, the
 /// tilted-slab wall still sags 2.2 × the deflection at 0.002 and 4.8 × at
 /// 0.0015, next to the slot's straight end generator (x = 2), where the
 /// capped rows leave the grid columns between the line and the trim unused
 /// and the CDT fans the line's endpoints to a column ~0.5 away. Volume is
 /// already within 1e-4 there. Exit: this passes.
 #[test]
-#[ignore = "open: B68 — budget-capped trim rows still sag past 2× deflection beside a line trim"]
+#[ignore = "open: B69 — budget-capped trim rows still sag past 2× deflection beside a line trim"]
 fn ellipse_trimmed_wall_stays_within_the_chord_bound_at_capped_rows() {
     let exact = tilted_slab_cut_volume();
     let mut topo = Topology::new();
@@ -589,12 +589,12 @@ fn ellipse_trimmed_wall_stays_within_the_chord_bound_at_capped_rows() {
     }
 }
 
-/// Ready-repro (B69): the torus notch with the box turned 25° or 30° about x
+/// Ready-repro (B70): the torus notch with the box turned 25° or 30° about x
 /// (its corners now cut the tube too) is an exact, valid B-Rep whose mesh
 /// is closed at 0.1 and 0.02 but opens at 0.005 (5 and 15 boundary edges),
 /// while its volume converges on the quadrature value. Exit: this passes.
 #[test]
-#[ignore = "open: B69 — steeply turned torus notch meshes open at fine deflection"]
+#[ignore = "open: B70 — steeply turned torus notch meshes open at fine deflection"]
 fn steep_torus_notch_meshes_closed_at_fine_deflection() {
     for degrees in [25.0_f64, 30.0] {
         let tilt = degrees.to_radians();
@@ -609,7 +609,7 @@ fn steep_torus_notch_meshes_closed_at_fine_deflection() {
     }
 }
 
-/// Ready-repro (B70): the cross-drilled shaft of
+/// Ready-repro (B71): the cross-drilled shaft of
 /// `cross_drilled_display_mesh_is_closed_and_matches_brep_volume` (shaft
 /// r = 3, h = 30, bored along x at mid-height). The bore wall is bounded by
 /// its two marched saddle curves, which touch the wall's v extremes at only
@@ -622,7 +622,7 @@ fn steep_torus_notch_meshes_closed_at_fine_deflection() {
 /// intersection with the shaft, ∫ 4·√(9 − y²)·√(b² − y²) dy over |y| ≤ b.
 /// Exit: this passes.
 #[test]
-#[ignore = "open: B70 — a cross-drilled bore wall is meshed without its trim densification"]
+#[ignore = "open: B71 — a cross-drilled bore wall is meshed without its trim densification"]
 fn cross_drilled_bore_wall_stays_within_the_chord_bound() {
     use std::f64::consts::PI;
     for b in [2.0_f64, 1.0] {
