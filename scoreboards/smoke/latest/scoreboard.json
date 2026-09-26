@@ -30,6 +30,6 @@
     "invalid_topology": 3,
     "tolerance_violation": 1
   },
-  "boolean_exact": 12,
-  "boolean_approximate": 29
+  "boolean_exact": 13,
+  "boolean_approximate": 28
 }
