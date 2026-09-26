@@ -13,6 +13,7 @@ pub mod shell;
 pub mod small_face;
 pub mod solid;
 pub mod split_vertex;
+pub mod vertex_merge;
 pub mod wire;
 pub mod wireframe;
 
