@@ -4,6 +4,9 @@
 //! them to [`OrientedPCurveEdge`]s in the face's parameter space, calls
 //! the wire builder, and produces [`SplitSubFace`]s.
 
+// Isolated qualification core; production dispatch migrates in O2.3c/d.
+#[allow(dead_code)]
+mod arrangement;
 #[cfg(test)]
 mod closed_form_split_tests;
 mod containment;
