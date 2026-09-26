@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790375680284,
+  "lastUpdate": 1790386774815,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -65491,6 +65491,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 78302,
             "range": "± 195",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "578880805e36db31b9d47458d56ea170ecec4b0d",
+          "message": "test(operations): triage the B19 measure/defeature/evolution survivor tranche (#680)\n\n* test(evolution): pin resolved_outputs to the result face set (B19)\n\n`EvolutionMap::resolved_outputs` had no caller, so the 2026-09-25\nmutation run's three body replacements (empty set, {0}, {1}) all\nsurvived. Every lineage check now requires it to name exactly the\nresult faces, and a direct test pins that shared outputs appear once\nand unresolved-only outputs are excluded.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01N7ijnT3zQ1MeiCiLa54fhd\n\n* test(defeature): cover the extend-heal guards the mutation run missed (B19)\n\nFour `delete !` mutants in `heal_by_extending` survived the 2026-09-25\nmutation run: nothing exercised a kept face that meets the patch only at\na vertex, a curved face away from the wound, or the path where the\nextended face also drops a fully wound hole. New cases, each checked\nagainst a closed-form volume through both `solid_volume` and the Gauss\nintegral:\n\n- chamfer removal on a bored plate keeps the unrelated bore;\n- an L-notch whose split top has a face touching the notch at one\n  vertex heals to the full block;\n- a slanted hole into a removed corner face is filled while a straight\n  hole on the extended top is rebuilt on its plane;\n- the same heal refuses a round kept hole by name, before any rebuild,\n  and rolls back.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01N7ijnT3zQ1MeiCiLa54fhd\n\n* test(measure): pin which side of a latitude ring a sphere cap takes (B19)\n\nFifteen `sphere_wire_u_winding` mutants survived the 2026-09-25 mutation\nrun. A sphere centred at the origin gives a cap and its complement the\nsame volume term, a whole sphere's hemispheres swap together, and the\ncentroid fallback answers right off the equator, so no existing body\ncould tell a reversed or zero winding from the real one.\n\nThe new file measures, off the origin along the sphere axis and against\nclosed forms plus the Gauss integral: single dome and dimple caps with\nthe sphere axis up and flipped; a whole sphere lump beside a bored\nplate; and a hand-assembled dome whose only rim is one closed circle on\nthe sphere's equator, in both rim directions and at seam angles that\nput the closing sample step in the window a wrong closing term would\nexploit. Exact booleans do not produce that equatorial rim (a box face\nthrough the centre is refused as ExactOnlyUnattainable).\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01N7ijnT3zQ1MeiCiLa54fhd\n\n* docs(roadmap): record the B19 measure/defeature/evolution survivor tranche\n\nAdds the 2026-09-25 tranche to the B19 row: 36 survivors from run\n36075171651 in measure/volume.rs, defeature.rs and evolution.rs, with 4\nalready caught on main, 18 killed by new tests and 14 equivalent, and the\nbefore/after counts from full-oracle re-runs. Files B63 for a box-cylinder\ninclusion-exclusion failure the fast B26 proptest found in passing.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01N7ijnT3zQ1MeiCiLa54fhd\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T18:33:00-07:00",
+          "tree_id": "302b4db8a724d6af1e87112262dac424927a16d4",
+          "url": "https://github.com/esaueng/remus/commit/578880805e36db31b9d47458d56ea170ecec4b0d"
+        },
+        "date": 1790386773183,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1021976,
+            "range": "± 774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1101816,
+            "range": "± 891",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22239,
+            "range": "± 148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 9631508,
+            "range": "± 7422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 9621054,
+            "range": "± 31250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 9264312,
+            "range": "± 7573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 916469,
+            "range": "± 867",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 14780901,
+            "range": "± 11613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26167345,
+            "range": "± 355004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 82,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 172,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 128,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 629,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 134,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 262,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 178,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 423,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 633,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2636,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 52,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 52,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 431934,
+            "range": "± 394",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 7963451,
+            "range": "± 10471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 126260,
+            "range": "± 152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 409993,
+            "range": "± 1327",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 48936,
+            "range": "± 234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 755199,
+            "range": "± 2248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8902189,
+            "range": "± 70882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 689304,
+            "range": "± 1351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 951676,
+            "range": "± 1415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 81301,
+            "range": "± 502",
             "unit": "ns/iter"
           }
         ]
