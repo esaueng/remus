@@ -454,3 +454,256 @@ fn the_input_solid_survives_a_successful_heal() {
         "the pocketed input must keep its own volume"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Extend-heal guards (B19 mutation survivors of 2026-09-25)
+// ---------------------------------------------------------------------------
+
+/// A planar face from its corner points, wound counter-clockwise about its
+/// outward normal.
+fn planar(topo: &mut Topology, corners: &[(f64, f64, f64)]) -> FaceId {
+    let points: Vec<Point3> = corners
+        .iter()
+        .map(|&(x, y, z)| Point3::new(x, y, z))
+        .collect();
+    remus_topology::builder::make_planar_face(topo, &points, 1e-7).unwrap()
+}
+
+/// The healed solid's volume through the Gauss route too, not only the
+/// `solid_volume` reading `assert_healed` takes.
+fn assert_gauss_volume(topo: &Topology, solid: SolidId, expected: f64) {
+    let gauss = remus_operations::measure::mass_properties(topo, solid)
+        .unwrap()
+        .mass;
+    assert!(
+        (gauss - expected).abs() <= 1e-9 * expected,
+        "Gauss volume {gauss} differs from {expected}"
+    );
+}
+
+/// Removing a chamfer extends the faces it touches; an unrelated bore
+/// elsewhere on the body is a kept face that touches no wound edge and must
+/// travel verbatim. Its circular rims are not "curved edges that survive the
+/// heal" of a wound-adjacent face, so they must not trigger that refusal.
+#[test]
+fn chamfer_removal_keeps_an_unrelated_bore() {
+    let mut topo = Topology::new();
+    let plate = make_box(&mut topo, 30.0, 30.0, 10.0).unwrap();
+    let bore = make_cylinder(&mut topo, 3.0, 30.0).unwrap();
+    translate(&mut topo, bore, 15.0, 15.0, -10.0);
+    let bored = boolean(&mut topo, BooleanOp::Cut, plate, bore).unwrap();
+    let top_front = remus_topology::explorer::solid_edges(&topo, bored)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let edge = topo.edge(*e).unwrap();
+            [edge.start(), edge.end()].iter().all(|v| {
+                let p = topo.vertex(*v).unwrap().point();
+                (p.z() - 10.0).abs() < 1e-9 && p.y().abs() < 1e-9
+            })
+        })
+        .unwrap();
+    let chamfered =
+        remus_operations::chamfer::chamfer(&mut topo, bored, &[top_front], 2.0).unwrap();
+    let bevel = oblique_faces(&topo, chamfered);
+    assert_eq!(bevel.len(), 1, "one edge chamfered => one bevel face");
+
+    let healed = defeature(&mut topo, chamfered, &bevel).unwrap();
+    let expected = 30.0 * 30.0 * 10.0 - std::f64::consts::PI * 9.0 * 10.0;
+    assert_healed(&topo, healed, expected);
+    assert_gauss_volume(&topo, healed, expected);
+    let walls = faces_of(&topo, healed)
+        .into_iter()
+        .filter(|f| !topo.face(*f).unwrap().surface().is_planar())
+        .count();
+    assert_eq!(walls, 1, "the bore wall survives as its cylindrical face");
+}
+
+/// A 20×20×10 block with a 10×10×5 notch out of its (20, 20, 10) corner,
+/// whose top is three coplanar faces: `[0,10]²` touches the notch only at
+/// its corner (10, 10, 10), while the other two share an edge with a notch
+/// wall.
+fn split_top_notched_block(topo: &mut Topology) -> SolidId {
+    #[rustfmt::skip]
+    let faces = [
+        planar(topo, &[(0., 0., 0.), (0., 20., 0.), (20., 20., 0.), (20., 0., 0.)]),
+        planar(topo, &[(0., 0., 10.), (10., 0., 10.), (10., 10., 10.), (0., 10., 10.)]),
+        planar(topo, &[(10., 0., 10.), (20., 0., 10.), (20., 10., 10.), (10., 10., 10.)]),
+        planar(topo, &[(0., 10., 10.), (10., 10., 10.), (10., 20., 10.), (0., 20., 10.)]),
+        planar(topo, &[(10., 10., 5.), (20., 10., 5.), (20., 20., 5.), (10., 20., 5.)]),
+        planar(topo, &[(10., 10., 5.), (10., 10., 10.), (20., 10., 10.), (20., 10., 5.)]),
+        planar(topo, &[(10., 10., 5.), (10., 20., 5.), (10., 20., 10.), (10., 10., 10.)]),
+        planar(
+            topo,
+            &[(0., 0., 0.), (20., 0., 0.), (20., 0., 10.), (10., 0., 10.), (0., 0., 10.)],
+        ),
+        planar(
+            topo,
+            &[
+                (0., 20., 0.),
+                (0., 20., 10.),
+                (10., 20., 10.),
+                (10., 20., 5.),
+                (20., 20., 5.),
+                (20., 20., 0.),
+            ],
+        ),
+        planar(
+            topo,
+            &[(0., 0., 0.), (0., 0., 10.), (0., 10., 10.), (0., 20., 10.), (0., 20., 0.)],
+        ),
+        planar(
+            topo,
+            &[
+                (20., 0., 0.),
+                (20., 20., 0.),
+                (20., 20., 5.),
+                (20., 10., 5.),
+                (20., 10., 10.),
+                (20., 0., 10.),
+            ],
+        ),
+    ];
+    remus_operations::sew::sew_faces(topo, &faces, 1e-6).unwrap()
+}
+
+/// A kept face that meets the removed patch at a single vertex is still
+/// wound-adjacent: that vertex moves to the recovered corner (20, 20, 10),
+/// so the face must be rebuilt around it, not carried verbatim with the
+/// vertex left behind.
+#[test]
+fn notch_removal_moves_a_face_that_touches_it_only_at_a_vertex() {
+    let mut topo = Topology::new();
+    let block = split_top_notched_block(&mut topo);
+    assert!(validate_solid(&topo, block).unwrap().is_valid());
+    assert_healed(&topo, block, 4000.0 - 500.0);
+
+    let notch: Vec<FaceId> = faces_of(&topo, block)
+        .into_iter()
+        .filter(|f| {
+            let corners = face_polygon(&topo, *f).unwrap();
+            corners
+                .iter()
+                .all(|p| p.x() > 10.0 - 1e-9 && p.y() > 10.0 - 1e-9 && p.z() > 5.0 - 1e-9)
+                && corners.iter().any(|p| p.z() < 10.0 - 1e-9)
+        })
+        .collect();
+    assert_eq!(notch.len(), 3, "two notch walls and the notch floor");
+    let vertex_only = faces_of(&topo, block)
+        .into_iter()
+        .filter(|f| {
+            let c = face_centroid(&topo, *f);
+            (c.x() - 5.0).abs() < 1e-9 && (c.y() - 5.0).abs() < 1e-9 && (c.z() - 10.0).abs() < 1e-9
+        })
+        .count();
+    assert_eq!(vertex_only, 1, "premise: the [0,10]² top face exists");
+
+    let healed = defeature(&mut topo, block, &notch).unwrap();
+    assert_healed(&topo, healed, 4000.0);
+    assert_gauss_volume(&topo, healed, 4000.0);
+}
+
+/// A 20×20×10 block with the (20, 20, 10) corner cut off by the plane
+/// x + y + z = 42 (an 8-unit right tetrahedron), and a unit square hole
+/// drilled along (1, 1, −1) from the top face into that corner face.
+///
+/// Removing the corner face and the four hole walls wounds the top face's
+/// hole rim in its entirety (the rim is dropped) and its outer boundary
+/// (the top is extended back to the corner), so the heal runs the extend
+/// path on a face that also loses an inner wire.
+fn corner_cut_block_with_slanted_hole(topo: &mut Topology) -> SolidId {
+    #[rustfmt::skip]
+    let faces = [
+        planar(topo, &[(0., 0., 0.), (0., 20., 0.), (20., 20., 0.), (20., 0., 0.)]),
+        planar(
+            topo,
+            &[(0., 0., 10.), (20., 0., 10.), (20., 12., 10.), (12., 20., 10.), (0., 20., 10.)],
+        ),
+        planar(topo, &[(12., 20., 10.), (20., 12., 10.), (20., 20., 2.)]),
+        planar(topo, &[(0., 0., 0.), (20., 0., 0.), (20., 0., 10.), (0., 0., 10.)]),
+        planar(
+            topo,
+            &[(0., 20., 0.), (0., 20., 10.), (12., 20., 10.), (20., 20., 2.), (20., 20., 0.)],
+        ),
+        planar(topo, &[(0., 0., 0.), (0., 0., 10.), (0., 20., 10.), (0., 20., 0.)]),
+        planar(
+            topo,
+            &[(20., 0., 0.), (20., 20., 0.), (20., 20., 2.), (20., 12., 10.), (20., 0., 10.)],
+        ),
+    ];
+    let block = remus_operations::sew::sew_faces(topo, &faces, 1e-6).unwrap();
+    assert_healed(topo, block, 4000.0 - 8.0_f64.powi(3) / 6.0);
+
+    // A 1×1 prism whose axis runs from (14, 14, 10) on the top to
+    // (18, 18, 6) on the corner face.
+    let tool = make_box(topo, 1.0, 1.0, 20.0).unwrap();
+    let tilt = std::f64::consts::PI - (1.0 / 3.0_f64.sqrt()).acos();
+    let place = Mat4::translation(16.0, 16.0, 8.0)
+        * Mat4::rotation_z(std::f64::consts::FRAC_PI_4)
+        * Mat4::rotation_y(tilt)
+        * Mat4::translation(-0.5, -0.5, -10.0);
+    remus_operations::transform::transform_solid(topo, tool, &place).unwrap();
+    boolean(topo, BooleanOp::Cut, block, tool).unwrap()
+}
+
+/// The corner face and the slanted hole's four walls.
+fn corner_patch(topo: &Topology, solid: SolidId) -> Vec<FaceId> {
+    let patch: Vec<FaceId> = oblique_faces(topo, solid)
+        .into_iter()
+        .filter(|f| {
+            face_polygon(topo, *f)
+                .unwrap()
+                .iter()
+                .all(|p| p.x() > 11.0 && p.y() > 11.0)
+        })
+        .collect();
+    assert_eq!(patch.len(), 5, "the corner face and four hole walls");
+    patch
+}
+
+/// The dropped rim is healed away and a straight-edged hole the top face
+/// keeps is rebuilt on the top plane: the result is the full block less
+/// that hole.
+#[test]
+fn corner_patch_removal_keeps_a_straight_hole_on_the_extended_face() {
+    let mut topo = Topology::new();
+    let drilled = corner_cut_block_with_slanted_hole(&mut topo);
+    let square = make_box(&mut topo, 2.0, 2.0, 30.0).unwrap();
+    translate(&mut topo, square, 4.0, 4.0, -10.0);
+    let body = boolean(&mut topo, BooleanOp::Cut, drilled, square).unwrap();
+    let patch = corner_patch(&topo, body);
+
+    let healed = defeature(&mut topo, body, &patch).unwrap();
+    let expected = 4000.0 - 2.0 * 2.0 * 10.0;
+    assert_healed(&topo, healed, expected);
+    assert_gauss_volume(&topo, healed, expected);
+    let holes: usize = faces_of(&topo, healed)
+        .iter()
+        .map(|f| topo.face(*f).unwrap().inner_wires().len())
+        .sum();
+    assert_eq!(
+        holes, 2,
+        "the kept hole keeps a rim on the top and the bottom"
+    );
+}
+
+/// The same heal with a round hole kept on the extended face: a curved rim
+/// cannot be rebuilt from corner positions, so the heal refuses it up front
+/// by name, before any rebuild, and leaves the input untouched.
+#[test]
+fn corner_patch_removal_refuses_a_curved_hole_on_the_extended_face() {
+    let mut topo = Topology::new();
+    let drilled = corner_cut_block_with_slanted_hole(&mut topo);
+    let round = make_cylinder(&mut topo, 1.0, 30.0).unwrap();
+    translate(&mut topo, round, 5.0, 5.0, -10.0);
+    let body = boolean(&mut topo, BooleanOp::Cut, drilled, round).unwrap();
+    let patch = corner_patch(&topo, body);
+    let before = faces_of(&topo, body);
+
+    let reason = assert_refused(defeature(&mut topo, body, &patch));
+    assert!(
+        reason.contains("curved hole edge that survives the heal"),
+        "the curved kept rim must be refused by name, got: {reason}"
+    );
+    assert_eq!(faces_of(&topo, body), before, "the refusal must roll back");
+}
