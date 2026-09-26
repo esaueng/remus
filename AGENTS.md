@@ -210,6 +210,7 @@ Quick reference — find the right file for any task:
 | Face classification state | `ds/face_info.rs` |
 | PaveFiller orchestrator | `pave_filler/mod.rs` |
 | Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
+| Isolated curved NURBS section clipping and whole-span bounds | `pave_filler/curved_section_clip.rs`, `pave_filler/curved_section_clip/bernstein.rs`, `pave_filler/curved_section_clip/tests.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Pave block splitting + edge creation | `pave_filler/make_blocks.rs`, `make_split_edges.rs` |
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
