@@ -69,7 +69,6 @@ crates/operations/src/measure/bounding_box.rs
 crates/operations/src/measure/helpers.rs
 crates/operations/src/measure/volume.rs
 crates/operations/src/offset_face.rs
-crates/operations/src/pattern.rs
 crates/operations/src/primitives.rs
 crates/operations/src/push_pull.rs
 crates/operations/src/query.rs
