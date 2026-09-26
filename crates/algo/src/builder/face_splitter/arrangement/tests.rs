@@ -915,3 +915,29 @@ fn native_major_and_minor_arc_boundaries_keep_their_selected_side() {
         invariants(&a, &uses);
     }
 }
+
+#[test]
+fn unrepresentable_native_subspans_refuse_atomically() {
+    for (range, expected) in [
+        ([-f64::MAX, f64::MAX], ArrangementError::NonFiniteInput),
+        (
+            [1.0, 1.0 + f64::EPSILON],
+            ArrangementError::IntersectionRefinementFailed,
+        ),
+    ] {
+        let mut uses = rectangle(0, 0.0, 0.0, 2.0, 2.0);
+        uses[0].source_range = range;
+        uses.push(line(10, p(1.0, 0.0), p(1.0, 2.0), [10, 11], None));
+        let before = format!("{uses:?}");
+        assert_eq!(
+            build_arrangement(&ArrangementInput {
+                uses: &uses,
+                domain: ParamDomain::Plane,
+                context: &context(),
+            })
+            .unwrap_err(),
+            expected
+        );
+        assert_eq!(format!("{uses:?}"), before);
+    }
+}

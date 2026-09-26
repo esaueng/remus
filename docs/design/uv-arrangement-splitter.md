@@ -336,7 +336,8 @@ fixture corpus for later differential integration. It covers X/T/star and true
 interior crossings; major/minor circle caps and two-circle lenses; nested holes,
 islands and disconnected components; authoritative coedge/source subspans;
 sub-tolerance slivers; cylinder bands, seam-crossing sectors and a strip with a
-hole; contact/overlap and malformed-input refusals; and all work-budget prefixes
+hole; contact/overlap, malformed-input and unrepresentable native-subspan
+refusals; and all work-budget prefixes
 of a complete square build. A cancellation test covers an already-used work
 counter, and the build entry point separately covers pre-cancellation.
 

@@ -468,6 +468,16 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             }
             let h = halves.len();
             for (a, b, twin) in [(pair[0], pair[1], h + 1), (pair[1], pair[0], h)] {
+                let source_range = [
+                    uses[i].source_parameter(a.parameter),
+                    uses[i].source_parameter(b.parameter),
+                ];
+                if !source_range.iter().all(|t| t.is_finite()) {
+                    return Err(ArrangementError::NonFiniteInput);
+                }
+                if same(source_range[0], source_range[1]) {
+                    return Err(ArrangementError::IntersectionRefinementFailed);
+                }
                 rotations[a.event].push(halves.len());
                 halves.push(ArrangementHalfEdge {
                     from: a.event,
@@ -476,10 +486,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
                     next: usize::MAX,
                     source: uses[i].source.clone(),
                     range: [a.parameter, b.parameter],
-                    source_range: [
-                        uses[i].source_parameter(a.parameter),
-                        uses[i].source_parameter(b.parameter),
-                    ],
+                    source_range,
                     endpoints_3d: [uses[i].point_3d(a.parameter), uses[i].point_3d(b.parameter)],
                 });
             }
