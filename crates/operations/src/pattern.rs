@@ -9,7 +9,7 @@ use remus_topology::Topology;
 use remus_topology::compound::{Compound, CompoundId};
 use remus_topology::solid::SolidId;
 
-use crate::copy::copy_solid_with_face_map;
+use crate::copy::{CopiedSolidEntities, copy_solid_with_entity_map};
 use crate::evolution::EvolutionMap;
 use crate::transform::transform_solid;
 
@@ -26,8 +26,42 @@ const MATERIAL_OVERLAP_RELATIVE_FLOOR: f64 = 1e-9;
 /// The source solid is itself the first element of every pattern, so its faces
 /// are recorded as modified into themselves; each copy's faces are new geometry
 /// generated from the source face they were copied from.
+///
+/// Edges and vertices ride the same copy-time correspondence: the tracker's
+/// `edge_copies` / `vertex_copies` pairs are `(source index, copy index)` by
+/// construction, never by coordinate matching. The original instance's
+/// boundary entities are accounted for as modified-into-themselves at journal
+/// time, mirroring the face map, so no `Preserved` claim is fabricated for
+/// moved copies and no face/edge/vertex index collides across kinds (each
+/// journals under its own [`EntityKey`](remus_topology::journal::EntityKey)
+/// kind).
 struct PatternTracker {
     evo: EvolutionMap,
+    source_edges: Vec<usize>,
+    source_vertices: Vec<usize>,
+    edge_copies: Vec<(usize, usize)>,
+    vertex_copies: Vec<(usize, usize)>,
+}
+
+/// Full copy-time lineage for one pattern build: the legacy face map plus the
+/// edge/vertex correspondence the journal needs for total history.
+///
+/// `source_edges` / `source_vertices` are the pre-build source indices (the
+/// original instance, unchanged). `edge_copies` / `vertex_copies` are
+/// `(source, copy)` pairs in sorted order, one per copied entity per instance.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PatternEntityHistory {
+    /// Legacy face lineage: original faces modified-into-themselves, copies
+    /// generated from their source face.
+    pub map: EvolutionMap,
+    /// Pre-build source edge indices (original instance).
+    pub source_edges: Vec<usize>,
+    /// Pre-build source vertex indices (original instance).
+    pub source_vertices: Vec<usize>,
+    /// `(source, copy)` edge pairs, sorted, by construction.
+    pub edge_copies: Vec<(usize, usize)>,
+    /// `(source, copy)` vertex pairs, sorted, by construction.
+    pub vertex_copies: Vec<(usize, usize)>,
 }
 
 impl PatternTracker {
@@ -36,14 +70,53 @@ impl PatternTracker {
         for fid in remus_topology::explorer::solid_faces(topo, solid)? {
             evo.add_modified(fid.index(), fid.index());
         }
-        Ok(Self { evo })
+        let mut source_edges: Vec<usize> = remus_topology::explorer::solid_edges(topo, solid)?
+            .into_iter()
+            .map(remus_topology::arena::Id::index)
+            .collect();
+        source_edges.sort_unstable();
+        let mut source_vertices: Vec<usize> =
+            remus_topology::explorer::solid_vertices(topo, solid)?
+                .into_iter()
+                .map(remus_topology::arena::Id::index)
+                .collect();
+        source_vertices.sort_unstable();
+        Ok(Self {
+            evo,
+            source_edges,
+            source_vertices,
+            edge_copies: Vec::new(),
+            vertex_copies: Vec::new(),
+        })
     }
 
-    fn record_instance(&mut self, face_map: &std::collections::HashMap<usize, usize>) {
-        let mut sources: Vec<usize> = face_map.keys().copied().collect();
+    fn record_instance(&mut self, copied: &CopiedSolidEntities) {
+        let mut sources: Vec<usize> = copied.face_map.keys().copied().collect();
         sources.sort_unstable();
         for src in sources {
-            self.evo.add_generated(src, face_map[&src]);
+            let dst = copied.face_map[&src].index();
+            self.evo.add_generated(src, dst);
+        }
+        let mut edge_sources: Vec<usize> = copied.edge_map.keys().copied().collect();
+        edge_sources.sort_unstable();
+        for src in edge_sources {
+            self.edge_copies.push((src, copied.edge_map[&src].index()));
+        }
+        let mut vertex_sources: Vec<usize> = copied.vertex_map.keys().copied().collect();
+        vertex_sources.sort_unstable();
+        for src in vertex_sources {
+            self.vertex_copies
+                .push((src, copied.vertex_map[&src].index()));
+        }
+    }
+
+    fn into_history(self) -> PatternEntityHistory {
+        PatternEntityHistory {
+            map: self.evo,
+            source_edges: self.source_edges,
+            source_vertices: self.source_vertices,
+            edge_copies: self.edge_copies,
+            vertex_copies: self.vertex_copies,
         }
     }
 }
@@ -87,18 +160,35 @@ pub fn linear_pattern_with_evolution(
     spacing: f64,
     count: usize,
 ) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
-        linear_pattern_impl(topo, solid, direction, spacing, count)
-    })
+    linear_pattern_with_entity_history(topo, solid, direction, spacing, count)
+        .map(|(compound, history)| (compound, history.map))
 }
 
-fn linear_pattern_impl(
+/// [`linear_pattern`] with total copy-time lineage: the legacy face map plus
+/// the edge/vertex `(source, copy)` correspondence the journal needs.
+///
+/// `source_edges` / `source_vertices` are the pre-build source indices;
+/// `edge_copies` / `vertex_copies` are sorted `(source, copy)` pairs by
+/// construction, never by coordinate matching.
+pub(crate) fn linear_pattern_with_entity_history(
     topo: &mut Topology,
     solid: SolidId,
     direction: Vec3,
     spacing: f64,
     count: usize,
-) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        linear_pattern_full_impl(topo, solid, direction, spacing, count)
+    })
+}
+
+fn linear_pattern_full_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    direction: Vec3,
+    spacing: f64,
+    count: usize,
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if count < 1 {
@@ -119,8 +209,9 @@ fn linear_pattern_impl(
     solids.push(solid);
 
     for i in 1..count {
-        let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
-        tracker.record_instance(&face_map);
+        let copied = copy_solid_with_entity_map(topo, solid)?;
+        let copy = copied.solid;
+        tracker.record_instance(&copied);
         #[allow(clippy::cast_precision_loss)]
         let offset = dir * (spacing * i as f64);
         let matrix = Mat4::translation(offset.x(), offset.y(), offset.z());
@@ -191,8 +282,9 @@ fn circular_pattern_impl(
     let angle_step = 2.0 * std::f64::consts::PI / (count as f64);
 
     for i in 1..count {
-        let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
-        tracker.record_instance(&face_map);
+        let copied = copy_solid_with_entity_map(topo, solid)?;
+        let copy = copied.solid;
+        tracker.record_instance(&copied);
         #[allow(clippy::cast_precision_loss)]
         let angle = angle_step * (i as f64);
 
@@ -201,7 +293,7 @@ fn circular_pattern_impl(
         solids.push(copy);
     }
 
-    finish_pattern(topo, solids, tracker)
+    finish_pattern(topo, solids, tracker).map(|(compound, history)| (compound, history.map))
 }
 
 /// Create a 2D grid pattern of a solid.
@@ -306,8 +398,9 @@ fn grid_pattern_impl(
                 continue;
             }
 
-            let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
-            tracker.record_instance(&face_map);
+            let copied = copy_solid_with_entity_map(topo, solid)?;
+            let copy = copied.solid;
+            tracker.record_instance(&copied);
 
             #[allow(clippy::cast_precision_loss)]
             let offset = dx * (spacing_x * ix as f64) + dy * (spacing_y * iy as f64);
@@ -318,16 +411,19 @@ fn grid_pattern_impl(
         }
     }
 
-    finish_pattern(topo, solids, tracker)
+    finish_pattern(topo, solids, tracker).map(|(compound, history)| (compound, history.map))
 }
 
 fn finish_pattern(
     topo: &mut Topology,
     solids: Vec<SolidId>,
     tracker: PatternTracker,
-) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
     refuse_material_overlap(topo, &solids)?;
-    Ok((topo.add_compound(Compound::new(solids)), tracker.evo))
+    Ok((
+        topo.add_compound(Compound::new(solids)),
+        tracker.into_history(),
+    ))
 }
 
 /// Refuse a pattern that would silently represent intersecting material as
