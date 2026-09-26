@@ -27,6 +27,10 @@
 //! harness deflection, translation invariance, and ray-cast material probes.
 //! The cone twin (B32) is swept across the same seam rotations for all three
 //! operations.
+//!
+//! Scale × rigid-placement acceptance (2026-09-26) crosses scales 1e-3, 1
+//! and 1e3 with origin / rigid whole-body placements over the same seam
+//! matrix; see the section at the end of this file.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -273,30 +277,87 @@ fn b52_box_cylinder_notch_identities_hold_at_every_seam() {
 /// Ray-cast material probes at the two seam placements that refused: the
 /// below-box cylinder extent and bottom rim (dropped by the refusing fuse),
 /// the notch (box ∩ cylinder), the box beyond the cylinder, and clear
-/// outside points.
+/// outside points. Coordinates are unit-scale base placement; the
+/// scale × placement tests carry them through the same map as the operands.
+const MATERIAL_PROBES: [(
+    [f64; 3],
+    PointClassification,
+    PointClassification,
+    PointClassification,
+); 10] = [
+    (
+        [0.5, -1.5, -0.25],
+        PointClassification::Inside,
+        PointClassification::Outside,
+        PointClassification::Outside,
+    ),
+    (
+        [0.5, -1.5, -0.45],
+        PointClassification::Inside,
+        PointClassification::Outside,
+        PointClassification::Outside,
+    ),
+    (
+        [2.3, -1.5, -0.4],
+        PointClassification::Inside,
+        PointClassification::Outside,
+        PointClassification::Outside,
+    ),
+    (
+        [0.5, 0.2, 0.25],
+        PointClassification::Inside,
+        PointClassification::Outside,
+        PointClassification::Inside,
+    ),
+    (
+        [1.0, 0.1, 0.4],
+        PointClassification::Inside,
+        PointClassification::Outside,
+        PointClassification::Inside,
+    ),
+    (
+        [0.5, 0.2, 0.75],
+        PointClassification::Inside,
+        PointClassification::Inside,
+        PointClassification::Outside,
+    ),
+    (
+        [2.0, 0.8, 0.8],
+        PointClassification::Inside,
+        PointClassification::Inside,
+        PointClassification::Outside,
+    ),
+    (
+        [0.5, -1.5, -0.6],
+        PointClassification::Outside,
+        PointClassification::Outside,
+        PointClassification::Outside,
+    ),
+    (
+        [0.5, -3.0, 0.7],
+        PointClassification::Outside,
+        PointClassification::Outside,
+        PointClassification::Outside,
+    ),
+    (
+        [3.0, 2.0, 0.5],
+        PointClassification::Outside,
+        PointClassification::Outside,
+        PointClassification::Outside,
+    ),
+];
+
 #[test]
 fn b52_box_cylinder_notch_material_probes() {
-    use PointClassification::{Inside, Outside};
     let opts = ClassifyOptions::default();
-    // (point, fuse, cut, intersect)
-    let probes = [
-        (Point3::new(0.5, -1.5, -0.25), Inside, Outside, Outside),
-        (Point3::new(0.5, -1.5, -0.45), Inside, Outside, Outside),
-        (Point3::new(2.3, -1.5, -0.4), Inside, Outside, Outside),
-        (Point3::new(0.5, 0.2, 0.25), Inside, Outside, Inside),
-        (Point3::new(1.0, 0.1, 0.4), Inside, Outside, Inside),
-        (Point3::new(0.5, 0.2, 0.75), Inside, Inside, Outside),
-        (Point3::new(2.0, 0.8, 0.8), Inside, Inside, Outside),
-        (Point3::new(0.5, -1.5, -0.6), Outside, Outside, Outside),
-        (Point3::new(0.5, -3.0, 0.7), Outside, Outside, Outside),
-        (Point3::new(3.0, 2.0, 0.5), Outside, Outside, Outside),
-    ];
     for rot in [0.3, 2.0] {
         for (col, op) in OPS.into_iter().enumerate() {
             let mut t = Topology::new();
             let (a, b) = build_cylinder(&mut t, rot);
             let s = exact_boolean(&mut t, op, a, b, &format!("{op:?} rot={rot}"));
-            for (p, f, c, i) in probes {
+            // (point, fuse, cut, intersect)
+            for (coords, f, c, i) in MATERIAL_PROBES {
+                let p = Point3::new(coords[0], coords[1], coords[2]);
                 let want = [f, c, i][col];
                 let got = classify_point(&t, s, p, &opts).unwrap();
                 assert_eq!(got, want, "{op:?} rot={rot}: probe {p:?}");
@@ -404,4 +465,213 @@ fn b52_box_cone_seam_crossing_slanted_side() {
     let rotations = [0.7, std::f64::consts::FRAC_PI_4, 1.8];
     assert!(rotations.iter().all(|&r| cone_seam_crosses_slanted_side(r)));
     check_cone_seams(&rotations);
+}
+
+// ---------------------------------------------------------------------------
+// Scale × rigid-placement acceptance (2026-09-26).
+//
+// The unit-scale tests above cover one scale and one placement. Seam
+// invariance and rigid-motion invariance are DISTINCT claims, and this
+// section covers both as independent matrix dimensions:
+//
+// * seam (`rot`): spins the cylinder about its own axis. The solid is
+//   unchanged; only its seam moves. This is the B52 dimension.
+// * rigid placement: a non-axis-aligned rotation plus translation applied
+//   to BOTH operands together (and to every probe through the same map).
+//   The relative arrangement — and the seam under test — is unchanged; the
+//   physical assembly moves. This catches axis-aligned assumptions and
+//   world-origin-referenced arithmetic (see B41, B56, B58).
+//
+// Scales are 1e-3, 1 and 1e3 with dimensionally scaled dimensions, base
+// placement offsets and rigid translations. Expectations reuse the
+// independent clipped-circle/rectangle area-times-height closed form
+// (`inter_closed_form`), scaled dimensionally (lengths × s, volumes × s³).
+//
+// Tolerance accounting (no production tolerance is touched by this file):
+// * FIXED physical quantities: the engine's linear (1e-7) and angular
+//   (1e-12) tolerances are absolute model units and stay put; the test
+//   never widens a band to accommodate a scale.
+// * SCALED test quantities: every dimension, placement offset, probe
+//   coordinate and tessellation deflection is an absolute length and is
+//   scaled with the body (× s); expected volumes scale × s³.
+// * SCALE-INVARIANT comparisons: every pass band is a dimensionless
+//   relative ratio (1e-6 Gauss-vs-closed-form, 1e-4 measured-vs-Gauss,
+//   1e-6 inclusion–exclusion) and is identical at every scale.
+//
+// Matrix denominator: 3 scales × 2 placements × 18 seams × 3 ops = 324
+// exact boolean cells, plus 3 × 2 × 2 seams × 3 ops = 36 probe cells.
+// Every cell drives the PUBLIC path (`boolean_with_context` + `ExactOnly`,
+// never raw GFA), and every result keeps its analytic carriers (planes +
+// cylinders only, ≤ 20 faces), passes strict validation on BOTH validators
+// (oriented closed topology), and meshes welded-manifold (zero boundary,
+// zero non-manifold edges) at scale-relative coarse/mid/fine deflections
+// plus the bbox-derived harness deflection.
+
+/// Scales of the acceptance matrix.
+const ACCEPT_SCALES: [f64; 3] = [1e-3, 1.0, 1e3];
+
+/// Whole-body rigid placement for a scale: a non-axis-aligned rotation (x-
+/// then y-, so the composed axis is not a coordinate axis) plus a
+/// translation scaled with the body, keeping the off-origin distance
+/// proportional across scales.
+fn rigid_placement(scale: f64) -> Mat4 {
+    Mat4::translation(13.0 * scale, -7.0 * scale, 5.0 * scale)
+        * Mat4::rotation_y(0.5)
+        * Mat4::rotation_x(0.7)
+}
+
+/// The cylinder-notch pair rebuilt at `scale` with the cylinder seam at
+/// `rot`, then optionally carried through a whole-body rigid placement
+/// applied to BOTH operands together.
+fn build_scaled_cylinder(
+    topo: &mut Topology,
+    scale: f64,
+    rot: f64,
+    rigid: Option<&Mat4>,
+) -> (SolidId, SolidId) {
+    let m = Mat4::translation(0.5 * scale, -1.5 * scale, -0.5 * scale) * Mat4::rotation_z(rot);
+    let a = make_box(topo, 2.5 * scale, 1.0 * scale, 1.0 * scale).expect("box");
+    let b = make_cylinder(topo, 2.0 * scale, 1.0 * scale).expect("cylinder");
+    remus_operations::transform::transform_solid(topo, b, &m).expect("place");
+    if let Some(p) = rigid {
+        remus_operations::transform::transform_solid(topo, a, p).expect("rigid box");
+        remus_operations::transform::transform_solid(topo, b, p).expect("rigid cylinder");
+    }
+    (a, b)
+}
+
+/// Dimensionally scaled volume expectations: the unit-scale closed form and
+/// operand volumes times s³.
+fn expected_scaled_cylinder_volume(op: BooleanOp, scale: f64) -> f64 {
+    expected_cylinder_volume(op) * scale.powi(3)
+}
+
+fn scaled_operand_volumes(scale: f64) -> (f64, f64) {
+    (V_BOX * scale.powi(3), 4.0 * PI * scale.powi(3))
+}
+
+/// Welded-manifold meshes at scale-relative coarse/mid/fine deflections plus
+/// the bbox-derived proptest harness deflection. Deflections are absolute
+/// model units, so each is scaled with the body.
+fn assert_watertight_scaled(topo: &Topology, s: SolidId, scale: f64, what: &str) {
+    let diag = remus_operations::measure::solid_bounding_box(topo, s)
+        .map(|b| (b.max - b.min).length())
+        .unwrap();
+    for d in [
+        0.1 * scale,
+        0.01 * scale,
+        1e-4 * scale,
+        (diag * 1e-5).max(1e-7),
+    ] {
+        assert_watertight_at(topo, s, d, what);
+    }
+}
+
+/// The tessellation-measured volume equals the exact Gauss integral at two
+/// scale-relative deflections. Coarse requests clamp to `diag · 5e-5`
+/// inside `solid_volume`, so the two legs stay genuinely different.
+/// Rigidly placed cells ARE translated bodies, so this subsumes the
+/// translation-invariance detector at every scale.
+fn assert_measured_scaled(topo: &Topology, s: SolidId, scale: f64, gauss: f64, what: &str) {
+    for d in [0.1 * scale, 1e-4 * scale] {
+        let v = solid_volume(topo, s, d).unwrap();
+        assert!(
+            (v - gauss).abs() / gauss <= 1e-4,
+            "{what}: measured {v:.9} (d={d}) vs Gauss {gauss:.9}"
+        );
+    }
+}
+
+/// Scale × rigid-placement acceptance over the full seam matrix: every cell
+/// exact and analytic with the closed-form volume, strict-valid on both
+/// validators, welded-manifold at every deflection, measured against Gauss,
+/// and satisfying inclusion–exclusion and the cut complement between its
+/// three separately built legs.
+#[test]
+fn b52_box_cylinder_notch_scale_and_placement_every_seam_every_op() {
+    for &scale in &ACCEPT_SCALES {
+        let rigid = rigid_placement(scale);
+        for (place_name, rigid_opt) in [("origin", None), ("rigid", Some(&rigid))] {
+            for rot in seam_rotations() {
+                let mut legs = [0.0; 3];
+                for (k, op) in OPS.into_iter().enumerate() {
+                    let what = format!(
+                        "box-cylinder {op:?} scale={scale} place={place_name} rot={rot:.4}"
+                    );
+                    let mut t = Topology::new();
+                    let (a, b) = build_scaled_cylinder(&mut t, scale, rot, rigid_opt);
+                    let s = exact_boolean(&mut t, op, a, b, &what);
+                    let g = gauss_volume(&t, s);
+                    legs[k] = g;
+                    let want = expected_scaled_cylinder_volume(op, scale);
+                    assert!(
+                        (g - want).abs() / want <= 1e-6,
+                        "{what}: Gauss {g:.9} vs closed form {want:.9}"
+                    );
+                    assert_cylinder_census(&t, s, &what);
+                    assert_strict_valid(&t, s, &what);
+                    assert_watertight_scaled(&t, s, scale, &what);
+                    assert_measured_scaled(&t, s, scale, g, &what);
+                }
+                let (v_box, v_cyl) = scaled_operand_volumes(scale);
+                let [gf, gc, gi] = legs;
+                let what = format!("box-cylinder scale={scale} place={place_name} rot={rot:.4}");
+                assert!(
+                    (gf - (v_box + v_cyl - gi)).abs() / gf <= 1e-6,
+                    "{what}: fuse {gf:.9} != box + cylinder − inter {gi:.9}"
+                );
+                assert!(
+                    (gc + gi - v_box).abs() / v_box <= 1e-6,
+                    "{what}: cut {gc:.9} + inter {gi:.9} != box"
+                );
+                assert!(
+                    (gf - (gc + v_cyl)).abs() / gf <= 1e-6,
+                    "{what}: fuse {gf:.9} != cut {gc:.9} + cylinder"
+                );
+            }
+        }
+    }
+}
+
+/// Material occupancy across the scale × placement matrix at the two
+/// historically refusing seams: every base probe scaled with the body and
+/// carried through the same rigid map as the operands.
+#[test]
+fn b52_box_cylinder_notch_material_probes_scaled_and_placed() {
+    let opts = ClassifyOptions::default();
+    for &scale in &ACCEPT_SCALES {
+        let rigid = rigid_placement(scale);
+        for (place_name, rigid_opt) in [("origin", None), ("rigid", Some(&rigid))] {
+            let map = |coords: [f64; 3]| {
+                let q = Point3::new(coords[0] * scale, coords[1] * scale, coords[2] * scale);
+                match rigid_opt {
+                    Some(p) => p.mul_point(q),
+                    None => q,
+                }
+            };
+            for rot in [0.3, 2.0] {
+                for (col, op) in OPS.into_iter().enumerate() {
+                    let mut t = Topology::new();
+                    let (a, b) = build_scaled_cylinder(&mut t, scale, rot, rigid_opt);
+                    let s = exact_boolean(
+                        &mut t,
+                        op,
+                        a,
+                        b,
+                        &format!("{op:?} scale={scale} place={place_name} rot={rot}"),
+                    );
+                    // (point, fuse, cut, intersect)
+                    for (coords, f, c, i) in MATERIAL_PROBES {
+                        let p = map(coords);
+                        let want = [f, c, i][col];
+                        let got = classify_point(&t, s, p, &opts).unwrap();
+                        assert_eq!(
+                            got, want,
+                            "{op:?} scale={scale} place={place_name} rot={rot}: probe {p:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
