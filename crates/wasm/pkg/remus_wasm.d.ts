@@ -941,6 +941,15 @@ export class BrepKernel {
      */
     chamferDistanceAngle(solid: number, edge_handles: Uint32Array, distance: number, angle: number): number;
     /**
+     * Distance-angle chamfer on the v2 blend engine, as typed data.
+     *
+     * Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
+     * unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     */
+    chamferDistanceAngleDetailed(solid: number, edge_handles: Uint32Array, distance: number, angle: number, exact_only?: boolean | null): SolidOperationDetailedResult;
+    /**
      * Distance-angle chamfer with versioned face-evolution tracking data.
      *
      * Runs the same engine routing as
@@ -972,6 +981,14 @@ export class BrepKernel {
      * blend computation fails.
      */
     chamferV2(solid: number, edge_handles: Uint32Array, d1: number, d2: number): number;
+    /**
+     * Two-distance chamfer on the v2 blend engine, as typed data.
+     *
+     * Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     */
+    chamferV2Detailed(solid: number, edge_handles: Uint32Array, d1: number, d2: number, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
      * Chamfer edges and return versioned face-evolution tracking data.
      *
@@ -1555,6 +1572,15 @@ export class BrepKernel {
      */
     filletV2(solid: number, edge_handles: Uint32Array, radius: number): number;
     /**
+     * Fillet edges on the v2 walking engine alone and return exact,
+     * disclosed-approximate, or refused results as typed data.
+     *
+     * Additive twin of [`filletV2`](Self::fillet_v2), unchanged. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     */
+    filletV2Detailed(solid: number, edge_handles: Uint32Array, radius: number, exact_only?: boolean | null): SolidOperationDetailedResult;
+    /**
      * Apply variable-radius fillets to edges.
      *
      * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
@@ -1571,6 +1597,17 @@ export class BrepKernel {
      * `edges-not-blended: …`).
      */
     filletVariable(solid: number, json: string): number;
+    /**
+     * Variable-radius fillet, as typed data.
+     *
+     * Additive twin of [`filletVariable`](Self::fillet_variable), unchanged:
+     * `json` is the same spec array. That engine carries no engine tag, so
+     * success details hold `quality` (and `approximateFaces`) but no
+     * `engine`; `exactOnly` follows
+     * [`filletDetailed`](Self::fillet_detailed). Malformed JSON is an
+     * `invalid_argument` refusal, not a thrown error.
+     */
+    filletVariableDetailed(solid: number, json: string, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
      * Apply a constant-radius fillet and return face-evolution tracking data.
      *
@@ -2725,12 +2762,34 @@ export class BrepKernel {
      * Integration runs on the exact face geometry (analytic and NURBS
      * surfaces, no tessellation), so there is no deflection parameter.
      *
+     * # Numerical controls (optional)
+     *
+     * Omitting all three reproduces the historical call exactly
+     * (`gaussOrder = 8`, `adaptiveEps = 1e-6`, `maxDepth = 8`).
+     *
+     * * `adaptiveEps` — positive finite relative tolerance of the
+     *   coarse-versus-refined quadrature estimator, applied to every area,
+     *   volume and moment component per initial patch.
+     * * `maxDepth` — integer `0..=32`: refinement levels beyond the initial
+     *   patches. Larger values are rejected, not clamped.
+     * * `gaussOrder` — integer `1..=20`: the Gauss rule per quadrature cell.
+     *
+     * Untrimmed analytic patches always refine. Trimmed curved faces, NURBS
+     * faces and torus tube bands keep the historical fixed rule while
+     * `adaptiveEps` and `maxDepth` are both at their defaults and refine with
+     * any other pair; passing the default values explicitly is the same as
+     * omitting them. Refinement converges the quadrature over the face's
+     * resolved domain; it does not reduce the chord error of a sampled trim
+     * outline. Exact and sampled planar faces integrate in closed form.
+     *
      * # Errors
      *
-     * Returns an error if the solid handle is invalid, integration fails,
-     * or the solid has zero volume.
+     * Returns an error if the solid handle is invalid, a control is out of
+     * range, the requested tolerance cannot be met within `maxDepth` or the
+     * per-face work budget (never an unconverged result), integration
+     * fails, or the solid has zero volume.
      */
-    massProperties(solid: number): any;
+    massProperties(solid: number, adaptive_eps?: number | null, max_depth?: number | null, gauss_order?: number | null): any;
     /**
      * Measure curvature of an edge curve at parameter `t`.
      *
