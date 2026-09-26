@@ -87,6 +87,15 @@ fn assert_lineage_accounts_for_everything(
         evo.to_json()
     );
 
+    // The map's own query for that set must name exactly the result faces.
+    let resolved: HashSet<usize> = evo.resolved_outputs().into_iter().collect();
+    assert_eq!(
+        &resolved,
+        result,
+        "{label}: resolved_outputs() disagrees with the result faces. map = {}",
+        evo.to_json()
+    );
+
     assert!(
         evo.unresolved.is_empty(),
         "{label}: the map refuses to place {:?}. These origins are construction \
@@ -626,4 +635,35 @@ fn failed_blend_evolution_calls_leave_source_topology_unchanged() {
         remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
             .unwrap();
     }
+}
+
+/// `resolved_outputs` keeps only faces a `modified` or `generated` record
+/// claims: a face shared by two records appears once, and a face recorded
+/// only as `unresolved` is left out, though `attributed_outputs` counts it.
+#[test]
+fn resolved_outputs_excludes_faces_recorded_only_as_unresolved() {
+    let mut evo = EvolutionMap::exact();
+    evo.add_modified(0, 10);
+    evo.add_modified(0, 11);
+    evo.add_generated(1, 11);
+    evo.add_generated(1, 12);
+    evo.add_deleted(2);
+    evo.add_unresolved(13, vec![0, 1]);
+
+    let resolved: Vec<usize> = evo.resolved_outputs().into_iter().collect();
+    assert_eq!(resolved, vec![10, 11, 12]);
+    let attributed: Vec<usize> = evo.attributed_outputs().into_iter().collect();
+    assert_eq!(attributed, vec![10, 11, 12, 13]);
+
+    let result = [10, 11, 12, 13];
+    assert!(
+        evo.accounts_for_result(result),
+        "13 is accounted as unresolved"
+    );
+    assert!(
+        !evo.is_resolved_for_result(result),
+        "13 has no resolved origin"
+    );
+
+    assert!(EvolutionMap::exact().resolved_outputs().is_empty());
 }
