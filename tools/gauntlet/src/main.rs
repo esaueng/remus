@@ -9,7 +9,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use remus_gauntlet::manifest::{
-    ArchiveManifestConfig, FetchConfig, fetch_manifest, generate_archive_manifest, write_manifest,
+    ArchiveManifestConfig, FetchConfig, fetch_manifest, generate_archive_manifest, read_manifest,
+    write_manifest,
+};
+use remus_gauntlet::p85::{
+    P85RunConfig, process_p85_model, replay_bundle, run_p85_isolated, write_p85_outputs,
 };
 use remus_gauntlet::trend::{build_trend_row, enforce_ratchet, load_latest_trend, write_trend_row};
 use remus_gauntlet::{
@@ -18,7 +22,7 @@ use remus_gauntlet::{
 };
 use remus_io::ImportLimits;
 
-const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n  remus-gauntlet trend --scoreboard PATH --history PATH --output-row PATH --tier NAME --date YYYY-MM-DD --sha HEX --manifest-sha256 HEX --max-drop-bps N\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache. Trend writes the current row before enforcing the declared per-stage ratchet.\n";
+const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n  remus-gauntlet trend --scoreboard PATH --history PATH --output-row PATH --tier NAME --date YYYY-MM-DD --sha HEX --manifest-sha256 HEX --max-drop-bps N\n  remus-gauntlet p85-run --manifest MANIFEST.json --cache DIR --output DIR [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] [--kernel-sha HEX] [--sample N --seed S] [--source-file URL PATH]... [MODEL.step...]\n  remus-gauntlet p85-worker [--deflection D] [--max-input-bytes N] [--max-model-entities N] --model-id ID --model-sha256 HEX --kernel-sha HEX --manifest-sha256 HEX MODEL.step\n  remus-gauntlet p85-replay --model MODEL.step --model-id ID --model-sha256 HEX [--bundle-out PATH] [--kernel-sha HEX] [--manifest-sha256 HEX] [--deflection D] [--max-input-bytes N] [--max-model-entities N] [--model-timeout-ms N]\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache. Trend writes the current row before enforcing the declared per-stage ratchet. The p85-run command executes the P-Class 8.5 operation/export slice and writes p85-models.jsonl, p85-scoreboard.json, and p85-scoreboard.md; p85-replay re-runs one fixture plus recipe in-process and records a deterministic reproduction bundle.\n";
 
 fn main() -> ExitCode {
     match run() {
@@ -48,6 +52,12 @@ fn run() -> Result<(), GauntletError> {
         run_trend(&rest)
     } else if arg_is(&command, "worker") {
         run_worker(&rest)
+    } else if arg_is(&command, "p85-run") {
+        run_p85_parent(&rest)
+    } else if arg_is(&command, "p85-worker") {
+        run_p85_worker(&rest)
+    } else if arg_is(&command, "p85-replay") {
+        run_p85_replay(&rest)
     } else if arg_is(&command, "--help") || arg_is(&command, "-h") {
         io::stdout()
             .lock()
@@ -241,6 +251,385 @@ fn run_worker(args: &[OsString]) -> Result<(), GauntletError> {
     stdout
         .write_all(b"\n")
         .map_err(|error| GauntletError::message(error.to_string()))
+}
+
+struct P85ParentArgs {
+    output: PathBuf,
+    timeout: Duration,
+    jobs: usize,
+    pipeline: PipelineConfig,
+    kernel_sha: String,
+    manifest_sha256: String,
+    models: Vec<(String, String, PathBuf)>,
+}
+
+fn run_p85_parent(args: &[OsString]) -> Result<(), GauntletError> {
+    let parsed = parse_p85_parent_args(args)?;
+    if parsed.models.is_empty() {
+        return Err(GauntletError::message(
+            "p85-run requires at least one slice model",
+        ));
+    }
+    let executable =
+        std::env::current_exe().map_err(|error| GauntletError::message(error.to_string()))?;
+    let results = run_p85_isolated(
+        &executable,
+        &parsed.models,
+        &P85RunConfig {
+            pipeline: parsed.pipeline,
+            model_timeout: parsed.timeout,
+            max_parallel_models: parsed.jobs,
+            kernel_sha: parsed.kernel_sha.clone(),
+            manifest_sha256: parsed.manifest_sha256.clone(),
+        },
+    );
+    write_p85_outputs(
+        &parsed.output,
+        &results,
+        &parsed.kernel_sha,
+        &parsed.manifest_sha256,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn parse_p85_parent_args(args: &[OsString]) -> Result<P85ParentArgs, GauntletError> {
+    let mut manifest: Option<PathBuf> = None;
+    let mut cache: Option<PathBuf> = None;
+    let mut output = PathBuf::from("p85-results");
+    let mut timeout_ms = 60_000_u64;
+    let mut jobs = 1_usize;
+    let mut deflection = remus_gauntlet::DEFAULT_DEFLECTION;
+    let mut limits = ImportLimits::default();
+    let mut kernel_sha = String::from("local");
+    let mut sample = None;
+    let mut seed = 0_u64;
+    let mut source_files = BTreeMap::new();
+    let mut positional = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if arg_is(argument, "--manifest") {
+            manifest = Some(PathBuf::from(next_value(args, &mut index, "--manifest")?));
+        } else if arg_is(argument, "--cache") {
+            cache = Some(PathBuf::from(next_value(args, &mut index, "--cache")?));
+        } else if arg_is(argument, "--output") {
+            output = PathBuf::from(next_value(args, &mut index, "--output")?);
+        } else if arg_is(argument, "--timeout-ms") {
+            timeout_ms = parse_u64(next_value(args, &mut index, "--timeout-ms")?, "timeout")?;
+        } else if arg_is(argument, "--jobs") {
+            jobs = parse_usize(next_value(args, &mut index, "--jobs")?, "jobs")?;
+        } else if arg_is(argument, "--deflection") {
+            deflection = parse_f64(next_value(args, &mut index, "--deflection")?, "deflection")?;
+        } else if arg_is(argument, "--max-input-bytes") {
+            limits.max_input_bytes = parse_usize(
+                next_value(args, &mut index, "--max-input-bytes")?,
+                "max input bytes",
+            )?;
+        } else if arg_is(argument, "--max-model-entities") {
+            limits.max_model_entities = parse_usize(
+                next_value(args, &mut index, "--max-model-entities")?,
+                "max model entities",
+            )?;
+        } else if arg_is(argument, "--kernel-sha") {
+            parse_utf8(next_value(args, &mut index, "--kernel-sha")?, "kernel SHA")?
+                .clone_into(&mut kernel_sha);
+        } else if arg_is(argument, "--sample") {
+            sample = Some(parse_usize(
+                next_value(args, &mut index, "--sample")?,
+                "sample",
+            )?);
+        } else if arg_is(argument, "--seed") {
+            seed = parse_u64(next_value(args, &mut index, "--seed")?, "seed")?;
+        } else if arg_is(argument, "--source-file") {
+            let url = parse_utf8(
+                next_value(args, &mut index, "--source-file URL")?,
+                "source URL",
+            )?
+            .to_owned();
+            let path = PathBuf::from(next_value(args, &mut index, "--source-file PATH")?);
+            if source_files.insert(url.clone(), path).is_some() {
+                return Err(GauntletError::message(format!(
+                    "duplicate --source-file URL {url}"
+                )));
+            }
+        } else if argument.to_string_lossy().starts_with('-') {
+            return Err(GauntletError::message(format!(
+                "unknown p85-run option {}",
+                argument.to_string_lossy()
+            )));
+        } else {
+            positional.push(PathBuf::from(argument));
+        }
+        index += 1;
+    }
+    if !deflection.is_finite() || deflection <= 0.0 {
+        return Err(GauntletError::message(
+            "deflection must be finite and positive",
+        ));
+    }
+    if jobs == 0 {
+        return Err(GauntletError::message("jobs must be at least 1"));
+    }
+    let models = if positional.is_empty() {
+        let manifest_path = manifest
+            .as_ref()
+            .ok_or_else(|| GauntletError::message("p85-run requires --manifest"))?;
+        let cache_dir = cache
+            .as_ref()
+            .ok_or_else(|| GauntletError::message("p85-run requires --cache"))?
+            .clone();
+        let corpus = read_manifest(manifest_path)?;
+        let sha_by_id: BTreeMap<_, _> = corpus
+            .models
+            .iter()
+            .map(|entry| (entry.id.clone(), entry.sha256.clone()))
+            .collect();
+        let fetched = fetch_manifest(
+            manifest_path,
+            &FetchConfig {
+                cache_dir,
+                sample,
+                seed,
+                source_files,
+            },
+        )?;
+        fetched
+            .into_iter()
+            .map(|model| {
+                let sha = sha_by_id.get(&model.id).cloned().unwrap_or_default();
+                (model.id, sha, model.path)
+            })
+            .collect()
+    } else {
+        if manifest.is_some() || cache.is_some() {
+            return Err(GauntletError::message(
+                "p85-run accepts positional models or --manifest/--cache, not both",
+            ));
+        }
+        positional
+            .into_iter()
+            .map(|path| {
+                let bytes =
+                    fs::read(&path).map_err(|error| GauntletError::message(error.to_string()))?;
+                let stem = path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "model".to_owned());
+                Ok((stem, sha_hex(&bytes), path))
+            })
+            .collect::<Result<Vec<_>, GauntletError>>()?
+    };
+    let manifest_sha256 = if let Some(path) = manifest.as_ref() {
+        sha_hex(&fs::read(path).map_err(|error| GauntletError::message(error.to_string()))?)
+    } else {
+        String::from("positional-models")
+    };
+    Ok(P85ParentArgs {
+        output,
+        timeout: Duration::from_millis(timeout_ms),
+        jobs,
+        pipeline: PipelineConfig {
+            import_limits: limits,
+            deflection,
+        },
+        kernel_sha,
+        manifest_sha256,
+        models,
+    })
+}
+
+fn run_p85_worker(args: &[OsString]) -> Result<(), GauntletError> {
+    let parsed = parse_p85_model_args(args, false)?;
+    let result = process_p85_model(
+        &parsed.model,
+        &parsed.model_id,
+        &parsed.model_sha256,
+        parsed.pipeline,
+        &parsed.kernel_sha,
+        &parsed.manifest_sha256,
+    );
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer(&mut stdout, &result)
+        .map_err(|error| GauntletError::message(error.to_string()))?;
+    stdout
+        .write_all(b"\n")
+        .map_err(|error| GauntletError::message(error.to_string()))
+}
+
+struct P85ModelArgs {
+    model: PathBuf,
+    model_id: String,
+    model_sha256: String,
+    kernel_sha: String,
+    manifest_sha256: String,
+    pipeline: PipelineConfig,
+}
+
+fn parse_p85_model_args(
+    args: &[OsString],
+    allow_replay_flags: bool,
+) -> Result<P85ModelArgs, GauntletError> {
+    let mut deflection = remus_gauntlet::DEFAULT_DEFLECTION;
+    let mut limits = ImportLimits::default();
+    let mut model_id = None;
+    let mut model_sha256 = None;
+    let mut kernel_sha = String::from("local");
+    let mut manifest_sha256 = String::from("unspecified");
+    let mut models = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if arg_is(argument, "--deflection") {
+            deflection = parse_f64(next_value(args, &mut index, "--deflection")?, "deflection")?;
+        } else if arg_is(argument, "--max-input-bytes") {
+            limits.max_input_bytes = parse_usize(
+                next_value(args, &mut index, "--max-input-bytes")?,
+                "max input bytes",
+            )?;
+        } else if arg_is(argument, "--max-model-entities") {
+            limits.max_model_entities = parse_usize(
+                next_value(args, &mut index, "--max-model-entities")?,
+                "max model entities",
+            )?;
+        } else if arg_is(argument, "--model-id") {
+            let mut model_id_value = String::new();
+            parse_utf8(next_value(args, &mut index, "--model-id")?, "model id")?
+                .clone_into(&mut model_id_value);
+            model_id = Some(model_id_value);
+        } else if arg_is(argument, "--model-sha256") {
+            let mut model_sha256_value = String::new();
+            parse_utf8(
+                next_value(args, &mut index, "--model-sha256")?,
+                "model SHA-256",
+            )?
+            .clone_into(&mut model_sha256_value);
+            model_sha256 = Some(model_sha256_value);
+        } else if arg_is(argument, "--kernel-sha") {
+            parse_utf8(next_value(args, &mut index, "--kernel-sha")?, "kernel SHA")?
+                .clone_into(&mut kernel_sha);
+        } else if arg_is(argument, "--manifest-sha256") {
+            parse_utf8(
+                next_value(args, &mut index, "--manifest-sha256")?,
+                "manifest SHA-256",
+            )?
+            .clone_into(&mut manifest_sha256);
+        } else if allow_replay_flags
+            && (arg_is(argument, "--model")
+                || arg_is(argument, "--bundle-out")
+                || arg_is(argument, "--model-timeout-ms"))
+        {
+            if arg_is(argument, "--model") {
+                models.push(PathBuf::from(next_value(args, &mut index, "--model")?));
+            } else {
+                let _ = next_value(args, &mut index, "replay option")?;
+            }
+        } else if argument.to_string_lossy().starts_with('-') {
+            return Err(GauntletError::message(format!(
+                "unknown p85 option {}",
+                argument.to_string_lossy()
+            )));
+        } else {
+            models.push(PathBuf::from(argument));
+        }
+        index += 1;
+    }
+    if !deflection.is_finite() || deflection <= 0.0 {
+        return Err(GauntletError::message(
+            "deflection must be finite and positive",
+        ));
+    }
+    if models.len() != 1 {
+        return Err(GauntletError::message(
+            "p85 worker and replay require exactly one STEP model",
+        ));
+    }
+    Ok(P85ModelArgs {
+        model: models.remove(0),
+        model_id: model_id.ok_or_else(|| GauntletError::message("missing --model-id"))?,
+        model_sha256: model_sha256
+            .ok_or_else(|| GauntletError::message("missing --model-sha256"))?,
+        kernel_sha,
+        manifest_sha256,
+        pipeline: PipelineConfig {
+            import_limits: limits,
+            deflection,
+        },
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_p85_replay(args: &[OsString]) -> Result<(), GauntletError> {
+    let mut bundle_out: Option<PathBuf> = None;
+    let mut model_timeout_ms = 60_000_u64;
+    let mut forwarded = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if arg_is(argument, "--bundle-out") {
+            bundle_out = Some(PathBuf::from(next_value(args, &mut index, "--bundle-out")?));
+        } else if arg_is(argument, "--model-timeout-ms") {
+            model_timeout_ms = parse_u64(
+                next_value(args, &mut index, "--model-timeout-ms")?,
+                "model timeout",
+            )?;
+        } else {
+            forwarded.push(argument.clone());
+        }
+        index += 1;
+    }
+    let parsed = parse_p85_model_args(&forwarded, true)?;
+    let bytes =
+        fs::read(&parsed.model).map_err(|error| GauntletError::message(error.to_string()))?;
+    let actual_sha256 = sha_hex(&bytes);
+    if actual_sha256 != parsed.model_sha256 {
+        return Err(GauntletError::message(format!(
+            "replay model SHA-256 mismatch: expected {}, got {actual_sha256}",
+            parsed.model_sha256
+        )));
+    }
+    let result = process_p85_model(
+        &parsed.model,
+        &parsed.model_id,
+        &parsed.model_sha256,
+        parsed.pipeline,
+        &parsed.kernel_sha,
+        &parsed.manifest_sha256,
+    );
+    let bundle = replay_bundle(
+        &result,
+        u64::try_from(bytes.len())
+            .map_err(|_| GauntletError::message("replay model is too large"))?,
+        parsed.pipeline.import_limits,
+        parsed.pipeline.deflection,
+        Duration::from_millis(model_timeout_ms),
+    );
+    if let Some(path) = bundle_out {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| GauntletError::message(error.to_string()))?;
+        }
+        let mut json = serde_json::to_vec_pretty(&bundle)
+            .map_err(|error| GauntletError::message(error.to_string()))?;
+        json.push(b'\n');
+        fs::write(path, json).map_err(|error| GauntletError::message(error.to_string()))?;
+    }
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer(&mut stdout, &result)
+        .map_err(|error| GauntletError::message(error.to_string()))?;
+    stdout
+        .write_all(b"\n")
+        .map_err(|error| GauntletError::message(error.to_string()))
+}
+
+fn sha_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 struct ParsedArgs {
