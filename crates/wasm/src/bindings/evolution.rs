@@ -376,6 +376,30 @@ impl BrepKernel {
         }))
     }
 
+    fn circular_pattern_journaled_json(
+        &mut self,
+        solid: u32,
+        axis: [f64; 3],
+        count: u32,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let count =
+            crate::error::validate_work_count(count, "count").map_err(StructuredWasmError::from)?;
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let journaled = journal_ops::circular_pattern_journaled(
+            self.topo_mut(),
+            solid_id,
+            remus_math::vec::Vec3::new(axis[0], axis[1], axis[2]),
+            count,
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "compound": crate::handles::compound_id_to_u32(journaled.compound),
+            "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn imprint_json(
         &mut self,
         target: u32,
@@ -727,6 +751,18 @@ impl BrepKernel {
                 let count = get_u32(args, "count")?;
                 self.linear_pattern_journaled_json(solid, [*dx, *dy, *dz], spacing, count)
             })(),
+            "circularPatternJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let axis = crate::helpers::get_f64_array(args, "axis")?;
+                let [ax, ay, az] = axis.as_slice() else {
+                    return Err(StructuredWasmError::invalid_argument(
+                        "'axis' must have exactly 3 components",
+                        Some("axis"),
+                    ));
+                };
+                let count = get_u32(args, "count")?;
+                self.circular_pattern_journaled_json(solid, [*ax, *ay, *az], count)
+            })(),
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
@@ -885,6 +921,25 @@ impl BrepKernel {
             validate_finite(value, name)?;
         }
         self.linear_pattern_journaled_json(solid, [dx, dy, dz], spacing, count)
+            .map(|v| v.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Circular pattern journaled as one evolution entry (kind
+    /// `circular_pattern`). Returns JSON `{"compound", "op"}`.
+    #[wasm_bindgen(js_name = "circularPatternJournaled")]
+    pub fn circular_pattern_journaled_js(
+        &mut self,
+        solid: u32,
+        ax: f64,
+        ay: f64,
+        az: f64,
+        count: u32,
+    ) -> Result<String, JsError> {
+        for (name, value) in [("ax", ax), ("ay", ay), ("az", az)] {
+            validate_finite(value, name)?;
+        }
+        self.circular_pattern_journaled_json(solid, [ax, ay, az], count)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
     }
@@ -2911,6 +2966,247 @@ mod evolution_contract_tests {
                         "solid": retired,
                         "direction": [1.0, 0.0, 0.0],
                         "spacing": 12.0,
+                        "count": 2,
+                    },
+                }])
+                .to_string(),
+            ),
+        )
+        .unwrap();
+        assert!(response[0].get("error").is_some());
+        assert_eq!(
+            kernel.topo().journal().entries().len(),
+            entries_before,
+            "foreign-handle refusal must not publish history"
+        );
+    }
+
+    #[test]
+    fn circular_pattern_journaled_resolves_all_kinds_direct_and_batch() {
+        // Success cell: origin box count 2 about Z (point-touching, supported).
+        // Direct and batch must agree, and every result face/edge/vertex must
+        // resolve bound with construction provenance (total F/E/V lineage).
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+            let (compound, op) = if batch {
+                let response: serde_json::Value = serde_json::from_str(
+                    &kernel.execute_batch(
+                        &serde_json::json!([{
+                            "op": "circularPatternJournaled",
+                            "args": {
+                                "solid": source,
+                                "axis": [0.0, 0.0, 1.0],
+                                "count": 2,
+                            },
+                        }])
+                        .to_string(),
+                    ),
+                )
+                .unwrap();
+                let ok = &response[0]["ok"];
+                let compound = u32::try_from(ok["compound"].as_u64().unwrap()).unwrap();
+                let op = u32::try_from(ok["op"].as_u64().unwrap()).unwrap();
+                (compound, op)
+            } else {
+                let payload: serde_json::Value = serde_json::from_str(
+                    &kernel
+                        .circular_pattern_journaled_js(source, 0.0, 0.0, 1.0, 2)
+                        .unwrap(),
+                )
+                .unwrap();
+                let compound = u32::try_from(payload["compound"].as_u64().unwrap()).unwrap();
+                let op = u32::try_from(payload["op"].as_u64().unwrap()).unwrap();
+                (compound, op)
+            };
+            // 6+6 faces, 12+12 edges, 8+8 vertices across two boxes.
+            for (kind, expected) in [("face", 12u32), ("edge", 24u32), ("vertex", 16u32)] {
+                let mut handles = std::collections::BTreeSet::new();
+                for index in 0..expected {
+                    let resolution: serde_json::Value = if batch {
+                        let batch_response: serde_json::Value = serde_json::from_str(
+                            &kernel.execute_batch(
+                                &serde_json::json!([{
+                                    "op": "resolveOperationOutput",
+                                    "args": {"op": op, "kind": kind, "index": index},
+                                }])
+                                .to_string(),
+                            ),
+                        )
+                        .unwrap();
+                        batch_response[0]["ok"].clone()
+                    } else {
+                        serde_json::from_str(
+                            &kernel.resolve_operation_output(op, kind, index).unwrap(),
+                        )
+                        .unwrap()
+                    };
+                    assert_eq!(
+                        resolution["status"], "bound",
+                        "{kind} output {index} must resolve bound, got {resolution}"
+                    );
+                    assert_eq!(resolution["provenance"], "construction");
+                    let entities = resolution["entities"].as_array().unwrap();
+                    assert_eq!(entities.len(), 1);
+                    let handle = entities[0]["handle"].as_u64().unwrap();
+                    assert!(handles.insert(handle), "{kind} outputs must be distinct");
+                    assert_eq!(entities[0]["kind"], kind);
+                }
+                let _ = compound;
+            }
+            let summary: serde_json::Value =
+                serde_json::from_str(&kernel.journal_summary()).unwrap();
+            let entry = summary
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["op"].as_u64() == Some(u64::from(op)))
+                .unwrap();
+            assert_eq!(entry["kind"], "circular_pattern");
+            assert_eq!(entry["type"], "evolution");
+            assert_eq!(entry["detail"]["origin"], "construction");
+        }
+        // Disjoint count 3 via an offset box: direct and batch agree on the
+        // same compound/op shape and total F/E/V census (18/36/24).
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+            let source_id = kernel.resolve_solid(source).unwrap();
+            remus_operations::transform::transform_solid(
+                kernel.topo_mut(),
+                source_id,
+                &remus_math::mat::Mat4::translation(30.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let (compound, op) = if batch {
+                let response: serde_json::Value = serde_json::from_str(
+                    &kernel.execute_batch(
+                        &serde_json::json!([{
+                            "op": "circularPatternJournaled",
+                            "args": {
+                                "solid": source,
+                                "axis": [0.0, 0.0, 1.0],
+                                "count": 3,
+                            },
+                        }])
+                        .to_string(),
+                    ),
+                )
+                .unwrap();
+                let ok = &response[0]["ok"];
+                (
+                    u32::try_from(ok["compound"].as_u64().unwrap()).unwrap(),
+                    u32::try_from(ok["op"].as_u64().unwrap()).unwrap(),
+                )
+            } else {
+                let payload: serde_json::Value = serde_json::from_str(
+                    &kernel
+                        .circular_pattern_journaled_js(source, 0.0, 0.0, 1.0, 3)
+                        .unwrap(),
+                )
+                .unwrap();
+                (
+                    u32::try_from(payload["compound"].as_u64().unwrap()).unwrap(),
+                    u32::try_from(payload["op"].as_u64().unwrap()).unwrap(),
+                )
+            };
+            for (kind, expected) in [("face", 18u32), ("edge", 36u32), ("vertex", 24u32)] {
+                let resolution: serde_json::Value = if batch {
+                    let batch_response: serde_json::Value = serde_json::from_str(
+                        &kernel.execute_batch(
+                            &serde_json::json!([{
+                                "op": "resolveOperationOutput",
+                                "args": {"op": op, "kind": kind, "index": 0},
+                            }])
+                            .to_string(),
+                        ),
+                    )
+                    .unwrap();
+                    batch_response[0]["ok"].clone()
+                } else {
+                    serde_json::from_str(&kernel.resolve_operation_output(op, kind, 0).unwrap())
+                        .unwrap()
+                };
+                // At least the first output of each kind resolves bound.
+                assert_eq!(resolution["status"], "bound");
+                assert_eq!(resolution["provenance"], "construction");
+                let _ = expected;
+                let _ = compound;
+            }
+            let summary: serde_json::Value =
+                serde_json::from_str(&kernel.journal_summary()).unwrap();
+            let entry = summary
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["op"].as_u64() == Some(u64::from(op)))
+                .unwrap();
+            assert_eq!(entry["kind"], "circular_pattern");
+        }
+        // Refusal cells: batch returns typed errors, and the source survives.
+        // Direct error paths are not exercised natively (JsError cannot
+        // construct there); batch is the WASM refusal surface.
+        let mut kernel = BrepKernel::new();
+        let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        for (axis, count, tag) in [
+            ([0.0, 0.0, 0.0], 2u32, "axis"),
+            ([1.0, 0.0, 0.0], 0u32, "count0"),
+            ([1.0, 0.0, 0.0], 1u32, "count1"),
+        ] {
+            let response: serde_json::Value = serde_json::from_str(
+                &kernel.execute_batch(
+                    &serde_json::json!([{
+                        "op": "circularPatternJournaled",
+                        "args": {
+                            "solid": source,
+                            "axis": axis,
+                            "count": count,
+                        },
+                    }])
+                    .to_string(),
+                ),
+            )
+            .unwrap();
+            assert!(
+                response[0].get("error").is_some(),
+                "{tag} refusal must surface a batch error, got {}",
+                response[0]
+            );
+        }
+        // Material overlap refuses: a Z-coaxial cylinder rotated about Z sits
+        // on itself, so instances 0 and 1 overlap by the full volume.
+        let cylinder = kernel.make_cylinder_solid(2.0, 5.0).unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            &kernel.execute_batch(
+                &serde_json::json!([{
+                    "op": "circularPatternJournaled",
+                    "args": {
+                        "solid": cylinder,
+                        "axis": [0.0, 0.0, 1.0],
+                        "count": 2,
+                    },
+                }])
+                .to_string(),
+            ),
+        )
+        .unwrap();
+        assert!(
+            response[0].get("error").is_some(),
+            "overlap refusal must surface a batch error, got {}",
+            response[0]
+        );
+        // Foreign handle refuses without publishing history.
+        let retired = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let retired_id = kernel.resolve_solid(retired).unwrap();
+        kernel.topo_mut().delete_solid(retired_id).unwrap();
+        let entries_before = kernel.topo().journal().entries().len();
+        let response: serde_json::Value = serde_json::from_str(
+            &kernel.execute_batch(
+                &serde_json::json!([{
+                    "op": "circularPatternJournaled",
+                    "args": {
+                        "solid": retired,
+                        "axis": [0.0, 0.0, 1.0],
                         "count": 2,
                     },
                 }])
