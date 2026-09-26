@@ -1029,6 +1029,11 @@ export class BrepKernel {
      */
     circularPattern(solid: number, ax: number, ay: number, az: number, count: number): number;
     /**
+     * Circular pattern journaled as one evolution entry (kind
+     * `circular_pattern`). Returns JSON `{"compound", "op"}`.
+     */
+    circularPatternJournaled(solid: number, ax: number, ay: number, az: number, count: number): string;
+    /**
      * Classify a point relative to a solid: inside, outside, or on boundary.
      *
      * Returns `"inside"`, `"outside"`, or `"boundary"`.
