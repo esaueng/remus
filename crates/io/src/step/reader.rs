@@ -4689,20 +4689,6 @@ impl<'a> StepBuilder<'a> {
             .tolerance()
             .max(end_vertex.tolerance())
             .max(self.model_tolerance_cap);
-        // Exact analytic carriers (Circle/Ellipse) with bare vertices may carry
-        // exporter fitting tolerance up to the loose classification deflection
-        // (0.1 micrometre). The exact carrier is preserved and the measured
-        // residual is stored as edge tolerance (no healing, no diagnostic),
-        // consistent with face-bound UV classification which already uses loose.
-        // NURBS recovery remains at the absolute 1e-6 ceiling (pinned) to prevent
-        // healing approximate carriers into exact edges.
-        let analytic_cap = tolerance_cap.max(FACE_BOUND_CLASSIFICATION_DEFLECTION);
-        let analytic_endpoint_error = |label: &str, distance: f64| IoError::ParseError {
-            reason: format!(
-                "EDGE_CURVE #{ec_ref} {label} endpoint misses its carrier by \
-                 {distance:.6e} mm (analytic cap {analytic_cap:.6e} mm)"
-            ),
-        };
         let mut measured_tolerance = start_vertex
             .tolerance()
             .max(end_vertex.tolerance())
@@ -4743,8 +4729,8 @@ impl<'a> StepBuilder<'a> {
             EdgeCurve::Circle(circle) => {
                 let t0 = circle.project(start);
                 let start_residual = (circle.evaluate(t0) - start).length();
-                if !start_residual.is_finite() || start_residual > analytic_cap {
-                    return Err(analytic_endpoint_error("start", start_residual));
+                if !start_residual.is_finite() || start_residual > tolerance_cap {
+                    return Err(endpoint_error("start", start_residual));
                 }
                 measured_tolerance = measured_tolerance.max(start_residual);
                 if let Some(span) = declared_curve_trim.and_then(|trim| trim.periodic_span) {
@@ -4754,8 +4740,8 @@ impl<'a> StepBuilder<'a> {
                 } else {
                     let projected_end = circle.project(end);
                     let end_residual = (circle.evaluate(projected_end) - end).length();
-                    if !end_residual.is_finite() || end_residual > analytic_cap {
-                        return Err(analytic_endpoint_error("end", end_residual));
+                    if !end_residual.is_finite() || end_residual > tolerance_cap {
+                        return Err(endpoint_error("end", end_residual));
                     }
                     measured_tolerance = measured_tolerance.max(end_residual);
                     (
@@ -4767,8 +4753,8 @@ impl<'a> StepBuilder<'a> {
             EdgeCurve::Ellipse(ellipse) => {
                 let t0 = ellipse.project(start);
                 let start_residual = (ellipse.evaluate(t0) - start).length();
-                if !start_residual.is_finite() || start_residual > analytic_cap {
-                    return Err(analytic_endpoint_error("start", start_residual));
+                if !start_residual.is_finite() || start_residual > tolerance_cap {
+                    return Err(endpoint_error("start", start_residual));
                 }
                 measured_tolerance = measured_tolerance.max(start_residual);
                 if let Some(span) = declared_curve_trim.and_then(|trim| trim.periodic_span) {
@@ -4778,8 +4764,8 @@ impl<'a> StepBuilder<'a> {
                 } else {
                     let projected_end = ellipse.project(end);
                     let end_residual = (ellipse.evaluate(projected_end) - end).length();
-                    if !end_residual.is_finite() || end_residual > analytic_cap {
-                        return Err(analytic_endpoint_error("end", end_residual));
+                    if !end_residual.is_finite() || end_residual > tolerance_cap {
+                        return Err(endpoint_error("end", end_residual));
                     }
                     measured_tolerance = measured_tolerance.max(end_residual);
                     (
@@ -4931,19 +4917,7 @@ impl<'a> StepBuilder<'a> {
 
         for (label, point, parameter) in [("start", start, range.0), ("end", end, range.1)] {
             let residual = (curve.evaluate_with_endpoints(parameter, start, end) - point).length();
-            // Analytic Circle/Ellipse trims use the fitting cap above so the
-            // branch checks and this final authority check agree; all other
-            // carriers retain the declared cap.
-            let is_analytic_circle = matches!(&curve, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_));
-            let final_cap = if is_analytic_circle {
-                analytic_cap
-            } else {
-                tolerance_cap
-            };
-            if !residual.is_finite() || residual > final_cap {
-                if is_analytic_circle {
-                    return Err(analytic_endpoint_error(label, residual));
-                }
+            if !residual.is_finite() || residual > tolerance_cap {
                 return Err(endpoint_error(label, residual));
             }
             measured_tolerance = measured_tolerance.max(residual);
@@ -11182,10 +11156,7 @@ mod tests {
         let error = builder
             .import_edge_with_authority(77, start, end, EdgeCurve::Circle(circle), None)
             .unwrap_err();
-        // Analytic Circle/Ellipse authority uses the fitting cap
-        // (max(declared, loose)) so the label names that cap; the 1e-2 miss
-        // still exceeds the 1e-3 analytic cap here.
-        assert!(error.to_string().contains("analytic cap 1.000000e-3"));
+        assert!(error.to_string().contains("declared cap 1.000000e-3"));
     }
 
     #[test]
@@ -11534,19 +11505,23 @@ mod tests {
         edge.strict_domain().unwrap();
     }
 
-    /// O1.1d analytic fitting tolerance for bare Circle endpoints.
+    /// O1.1d analytic endpoint authority stays at the declared/model cap.
     ///
-    /// Bare Circle vertices may carry exporter fitting tolerance up to loose
-    /// with the exact carrier preserved. NURBS recovery stays at 1e-6.
+    /// Bare Circle/Ellipse endpoints that miss their exact carrier beyond the
+    /// declared cap refuse transactionally (no healing, no widening to the
+    /// loose classification deflection, which never replaces exact edge
+    /// geometry). Witnesses (MAMBO Apache-2.0): mambo-basic-b25 (B25.step,
+    /// 22907 bytes) CIRCLE r0.35 EDGE_CURVE #259 end miss 1.44e-6 vs 1e-6
+    /// declared; mambo-simple-s5 analytic layer (S5.step) CIRCLE r14.0 #1488
+    /// end miss 2.53e-6 vs 1e-6 (its later NURBS #1493 still refuses).
+    /// B25 verbatim carrier-local numbers: center (0.5,0.5,0.75),
+    /// normal ~(0,-1,0), ref (-1,0,0), r0.35; vertices (0.5,0.5,1.1) exact
+    /// and off vertex 1.44e-6 away.
     #[test]
-    fn analytic_circle_fitting_tolerance_accepts_exporter_roundoff() {
-        // Witnesses (MAMBO Apache-2.0): mambo-basic-b25 (B25.step, 22907
-        // bytes) CIRCLE r0.35 EDGE_CURVE #259 end miss 1.44e-6 vs 1e-6;
-        // mambo-simple-s5 analytic layer (S5.step) CIRCLE r14.0 #1488 end
-        // miss 2.53e-6 vs 1e-6 (its later NURBS #1493 still refuses).
-        // B25 verbatim carrier-local numbers: center (0.5,0.5,0.75),
-        // normal ~(0,-1,0), ref (-1,0,0), r0.35; vertices (0.5,0.5,1.1) exact
-        // and off vertex 1.44e-6 away.
+    fn analytic_circle_exporter_miss_refuses_beyond_declared_cap() {
+        // S5 verbatim carrier-local numbers: center (-53,45,23),
+        // normal (0,0,-1), ref (0,1,0), r14.0; vertices (-67,45,23) exact and
+        // off vertex 2.53e-6 away.
         let b25_circle = remus_math::curves::Circle3D::new_with_ref(
             Point3::new(0.5, 0.5, 0.75),
             Vec3::new(1.586_032_892_321_65e-16, -1.0, 0.0),
@@ -11560,9 +11535,6 @@ mod tests {
             0.500_000_000_000_096,
             0.827_777_777_778,
         );
-        // S5 verbatim carrier-local numbers: center (-53,45,23),
-        // normal (0,0,-1), ref (0,1,0), r14.0; vertices (-67,45,23) exact and
-        // off vertex 2.53e-6 away.
         let s5_circle = remus_math::curves::Circle3D::new_with_ref(
             Point3::new(-53.0, 45.0, 23.0),
             Vec3::new(0.0, 0.0, -1.0),
@@ -11576,28 +11548,74 @@ mod tests {
             58.999_997_471_549_7,
             23.000_000_000_002_1,
         );
-        for (circle, exact, off, expected_residual) in [
-            (b25_circle, b25_exact, b25_off, 1.438_593e-6),
-            (s5_circle, s5_exact, s5_off, 2.528_450e-6),
+        for (circle, exact, off) in [
+            (b25_circle, b25_exact, b25_off),
+            (s5_circle, s5_exact, s5_off),
         ] {
-            let (topo, edge_id) = imported_edge(EdgeCurve::Circle(circle), exact, off, false)
-                .expect("exporter fitting tolerance within analytic cap");
-            let edge = topo.edge(edge_id).unwrap();
-            let stored = edge.tolerance().unwrap();
+            let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            let start_id = topo.add_vertex(Vertex::new(exact, Tolerance::new().linear));
+            let end_id = topo.add_vertex(Vertex::new(off, Tolerance::new().linear));
+            let edge_count = topo.num_edges();
+            let error = {
+                let mut builder =
+                    StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+                builder
+                    .import_edge_with_authority(
+                        42,
+                        start_id,
+                        end_id,
+                        EdgeCurve::Circle(circle),
+                        None,
+                    )
+                    .unwrap_err()
+            };
+            let message = error.to_string();
             assert!(
-                (stored - expected_residual).abs() < 2e-11,
-                "stored {stored:.6e} vs expected {expected_residual:.6e}"
+                message.contains("endpoint misses its carrier"),
+                "B25/S5 witness must refuse: {message}"
             );
             assert!(
-                stored <= FACE_BOUND_CLASSIFICATION_DEFLECTION,
-                "stored tolerance must stay within loose"
+                message.contains("declared cap 1.000000e-7"),
+                "authority stays at the declared/model cap, not loose: {message}"
             );
-            edge.strict_domain().unwrap();
+            assert_eq!(topo.num_edges(), edge_count, "refusal must not allocate");
+            assert!(
+                (topo.vertex(start_id).unwrap().tolerance() - 1e-7).abs() < f64::EPSILON
+                    && (topo.vertex(end_id).unwrap().tolerance() - 1e-7).abs() < f64::EPSILON,
+                "declared vertex tolerances are preserved"
+            );
         }
     }
 
     #[test]
-    fn analytic_ellipse_fitting_tolerance_matches_circle() {
+    fn analytic_circle_within_declared_cap_still_accepts_exact_carrier() {
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let exact = circle.evaluate(0.3);
+        let off = circle.evaluate(0.9) + Vec3::new(0.0, 0.0, 5.0e-8);
+        let (topo, edge_id) = imported_edge(EdgeCurve::Circle(circle), exact, off, false)
+            .expect("miss within the declared 1e-7 cap must accept");
+        let edge = topo.edge(edge_id).unwrap();
+        assert!(
+            matches!(edge.curve(), EdgeCurve::Circle(_)),
+            "exact Circle carrier is preserved, never converted"
+        );
+        let stored = edge.tolerance().unwrap();
+        assert!(
+            (stored - Tolerance::new().linear).abs() < 1e-15,
+            "miss below the floor keeps the 1e-7 floor, not the 5e-8 residual: {stored:.6e}"
+        );
+        edge.strict_domain().unwrap();
+    }
+
+    #[test]
+    fn analytic_ellipse_exporter_miss_refuses_beyond_declared_cap() {
         let ellipse = remus_math::curves::Ellipse3D::new_with_ref(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
@@ -11608,11 +11626,55 @@ mod tests {
         .unwrap();
         let exact = ellipse.evaluate(0.3);
         let off = ellipse.evaluate(0.9) + Vec3::new(0.0, 0.0, 2.0e-6);
+        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let start_id = topo.add_vertex(Vertex::new(exact, Tolerance::new().linear));
+        let end_id = topo.add_vertex(Vertex::new(off, Tolerance::new().linear));
+        let edge_count = topo.num_edges();
+        let error = {
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+            builder
+                .import_edge_with_authority(42, start_id, end_id, EdgeCurve::Ellipse(ellipse), None)
+                .unwrap_err()
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("endpoint misses its carrier"),
+            "ellipse miss beyond declared cap must refuse: {message}"
+        );
+        assert!(
+            message.contains("declared cap 1.000000e-7"),
+            "ellipse authority stays at the declared cap: {message}"
+        );
+        assert_eq!(topo.num_edges(), edge_count, "refusal must not allocate");
+    }
+
+    #[test]
+    fn analytic_ellipse_within_declared_cap_still_accepts_exact_carrier() {
+        let ellipse = remus_math::curves::Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let exact = ellipse.evaluate(0.3);
+        let off = ellipse.evaluate(0.9) + Vec3::new(0.0, 0.0, 5.0e-8);
         let (topo, edge_id) = imported_edge(EdgeCurve::Ellipse(ellipse), exact, off, false)
-            .expect("ellipse fitting tolerance within analytic cap");
+            .expect("ellipse miss within the declared cap must accept");
         let edge = topo.edge(edge_id).unwrap();
+        assert!(
+            matches!(edge.curve(), EdgeCurve::Ellipse(_)),
+            "exact Ellipse carrier is preserved, never converted"
+        );
         let stored = edge.tolerance().unwrap();
-        assert!((stored - 2.0e-6).abs() < 5e-10, "stored {stored:.6e}");
+        assert!(
+            (stored - Tolerance::new().linear).abs() < 1e-15,
+            "miss below the floor keeps the 1e-7 floor: {stored:.6e}"
+        );
         edge.strict_domain().unwrap();
     }
 
@@ -11640,7 +11702,7 @@ mod tests {
                 .unwrap_err()
         };
         assert!(error.to_string().contains("endpoint misses its carrier"));
-        assert!(error.to_string().contains("analytic cap 1.000000e-4"));
+        assert!(error.to_string().contains("declared cap 1.000000e-7"));
         assert_eq!(topo.num_edges(), edge_count);
     }
 
