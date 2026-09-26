@@ -1,0 +1,504 @@
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.07396, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.06481200000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.064942, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.08348799999999999, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.050605000000000004, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.067908, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.078719, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.0583, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.070664, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.065364, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.058891000000000006, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.049573, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.05314, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 0, "depth": 0, "ms": 0.053501, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.17279599999999998, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.059162, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.053701, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.16650500000000001, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.170883, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.050996, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.049974, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.158069, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.146287, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.077426, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.061766999999999996, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.136959, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.159301, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 0, "depth": 8, "ms": 0.067888, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.65062, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.554499, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.6286780000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.649428, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.551462, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.551513, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.5485680000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.51831, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.642184, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.511908, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.5858979999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.57663, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.566942, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 100, "depth": 0, "ms": 0.521436, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 100, "depth": 8, "ms": 4.759860000000001, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.628478, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.536784, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 100, "depth": 8, "ms": 5.204691, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 100, "depth": 8, "ms": 4.741094, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.566391, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.7331259999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 100, "depth": 8, "ms": 4.587665, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 100, "depth": 8, "ms": 4.861923, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.673984, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.546905, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 100, "depth": 8, "ms": 4.693825, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 100, "depth": 8, "ms": 5.695169, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 100, "depth": 8, "ms": 0.53947, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.487586, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.518624, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 4.871791, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 4.519966, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.646316000000001, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.595751000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 4.999914, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.853416999999999, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.072781, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.771573, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.435207, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.5188950000000006, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 4.982521, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 1000, "depth": 0, "ms": 5.645003, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 47.500813, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 5.534054, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 5.6959089999999994, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 46.88535, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 45.880199000000005, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 5.136763, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 5.331621, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 46.432504, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 48.127900000000004, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 5.02415, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 5.5179540000000005, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 47.643181999999996, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 50.133411, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": false, "size": 1000, "depth": 8, "ms": 6.102469, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 0, "depth": 0, "ms": 3.763115, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 0, "depth": 0, "ms": 3.914732, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.319887, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.251097, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 0, "depth": 0, "ms": 3.639181, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.359132, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 0, "depth": 0, "ms": 3.603374, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.34209, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.225389000000001, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 0, "depth": 0, "ms": 3.391332, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 0, "depth": 0, "ms": 3.652136, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.046251, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.007227, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 0, "depth": 0, "ms": 4.100964, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.745622, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.916325, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.711177, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.217594, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.7419049999999996, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.274823, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.655031, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.371626, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.378018, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.633531, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.297225, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.36328, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 0, "depth": 8, "ms": 3.7428470000000003, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 0, "depth": 8, "ms": 4.30511, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.90289, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.8392100000000005, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.961712, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 100, "depth": 0, "ms": 5.075066, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.921976, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.499528, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 100, "depth": 0, "ms": 3.9209140000000002, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 100, "depth": 0, "ms": 5.089983999999999, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 100, "depth": 0, "ms": 5.69623, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.130288999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.809362999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 100, "depth": 0, "ms": 5.602684, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 100, "depth": 0, "ms": 5.405209999999999, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 100, "depth": 0, "ms": 4.709335, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 100, "depth": 8, "ms": 10.928163, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 100, "depth": 8, "ms": 4.080625, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 100, "depth": 8, "ms": 4.212966000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 100, "depth": 8, "ms": 10.702926999999999, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 100, "depth": 8, "ms": 9.757518999999998, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 100, "depth": 8, "ms": 5.129359, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 100, "depth": 8, "ms": 4.901898, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 100, "depth": 8, "ms": 9.586045, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 100, "depth": 8, "ms": 9.760305, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 100, "depth": 8, "ms": 4.9041120000000005, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 100, "depth": 8, "ms": 4.946061, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 100, "depth": 8, "ms": 8.760805, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 100, "depth": 8, "ms": 9.343336, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 100, "depth": 8, "ms": 4.817098, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 14.78743, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 8.708606000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 10.258717, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 16.042562, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 15.109008, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 9.577729999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 9.788208, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 14.933085, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 14.27988, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 8.326253000000001, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 9.111899, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 14.109217000000001, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 15.582433, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 1000, "depth": 0, "ms": 9.291146999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 53.497072, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 9.489703, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 0}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 9.086129999999999, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 57.559793, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 1}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 56.249835999999995, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 10.07519, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 2}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 9.914917, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 55.138195, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 3}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 57.035351999999996, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 8.644665, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 4}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 9.906722, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 57.063836, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 5}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 56.939491000000004, "metrics": null, "revision": "baseline", "runtime": "native", "sample": 6}
+{"gfa": true, "size": 1000, "depth": 8, "ms": 10.114604, "metrics": null, "revision": "candidate", "runtime": "native", "sample": 6}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 4.052663000000003, "metrics": null, "peakRssBytes": 76365824, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.9224160000000055, "metrics": null, "peakRssBytes": 76730368, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 4.021073000000001, "metrics": null, "peakRssBytes": 76963840, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.994081999999999, "metrics": null, "peakRssBytes": 76709888, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.9862479999999962, "metrics": null, "peakRssBytes": 76300288, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.952231999999995, "metrics": null, "peakRssBytes": 76349440, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.763216, "metrics": null, "peakRssBytes": 76947456, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.9462620000000044, "metrics": null, "peakRssBytes": 76537856, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 4.0219239999999985, "metrics": null, "peakRssBytes": 76423168, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 4.593935999999999, "metrics": null, "peakRssBytes": 75362304, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.988330999999995, "metrics": null, "peakRssBytes": 76931072, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 4.024699999999996, "metrics": null, "peakRssBytes": 76529664, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 4.046851000000004, "metrics": null, "peakRssBytes": 76103680, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "false", "ms": 3.9510309999999933, "metrics": null, "peakRssBytes": 76279808, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.9617310000000003, "metrics": null, "peakRssBytes": 75988992, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.7738860000000045, "metrics": null, "peakRssBytes": 76840960, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.9748360000000034, "metrics": null, "peakRssBytes": 75751424, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 4.104430000000001, "metrics": null, "peakRssBytes": 75575296, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.9995019999999997, "metrics": null, "peakRssBytes": 75485184, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.8160560000000032, "metrics": null, "peakRssBytes": 76566528, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 4.0281360000000035, "metrics": null, "peakRssBytes": 76460032, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.970165999999999, "metrics": null, "peakRssBytes": 75665408, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.963132999999999, "metrics": null, "peakRssBytes": 76410880, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 4.629804, "metrics": null, "peakRssBytes": 76636160, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.937464999999996, "metrics": null, "peakRssBytes": 75898880, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 4.014790999999995, "metrics": null, "peakRssBytes": 75816960, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 4.015522000000004, "metrics": null, "peakRssBytes": 76017664, "linearMemoryBytes": 1441792, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "direct", "checkpoint": "true", "ms": 3.936772999999995, "metrics": null, "peakRssBytes": 76521472, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.687985999999995, "metrics": null, "peakRssBytes": 76779520, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.690221000000001, "metrics": null, "peakRssBytes": 76775424, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.672196, "metrics": null, "peakRssBytes": 76808192, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.810206999999998, "metrics": null, "peakRssBytes": 76414976, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.708375000000004, "metrics": null, "peakRssBytes": 77209600, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 8.603437, "metrics": null, "peakRssBytes": 76697600, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.641058000000001, "metrics": null, "peakRssBytes": 77221888, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.7146959999999964, "metrics": null, "peakRssBytes": 77307904, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.692365000000002, "metrics": null, "peakRssBytes": 76713984, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 8.960040999999997, "metrics": null, "peakRssBytes": 76443648, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.665453999999997, "metrics": null, "peakRssBytes": 76406784, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.709557000000004, "metrics": null, "peakRssBytes": 77357056, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 8.320221999999994, "metrics": null, "peakRssBytes": 77611008, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "false", "ms": 7.622633, "metrics": null, "peakRssBytes": 77250560, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.639083999999997, "metrics": null, "peakRssBytes": 77316096, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 8.147895999999996, "metrics": null, "peakRssBytes": 76664832, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.671775000000004, "metrics": null, "peakRssBytes": 77107200, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.778417000000005, "metrics": null, "peakRssBytes": 77303808, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 8.95391, "metrics": null, "peakRssBytes": 76926976, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.785379999999996, "metrics": null, "peakRssBytes": 77660160, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 8.157644999999995, "metrics": null, "peakRssBytes": 77103104, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 8.432724, "metrics": null, "peakRssBytes": 76808192, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.728292000000003, "metrics": null, "peakRssBytes": 77348864, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.682957000000002, "metrics": null, "peakRssBytes": 77299712, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 8.503498, "metrics": null, "peakRssBytes": 77684736, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.728453000000002, "metrics": null, "peakRssBytes": 77492224, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 7.7052090000000035, "metrics": null, "peakRssBytes": 77180928, "linearMemoryBytes": 1507328, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "batch", "checkpoint": "true", "ms": 8.029482000000002, "metrics": null, "peakRssBytes": 76959744, "linearMemoryBytes": 1441792, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.100813000000002, "metrics": null, "peakRssBytes": 82538496, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.112285, "metrics": null, "peakRssBytes": 81416192, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.1289370000000005, "metrics": null, "peakRssBytes": 81092608, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.161659, "metrics": null, "peakRssBytes": 82681856, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.026111999999998, "metrics": null, "peakRssBytes": 82784256, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.127404000000006, "metrics": null, "peakRssBytes": 82358272, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 3.988742000000002, "metrics": null, "peakRssBytes": 82812928, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.145497999999996, "metrics": null, "peakRssBytes": 82202624, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.716707999999997, "metrics": null, "peakRssBytes": 82341888, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.165545999999999, "metrics": null, "peakRssBytes": 83595264, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.1264520000000005, "metrics": null, "peakRssBytes": 82321408, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.0943519999999936, "metrics": null, "peakRssBytes": 83103744, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.091486000000003, "metrics": null, "peakRssBytes": 83013632, "linearMemoryBytes": 3276800, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "false", "ms": 4.48518, "metrics": null, "peakRssBytes": 81571840, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.587084000000004, "metrics": null, "peakRssBytes": 85323776, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.464932000000005, "metrics": null, "peakRssBytes": 84660224, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 5.356076999999999, "metrics": null, "peakRssBytes": 84217856, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.462508, "metrics": null, "peakRssBytes": 83492864, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.5238939999999985, "metrics": null, "peakRssBytes": 85573632, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.537559000000002, "metrics": null, "peakRssBytes": 85430272, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 7.950612999999997, "metrics": null, "peakRssBytes": 84152320, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 5.801899999999996, "metrics": null, "peakRssBytes": 83988480, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.5690290000000005, "metrics": null, "peakRssBytes": 85684224, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.749950999999996, "metrics": null, "peakRssBytes": 84705280, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.612070000000003, "metrics": null, "peakRssBytes": 85024768, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.746003999999999, "metrics": null, "peakRssBytes": 84017152, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.636876999999998, "metrics": null, "peakRssBytes": 84316160, "linearMemoryBytes": 4849664, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "direct", "checkpoint": "true", "ms": 4.474320000000006, "metrics": null, "peakRssBytes": 85237760, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.403849999999998, "metrics": null, "peakRssBytes": 84856832, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 7.811820999999995, "metrics": null, "peakRssBytes": 84008960, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 9.515492000000002, "metrics": null, "peakRssBytes": 83791872, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.433255000000003, "metrics": null, "peakRssBytes": 83173376, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.273373, "metrics": null, "peakRssBytes": 85483520, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 9.408338999999998, "metrics": null, "peakRssBytes": 83001344, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 9.160559999999997, "metrics": null, "peakRssBytes": 82386944, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.795169000000001, "metrics": null, "peakRssBytes": 85798912, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.294272999999997, "metrics": null, "peakRssBytes": 85979136, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 9.145250999999995, "metrics": null, "peakRssBytes": 83083264, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 7.746097000000006, "metrics": null, "peakRssBytes": 84238336, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.341391999999999, "metrics": null, "peakRssBytes": 84303872, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 8.368502999999997, "metrics": null, "peakRssBytes": 85549056, "linearMemoryBytes": 3932160, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "false", "ms": 9.450248000000002, "metrics": null, "peakRssBytes": 83263488, "linearMemoryBytes": 3276800, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 13.913958000000001, "metrics": null, "peakRssBytes": 86085632, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.862477999999996, "metrics": null, "peakRssBytes": 85925888, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 8.447842999999999, "metrics": null, "peakRssBytes": 85512192, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.12359, "metrics": null, "peakRssBytes": 87576576, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.013271999999994, "metrics": null, "peakRssBytes": 84799488, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.802143999999998, "metrics": null, "peakRssBytes": 83804160, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 14.115599000000003, "metrics": null, "peakRssBytes": 85487616, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 12.976875999999997, "metrics": null, "peakRssBytes": 86671360, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 8.832960999999997, "metrics": null, "peakRssBytes": 88621056, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.315953999999998, "metrics": null, "peakRssBytes": 85053440, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.791723999999995, "metrics": null, "peakRssBytes": 86757376, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 8.943700999999997, "metrics": null, "peakRssBytes": 87212032, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.746438000000005, "metrics": null, "peakRssBytes": 84455424, "linearMemoryBytes": 5505024, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 100, "mode": "batch", "checkpoint": "true", "ms": 9.560085999999998, "metrics": null, "peakRssBytes": 86740992, "linearMemoryBytes": 4849664, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.536547999999996, "metrics": null, "peakRssBytes": 95989760, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 8.683508000000003, "metrics": null, "peakRssBytes": 96563200, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.560783999999998, "metrics": null, "peakRssBytes": 96673792, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.512532999999998, "metrics": null, "peakRssBytes": 94605312, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.790939000000002, "metrics": null, "peakRssBytes": 98222080, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.597051999999998, "metrics": null, "peakRssBytes": 96833536, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.520998999999996, "metrics": null, "peakRssBytes": 95727616, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.587555000000002, "metrics": null, "peakRssBytes": 95891456, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.469480999999995, "metrics": null, "peakRssBytes": 95440896, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 7.244729000000007, "metrics": null, "peakRssBytes": 97218560, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 8.834074000000001, "metrics": null, "peakRssBytes": 96477184, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.509948000000001, "metrics": null, "peakRssBytes": 95916032, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.690199, "metrics": null, "peakRssBytes": 97394688, "linearMemoryBytes": 17432576, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "false", "ms": 5.584157999999995, "metrics": null, "peakRssBytes": 95772672, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.513137999999998, "metrics": null, "peakRssBytes": 108814336, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.721392000000009, "metrics": null, "peakRssBytes": 107016192, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 13.924608, "metrics": null, "peakRssBytes": 108097536, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.393180999999998, "metrics": null, "peakRssBytes": 106676224, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.669253000000005, "metrics": null, "peakRssBytes": 106569728, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.766517, "metrics": null, "peakRssBytes": 108167168, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.519910999999993, "metrics": null, "peakRssBytes": 106770432, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.835067000000002, "metrics": null, "peakRssBytes": 108236800, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 11.176130999999998, "metrics": null, "peakRssBytes": 106979328, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 14.017845000000001, "metrics": null, "peakRssBytes": 108703744, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.343207000000007, "metrics": null, "peakRssBytes": 108118016, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.592348000000001, "metrics": null, "peakRssBytes": 106475520, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.515282, "metrics": null, "peakRssBytes": 107106304, "linearMemoryBytes": 32309248, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "direct", "checkpoint": "true", "ms": 10.846116999999992, "metrics": null, "peakRssBytes": 107233280, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 13.152878999999992, "metrics": null, "peakRssBytes": 103964672, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.298421000000005, "metrics": null, "peakRssBytes": 96038912, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.271170000000005, "metrics": null, "peakRssBytes": 99352576, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 13.256986000000005, "metrics": null, "peakRssBytes": 106340352, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 16.58041, "metrics": null, "peakRssBytes": 105631744, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.311946999999996, "metrics": null, "peakRssBytes": 98742272, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.369646000000003, "metrics": null, "peakRssBytes": 97345536, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 13.324132999999996, "metrics": null, "peakRssBytes": 105943040, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 16.483836999999994, "metrics": null, "peakRssBytes": 105840640, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.299653999999997, "metrics": null, "peakRssBytes": 96534528, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.389282999999999, "metrics": null, "peakRssBytes": 96313344, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 13.479485999999994, "metrics": null, "peakRssBytes": 105033728, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 13.357776999999999, "metrics": null, "peakRssBytes": 105361408, "linearMemoryBytes": 23461888, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "false", "ms": 9.343857000000007, "metrics": null, "peakRssBytes": 97210368, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 18.386605000000003, "metrics": null, "peakRssBytes": 113836032, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 15.279188999999995, "metrics": null, "peakRssBytes": 109203456, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 14.536946000000007, "metrics": null, "peakRssBytes": 108253184, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 19.634555, "metrics": null, "peakRssBytes": 114966528, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 18.756694000000003, "metrics": null, "peakRssBytes": 115212288, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 14.870036000000006, "metrics": null, "peakRssBytes": 109154304, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 14.585598000000005, "metrics": null, "peakRssBytes": 108392448, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 18.797681999999995, "metrics": null, "peakRssBytes": 115613696, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 18.387576999999993, "metrics": null, "peakRssBytes": 114130944, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 14.480418999999998, "metrics": null, "peakRssBytes": 108494848, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 16.134447, "metrics": null, "peakRssBytes": 109039616, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 18.694787000000005, "metrics": null, "peakRssBytes": 115523584, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 18.69399599999999, "metrics": null, "peakRssBytes": 115359744, "linearMemoryBytes": 38993920, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 1000, "mode": "batch", "checkpoint": "true", "ms": 14.755589999999998, "metrics": null, "peakRssBytes": 107360256, "linearMemoryBytes": 32309248, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": false}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 73.17626, "metrics": null, "peakRssBytes": 177381376, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 77.79855, "metrics": null, "peakRssBytes": 172077056, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 68.468759, "metrics": null, "peakRssBytes": 172093440, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.424521, "metrics": null, "peakRssBytes": 172433408, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 73.216367, "metrics": null, "peakRssBytes": 169639936, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.96696700000001, "metrics": null, "peakRssBytes": 175140864, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.082191, "metrics": null, "peakRssBytes": 170991616, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 68.094562, "metrics": null, "peakRssBytes": 170938368, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 71.469814, "metrics": null, "peakRssBytes": 168914944, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 76.399334, "metrics": null, "peakRssBytes": 170835968, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 73.89846600000001, "metrics": null, "peakRssBytes": 168251392, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.43648199999998, "metrics": null, "peakRssBytes": 172691456, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 74.499142, "metrics": null, "peakRssBytes": 170463232, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.66317000000001, "metrics": null, "peakRssBytes": 173109248, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 80.06556599999999, "metrics": null, "peakRssBytes": 178053120, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 68.16322199999999, "metrics": null, "peakRssBytes": 167407616, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 72.50571199999999, "metrics": null, "peakRssBytes": 175345664, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 71.13897800000001, "metrics": null, "peakRssBytes": 172097536, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 71.93838, "metrics": null, "peakRssBytes": 172343296, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 72.688538, "metrics": null, "peakRssBytes": 172580864, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 73.500032, "metrics": null, "peakRssBytes": 173408256, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 72.03709599999999, "metrics": null, "peakRssBytes": 175697920, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 75.430462, "metrics": null, "peakRssBytes": 170811392, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 70.87464800000001, "metrics": null, "peakRssBytes": 170647552, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 71.799948, "metrics": null, "peakRssBytes": 168378368, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 73.67403100000001, "metrics": null, "peakRssBytes": 174788608, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 74.73597999999998, "metrics": null, "peakRssBytes": 171941888, "linearMemoryBytes": 1769472, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-direct", "checkpoint": "true", "ms": 76.131808, "metrics": null, "peakRssBytes": 174817280, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 79.960758, "metrics": null, "peakRssBytes": 177053696, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 81.23242300000001, "metrics": null, "peakRssBytes": 167768064, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 77.308994, "metrics": null, "peakRssBytes": 171360256, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 81.005804, "metrics": null, "peakRssBytes": 181993472, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 75.332618, "metrics": null, "peakRssBytes": 176726016, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 78.901425, "metrics": null, "peakRssBytes": 179986432, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 78.563376, "metrics": null, "peakRssBytes": 173772800, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 79.874034, "metrics": null, "peakRssBytes": 178470912, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 77.081835, "metrics": null, "peakRssBytes": 183738368, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 76.803178, "metrics": null, "peakRssBytes": 178135040, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 77.91945799999999, "metrics": null, "peakRssBytes": 174125056, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 82.25138000000001, "metrics": null, "peakRssBytes": 172998656, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 80.98813100000001, "metrics": null, "peakRssBytes": 169185280, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "false", "ms": 81.672686, "metrics": null, "peakRssBytes": 158388224, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 75.112131, "metrics": null, "peakRssBytes": 177004544, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 79.35885999999999, "metrics": null, "peakRssBytes": 172642304, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 78.57916599999999, "metrics": null, "peakRssBytes": 179273728, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 75.33512200000001, "metrics": null, "peakRssBytes": 169701376, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 76.087174, "metrics": null, "peakRssBytes": 172507136, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 82.650905, "metrics": null, "peakRssBytes": 168718336, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 78.69613700000001, "metrics": null, "peakRssBytes": 171053056, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 74.903406, "metrics": null, "peakRssBytes": 168448000, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 70.270546, "metrics": null, "peakRssBytes": 178622464, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 80.03941699999999, "metrics": null, "peakRssBytes": 175190016, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 82.430198, "metrics": null, "peakRssBytes": 177889280, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 70.93348, "metrics": null, "peakRssBytes": 178819072, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 73.48958200000001, "metrics": null, "peakRssBytes": 172560384, "linearMemoryBytes": 1835008, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 0, "mode": "gfa-batch", "checkpoint": "true", "ms": 77.647906, "metrics": null, "peakRssBytes": 168988672, "linearMemoryBytes": 1769472, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.866164, "metrics": null, "peakRssBytes": 175325184, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 71.481376, "metrics": null, "peakRssBytes": 177164288, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 79.520195, "metrics": null, "peakRssBytes": 177635328, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 76.410245, "metrics": null, "peakRssBytes": 183083008, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 74.33001200000001, "metrics": null, "peakRssBytes": 177455104, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 77.448708, "metrics": null, "peakRssBytes": 180498432, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 70.99615800000001, "metrics": null, "peakRssBytes": 172687360, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 74.475337, "metrics": null, "peakRssBytes": 176869376, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.46903499999999, "metrics": null, "peakRssBytes": 180645888, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.347554, "metrics": null, "peakRssBytes": 176070656, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.507135, "metrics": null, "peakRssBytes": 178397184, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 70.64139800000001, "metrics": null, "peakRssBytes": 174800896, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.88062299999999, "metrics": null, "peakRssBytes": 179724288, "linearMemoryBytes": 4194304, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "false", "ms": 71.645275, "metrics": null, "peakRssBytes": 178814976, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 73.84645800000001, "metrics": null, "peakRssBytes": 177340416, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 76.115868, "metrics": null, "peakRssBytes": 176762880, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 67.36356899999998, "metrics": null, "peakRssBytes": 176717824, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 73.561429, "metrics": null, "peakRssBytes": 174723072, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 67.62297, "metrics": null, "peakRssBytes": 176160768, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 72.03681600000002, "metrics": null, "peakRssBytes": 177373184, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 69.89444499999999, "metrics": null, "peakRssBytes": 177926144, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 73.02450300000001, "metrics": null, "peakRssBytes": 171634688, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 81.672094, "metrics": null, "peakRssBytes": 181477376, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 75.15388, "metrics": null, "peakRssBytes": 173219840, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 73.38530499999999, "metrics": null, "peakRssBytes": 166928384, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 81.699175, "metrics": null, "peakRssBytes": 176570368, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 90.743145, "metrics": null, "peakRssBytes": 183676928, "linearMemoryBytes": 5832704, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-direct", "checkpoint": "true", "ms": 80.359061, "metrics": null, "peakRssBytes": 170180608, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 73.302038, "metrics": null, "peakRssBytes": 176279552, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 77.483825, "metrics": null, "peakRssBytes": 163127296, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 75.519521, "metrics": null, "peakRssBytes": 177582080, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 78.013206, "metrics": null, "peakRssBytes": 174366720, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 76.66807200000001, "metrics": null, "peakRssBytes": 163319808, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 71.589159, "metrics": null, "peakRssBytes": 180920320, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 74.328679, "metrics": null, "peakRssBytes": 180596736, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 72.237045, "metrics": null, "peakRssBytes": 178831360, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 72.960653, "metrics": null, "peakRssBytes": 185655296, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 80.868795, "metrics": null, "peakRssBytes": 180031488, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 74.929836, "metrics": null, "peakRssBytes": 182030336, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 75.59318999999999, "metrics": null, "peakRssBytes": 186933248, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 75.34982, "metrics": null, "peakRssBytes": 177889280, "linearMemoryBytes": 4915200, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "false", "ms": 75.193184, "metrics": null, "peakRssBytes": 174768128, "linearMemoryBytes": 3473408, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 77.80020400000001, "metrics": null, "peakRssBytes": 177217536, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 76.319834, "metrics": null, "peakRssBytes": 177623040, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 71.97586, "metrics": null, "peakRssBytes": 185937920, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 81.33783199999999, "metrics": null, "peakRssBytes": 178438144, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 78.69876199999999, "metrics": null, "peakRssBytes": 187654144, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 81.06714, "metrics": null, "peakRssBytes": 180985856, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 77.908088, "metrics": null, "peakRssBytes": 175226880, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 85.37538599999999, "metrics": null, "peakRssBytes": 184614912, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 78.191923, "metrics": null, "peakRssBytes": 183398400, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 79.782291, "metrics": null, "peakRssBytes": 178008064, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 82.26861199999999, "metrics": null, "peakRssBytes": 172777472, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 79.714303, "metrics": null, "peakRssBytes": 183066624, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 77.307952, "metrics": null, "peakRssBytes": 183275520, "linearMemoryBytes": 6553600, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 100, "mode": "gfa-batch", "checkpoint": "true", "ms": 78.88237900000001, "metrics": null, "peakRssBytes": 176779264, "linearMemoryBytes": 5177344, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 82.17894299999999, "metrics": null, "peakRssBytes": 196116480, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 74.28309300000001, "metrics": null, "peakRssBytes": 192983040, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.426626, "metrics": null, "peakRssBytes": 181968896, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 82.14361500000001, "metrics": null, "peakRssBytes": 203313152, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 78.863244, "metrics": null, "peakRssBytes": 190889984, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 74.15273699999999, "metrics": null, "peakRssBytes": 190341120, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 73.189025, "metrics": null, "peakRssBytes": 194396160, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.45172299999999, "metrics": null, "peakRssBytes": 198266880, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 80.94223400000001, "metrics": null, "peakRssBytes": 199987200, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 76.04832100000002, "metrics": null, "peakRssBytes": 188817408, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 75.45485899999998, "metrics": null, "peakRssBytes": 194019328, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 81.464411, "metrics": null, "peakRssBytes": 199098368, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 77.29864500000002, "metrics": null, "peakRssBytes": 201089024, "linearMemoryBytes": 23789568, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "false", "ms": 72.587386, "metrics": null, "peakRssBytes": 191033344, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 81.96976699999999, "metrics": null, "peakRssBytes": 208453632, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 79.66379699999999, "metrics": null, "peakRssBytes": 198172672, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 80.207484, "metrics": null, "peakRssBytes": 206045184, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 82.982451, "metrics": null, "peakRssBytes": 210698240, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 87.500284, "metrics": null, "peakRssBytes": 212905984, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 75.425282, "metrics": null, "peakRssBytes": 205131776, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 78.289148, "metrics": null, "peakRssBytes": 212725760, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 91.92846599999999, "metrics": null, "peakRssBytes": 212361216, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 84.08115900000001, "metrics": null, "peakRssBytes": 202977280, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 77.92051, "metrics": null, "peakRssBytes": 197402624, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 81.93079399999999, "metrics": null, "peakRssBytes": 208347136, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 88.92593, "metrics": null, "peakRssBytes": 208482304, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 86.30778899999999, "metrics": null, "peakRssBytes": 206012416, "linearMemoryBytes": 39321600, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-direct", "checkpoint": "true", "ms": 83.408898, "metrics": null, "peakRssBytes": 198500352, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 83.07031799999999, "metrics": null, "peakRssBytes": 197603328, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 78.950618, "metrics": null, "peakRssBytes": 187023360, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 75.96723699999998, "metrics": null, "peakRssBytes": 188350464, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 89.176925, "metrics": null, "peakRssBytes": 210538496, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 85.930455, "metrics": null, "peakRssBytes": 209870848, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 77.096994, "metrics": null, "peakRssBytes": 182104064, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 81.303086, "metrics": null, "peakRssBytes": 186253312, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 86.171752, "metrics": null, "peakRssBytes": 198291456, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 93.97991599999999, "metrics": null, "peakRssBytes": 211439616, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 83.62143999999999, "metrics": null, "peakRssBytes": 196366336, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 83.847407, "metrics": null, "peakRssBytes": 183365632, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 83.81134899999998, "metrics": null, "peakRssBytes": 195895296, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 87.86104599999999, "metrics": null, "peakRssBytes": 209858560, "linearMemoryBytes": 30474240, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "false", "ms": 81.31440699999999, "metrics": null, "peakRssBytes": 182599680, "linearMemoryBytes": 17432576, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 97.141483, "metrics": null, "peakRssBytes": 220061696, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 83.703786, "metrics": null, "peakRssBytes": 201916416, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 0, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 80.36268799999999, "metrics": null, "peakRssBytes": 202260480, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 90.559709, "metrics": null, "peakRssBytes": 214425600, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 1, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 96.50222500000001, "metrics": null, "peakRssBytes": 222425088, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 85.61522899999999, "metrics": null, "peakRssBytes": 201113600, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 2, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 84.62910600000001, "metrics": null, "peakRssBytes": 207806464, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 89.36601099999999, "metrics": null, "peakRssBytes": 215126016, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 3, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 92.158932, "metrics": null, "peakRssBytes": 216522752, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 81.30177400000001, "metrics": null, "peakRssBytes": 203898880, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 4, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 82.571134, "metrics": null, "peakRssBytes": 203591680, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 93.18749700000001, "metrics": null, "peakRssBytes": 217837568, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 5, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 97.444737, "metrics": null, "peakRssBytes": 224129024, "linearMemoryBytes": 46006272, "revision": "baseline", "runtime": "wasm", "sample": 6, "gfa": true}
+{"size": 1000, "mode": "gfa-batch", "checkpoint": "true", "ms": 83.407635, "metrics": null, "peakRssBytes": 202858496, "linearMemoryBytes": 32636928, "revision": "candidate", "runtime": "wasm", "sample": 6, "gfa": true}
