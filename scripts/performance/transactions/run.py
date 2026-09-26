@@ -14,10 +14,6 @@ a = p.parse_args()
 here = pathlib.Path(__file__).resolve().parent
 roots = [('baseline', a.baseline.resolve()), ('candidate', a.candidate.resolve())]
 a.output.mkdir(parents=True, exist_ok=True)
-for _, root in roots:
-    js = root / 'pkg-probe/remus_wasm.js'
-    if '__transactionMemory = wasm.memory' not in js.read_text():
-        js.write_text(js.read_text() + '\nexports.__transactionMemory = wasm.memory;\n')
 with (a.output / 'samples.jsonl').open('w') as out:
     for runtime in ['native', 'wasm']:
         for gfa in [False, True]:

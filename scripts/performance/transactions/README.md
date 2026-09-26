@@ -55,3 +55,21 @@ implementation for caught/propagated failures, outer rollback and validation vet
 Probe-only `unsafe` is confined to `allocator.rs`, a forwarding `System` allocator
 inserted into disposable measurement sources. Production code remains safe Rust;
 there is no new runtime feature, dependency, fault switch or JS export.
+
+For uninstrumented timing, start from fresh source archives and run
+`instrument.py ROOT --production`: this writes only the native workload example
+(no allocator, fault injection or library changes). Build that one example with
+the same release profile. Use `production.py` with the two native executable paths,
+the two installed Node package entry paths, and an output JSONL filename. The
+baseline may be a private Node-only tarball of the rebuilt wasm-bindgen output;
+the candidate is the actual package produced by `cargo xtask wasm-build`.
+`npm pack` and local tarball installation are sufficient; do not publish.
+The runner observes linear memory from the constructed WebAssembly instance
+without editing package bindings. RSS and reserved linear memory include setup
+and validation; allocator peak is read before validation.
+
+Use `summarize.py samples.jsonl` for the grouped medians/ranges and clone/memory
+counters. To verify runtime source provenance, independently archive the claimed
+source commit, apply this instrumentation recipe to that reference archive, then
+run `provenance.py DIAGNOSTIC_ROOT REFERENCE_ROOT OUTPUT.json`. It compares every
+local source dependency named by Cargo for both the native binary and WASM module.

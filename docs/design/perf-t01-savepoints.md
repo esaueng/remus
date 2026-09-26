@@ -101,3 +101,8 @@ before writing or returning an exclusive reference.
 The host integration is deliberately only batch `fuse`, `cut`, and `intersect`.
 Other batch arms and the unrelated `with_topology_transaction` helper keep their
 existing policy; this slice makes no new failure-atomicity claim for them.
+
+## Results
+
+See the [source-pinned before/after report](../performance/perf-t01-savepoints.md)
+for production timings, clone/memory counters, fault evidence and remaining costs.

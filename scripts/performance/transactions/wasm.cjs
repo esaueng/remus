@@ -3,7 +3,17 @@ const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const [pkg, sizeArg, mode = 'batch', checkpoint = 'false'] = process.argv.slice(2);
 const size = Number(sizeArg);
+const OriginalInstance = WebAssembly.Instance;
+let linearMemory;
+WebAssembly.Instance = new Proxy(OriginalInstance, {
+  construct(target, args) {
+    const instance = Reflect.construct(target, args);
+    linearMemory = instance.exports.memory;
+    return instance;
+  },
+});
 const wasm = require(path.resolve(pkg));
+WebAssembly.Instance = OriginalInstance;
 const k = new wasm.BrepKernel();
 for (let i = 0; i < size; i++) k.makeBox(1, 1, 1);
 const a = k.makeBox(1, 1, 1), b = k.makeBox(1, 1, 1);
@@ -24,5 +34,5 @@ else {
 const ms = performance.now() - start;
 const metrics = wasm.transactionProbeRead ? Array.from(wasm.transactionProbeRead()) : null;
 assert(Math.abs(k.volume(result, 0.01) - (gfa ? 4 - 2*Math.SQRT2 : 1.5)) < 1e-8);
-console.log(JSON.stringify({size, mode, checkpoint, ms, metrics, peakRssBytes:process.resourceUsage().maxRSS*1024, linearMemoryBytes:wasm.__transactionMemory?.buffer.byteLength ?? null}));
+console.log(JSON.stringify({size, mode, checkpoint, ms, metrics, peakRssBytes:process.resourceUsage().maxRSS*1024, linearMemoryBytes:linearMemory?.buffer.byteLength ?? null}));
 k.free();

@@ -12,8 +12,18 @@ import sys
 
 root = pathlib.Path(sys.argv[1]).resolve()
 here = pathlib.Path(__file__).resolve().parent
+if (root / '.git').exists():
+    raise SystemExit('Use a disposable git archive, not a Git checkout.')
+if len(sys.argv) > 2 and sys.argv[2] == '--production':
+    source = (here / 'native.rs').read_text()
+    source = source.replace(', transaction_probe as probe', '')
+    source = source.replace('    probe::reset();', '')
+    source = source.replace('let metrics = probe::read();', 'let metrics = [0; 4];')
+    (root / 'crates/wasm/examples/perf-t01.rs').write_text(source)
+    raise SystemExit(0)
 p = root / 'crates/topology/src/topology.rs'
 s = p.read_text()
+assert '#[derive(Debug, Default, Clone)]\npub struct Topology' in s, 'already instrumented or changed Topology definition'
 s = s.replace('#[derive(Debug, Default, Clone)]\npub struct Topology', '#[derive(Debug, Default)]\npub struct Topology')
 body = s.split('pub struct Topology {', 1)[1].split('\n}', 1)[0]
 fields = re.findall(r'^    (?:pub\(crate\) )?(\w+):', body, re.M)

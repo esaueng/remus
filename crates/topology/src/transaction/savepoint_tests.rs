@@ -179,6 +179,13 @@ fn fault_prefixes_match_full_snapshot_oracle_and_preserve_outer_work() {
                     });
                     assert!(result.is_err());
                     assert_eq!(state(t), outer, "caught failure at {stop}");
+                    let entries = t.journal().len();
+                    let _ = t.journal_begin("observe-restored-ticks");
+                    assert_eq!(
+                        t.journal().len(),
+                        entries,
+                        "rollback introduced a history gap"
+                    );
                 }
                 Ok(())
             })
