@@ -103,4 +103,56 @@ The untrusted corpus job has read-only repository credentials. A separate
 main-only job receives the write token and publishes aggregate artifacts
 without checking out or executing repository code.
 
+## P-Class 8.5 operation/export slice
+
+`manifests/p85-slice.json` pins 11 MAMBO models (Apache-2.0, same pinned
+commit as `mambo.json`) selected by a declared rule before any operation
+outcome was observed: the 6 lowest `sha256-rank-v1` basic models, the 3
+lowest simple models, and the 2 lowest medium models at seed `8505`,
+manifest order preserved. Entries reuse the parent manifest verbatim; no
+corpus bytes are committed. Every selected model stays in the denominator.
+
+Each model runs six stages in its own bounded subprocess: import (body,
+cavity, carrier, unit, and CAx-IF counting), validation, a rigid transform
+(30° about Z plus a fixed diagonal-fraction shift, checked by vertex-set,
+volume/area, census, cavity, occupancy, and re-validation oracles), a
+declared exact-only disjoint-box fuse per solid (two regions, closed-form
+`s³`/`6s²` oracles, inclusion identity, occupancy), STEP export
+(millimetre units, root count, carrier entities), and STEP reimport
+(property bounds, census, cavities, occupancy, mesh-volume cross-check,
+trim metrics). Same-kernel round-trip agreement is only one check among
+several independent oracles; MAMBO fixtures carry no CAx-IF validation
+properties, which the slice records as an explicit oracle gap.
+
+Per-model verdicts distinguish `pass` from `failed` (incorrect success or
+ordinary stage error), `refused` (typed `unsupported`/`quality_refused`),
+`crashed` (worker-level failure), and `resource` (budget/limit failure).
+The first failing stage and full provenance (kernel SHA, manifest bytes
+SHA-256, model SHA-256, recipe actuals, limits, deflection, timeout) are
+recorded on every row for later regression bisection.
+
+```bash
+cargo run -p remus-gauntlet -- p85-run \
+  --manifest tools/gauntlet/manifests/p85-slice.json \
+  --cache /tmp/remus-gauntlet-cache \
+  --output p85-results \
+  --timeout-ms 120000 \
+  --kernel-sha "$(git rev-parse HEAD)"
+```
+
+A 120 second per-model budget is recommended: medium fixtures tessellate
+and classify for tens of seconds. To replay one fixture and recipe at any
+source revision, check out the revision and run:
+
+```bash
+cargo run -p remus-gauntlet -- p85-replay \
+  --model <model.step> --model-id <id> --model-sha256 <sha> \
+  --kernel-sha <revision> --manifest-sha256 <manifest-sha> \
+  --bundle-out replay-bundle.json
+```
+
+`p85-replay` refuses model bytes whose SHA-256 differs from the pinned
+value and writes a deterministic reproduction bundle to compare against
+the published row.
+
 [abc]: https://deep-geometry.github.io/abc-dataset/

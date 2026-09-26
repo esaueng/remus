@@ -217,6 +217,80 @@ fn zero_budget_kills_only_its_model_and_reports_resource_limit() {
 }
 
 #[test]
+fn p85_run_positional_model_passes_and_writes_slice_outputs() {
+    let root = temp_dir("p85-run");
+    fs::create_dir_all(&root).unwrap();
+    let model = root.join("slice-box.step");
+    let output = root.join("p85-results");
+    write_box_step(&model);
+
+    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+        .args(["p85-run", "--jobs", "1", "--output"])
+        .arg(&output)
+        .arg("--kernel-sha")
+        .arg("0123456789abcdef0123456789abcdef01234567")
+        .arg(&model)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let jsonl = fs::read_to_string(output.join("p85-models.jsonl")).unwrap();
+    let rows: Vec<remus_gauntlet::p85::P85ModelResult> = jsonl
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].verdict, remus_gauntlet::p85::P85Verdict::Pass);
+    assert_eq!(rows[0].first_failing_stage, None);
+    assert!(rows[0].stages.exact_op.status == remus_gauntlet::StageStatus::Pass);
+
+    let scoreboard: remus_gauntlet::p85::P85Scoreboard =
+        serde_json::from_slice(&fs::read(output.join("p85-scoreboard.json")).unwrap()).unwrap();
+    assert_eq!(scoreboard.models, 1);
+    assert_eq!(scoreboard.passed, 1);
+    assert_eq!(scoreboard.exact_op_exact, 1);
+    assert!(output.join("p85-scoreboard.md").is_file());
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn p85_replay_records_deterministic_bundle_for_one_fixture() {
+    let root = temp_dir("p85-replay");
+    fs::create_dir_all(&root).unwrap();
+    let model = root.join("replay-box.step");
+    let bundle_path = root.join("bundle.json");
+    write_box_step(&model);
+    let bytes = fs::read(&model).unwrap();
+    let sha = sha256(&bytes);
+    let kernel_sha = "0123456789abcdef0123456789abcdef01234567";
+
+    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+        .args(["p85-replay", "--model"])
+        .arg(&model)
+        .args(["--model-id", "replay-box", "--model-sha256"])
+        .arg(&sha)
+        .args(["--bundle-out"])
+        .arg(&bundle_path)
+        .args(["--kernel-sha"])
+        .arg(kernel_sha)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let bundle: remus_gauntlet::p85::P85ReplayBundle =
+        serde_json::from_slice(&fs::read(&bundle_path).unwrap()).unwrap();
+    assert_eq!(bundle.schema_version, 1);
+    assert_eq!(bundle.model_id, "replay-box");
+    assert_eq!(bundle.model_sha256, sha);
+    assert_eq!(bundle.kernel_sha, kernel_sha);
+    assert_eq!(bundle.result.verdict, remus_gauntlet::p85::P85Verdict::Pass);
+    assert_eq!(bundle.result.recipe.box_sides.len(), 1);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn fetch_command_writes_a_verified_deterministic_sample_list() {
     let root = temp_dir("fetch");
     fs::create_dir_all(&root).unwrap();
