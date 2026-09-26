@@ -1830,6 +1830,29 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Extrude a planar face along a direction vector, as typed data.
+     *
+     * Additive twin of [`extrude`](Self::extrude_face): the same validation
+     * order (finite `dir_x`, `dir_y`, `dir_z`, `distance`, then the face
+     * handle) and the same engine, with the legacy method unchanged. On
+     * success `details.quality` is `"exact"`; there is no approximate
+     * extrusion to disclose. A refusal carries the legacy failure's code
+     * and category with `details.operation: "extrude"`.
+     * @param {number} face
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} distance
+     * @returns {SolidOperationDetailedResult}
+     */
+    extrudeDetailed(face, dir_x, dir_y, dir_z, distance) {
+        const ret = wasm.brepkernel_extrudeDetailed(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compute the area of a single face.
      *
      * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
@@ -6021,6 +6044,33 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Revolve a planar face around an axis, as typed data.
+     *
+     * Additive twin of [`revolve`](Self::revolve_face): the same validation
+     * order (finite `ox`, `oy`, `oz`, `dx`, `dy`, `dz`, `angle_degrees`,
+     * then the `(0, 360]` range check, then the face handle), the same
+     * degrees-to-radians conversion, and the same engine, with the legacy
+     * method unchanged. On success `details.quality` is `"exact"`. A
+     * refusal carries the legacy failure's code and category with
+     * `details.operation: "revolve"`.
+     * @param {number} face
+     * @param {number} ox
+     * @param {number} oy
+     * @param {number} oz
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} angle_degrees
+     * @returns {SolidOperationDetailedResult}
+     */
+    revolveDetailed(face, ox, oy, oz, dx, dy, dz, angle_degrees) {
+        const ret = wasm.brepkernel_revolveDetailed(this.__wbg_ptr, face, ox, oy, oz, dx, dy, dz, angle_degrees);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Run a custom sequence of healing operators on a solid.

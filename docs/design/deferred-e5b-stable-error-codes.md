@@ -121,6 +121,15 @@ The third slice covers the blend variants on the same pattern:
 tag, so its details omit `engine`; its constant-law wall is a NURBS fit and
 reports `approximate`.
 
+The fourth slice covers the construction twins `extrudeDetailed` and
+`revolveDetailed`, twins of `extrude` and `revolve` on the same engine
+paths. Both engines are exact-only by construction (translated profile
+curves; exact surfaces of revolution), so success always discloses
+`details.quality: "exact"` and there is no `exactOnly` flag. `revolve`
+accepts degrees in `(0, 360]` and converts to radians for the native
+operation; both twins preserve that conversion exactly. The twins reuse the
+native `run_transacted` rollback and take no additional session snapshot.
+
 The remaining mutating direct-method families and typed replacements for the
 JSON-string returns remain O4.7 follow-up work.
 

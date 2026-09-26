@@ -32,6 +32,14 @@
 
 ### Features
 
+* Add `extrudeDetailed` and `revolveDetailed` (direct and batch), typed
+  O4.7 twins of `extrude` and `revolve` with the same envelope and rollback
+  as the boolean twins. Both engines are exact-only by construction, so
+  success always discloses `details.quality: "exact"` and there is no
+  `exactOnly` flag; a refusal carries the legacy failure's code and category
+  with `details.operation` naming the op. `revolveDetailed` preserves the
+  degrees-in-`(0, 360]` to radians conversion exactly. The batch ops return
+  the same envelope as their `ok` value. Legacy methods are unchanged.
 * Add `filletV2Detailed`, `chamferV2Detailed`,
   `chamferDistanceAngleDetailed`, and `filletVariableDetailed` (direct and
   batch), typed O4.7 twins of the blend variants with the same envelope,
