@@ -214,10 +214,12 @@ Quick reference — find the right file for any task:
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
 | Builder (face splitting + assembly) | `builder/mod.rs`, `builder/assemble.rs` |
 | Face splitting (UV-space) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
+| Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
+| Shared DCEL clockwise-successor connectivity | `builder/rotation_system.rs` |
 | Split types + face class | `builder/split_types.rs`, `builder/face_class.rs` |
 | Face image population | `builder/fill_images.rs`, `builder/fill_images_faces.rs` |
 | Same-domain face merging | `builder/same_domain.rs` |
