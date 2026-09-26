@@ -8,6 +8,9 @@
 //! **Stage 2 — Resolution** (writes `&mut Topology` from arena data):
 //! `MakeBlocks`, `MakeSplitEdges`, `MakePCurves`, `FillFaceInfo`.
 
+// Isolated until the curved-chart arrangement adapter is qualified.
+#[allow(dead_code)]
+mod curved_section_clip;
 pub mod fill_face_info;
 pub mod force_interf_ee;
 // Visible to `crate::builder` and `crate::classifier` (wall recognition,
