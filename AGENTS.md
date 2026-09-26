@@ -320,6 +320,7 @@ Quick reference — find the right file for any task:
 | UV boundary polygon, containment tests | `classify/boundary.rs` |
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
 | Winding number classifier | `classify/winding.rs` |
+| Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |
 | Wire topological checks | `validate/wire.rs` |
 | Shell topological checks | `validate/shell.rs` |
@@ -339,6 +340,7 @@ Quick reference — find the right file for any task:
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
 | Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
+| Deterministic work counters for the point-classification hot path (`perf-counters` feature) | `perf.rs` |
 
 ### L2: offset (`crates/offset/src/`)
 | Task | File(s) |

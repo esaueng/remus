@@ -7,6 +7,12 @@ repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
+[features]
+# Deterministic work counters for the PERF-Q01 classification-reuse guard.
+# Off in every normal build (the bump calls compile to nothing); enabled only
+# for the test build that asserts preparation/trim-build counts.
+perf-counters = []
+
 [dependencies]
 remus-geometry.workspace = true
 remus-math.workspace = true
