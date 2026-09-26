@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -1241,5 +1242,11 @@ runSplitVertexRefusalRegression({ BrepKernel });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 runZeroAreaMeshExportRegression({ BrepKernel, RemusIo });
+
+// 16. B6 plane-section/split packaged-runtime witnesses (actual WASM execution,
+// not native contract tests): ordinary/coincident/empty sections, cavity and
+// through-hole hole counts, degenerate InvalidInput, split halves with
+// volume-sum/material oracles, and typed refusals with session preservation.
+runB6SectionSplitPackaged({ BrepKernel });
 
 console.log('\nAll smoke tests passed');
