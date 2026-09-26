@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790386774815,
+  "lastUpdate": 1790388707622,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -65725,6 +65725,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 81301,
             "range": "± 502",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44a9a82ca9bfdbb2b032a5c4ee21ac02543bab23",
+          "message": "test(tessellate): triage the B19 tessellate mutation survivors; fix two mesh defects, file B69-B71 (#681)\n\n* fix(tessellate): chart a single-rim cone at its rim radius\n\nA pointed cone whose only outer wire is its base rim (the face closes on\nthe apex and carries holes as inner wires) has every outer-wire vertex\nat one level. `compute_v_param_range` falls back to (-1, 1) for such a\nwire, so the apex-closing `tessellate_revolved_with_holes` callers\ncharted the cone at `radius_at(1)`, a unit-scale constant, and the\nchart's column count stopped following the model. The B37 cone-cylinder\nfuse scaled by 10 sagged 2.4x the (scaled) deflection, up to 9x at the\nfinest; at 1000x it meshed 274,571 cone triangles at the coarsest\ndeflection and read 1 % low in volume at the finest.\n\n`cone_chart_radius` takes the largest ring radius over the outer wire's\nvertices, which equals the old value whenever the wire spans two levels.\nThe same body now meshes identically at 1, 10 and 1000x.\n\nRegression: tessellate::tests::mutation_oracles::\npointed_cone_with_a_side_hole_tiles_its_exact_area (next commits).\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(tessellate): cap curved-trim dense rows to the polygon budget\n\n`tessellate_nonplanar_cdt` densifies the v-band a cylinder or cone wall's\nellipse or NURBS trim occupies, and dropped that whole band whenever its\ncontainment and clearance scans would exceed the interior polygon\nbudget. A trim run of 33-127 samples keeps `interior_rows_for_boundary`'s\ntwo-row default, so the wall was left with one mid-height row and the\nCDT bridged the trim valley with chords through the solid: an r6 h6\ncylinder cut by a slab tilted 30 degrees (the body of\n`cut_cylinder_by_tilted_slab_stays_exact_and_closed`) meshed chords 1.6\noff the cylinder at 0.005, 0.003 and 0.002 deflection, a closed,\nmanifold mesh reading 643.5 against the exact 676.6 (-4.9 %).\n\nTake as many of the wanted rows as the budget admits instead\n(`dense_trim_rows_within_budget`); only when not even one fits is the\nband dropped. The work bound is unchanged. Volume is now within 1e-4 at\nevery deflection from 0.05 to 0.001; a residual sag of 2.2-4.8x the\ndeflection beside the slot's straight end generator at 0.002 and 0.0015\nis filed as B63 with an ignored ready-repro.\n\nRegression: tessellate::tests::mutation_oracles::\nellipse_trimmed_cylinder_wall_stays_within_the_chord_bound (next commit).\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(tessellate): independent mesh oracles for the B19 survivor tranche\n\nWeekly Mutation Testing run 36075171651 (2026-09-25) left 142 surviving\nmutants in `tessellate/{nonplanar,planar,solid}.rs`. Add tests whose\noracles do not come from the code under test:\n\n- `tests/mesh_oracles.rs`: per-face triangles from the grouped\n  tessellation, closed-form distance and normal for every analytic\n  carrier (vertex on surface, chord sag at centroids and edge midpoints,\n  outward orientation), divergence-theorem volume.\n- `tests/mutation_oracles.rs`: closed forms computed by quadrature for a\n  torus minus a box (flat and turned 10 degrees about x, so the notch\n  loops' ring angle has a slope across the tube seam), the B37 pointed\n  cone fused with a cylinder (face area and body volume, at 1, 10 and\n  1000x, with a scale-invariant triangle count), a cylinder cut by a\n  tilted slab (ellipse trims), a filleted cap rim (Pappus) and the\n  stepped-rim box-cylinder fuse. Two ignored ready-repros pin B63\n  (residual sag beside a line trim) and B64 (a steeply turned torus notch\n  that meshes open at fine deflection).\n- `interior_rows_for_boundary`: v-translation and scale invariance, the\n  documented 8 / 32 / 128 sample bounds, and grown rows that exactly fill\n  the caller's own grid budget (`validate_interior_grid_size`).\n- The interior-grid budget gates at exactly their limits.\n- `ConstraintIndex::contains` at exactly the tolerance, on a zero-length\n  segment, and invariant under v translation; ear clipping of concave\n  polygons in both windings against shoelace area, orientation and\n  centroid containment, its work budget, a self-crossing refusal, and\n  the coverage check on malformed and partial index lists.\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(tessellate): hold NURBS-railed walls and torus bands to the deflection\n\nTwo oracles the tranche's first pass left at the generic twice-the-\ndeflection chord bound, where the densification they guard is load-\nbearing only against the contract itself:\n\n- The B37 cone-cylinder fuse's cylinder wall is trimmed by the marched\n  footprint, so the CDT densifies its trim band: with it the wall sags at\n  most 0.98x the deflection, without it 1.2-1.5x. Hold it to 1.1x, the\n  bound `nurbs_trimmed_cylinder_keeps_chords_near_surface` sets (1x) plus\n  the edge-midpoint samples.\n- A filleted cap rim's torus band densifies its pool rims to its own wrap\n  density: with it the band sags at most 0.25x, without it 1.1x, and a\n  B46-sized rho = 0.05 band meshes open at 0.1 and 0.05. Add that band and\n  hold both to the deflection itself.\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(tessellate): pin the cross-drilled bore wall as a B65 ready-repro\n\nThe shaft of `cross_drilled_display_mesh_is_closed_and_matches_brep_volume`\nmeshes its r = 2 bore wall with chords 16x the deflection at 0.05 and\n397x at 0.002, and the closed mesh reads up to 0.87 % over the exact\nvolume, inside that test's 2 % band; r = 1 sags 6.5x at 0.002. The wall's\nsaddle curves touch its v extremes at four points, so the NURBS-rail\ndensification's `rim_sample_count >= 8` gate withholds it. Opening the\ngate cures the wall but fails `pclass_curved_blend::\ncross_drilled_hole_rim_fillet_refuses_wrong_side_material`, whose refusal\nleans on the defective mesh, so the fix is not narrow: ignored repro\nagainst the quadrature volume and the chord bound, owned by B65.\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(kernel-maturity): triage the B19 tessellate survivor tranche\n\n`docs/kernel-maturity/mutants-tessellate-2026-09-25.md` triages all 142\nsurvivors the 2026-09-25 weekly run (36075171651) left in\n`tessellate/{nonplanar,planar,solid}.rs`: per-function before/after,\nevery mutant's killing test (from the cargo-mutants log) or one-line\nproof, the three defects the missing oracles hid, and what the narrowed\noracle does not cover.\n\nRoadmap: the B19 row gains the tranche counts (47 killed by new tests, 4\ncaught by an existing test at this base, 75 equivalent, 16 unkillable);\nnew rows B63 (residual sag beside a line trim), B64 (steeply turned torus\nnotch meshes open) and B65 (cross-drilled bore wall without its\ndensification). The roadmap skill records the three witnesses and the\nlesson that a loose mesh oracle hides load-bearing densification.\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(kernel-maturity): renumber the tessellate tranche rows to B68-B70\n\nMain assigned B63 to the variable-fillet radius refusal (#656) and the\nopen face-splitter tranche (#664) claims B64 and B65, so this tranche's\nrows move to B68 (residual sag beside a line trim), B69 (steeply turned\ntorus notch meshes open) and B70 (cross-drilled bore wall without its\ndensification). Earlier commit messages on this branch cite the old\nnumbers.\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(kernel-maturity): record post-merge verification for the tessellate tranche\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(kernel-maturity): record verification at the final merged base\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(kernel-maturity): state which commits the pre-commit hook checked\n\nClaude-Session: https://claude.ai/code/session_01LA1udMmR5pcxHuATCLtg7p\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): renumber this branch's rows to B69–B71\n\nmain took B68 for the box–cylinder identity seed (#680).\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XmUrsvhcEH4mLLT5UfB162\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T19:03:41-07:00",
+          "tree_id": "a313f6da7890efc8db022fc1b079ed70aa658ace",
+          "url": "https://github.com/esaueng/remus/commit/44a9a82ca9bfdbb2b032a5c4ee21ac02543bab23"
+        },
+        "date": 1790388706341,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1288444,
+            "range": "± 8109",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1382669,
+            "range": "± 48139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27065,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12044717,
+            "range": "± 59202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11968880,
+            "range": "± 42257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11607504,
+            "range": "± 36712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1144084,
+            "range": "± 9857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17937296,
+            "range": "± 39223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 33584960,
+            "range": "± 246068",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 219,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 808,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 225,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 522,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 756,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3263,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 547369,
+            "range": "± 748",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9811107,
+            "range": "± 196975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 161881,
+            "range": "± 704",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 524046,
+            "range": "± 1417",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 63701,
+            "range": "± 170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 930871,
+            "range": "± 2124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10794439,
+            "range": "± 44118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 835545,
+            "range": "± 2618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1187791,
+            "range": "± 10694",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 89710,
+            "range": "± 863",
             "unit": "ns/iter"
           }
         ]
