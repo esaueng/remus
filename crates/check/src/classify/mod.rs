@@ -6,8 +6,11 @@
 
 pub(crate) mod boundary;
 pub use boundary::surface_point_in_face;
+pub mod prepared;
 pub(crate) mod ray_surface;
 pub(crate) mod winding;
+
+pub use prepared::PreparedSolid;
 
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -52,6 +55,12 @@ impl Default for ClassifyOptions {
 /// (very rare — indicates grazing rays), perturbed recovery directions
 /// are tried.
 ///
+/// This is the one-shot convenience path: it gathers the face list and
+/// rebuilds the BVH and trim polygons on every call. For repeated queries
+/// against the same solid, prepare once with [`PreparedSolid`] instead —
+/// both paths run the same [`classify_point_with_source`] vote loop over
+/// the same faces, bounds and trims.
+///
 /// # Errors
 ///
 /// Returns an error if the solid or its faces contain invalid topology references.
@@ -63,8 +72,57 @@ pub fn classify_point(
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    classify_point_with_source(&OneShotSource { topo, faces }, point, options)
+}
 
-    if is_on_boundary(topo, &faces, point, options.tolerance)? {
+/// Source of boundary and crossing answers for the shared vote loop.
+///
+/// The one-shot path answers from a freshly gathered face list; the prepared
+/// path answers from its once-built bounds, BVH and trim cache. Both run the
+/// same [`classify_point_with_source`] loop, so ray ordering, recovery
+/// sequence, tolerance handling and determinism are identical by construction.
+pub(crate) trait ClassifySource {
+    /// The same boundary test [`classify_point`] applies.
+    fn check_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError>;
+    /// Crossings of one ray over the faces the boundary test covers.
+    fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError>;
+}
+
+/// One-shot [`ClassifySource`]: freshly gathered faces, bounds and BVH built
+/// per ray, trim polygons built per candidate face — exactly the work the
+/// pre-PERF-Q01 `classify_point` always did.
+pub(crate) struct OneShotSource<'a> {
+    pub(crate) topo: &'a Topology,
+    pub(crate) faces: Vec<FaceId>,
+}
+
+impl ClassifySource for OneShotSource<'_> {
+    fn check_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError> {
+        is_on_boundary(self.topo, &self.faces, point, tolerance)
+    }
+
+    fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError> {
+        count_ray_crossings(self.topo, &self.faces, point, direction)
+    }
+}
+
+/// Shared ray-vote loop behind both [`classify_point`] and [`PreparedSolid`].
+///
+/// Three irrational ray directions vote by crossing parity, with early exit
+/// once two agree; three-way disagreement (grazing rays) falls back to
+/// perturbed recovery directions. `source` supplies the boundary test and
+/// the per-ray crossing counts.
+///
+/// # Errors
+///
+/// Returns an error if the source's topology lookups fail.
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+pub(crate) fn classify_point_with_source(
+    source: &impl ClassifySource,
+    point: Point3,
+    options: &ClassifyOptions,
+) -> Result<PointClassification, CheckError> {
+    if source.check_boundary(point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
 
@@ -92,7 +150,7 @@ pub fn classify_point(
     let mut outside_votes = 0u32;
 
     for &dir in &base_dirs {
-        let crossings = count_ray_crossings(topo, &faces, point, dir)?;
+        let crossings = source.count_crossings(point, dir)?;
         if crossings % 2 == 1 {
             inside_votes += 1;
         } else {
@@ -115,7 +173,7 @@ pub fn classify_point(
         let phi = (seed * std::f64::consts::E).fract() * std::f64::consts::PI;
         let dir = Vec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
 
-        let crossings = count_ray_crossings(topo, &faces, point, dir)?;
+        let crossings = source.count_crossings(point, dir)?;
         if crossings % 2 == 1 {
             inside_votes += 1;
         } else {
@@ -138,10 +196,87 @@ pub fn classify_point(
     }
 }
 
+/// Distance from `point` to the support surface of one face.
+///
+/// The cheap first half of the boundary test: no wire sampling, so the caller
+/// only builds trim polygons once this is already within tolerance.
+/// `tolerance` doubles as the NURBS projection tolerance, exactly as the
+/// pre-refactor `is_on_boundary` passed it.
+///
+/// # Errors
+///
+/// Returns an error if the face handle is invalid.
+pub(crate) fn face_surface_distance(
+    topo: &Topology,
+    fid: FaceId,
+    point: Point3,
+    tolerance: f64,
+) -> Result<f64, CheckError> {
+    let face = topo.face(fid)?;
+    match face.surface() {
+        FaceSurface::Plane { normal, d } => {
+            let pv = Vec3::new(point.x(), point.y(), point.z());
+            Ok((normal.dot(pv) - d).abs())
+        }
+        FaceSurface::Cylinder(cyl) => {
+            let (u, v) = cyl.project_point(point);
+            let on_surface = cyl.evaluate(u, v);
+            Ok((point - on_surface).length())
+        }
+        FaceSurface::Cone(cone) => {
+            let (u, v) = cone.project_point(point);
+            let on_surface = cone.evaluate(u, v);
+            Ok((point - on_surface).length())
+        }
+        FaceSurface::Sphere(sph) => {
+            let (u, v) = sph.project_point(point);
+            let on_surface = sph.evaluate(u, v);
+            Ok((point - on_surface).length())
+        }
+        FaceSurface::Torus(tor) => {
+            let (u, v) = tor.project_point(point);
+            let on_surface = tor.evaluate(u, v);
+            Ok((point - on_surface).length())
+        }
+        FaceSurface::Nurbs(nurbs) => {
+            match remus_math::nurbs::projection::project_point_to_surface(nurbs, point, tolerance) {
+                Ok(proj) => Ok(proj.distance),
+                Err(_) => Ok(f64::INFINITY),
+            }
+        }
+    }
+}
+
+/// Containment second half of the boundary test: `point` is already within
+/// tolerance of the face's support surface — check it falls inside the face's
+/// trims (outer wire minus inner hole wires).
+#[must_use]
+pub(crate) fn trim_contains_point(trim: &boundary::FaceTrimData, point: Point3) -> bool {
+    let polygon = &trim.outer;
+    if polygon.len() >= 3 {
+        let normal = boundary::polygon_normal(polygon);
+        if crate::util::point_in_polygon_3d(&point, polygon, &normal) {
+            // A point in one of the face's holes lies in open space,
+            // not on the trimmed face.
+            let in_hole = trim
+                .holes
+                .iter()
+                .any(|hole| crate::util::point_in_polygon_3d(&point, hole, &normal));
+            return !in_hole;
+        }
+        false
+    } else {
+        // Full-surface face (like torus with seam edges only).
+        true
+    }
+}
+
 /// Checks if a point is within `tolerance` of any face boundary.
 ///
 /// Uses analytic point-to-surface distance for all surface types, then
-/// verifies the projection falls within the face polygon.
+/// verifies the projection falls within the face polygon. Trim polygons are
+/// built lazily — only for faces the point is already near — exactly as the
+/// pre-PERF-Q01 code built them.
 fn is_on_boundary(
     topo: &Topology,
     faces: &[FaceId],
@@ -149,57 +284,9 @@ fn is_on_boundary(
     tolerance: f64,
 ) -> Result<bool, CheckError> {
     for &fid in faces {
-        let face = topo.face(fid)?;
-        let dist = match face.surface() {
-            FaceSurface::Plane { normal, d } => {
-                let pv = Vec3::new(point.x(), point.y(), point.z());
-                (normal.dot(pv) - d).abs()
-            }
-            FaceSurface::Cylinder(cyl) => {
-                let (u, v) = cyl.project_point(point);
-                let on_surface = cyl.evaluate(u, v);
-                (point - on_surface).length()
-            }
-            FaceSurface::Cone(cone) => {
-                let (u, v) = cone.project_point(point);
-                let on_surface = cone.evaluate(u, v);
-                (point - on_surface).length()
-            }
-            FaceSurface::Sphere(sph) => {
-                let (u, v) = sph.project_point(point);
-                let on_surface = sph.evaluate(u, v);
-                (point - on_surface).length()
-            }
-            FaceSurface::Torus(tor) => {
-                let (u, v) = tor.project_point(point);
-                let on_surface = tor.evaluate(u, v);
-                (point - on_surface).length()
-            }
-            FaceSurface::Nurbs(nurbs) => {
-                match remus_math::nurbs::projection::project_point_to_surface(
-                    nurbs, point, tolerance,
-                ) {
-                    Ok(proj) => proj.distance,
-                    Err(_) => f64::INFINITY,
-                }
-            }
-        };
-        if dist < tolerance {
-            let polygon = crate::util::face_polygon(topo, fid)?;
-            if polygon.len() >= 3 {
-                let normal = boundary::polygon_normal(&polygon);
-                if crate::util::point_in_polygon_3d(&point, &polygon, &normal) {
-                    // A point in one of the face's holes lies in open space,
-                    // not on the trimmed face.
-                    let in_hole = crate::util::face_hole_polygons(topo, fid)?
-                        .iter()
-                        .any(|hole| crate::util::point_in_polygon_3d(&point, hole, &normal));
-                    if !in_hole {
-                        return Ok(true);
-                    }
-                }
-            } else {
-                // Full-surface face (like torus with seam edges only).
+        if face_surface_distance(topo, fid, point, tolerance)? < tolerance {
+            let trim = boundary::FaceTrimData::build(topo, fid)?;
+            if trim_contains_point(&trim, point) {
                 return Ok(true);
             }
         }
@@ -319,9 +406,13 @@ fn count_ray_crossings(
     let face_aabbs: Vec<(usize, remus_math::aabb::Aabb3)> = faces
         .iter()
         .enumerate()
-        .filter_map(|(i, &fid)| crate::util::face_aabb(topo, fid).ok().map(|aabb| (i, aabb)))
+        .filter_map(|(i, &fid)| {
+            crate::perf::bump_classify_face_aabb_eval();
+            crate::util::face_aabb(topo, fid).ok().map(|aabb| (i, aabb))
+        })
         .collect();
     let bvh = Bvh::build(&face_aabbs);
+    crate::perf::bump_classify_bvh_build();
 
     // query_ray returns the primitive IDs (the `i` values), which are
     // indices into the original `faces` slice.
