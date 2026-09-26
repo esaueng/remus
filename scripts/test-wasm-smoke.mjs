@@ -865,6 +865,101 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - modifier twins: typed refusals with rollback');
 }
 
+// O4.7 construction twins: extrudeDetailed and revolveDetailed are
+// exact-only additive twins with direct/batch parity, pinned volumes, and
+// rollback on refusal. The revolve cases also pin the degrees-to-radians
+// conversion (180 degrees succeeds with exactly half the full volume; 0
+// and above-360 degrees refuse).
+{
+  const k = new BrepKernel();
+  const face = k.makeRectangle(2, 3);
+  const extruded = k.extrudeDetailed(face, 0, 0, 1, 5);
+  assert.equal(extruded.status, 'ok');
+  assert.equal(extruded.details.quality, 'exact');
+  assert.ok(Math.abs(k.volume(extruded.value, DEFLECTION) - 30) < 1e-6);
+
+  const batchKernel = new BrepKernel();
+  assert.equal(batchKernel.makeRectangle(2, 3), face);
+  const batch = JSON.parse(
+    batchKernel.executeBatchV2(
+      JSON.stringify([
+        { op: 'extrudeDetailed', args: { face, dx: 0, dy: 0, dz: 1, distance: 5 } },
+      ]),
+    ),
+  );
+  assert.deepEqual(batch[0].ok, extruded);
+  const legacyBatchKernel = new BrepKernel();
+  assert.equal(legacyBatchKernel.makeRectangle(2, 3), face);
+  const legacyBatch = JSON.parse(
+    legacyBatchKernel.executeBatch(
+      JSON.stringify([
+        { op: 'extrudeDetailed', args: { face, dx: 0, dy: 0, dz: 1, distance: 5 } },
+      ]),
+    ),
+  );
+  assert.deepEqual(legacyBatch[0].ok, extruded);
+
+  const legacyKernel = new BrepKernel();
+  assert.equal(legacyKernel.makeRectangle(2, 3), face);
+  const legacy = JSON.parse(
+    legacyKernel.executeBatchV2(
+      JSON.stringify([{ op: 'extrude', args: { face, dx: 0, dy: 0, dz: 1, distance: 5 } }]),
+    ),
+  );
+  assert.equal(legacy[0].ok, extruded.value);
+
+  const badDistance = k.extrudeDetailed(face, 0, 0, 1, 0);
+  assert.equal(badDistance.status, 'error');
+  assert.equal(badDistance.code, 'invalid_argument');
+  assert.equal(badDistance.value, null);
+  const stale = k.extrudeDetailed(0xffffffff, 0, 0, 1, 1);
+  assert.equal(stale.status, 'error');
+  assert.equal(stale.code, 'invalid_handle');
+  assert.ok(Math.abs(k.volume(extruded.value, DEFLECTION) - 30) < 1e-6);
+  const again = k.extrudeDetailed(face, 0, 0, 1, 1);
+  assert.equal(again.status, 'ok');
+  assert.ok(Math.abs(k.volume(again.value, DEFLECTION) - 6) < 1e-6);
+  console.log('ok - extrudeDetailed: exact, disclosed, direct/batch parity, refusals with rollback');
+}
+
+{
+  const rect = [0, 0, 0, 2, 0, 0, 2, 5, 0, 0, 5, 0];
+  const full = Math.PI * 2 * 2 * 5;
+  const k = new BrepKernel();
+  const face = k.makePolygon(Float64Array.from(rect));
+  const revolved = k.revolveDetailed(face, 0, 0, 0, 0, 1, 0, 360);
+  assert.equal(revolved.status, 'ok');
+  assert.equal(revolved.details.quality, 'exact');
+  assert.ok(Math.abs(k.volume(revolved.value, DEFLECTION) - full) / full < 1e-6);
+
+  const batchKernel = new BrepKernel();
+  assert.equal(batchKernel.makePolygon(Float64Array.from(rect)), face);
+  const batch = JSON.parse(
+    batchKernel.executeBatchV2(
+      JSON.stringify([
+        {
+          op: 'revolveDetailed',
+          args: { face, originX: 0, originY: 0, originZ: 0, axisX: 0, axisY: 1, axisZ: 0, angle: 360 },
+        },
+      ]),
+    ),
+  );
+  assert.deepEqual(batch[0].ok, revolved);
+
+  // 180 degrees is exactly half the full cylinder: the native operation
+  // received pi radians, not 180 radians.
+  const half = k.revolveDetailed(face, 0, 0, 0, 0, 1, 0, 180);
+  assert.equal(half.status, 'ok');
+  assert.ok(Math.abs(k.volume(half.value, 1e-4) - full * 0.5) / full < 1e-3);
+
+  const zero = k.revolveDetailed(face, 0, 0, 0, 0, 1, 0, 0);
+  assert.equal(zero.status, 'error');
+  assert.equal(zero.code, 'invalid_argument');
+  assert.equal(zero.value, null);
+  assert.ok(Math.abs(k.volume(revolved.value, DEFLECTION) - full) / full < 1e-6);
+  console.log('ok - revolveDetailed: exact, disclosed, direct/batch parity, degrees pinned');
+}
+
 // A stored/transported payload is untrusted input: malformed versions,
 // incomplete coverage and contradictory result claims must fail closed.
 {
