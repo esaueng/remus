@@ -1,8 +1,9 @@
 # UV-arrangement splitter design
 
-Status: accepted implementation design for Open Kernel O2.3a. The runtime
-implementation remains staged as O2.3b-d and waits for P-Class 2.4 to release
-the splitter files.
+Status: accepted implementation design for Open Kernel O2.3a. O2.3b has a
+bounded isolated runtime slice described below; the rest of O2.3b and the
+O2.3c-d production integration remain staged. Shared-file ownership was
+rechecked before the first runtime slice.
 
 - Measured baseline: `main` at `74dd0e9732e57f1b5f7f43b0177dac8668d207f9`.
 - Retirement target:
@@ -252,6 +253,102 @@ The isolated core is not ready until all of these pass:
 
 Use deterministic maps/sets and sort all emitted IDs by source key,
 parameter, and lift. Randomized tests must replay a printed seed.
+
+## First O2.3b runtime slice (2026-09-26)
+
+The isolated internal implementation is now in
+`crates/algo/src/builder/face_splitter/arrangement.rs`. It is compiled in ordinary
+builds but has no production splitter dispatch call. O2.3b remains **partial**.
+
+The starting head was `578880805e36db31b9d47458d56ea170ecec4b0d`. P-Class 2.4a/b
+(#206/#207) and the bounded torus-sphere work (#299) were merged, and no open PR
+in the inspected queue owned splitter files. This is a file-ownership release,
+not completion of general P-Class 2.4.
+
+### Supported input and output contract
+
+- Inputs are certified per-use pcurves in one existing chart, not raw topology
+  awaiting projection. Native line intervals and circle intervals within
+  `[0, 2π]` are supported, including full circles and major arcs. A signed
+  affine map carries pcurve parameters to the original source interval. Source
+  lines interpolate the use endpoints; their provenance interval is never
+  silently rebased. Circle carriers evaluate their native source parameters.
+- Boundary loops carry endpoint-event identities and optional authoritative
+  face/Loop/Coedge identity. The caller must retain actual coedge identity when
+  adapting topology. Boundary loop keys must describe single closed connected
+  cycles. Sections carry source-edge, section and pave-block provenance.
+- The result owns the sorted original exact carriers. Each half-edge references
+  its source use and carries both exact analytic subspans, directed 3D endpoints,
+  twin and next. New vertices come from authoritative endpoints or analytic
+  pair events. Cardinal circle cuts only split a source; they do not establish
+  intersection identity. Floating roots are residual-checked; unresolved root
+  collisions refuse. Multi-pair junctions require a common endpoint certificate
+  or exact line-incidence signs. General curved multiway junctions are deferred.
+- Areas and region seeds are in the supplied UV chart. Analytic Green integrals
+  and horizontal-ray crossings retain circular segments. Negative cycles attach
+  to the smallest containing positive cycle, or to the explicit exterior.
+  Boundary parity selects material independently of input traversal direction;
+  sections partition that material without changing it.
+- The singly periodic input is a **pre-cut rectilinear cylinder strip** with
+  explicit left/right seam-use IDs one turn apart. Exact rulings and latitude
+  circles are supported. Matching seam subdivisions are verified after planar
+  tracing, then quotient cells join across those seam uses. Results carry seam
+  vertex identifications, quotient boundary windings and Euler characteristics.
+  Cylinder area multiplies UV area by the supplied cylinder radius. The caller
+  certifies this metric and the pcurve/source correspondence.
+
+This boundary intentionally defers automatic periodic image generation and
+clipping, oblique cylinder traces, seam-crossing hole input adaptation, curved
+multiway contacts, all overlap emission, tangent limiting-order resolution,
+noncanonical circle branches, poles, and double-periodic domains. Coincident
+intervals return `AmbiguousOverlap`; tangencies and unresolved near-tangencies
+return `AmbiguousContact`. Open/slit regions, inconsistent event certificates,
+unsupported domains, non-finite data, exhausted budgets and cancellation are
+errors, never unsplit-face or partial-result success. No tolerance is increased.
+
+### Reuse and isolation
+
+The rotation-system successor bijection was extracted from
+`build_wire_loops_dcel` into `crates/algo/src/builder/rotation_system.rs`. Both
+tracers use that same clockwise-predecessor rule. The existing wire builder
+retains its input collection, angular ordering, periodic handling and output
+selection. The new core reuses `Curve2D`, robust `orient2d`, exact 3D carriers,
+and `OperationContext`.
+
+The inventory also examined `arrangement_regions_from_inputs`,
+`split_cylinder_band_by_arrangement`, and the winding-chain emitter. Their
+quantized/chord identity and calibrated topology emission are deliberately not
+copied into the exact-event core. They remain production fallbacks pending the
+O2.3c material-differential gate; no special case was deleted or rerouted.
+
+### Resource policy and qualification fixtures
+
+The isolated core uses `OperationContext.budgets.march_steps` as its total work
+counter, `queue_size` as its input/event cap, and `segments` as its undirected
+edge cap. These are explicit arrangement interpretations of existing fields;
+there are no hidden unlimited refinements. Callers must provide budgets suitable
+for the arrangement size; the SSI-oriented defaults do not promise success for
+an arbitrary arrangement. Refinement, pair scans, seed searches, graph walks and
+quotient traversal poll cancellation and charge work. All staged state is local.
+
+`crates/algo/src/builder/face_splitter/arrangement/tests.rs` is the representative
+fixture corpus for later differential integration. It covers X/T/star and true
+interior crossings; major/minor circle caps and two-circle lenses; nested holes,
+islands and disconnected components; authoritative coedge/source subspans;
+sub-tolerance slivers; cylinder bands, seam-crossing sectors and a strip with a
+hole; contact/overlap, malformed-input and unrepresentable native-subspan
+refusals; and all work-budget prefixes
+of a complete square build. A cancellation test covers an already-used work
+counter, and the build entry point separately covers pre-cancellation.
+
+Independent oracles include closed-form cap/lens/annulus/rectangle areas,
+sampled-curve material probes, known cylinder metric areas and quotient Euler
+values. Generated line grids and translated/rotated circle pairs exercise
+connectivity, planar Euler, source coverage, orientation reversal and canonical
+output. The four-edge boundary fixture checks all 24 input permutations and
+16 orientation masks; generated and cylinder cases also permute/reverse inputs.
+These are UV-subdivision qualifications, not Boolean capability, installed-WASM
+qualification, or a completed production differential comparison.
 
 ## Migration and deletion plan
 

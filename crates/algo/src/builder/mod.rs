@@ -22,6 +22,7 @@ pub mod fill_images;
 pub mod fill_images_faces;
 pub mod pcurve_compute;
 pub mod plane_frame;
+mod rotation_system;
 pub mod same_domain;
 pub mod split_types;
 pub mod wire_builder;
