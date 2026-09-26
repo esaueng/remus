@@ -71,6 +71,8 @@ pub enum BodyId {
 /// for allocation.
 #[derive(Debug, Default, Clone)]
 pub struct Topology {
+    /// Only unchanged entry states may share an active savepoint.
+    pub(crate) savepoint: crate::transaction::Coordinator,
     /// All vertices in the model.
     vertices: Arena<Vertex>,
     /// All edges in the model.
@@ -159,6 +161,7 @@ macro_rules! arena_get_mut {
         ///
         /// Returns a not-found error if the ID is invalid.
         pub fn $method(&mut self, id: $Id) -> Result<&mut $T, TopologyError> {
+            self.savepoint.invalidate();
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
             self.$field.get_mut(id).ok_or(TopologyError::$err(id))
         }
@@ -179,6 +182,7 @@ macro_rules! arena_api {
     ) => {
         /// Allocates a new entity in the arena and returns its typed handle.
         pub fn $add(&mut self, value: $T) -> $Id {
+            self.savepoint.invalidate();
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
             self.$arena.alloc(value)
         }
@@ -238,6 +242,7 @@ impl Topology {
         shell: ShellId,
         body_class: BodyClass,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         if !matches!(body_class, BodyClass::Solid | BodyClass::Sheet) {
             return Err(TopologyError::InvalidBodyClass {
                 entity: "shell",
@@ -259,6 +264,7 @@ impl Topology {
         wire: WireId,
         body_class: BodyClass,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         if body_class != BodyClass::Wire {
             return Err(TopologyError::InvalidBodyClass {
                 entity: "wire",
@@ -316,6 +322,7 @@ impl Topology {
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
+        self.savepoint.invalidate();
         let mut snapshot_face_authority: HashMap<
             FaceId,
             HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
@@ -434,6 +441,7 @@ impl Topology {
     /// barrier instead: there a retirement may already have been reported
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
+        self.savepoint.invalidate();
         self.vertices.restore_for_rollback(&snapshot.vertices);
         self.edges.restore_for_rollback(&snapshot.edges);
         self.wires.restore_for_rollback(&snapshot.wires);
@@ -468,6 +476,7 @@ impl Topology {
         shells: usize,
         solids: usize,
     ) {
+        self.savepoint.invalidate();
         self.vertices.reserve(vertices);
         self.edges.reserve(edges);
         self.wires.reserve(wires);
@@ -535,6 +544,7 @@ impl Topology {
         solid: SolidId,
         attributes: crate::attributes::EntityAttributes,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         let _ = self.solid(solid)?;
         self.attributes.set_solid(solid, attributes);
         Ok(())
@@ -556,6 +566,7 @@ impl Topology {
         face: FaceId,
         attributes: crate::attributes::EntityAttributes,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         let _ = self.face(face)?;
         self.attributes.set_face(face, attributes);
         Ok(())
@@ -585,6 +596,7 @@ impl Topology {
     /// safe — the operation's mutations surface as a gap at the next
     /// `journal_begin`.
     pub fn journal_begin(&mut self, kind: impl Into<String>) -> PendingOp {
+        self.savepoint.invalidate();
         if let Some(last) = self.journal.last_ticks()
             && last != self.mutation_ticks
         {
@@ -612,6 +624,7 @@ impl Topology {
         pending: PendingOp,
         draft: EvolutionDraft,
     ) -> Result<OpId, TopologyError> {
+        self.savepoint.invalidate();
         self.journal
             .record_evolution(pending.kind, pending.scope, draft, self.mutation_ticks)
     }
@@ -655,6 +668,8 @@ impl Topology {
         allow_inferred: bool,
     ) -> Result<crate::journal::JournalAttributePropagation, TopologyError> {
         use crate::journal::{EntityEvent, EntityKind, EntryPayload, JournalAttributePropagation};
+
+        self.savepoint.invalidate();
 
         let mut report = JournalAttributePropagation::default();
         let Some(entry) = self.journal.entries().iter().find(|entry| entry.op() == op) else {
@@ -737,6 +752,7 @@ impl Topology {
     /// not describe this topology's history would fake continuity, and
     /// the caller (the document reader) owns that consistency.
     pub fn load_journal(&mut self, journal: Journal) {
+        self.savepoint.invalidate();
         if let Some(ticks) = journal.last_ticks() {
             self.mutation_ticks = ticks;
         }
@@ -748,6 +764,7 @@ impl Topology {
     /// entities) is unresolved across it, and a resolver chasing a
     /// reference through this entry fails closed naming the operation.
     pub fn journal_record_barrier(&mut self, pending: PendingOp, affected: Vec<EntityKey>) -> OpId {
+        self.savepoint.invalidate();
         self.journal
             .record_barrier(pending.kind, pending.scope, affected, self.mutation_ticks)
     }
@@ -799,6 +816,7 @@ impl Topology {
     /// are installed and strict consumers return the corresponding not-found
     /// error when they inspect the boundary.
     pub fn add_face(&mut self, mut value: Face) -> FaceId {
+        self.savepoint.invalidate();
         let mut wire_ids = vec![value.outer_wire()];
         wire_ids.extend(value.inner_wires().iter().copied());
         let specs = self.boundary_loop_specs(&wire_ids, None);
@@ -900,6 +918,7 @@ impl Topology {
         face_id: FaceId,
         specs: Vec<BoundaryLoopSpec>,
     ) -> Vec<LoopId> {
+        self.savepoint.invalidate();
         let carried_authority = self.carried_face_authority(face_id);
         self.install_face_loop_specs_carrying(face_id, specs, carried_authority, true)
     }
@@ -939,6 +958,7 @@ impl Topology {
         mut carried_authority: HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
         replace_existing: bool,
     ) -> Vec<LoopId> {
+        self.savepoint.invalidate();
         if replace_existing {
             self.pcurves.remove_face(face_id);
             let old_loops = self
@@ -1025,6 +1045,7 @@ impl Topology {
         wire_id: WireId,
         replacement: Wire,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         self.wire(wire_id)?;
 
         let mut affected = Vec::new();
@@ -1071,6 +1092,7 @@ impl Topology {
         outer_wire: WireId,
         inner_wires: Vec<WireId>,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         self.face(face_id)?;
         let mut wire_ids = vec![outer_wire];
         wire_ids.extend(inner_wires.iter().copied());
@@ -1098,6 +1120,7 @@ impl Topology {
     /// referenced edge is invalid. Nothing is retired or allocated on
     /// error.
     pub fn build_face_loops(&mut self, face_id: FaceId) -> Result<Vec<LoopId>, TopologyError> {
+        self.savepoint.invalidate();
         if let Some(loops) = self
             .faces
             .get(face_id)
@@ -1205,6 +1228,7 @@ impl Topology {
     /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
+        self.savepoint.invalidate();
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         let mut retiring = self.collect_solid_entities(solid)?;
         if let Some((compound_id, _)) = self
@@ -1342,6 +1366,7 @@ impl Topology {
     /// distinct from a malformed-input error. A shell cannot otherwise
     /// hold zero faces, so this is the only path that produces one.
     pub fn add_empty_solid(&mut self) -> SolidId {
+        self.savepoint.invalidate();
         let shell = self.add_shell(Shell::empty());
         self.add_solid(Solid::new(shell, Vec::new()))
     }
@@ -1385,6 +1410,7 @@ impl Topology {
         forward: bool,
         pcurve: PCurve,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         self.edge(edge)?;
         self.face(face)?;
         if self.loops_of_face(face).is_none() {
@@ -1413,6 +1439,7 @@ impl Topology {
         face: FaceId,
         forward: bool,
     ) -> Result<Option<PCurve>, TopologyError> {
+        self.savepoint.invalidate();
         self.edge(edge)?;
         self.face(face)?;
         let Some(coedge_id) = self.pcurves.get_use(edge, face, forward) else {
@@ -1473,6 +1500,7 @@ impl Topology {
         face: FaceId,
         pcurve: PCurve,
     ) -> Result<(), TopologyError> {
+        self.savepoint.invalidate();
         let uses = self.face_edge_uses(edge, face)?;
         let forward = match uses.as_slice() {
             [forward] => *forward,
@@ -1498,6 +1526,7 @@ impl Topology {
         edge: EdgeId,
         face: FaceId,
     ) -> Result<Option<PCurve>, TopologyError> {
+        self.savepoint.invalidate();
         let stored: Vec<bool> = self.face_edge_uses(edge, face)?;
         match stored.as_slice() {
             [] => Ok(None),
@@ -1573,6 +1602,7 @@ impl Topology {
         coedge_id: CoedgeId,
         pcurve: PCurve,
     ) -> Result<Option<PCurve>, TopologyError> {
+        self.savepoint.invalidate();
         self.validate_coedge_authority(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         Ok(self
@@ -1591,6 +1621,7 @@ impl Topology {
         &mut self,
         coedge_id: CoedgeId,
     ) -> Result<Option<PCurve>, TopologyError> {
+        self.savepoint.invalidate();
         self.validate_coedge_authority(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         Ok(self
@@ -1611,6 +1642,7 @@ impl Topology {
         coedge_id: CoedgeId,
         winding: PeriodicWinding,
     ) -> Result<PeriodicWinding, TopologyError> {
+        self.savepoint.invalidate();
         self.validate_coedge_authority(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         Ok(self

@@ -17,18 +17,62 @@
 //!   fail typed lookups permanently and can never alias a later entity
 //!   (arena slots are high-water preserved, never reused).
 //!
-//! Cost: one deep snapshot of the topology per transaction — the same
-//! price the WASM batch dispatcher already pays per mutating operation
-//! (its `dispatch_with_rollback` is this pattern, plus an `Rc`-sharing
-//! fast path for read-only operations). Operations that already isolate
-//! their work (e.g. the GFA boolean's shape store) still benefit: the
-//! snapshot covers the caller-visible export window too.
+//! Unchanged nested entry states share one immutable full snapshot. Every
+//! mutable topology access invalidates sharing, so a nested scope after outer
+//! work still owns a genuine savepoint. The outer snapshot and changed-state
+//! savepoints remain O(document size); this is not mutation-local undo.
 //!
 //! These free functions are the standard implementation; ad-hoc
 //! snapshot/restore pairs in operation code should migrate onto them so
 //! the contract has one implementation to audit.
 
 use crate::Topology;
+use std::sync::{Arc, Weak};
+
+/// Per-topology, non-retaining coordination of active savepoints.
+#[derive(Debug, Default)]
+pub(crate) struct Coordinator(Weak<Topology>);
+
+impl Clone for Coordinator {
+    fn clone(&self) -> Self {
+        // Independent clones must never reuse the source's active savepoint.
+        Self::default()
+    }
+}
+
+impl Coordinator {
+    pub(crate) fn invalidate(&mut self) {
+        self.0 = Weak::new();
+    }
+}
+
+/// An immutable transaction entry state, shared only until a mutable access.
+///
+/// Coordinates a host's rollback boundary with nested native transactions.
+/// Dropping a snapshot commits that scope; [`Self::restore`] rolls it back.
+/// Unlike a user checkpoint, rollback undoes retirements too. Host-owned state
+/// outside `Topology` is not captured.
+#[derive(Debug)]
+#[must_use]
+pub struct RollbackSnapshot(Arc<Topology>);
+
+impl RollbackSnapshot {
+    /// Capture this scope's entry state. Unchanged nested scopes share storage.
+    pub fn capture(topo: &mut Topology) -> Self {
+        if let Some(snapshot) = topo.savepoint.0.upgrade() {
+            return Self(snapshot);
+        }
+        let snapshot = Arc::new(topo.clone());
+        topo.savepoint.0 = Arc::downgrade(&snapshot);
+        Self(snapshot)
+    }
+
+    /// Restore live state while preserving allocation and journal high-water
+    /// marks. Pre-existing handles survive; failed allocations stay stale.
+    pub fn restore(self, topo: &mut Topology) {
+        topo.restore_for_rollback(&self.0);
+    }
+}
 
 /// Runs `operation` transactionally: on `Err`, the topology is restored to
 /// its pre-operation state (including handle-slot high-water marks) before
@@ -41,11 +85,11 @@ pub fn run_transacted<T, E>(
     topo: &mut Topology,
     operation: impl FnOnce(&mut Topology) -> Result<T, E>,
 ) -> Result<T, E> {
-    let snapshot = topo.clone();
+    let snapshot = RollbackSnapshot::capture(topo);
     match operation(topo) {
         Ok(value) => Ok(value),
         Err(error) => {
-            topo.restore_for_rollback(&snapshot);
+            snapshot.restore(topo);
             Err(error)
         }
     }
@@ -68,10 +112,10 @@ pub fn run_validated<T, E>(
     operation: impl FnOnce(&mut Topology) -> Result<T, E>,
     validate: impl FnOnce(&Topology, &T) -> Result<(), E>,
 ) -> Result<T, E> {
-    let snapshot = topo.clone();
+    let snapshot = RollbackSnapshot::capture(topo);
     let result = operation(topo).and_then(|value| validate(topo, &value).map(|()| value));
     if result.is_err() {
-        topo.restore_for_rollback(&snapshot);
+        snapshot.restore(topo);
     }
     result
 }
@@ -87,7 +131,7 @@ mod tests {
 
     use super::*;
 
-    fn seed(topo: &mut Topology) -> crate::VertexId {
+    pub(super) fn seed(topo: &mut Topology) -> crate::VertexId {
         topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7))
     }
 
@@ -159,7 +203,7 @@ mod tests {
         assert!(topo.vertex(v).is_ok());
     }
 
-    fn triangle_face(topo: &mut Topology) -> crate::FaceId {
+    pub(super) fn triangle_face(topo: &mut Topology) -> crate::FaceId {
         use crate::edge::EdgeCurve;
         use crate::face::{Face, FaceSurface};
         use crate::wire::{OrientedEdge, Wire};
@@ -244,3 +288,7 @@ mod tests {
         assert_eq!(topo.num_shells(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "transaction/savepoint_tests.rs"]
+mod savepoint_tests;
