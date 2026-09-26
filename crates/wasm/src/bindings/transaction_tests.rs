@@ -1,3 +1,5 @@
+//! Coordinated boolean batch commits and retained session-state tests.
+
 #![allow(clippy::unwrap_used)]
 use crate::kernel::BrepKernel;
 

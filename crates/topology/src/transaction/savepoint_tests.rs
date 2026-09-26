@@ -1,3 +1,5 @@
+//! Nested savepoint state, failure injection, and stale-handle contract tests.
+
 #![allow(clippy::unwrap_used)]
 use super::tests::{seed, triangle_face};
 use super::*;
@@ -327,7 +329,8 @@ fn mutable_entity_and_pcurve_access_create_genuine_savepoints() {
                 t.edge_mut(edge).unwrap();
             }
             2 => {
-                t.wire_mut(wire).unwrap();
+                let replacement = t.wire(wire).unwrap().clone();
+                t.replace_boundary_wire(wire, replacement).unwrap();
             }
             3 => {
                 t.face_mut(face).unwrap();
