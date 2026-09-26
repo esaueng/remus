@@ -1329,3 +1329,62 @@ fn torus_oval_on_a_notched_box_face_drops_the_short_excursion_through_the_notch(
         );
     }
 }
+
+#[test]
+fn curved_nurbs_trim_authority_stops_at_the_extent_handoff() {
+    use crate::pave_filler::curved_section_clip::{clip_section, tests::fixture};
+    use remus_math::context::OperationContext;
+
+    let (topo, traces, section) = fixture(
+        &[[0.125, 0.875, -1.0, 1.0], [0.375, 0.625, -0.5, 0.5]],
+        &[[0.0, 1.0, -1.5, 1.5]],
+        false,
+        1.0,
+        false,
+        true,
+        [(0.0, 1.0); 2],
+    );
+    let surfaces = traces.map(|trace| topo.face(trace.face).unwrap().surface());
+    for j in 0..2 {
+        assert!(
+            FaceExtent::new(
+                &topo,
+                traces[j].face,
+                surfaces[j],
+                None,
+                Tolerance::default()
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+    let raw = RawCurve {
+        bbox: Aabb3::from_points(section.control_points().iter().copied()),
+        t_range: section.domain(),
+        p_start: section.evaluate(-8.0),
+        p_end: section.evaluate(24.0),
+        curve: EdgeCurve::NurbsCurve(section.clone()),
+    };
+    let current = super::restrict_curves_to_faces(
+        &topo,
+        traces[0].face,
+        traces[1].face,
+        surfaces[0],
+        surfaces[1],
+        None,
+        None,
+        vec![raw],
+        Tolerance::default(),
+        &mut super::JunctionRegistry::default(),
+    )
+    .unwrap();
+    assert_eq!(current.len(), 1);
+    assert!((current[0].t_range.0 + 8.0).abs() < 1e-12);
+    assert!((current[0].t_range.1 - 24.0).abs() < 1e-12);
+    let clipped = clip_section(&topo, traces, &section, &OperationContext::new()).unwrap();
+    assert_eq!(clipped.intervals.len(), 2);
+    for (interval, expected) in clipped.intervals.iter().zip([[-4.0, 4.0], [12.0, 20.0]]) {
+        assert!((interval.source_range[0] - expected[0]).abs() < 1e-12);
+        assert!((interval.source_range[1] - expected[1]).abs() < 1e-12);
+    }
+}
