@@ -301,14 +301,21 @@ fn wholly_outside_trim_or_inside_hole_is_empty() {
 }
 #[test]
 fn full_source_endpoints_keep_both_boundary_uses() {
-    let (_, _, _, clip) = run(&[FULL], &[FULL]);
-    assert_intervals(&clip, &[[0.0, 1.0]]);
-    assert_eq!(clip.intervals[0].endpoints[0].len(), 2);
-    assert_eq!(clip.intervals[0].endpoints[1].len(), 2);
-    assert_ne!(
-        clip.intervals[0].endpoints[0][0].coedge,
-        clip.intervals[0].endpoints[0][1].coedge
-    );
+    for domains in [[(0.0, 1.0); 2], [(16.0, 24.0), (-4.0, -2.0)]] {
+        let (topo, traces, section) = fixture(&[FULL], &[FULL], false, 1.0, false, true, domains);
+        let clip = clip_section(&topo, traces, &section, &OperationContext::new()).unwrap();
+        assert_intervals(&clip, &[[0.0, 1.0]]);
+        for (end, native) in [-8.0, 24.0].into_iter().enumerate() {
+            assert_eq!(clip.intervals[0].endpoints[end].len(), 2);
+            let events = &clip.intervals[0].endpoints[end];
+            assert_ne!(events[0].coedge, events[1].coedge);
+            for event in events {
+                near(event.section_parameter, native);
+                assert!(event.section_parameter_bound[0] <= native);
+                assert!(event.section_parameter_bound[1] >= native);
+            }
+        }
+    }
 }
 #[test]
 fn curved_nurbs_matrix_has_independent_material_and_locus_oracles() {
