@@ -515,7 +515,7 @@ impl BrepKernel {
     /// Create a new typed GCS sketch. Returns a sketch handle.
     ///
     /// This is the successor to the legacy `sketch*` API: the constraint
-    /// system persists across calls, entities are typed handles, all 24
+    /// system persists across calls, entities are typed handles, all 26
     /// constraint types are available, and constraints can be removed.
     #[wasm_bindgen(js_name = "gcsNew")]
     pub fn gcs_new(&mut self) -> u32 {
@@ -898,12 +898,16 @@ mod tests {
             format!(r#"{{"type":"equalLength","l1":{l0},"l2":{l1}}}"#),
             format!(r#"{{"type":"midpoint","point":{p2},"line":{l0}}}"#),
             format!(r#"{{"type":"symmetric","a":{p0},"b":{p1},"axis":{l1}}}"#),
+            // B16: the two tags missing from the original 24-count. The header
+            // still says 24 in history; the kernel supports 26.
+            format!(r#"{{"type":"tangentLineCircle","line":{l0},"circle":{ci}}}"#),
+            format!(r#"{{"type":"symmetricAboutPoint","a":{p0},"b":{p1},"center":{p2}}}"#),
         ];
         for c in &constraints {
             k.gcs_add_constraint_impl(s, c)
                 .unwrap_or_else(|e| panic!("constraint failed to add: {c}: {e:?}"));
         }
-        assert_eq!(constraints.len(), 24);
+        assert_eq!(constraints.len(), 26);
     }
 
     /// Unknown types and bad handles produce typed errors.
@@ -1362,5 +1366,127 @@ mod tests {
             (pos[0] - 1.25).abs() > 1e-6,
             "gcsSolve must keep publishing its last iterate, got {pos:?}"
         );
+    }
+
+    // ── B16 representative binding cells (native `*_impl`; packaged-WASM node
+    // run distinguished in the PR body, not here) ──────────────────────────
+
+    /// Angle solves through the binding with an independent angle oracle.
+    #[test]
+    fn b16_angle_solves_via_binding() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let o = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let x = k.gcs_add_point_impl(s, 4.0, 0.0, true).unwrap();
+        let q = k.gcs_add_point_impl(s, 1.0, 1.0, false).unwrap();
+        let l1 = k.gcs_add_line_impl(s, o, x).unwrap();
+        let l2 = k.gcs_add_line_impl(s, o, q).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"angle","l1":{l1},"l2":{l2},"value":0.5}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"distance","a":{o},"b":{q},"value":3.0}}"#),
+        )
+        .unwrap();
+        let r = k.gcs_solve_impl(s, 300, 1e-10).unwrap();
+        assert!(r.converged, "binding angle: max_r={}", r.max_residual);
+        let pos = k.gcs_point_position_impl(s, q).unwrap();
+        let ang = (pos[0] * 0.0 + pos[1] * 1.0).atan2(pos[0]);
+        let err = (ang - 0.5).abs().min((ang + 0.5).abs());
+        assert!(err < 1e-8, "binding angle got {ang:.9e}");
+    }
+
+    /// Point-line distance solves through the binding.
+    #[test]
+    fn b16_point_line_distance_solves_via_binding() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let b = k.gcs_add_point_impl(s, 4.0, 0.0, true).unwrap();
+        let p = k.gcs_add_point_impl(s, 1.0, 5.0, false).unwrap();
+        let l = k.gcs_add_line_impl(s, a, b).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"pointLineDistance","point":{p},"line":{l},"value":2.0}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":1.0}}"#))
+            .unwrap();
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(r.converged, "binding pld: max_r={}", r.max_residual);
+        let pos = k.gcs_point_position_impl(s, p).unwrap();
+        assert!((pos[0] - 1.0).abs() < 1e-8);
+        assert!((pos[1].abs() - 2.0).abs() < 1e-8, "binding pld y={pos:?}");
+    }
+
+    /// Detailed solve reports redundant + rolls back contradictory systems.
+    #[test]
+    fn b16_solve_detailed_redundant_and_rollback_via_binding() {
+        // Redundant: duplicate FixX.
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixY","point":{p},"value":3.0}}"#))
+            .unwrap();
+        let d = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        assert!(d.converged);
+        assert!(d.redundant);
+        assert_eq!(d.classification, "redundant");
+
+        // Rollback: contradictory FixX restores the pre-solve point.
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":9.0}}"#))
+            .unwrap();
+        let d = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        assert!(!d.converged);
+        assert!(d.rolled_back);
+        let pos = k.gcs_point_position_impl(s, p).unwrap();
+        assert!((pos[0] - 1.25).abs() < 1e-15 && (pos[1] + 4.5).abs() < 1e-15);
+    }
+
+    /// Translated tangency through the binding (unit size at +1e6/−1e6).
+    #[test]
+    fn b16_translated_tangency_via_binding() {
+        let (tx, ty) = (1_000_000.0, -1_000_000.0);
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let a = k.gcs_add_point_impl(s, tx, ty, true).unwrap();
+        let b = k.gcs_add_point_impl(s, tx + 4.0, ty, true).unwrap();
+        let c = k.gcs_add_point_impl(s, tx + 1.0, ty + 5.0, false).unwrap();
+        let line = k.gcs_add_line_impl(s, a, b).unwrap();
+        let circ = k.gcs_add_circle_impl(s, c, 2.0).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"circleRadius","circle":{circ},"value":2.0}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"tangentLineCircle","line":{line},"circle":{circ}}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(
+                r#"{{"type":"fixX","point":{c},"value":{tx_plus}}}"#,
+                tx_plus = tx + 1.0
+            ),
+        )
+        .unwrap();
+        let r = k.gcs_solve_impl(s, 300, 1e-10).unwrap();
+        assert!(r.converged, "binding T tangency: max_r={}", r.max_residual);
+        let pos = k.gcs_point_position_impl(s, c).unwrap();
+        assert!(((pos[1] - ty).abs() - 2.0).abs() < 1e-8, "T y={pos:?}");
     }
 }
