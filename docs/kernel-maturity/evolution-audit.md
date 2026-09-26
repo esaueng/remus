@@ -38,7 +38,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Unify / healing sewing / inner-wire removal | Qualified merge, replacement and consumed-entity history through healing pipelines | `crates/operations/tests/journal.rs`: `verified_unification_journals_merged_faces_and_consumed_center`, `verified_sewing_preserves_all_references_through_arena_and_later_draft`, `verified_inner_wire_removal_deletes_consumed_references_and_preserves_survivors` | General standalone sewing and every upgrade variant; pipeline evidence does not certify all construction APIs |
 | Fillet / chamfer creation | Faces only, with unresolved output claims retained | `crates/operations/tests/journal.rs`: `blend_face_evolution_journals_with_unresolved_claims_intact`; WASM `chamfer_journaled_severs_edge_refs_like_any_faces_only_entry` | Edge/vertex construction maps |
 | Analytic blend-band resize | Journaled single-cylinder/planar-support path retains F/E/V on resize and records complete merges/deletions on removal; legacy resize remains faces-only | `crates/operations/tests/journal_resize_blend.rs`; WASM `blend_resize_history_has_direct_batch_parity_and_rollback`; packaged consumer regression | Multi-face regions, curved supports and ambiguous boundaries remain outside the journaled path |
-| Linear pattern | Face map over instances | `crates/operations/src/journal_ops.rs`: `linear_pattern_journaled` | Edge/vertex maps; native whole-call rollback now covered below |
+| Linear pattern | Total F/E/V construction lineage for the journaled linear path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map and material results unchanged | `crates/operations/tests/regress_pattern_evolution_fev.rs` (census, original-only naming, arena round-trip/restore/subsequent edit, scales/curved/cavity/placement, typed refusals); WASM `linear_pattern_journaled_resolves_all_kinds_direct_and_batch`; `crates/operations/src/pattern.rs` `PatternTracker`/`linear_pattern_with_entity_history`, `journal_ops.rs` `linear_pattern_journaled` | Circular/grid patterns; broader blend/shell/split E/V beyond their faces-only scope |
 | Default V2 offset | F/E/V: one-to-one construction face map, plus edge/vertex claims induced from it by exact incidence and checked against the actual result sets; shared incidence stays typed unresolved | `crates/operations/tests/qualify_offset_entity_evolution.rs`; `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution`; WASM `offset_journaled_typed_unresolved_survives_every_envelope` | Torus seams and sphere equator rings need engine-level edge records; arc-joint and self-intersection-removal provenance; curved offsets refuse from 100 units (B55) |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
 | Extrude / revolve / sweep / loft / section | No family-wide total journal coverage established by this audit | Construction modules in `crates/operations/src/` | Construction attribution for caps, side faces and boundary entities; one family per slice |
@@ -249,12 +249,13 @@ This slice neither bypasses the failing test nor changes CI routing.
    complete merge/deletion history. Extend multi-face regions and curved supports
    only with construction boundary correspondence.
 3. Extend one B18 family at a time. **Done: default V2 offset F/E/V
-   (2026-09-25, above).** Remaining, in order: shell boundary maps
+   (2026-09-25, above). Done: journaled linear-pattern F/E/V (this slice,
+   above).** Remaining, in order: shell boundary maps
    (`shell_op` rebuilds both skins and rims from polygon specs, so it needs
    its own spec-to-edge records), split/section boundaries, then sweep-family
    cap attribution. Face-only entries that still sever edge and vertex
-   references are fillet/chamfer creation, linear pattern, shell and plane
-   split. Offset residuals are torus seams and sphere equator rings, which
+   references are fillet/chamfer creation, circular/grid patterns, shell and
+   plane split. Offset residuals are torus seams and sphere equator rings, which
    need edge records from the offset engine's intersection phase, plus
    arc-joint and self-intersection-removal provenance. Preserve explicit
    unresolved records outside each qualified domain.
