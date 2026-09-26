@@ -286,6 +286,7 @@ Quick reference — find the right file for any task:
 | Small face removal | `fix/small_face.rs` |
 | Wireframe repair | `fix/wireframe.rs` |
 | Split over-connected vertices | `fix/split_vertex.rs` |
+| Conservative spatial index for coincident-vertex candidate discovery | `fix/vertex_merge.rs` |
 | Unify same-domain faces (merge coplanar/co-cylindrical) | `upgrade/unify_same_domain.rs` |
 | Curve splitting at continuity breaks | `upgrade/split_curve.rs` |
 | Surface splitting | `upgrade/split_surface.rs` |
