@@ -502,7 +502,6 @@ pub fn merge_coincident_vertices(
     } else {
         Tolerance::new().linear
     };
-    let tol_sq = tol * tol;
 
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
@@ -528,24 +527,20 @@ pub fn merge_coincident_vertices(
     }
 
     // Build merge map: for each vertex, find the canonical (lowest-index)
-    // vertex it should merge into.
-    let num_verts = vertex_ids.len();
+    // vertex it should merge into. Candidate discovery is the shared
+    // conservative spatial index (`remus_heal::fix::vertex_merge`); the exact
+    // predicate, tolerance policy, canonical representative, deterministic
+    // order, and nontransitive semantics equal the legacy all-pairs scan
+    // (PERF-H01).
+    let plan = remus_heal::fix::vertex_merge::plan_coincident_merges(&positions, tol);
+    debug_assert_eq!(plan.merge_target.len(), vertex_ids.len());
     let mut merge_to: HashMap<usize, VertexId> = HashMap::new();
     let mut merged_count = 0;
 
-    for i in 0..num_verts {
-        if merge_to.contains_key(&vertex_ids[i].index()) {
-            continue;
-        }
-        for j in (i + 1)..num_verts {
-            if merge_to.contains_key(&vertex_ids[j].index()) {
-                continue;
-            }
-            let dist_sq = (positions[i] - positions[j]).length_squared();
-            if dist_sq < tol_sq {
-                merge_to.insert(vertex_ids[j].index(), vertex_ids[i]);
-                merged_count += 1;
-            }
+    for (j, target) in plan.merge_target.iter().enumerate() {
+        if let Some(i) = *target {
+            merge_to.insert(vertex_ids[j].index(), vertex_ids[i]);
+            merged_count += 1;
         }
     }
 
