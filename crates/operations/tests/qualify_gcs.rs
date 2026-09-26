@@ -45,9 +45,11 @@
 //!   × 4 placements (1e-3, 1, 1e3, T) = 104 cells. Covered: pre-existing 7 newest × 3
 //!   ([1e-3,1,1e5]) + this PR's `b16_jacobian_*` in `constraint/tests.rs` for the
 //!   19 older × [1e-3,1,1e3] and all 26 at T. Denominator 104.
-//! - Solve-F (converged + independent geometric oracle, not the solver residual):
-//!   26 variants × 4 placements = 104 cells. This file covers all 104 (each variant
-//!   solved at 1e-3/1/1e3/T with an independent hypot/dot/cross/angle check).
+//! - Solve (converged + independent geometric oracle, not the solver residual):
+//!   26 variants × 4 placements = 104 cells. Of these, 24×4=96 classify Solved
+//!   (F); the 2 concentric families ×4=8 classify Redundant with dof 0 (R) via
+//!   the arc internal tie and are asserted as R below. Each variant is solved
+//!   at 1e-3/1/1e3/T with an independent hypot/dot/cross/angle check.
 //! - State cells: U/F/R/I/D per family (7 families × up to 5 = 35 nominal, 29
 //!   applicable — see inapplicable list). This file covers all 29.
 //! - Contract cells: solve-publishes vs detailed-rolls-back, 0/1-iteration budget,
@@ -645,7 +647,10 @@ fn arc_family_solves_with_independent_oracles() {
             "arclength angle {scale}: {got_theta:.9e}"
         );
 
-        // ConcentricArcArc F.
+        // ConcentricArcArc R (not F): Concentric already places the free center
+        // (2 eq, 2 params); the arc internal tie adds a third consistent
+        // equation, so dof 0 with rank < equations → Redundant. An extra FixX
+        // would only duplicate the redundancy; it is omitted here.
         // NOTE: s2/e2 must already be equidistant from the concentric target
         // (0,0) or the arc internal tie contradicts Concentric by construction.
         let mut sys = GcsSystem::new();
@@ -659,17 +664,19 @@ fn arc_family_solves_with_independent_oracles() {
         let a2 = sys.add_arc(c2, s2, e2).unwrap();
         sys.add_constraint(Constraint::ConcentricArcArc(a1, a2))
             .unwrap();
-        // Pin one coordinate so the free center is determinate.
-        sys.add_constraint(Constraint::FixX(c2, 0.0)).unwrap();
-        // FixY via a second pin: the concentric pair fixes both, FixX makes it
-        // over-determined consistently (x=0 plus concentric ⇒ y=0).
-        let r = sys.solve(300, tol_len(scale)).unwrap();
-        assert!(r.converged, "concentricarcarc {scale}: {}", r.max_residual);
+        let d = sys.solve_detailed(300, tol_len(scale)).unwrap();
+        assert!(d.converged, "concentricarcarc {scale}: {}", d.max_residual);
+        assert_eq!(d.dof, 0);
+        assert!(d.redundant, "internal tie makes this R, not Solved");
+        assert_eq!(d.classification, SolveClassification::Redundant);
         let (cx, cy) = pt(&sys, c2);
         assert_len("concentric x", cx, 0.0, scale);
         assert_len("concentric y", cy, 0.0, scale);
 
-        // ConcentricArcCircle F (natively unsolved before).
+        // ConcentricArcCircle R (not F): Concentric places the circle center
+        // (2 eq); CircleRadius pins the free radius (1 eq). The all-fixed arc
+        // contributes a zero-row internal tie, so dof 0 with rank < equations
+        // → Redundant. A FixX would duplicate the x residual; it is omitted.
         let mut sys = GcsSystem::new();
         let ac = fixed_pt(&mut sys, 0.0, 0.0);
         let s = fixed_pt(&mut sys, 1.0 * scale, 0.0);
@@ -679,16 +686,21 @@ fn arc_family_solves_with_independent_oracles() {
         let circ = sys.add_circle(cc, 2.0 * scale).unwrap();
         sys.add_constraint(Constraint::ConcentricArcCircle(arc, circ))
             .unwrap();
-        sys.add_constraint(Constraint::FixX(cc, 0.0)).unwrap();
-        let r = sys.solve(300, tol_len(scale)).unwrap();
+        sys.add_constraint(Constraint::CircleRadius(circ, 2.0 * scale))
+            .unwrap();
+        let d = sys.solve_detailed(300, tol_len(scale)).unwrap();
         assert!(
-            r.converged,
+            d.converged,
             "concentricarccircle {scale}: {}",
-            r.max_residual
+            d.max_residual
         );
+        assert_eq!(d.dof, 0);
+        assert!(d.redundant, "zero-row internal makes this R, not Solved");
         let (cx, cy) = pt(&sys, cc);
         assert_len("concentric-arc-circle x", cx, 0.0, scale);
         assert_len("concentric-arc-circle y", cy, 0.0, scale);
+        let got_r = sys.circle(circ).expect("circ").radius;
+        assert_len("concentric-arc-circle radius", got_r, 2.0 * scale, scale);
 
         // TangentLineArc F: horizontal line y=0 pinned in direction, arc with
         // center (0,r) so the line is tangent at the shared origin point.
@@ -775,6 +787,264 @@ fn line_circle_tangency_solves() {
     assert!(r.converged, "T tangency: {}", r.max_residual);
     let (_, cy) = pt(&sys, c);
     assert_len_abs("T tangency |y|", (cy - TY).abs(), 2.0, 1e-8);
+}
+
+// ── Translated F/R cells for the remaining 17 variants (review) ───────────
+// The per-family scale loops above prove 1e-3/1/1e3; the translated blocks
+// there covered only 9 variants. This closes the T placement for the other 17
+// with the same independent oracles, so the 26×4 denominator is exercised.
+
+#[test]
+fn translated_solve_f_cells_for_remaining_variants() {
+    // Horizontal / Vertical / Parallel / EqualLength at T.
+    let mut sys = GcsSystem::new();
+    let a = fixed_pt(&mut sys, TX, TY);
+    let b = free_pt(&mut sys, TX + 3.0, TY + 2.0);
+    let l = sys.add_line(a, b).unwrap();
+    sys.add_constraint(Constraint::Horizontal(l)).unwrap();
+    sys.add_constraint(Constraint::FixX(b, TX + 3.0)).unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T horizontal: {}", r.max_residual);
+    assert_len_abs("T horizontal y", pt(&sys, b).1, TY, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let a = fixed_pt(&mut sys, TX, TY);
+    let b = free_pt(&mut sys, TX + 2.0, TY + 3.0);
+    let l = sys.add_line(a, b).unwrap();
+    sys.add_constraint(Constraint::Vertical(l)).unwrap();
+    sys.add_constraint(Constraint::FixY(b, TY + 3.0)).unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T vertical: {}", r.max_residual);
+    assert_len_abs("T vertical x", pt(&sys, b).0, TX, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let o = fixed_pt(&mut sys, TX, TY);
+    let h = fixed_pt(&mut sys, TX + 4.0, TY);
+    let p = fixed_pt(&mut sys, TX, TY + 2.0);
+    let q = free_pt(&mut sys, TX + 3.0, TY + 5.0);
+    let l1 = sys.add_line(o, h).unwrap();
+    let l2 = sys.add_line(p, q).unwrap();
+    sys.add_constraint(Constraint::Parallel(l1, l2)).unwrap();
+    sys.add_constraint(Constraint::FixX(q, TX + 3.0)).unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T parallel: {}", r.max_residual);
+    assert_len_abs("T parallel y", pt(&sys, q).1, TY + 2.0, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let a0 = fixed_pt(&mut sys, TX, TY);
+    let a1 = fixed_pt(&mut sys, TX + 3.0, TY + 4.0);
+    let b0 = fixed_pt(&mut sys, TX + 10.0, TY);
+    let b1 = free_pt(&mut sys, TX + 11.0, TY);
+    let l1 = sys.add_line(a0, a1).unwrap();
+    let l2 = sys.add_line(b0, b1).unwrap();
+    sys.add_constraint(Constraint::Horizontal(l2)).unwrap();
+    sys.add_constraint(Constraint::EqualLength(l1, l2)).unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T equallength: {}", r.max_residual);
+    assert_len_abs("T equallength", dist(pt(&sys, b0), pt(&sys, b1)), 5.0, 1e-8);
+
+    // Midpoint / Symmetric / SymmetricAboutPoint at T.
+    let mut sys = GcsSystem::new();
+    let a = fixed_pt(&mut sys, TX - 4.0, TY + 2.0);
+    let b = fixed_pt(&mut sys, TX + 10.0, TY + 8.0);
+    let line = sys.add_line(a, b).unwrap();
+    let mid = free_pt(&mut sys, TX, TY);
+    sys.add_constraint(Constraint::Midpoint(mid, line)).unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T midpoint: {}", r.max_residual);
+    assert_len_abs("T midpoint x", pt(&sys, mid).0, TX + 3.0, 1e-8);
+    assert_len_abs("T midpoint y", pt(&sys, mid).1, TY + 5.0, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let ax = fixed_pt(&mut sys, TX + 2.0, TY - 1.0);
+    let bx = fixed_pt(&mut sys, TX + 2.0, TY + 5.0);
+    let axis = sys.add_line(ax, bx).unwrap();
+    let p1 = fixed_pt(&mut sys, TX - 3.0, TY + 4.0);
+    let p2 = free_pt(&mut sys, TX, TY);
+    sys.add_constraint(Constraint::Symmetric(p1, p2, axis))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T symmetric: {}", r.max_residual);
+    assert_len_abs("T symmetric x", pt(&sys, p2).0, TX + 7.0, 1e-8);
+    assert_len_abs("T symmetric y", pt(&sys, p2).1, TY + 4.0, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let c = fixed_pt(&mut sys, TX + 1.0, TY + 1.0);
+    let p1 = fixed_pt(&mut sys, TX - 2.0, TY + 3.0);
+    let p2 = free_pt(&mut sys, TX, TY);
+    sys.add_constraint(Constraint::SymmetricAboutPoint(p1, p2, c))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T symabout: {}", r.max_residual);
+    assert_len_abs("T symabout x", pt(&sys, p2).0, TX + 4.0, 1e-8);
+    assert_len_abs("T symabout y", pt(&sys, p2).1, TY - 1.0, 1e-8);
+
+    // CircleRadius / EqualRadiusCircleCircle at T.
+    let mut sys = GcsSystem::new();
+    let c = fixed_pt(&mut sys, TX, TY);
+    let circ = sys.add_circle(c, 1.0).unwrap();
+    sys.add_constraint(Constraint::CircleRadius(circ, 2.5))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T circleradius: {}", r.max_residual);
+    assert_len_abs(
+        "T circle radius",
+        sys.circle(circ).expect("c").radius,
+        2.5,
+        1e-8,
+    );
+
+    let mut sys = GcsSystem::new();
+    let c1 = fixed_pt(&mut sys, TX, TY);
+    let c2 = fixed_pt(&mut sys, TX + 20.0, TY);
+    let circ1 = sys.add_circle(c1, 2.0).unwrap();
+    let circ2 = sys.add_circle(c2, 7.0).unwrap();
+    sys.add_constraint(Constraint::CircleRadius(circ1, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EqualRadiusCircleCircle(circ1, circ2))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T equalradii: {}", r.max_residual);
+    assert_len_abs(
+        "T equalradii r2",
+        sys.circle(circ2).expect("c2").radius,
+        2.0,
+        1e-8,
+    );
+
+    // Arc family at T (unit size, offset placement; same consistent layouts
+    // as the scale loops).
+    let mut sys = GcsSystem::new();
+    let c = fixed_pt(&mut sys, TX, TY);
+    let s = fixed_pt(&mut sys, TX + 3.0, TY);
+    let e = fixed_pt(&mut sys, TX, TY + 3.0);
+    let arc = sys.add_arc(c, s, e).unwrap();
+    let p = free_pt(&mut sys, TX + 10.0, TY);
+    sys.add_constraint(Constraint::PointOnArc(p, arc)).unwrap();
+    sys.add_constraint(Constraint::FixY(p, TY)).unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T pointonarc: {}", r.max_residual);
+    assert_len_abs(
+        "T pointonarc radius",
+        dist(pt(&sys, p), pt(&sys, c)),
+        3.0,
+        1e-8,
+    );
+
+    let mut sys = GcsSystem::new();
+    let l1 = fixed_pt(&mut sys, TX - 2.0, TY);
+    let l2 = free_pt(&mut sys, TX + 2.0, TY + 1.0);
+    let line = sys.add_line(l1, l2).unwrap();
+    let cc = fixed_pt(&mut sys, TX, TY + 2.0);
+    let st = fixed_pt(&mut sys, TX, TY);
+    let en = fixed_pt(&mut sys, TX + 2.0, TY + 2.0);
+    let arc = sys.add_arc(cc, st, en).unwrap();
+    sys.add_constraint(Constraint::TangentLineArc(line, arc, st))
+        .unwrap();
+    sys.add_constraint(Constraint::FixX(l2, TX + 2.0)).unwrap();
+    let r = sys.solve(300, TOL).unwrap();
+    assert!(r.converged, "T tangentlinearc: {}", r.max_residual);
+    assert_len_abs("T tangent line y", pt(&sys, l2).1, TY, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let c1 = fixed_pt(&mut sys, TX, TY + 1.0);
+    let s1 = fixed_pt(&mut sys, TX, TY);
+    let e1 = fixed_pt(&mut sys, TX + 1.0, TY + 1.0);
+    let a1 = sys.add_arc(c1, s1, e1).unwrap();
+    let c2 = free_pt(&mut sys, TX + 0.5, TY - 1.0);
+    let s2 = fixed_pt(&mut sys, TX, TY);
+    let e2 = fixed_pt(&mut sys, TX + 1.0, TY - 1.0);
+    let a2 = sys.add_arc(c2, s2, e2).unwrap();
+    sys.add_constraint(Constraint::TangentArcArc(a1, a2, s1))
+        .unwrap();
+    sys.add_constraint(Constraint::FixX(c2, TX)).unwrap();
+    let r = sys.solve(300, TOL).unwrap();
+    assert!(r.converged, "T tangentarcarc: {}", r.max_residual);
+    assert_len_abs("T tangent arcs x", pt(&sys, c2).0, TX, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let c1 = fixed_pt(&mut sys, TX, TY);
+    let s1 = fixed_pt(&mut sys, TX + 2.0, TY);
+    let e1 = fixed_pt(&mut sys, TX, TY + 2.0);
+    let a1 = sys.add_arc(c1, s1, e1).unwrap();
+    let c2 = fixed_pt(&mut sys, TX + 10.0, TY);
+    let s2 = free_pt(&mut sys, TX + 13.0, TY + 1.0);
+    let e2 = fixed_pt(&mut sys, TX + 10.0, TY + 2.0);
+    let a2 = sys.add_arc(c2, s2, e2).unwrap();
+    sys.add_constraint(Constraint::EqualRadiusArcArc(a1, a2))
+        .unwrap();
+    sys.add_constraint(Constraint::FixY(s2, TY)).unwrap();
+    let r = sys.solve(300, TOL).unwrap();
+    assert!(r.converged, "T equalradiusarcarc: {}", r.max_residual);
+    let r1 = dist(pt(&sys, s1), pt(&sys, c1));
+    let r2 = dist(pt(&sys, s2), pt(&sys, c2));
+    assert_len_abs("T equal arc radii", (r1 - r2).abs(), 0.0, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let c = fixed_pt(&mut sys, TX, TY);
+    let s = fixed_pt(&mut sys, TX + 4.0, TY);
+    let e = fixed_pt(&mut sys, TX, TY + 4.0);
+    let arc = sys.add_arc(c, s, e).unwrap();
+    let cc = fixed_pt(&mut sys, TX + 20.0, TY);
+    let circ = sys.add_circle(cc, 1.0).unwrap();
+    sys.add_constraint(Constraint::EqualRadiusArcCircle(arc, circ))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "T equalradiusarccircle: {}", r.max_residual);
+    let ra = dist(pt(&sys, s), pt(&sys, c));
+    let rc = sys.circle(circ).expect("circ").radius;
+    assert_len_abs("T arc==circle", (ra - rc).abs(), 0.0, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let c = fixed_pt(&mut sys, TX, TY);
+    let s = fixed_pt(&mut sys, TX + 2.0, TY);
+    let e = free_pt(&mut sys, TX, TY + 1.0);
+    let arc = sys.add_arc(c, s, e).unwrap();
+    sys.add_constraint(Constraint::ArcLength(arc, PI)).unwrap();
+    let r = sys.solve(300, TOL).unwrap();
+    assert!(r.converged, "T arclength: {}", r.max_residual);
+    let (ex, ey) = pt(&sys, e);
+    assert_len_abs("T arclength radius", (ex - TX).hypot(ey - TY), 2.0, 1e-8);
+    let cross = 2.0 * (ey - TY) - 0.0 * (ex - TX);
+    let dot = 2.0 * (ex - TX) + 0.0 * (ey - TY);
+    assert!((cross.atan2(dot).abs() - PI / 2.0).abs() < 1e-8);
+
+    // Concentric pair at T are R cells (dof 0, Redundant via the internal tie).
+    let mut sys = GcsSystem::new();
+    let c1 = fixed_pt(&mut sys, TX, TY);
+    let s1 = fixed_pt(&mut sys, TX + 1.0, TY);
+    let e1 = fixed_pt(&mut sys, TX, TY + 1.0);
+    let a1 = sys.add_arc(c1, s1, e1).unwrap();
+    let c2 = free_pt(&mut sys, TX + 5.0, TY + 5.0);
+    let s2 = fixed_pt(&mut sys, TX + 10.0, TY);
+    let e2 = fixed_pt(&mut sys, TX, TY + 10.0);
+    let a2 = sys.add_arc(c2, s2, e2).unwrap();
+    sys.add_constraint(Constraint::ConcentricArcArc(a1, a2))
+        .unwrap();
+    let d = sys.solve_detailed(300, TOL).unwrap();
+    assert!(d.converged, "T concentricarcarc: {}", d.max_residual);
+    assert_eq!(d.dof, 0);
+    assert!(d.redundant);
+    assert_len_abs("T concentric x", pt(&sys, c2).0, TX, 1e-8);
+    assert_len_abs("T concentric y", pt(&sys, c2).1, TY, 1e-8);
+
+    let mut sys = GcsSystem::new();
+    let ac = fixed_pt(&mut sys, TX, TY);
+    let s = fixed_pt(&mut sys, TX + 1.0, TY);
+    let e = fixed_pt(&mut sys, TX, TY + 1.0);
+    let arc = sys.add_arc(ac, s, e).unwrap();
+    let cc = free_pt(&mut sys, TX + 4.0, TY + 4.0);
+    let circ = sys.add_circle(cc, 2.0).unwrap();
+    sys.add_constraint(Constraint::ConcentricArcCircle(arc, circ))
+        .unwrap();
+    sys.add_constraint(Constraint::CircleRadius(circ, 2.0))
+        .unwrap();
+    let d = sys.solve_detailed(300, TOL).unwrap();
+    assert!(d.converged, "T concentricarccircle: {}", d.max_residual);
+    assert_eq!(d.dof, 0);
+    assert!(d.redundant);
+    assert_len_abs("T concentric-arc-circle x", pt(&sys, cc).0, TX, 1e-8);
+    assert_len_abs("T concentric-arc-circle y", pt(&sys, cc).1, TY, 1e-8);
 }
 
 // ── States: redundant / inconsistent / degenerate ─────────────────────────
