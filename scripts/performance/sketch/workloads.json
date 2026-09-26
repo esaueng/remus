@@ -1,0 +1,156 @@
+{
+  "schema": "remus-sketch-perf-workloads-v1",
+  "name": "sketch-baseline",
+  "seed_note": "No RNG: fixtures are closed-form grids (anchors at 10k, free starts at +1/+1, chain at (i, 0.5*(i%2))). Drag deltas are fixed (+0.5, +0.25) on chain point index 25. Deterministic across processes and machines.",
+  "solver": {
+    "max_iterations": 100,
+    "inconsistent_max_iterations": 50,
+    "tolerance": 1e-10,
+    "drag_steps": 20,
+    "drag_target_index": 25,
+    "drag_delta": [0.5, 0.25]
+  },
+  "budgets": {
+    "jacobian_bytes": 268435456,
+    "note": "Dense Jacobian (m*n*8 bytes) above this budget is recorded as a resource refusal, never attempted. 10000-param coupled (10000x10000 = 800 MB) always refuses; 10000-param independent_under (5000x10000 = 400 MB) always refuses."
+  },
+  "cases": [
+    {
+      "id": "independent_under_10",
+      "workload": "independent_under",
+      "size": 10,
+      "num_params": 10,
+      "num_equations": 5,
+      "expected": "underConstrained"
+    },
+    {
+      "id": "independent_under_100",
+      "workload": "independent_under",
+      "size": 100,
+      "num_params": 100,
+      "num_equations": 50,
+      "expected": "underConstrained"
+    },
+    {
+      "id": "independent_under_1000",
+      "workload": "independent_under",
+      "size": 1000,
+      "num_params": 1000,
+      "num_equations": 500,
+      "expected": "underConstrained"
+    },
+    {
+      "id": "independent_under_10000",
+      "workload": "independent_under",
+      "size": 10000,
+      "num_params": 10000,
+      "num_equations": 5000,
+      "expected": "resource_refused"
+    },
+    {
+      "id": "independent_solved_10",
+      "workload": "independent_solved",
+      "size": 10,
+      "num_params": 10,
+      "num_equations": 10,
+      "expected": "solved"
+    },
+    {
+      "id": "independent_solved_100",
+      "workload": "independent_solved",
+      "size": 100,
+      "num_params": 100,
+      "num_equations": 100,
+      "expected": "solved"
+    },
+    {
+      "id": "independent_solved_1000",
+      "workload": "independent_solved",
+      "size": 1000,
+      "num_params": 1000,
+      "num_equations": 1000,
+      "expected": "solved"
+    },
+    {
+      "id": "independent_solved_10000",
+      "workload": "independent_solved",
+      "size": 10000,
+      "num_params": 10000,
+      "num_equations": 10000,
+      "expected": "resource_refused"
+    },
+    {
+      "id": "coupled_chain_10",
+      "workload": "coupled_chain",
+      "size": 10,
+      "num_params": 10,
+      "num_equations": 10,
+      "expected": "solved"
+    },
+    {
+      "id": "coupled_chain_100",
+      "workload": "coupled_chain",
+      "size": 100,
+      "num_params": 100,
+      "num_equations": 100,
+      "expected": "solved"
+    },
+    {
+      "id": "coupled_chain_1000",
+      "workload": "coupled_chain",
+      "size": 1000,
+      "num_params": 1000,
+      "num_equations": 1000,
+      "expected": "solved"
+    },
+    {
+      "id": "coupled_chain_10000",
+      "workload": "coupled_chain",
+      "size": 10000,
+      "num_params": 10000,
+      "num_equations": 10000,
+      "expected": "resource_refused"
+    },
+    {
+      "id": "redundant_100",
+      "workload": "redundant",
+      "size": 100,
+      "num_params": 100,
+      "num_equations": 150,
+      "expected": "redundant"
+    },
+    {
+      "id": "redundant_1000",
+      "workload": "redundant",
+      "size": 1000,
+      "num_params": 1000,
+      "num_equations": 1500,
+      "expected": "redundant"
+    },
+    {
+      "id": "inconsistent_100",
+      "workload": "inconsistent",
+      "size": 100,
+      "num_params": 100,
+      "num_equations": 51,
+      "expected": "unsatisfied"
+    },
+    {
+      "id": "inconsistent_1000",
+      "workload": "inconsistent",
+      "size": 1000,
+      "num_params": 1000,
+      "num_equations": 501,
+      "expected": "unsatisfied"
+    },
+    {
+      "id": "drag_100",
+      "workload": "drag",
+      "size": 100,
+      "num_params": 100,
+      "num_equations": 100,
+      "expected": "solved",
+      "drag_steps": 20
+    }
+  ]
+}
