@@ -3958,6 +3958,162 @@ fn is_wall_rim_edge(edge: &remus_topology::edge::Edge) -> bool {
     ext.iter().filter(|e| **e < 1e-4).count() == 1 && ext.iter().all(|e| e.is_finite())
 }
 
+/// Whether two curves take the same-kind unification path in
+/// [`merge_duplicate_edges`]: identical carriers (line/line, circle/circle,
+/// ellipse/ellipse, NURBS/NURBS) merge under the existing phase-1 rules.
+/// Every other combination (chord/arc lenses, converted-rim twins,
+/// mixed analytic pairs) defers to the phase-2 need-based merge.
+fn same_merge_family(a: &EdgeCurve, b: &EdgeCurve) -> bool {
+    matches!(
+        (a, b),
+        (EdgeCurve::Line, EdgeCurve::Line)
+            | (EdgeCurve::Circle(_), EdgeCurve::Circle(_))
+            | (EdgeCurve::Ellipse(_), EdgeCurve::Ellipse(_))
+            | (EdgeCurve::NurbsCurve(_), EdgeCurve::NurbsCurve(_))
+    )
+}
+
+/// Whether unifying `dup` into `canonical` in [`merge_duplicate_edges`]
+/// must flip the duplicate's forward flag when rebuilding wires: true when
+/// the duplicate's vertex order runs opposite to the canonical's. For open
+/// edges the vertex order tells; for closed edges (start == end) both
+/// quantized endpoints coincide, so endpoint order says nothing — but the
+/// two curves can still be parameterized in opposite directions (two
+/// operands' coincident rim circles wound about opposite normals). Compare
+/// curve tangents at the shared seam vertex instead: coincident closed
+/// curves in one group share their seam position, so opposite tangents there
+/// mean opposite traversal.
+fn merge_needs_flip(
+    topo: &Topology,
+    canonical: EdgeId,
+    dup: EdgeId,
+    tol: f64,
+) -> Result<bool, AlgoError> {
+    let canon_edge = topo.edge(canonical)?;
+    let dup_edge = topo.edge(dup)?;
+    let canon_qs = quantize_point(topo.vertex(canon_edge.start())?.point(), tol);
+    let canon_qe = quantize_point(topo.vertex(canon_edge.end())?.point(), tol);
+    let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
+    let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
+    let is_closed = canon_qs == canon_qe;
+    if is_closed {
+        Ok(match (canon_edge.curve(), dup_edge.curve()) {
+            (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => a.normal().dot(b.normal()) < 0.0,
+            (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => a.normal().dot(b.normal()) < 0.0,
+            // Mixed analytic/free-form closed pairs (a converted wall's NURBS
+            // ring vs the exact section circle from the FF substitution): no
+            // shared parameterization, so compare curve tangents AT the
+            // shared seam vertex instead. Coincident closed curves in one
+            // group share their seam position, so opposite tangents there
+            // mean opposite traversal. Tangent direction is meaningless for a
+            // near-degenerate evaluation — decline the flip (keep no-flip)
+            // when either tangent is near-zero.
+            (
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            )
+            | (
+                _,
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+            )
+            | (EdgeCurve::Circle(_), EdgeCurve::Ellipse(_))
+            | (EdgeCurve::Ellipse(_), EdgeCurve::Circle(_)) => {
+                closed_pair_traversal_flipped(topo, canonical, dup).unwrap_or(false)
+            }
+        })
+    } else {
+        Ok(dup_qs == canon_qe && dup_qe == canon_qs)
+    }
+}
+
+/// Whether unifying `dup` into `canonical` in [`merge_duplicate_edges`]
+/// would collapse any selected face's wire loop to a single repeated edge.
+///
+/// The B68 destruction shape: a chord/arc lens co-bounding one wire (the
+/// bottom segment patch `[chord, arc]`) becomes `[chord, chord]` — a
+/// zero-area loop the spur step deletes — while the neighbor face keeps the
+/// wrong curve. Refusing the pair preserves both curves. Unifications that
+/// leave two or more distinct edges in every wire (lip-corner rims,
+/// chord-discretized seams, tangent-pinch loops, which legitimately traverse
+/// one line twice) still proceed, preserving closure. Wires that are already
+/// single-edged are spur-bound either way and do not count.
+/// `replacements` holds the unifications decided so far, applied
+/// transitively before and after the proposed merge.
+fn unification_collapses_wire(
+    topo: &Topology,
+    face_ids: &[FaceId],
+    replacements: &HashMap<EdgeId, (EdgeId, bool)>,
+    canonical: EdgeId,
+    dup: EdgeId,
+) -> Result<bool, AlgoError> {
+    let resolve = |mut eid: EdgeId| -> EdgeId {
+        while let Some(&(target, _)) = replacements.get(&eid) {
+            eid = target;
+        }
+        eid
+    };
+    let resolved_canonical = resolve(canonical);
+    for &fid in face_ids {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wid)?;
+            let pre: HashSet<EdgeId> = wire.edges().iter().map(|oe| resolve(oe.edge())).collect();
+            if pre.len() <= 1 || !pre.contains(&dup) {
+                continue;
+            }
+            if pre
+                .iter()
+                .map(|&eid| if eid == dup { resolved_canonical } else { eid })
+                .collect::<HashSet<_>>()
+                .len()
+                <= 1
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// A section spline may be a fitted copy of a straight boundary, or the
+/// curved side of a lens. Positive NURBS weights make the curve a convex
+/// combination of its control points, so this certifies that the entire
+/// carrier lies within the fitted-seam band of the chord before collapse.
+fn nurbs_is_line_like(
+    topo: &Topology,
+    line: &remus_topology::edge::Edge,
+    spline: &remus_topology::edge::Edge,
+) -> Result<bool, AlgoError> {
+    // Existing fitted seam copies can wobble by ~5e-5. A 1e-4 band retains
+    // those merges while rejecting a section that leaves the chord.
+    const FIT_BAND: f64 = 1e-4;
+    let EdgeCurve::NurbsCurve(curve) = spline.curve() else {
+        return Ok(false);
+    };
+    let start = topo.vertex(line.start())?.point();
+    let end = topo.vertex(line.end())?.point();
+    let delta = end - start;
+    let length_sq = delta.dot(delta);
+    let distance = |point: Point3| {
+        if length_sq <= MERGE_TOL * MERGE_TOL {
+            (point - start).length()
+        } else {
+            let t = ((point - start).dot(delta) / length_sq).clamp(0.0, 1.0);
+            (point - (start + delta * t)).length()
+        }
+    };
+    Ok(curve.control_points().iter().all(|&point| {
+        let d = distance(point);
+        d.is_finite() && d <= FIT_BAND
+    }))
+}
+
 /// Merge duplicate edges across selected faces by quantized endpoint position.
 ///
 /// For each group of edges with the same quantized start/end positions,
@@ -4000,6 +4156,14 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     // Build edge replacement map: duplicate EdgeId → (canonical EdgeId, needs_flip).
     // needs_flip is true when the duplicate's vertex order is reversed vs canonical,
     // requiring the OrientedEdge's forward flag to be flipped during wire rebuilding.
+    //
+    // Two phases per endpoint group. Phase 1 unifies same-kind copies with the
+    // existing rules (blind for lines, support + midpoint/branch checks for
+    // conic and NURBS pairs). Phase 2 absorbs leftover cross-kind edges
+    // (chord/arc lenses, converted-rim twins) into the lowest-index canonical
+    // unless the unification would collapse a face loop to a single repeated
+    // edge (B68). Groups are edge-disjoint, so group order cannot affect the
+    // replacement set.
     let mut replacements: HashMap<EdgeId, (EdgeId, bool)> = HashMap::new();
     for edge_ids in groups.values() {
         // Deduplicate edge IDs (same edge may appear multiple times from different faces)
@@ -4010,7 +4174,11 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
         if unique.len() < 2 {
             continue; // Only one unique edge — no merge needed
         }
+        let members = unique.clone();
 
+        // Phase 1: same-kind unification with the existing rules. Cross-kind
+        // pairs defer to phase 2.
+        //
         // Each distinct curved branch needs its own canonical representative.
         while unique.len() > 1 {
             let canonical = unique[0];
@@ -4022,6 +4190,9 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
             for &dup in &unique[1..] {
                 let dup_edge = topo.edge(dup)?;
                 let canon_edge = topo.edge(canonical)?;
+                if !same_merge_family(canon_edge.curve(), dup_edge.curve()) {
+                    continue;
+                }
                 let both_analytic_conics = matches!(
                     (canon_edge.curve(), dup_edge.curve()),
                     (EdgeCurve::Circle(_), EdgeCurve::Circle(_))
@@ -4141,69 +4312,96 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                         }
                     } // end non-wall-rim branch checks
                 }
-                let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
-                let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
-                // Detect reversed traversal. For open edges the vertex order tells;
-                // for closed edges (start == end) both quantized endpoints
-                // coincide, so endpoint order says nothing — but the two curves
-                // can still be parameterized in opposite directions (two operands'
-                // coincident rim circles wound about opposite normals). Compare
-                // curve tangents at the shared seam vertex instead: coincident
-                // closed curves in one group share their seam position, so
-                // opposite tangents there mean opposite traversal.
-                let is_closed = canon_qs == canon_qe;
-                let needs_flip = if is_closed {
-                    use remus_topology::edge::EdgeCurve;
-                    // A closed curve's traversal direction is its plane normal
-                    // (CCW-about-normal); tangent evaluation is unusable here
-                    // because `domain_with_endpoints` anchors a closed curve to
-                    // the CURVE's own start parameter, not the seam vertex.
-                    match (canon_edge.curve(), dup_edge.curve()) {
-                        (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
-                            a.normal().dot(b.normal()) < 0.0
-                        }
-                        (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
-                            a.normal().dot(b.normal()) < 0.0
-                        }
-                        // Mixed analytic/free-form closed pairs (a converted
-                        // wall's NURBS ring vs the exact section circle from
-                        // the FF substitution): no shared parameterization,
-                        // so compare curve tangents AT the shared seam vertex
-                        // instead. Coincident closed curves in one group share
-                        // their seam position, so opposite tangents there mean
-                        // opposite traversal. Tangent direction is meaningless
-                        // for a near-degenerate evaluation — decline the flip
-                        // (keep no-flip) when either tangent is near-zero.
-                        (
-                            EdgeCurve::Line
-                            | EdgeCurve::NurbsCurve(_)
-                            | EdgeCurve::Hyperbola(_)
-                            | EdgeCurve::Parabola(_),
-                            _,
-                        )
-                        | (
-                            _,
-                            EdgeCurve::Line
-                            | EdgeCurve::NurbsCurve(_)
-                            | EdgeCurve::Hyperbola(_)
-                            | EdgeCurve::Parabola(_),
-                        )
-                        | (EdgeCurve::Circle(_), EdgeCurve::Ellipse(_))
-                        | (EdgeCurve::Ellipse(_), EdgeCurve::Circle(_)) => {
-                            closed_pair_traversal_flipped(topo, canonical, dup).unwrap_or(false)
-                        }
-                    }
-                } else {
-                    dup_qs == canon_qe && dup_qe == canon_qs
-                };
+                let needs_flip = merge_needs_flip(topo, canonical, dup, tol)?;
                 replacements.insert(dup, (canonical, needs_flip));
             }
             unique.retain(|id| *id != canonical && !replacements.contains_key(id));
+        }
+
+        // Phase 2: leftover cross-kind edges (deferred above) merge into the
+        // lowest-index canonical, except the proven-destructive shape: an
+        // exact chord/arc lens co-bounding one wire (B68's bottom segment
+        // patch `[chord, arc]`) would degenerate to a doubled edge — deleted
+        // by the spur step — while the neighbor face keeps the wrong curve.
+        // Refusing that pair preserves both curves. Every other cross-kind
+        // pair keeps the historical merge. A line/NURBS pair may also bound
+        // a real lens; preserve it unless its control net certifies a
+        // line-like fitted carrier.
+        // Line-like fitted seams still unify for closure.
+        let leftovers: Vec<EdgeId> = members
+            .into_iter()
+            .filter(|id| !replacements.contains_key(id))
+            .collect();
+        if leftovers.len() > 1 {
+            let canonical = leftovers[0];
+            for &dup in &leftovers[1..] {
+                let dup_edge = topo.edge(dup)?;
+                let canon_edge = topo.edge(canonical)?;
+                if same_merge_family(canon_edge.curve(), dup_edge.curve()) {
+                    continue;
+                }
+                let mixed_line_conic = matches!(
+                    (canon_edge.curve(), dup_edge.curve()),
+                    (
+                        EdgeCurve::Line,
+                        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
+                    ) | (
+                        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_),
+                        EdgeCurve::Line
+                    )
+                );
+                let mixed_line_nurbs = matches!(
+                    (canon_edge.curve(), dup_edge.curve()),
+                    (EdgeCurve::Line, EdgeCurve::NurbsCurve(_))
+                        | (EdgeCurve::NurbsCurve(_), EdgeCurve::Line)
+                );
+                if (mixed_line_conic || mixed_line_nurbs)
+                    && unification_collapses_wire(topo, face_ids, &replacements, canonical, dup)?
+                {
+                    let line_like_nurbs = if mixed_line_nurbs {
+                        let (line, spline) = if matches!(canon_edge.curve(), EdgeCurve::Line) {
+                            (canon_edge, dup_edge)
+                        } else {
+                            (dup_edge, canon_edge)
+                        };
+                        nurbs_is_line_like(topo, line, spline)?
+                    } else {
+                        false
+                    };
+                    if mixed_line_conic || !line_like_nurbs {
+                        continue;
+                    }
+                }
+                let needs_flip = merge_needs_flip(topo, canonical, dup, tol)?;
+                replacements.insert(dup, (canonical, needs_flip));
+            }
         }
     }
 
     if replacements.is_empty() {
         return Ok(());
+    }
+
+    // Flatten chains: phase 2 may redirect a phase-1 canonical (which already
+    // absorbed its duplicates), e.g. 136→134 then 134→129. The wire rebuild
+    // below follows one level only, so compose the flips (XOR) and point every
+    // duplicate at its final canonical here.
+    let dup_keys: Vec<EdgeId> = replacements.keys().copied().collect();
+    for dup in dup_keys {
+        let mut target = dup;
+        let mut flip = false;
+        while let Some(&(next, f)) = replacements.get(&target) {
+            // Guard against cycles (defensive; canonicals are never replaced
+            // back into their own duplicates by construction).
+            if next == dup {
+                break;
+            }
+            flip ^= f;
+            target = next;
+        }
+        if target != dup {
+            replacements.insert(dup, (target, flip));
+        }
     }
 
     let merge_count = replacements.len();
@@ -5672,6 +5870,143 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn duplicate_edge_merge_detects_lens_through_same_family_alias() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::{edge::Edge, face::Face, vertex::Vertex, wire::Wire};
+
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(-1.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let line = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let arc = |topo: &mut Topology| {
+            let mut edge = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some((std::f64::consts::PI, std::f64::consts::TAU)));
+            topo.add_edge(edge)
+        };
+        let canonical_arc = arc(&mut topo);
+        let alias_arc = arc(&mut topo);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(line, true),
+                    OrientedEdge::new(alias_arc, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let aliases = HashMap::from([(alias_arc, (canonical_arc, false))]);
+        let without_alias =
+            unification_collapses_wire(&topo, &[face], &HashMap::new(), line, canonical_arc)
+                .unwrap();
+        let with_alias =
+            unification_collapses_wire(&topo, &[face], &aliases, line, canonical_arc).unwrap();
+        assert!(!without_alias);
+        assert!(with_alias);
+
+        let mate_wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(canonical_arc, true),
+                    OrientedEdge::new(line, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let mate_face = topo.add_face(Face::new(
+            mate_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let mut faces = [face, mate_face];
+        merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+        let lens = topo
+            .wire(topo.face(faces[0]).unwrap().outer_wire())
+            .unwrap();
+        assert_ne!(lens.edges()[0].edge(), lens.edges()[1].edge());
+        assert_eq!(lens.edges()[1].edge(), canonical_arc);
+    }
+
+    #[test]
+    fn duplicate_edge_merge_distinguishes_curved_and_line_like_nurbs_lenses() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::{edge::Edge, face::Face, vertex::Vertex, wire::Wire};
+
+        for (bow, spline_first, expect_distinct) in [
+            (1.0, false, true),
+            (1.0, true, true),
+            (5e-5, false, false),
+            (5e-5, true, false),
+        ] {
+            let mut topo = Topology::new();
+            let a = Point3::new(-1.0, 0.0, 0.0);
+            let b = Point3::new(1.0, 0.0, 0.0);
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let curve = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![a, Point3::new(0.0, bow, 0.0), b],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let mut spline = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+            spline.set_trim(Some((0.0, 1.0)));
+            let line = Edge::new(va, vb, EdgeCurve::Line);
+            let (line_id, spline_id) = if spline_first {
+                let spline_id = topo.add_edge(spline);
+                (topo.add_edge(line), spline_id)
+            } else {
+                let line_id = topo.add_edge(line);
+                (line_id, topo.add_edge(spline))
+            };
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(line_id, true),
+                        OrientedEdge::new(spline_id, false),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            );
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let mut faces = [face];
+            merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+            let result = topo
+                .wire(topo.face(faces[0]).unwrap().outer_wire())
+                .unwrap();
+            assert_eq!(
+                result.edges()[0].edge() != result.edges()[1].edge(),
+                expect_distinct,
+                "bow={bow}, spline_first={spline_first}"
+            );
+        }
+    }
+
     #[test]
     fn duplicate_edge_merge_preserves_complementary_nurbs_branches() {
         use remus_math::nurbs::curve::NurbsCurve;
