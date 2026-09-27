@@ -415,6 +415,40 @@ class O47CoverageFixtures(unittest.TestCase):
         self.assertEqual(len(unknown), 1)
         self.assertIn("bare_async", unknown[0])
 
+    def test_default_named_method_in_exported_impl_fails_loudly(self):
+        for qualifier in ("", "async "):
+            with self.subTest(qualifier=qualifier):
+                directory = make_tree(
+                    {
+                        "bindings/operations.rs": (
+                            "#[wasm_bindgen]\n"
+                            "impl BrepKernel {\n"
+                            f"    pub {qualifier}fn default_named(&mut self, solid: u32) -> Result<u32, JsError> {{\n"
+                            "        Ok(solid)\n"
+                            "    }\n"
+                            "}\n"
+                        ),
+                        "bindings/batch.rs": BATCH_RS.format(ops="default_named"),
+                    }
+                )
+                _, _, _, unknown = run_gate(directory, [])
+                self.assertEqual(len(unknown), 1)
+                self.assertIn("default_named", unknown[0])
+
+    def test_plain_impl_method_is_not_an_export(self):
+        directory = make_tree(
+            {
+                "bindings/operations.rs": (
+                    "impl BrepKernel {\n"
+                    "    pub fn internal_helper(&mut self) {}\n"
+                    "}\n"
+                ),
+                "bindings/batch.rs": BATCH_RS.format(ops="internal_helper"),
+            }
+        )
+        _, _, _, unknown = run_gate(directory, [])
+        self.assertEqual(unknown, [])
+
     def test_repo_tree_passes(self):
         root = REPO / "crates" / "wasm" / "src"
         exports = gate.discover_from_files(root)
