@@ -13,8 +13,8 @@
 //!
 //! The twins are exact-only. Extrusion keeps open profile curves on exact
 //! swept carriers. Revolution refuses curved profiles whose fallback bands
-//! or later rings use line chords; a true circular profile whose revolution
-//! takes the analytic torus path remains supported. There is no
+//! or later rings use line chords; true circular torus profiles and the
+//! native analytic full-turn path remain supported. There is no
 //! `approximate` success or `exactOnly` flag: supported profiles commit with
 //! `quality: "exact"`, while chorded profiles return `exact_only_unattainable`.
 //!
@@ -156,7 +156,17 @@ fn ensure_exact_revolve_profile(
         return Ok(());
     }
 
-    // Only the single true-circle torus path bypasses the native chord split.
+    let is_full = angle_degrees.to_radians() >= std::f64::consts::TAU - Tolerance::new().angular;
+    if is_full
+        && remus_operations::revolve::supports_analytic_full_revolution(
+            topo, face, origin, direction,
+        )
+        .map_err(StructuredWasmError::from)?
+    {
+        return Ok(());
+    }
+
+    // The remaining exact path is the single true-circle torus.
     let wire = topo.wire(profile.outer_wire())?;
     let exact_torus = (|| -> Option<bool> {
         if !profile.inner_wires().is_empty() || wire.edges().len() != 1 {
