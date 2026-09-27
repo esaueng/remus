@@ -498,7 +498,7 @@ fn grid_pattern_journal_covers_every_result_entity() {
                     &mut topo, source, GRID_X, GRID_Y, spacing_x, spacing_y, count_x, count_y,
                 )
                 .unwrap();
-                let label = format!("box {tag} {count_x}x{count_y} at {scale:e}",);
+                let label = format!("box {tag} {count_x}x{count_y} at {scale:e}");
                 assert_total_pattern_history(
                     &label,
                     &topo,
