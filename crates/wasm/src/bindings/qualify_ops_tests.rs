@@ -873,3 +873,123 @@ fn batch_offset_face_with_quality_reports_exact_on_planes() {
     assert_eq!(result[0]["quality"], "exact");
     assert!(result[0].get("samples").is_none());
 }
+
+// ── B67: plane–cone closed-rim fillet builds the material-side torus ──
+
+/// Meridian-integral removal for a convex bounded plane–cone rim (see
+/// `crates/operations/tests/regress_cone_rim_fillet.rs::removed_volume_meridian`
+/// for the derivation): Pappus Simpson integral over the removed profile,
+/// independent of every kernel 3-D measurement path.
+fn cone_rim_removed_volume(r_rim: f64, alpha: f64, sigma: f64, r: f64) -> f64 {
+    let (sin_a, cos_a) = alpha.sin_cos();
+    let k = sigma * cos_a / sin_a;
+    let rho_c = r_rim + k * r - r / sin_a;
+    let s_foot = r * (1.0 - sigma * cos_a);
+    let n: usize = 2048;
+    let h = s_foot / n as f64;
+    let mut sum = 0.0;
+    for i in 0..=n {
+        let s = h * i as f64;
+        let wall = r_rim + k * s;
+        let q = (r * r - (s - r) * (s - r)).max(0.0).sqrt();
+        let outer = rho_c + q;
+        let f = wall * wall - outer * outer;
+        let w = if i == 0 || i == n {
+            1.0
+        } else if i % 2 == 0 {
+            2.0
+        } else {
+            4.0
+        };
+        sum += w * f;
+    }
+    std::f64::consts::PI * sum * h / 3.0
+}
+
+/// Bottom circle-edge handle of a batch-built solid (extremal −z centre).
+fn bottom_rim_handle(kernel: &mut BrepKernel, solid: u32) -> u32 {
+    let out = run_all_ok(
+        kernel,
+        &[op("solidEdges", serde_json::json!({"solid": solid}))],
+    );
+    let handles: Vec<u32> = out[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| u32::try_from(v.as_u64().unwrap()).unwrap())
+        .collect();
+    let mut best: Option<(u32, f64)> = None;
+    for handle in handles {
+        let edge_id = kernel.resolve_edge(handle).unwrap();
+        let edge = kernel.topo().edge(edge_id).unwrap();
+        if let EdgeCurve::Circle(c) = edge.curve() {
+            if edge.start() != edge.end() {
+                continue;
+            }
+            let z = c.center().z();
+            if best.is_none_or(|(_, bz)| z < bz) {
+                best = Some((handle, z));
+            }
+        }
+    }
+    best.map(|(handle, _)| handle).expect("cone has a rim")
+}
+
+fn batch_volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
+    let out = run_all_ok(
+        kernel,
+        &[op(
+            "volume",
+            serde_json::json!({"solid": solid, "deflection": 1e-4}),
+        )],
+    );
+    out[0].as_f64().unwrap()
+}
+
+/// B67 through the packaged path: `makeCone` + batch `filletV2` on the base
+/// rim must remove the rolling-ball closed form (0.39834 for
+/// `make_cone(2, 1.5, 2)` at `r = 0.3` — the pre-fix build measured
+/// 0.44512), return a new handle, and validate clean.
+#[test]
+fn batch_cone_base_rim_fillet_removes_rolling_ball_volume() {
+    let mut kernel = BrepKernel::new();
+    let out = run_all_ok(
+        &mut kernel,
+        &[op(
+            "makeCone",
+            serde_json::json!({"bottomRadius": 2.0, "topRadius": 1.5, "height": 2.0}),
+        )],
+    );
+    let solid = as_u32(&out[0]);
+    let rim = bottom_rim_handle(&mut kernel, solid);
+    let before = batch_volume(&mut kernel, solid);
+
+    let out = run_all_ok(
+        &mut kernel,
+        &[op(
+            "filletV2",
+            serde_json::json!({"solid": solid, "edges": [rim], "radius": 0.3}),
+        )],
+    );
+    let result = as_u32(&out[0]);
+    assert_ne!(result, solid, "fillet must not echo the input handle");
+
+    let alpha = 8.0_f64.atan2(2.0);
+    let expected = cone_rim_removed_volume(2.0, alpha, -1.0, 0.3);
+    assert!(
+        (expected - 0.39834).abs() < 2e-5,
+        "oracle must reproduce the roadmap closed form: {expected}"
+    );
+    let after = batch_volume(&mut kernel, result);
+    let removed = before - after;
+    assert!(
+        (removed - expected).abs() <= 1e-3 * expected,
+        "batch removal {removed} vs rolling-ball closed form {expected}"
+    );
+
+    let valid = run_all_ok(
+        &mut kernel,
+        &[op("validateSolid", serde_json::json!({"solid": result}))],
+    );
+    assert_eq!(valid[0], 0, "the filleted solid must validate: {valid:?}");
+}
