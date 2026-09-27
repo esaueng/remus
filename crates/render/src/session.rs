@@ -193,7 +193,7 @@ impl OffscreenSession {
     /// [`RenderError::NoAdapter`] if no adapter (GPU or software fallback)
     /// exists, or [`RenderError::DeviceRequest`] if the device cannot be
     /// created. The software-adapter fallback is the same
-    /// [`GpuContext::new`] path the convenience API uses.
+    /// GPU context setup path the convenience API uses.
     pub fn new() -> Result<Self, RenderError> {
         let ctx = GpuContext::new()?;
         let info = ctx.adapter.get_info();
