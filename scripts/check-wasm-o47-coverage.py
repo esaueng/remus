@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -65,18 +66,39 @@ EXPORT_RE = re.compile(
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
 BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
+CFG_PREFIX_RE = re.compile(r'#\s*\[\s*(cfg|cfg_attr)\s*\(', re.MULTILINE)
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
 SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
 SOLID_HANDLE = "Result<u32, JsError>"
 
 
-def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
+def parsed_source(
+    path: Path, cache: dict[Path, tuple[str, list[str], list[int], list[str]]]
+) -> tuple[str, list[str], list[int], list[str]]:
+    if path not in cache:
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        depths, code_lines = rust_lines_with_depth(lines)
+        cache[path] = text, lines, depths, code_lines
+    return cache[path]
+
+
+def discover_from_files(
+    root: Path = WASM_SRC,
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] | None = None,
+) -> list[dict]:
     """Parse exports from the working tree (used by the gate and tests)."""
+    if source_cache is None:
+        source_cache = {}
     exports: list[dict] = []
     for path in sorted(root.rglob("*.rs")):
-        text = path.read_text(encoding="utf-8")
+        text, _, depths, code_lines = parsed_source(path, source_cache)
         rel = path.relative_to(root).as_posix()
+        parent_gate = file_gate(root, rel, source_cache)
         for match in EXPORT_RE.finditer(text):
+            attr_index = text.count("\n", 0, match.start())
+            if "#[wasm_bindgen" not in code_lines[attr_index]:
+                continue
             js = match.group("js")
             rust = match.group("rust")
             params = match.group("params")
@@ -86,7 +108,13 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
                 if "&mut self" in params
                 else ("imm" if "&self" in params else "static")
             )
-            gate = "io" if rel.startswith("bindings/io") else "shipped"
+            fn_index = text.count("\n", 0, match.start("rust"))
+            if not re.search(
+                rf"\bpub\s+(?:(?:async|unsafe)\s+)*fn\s+{re.escape(rust)}\b",
+                code_lines[fn_index],
+            ):
+                continue
+            gate = public_gate(export_gate(code_lines, depths, fn_index, rel, parent_gate))
             exports.append(
                 {
                     "js": js,
@@ -100,23 +128,191 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
     return exports
 
 
-def own_attr_block(lines: list[str], index: int) -> str:
-    """The contiguous attribute/comment block directly above a `pub fn`.
-
-    Walks upward over `#[...]`, `///`, `//`, and blank lines only, so an
-    `impl`-level `#[wasm_bindgen]` header further up is never mistaken
-    for this function's own attribute.
-    """
+def own_attr_block(code_lines: list[str], index: int, depths: list[int]) -> str:
+    """Attributes and comments directly above an item, including multiline attrs."""
     block: list[str] = []
     cursor = index - 1
-    while cursor >= 0:
-        stripped = lines[cursor].strip()
-        if stripped.startswith("#[") or stripped.startswith("///") or stripped.startswith("//") or stripped == "":
-            block.append(lines[cursor])
-            cursor -= 1
-        else:
+    while cursor >= 0 and depths[cursor] == depths[index]:
+        stripped = code_lines[cursor].strip()
+        if re.match(r"^(?:(?:pub(?:\([^)]*\))?)\s+)?(?:fn|async|impl|mod|const|type|use|struct|enum)\b", stripped) or stripped.startswith("}") or stripped.endswith(";"):
             break
+        block.append(code_lines[cursor])
+        cursor -= 1
     return "\n".join(reversed(block))
+
+
+def combine_gates(*gates: str) -> str:
+    if "conditional" in gates or ("io" in gates and "no_io" in gates):
+        return "conditional"
+    if "io" in gates:
+        return "io"
+    return "no_io" if "no_io" in gates else "shipped"
+
+
+def public_gate(gate: str) -> str:
+    return "shipped" if gate == "no_io" else gate
+
+
+def attribute_gate(attributes: str) -> str:
+    """Conservatively classify cfgs for the shipped no-feature build."""
+    gates: list[str] = []
+    _, code_lines = rust_lines_with_depth(attributes.splitlines())
+    source = "\n".join(code_lines)
+    masked = mask_rust_literals(source)
+    for match in CFG_PREFIX_RE.finditer(masked):
+        cursor = match.end()
+        depth = 1
+        while cursor < len(masked) and depth:
+            if masked[cursor] == "(":
+                depth += 1
+            elif masked[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        end = cursor - 1
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if depth or cursor >= len(masked) or masked[cursor] != "]":
+            gates.append("conditional")
+            continue
+        expr = re.sub(r"\s+", "", source[match.end() : end])
+        if match.group(1) == "cfg" and expr == 'feature="io"':
+            gates.append("io")
+        elif match.group(1) == "cfg" and expr == 'not(feature="io")':
+            gates.append("no_io")
+        else:
+            gates.append("conditional")
+    return combine_gates(*gates)
+
+
+def inner_file_attrs(code_lines: list[str], depths: list[int]) -> str:
+    """Collect leading file-level inner attributes, including multiline cfgs."""
+    attrs: list[str] = []
+    collecting = False
+    for index, line in enumerate(code_lines):
+        if depths[index] != 0:
+            break
+        stripped = line.strip()
+        if stripped.startswith("#!["):
+            collecting = True
+        elif not collecting:
+            if stripped:
+                break
+            continue
+        attrs.append(line.replace("#![", "#[", 1))
+        if stripped.endswith("]"):
+            collecting = False
+    return "\n".join(attrs)
+
+
+def file_gate(
+    root: Path,
+    rel: str,
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] | None = None,
+) -> str:
+    """Follow out-of-line module declarations and crate/file attributes."""
+    if source_cache is None:
+        source_cache = {}
+    parts = list(Path(rel).with_suffix("").parts)
+    if parts[-1] == "mod":
+        parts.pop()
+    parent = root / "lib.rs"
+    gates: list[str] = []
+    for index, name in enumerate(parts):
+        if parent.is_file() and parent != root / rel:
+            parent_text, _, depths, code_lines = parsed_source(parent, source_cache)
+            for override in re.finditer(r'#\[\s*path\s*=\s*([^]]+)\]', parent_text):
+                literal = re.fullmatch(
+                    r'(?:r(?P<hash>#{0,16})"(?P<raw>.*?)"(?P=hash)|"(?P<plain>[^"]+)")',
+                    override.group(1).strip(),
+                    re.DOTALL,
+                )
+                if literal is None:
+                    return "conditional"
+                target = literal.group("raw")
+                if target is None:
+                    target = literal.group("plain")
+                if (parent.parent / target).resolve() == (root / rel).resolve():
+                    return "conditional"
+            gates.append(attribute_gate(inner_file_attrs(code_lines, depths)))
+            declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
+            module_item = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\b")
+            declared = False
+            for line_index, line in enumerate(code_lines):
+                if depths[line_index] != 0:
+                    continue
+                if declaration.match(line):
+                    declared = True
+                    gates.append(attribute_gate(own_attr_block(code_lines, line_index, depths)))
+                elif module_item.match(line):
+                    # This file layout requires following declarations inside
+                    # the inline module. Until then, refuse coverage claims.
+                    return "conditional"
+            if not declared:
+                return "conditional"
+        prefix = root.joinpath(*parts[:index + 1])
+        parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
+    if parent.is_file():
+        _, _, depths, code_lines = parsed_source(parent, source_cache)
+        gates.append(attribute_gate(inner_file_attrs(code_lines, depths)))
+    return combine_gates(*gates)
+
+
+def export_gate(code_lines: list[str], depths: list[int], index: int, rel: str, parent_gate: str) -> str:
+    """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
+    if macro_body_contains(code_lines, index):
+        return "conditional"
+    gates = [attribute_gate(own_attr_block(code_lines, index, depths))]
+    for ancestor in range(index):
+        if not re.match(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:impl|mod)\b", code_lines[ancestor]
+        ):
+            continue
+        base = depths[ancestor]
+        if base >= depths[index]:
+            continue
+        body = next(
+            (child for child in range(ancestor + 1, index + 1) if depths[child] > base),
+            None,
+        )
+        if body is None or not all(depths[child] > base for child in range(body, index + 1)):
+            continue
+        header = "\n".join(code_lines[ancestor:body])
+        if ";" in header or "{" not in header:
+            continue
+        # A split header can hide an enclosing cfg from this lightweight
+        # source parser. Refuse a coverage claim until it is parsed fully.
+        gates.append(
+            "conditional"
+            if "{" not in code_lines[ancestor]
+            else attribute_gate(own_attr_block(code_lines, ancestor, depths))
+        )
+    return combine_gates(
+        "io" if rel.startswith("bindings/io") else parent_gate,
+        *gates,
+    )
+
+
+def arm_gate(code_lines: list[str], index: int) -> str:
+    """Availability of one batch match arm from its adjacent cfg attributes."""
+    blocks: list[str] = []
+    cursor = index - 1
+    while cursor >= 0:
+        stripped = code_lines[cursor].strip()
+        if not stripped or stripped.startswith("//"):
+            cursor -= 1
+            continue
+        if not re.search(r"\]\s*(?://.*)?$", stripped):
+            break
+        end = cursor
+        while cursor >= 0 and not code_lines[cursor].lstrip().startswith("#["):
+            if re.search(r"=>|[{};]", code_lines[cursor]):
+                return attribute_gate("\n".join(reversed(blocks)))
+            cursor -= 1
+        if cursor < 0:
+            break
+        blocks.append("\n".join(code_lines[cursor : end + 1]))
+        cursor -= 1
+    return attribute_gate("\n".join(reversed(blocks)))
 
 
 def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
@@ -135,9 +331,11 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
             if block_depth:
                 code[cursor] = " "
                 if tail.startswith("/*"):
+                    code[cursor : cursor + 2] = "  "
                     block_depth += 1
                     cursor += 2
                 elif tail.startswith("*/"):
+                    code[cursor : cursor + 2] = "  "
                     block_depth -= 1
                     cursor += 2
                 else:
@@ -164,6 +362,7 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
                 code[cursor:] = " " * (len(line) - cursor)
                 break
             if tail.startswith("/*"):
+                code[cursor : cursor + 2] = "  "
                 block_depth = 1
                 cursor += 2
                 continue
@@ -189,6 +388,96 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
     return depths, code_lines
 
 
+@lru_cache(maxsize=64)
+def mask_rust_literals(source: str) -> str:
+    """Mask literal tokens while preserving offsets and line breaks."""
+    masked = list(source)
+
+    def hide(start: int, end: int) -> None:
+        for offset in range(start, end):
+            if masked[offset] != "\n":
+                masked[offset] = " "
+
+    raw_pattern = re.compile(r'(?:b)?r(#+)?"')
+    quote_pattern = re.compile(r'(?:b|c)?"')
+    char_pattern = re.compile(r"(?:b)?'(?:\\u\{[^}]+\}|\\.|[^'\\])'")
+    cursor = 0
+    while cursor < len(source):
+        raw = raw_pattern.match(source, cursor)
+        if raw:
+            closing = '"' + (raw.group(1) or "")
+            end = source.find(closing, cursor + len(raw.group()))
+            end = len(source) if end < 0 else end + len(closing)
+            hide(cursor, end)
+            cursor = end
+            continue
+        quote = quote_pattern.match(source, cursor)
+        if quote:
+            start = cursor
+            cursor += len(quote.group())
+            while cursor < len(source):
+                if source[cursor] == "\\":
+                    cursor += 2
+                elif source[cursor] == '"':
+                    cursor += 1
+                    break
+                else:
+                    cursor += 1
+            hide(start, min(cursor, len(source)))
+            continue
+        char = char_pattern.match(source, cursor)
+        if char:
+            end = cursor + len(char.group())
+            hide(cursor, end)
+            cursor = end
+            continue
+        cursor += 1
+    return "".join(masked)
+
+
+@lru_cache(maxsize=64)
+def macro_token_ranges(source: str) -> tuple[tuple[int, int], ...]:
+    """Token-tree spans for macro definitions and invocations."""
+    ranges: list[tuple[int, int]] = []
+    closers = {"{": "}", "(": ")", "[": "]"}
+    for macro in re.finditer(
+        r"^[ \t]*(?:::\s*)?(?:[^\s!:({\[]+\s*::\s*)*"
+        r"[^\s!:({\[]+\s*!\s*(?:[^\s{(\[]+\s*)?(?=[{(\[])",
+        source,
+        re.MULTILINE,
+    ):
+        cursor = macro.end()
+        while cursor < len(source) and source[cursor].isspace():
+            cursor += 1
+        if cursor >= len(source) or source[cursor] not in closers:
+            continue
+        opener = cursor
+        stack: list[str] = []
+        while cursor < len(source):
+            token = source[cursor]
+            if token in closers:
+                stack.append(closers[token])
+            elif stack and token == stack[-1]:
+                stack.pop()
+                if not stack:
+                    ranges.append((opener, cursor))
+                    break
+            cursor += 1
+        else:
+            ranges.append((opener, len(source)))
+    return tuple(ranges)
+
+
+def macro_body_contains(code_lines: list[str], index: int) -> bool:
+    """Whether an export is textually inside a macro definition or invocation."""
+    source = mask_rust_literals("\n".join(code_lines))
+    line = code_lines[index]
+    method = re.search(r"\bpub\s+(?:(?:async|unsafe)\s+)*fn\b", line)
+    target = sum(len(item) + 1 for item in code_lines[:index])
+    target += method.start() if method else 0
+    return any(start < target < end for start, end in macro_token_ranges(source))
+
+
 def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
     """Direct method lines inside exported `BrepKernel` impls."""
     result: set[int] = set()
@@ -206,7 +495,11 @@ def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
     return result
 
 
-def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
+def find_unknown_syntax(
+    root: Path = WASM_SRC,
+    exports: list[dict] | None = None,
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] | None = None,
+) -> list[str]:
     """Find `pub fn` items under `wasm_bindgen` that match no known shape.
 
     Known shapes: a `js_name` export (captured by discovery), a
@@ -217,25 +510,28 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
     `js_name` (including a misspelled `js_nam`) -- must fail the gate.
     Unknown items must never silently disappear from discovery.
     """
+    if source_cache is None:
+        source_cache = {}
     problems: list[str] = []
-    known_exports = {(e["rust"], e["file"]) for e in discover_from_files(root)}
+    if exports is None:
+        exports = discover_from_files(root, source_cache)
+    known_exports = {(e["rust"], e["file"]) for e in exports}
     for path in sorted(root.rglob("*.rs")):
         # Test companions never ship exports; production `_impl` bodies
         # live in plain `impl` blocks without `wasm_bindgen`.
         if path.name == "tests.rs" or "/tests/" in path.as_posix():
             continue
-        lines = path.read_text(encoding="utf-8").splitlines()
+        _, _, depths, code_lines = parsed_source(path, source_cache)
         rel = path.relative_to(root).as_posix()
-        depths, _ = rust_lines_with_depth(lines)
-        exported_impl = wasm_impl_lines(lines, depths)
-        for index, line in enumerate(lines):
+        exported_impl = wasm_impl_lines(code_lines, depths)
+        for index, line in enumerate(code_lines):
             match = re.match(r"\s*pub\s+(?:(?:async|unsafe)\s+)*fn\s+(\w+)", line)
             if not match:
                 continue
             fn_name = match.group(1)
             if (fn_name, rel) in known_exports:
                 continue
-            block = own_attr_block(lines, index)
+            block = own_attr_block(code_lines, index, depths)
             if "wasm_bindgen" not in block and index not in exported_impl:
                 continue
             if "constructor" in block:
@@ -255,17 +551,21 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
     return problems
 
 
-def batch_ops(root: Path = WASM_SRC) -> set[str]:
-    """Top-level `match op` arms in `dispatch_op`, excluding other matches."""
+def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
+    """Top-level `dispatch_op` arms and their shipped/optional-I/O gates."""
     text = (root / "bindings" / "batch.rs").read_text(encoding="utf-8")
     lines = text.splitlines()
     depths, code_lines = rust_lines_with_depth(lines)
     dispatch = next(
-        (index for index, line in enumerate(lines) if re.match(r"^\s*fn dispatch_op\s*\(", line)),
+        (index for index, line in enumerate(code_lines) if re.match(r"^\s*fn dispatch_op\s*\(", line)),
         None,
     )
     if dispatch is None:
         raise ValueError("batch dispatch_op method is missing")
+    dispatch_gate = export_gate(
+        code_lines, depths, dispatch, "bindings/batch.rs",
+        file_gate(root, "bindings/batch.rs"),
+    )
     method_depth = depths[dispatch]
     method_body = next(
         (index for index in range(dispatch + 1, len(lines)) if depths[index] > method_depth),
@@ -288,17 +588,23 @@ def batch_ops(root: Path = WASM_SRC) -> set[str]:
     )
     if match_line is None:
         raise ValueError("batch dispatch_op match op is missing")
+    match_gate = attribute_gate(own_attr_block(code_lines, match_line, depths))
     arm_depth = depths[match_line] + 1
     match_end = next(
         (index for index in range(match_line + 1, method_end) if depths[index] < arm_depth),
         method_end,
     )
-    return {
-        match.group("op")
-        for index in range(match_line + 1, match_end)
-        if depths[index] == arm_depth
-        and (match := BATCH_OP_RE.match(code_lines[index]))
-    }
+    result: dict[str, str] = {}
+    for index in range(match_line + 1, match_end):
+        if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
+            continue
+        op = match.group("op")
+        gate = public_gate(
+            combine_gates(dispatch_gate, match_gate, arm_gate(code_lines, index))
+        )
+        if op not in result or gate == "shipped":
+            result[op] = gate
+    return result
 
 
 def witness_exists(name: str, root: Path = WASM_SRC) -> bool:
@@ -329,7 +635,7 @@ def load_baseline(path: Path = BASELINE) -> dict:
 def verify(
     exports: list[dict],
     baseline: dict,
-    ops: set[str],
+    ops: dict[str, str],
     root: Path = WASM_SRC,
 ) -> tuple[list[str], list[str], dict]:
     """Check discovery against the baseline.
@@ -383,6 +689,11 @@ def verify(
         status = row.get("coverage")
         if status == "covered":
             covered += 1
+            if by_js_source.get(js, {}).get("gate") == "conditional":
+                violations.append(
+                    f"VIOLATION: {js} claims coverage under an unknown feature gate; "
+                    f"qualify its shipped availability before marking it covered"
+                )
             twin = row.get("twin", "")
             twin_hit = next(
                 (e for e in exports if e["js"] == twin), None
@@ -398,6 +709,12 @@ def verify(
                     f"{twin_hit.get('ret', '')!r}, not the solid envelope; "
                     f"non-solid methods must not be forced into a "
                     f"solid-result schema"
+                )
+            if twin_hit is not None and twin_hit["gate"] != by_js_source.get(js, {}).get("gate"):
+                violations.append(
+                    f"VIOLATION: {js} is available under "
+                    f"{by_js_source.get(js, {}).get('gate')!r}, but twin {twin} "
+                    f"is only available under {twin_hit['gate']!r}"
                 )
             if row.get("schema") != "solid_envelope":
                 violations.append(
@@ -417,6 +734,12 @@ def verify(
                     violations.append(
                         f"VIOLATION: {js} requires batch dispatch {op!r}, "
                         f"but bindings/batch.rs has no such arm"
+                    )
+                elif ops[op] != by_js_source.get(js, {}).get("gate"):
+                    violations.append(
+                        f"VIOLATION: {js} requires batch dispatch {op!r} "
+                        f"under {by_js_source.get(js, {}).get('gate')!r}, "
+                        f"but its arm is only available under {ops[op]!r}"
                     )
             for witness in row.get("witnesses", []):
                 if not witness_exists(witness, root):
@@ -459,12 +782,13 @@ def verify(
 
 
 def main() -> int:
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] = {}
     try:
-        exports = discover_from_files()
+        exports = discover_from_files(source_cache=source_cache)
     except OSError as error:
         print(f"check-wasm-o47-coverage: cannot read source: {error}")
         return 2
-    unknown = find_unknown_syntax()
+    unknown = find_unknown_syntax(exports=exports, source_cache=source_cache)
     try:
         baseline = load_baseline()
     except (OSError, ValueError) as error:
