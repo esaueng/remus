@@ -20,6 +20,15 @@ pub enum RenderError {
     #[error("failed to poll wgpu device: {0}")]
     Poll(String),
 
+    /// The session's device was lost (or a readback failed) and the session is
+    /// poisoned: subsequent renders on this session fail without touching the
+    /// GPU. Create a new session to recover. The first failure surfaces as
+    /// [`RenderError::BufferMap`] / [`RenderError::Poll`]; later calls surface
+    /// this variant. Real device loss is not synthesized in tests — see
+    /// [`crate::OffscreenSession::inject_device_loss_for_test`].
+    #[error("render session device lost (session poisoned): {0}")]
+    DeviceLost(String),
+
     /// The requested render dimensions were invalid (zero width or height).
     #[error("invalid render size: width and height must be non-zero, got {width}x{height}")]
     InvalidSize {
