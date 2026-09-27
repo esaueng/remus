@@ -66,7 +66,8 @@ EXPORT_RE = re.compile(
 )
 BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
-SOLID_ENVELOPE = "SolidOperationDetailedResult"
+SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
+SOLID_HANDLE = "Result<u32, JsError>"
 
 
 def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
@@ -391,7 +392,7 @@ def verify(
                     f"VIOLATION: {js} claims covered by {twin}, but no such "
                     f"export exists in source"
                 )
-            elif SOLID_ENVELOPE not in twin_hit.get("ret", ""):
+            elif twin_hit.get("ret") != SOLID_ENVELOPE:
                 violations.append(
                     f"VIOLATION: {js} twin {twin} returns "
                     f"{twin_hit.get('ret', '')!r}, not the solid envelope; "
@@ -405,7 +406,7 @@ def verify(
                     f"the solid envelope"
                 )
             legacy_ret = by_js_source.get(js, {}).get("ret", "")
-            if "Vec<u32>" in legacy_ret or "()" in legacy_ret.split(", JsError")[0][-6:]:
+            if legacy_ret != SOLID_HANDLE:
                 violations.append(
                     f"VIOLATION: {js} is covered with the solid envelope "
                     f"but returns {legacy_ret!r}; non-solid methods need "

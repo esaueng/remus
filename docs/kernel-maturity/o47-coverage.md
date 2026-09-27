@@ -25,9 +25,10 @@ package builds without). Queries (`&self`) carry no rows. Every
 
 For `covered` rows the gate additionally enforces:
 
-* the twin returns `SolidOperationDetailedResult` (the solid envelope);
-* the legacy method itself returns a single solid handle -- a `Vec<u32>`,
-  `()`, or JSON-string method can never be `covered` with the solid
+* the twin returns `Result<tsify::Ts<SolidOperationDetailedResult>, JsError>`
+  (the solid envelope);
+* the legacy method itself returns `Result<u32, JsError>` (one solid
+  handle) -- a `Vec<u32>`, `()`, or JSON-string method can never be `covered` with the solid
   envelope. Non-solid and lifecycle methods need their own schema, never
   a forced solid twin;
 * every `batch_ops` entry has a top-level `match op` arm in

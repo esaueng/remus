@@ -339,13 +339,46 @@ class O47CoverageFixtures(unittest.TestCase):
         )
 
     def test_non_solid_forced_into_solid_schema_fails(self):
+        for return_type in ("Result<Vec<u32>, JsError>", "Result<String, JsError>", "Result<(), JsError>"):
+            with self.subTest(return_type=return_type):
+                directory = make_tree(
+                    {
+                        "bindings/operations.rs": MUT_EXPORT.format(
+                            js="split", rust="split_solid"
+                        ).replace("Result<u32, JsError>", return_type)
+                        + TWIN_EXPORT.format(
+                            js="splitDetailed", rust="split_detailed"
+                        ),
+                        "bindings/batch.rs": BATCH_RS.format(ops="splitDetailed"),
+                        "witness.rs": WITNESS_RS.format(name="split_success"),
+                    }
+                )
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row(
+                            "split", "split_solid", "splitDetailed",
+                            ["splitDetailed"], ["split_success"],
+                        ),
+                        {
+                            "js": "splitDetailed", "rust": "split_detailed",
+                            "file": "bindings/operations.rs", "gate": "shipped",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "O4.7 twin; the typed surface itself",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("solid envelope" in v for v in violations), violations
+                )
+
+    def test_twin_must_return_one_solid_envelope(self):
         directory = make_tree(
             {
-                "bindings/operations.rs": MUT_EXPORT.format(
-                    js="split", rust="split_solid"
-                ).replace("Result<u32, JsError>", "Result<Vec<u32>, JsError>")
-                + TWIN_EXPORT.format(
-                    js="splitDetailed", rust="split_detailed"
+                "bindings/operations.rs": MUT_EXPORT.format(js="split", rust="split_solid")
+                + TWIN_EXPORT.format(js="splitDetailed", rust="split_detailed").replace(
+                    "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>",
+                    "Result<Vec<SolidOperationDetailedResult>, JsError>",
                 ),
                 "bindings/batch.rs": BATCH_RS.format(ops="splitDetailed"),
                 "witness.rs": WITNESS_RS.format(name="split_success"),
@@ -354,28 +387,16 @@ class O47CoverageFixtures(unittest.TestCase):
         violations, _, _, _ = run_gate(
             directory,
             [
-                covered_row(
-                    "split",
-                    "split_solid",
-                    "splitDetailed",
-                    ["splitDetailed"],
-                    ["split_success"],
-                ),
+                covered_row("split", "split_solid", "splitDetailed", ["splitDetailed"], ["split_success"]),
                 {
-                    "js": "splitDetailed",
-                    "rust": "split_detailed",
-                    "file": "bindings/operations.rs",
-                    "gate": "shipped",
-                    "class": "special_case",
-                    "coverage": "special",
-                    "owner": "O4.7",
-                    "reason": "O4.7 twin; the typed surface itself",
+                    "js": "splitDetailed", "rust": "split_detailed",
+                    "file": "bindings/operations.rs", "gate": "shipped",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
                 },
             ],
         )
-        self.assertTrue(
-            any("solid envelope" in v for v in violations), violations
-        )
+        self.assertTrue(any("not the solid envelope" in v for v in violations), violations)
 
     def test_unknown_syntax_fails_loudly(self):
         directory = make_tree(
