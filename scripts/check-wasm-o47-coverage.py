@@ -169,7 +169,7 @@ def file_gate(root: Path, rel: str) -> str:
     parent = root / "lib.rs"
     gates: list[str] = []
     for index, name in enumerate(parts):
-        if parent.is_file():
+        if parent.is_file() and parent != root / rel:
             parent_text = parent.read_text(encoding="utf-8")
             for override in re.finditer(r'#\[\s*path\s*=\s*([^]]+)\]', parent_text):
                 literal = re.fullmatch(
@@ -189,15 +189,19 @@ def file_gate(root: Path, rel: str) -> str:
             gates.append(attribute_gate(inner_file_attrs(lines)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
             module_item = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\b")
+            declared = False
             for line_index, line in enumerate(lines):
                 if depths[line_index] != 0:
                     continue
                 if declaration.match(line):
+                    declared = True
                     gates.append(attribute_gate(own_attr_block(lines, line_index, depths)))
                 elif module_item.match(line):
                     # This file layout requires following declarations inside
                     # the inline module. Until then, refuse coverage claims.
                     return "conditional"
+            if not declared:
+                return "conditional"
         prefix = root.joinpath(*parts[:index + 1])
         parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
     if parent.is_file():
