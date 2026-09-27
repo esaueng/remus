@@ -602,6 +602,8 @@ class O47CoverageFixtures(unittest.TestCase):
             ("items! {", "}"),
             ("items ! (", ");"),
             ("crate::items! [", "];"),
+            ("crate :: items ! {", "}"),
+            ("::crate :: items ! {", "}"),
         ):
             with self.subTest(prefix=prefix):
                 directory = make_tree(

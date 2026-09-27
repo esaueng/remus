@@ -441,7 +441,8 @@ def macro_token_ranges(source: str) -> tuple[tuple[int, int], ...]:
     ranges: list[tuple[int, int]] = []
     closers = {"{": "}", "(": ")", "[": "]"}
     for macro in re.finditer(
-        r"^[ \t]*[^\s!{(\[]+\s*!\s*(?:[^\s{(\[]+\s*)?(?=[{(\[])",
+        r"^[ \t]*(?:::\s*)?(?:[^\s!:({\[]+\s*::\s*)*"
+        r"[^\s!:({\[]+\s*!\s*(?:[^\s{(\[]+\s*)?(?=[{(\[])",
         source,
         re.MULTILINE,
     ):
