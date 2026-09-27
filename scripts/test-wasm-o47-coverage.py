@@ -369,6 +369,95 @@ class O47CoverageFixtures(unittest.TestCase):
             violations,
         )
 
+    def test_attribute_gated_twin_cannot_cover_shipped_legacy_export(self):
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
+        sources = {
+            "method": twin.replace(
+                '    #[wasm_bindgen(js_name',
+                '    #[cfg(feature = "io")]\n    #[wasm_bindgen(js_name',
+            ),
+            "impl": '#[cfg(feature = "io")]\n' + twin,
+            "module": '#[cfg(feature = "io")]\nmod optional {\n' + twin + '}\n',
+        }
+        for placement, gated_twin in sources.items():
+            with self.subTest(placement=placement):
+                directory = make_tree(
+                    {
+                        "bindings/booleans.rs": MUT_EXPORT.format(
+                            js="fuse", rust="fuse"
+                        ) + gated_twin,
+                        "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                        "witness.rs": WITNESS_RS.format(name="fuse_success"),
+                    }
+                )
+                exports = gate.discover_from_files(directory / "crates/wasm/src")
+                twin_export = next(e for e in exports if e["js"] == "fuseDetailed")
+                self.assertEqual(twin_export["gate"], "io")
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                        {
+                            "js": "fuseDetailed", "rust": "fuse_detailed",
+                            "file": "bindings/booleans.rs", "gate": "io",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "typed twin",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("only available under 'io'" in item for item in violations),
+                    violations,
+                )
+
+    def test_optional_io_batch_arm_cannot_cover_shipped_method(self):
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                + TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed"),
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse").replace(
+                    '            "fuse" =>',
+                    '            #[cfg(feature = "io")]\n            "fuse" =>',
+                ),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        root = directory / "crates/wasm/src"
+        self.assertEqual(gate.batch_ops(root)["fuse"], "io")
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "bindings/booleans.rs", "gate": "shipped",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("arm is only available under 'io'" in item for item in violations),
+            violations,
+        )
+
+    def test_negated_io_cfg_and_doc_example_stay_shipped(self):
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
+            '    #[wasm_bindgen(js_name',
+            '    /// Example: #[cfg(feature = "io")] is optional.\n'
+            '    #[cfg(not(feature = "io"))]\n'
+            '    #[wasm_bindgen(js_name',
+        )
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse") + twin,
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        exports = gate.discover_from_files(directory / "crates/wasm/src")
+        self.assertEqual(next(e for e in exports if e["js"] == "fuseDetailed")["gate"], "shipped")
+
     def test_non_solid_forced_into_solid_schema_fails(self):
         for return_type in ("Result<Vec<u32>, JsError>", "Result<String, JsError>", "Result<(), JsError>"):
             with self.subTest(return_type=return_type):
