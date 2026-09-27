@@ -150,9 +150,16 @@ Bounded smoke directory:
 (1 process × 1 retained sample + 1 warmup; all smoke cells correctness-passed,
 including the same three representative WASM cells).
 
-Reproduce (from the same source):
+Reproduce the recorded run from the witness commit
+`787bb1732185ed3241616a9c7255a54ba3273bb5`, whose Rust source is
+unchanged from `49099bc6b4e7f1d2a0273e15fb120c021ce641e6`. The
+witness commit supplies `scripts/circular-pattern-packaged.mjs` and its
+smoke-suite wiring; the source commit alone does not contain them.
 
 ```bash
+git fetch origin pull/724/head
+test "$(git rev-parse FETCH_HEAD)" = 787bb1732185ed3241616a9c7255a54ba3273bb5
+git switch --detach 787bb1732185ed3241616a9c7255a54ba3273bb5
 cargo xtask wasm-build
 node scripts/test-wasm-smoke.mjs
 node scripts/circular-pattern-packaged.mjs
