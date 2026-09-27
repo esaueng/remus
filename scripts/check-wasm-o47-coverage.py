@@ -118,16 +118,36 @@ def own_attr_block(lines: list[str], index: int) -> str:
     return "\n".join(reversed(block))
 
 
+def wasm_impl_lines(lines: list[str]) -> set[int]:
+    """Line indices inside exported `BrepKernel` impls.
+
+    Rustfmt places the closing brace of a top-level impl in column zero.
+    Keep the impl scope separate from a method's own attributes: a method
+    without `js_name` still exports under its Rust name.
+    """
+    result: set[int] = set()
+    for index, line in enumerate(lines[:-1]):
+        if line.strip() != "#[wasm_bindgen]":
+            continue
+        if not re.match(r"^impl\s+BrepKernel\s*\{", lines[index + 1]):
+            continue
+        cursor = index + 2
+        while cursor < len(lines) and lines[cursor] != "}":
+            result.add(cursor)
+            cursor += 1
+    return result
+
+
 def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
     """Find `pub fn` items under `wasm_bindgen` that match no known shape.
 
     Known shapes: a `js_name` export (captured by discovery), a
     `constructor`, or a bare `getter` without `js_name` (a query accessor
     under its Rust name). Anything else carrying a `wasm_bindgen`
-    attribute -- a new macro spelling, a multi-line attribute the parser
-    does not cover, an export without `js_name` (including a misspelled
-    `js_nam`) -- must fail the gate loudly. Unknown items must never
-    silently disappear from discovery.
+    attribute, or living inside an exported impl -- a new macro spelling,
+    a multi-line attribute the parser does not cover, an export without
+    `js_name` (including a misspelled `js_nam`) -- must fail the gate.
+    Unknown items must never silently disappear from discovery.
     """
     problems: list[str] = []
     known_exports = {(e["rust"], e["file"]) for e in discover_from_files(root)}
@@ -138,13 +158,16 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         rel = path.relative_to(root).as_posix()
+        exported_impl = wasm_impl_lines(lines)
         for index, line in enumerate(lines):
             match = re.match(r"\s*pub\s+(?:(?:async|unsafe)\s+)*fn\s+(\w+)", line)
             if not match:
                 continue
             fn_name = match.group(1)
+            if (fn_name, rel) in known_exports:
+                continue
             block = own_attr_block(lines, index)
-            if "wasm_bindgen" not in block:
+            if "wasm_bindgen" not in block and index not in exported_impl:
                 continue
             if "constructor" in block:
                 continue
