@@ -604,6 +604,94 @@ pub fn circular_pattern_journaled(
     })
 }
 
+/// Runs a grid pattern and journals its construction-derived
+/// per-instance face/edge/vertex provenance as one entry (kind
+/// `grid_pattern`), scoped over the original solid and every instance.
+///
+/// Faces keep the legacy [`EvolutionMap`] contract (original faces
+/// modified-into-themselves, copies generated from their source face).
+/// Edges and vertices ride the same copy-time correspondence: the original
+/// instance's boundary entities are modified-into-themselves and each copy's
+/// boundary entities are generated from their source edge/vertex — by
+/// construction from [`copy`](crate::copy) maps, never by coordinate or
+/// centroid matching. No `Preserved` claim is made for moved copies, and
+/// every subject journals under its own [`EntityKey`] kind, so a face index
+/// never collides with an edge or vertex sharing its number.
+///
+/// The grid placement contract is unchanged from
+/// [`crate::pattern::grid_pattern`]: instance `(ix, iy)` sits at
+/// `dx * spacing_x * ix + dy * spacing_y * iy` from the source, members are
+/// ordered `iy`-outer/`ix`-inner with the source first, and touching
+/// instances remain supported while material overlap refuses.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the pattern or recording fails; topology and
+/// history roll back together, including unpublished mutation gaps.
+#[allow(clippy::too_many_arguments)]
+pub fn grid_pattern_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    dir_x: remus_math::vec::Vec3,
+    dir_y: remus_math::vec::Vec3,
+    spacing_x: f64,
+    spacing_y: f64,
+    count_x: usize,
+    count_y: usize,
+) -> Result<JournaledPattern, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "grid_pattern", &[solid])?;
+        let (compound, history) = crate::pattern::grid_pattern_with_entity_history(
+            topo, solid, dir_x, dir_y, spacing_x, spacing_y, count_x, count_y,
+        )?;
+        let members = topo.compound(compound)?.solids().to_vec();
+        // Original-instance boundaries: modified-into-themselves, mirroring
+        // the face map. Copies: generated from their copy-time source.
+        let mut boundary_pairs =
+            Vec::with_capacity(history.source_edges.len() + history.source_vertices.len());
+        for &src in &history.source_edges {
+            let key = EntityKey::edge(src);
+            boundary_pairs.push((key, key));
+        }
+        for &src in &history.source_vertices {
+            let key = EntityKey::vertex(src);
+            boundary_pairs.push((key, key));
+        }
+        let mut additional =
+            Vec::with_capacity(history.edge_copies.len() + history.vertex_copies.len());
+        for &(src, dst) in &history.edge_copies {
+            additional.push((
+                EntityKey::edge(dst),
+                EventDraft::Generated {
+                    sources: vec![EntityKey::edge(src)],
+                },
+            ));
+        }
+        for &(src, dst) in &history.vertex_copies {
+            additional.push((
+                EntityKey::vertex(dst),
+                EventDraft::Generated {
+                    sources: vec![EntityKey::vertex(src)],
+                },
+            ));
+        }
+        additional.sort_unstable_by_key(|(subject, _)| *subject);
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &history.map,
+            &members,
+            &boundary_pairs,
+            &additional,
+        )?;
+        Ok(JournaledPattern {
+            compound,
+            op,
+            map: history.map,
+        })
+    })
+}
+
 /// A journaled single-solid operation's result.
 #[derive(Debug)]
 pub struct JournaledSolidOp {

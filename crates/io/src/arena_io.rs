@@ -56,17 +56,6 @@ enum SerEdgeCurve {
 }
 
 impl SerEdgeCurve {
-    fn from_curve(curve: &EdgeCurve) -> Self {
-        match curve {
-            EdgeCurve::Line => Self::Line,
-            EdgeCurve::NurbsCurve(c) => Self::NurbsCurve(c.clone()),
-            EdgeCurve::Circle(c) => Self::Circle(c.clone()),
-            EdgeCurve::Ellipse(e) => Self::Ellipse(e.clone()),
-            EdgeCurve::Hyperbola(h) => Self::Hyperbola(h.clone()),
-            EdgeCurve::Parabola(pb) => Self::Parabola(pb.clone()),
-        }
-    }
-
     fn into_curve(self) -> EdgeCurve {
         match self {
             Self::Line => EdgeCurve::Line,
@@ -91,20 +80,6 @@ enum SerFaceSurface {
 }
 
 impl SerFaceSurface {
-    fn from_surface(surface: &FaceSurface) -> Self {
-        match surface {
-            FaceSurface::Plane { normal, d } => Self::Plane {
-                normal: *normal,
-                d: *d,
-            },
-            FaceSurface::Nurbs(s) => Self::Nurbs(s.clone()),
-            FaceSurface::Cylinder(s) => Self::Cylinder(s.clone()),
-            FaceSurface::Cone(s) => Self::Cone(s.clone()),
-            FaceSurface::Sphere(s) => Self::Sphere(s.clone()),
-            FaceSurface::Torus(s) => Self::Torus(s.clone()),
-        }
-    }
-
     fn into_surface(self) -> FaceSurface {
         match self {
             Self::Plane { normal, d } => FaceSurface::Plane { normal, d },
@@ -115,6 +90,181 @@ impl SerFaceSurface {
             Self::Torus(s) => FaceSurface::Torus(s),
         }
     }
+}
+
+/// Borrowed serialization view of an [`EdgeCurve`].
+///
+/// Serializes byte-identically to [`SerEdgeCurve`] but borrows the immutable
+/// geometry payloads instead of cloning them. Deserialization keeps the owned
+/// representation.
+#[derive(Debug, Clone, Copy, Serialize)]
+enum SerEdgeCurveView<'a> {
+    Line,
+    NurbsCurve(&'a NurbsCurve),
+    Circle(&'a Circle3D),
+    Ellipse(&'a Ellipse3D),
+    Hyperbola(&'a Hyperbola3D),
+    Parabola(&'a Parabola3D),
+}
+
+impl<'a> SerEdgeCurveView<'a> {
+    fn from_curve(curve: &'a EdgeCurve) -> Self {
+        match curve {
+            EdgeCurve::Line => Self::Line,
+            EdgeCurve::NurbsCurve(c) => Self::NurbsCurve(c),
+            EdgeCurve::Circle(c) => Self::Circle(c),
+            EdgeCurve::Ellipse(e) => Self::Ellipse(e),
+            EdgeCurve::Hyperbola(h) => Self::Hyperbola(h),
+            EdgeCurve::Parabola(pb) => Self::Parabola(pb),
+        }
+    }
+}
+
+/// Borrowed serialization view of a [`FaceSurface`].
+///
+/// Serializes byte-identically to [`SerFaceSurface`] but borrows large
+/// payloads (notably NURBS control nets) instead of cloning them.
+/// Deserialization keeps the owned representation.
+#[derive(Debug, Clone, Copy, Serialize)]
+enum SerFaceSurfaceView<'a> {
+    Plane { normal: Vec3, d: f64 },
+    Nurbs(&'a NurbsSurface),
+    Cylinder(&'a CylindricalSurface),
+    Cone(&'a ConicalSurface),
+    Sphere(&'a SphericalSurface),
+    Torus(&'a ToroidalSurface),
+}
+
+impl<'a> SerFaceSurfaceView<'a> {
+    fn from_surface(surface: &'a FaceSurface) -> Self {
+        match surface {
+            FaceSurface::Plane { normal, d } => Self::Plane {
+                normal: *normal,
+                d: *d,
+            },
+            FaceSurface::Nurbs(s) => Self::Nurbs(s),
+            FaceSurface::Cylinder(s) => Self::Cylinder(s),
+            FaceSurface::Cone(s) => Self::Cone(s),
+            FaceSurface::Sphere(s) => Self::Sphere(s),
+            FaceSurface::Torus(s) => Self::Torus(s),
+        }
+    }
+}
+
+/// Borrowed serialization view of a per-use pcurve.
+///
+/// Serializes byte-identically to [`SerUsePCurve`] but borrows the 2D curve
+/// instead of cloning it.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct SerUsePCurveView<'a> {
+    curve: &'a Curve2D,
+    t_start: f64,
+    t_end: f64,
+}
+
+/// Borrowed serialization view of [`SerEdge`].
+///
+/// Structural indices are built during traversal (small); only the curve
+/// payload is borrowed.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct SerEdgeView<'a> {
+    start: usize,
+    end: usize,
+    curve: SerEdgeCurveView<'a>,
+    tolerance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trim: Option<(f64, f64)>,
+}
+
+/// Borrowed serialization view of [`SerFace`].
+#[derive(Debug, Clone, Serialize)]
+struct SerFaceView<'a> {
+    outer_wire: usize,
+    inner_wires: Vec<usize>,
+    surface: SerFaceSurfaceView<'a>,
+    reversed: bool,
+}
+
+/// Borrowed serialization view of [`SerCoedgeAuthority`].
+#[derive(Debug, Clone, Copy, Serialize)]
+struct SerCoedgeAuthorityView<'a> {
+    edge: usize,
+    forward: bool,
+    periodic_winding: [i32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pcurve: Option<SerUsePCurveView<'a>>,
+}
+
+/// Borrowed serialization view of [`SerBoundaryAuthority`].
+#[derive(Debug, Clone, Serialize)]
+struct SerBoundaryAuthorityView<'a> {
+    loops: Vec<SerLoopAuthority>,
+    coedges: Vec<SerCoedgeAuthorityView<'a>>,
+    /// Parallel to the document's dense face table.
+    faces: Vec<SerFaceLoopAuthority>,
+}
+
+/// Borrowed version 3 document view.
+///
+/// Field order and serde attributes mirror [`SerializedDocumentV3`] so the
+/// emitted bytes are identical where deterministic.
+#[derive(Debug, Serialize)]
+struct SerializedDocumentV3View<'a> {
+    version: u32,
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdgeView<'a>>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFaceView<'a>>,
+    shells: Vec<SerShell>,
+    solids: Vec<SerSolid>,
+    solid_roots: Vec<usize>,
+    compounds: Vec<SerCompound>,
+    boundary_authority: SerBoundaryAuthorityView<'a>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal: Option<SerJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<SerAttributes>,
+}
+
+/// Borrowed version 4 document view (mirrors [`SerializedDocumentV4`]).
+#[derive(Debug, Serialize)]
+struct SerializedDocumentV4View<'a> {
+    version: u32,
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdgeView<'a>>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFaceView<'a>>,
+    shells: Vec<SerShell>,
+    solids: Vec<SerSolid>,
+    solid_roots: Vec<usize>,
+    sheet_roots: Vec<usize>,
+    compounds: Vec<SerCompound>,
+    boundary_authority: SerBoundaryAuthorityView<'a>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal: Option<SerJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<SerAttributes>,
+}
+
+/// Borrowed version 5 document view (mirrors [`SerializedDocumentV5`]).
+#[derive(Debug, Serialize)]
+struct SerializedDocumentV5View<'a> {
+    version: u32,
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdgeView<'a>>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFaceView<'a>>,
+    shells: Vec<SerShell>,
+    solids: Vec<SerSolid>,
+    solid_roots: Vec<usize>,
+    sheet_roots: Vec<usize>,
+    wire_roots: Vec<usize>,
+    compounds: Vec<SerCompound>,
+    boundary_authority: SerBoundaryAuthorityView<'a>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal: Option<SerJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<SerAttributes>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,14 +628,19 @@ pub struct DeserializedDocument {
 }
 
 /// Discovers and remaps a solid's reachable entities into dense local indices.
+///
+/// Geometry payloads are borrowed from the source topology through
+/// serialization views, so gathering entities never clones NURBS control
+/// nets or analytic carriers. Traversal order and aliasing match the
+/// previous owned builder exactly.
 struct Builder<'a> {
     topo: &'a Topology,
     vertices: Vec<SerVertex>,
-    edges: Vec<SerEdge>,
+    edges: Vec<SerEdgeView<'a>>,
     wires: Vec<SerWire>,
-    faces: Vec<SerFace>,
+    faces: Vec<SerFaceView<'a>>,
     loops: Vec<SerLoopAuthority>,
-    coedges: Vec<SerCoedgeAuthority>,
+    coedges: Vec<SerCoedgeAuthorityView<'a>>,
     face_loop_authority: Vec<SerFaceLoopAuthority>,
     shells: Vec<SerShell>,
     vertex_map: HashMap<usize, usize>,
@@ -527,7 +682,8 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.vertex_map.get(&id.index()) {
             return Ok(local);
         }
-        let v = self.topo.vertex(id)?;
+        let topo = self.topo;
+        let v = topo.vertex(id)?;
         let local = self.vertices.len();
         self.vertices.push(SerVertex {
             point: v.point(),
@@ -541,18 +697,23 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.edge_map.get(&id.index()) {
             return Ok(local);
         }
-        let e = self.topo.edge(id)?;
-        let start = self.intern_vertex(e.start())?;
-        let end = self.intern_vertex(e.end())?;
-        let curve = SerEdgeCurve::from_curve(e.curve());
+        let topo = self.topo;
+        let e = topo.edge(id)?;
+        let start_id = e.start();
+        let end_id = e.end();
+        let curve = e.curve();
         let tolerance = e.tolerance();
+        let trim = e.trim();
+        let start = self.intern_vertex(start_id)?;
+        let end = self.intern_vertex(end_id)?;
+        let curve = SerEdgeCurveView::from_curve(curve);
         let local = self.edges.len();
-        self.edges.push(SerEdge {
+        self.edges.push(SerEdgeView {
             start,
             end,
             curve,
             tolerance,
-            trim: e.trim(),
+            trim,
         });
         self.edge_map.insert(id.index(), local);
         Ok(local)
@@ -562,19 +723,21 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.wire_map.get(&id.index()) {
             return Ok(local);
         }
-        let w = self.topo.wire(id)?;
-        let mut edges = Vec::with_capacity(w.edges().len());
-        for oe in w.edges() {
+        let topo = self.topo;
+        let w = topo.wire(id)?;
+        let edge_uses = w.edges().to_vec();
+        let closed = w.is_closed();
+        let body_class = w.body_class();
+        let mut edges = Vec::with_capacity(edge_uses.len());
+        for oe in edge_uses {
             let edge = self.intern_edge(oe.edge())?;
             edges.push(SerOrientedEdge {
                 edge,
                 forward: oe.is_forward(),
             });
         }
-        let closed = w.is_closed();
         let local = self.wires.len();
-        let body_class =
-            (w.body_class() != BodyClass::Wire).then(|| SerBodyClass::from(w.body_class()));
+        let body_class = (body_class != BodyClass::Wire).then(|| SerBodyClass::from(body_class));
         self.wires.push(SerWire {
             edges,
             closed,
@@ -588,21 +751,25 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.face_map.get(&id.index()) {
             return Ok(local);
         }
-        remus_topology::validation::validate_face_loops(self.topo, id).map_err(|error| {
+        let topo = self.topo;
+        remus_topology::validation::validate_face_loops(topo, id).map_err(|error| {
             IoError::InvalidTopology {
                 reason: format!("face {id:?} has inconsistent boundary authority: {error}"),
             }
         })?;
-        let f = self.topo.face(id)?;
-        let outer_wire = self.intern_wire(f.outer_wire())?;
-        let mut inner_wires = Vec::with_capacity(f.inner_wires().len());
-        for &iw in f.inner_wires() {
+        let f = topo.face(id)?;
+        let outer_wire_id = f.outer_wire();
+        let inner_wire_ids = f.inner_wires().to_vec();
+        let surface = f.surface();
+        let reversed = f.is_reversed();
+        let outer_wire = self.intern_wire(outer_wire_id)?;
+        let mut inner_wires = Vec::with_capacity(inner_wire_ids.len());
+        for iw in inner_wire_ids {
             inner_wires.push(self.intern_wire(iw)?);
         }
-        let surface = SerFaceSurface::from_surface(f.surface());
-        let reversed = f.is_reversed();
+        let surface = SerFaceSurfaceView::from_surface(surface);
         let local = self.faces.len();
-        self.faces.push(SerFace {
+        self.faces.push(SerFaceView {
             outer_wire,
             inner_wires,
             surface,
@@ -610,13 +777,12 @@ impl<'a> Builder<'a> {
         });
         self.face_map.insert(id.index(), local);
 
-        let loop_ids = self
-            .topo
+        let loop_ids = topo
             .loops_of_face(id)
             .ok_or_else(|| IoError::InvalidTopology {
                 reason: format!("face {id:?} has no authoritative boundary loops"),
             })?;
-        let expected = 1 + f.inner_wires().len();
+        let expected = 1 + topo.face(id)?.inner_wires().len();
         if loop_ids.len() != expected {
             return Err(IoError::InvalidTopology {
                 reason: format!(
@@ -640,7 +806,8 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.loop_map.get(&id.index()) {
             return Ok(local);
         }
-        let boundary_loop = self.topo.face_loop(id)?;
+        let topo = self.topo;
+        let boundary_loop = topo.face_loop(id)?;
         let coedge_ids = boundary_loop.coedges().to_vec();
         let closed = boundary_loop.is_closed();
         let mut coedges = Vec::with_capacity(coedge_ids.len());
@@ -657,10 +824,14 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.coedge_map.get(&id.index()) {
             return Ok(local);
         }
-        let coedge = self.topo.coedge(id)?;
-        let edge = self.intern_edge(coedge.edge())?;
-        let pcurve = coedge
-            .pcurve()
+        let topo = self.topo;
+        let coedge = topo.coedge(id)?;
+        let edge_id = coedge.edge();
+        let forward = coedge.is_forward();
+        let winding = coedge.periodic_winding();
+        let pcurve = coedge.pcurve();
+        let edge = self.intern_edge(edge_id)?;
+        let pcurve = pcurve
             .map(|pcurve| {
                 validate_arena_pcurve(
                     pcurve.curve(),
@@ -668,18 +839,18 @@ impl<'a> Builder<'a> {
                     pcurve.t_end(),
                     &format!("coedge {id:?} pcurve"),
                 )?;
-                Ok::<SerUsePCurve, IoError>(SerUsePCurve {
-                    curve: pcurve.curve().clone(),
+                Ok::<SerUsePCurveView<'_>, IoError>(SerUsePCurveView {
+                    curve: pcurve.curve(),
                     t_start: pcurve.t_start(),
                     t_end: pcurve.t_end(),
                 })
             })
             .transpose()?;
         let local = self.coedges.len();
-        self.coedges.push(SerCoedgeAuthority {
+        self.coedges.push(SerCoedgeAuthorityView {
             edge,
-            forward: coedge.is_forward(),
-            periodic_winding: [coedge.periodic_winding().u(), coedge.periodic_winding().v()],
+            forward,
+            periodic_winding: [winding.u(), winding.v()],
             pcurve,
         });
         self.coedge_map.insert(id.index(), local);
@@ -690,14 +861,16 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.shell_map.get(&id.index()) {
             return Ok(local);
         }
-        let s = self.topo.shell(id)?;
-        let mut faces = Vec::with_capacity(s.faces().len());
-        for &fid in s.faces() {
+        let topo = self.topo;
+        let s = topo.shell(id)?;
+        let face_ids = s.faces().to_vec();
+        let body_class = s.body_class();
+        let mut faces = Vec::with_capacity(face_ids.len());
+        for fid in face_ids {
             faces.push(self.intern_face(fid)?);
         }
         let local = self.shells.len();
-        let body_class =
-            (s.body_class() != BodyClass::Solid).then(|| SerBodyClass::from(s.body_class()));
+        let body_class = (body_class != BodyClass::Solid).then(|| SerBodyClass::from(body_class));
         self.shells.push(SerShell { faces, body_class });
         self.shell_map.insert(id.index(), local);
         Ok(local)
@@ -707,7 +880,8 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.solid_map.get(&id.index()) {
             return Ok(local);
         }
-        let solid = self.topo.solid(id)?;
+        let topo = self.topo;
+        let solid = topo.solid(id)?;
         let outer_shell_id = solid.outer_shell();
         let inner_shell_ids = solid.inner_shells().to_vec();
         let outer_shell = self.intern_shell(outer_shell_id)?;
@@ -826,7 +1000,7 @@ fn serialize_document_impl(
 
     let journal = serialize_journal(topo, &builder);
     let attributes = serialize_attributes(topo, &builder);
-    let dump = SerializedDocumentV3 {
+    let dump = SerializedDocumentV3View {
         version: FORMAT_VERSION,
         vertices: builder.vertices,
         edges: builder.edges,
@@ -836,7 +1010,7 @@ fn serialize_document_impl(
         solids: builder.solids,
         solid_roots,
         compounds,
-        boundary_authority: SerBoundaryAuthority {
+        boundary_authority: SerBoundaryAuthorityView {
             loops: builder.loops,
             coedges: builder.coedges,
             faces: builder.face_loop_authority,
@@ -1011,7 +1185,7 @@ pub fn serialize_body_document(
 
     let journal = serialize_journal(topo, &builder);
     let attributes = serialize_attributes(topo, &builder);
-    let dump = SerializedDocumentV4 {
+    let dump = SerializedDocumentV4View {
         version: SHEET_ROOT_FORMAT_VERSION,
         vertices: builder.vertices,
         edges: builder.edges,
@@ -1022,7 +1196,7 @@ pub fn serialize_body_document(
         solid_roots,
         sheet_roots,
         compounds,
-        boundary_authority: SerBoundaryAuthority {
+        boundary_authority: SerBoundaryAuthorityView {
             loops: builder.loops,
             coedges: builder.coedges,
             faces: builder.face_loop_authority,
@@ -1100,7 +1274,7 @@ pub fn serialize_body_document_with_wires(
 
     let journal = serialize_journal(topo, &builder);
     let attributes = serialize_attributes(topo, &builder);
-    let dump = SerializedDocumentV5 {
+    let dump = SerializedDocumentV5View {
         version: WIRE_ROOT_FORMAT_VERSION,
         vertices: builder.vertices,
         edges: builder.edges,
@@ -1112,7 +1286,7 @@ pub fn serialize_body_document_with_wires(
         sheet_roots,
         wire_roots,
         compounds,
-        boundary_authority: SerBoundaryAuthority {
+        boundary_authority: SerBoundaryAuthorityView {
             loops: builder.loops,
             coedges: builder.coedges,
             faces: builder.face_loop_authority,
@@ -4146,5 +4320,286 @@ mod tests {
                 "round-tripped document with tolerance {tolerance:e} is not byte-identical",
             );
         }
+    }
+
+    fn topology_counts(topo: &Topology) -> (usize, usize, usize, usize, usize, usize) {
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        )
+    }
+
+    fn document_total_entities(bytes: &[u8]) -> usize {
+        let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let array_len = |key: &str| {
+            value
+                .get(key)
+                .and_then(|v| v.as_array())
+                .map_or(0, std::vec::Vec::len)
+        };
+        let authority = value.get("boundary_authority");
+        let loops = authority
+            .and_then(|a| a.get("loops"))
+            .and_then(|v| v.as_array())
+            .map_or(0, std::vec::Vec::len);
+        let coedges = authority
+            .and_then(|a| a.get("coedges"))
+            .and_then(|v| v.as_array())
+            .map_or(0, std::vec::Vec::len);
+        array_len("vertices")
+            + array_len("edges")
+            + array_len("wires")
+            + array_len("faces")
+            + array_len("shells")
+            + array_len("solids")
+            + array_len("compounds")
+            + loops
+            + coedges
+    }
+
+    #[test]
+    fn perf_i03_borrowed_serialization_is_byte_stable_across_repeated_calls() {
+        // Small analytic solid, duplicate roots, and shared topology.
+        let mut topo = Topology::new();
+        let first = make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+        let second = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
+        let counts_before = topology_counts(&topo);
+
+        let once = serialize_solids(&topo, &[second, first, second]).unwrap();
+        let twice = serialize_solids(&topo, &[second, first, second]).unwrap();
+        assert_eq!(once, twice, "repeated serialization must be byte-identical");
+        assert_eq!(
+            topology_counts(&topo),
+            counts_before,
+            "serialization must not mutate the source"
+        );
+        assert_eq!(
+            serde_json::from_slice::<VersionHeader>(&once)
+                .unwrap()
+                .version,
+            FORMAT_VERSION
+        );
+
+        // Independent validation: entity relationships and geometry.
+        let mut restored = Topology::new();
+        let roots = deserialize_solids(&once, &mut restored).unwrap();
+        assert_eq!(roots.len(), 3);
+        assert_eq!(roots[0], roots[2]);
+        assert_ne!(roots[0], roots[1]);
+        assert_eq!(
+            face_type_histogram(&restored, roots[0]),
+            face_type_histogram(&topo, second)
+        );
+        assert_eq!(
+            face_type_histogram(&restored, roots[1]),
+            face_type_histogram(&topo, first)
+        );
+        let volume = remus_operations::measure::solid_volume(&restored, roots[1], 0.01).unwrap();
+        assert!((volume - 6.0).abs() < 1e-9, "box volume {volume}");
+        let report = remus_operations::validate::validate_solid(&restored, roots[1]).unwrap();
+        assert!(
+            report.issues.is_empty(),
+            "restored box must validate: {:?}",
+            report.issues
+        );
+        // Re-serialization of the restored document is stable.
+        let rewritten = serialize_solids(&restored, &roots).unwrap();
+        assert_eq!(rewritten, once);
+
+        // Sheet and wire roots preserve class, order, and duplicates.
+        let mut sheet_topo = Topology::new();
+        let sheet = trimmed_nurbs_sheet(&mut sheet_topo);
+        let sheet_bytes = serialize_sheets(&sheet_topo, &[sheet, sheet]).unwrap();
+        assert_eq!(
+            sheet_bytes,
+            serialize_sheets(&sheet_topo, &[sheet, sheet]).unwrap()
+        );
+        let mut sheet_restored = Topology::new();
+        let sheets = deserialize_sheets(&sheet_bytes, &mut sheet_restored).unwrap();
+        assert_eq!(sheets.len(), 2);
+        assert_eq!(sheets[0], sheets[1]);
+
+        let mut wire_topo = Topology::new();
+        let wire = remus_topology::builder::make_regular_polygon_wire(&mut wire_topo, 2.0, 5, 1e-7)
+            .unwrap();
+        let wire_bytes = serialize_wires(&wire_topo, &[wire, wire]).unwrap();
+        assert_eq!(
+            wire_bytes,
+            serialize_wires(&wire_topo, &[wire, wire]).unwrap()
+        );
+        let mut wire_restored = Topology::new();
+        let wires = deserialize_wires(&wire_bytes, &mut wire_restored).unwrap();
+        assert_eq!(wires.len(), 2);
+        assert_eq!(wires[0], wires[1]);
+    }
+
+    #[test]
+    fn perf_i03_cavity_attributes_journal_and_shared_topology_roundtrip() {
+        // Cavity: a solid with an explicit inner (cavity) shell. The inner
+        // shell reuses an existing shell so the document exercises shared
+        // topology across the outer/inner boundary.
+        let mut topo = Topology::new();
+        let outer_solid = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+        let outer_shell = topo.solid(outer_solid).unwrap().outer_shell();
+        let cavity_solid = topo.add_solid(Solid::new(outer_shell, vec![outer_shell]));
+        // Attributes on a solid and on one of its faces.
+        let face = solid_faces(&topo, outer_solid).unwrap()[0];
+        topo.set_solid_attributes(
+            cavity_solid,
+            remus_topology::attributes::EntityAttributes {
+                name: Some("cavity".to_owned()),
+                color: None,
+            },
+        )
+        .unwrap();
+        topo.set_face_attributes(
+            face,
+            remus_topology::attributes::EntityAttributes {
+                name: Some("wall".to_owned()),
+                color: Some(remus_topology::attributes::ColorRgb::new(0.2, 0.4, 0.6).unwrap()),
+            },
+        )
+        .unwrap();
+
+        let bytes = serialize_solids(&topo, &[cavity_solid, outer_solid]).unwrap();
+        assert_eq!(
+            bytes,
+            serialize_solids(&topo, &[cavity_solid, outer_solid]).unwrap()
+        );
+        let mut restored = Topology::new();
+        let roots = deserialize_solids(&bytes, &mut restored).unwrap();
+        assert_eq!(roots.len(), 2);
+        let cavity = restored.solid(roots[0]).unwrap();
+        assert_eq!(cavity.inner_shells().len(), 1);
+        assert_eq!(cavity.outer_shell(), cavity.inner_shells()[0]);
+        let name = restored
+            .attributes()
+            .solid(roots[0])
+            .and_then(|a| a.name.clone())
+            .unwrap();
+        assert_eq!(name, "cavity");
+        // Journal and persistent references survive alongside the arena
+        // document (naming codec is unchanged; this pins the pairing).
+        let reference = remus_topology::naming::PersistentRef::operation_output(
+            remus_topology::journal::OpId::from_value(7),
+            remus_topology::journal::EntityKind::Face,
+            3,
+        );
+        let encoded = crate::naming_io::serialize_persistent_ref(&reference).unwrap();
+        assert_eq!(
+            crate::naming_io::deserialize_persistent_ref(&encoded).unwrap(),
+            reference
+        );
+    }
+
+    #[test]
+    fn perf_i03_serialize_limits_hit_boundaries_without_mutation() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 20.0, 30.0).unwrap();
+        let baseline = serialize_solid(&topo, solid).unwrap();
+        let total = document_total_entities(&baseline);
+        assert!(total > 2, "fixture must have headroom for below/at/above");
+        let counts_before = topology_counts(&topo);
+
+        // Entity budget: below refuses, at and above succeed with identical bytes.
+        let below_entities = ImportLimits {
+            max_input_bytes: baseline.len(),
+            max_model_entities: total - 1,
+            ..ImportLimits::default()
+        };
+        let error = serialize_solid_with_limits(&topo, solid, below_entities).unwrap_err();
+        assert!(
+            matches!(error, IoError::LimitExceeded { .. }),
+            "entity budget below must refuse: {error}"
+        );
+        assert_eq!(topology_counts(&topo), counts_before);
+
+        for limit in [total, total + 1] {
+            let limits = ImportLimits {
+                max_input_bytes: baseline.len(),
+                max_model_entities: limit,
+                ..ImportLimits::default()
+            };
+            let bytes = serialize_solid_with_limits(&topo, solid, limits).unwrap();
+            assert_eq!(bytes, baseline, "limit {limit} must preserve bytes");
+        }
+
+        // Byte budget: below refuses, at and above succeed with identical bytes.
+        let below_bytes = ImportLimits {
+            max_input_bytes: baseline.len() - 1,
+            ..ImportLimits::default()
+        };
+        let error = serialize_solid_with_limits(&topo, solid, below_bytes).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                IoError::LimitExceeded {
+                    resource: "arena document bytes",
+                    ..
+                }
+            ),
+            "byte budget below must refuse: {error}"
+        );
+        assert_eq!(topology_counts(&topo), counts_before);
+
+        for limit in [baseline.len(), baseline.len() + 1] {
+            let limits = ImportLimits {
+                max_input_bytes: limit,
+                ..ImportLimits::default()
+            };
+            let bytes = serialize_solid_with_limits(&topo, solid, limits).unwrap();
+            assert_eq!(bytes, baseline, "byte limit {limit} must preserve bytes");
+        }
+    }
+
+    #[test]
+    fn perf_i03_serialize_refusals_leave_source_untouched() {
+        // Out-of-range root: the foreign topology owns fewer solids than the
+        // requested index, so lookup fails before any gathering.
+        let mut source = Topology::new();
+        let _first = make_box(&mut source, 1.0, 1.0, 1.0).unwrap();
+        let second = make_box(&mut source, 2.0, 2.0, 2.0).unwrap();
+        let counts_before = topology_counts(&source);
+        let mut foreign = Topology::new();
+        foreign.add_empty_solid();
+        let foreign_counts = topology_counts(&foreign);
+
+        let error = serialize_solid(&foreign, second).unwrap_err();
+        assert_eq!(topology_counts(&source), counts_before);
+        assert_eq!(topology_counts(&foreign), foreign_counts);
+        // Repeated refusal is stable and still leaks no partial success.
+        let again = serialize_solid(&foreign, second).unwrap_err();
+        assert_eq!(error.to_string(), again.to_string());
+
+        // Body-class mismatch refuses without mutation.
+        let mut topo = Topology::new();
+        let boxed = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid_shell = topo.solid(boxed).unwrap().outer_shell();
+        let counts = topology_counts(&topo);
+        let error = serialize_sheet(&topo, solid_shell).unwrap_err();
+        assert!(error.to_string().contains("sheet root"));
+        assert_eq!(topology_counts(&topo), counts);
+
+        // Invalid embedded pcurve refuses without mutation.
+        let mut poisoned = Topology::new();
+        let cylinder = make_cylinder(&mut poisoned, 1.0, 2.0).unwrap();
+        let (face, seam) = cylinder_seam(&poisoned, cylinder);
+        let bad = Circle2D::new(Point2::new(0.0, 0.0), f64::NAN).unwrap();
+        poisoned
+            .set_pcurve_oriented(
+                seam,
+                face,
+                true,
+                PCurve::new(Curve2D::Circle(bad), 0.0, 1.0),
+            )
+            .unwrap();
+        let counts = topology_counts(&poisoned);
+        let error = serialize_solid(&poisoned, cylinder).unwrap_err();
+        assert!(error.to_string().contains("invalid definition"));
+        assert_eq!(topology_counts(&poisoned), counts);
     }
 }
