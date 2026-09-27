@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790483312357,
+  "lastUpdate": 1790485369557,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -71575,6 +71575,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 82055,
             "range": "± 781",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "300465f436c92ce4b22536b65ac2df10c96c9305",
+          "message": "feat(kernel): integrated geometry, journal, and performance slices with paired WASM (#749)\n\n* perf(sketch): reuse solver workspaces to cut per-iteration allocations (PERF-S03)\n\n* feat(operations): preserve edge and vertex history through grid patterns (B18)\n\n* fix(operations): satisfy grid-pattern clippy gate\n\n* fix(blend): build plane-cone rim fillet on the material side (B67)\n\n* perf(io): serialize arena documents through borrowed views (PERF-I03)\n\n* fix(math): report SSI transverse branches from null directions, not the bisector (B66)\n\nBranch confirmation uses the scale-invariant sign det(Q) < -1e-12·||Q||² on the orthonormal difference Q = Q1 - s·Q2 (C = I⁻¹B, s = sign(n1·n2)), invariant under parameter rescaling/reparameterization by D⁻¹ cancellation. Tangents are Q's null (asymptotic) directions with a continuity-aware choice in the marcher; isolated touches, rulings, and osculating overlaps keep the explicit None/empty contract. Un-ignores the B66 repro and adds six oracles (curvature sweep, reparameterization, scale/placement, non-branch, public coverage, budgets/cancel).\n\n* perf(heal): index shell-sewing endpoint candidate discovery (PERF-H02)\n\n* docs(roadmap): link PERF-H02 endpoint slice to PR 734\n\n* fix(heal): preserve sewing orientation precedence\n\n* build(wasm): refresh paired packages for integrated source",
+          "timestamp": "2026-09-26T21:56:50-07:00",
+          "tree_id": "976d9ab19f513fbd818a688c161bd5cab57f1c2b",
+          "url": "https://github.com/esaueng/remus/commit/300465f436c92ce4b22536b65ac2df10c96c9305"
+        },
+        "date": 1790485367658,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 744444,
+            "range": "± 3391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 809572,
+            "range": "± 2227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 16420,
+            "range": "± 131",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7711689,
+            "range": "± 29444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7696600,
+            "range": "± 37781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7451468,
+            "range": "± 231536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 682246,
+            "range": "± 15741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 11241290,
+            "range": "± 75113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 20311192,
+            "range": "± 443594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 31,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 139,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 99,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 456,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 133,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 198,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 184,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 317,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 622,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2163,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 39,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 338405,
+            "range": "± 24981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 5370550,
+            "range": "± 118209",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 100063,
+            "range": "± 486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 317360,
+            "range": "± 3672",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 41168,
+            "range": "± 794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 577027,
+            "range": "± 22740",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7203585,
+            "range": "± 37297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 482110,
+            "range": "± 3462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 672358,
+            "range": "± 66756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 59713,
+            "range": "± 393",
             "unit": "ns/iter"
           }
         ]
