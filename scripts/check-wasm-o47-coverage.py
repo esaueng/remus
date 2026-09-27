@@ -64,7 +64,7 @@ EXPORT_RE = re.compile(
     r'pub\s+(?:(?:async|unsafe)\s+)*fn\s+(?P<rust>\w+)\s*\((?P<params>[^)]*)\)'
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
-BATCH_OP_RE = re.compile(r'"(?P<op>[A-Za-z0-9_]+)"\s*=>')
+BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
 SOLID_ENVELOPE = "SolidOperationDetailedResult"
 
@@ -118,22 +118,89 @@ def own_attr_block(lines: list[str], index: int) -> str:
     return "\n".join(reversed(block))
 
 
-def wasm_impl_lines(lines: list[str]) -> set[int]:
-    """Line indices inside exported `BrepKernel` impls.
+def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
+    """Brace depth and comment-masked source lines, ignoring Rust literals."""
+    depths: list[int] = []
+    code_lines: list[str] = []
+    depth = block_depth = 0
+    quote = ""
+    raw_closer = ""
+    for line in lines:
+        depths.append(depth)
+        code = list(line)
+        cursor = 0
+        while cursor < len(line):
+            tail = line[cursor:]
+            if block_depth:
+                code[cursor] = " "
+                if tail.startswith("/*"):
+                    block_depth += 1
+                    cursor += 2
+                elif tail.startswith("*/"):
+                    block_depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+                continue
+            if raw_closer:
+                if tail.startswith(raw_closer):
+                    cursor += len(raw_closer)
+                    raw_closer = ""
+                else:
+                    code[cursor] = " "
+                    cursor += 1
+                continue
+            if quote:
+                if line[cursor] == "\\":
+                    cursor += 2
+                elif line[cursor] == quote:
+                    quote = ""
+                    cursor += 1
+                else:
+                    cursor += 1
+                continue
+            if tail.startswith("//"):
+                code[cursor:] = " " * (len(line) - cursor)
+                break
+            if tail.startswith("/*"):
+                block_depth = 1
+                cursor += 2
+                continue
+            raw = re.match(r'r(#+)?"', tail)
+            if raw:
+                raw_closer = '"' + (raw.group(1) or "")
+                cursor += len(raw.group())
+                continue
+            if line[cursor] == '"':
+                quote = '"'
+                cursor += 1
+                continue
+            char = re.match(r"'(?:\\u\{[^}]+\}|\\.|[^'\\])'", tail)
+            if char:
+                cursor += len(char.group())
+                continue
+            if line[cursor] == "{":
+                depth += 1
+            elif line[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        code_lines.append("".join(code))
+    return depths, code_lines
 
-    Rustfmt places the closing brace of a top-level impl in column zero.
-    Keep the impl scope separate from a method's own attributes: a method
-    without `js_name` still exports under its Rust name.
-    """
+
+def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
+    """Direct method lines inside exported `BrepKernel` impls."""
     result: set[int] = set()
     for index, line in enumerate(lines[:-1]):
         if line.strip() != "#[wasm_bindgen]":
             continue
-        if not re.match(r"^impl\s+BrepKernel\s*\{", lines[index + 1]):
+        if not re.match(r"^\s*impl\s+BrepKernel\s*\{", lines[index + 1]):
             continue
+        base_depth = depths[index + 1]
         cursor = index + 2
-        while cursor < len(lines) and lines[cursor] != "}":
-            result.add(cursor)
+        while cursor < len(lines) and depths[cursor] > base_depth:
+            if depths[cursor] == base_depth + 1:
+                result.add(cursor)
             cursor += 1
     return result
 
@@ -158,7 +225,8 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         rel = path.relative_to(root).as_posix()
-        exported_impl = wasm_impl_lines(lines)
+        depths, _ = rust_lines_with_depth(lines)
+        exported_impl = wasm_impl_lines(lines, depths)
         for index, line in enumerate(lines):
             match = re.match(r"\s*pub\s+(?:(?:async|unsafe)\s+)*fn\s+(\w+)", line)
             if not match:
@@ -187,9 +255,49 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
 
 
 def batch_ops(root: Path = WASM_SRC) -> set[str]:
-    """Every dispatch arm name in `bindings/batch.rs`."""
+    """Top-level `match op` arms in `dispatch_op`, excluding other matches."""
     text = (root / "bindings" / "batch.rs").read_text(encoding="utf-8")
-    return set(BATCH_OP_RE.findall(text))
+    lines = text.splitlines()
+    depths, code_lines = rust_lines_with_depth(lines)
+    dispatch = next(
+        (index for index, line in enumerate(lines) if re.match(r"^\s*fn dispatch_op\s*\(", line)),
+        None,
+    )
+    if dispatch is None:
+        raise ValueError("batch dispatch_op method is missing")
+    method_depth = depths[dispatch]
+    method_body = next(
+        (index for index in range(dispatch + 1, len(lines)) if depths[index] > method_depth),
+        None,
+    )
+    if method_body is None:
+        raise ValueError("batch dispatch_op body is missing")
+    method_end = next(
+        (index for index in range(method_body + 1, len(lines)) if depths[index] <= method_depth),
+        len(lines),
+    )
+    match_line = next(
+        (
+            index
+            for index in range(dispatch + 1, method_end)
+            if depths[index] == method_depth + 1
+            and re.match(r"^\s*match\s+op\s*\{", code_lines[index])
+        ),
+        None,
+    )
+    if match_line is None:
+        raise ValueError("batch dispatch_op match op is missing")
+    arm_depth = depths[match_line] + 1
+    match_end = next(
+        (index for index in range(match_line + 1, method_end) if depths[index] < arm_depth),
+        method_end,
+    )
+    return {
+        match.group("op")
+        for index in range(match_line + 1, match_end)
+        if depths[index] == arm_depth
+        and (match := BATCH_OP_RE.match(code_lines[index]))
+    }
 
 
 def witness_exists(name: str, root: Path = WASM_SRC) -> bool:

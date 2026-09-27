@@ -48,7 +48,7 @@ ASYNC_MUT_EXPORT = MUT_EXPORT.replace("pub fn", "pub async fn")
 
 BATCH_RS = """use wasm_bindgen::prelude::*;
 impl BrepKernel {{
-    pub fn dispatch(&mut self, op: &str) -> u32 {{
+    fn dispatch_op(&mut self, op: &str) -> u32 {{
         match op {{
             "{ops}" => 0,
             _ => 1,
@@ -448,6 +448,57 @@ class O47CoverageFixtures(unittest.TestCase):
         )
         _, _, _, unknown = run_gate(directory, [])
         self.assertEqual(unknown, [])
+
+    def test_indented_impl_with_braces_in_literal_fails_loudly(self):
+        directory = make_tree(
+            {
+                "bindings/operations.rs": (
+                    "mod feature {\n"
+                    "    #[wasm_bindgen]\n"
+                    "    impl BrepKernel {\n"
+                    "        #[wasm_bindgen(js_name = \"named\")]\n"
+                    "        pub fn named(&self) -> &'static str { \"}\" }\n"
+                    "        pub fn default_mutation(&mut self, solid: u32) -> u32 { solid }\n"
+                    "    }\n"
+                    "}\n"
+                ),
+                "bindings/batch.rs": BATCH_RS.format(ops="default_mutation"),
+            }
+        )
+        _, _, _, unknown = run_gate(directory, [])
+        self.assertEqual(len(unknown), 1)
+        self.assertIn("default_mutation", unknown[0])
+
+    def test_batch_arm_must_be_in_dispatch_op_match(self):
+        directory = make_tree(
+            {
+                "bindings/operations.rs": MUT_EXPORT.format(js="doThing", rust="do_thing")
+                + TWIN_EXPORT.format(js="doThingDetailed", rust="do_thing_detailed"),
+                "bindings/batch.rs": BATCH_RS.format(ops="otherOp").replace(
+                    "            _ => 1,",
+                    "            _ => {\n"
+                    "                match op {\n"
+                    "                    \"doThing\" => 0,\n"
+                    "                    _ => 1,\n"
+                    "                }\n"
+                    "            },",
+                )
+                + '\n// "doThing" => is no longer a dispatch arm\n'
+                + 'fn unrelated(value: &str) { match value { "doThing" => {}, _ => {} } }\n',
+                "witness.rs": WITNESS_RS.format(name="do_thing_witness"),
+            }
+        )
+        rows = [
+            covered_row("doThing", "do_thing", "doThingDetailed", ["doThing"], ["do_thing_witness"], "bindings/operations.rs"),
+            {
+                "js": "doThingDetailed", "rust": "do_thing_detailed",
+                "file": "bindings/operations.rs", "gate": "shipped",
+                "class": "special_case", "coverage": "special", "owner": "O4.7",
+                "reason": "typed twin",
+            },
+        ]
+        violations, _, _, _ = run_gate(directory, rows)
+        self.assertTrue(any("batch dispatch" in item for item in violations), violations)
 
     def test_repo_tree_passes(self):
         root = REPO / "crates" / "wasm" / "src"
