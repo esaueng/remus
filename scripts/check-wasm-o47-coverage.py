@@ -167,9 +167,16 @@ def file_gate(root: Path, rel: str) -> str:
             depths, _ = rust_lines_with_depth(lines)
             gates.append(attribute_gate(inner_file_attrs(lines)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
+            module_item = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\b")
             for line_index, line in enumerate(lines):
-                if depths[line_index] == 0 and declaration.match(line):
+                if depths[line_index] != 0:
+                    continue
+                if declaration.match(line):
                     gates.append(attribute_gate(own_attr_block(lines, line_index, depths)))
+                elif module_item.match(line):
+                    # This file layout requires following declarations inside
+                    # the inline module. Until then, refuse coverage claims.
+                    return "conditional"
         prefix = root.joinpath(*parts[:index + 1])
         parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
     if parent.is_file():
@@ -194,25 +201,25 @@ def export_gate(lines: list[str], depths: list[int], index: int, rel: str, paren
     )
 
 
-def arm_gate(lines: list[str], index: int) -> str:
+def arm_gate(code_lines: list[str], index: int) -> str:
     """Availability of one batch match arm from its adjacent cfg attributes."""
     blocks: list[str] = []
     cursor = index - 1
     while cursor >= 0:
-        stripped = lines[cursor].strip()
+        stripped = code_lines[cursor].strip()
         if not stripped or stripped.startswith("//"):
             cursor -= 1
             continue
         if not re.search(r"\]\s*(?://.*)?$", stripped):
             break
         end = cursor
-        while cursor >= 0 and not lines[cursor].lstrip().startswith("#["):
-            if re.search(r"=>|[{};]", lines[cursor]):
+        while cursor >= 0 and not code_lines[cursor].lstrip().startswith("#["):
+            if re.search(r"=>|[{};]", code_lines[cursor]):
                 return attribute_gate("\n".join(reversed(blocks)))
             cursor -= 1
         if cursor < 0:
             break
-        blocks.append("\n".join(lines[cursor : end + 1]))
+        blocks.append("\n".join(code_lines[cursor : end + 1]))
         cursor -= 1
     return attribute_gate("\n".join(reversed(blocks)))
 
@@ -233,9 +240,11 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
             if block_depth:
                 code[cursor] = " "
                 if tail.startswith("/*"):
+                    code[cursor : cursor + 2] = "  "
                     block_depth += 1
                     cursor += 2
                 elif tail.startswith("*/"):
+                    code[cursor : cursor + 2] = "  "
                     block_depth -= 1
                     cursor += 2
                 else:
@@ -262,6 +271,7 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
                 code[cursor:] = " " * (len(line) - cursor)
                 break
             if tail.startswith("/*"):
+                code[cursor : cursor + 2] = "  "
                 block_depth = 1
                 cursor += 2
                 continue
@@ -400,7 +410,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
         if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
             continue
         op = match.group("op")
-        gate = combine_gates(dispatch_gate, arm_gate(lines, index))
+        gate = combine_gates(dispatch_gate, arm_gate(code_lines, index))
         if op not in result or gate == "shipped":
             result[op] = gate
     return result

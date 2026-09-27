@@ -473,6 +473,44 @@ class O47CoverageFixtures(unittest.TestCase):
             violations,
         )
 
+    def test_block_comment_keeps_batch_arm_cfg_attached(self):
+        for decorated in (
+            '#[cfg(feature = "io")]\n            /* note */',
+            '#[cfg(feature = "io")]\n            /* note\n               continued */',
+            '#[cfg(feature = "io")] /* note */',
+        ):
+            with self.subTest(decorated=decorated):
+                directory = make_tree(
+                    {
+                        "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                        + TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed"),
+                        "bindings/batch.rs": BATCH_RS.format(ops="fuse").replace(
+                            '            "fuse" =>',
+                            f'            {decorated}\n            "fuse" =>',
+                        ),
+                        "witness.rs": WITNESS_RS.format(name="fuse_success"),
+                    }
+                )
+                root = directory / "crates/wasm/src"
+                self.assertEqual(gate.batch_ops(root)["fuse"], "io")
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row("fuse", "fuse", "fuseDetailed", ["fuse"],
+                                    ["fuse_success"]),
+                        {
+                            "js": "fuseDetailed", "rust": "fuse_detailed",
+                            "file": "bindings/booleans.rs", "gate": "shipped",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "typed twin",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("arm is only available under 'io'" in item for item in violations),
+                    violations,
+                )
+
     def test_out_of_line_module_gate_cannot_cover_shipped_legacy_export(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
         for placement, module_source, twin_source in (
@@ -510,6 +548,42 @@ class O47CoverageFixtures(unittest.TestCase):
                     any("only available under 'io'" in item for item in violations),
                     violations,
                 )
+
+    def test_inline_parent_module_layout_fails_closed(self):
+        directory = make_tree(
+            {
+                "lib.rs": (
+                    "mod bindings;\nmod parent {\n"
+                    '    #[cfg(feature = "io")]\n    mod optional;\n}\n'
+                ),
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse"),
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "parent/optional.rs": TWIN_EXPORT.format(
+                    js="fuseDetailed", rust="fuse_detailed"
+                ),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        root = directory / "crates/wasm/src"
+        exports = gate.discover_from_files(root)
+        self.assertEqual(next(e for e in exports if e["js"] == "fuseDetailed")["gate"], "conditional")
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row("fuse", "fuse", "fuseDetailed", ["fuse"],
+                            ["fuse_success"], "parent/optional.rs"),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "parent/optional.rs", "gate": "conditional",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("only available under 'conditional'" in item for item in violations),
+            violations,
+        )
 
     def test_dispatch_parent_gate_cannot_cover_shipped_legacy_export(self):
         batch = BATCH_RS.format(ops="fuse")
