@@ -435,16 +435,13 @@ def mask_rust_literals(source: str) -> str:
     return "".join(masked)
 
 
-def macro_body_contains(code_lines: list[str], index: int) -> bool:
-    """Whether an export is textually inside any macro_rules token tree."""
-    source = mask_rust_literals("\n".join(code_lines))
-    line = code_lines[index]
-    method = re.search(r"\bpub\s+(?:(?:async|unsafe)\s+)*fn\b", line)
-    target = sum(len(item) + 1 for item in code_lines[:index])
-    target += method.start() if method else 0
+@lru_cache(maxsize=64)
+def macro_token_ranges(source: str) -> tuple[tuple[int, int], ...]:
+    """Token-tree spans for macro definitions and invocations."""
+    ranges: list[tuple[int, int]] = []
     closers = {"{": "}", "(": ")", "[": "]"}
     for macro in re.finditer(
-        r"^[ \t]*macro_rules\s*!\s*(?:r#)?[^\s{(\[]+(?=\s*[{(\[])",
+        r"^[ \t]*[^\s!{(\[]+\s*!\s*(?:[^\s{(\[]+\s*)?(?=[{(\[])",
         source,
         re.MULTILINE,
     ):
@@ -462,14 +459,22 @@ def macro_body_contains(code_lines: list[str], index: int) -> bool:
             elif stack and token == stack[-1]:
                 stack.pop()
                 if not stack:
-                    if opener < target < cursor:
-                        return True
+                    ranges.append((opener, cursor))
                     break
             cursor += 1
         else:
-            if opener < target:
-                return True
-    return False
+            ranges.append((opener, len(source)))
+    return tuple(ranges)
+
+
+def macro_body_contains(code_lines: list[str], index: int) -> bool:
+    """Whether an export is textually inside a macro definition or invocation."""
+    source = mask_rust_literals("\n".join(code_lines))
+    line = code_lines[index]
+    method = re.search(r"\bpub\s+(?:(?:async|unsafe)\s+)*fn\b", line)
+    target = sum(len(item) + 1 for item in code_lines[:index])
+    target += method.start() if method else 0
+    return any(start < target < end for start, end in macro_token_ranges(source))
 
 
 def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
