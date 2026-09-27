@@ -399,6 +399,12 @@ def verify(
                     f"non-solid methods must not be forced into a "
                     f"solid-result schema"
                 )
+            if twin_hit is not None and twin_hit["gate"] != by_js_source.get(js, {}).get("gate"):
+                violations.append(
+                    f"VIOLATION: {js} is available under "
+                    f"{by_js_source.get(js, {}).get('gate')!r}, but twin {twin} "
+                    f"is only available under {twin_hit['gate']!r}"
+                )
             if row.get("schema") != "solid_envelope":
                 violations.append(
                     f"VIOLATION: {js} is covered but schema is "

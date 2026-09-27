@@ -27,6 +27,8 @@ For `covered` rows the gate additionally enforces:
 
 * the twin returns `Result<tsify::Ts<SolidOperationDetailedResult>, JsError>`
   (the solid envelope);
+* the twin is available under the same shipped/optional-I/O feature gate
+  as the legacy export;
 * the legacy method itself returns `Result<u32, JsError>` (one solid
   handle) -- a `Vec<u32>`, `()`, or JSON-string method can never be `covered` with the solid
   envelope. Non-solid and lifecycle methods need their own schema, never

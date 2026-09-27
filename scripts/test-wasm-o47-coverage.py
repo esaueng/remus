@@ -338,6 +338,37 @@ class O47CoverageFixtures(unittest.TestCase):
             any("fuseDetailed" in v for v in violations), violations
         )
 
+    def test_optional_io_twin_cannot_cover_shipped_legacy_export(self):
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse"),
+                "bindings/io.rs": TWIN_EXPORT.format(
+                    js="fuseDetailed", rust="fuse_detailed"
+                ),
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row(
+                    "fuse", "fuse", "fuseDetailed", ["fuse"],
+                    ["fuse_success"], "bindings/io.rs",
+                ),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "bindings/io.rs", "gate": "io",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("only available under 'io'" in item for item in violations),
+            violations,
+        )
+
     def test_non_solid_forced_into_solid_schema_fails(self):
         for return_type in ("Result<Vec<u32>, JsError>", "Result<String, JsError>", "Result<(), JsError>"):
             with self.subTest(return_type=return_type):
