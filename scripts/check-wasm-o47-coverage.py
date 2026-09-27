@@ -362,7 +362,11 @@ def macro_body_contains(code_lines: list[str], index: int) -> bool:
     target = sum(len(item) + 1 for item in code_lines[:index])
     target += method.start() if method else 0
     closers = {"{": "}", "(": ")", "[": "]"}
-    for macro in re.finditer(r"^\s*macro_rules!\s*\w+\b", source, re.MULTILINE):
+    for macro in re.finditer(
+        r"^[ \t]*macro_rules\s*!\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*\b",
+        source,
+        re.MULTILINE,
+    ):
         cursor = macro.end()
         while cursor < len(source) and source[cursor].isspace():
             cursor += 1
