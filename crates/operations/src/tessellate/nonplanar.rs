@@ -1182,6 +1182,74 @@ fn collect_torus_phi_ring(
     Ok(Some((ring, winding)))
 }
 
+/// Tube angles where a notch-band boundary's ring angle turns around: local
+/// extrema of its v-sorted `(v, u)` table with a sustained run on both sides,
+/// so single-sample projection noise cannot nominate a fold. Only folds that
+/// persist over several samples can be spanned by a uniform interior column.
+fn table_u_fold_vs(table: &[(f64, f64)]) -> Vec<f64> {
+    const RUN: usize = 3;
+    const PROM: f64 = 1e-4;
+    let n = table.len();
+    if n < 7 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for i in 0..n {
+        let cur = table[i].1;
+        // Sustained monotone runs on both sides (periodic indices).
+        let mut down0 = true;
+        let mut up0 = true;
+        let mut down1 = true;
+        let mut up1 = true;
+        for k in 1..=RUN {
+            let a = table[(i + n - k) % n].1;
+            let b = table[(i + n - k + 1) % n].1;
+            if b <= a {
+                up0 = false;
+            }
+            if b >= a {
+                down0 = false;
+            }
+            let c = table[(i + k - 1) % n].1;
+            let d = table[(i + k) % n].1;
+            if d <= c {
+                up1 = false;
+            }
+            if d >= c {
+                down1 = false;
+            }
+        }
+        let is_max = up0 && down1;
+        let is_min = down0 && up1;
+        if !(is_max || is_min) {
+            continue;
+        }
+        let prom = if is_max {
+            let lo = (1..=RUN)
+                .map(|k| table[(i + n - k) % n].1.min(table[(i + k) % n].1))
+                .fold(f64::INFINITY, f64::min);
+            cur - lo
+        } else {
+            let hi = (1..=RUN)
+                .map(|k| table[(i + n - k) % n].1.max(table[(i + k) % n].1))
+                .fold(f64::NEG_INFINITY, f64::max);
+            hi - cur
+        };
+        if prom > PROM {
+            out.push(table[i].0);
+        }
+    }
+    // One column per corner: merge detections within 0.02 rad of tube angle.
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<f64> = Vec::with_capacity(out.len());
+    for v in out {
+        if merged.last().is_none_or(|&last| (v - last).abs() > 0.02) {
+            merged.push(v);
+        }
+    }
+    merged
+}
+
 /// Tessellate a `torus ± box`-style notch band: a toroidal patch that
 /// WRAPS the tube angle `v` fully and is bounded by TWO `v`-wrapping seam-arc
 /// loops at the two ends of a ring-angle (`u`) span (the box notch's `±y` walls).
@@ -1309,7 +1377,23 @@ pub(super) fn tessellate_torus_notch_band(
             .max(8);
     #[allow(clippy::cast_precision_loss)]
     let row_v = |j: usize| TAU * (j as f64) / (n_v as f64);
-    let deltas: Vec<f64> = (0..n_v).map(|j| delta(row_v(j))).collect();
+    // B70: a loop crossing a box edge turns around in ring angle, so its
+    // `u(v)` table has a fold (local extremum) at the corner. A uniform-v
+    // interior row straddling the fold fans one apex across the whole corner;
+    // those fan triangles overlap the neighbour wall's side of the shared
+    // edge and reuse its directed edge instead of opposing it (an index-open
+    // mesh whose welded positions still agree). Break the interior sampling
+    // at every significant fold so no fan spans one.
+    let mut col_v: Vec<f64> = (0..n_v).map(row_v).collect();
+    for table in [&table_a, &table_b] {
+        for fv in table_u_fold_vs(table) {
+            if col_v.iter().all(|&v| (v - fv).abs() > 1e-9) {
+                col_v.push(fv);
+            }
+        }
+    }
+    col_v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let deltas: Vec<f64> = col_v.iter().map(|&v| delta(v)).collect();
     // Loops touching (or crossing) in u bound no band here: defer.
     if deltas
         .iter()
@@ -1328,7 +1412,8 @@ pub(super) fn tessellate_torus_notch_band(
     // Same work bound the CDT interior path applies. A band mesher declines
     // rather than erroring: the caller then routes the face to a path that
     // carries the bound itself, instead of the whole tessellation failing.
-    if validate_interior_grid_size(n_u, n_v).is_err() {
+    let n_v_cols = col_v.len();
+    if !torus_band_within_grid_limit(n_u, n_v_cols) {
         return Ok(false);
     }
 
@@ -1338,9 +1423,8 @@ pub(super) fn tessellate_torus_notch_band(
                      merged: &mut TriangleMesh,
                      point_to_global: &mut DetHashMap<(i64, i64, i64), u32>|
      -> LatRing {
-        let mut row: LatRing = Vec::with_capacity(n_v);
-        for (j, d) in deltas.iter().enumerate() {
-            let v = row_v(j);
+        let mut row: LatRing = Vec::with_capacity(n_v_cols);
+        for (&v, &d) in col_v.iter().zip(deltas.iter()) {
             let u = (u_at(&table_a, v) + s * d).rem_euclid(TAU);
             let p = torus.evaluate(u, v);
             let key = point_merge_key(p, MERGE_GRID);
@@ -3484,6 +3568,13 @@ pub(super) fn validate_interior_grid_size(
         });
     }
     Ok(())
+}
+
+fn torus_band_within_grid_limit(n_u: usize, n_v_cols: usize) -> bool {
+    // Each of the n_u - 1 interior rows emits n_v_cols fresh vertices.
+    n_v_cols
+        .checked_add(1)
+        .is_some_and(|columns| validate_interior_grid_size(n_u, columns).is_ok())
 }
 
 fn validate_stepped_rim_level_count(
@@ -5715,8 +5806,8 @@ mod interior_grid_limit_tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{
-        MAX_INTERIOR_GRID_POINTS, validate_interior_grid_size, validate_interior_polygon_work,
-        validate_stepped_rim_level_count,
+        MAX_INTERIOR_GRID_POINTS, torus_band_within_grid_limit, validate_interior_grid_size,
+        validate_interior_polygon_work, validate_stepped_rim_level_count,
     };
 
     #[test]
@@ -5737,6 +5828,13 @@ mod interior_grid_limit_tests {
     #[test]
     fn rejects_grid_size_overflow() {
         assert!(validate_interior_grid_size(usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn torus_band_caps_emitted_vertices_after_fold_columns() {
+        assert!(torus_band_within_grid_limit(1_001, 1_000));
+        assert!(!torus_band_within_grid_limit(1_001, 1_001));
+        assert!(!torus_band_within_grid_limit(2, usize::MAX));
     }
 
     #[test]
