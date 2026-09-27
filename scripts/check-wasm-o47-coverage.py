@@ -65,11 +65,7 @@ EXPORT_RE = re.compile(
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
 BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
-CFG_IO_RE = re.compile(r'^\s*#\[cfg\([^]]*\bfeature\s*=\s*"io"', re.DOTALL | re.MULTILINE)
-CFG_NOT_IO_RE = re.compile(
-    r'^\s*#\[cfg\(\s*not\s*\(\s*feature\s*=\s*"io"\s*\)\s*\)\s*\]$',
-    re.MULTILINE,
-)
+CFG_ATTR_RE = re.compile(r'^\s*#\[\s*(cfg|cfg_attr)\s*\(([^]]*)\)\s*\]', re.MULTILINE)
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
 SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
 SOLID_HANDLE = "Result<u32, JsError>"
@@ -83,7 +79,7 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
         lines = text.splitlines()
         depths, _ = rust_lines_with_depth(lines)
         rel = path.relative_to(root).as_posix()
-        parent_io_gate = file_io_gate(root, rel)
+        parent_gate = file_gate(root, rel)
         for match in EXPORT_RE.finditer(text):
             js = match.group("js")
             rust = match.group("rust")
@@ -95,7 +91,7 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
                 else ("imm" if "&self" in params else "static")
             )
             fn_index = text.count("\n", 0, match.start("rust"))
-            gate = export_gate(lines, depths, fn_index, rel, parent_io_gate)
+            gate = export_gate(lines, depths, fn_index, rel, parent_gate)
             exports.append(
                 {
                     "js": js,
@@ -122,8 +118,24 @@ def own_attr_block(lines: list[str], index: int, depths: list[int]) -> str:
     return "\n".join(reversed(block))
 
 
-def has_io_cfg(attributes: str) -> bool:
-    return bool(CFG_IO_RE.search(CFG_NOT_IO_RE.sub("", attributes)))
+def combine_gates(*gates: str) -> str:
+    if "conditional" in gates:
+        return "conditional"
+    return "io" if "io" in gates else "shipped"
+
+
+def attribute_gate(attributes: str) -> str:
+    """Conservatively classify cfgs for the shipped no-feature build."""
+    gates: list[str] = []
+    for match in CFG_ATTR_RE.finditer(attributes):
+        expr = re.sub(r"\s+", "", match.group(2))
+        if match.group(1) == "cfg" and expr == 'feature="io"':
+            gates.append("io")
+        elif match.group(1) == "cfg" and expr == 'not(feature="io")':
+            gates.append("shipped")
+        else:
+            gates.append("conditional")
+    return combine_gates(*gates)
 
 
 def inner_file_attrs(lines: list[str]) -> str:
@@ -142,36 +154,32 @@ def inner_file_attrs(lines: list[str]) -> str:
     return "\n".join(attrs)
 
 
-def file_io_gate(root: Path, rel: str) -> bool:
+def file_gate(root: Path, rel: str) -> str:
     """Follow out-of-line module declarations and crate/file attributes."""
     parts = list(Path(rel).with_suffix("").parts)
     if parts[-1] == "mod":
         parts.pop()
     parent = root / "lib.rs"
+    gates: list[str] = []
     for index, name in enumerate(parts):
         if parent.is_file():
             lines = parent.read_text(encoding="utf-8").splitlines()
             depths, _ = rust_lines_with_depth(lines)
-            if has_io_cfg(inner_file_attrs(lines)):
-                return True
+            gates.append(attribute_gate(inner_file_attrs(lines)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
             for line_index, line in enumerate(lines):
                 if depths[line_index] == 0 and declaration.match(line):
-                    if has_io_cfg(own_attr_block(lines, line_index, depths)):
-                        return True
+                    gates.append(attribute_gate(own_attr_block(lines, line_index, depths)))
         prefix = root.joinpath(*parts[:index + 1])
         parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
     if parent.is_file():
         lines = parent.read_text(encoding="utf-8").splitlines()
-        if has_io_cfg(inner_file_attrs(lines)):
-            return True
-    return False
+        gates.append(attribute_gate(inner_file_attrs(lines)))
+    return combine_gates(*gates)
 
 
-def export_gate(lines: list[str], depths: list[int], index: int, rel: str, parent_io_gate: bool) -> str:
+def export_gate(lines: list[str], depths: list[int], index: int, rel: str, parent_gate: str) -> str:
     """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
-    if rel.startswith("bindings/io") or parent_io_gate:
-        return "io"
     attributes = [own_attr_block(lines, index, depths)]
     for ancestor in range(index):
         if not re.match(r"^\s*(?:pub\s+)?(?:impl|mod)\b.*\{", lines[ancestor]):
@@ -180,10 +188,10 @@ def export_gate(lines: list[str], depths: list[int], index: int, rel: str, paren
             continue
         if all(depths[child] > depths[ancestor] for child in range(ancestor + 1, index + 1)):
             attributes.append(own_attr_block(lines, ancestor, depths))
-    for block in attributes:
-        if has_io_cfg(block):
-            return "io"
-    return "shipped"
+    return combine_gates(
+        "io" if rel.startswith("bindings/io") else parent_gate,
+        *(attribute_gate(block) for block in attributes),
+    )
 
 
 def arm_gate(lines: list[str], index: int) -> str:
@@ -197,7 +205,7 @@ def arm_gate(lines: list[str], index: int) -> str:
         block.append(lines[cursor])
         cursor -= 1
     attrs = "\n".join(block)
-    return "io" if CFG_IO_RE.search(CFG_NOT_IO_RE.sub("", attrs)) else "shipped"
+    return attribute_gate(attrs)
 
 
 def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
@@ -349,7 +357,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
         raise ValueError("batch dispatch_op method is missing")
     dispatch_gate = export_gate(
         lines, depths, dispatch, "bindings/batch.rs",
-        file_io_gate(root, "bindings/batch.rs"),
+        file_gate(root, "bindings/batch.rs"),
     )
     method_depth = depths[dispatch]
     method_body = next(
@@ -383,7 +391,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
         if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
             continue
         op = match.group("op")
-        gate = "io" if dispatch_gate == "io" else arm_gate(lines, index)
+        gate = combine_gates(dispatch_gate, arm_gate(lines, index))
         if op not in result or gate == "shipped":
             result[op] = gate
     return result
@@ -471,6 +479,11 @@ def verify(
         status = row.get("coverage")
         if status == "covered":
             covered += 1
+            if by_js_source.get(js, {}).get("gate") == "conditional":
+                violations.append(
+                    f"VIOLATION: {js} claims coverage under an unknown feature gate; "
+                    f"qualify its shipped availability before marking it covered"
+                )
             twin = row.get("twin", "")
             twin_hit = next(
                 (e for e in exports if e["js"] == twin), None
