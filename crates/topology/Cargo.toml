@@ -5,7 +5,7 @@ license.workspace = true
 name = "remus-topology"
 repository.workspace = true
 rust-version.workspace = true
-version = "0.1.0"
+version = "2026.1.0"
 
 [dependencies]
 remus-math.workspace = true

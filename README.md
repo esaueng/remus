@@ -345,8 +345,12 @@ Until packages exist, build from source.
 remus = { git = "https://github.com/esaueng/remus" }
 ```
 
-Pin a revision (`rev = "..."`) for anything you intend to reproduce: nothing
-is versioned or published yet, so `main` moves.
+Pin a revision (`rev = "..."`) for anything you intend to reproduce: no
+first-party package has been published yet, and `main` moves.
+
+The [Remus versioning policy](docs/VERSIONING.md) defines the
+`YYYY.RELEASE.PATCH` numbers in source manifests and future releases. A version
+in this repository does not imply that an artifact has been published.
 
 ### Building from source
 

@@ -1,5 +1,8 @@
 # Changelog
 
+Remus package numbering starts at `2026.1.0`. Earlier `2.130.x` entries are
+retained as historical records. See [Remus versioning](../../docs/VERSIONING.md).
+
 ## Unreleased
 
 ### ⚠ BREAKING CHANGES
