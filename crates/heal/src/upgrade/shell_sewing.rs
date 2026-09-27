@@ -320,10 +320,8 @@ fn plan_merges_all_pairs(
                 curve_checks += 1;
                 if curves_agree(topo, &free[i], &free[j], false, tolerance)? {
                     candidates.push((j, false));
-                    continue;
                 }
-            }
-            if rev_ok {
+            } else if rev_ok {
                 curve_checks += 1;
                 if curves_agree(topo, &free[i], &free[j], true, tolerance)? {
                     candidates.push((j, true));
@@ -435,10 +433,8 @@ fn plan_merges_indexed(
                 curve_checks += 1;
                 if curves_agree(topo, &free[i], &free[j], false, tolerance)? {
                     candidates.push((j, false));
-                    continue;
                 }
-            }
-            if rev_ok {
+            } else if rev_ok {
                 curve_checks += 1;
                 if curves_agree(topo, &free[i], &free[j], true, tolerance)? {
                     candidates.push((j, true));
@@ -1842,6 +1838,29 @@ mod tests {
         // Whatever the winding decides (merge or decline), the index must not
         // invent a second opinion.
         assert!(indexed.endpoint_checks <= reference.endpoint_checks.max(1));
+    }
+
+    #[test]
+    fn closed_reversed_curve_retains_legacy_forward_precedence() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let reverse = circle.reversed();
+        let seam = circle.evaluate(0.0);
+        assert_eq!(seam, reverse.evaluate(0.0));
+        let a = topo.add_vertex(Vertex::new(seam, TOL));
+        let b = topo.add_vertex(Vertex::new(seam, TOL));
+        let rim0 = circle_edge(&mut topo, a, a, circle);
+        let rim1 = circle_edge(&mut topo, b, b, reverse);
+        let free = free_snapshot(&topo, &[rim0, rim1]);
+        let (forward, reversed) = endpoints_coincide(&free[0], &free[1], 1e-12);
+        assert!(forward && reversed);
+        assert!(!curves_agree(&topo, &free[0], &free[1], false, 1e-6).unwrap());
+        assert!(curves_agree(&topo, &free[0], &free[1], true, 1e-6).unwrap());
+
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert!(outcome.plans.is_empty());
+        assert_eq!(outcome.declined, 1);
     }
 
     #[test]
