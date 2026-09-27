@@ -526,6 +526,63 @@ class O47CoverageFixtures(unittest.TestCase):
                     violations,
                 )
 
+    def test_other_feature_cannot_cover_shipped_legacy_export(self):
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
+        for placement in ("twin", "batch_arm"):
+            with self.subTest(placement=placement):
+                gated_twin = twin.replace(
+                    '    #[wasm_bindgen(js_name',
+                    '    #[cfg(feature = "workflow-probes")]\n    #[wasm_bindgen(js_name',
+                ) if placement == "twin" else twin
+                batch = BATCH_RS.format(ops="fuse")
+                if placement == "batch_arm":
+                    batch = batch.replace(
+                        '            "fuse" =>',
+                        '            #[cfg(feature = "workflow-probes")]\n            "fuse" =>',
+                    )
+                directory = make_tree(
+                    {
+                        "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                        + gated_twin,
+                        "bindings/batch.rs": batch,
+                        "witness.rs": WITNESS_RS.format(name="fuse_success"),
+                    }
+                )
+                root = directory / "crates/wasm/src"
+                if placement == "twin":
+                    exports = gate.discover_from_files(root)
+                    self.assertEqual(
+                        next(e for e in exports if e["js"] == "fuseDetailed")["gate"],
+                        "conditional",
+                    )
+                else:
+                    self.assertEqual(gate.batch_ops(root)["fuse"], "conditional")
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row("fuse", "fuse", "fuseDetailed", ["fuse"],
+                                    ["fuse_success"]),
+                        {
+                            "js": "fuseDetailed", "rust": "fuse_detailed",
+                            "file": "bindings/booleans.rs",
+                            "gate": "conditional" if placement == "twin" else "shipped",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "typed twin",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("only available under 'conditional'" in item for item in violations),
+                    violations,
+                )
+
+    def test_unknown_feature_predicates_fail_closed(self):
+        self.assertEqual(
+            gate.attribute_gate('#[cfg(any(feature = "io", feature = "workflow-probes"))]'),
+            "conditional",
+        )
+        self.assertEqual(gate.attribute_gate('#[cfg(not(feature = "io"))]'), "shipped")
+
     def test_negated_io_cfg_and_doc_example_stay_shipped(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
             '    #[wasm_bindgen(js_name',
