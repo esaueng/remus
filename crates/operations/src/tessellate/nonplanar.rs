@@ -1413,7 +1413,7 @@ pub(super) fn tessellate_torus_notch_band(
     // rather than erroring: the caller then routes the face to a path that
     // carries the bound itself, instead of the whole tessellation failing.
     let n_v_cols = col_v.len();
-    if validate_interior_grid_size(n_u, n_v_cols).is_err() {
+    if !torus_band_within_grid_limit(n_u, n_v_cols) {
         return Ok(false);
     }
 
@@ -3568,6 +3568,13 @@ pub(super) fn validate_interior_grid_size(
         });
     }
     Ok(())
+}
+
+fn torus_band_within_grid_limit(n_u: usize, n_v_cols: usize) -> bool {
+    // Each of the n_u - 1 interior rows emits n_v_cols fresh vertices.
+    n_v_cols
+        .checked_add(1)
+        .is_some_and(|columns| validate_interior_grid_size(n_u, columns).is_ok())
 }
 
 fn validate_stepped_rim_level_count(
@@ -5799,8 +5806,8 @@ mod interior_grid_limit_tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{
-        MAX_INTERIOR_GRID_POINTS, validate_interior_grid_size, validate_interior_polygon_work,
-        validate_stepped_rim_level_count,
+        MAX_INTERIOR_GRID_POINTS, torus_band_within_grid_limit, validate_interior_grid_size,
+        validate_interior_polygon_work, validate_stepped_rim_level_count,
     };
 
     #[test]
@@ -5821,6 +5828,13 @@ mod interior_grid_limit_tests {
     #[test]
     fn rejects_grid_size_overflow() {
         assert!(validate_interior_grid_size(usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn torus_band_caps_emitted_vertices_after_fold_columns() {
+        assert!(torus_band_within_grid_limit(1_001, 1_000));
+        assert!(!torus_band_within_grid_limit(1_001, 1_001));
+        assert!(!torus_band_within_grid_limit(2, usize::MAX));
     }
 
     #[test]
