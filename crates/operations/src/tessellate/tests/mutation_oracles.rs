@@ -647,20 +647,76 @@ fn ellipse_trimmed_wall_stays_within_the_chord_bound_at_capped_rows() {
 
 /// Ready-repro (B70): the torus notch with the box turned 25° or 30° about x
 /// (its corners now cut the tube too) is an exact, valid B-Rep whose mesh
-/// is closed at 0.1 and 0.02 but opens at 0.005 (5 and 15 boundary edges),
-/// while its volume converges on the quadrature value. Exit: this passes.
+/// was closed at 0.1 and 0.02 but opened at fine deflection (6 boundary edges
+/// at 0.01 for 25°, 5 at 0.005; 15 at 0.005 for 30°), while its volume
+/// converged on the quadrature value. Root: the notch band's boundary loops
+/// turn around in ring angle at the box corners (a `u(v)` fold), and the
+/// uniform-v interior rows straddling a fold fanned one apex across the whole
+/// corner; those fan triangles overlapped the neighbour wall's side of the
+/// shared edge and reused its directed edge instead of opposing it. Interior
+/// columns now break at every significant table fold. Exit: this passes.
 #[test]
-#[ignore = "open: B70 — steeply turned torus notch meshes open at fine deflection"]
 fn steep_torus_notch_meshes_closed_at_fine_deflection() {
+    use crate::tessellate::welded_mesh_quality;
+
+    let check = |topo: &Topology,
+                 solid: remus_topology::solid::SolidId,
+                 exact: f64,
+                 what: &str,
+                 deflection: f64| {
+        let (mesh, faces) = closed_mesh_by_face(topo, solid, deflection);
+        let wq = welded_mesh_quality(&mesh);
+        assert_eq!(
+            (wq.boundary_edges, wq.non_manifold_edges),
+            (0, 0),
+            "{what}: position-welded mesh open at deflection {deflection}"
+        );
+        assert_faces_follow_their_carriers(&faces, deflection, what);
+        assert_volume_within_chord_bound(&mesh, exact, deflection, what);
+    };
     for degrees in [25.0_f64, 30.0] {
         let tilt = degrees.to_radians();
         let exact = tilted_torus_notch_exact_volume(tilt);
         let mut topo = Topology::new();
         let solid = torus_box_notch(&mut topo, tilt);
-        for deflection in [0.02, 0.01, 0.005] {
-            let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
-            assert_faces_follow_their_carriers(&faces, deflection, "steep torus notch");
-            assert_volume_within_chord_bound(&mesh, exact, deflection, "steep torus notch");
+        for deflection in [0.1, 0.02, 0.01, 0.005] {
+            let what = format!("steep torus notch {degrees}°");
+            check(&topo, solid, exact, &what, deflection);
+        }
+    }
+    // A rigid motion of the built body exercises placed carrier frames and
+    // weld-scale numerics far from the origin over the same solid; the exact
+    // volume is unchanged.
+    for degrees in [25.0_f64, 30.0] {
+        let tilt = degrees.to_radians();
+        let exact = tilted_torus_notch_exact_volume(tilt);
+        let mut topo = Topology::new();
+        let solid = torus_box_notch(&mut topo, tilt);
+        crate::transform::transform_solid(
+            &mut topo,
+            solid,
+            &(Mat4::translation(13.0, -7.0, 5.0) * Mat4::rotation_z(0.7)),
+        )
+        .unwrap();
+        let what = format!("steep torus notch {degrees}°, placed");
+        check(&topo, solid, exact, &what, 0.01);
+    }
+    // Tenfold scale with dimensionally correct physical deflection covers the
+    // fine-deflection phase at a different absolute budget point.
+    for degrees in [25.0_f64, 30.0] {
+        let tilt = degrees.to_radians();
+        let exact = tilted_torus_notch_exact_volume(tilt) * 1e3;
+        let mut topo = Topology::new();
+        let tor = crate::primitives::make_torus(&mut topo, 100.0, 30.0, 32).unwrap();
+        let bx = crate::primitives::make_box(&mut topo, 80.0, 80.0, 80.0).unwrap();
+        crate::transform::transform_solid(&mut topo, bx, &Mat4::translation(60.0, -40.0, -40.0))
+            .unwrap();
+        crate::transform::transform_solid(&mut topo, bx, &Mat4::rotation_x(tilt)).unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, tor, bx).unwrap();
+        for deflection in [0.2, 0.05] {
+            let what = format!("steep torus notch {degrees}° at 10x");
+            check(&topo, solid, exact, &what, deflection);
         }
     }
 }
