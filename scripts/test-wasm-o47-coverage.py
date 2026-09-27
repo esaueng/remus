@@ -414,6 +414,60 @@ class O47CoverageFixtures(unittest.TestCase):
                     violations,
                 )
 
+    def test_block_comment_cannot_hide_twin_cfg(self):
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
+            '    #[wasm_bindgen(js_name',
+            '    #[cfg(feature = "io")]\n    /*\n    fn decoy\n    */\n'
+            '    #[wasm_bindgen(js_name',
+        )
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse") + twin,
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        exports = gate.discover_from_files(directory / "crates/wasm/src")
+        self.assertEqual(next(e for e in exports if e["js"] == "fuseDetailed")["gate"], "io")
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "bindings/booleans.rs", "gate": "io",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("only available under 'io'" in item for item in violations),
+            violations,
+        )
+
+    def test_commented_out_twin_is_not_discovered(self):
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                + "/*\n"
+                + TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
+                + "*/\n",
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        exports = gate.discover_from_files(directory / "crates/wasm/src")
+        self.assertFalse(any(e["js"] == "fuseDetailed" for e in exports))
+        violations, _, _, _ = run_gate(
+            directory,
+            [covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"])],
+        )
+        self.assertTrue(
+            any("no such export exists" in item for item in violations),
+            violations,
+        )
+
     def test_multiline_ancestor_header_fails_closed(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
         sources = {
@@ -709,6 +763,7 @@ class O47CoverageFixtures(unittest.TestCase):
             "include": '#[cfg(feature = "io")] include!("optional.rs");\n',
             "raw_include": '#[cfg(feature = "io")] include!(r#"optional.rs"#);\n',
             "orphan": "",
+            "commented_mod": "/*\nmod optional;\n*/\n",
         }
         for placement, declaration in sources.items():
             with self.subTest(placement=placement):
