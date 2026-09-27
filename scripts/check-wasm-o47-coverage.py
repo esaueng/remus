@@ -83,6 +83,7 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
         lines = text.splitlines()
         depths, _ = rust_lines_with_depth(lines)
         rel = path.relative_to(root).as_posix()
+        parent_io_gate = file_io_gate(root, rel)
         for match in EXPORT_RE.finditer(text):
             js = match.group("js")
             rust = match.group("rust")
@@ -94,7 +95,7 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
                 else ("imm" if "&self" in params else "static")
             )
             fn_index = text.count("\n", 0, match.start("rust"))
-            gate = export_gate(lines, depths, fn_index, rel)
+            gate = export_gate(lines, depths, fn_index, rel, parent_io_gate)
             exports.append(
                 {
                     "js": js,
@@ -121,9 +122,55 @@ def own_attr_block(lines: list[str], index: int, depths: list[int]) -> str:
     return "\n".join(reversed(block))
 
 
-def export_gate(lines: list[str], depths: list[int], index: int, rel: str) -> str:
+def has_io_cfg(attributes: str) -> bool:
+    return bool(CFG_IO_RE.search(CFG_NOT_IO_RE.sub("", attributes)))
+
+
+def inner_file_attrs(lines: list[str]) -> str:
+    """Collect file-level inner attributes, including multiline cfgs."""
+    attrs: list[str] = []
+    collecting = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#!["):
+            collecting = True
+        elif not collecting:
+            continue
+        attrs.append(line.replace("#![", "#[", 1))
+        if "]" in line:
+            collecting = False
+    return "\n".join(attrs)
+
+
+def file_io_gate(root: Path, rel: str) -> bool:
+    """Follow out-of-line module declarations and crate/file attributes."""
+    parts = list(Path(rel).with_suffix("").parts)
+    if parts[-1] == "mod":
+        parts.pop()
+    parent = root / "lib.rs"
+    for index, name in enumerate(parts):
+        if parent.is_file():
+            lines = parent.read_text(encoding="utf-8").splitlines()
+            depths, _ = rust_lines_with_depth(lines)
+            if has_io_cfg(inner_file_attrs(lines)):
+                return True
+            declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
+            for line_index, line in enumerate(lines):
+                if depths[line_index] == 0 and declaration.match(line):
+                    if has_io_cfg(own_attr_block(lines, line_index, depths)):
+                        return True
+        prefix = root.joinpath(*parts[:index + 1])
+        parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
+    if parent.is_file():
+        lines = parent.read_text(encoding="utf-8").splitlines()
+        if has_io_cfg(inner_file_attrs(lines)):
+            return True
+    return False
+
+
+def export_gate(lines: list[str], depths: list[int], index: int, rel: str, parent_io_gate: bool) -> str:
     """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
-    if rel.startswith("bindings/io"):
+    if rel.startswith("bindings/io") or parent_io_gate:
         return "io"
     attributes = [own_attr_block(lines, index, depths)]
     for ancestor in range(index):
@@ -134,7 +181,7 @@ def export_gate(lines: list[str], depths: list[int], index: int, rel: str) -> st
         if all(depths[child] > depths[ancestor] for child in range(ancestor + 1, index + 1)):
             attributes.append(own_attr_block(lines, ancestor, depths))
     for block in attributes:
-        if CFG_IO_RE.search(CFG_NOT_IO_RE.sub("", block)):
+        if has_io_cfg(block):
             return "io"
     return "shipped"
 
