@@ -24,8 +24,10 @@ pub enum StlFormat {
 /// parameter controls tessellation quality.
 ///
 /// Peak intermediate mesh storage is one solid's mesh, not a merged mesh of
-/// every solid. The final output buffer still scales with file size: this is a
-/// bounded intermediate-memory improvement, not constant-memory export.
+/// every solid. Binary multi-solid export tessellates twice to size its final
+/// output buffer exactly before writing. The buffer still scales with file
+/// size: this is a bounded intermediate-memory improvement, not constant-memory
+/// export.
 ///
 /// # Errors
 ///
@@ -175,47 +177,55 @@ fn append_mesh_ascii(buf: &mut Vec<u8>, mesh: &TriangleMesh) -> Result<(), crate
 
 /// Tessellate each solid and stream its triangles into one binary STL buffer.
 ///
-/// One solid's mesh is live at a time; the running `u32` count is patched
-/// into bytes 80..84 after the last solid. Any tessellation or overflow
-/// failure returns `Err` and discards the partial buffer.
+/// One solid's mesh is live at a time. Multi-solid export counts filtered
+/// facets first, then allocates the exact output length and tessellates again
+/// to write them. A single solid needs only one tessellation. Any
+/// tessellation, count, or size failure returns `Err` without a partial output.
 fn write_binary_stl_streaming(
     topo: &Topology,
     solids: &[SolidId],
     deflection: f64,
 ) -> Result<Vec<u8>, crate::IoError> {
-    let mut buf = Vec::new();
+    if let [solid_id] = solids {
+        let mut mesh = tessellate::tessellate_solid(topo, *solid_id, deflection)?;
+        crate::retain_nondegenerate_triangles(&mut mesh);
+        return write_binary_stl(&mesh);
+    }
+
+    let mut total = 0;
+    for &solid_id in solids {
+        let mut mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
+        crate::retain_nondegenerate_triangles(&mut mesh);
+        total = checked_add_triangle_count(total, mesh.indices.len() / 3)?;
+    }
+
+    let mut buf = Vec::with_capacity(checked_binary_len(total)?);
     let header = b"remus STL export";
     buf.extend_from_slice(header);
     // The STL binary header is a fixed 80 bytes; zero-pad whatever the
     // header string didn't fill.
     buf.resize(80, 0);
-    // Placeholder count; patched after the last solid.
-    buf.extend_from_slice(&[0u8, 0u8, 0u8, 0u8]);
+    buf.extend_from_slice(&total.to_le_bytes());
 
-    let mut total: u32 = 0;
+    let mut written = 0;
     for &solid_id in solids {
         let mut mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
-        let tri_count = mesh.indices.len() / 3;
-        total = checked_add_triangle_count(total, tri_count)?;
-        let bytes = tri_count
-            .checked_mul(BINARY_BYTES_PER_TRIANGLE)
-            .ok_or_else(|| crate::IoError::InvalidTopology {
-                reason: "STL output size overflows address space".to_string(),
-            })?;
-        // Detect address-space overflow before growing the output buffer.
-        buf.len()
-            .checked_add(bytes)
-            .ok_or_else(|| crate::IoError::InvalidTopology {
-                reason: "STL output size overflows address space".to_string(),
-            })?;
-        buf.reserve(bytes);
+        written = checked_add_triangle_count(written, mesh.indices.len() / 3)?;
+        if written > total {
+            return Err(crate::IoError::InvalidTopology {
+                reason: "STL triangle count changed between sizing and writing".to_string(),
+            });
+        }
         append_mesh_binary(&mut buf, &mesh);
     }
 
-    // The final length must agree with the patched count.
+    if written != total {
+        return Err(crate::IoError::InvalidTopology {
+            reason: "STL triangle count changed between sizing and writing".to_string(),
+        });
+    }
     debug_assert_eq!(buf.len(), checked_binary_len(total)?);
-    buf[80..84].copy_from_slice(&total.to_le_bytes());
     Ok(buf)
 }
 
