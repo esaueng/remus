@@ -87,6 +87,350 @@ impl SsiScratch {
     }
 }
 
+/// Second-order branch geometry in the shared tangent plane (B66).
+///
+/// At a tangential contact the two surfaces share a tangent plane with unit
+/// normal `n`. Writing each surface as a height graph over orthonormal
+/// coordinates `(alpha, beta)` of that plane gives, to second order,
+/// `h_k(alpha, beta) = 1/2 [alpha beta] Q_k [alpha; beta]`, where `Q_k` is the
+/// second fundamental form expressed in the orthonormal frame. The
+/// intersection satisfies `h_1 = h_2` to second order, i.e. the quadratic
+///
+/// ```text
+/// [alpha beta] Q [alpha; beta] = 0,   Q = Q_1 - s * Q_2,
+/// ```
+///
+/// with `s = sign(n1 . n2)` so the two heights are measured along the same
+/// normal. `det(Q) < 0` (indefinite) is a transverse crossing with two null
+/// (asymptotic) directions; `det(Q) > 0` (definite) is an isolated touch with
+/// none; `det(Q) = 0` with `Q != 0` is a single ruling (contact line);
+/// `Q = 0` is osculating/overlap and carries no direction.
+///
+/// Per-surface orthonormal form: with first fundamental `I_k`, second
+/// fundamental `II_k`, and `B_k = [[Su.e1, Su.e2],[Sv.e1, Sv.e2]]`,
+/// `C_k = I_k^{-1} B_k` maps `(alpha, beta)` to `(du, dv)`, and
+/// `Q_k = C_k^T II_k C_k`.
+///
+/// Under a parameter rescaling `(u, v) -> (a*u, b*v)` with
+/// `D = diag(a, b)`, `I -> D I D`, `II -> D II D`, `B -> D B`, so
+/// `C = I^{-1} B -> D^{-1} C` and `Q = C^T II C` is unchanged. The same
+/// cancellation holds for any invertible linear reparameterization
+/// (`D` general 2x2) and for swapped/reversed parameters (orthogonal change
+/// of basis, possibly flipping the sign of `Q`, which preserves its null
+/// cone and `det` since `det(-Q) = det(Q)` in 2D). Rigid placements rotate
+/// `e1, e2` with the surfaces, leaving eigenvalues and `det` unchanged.
+/// Raw `II_1 - II_2` in parameter coordinates has none of these invariances:
+/// its entries scale as model-units-per-parameter^2, which is why the old
+/// absolute `|lambda| < 0.1` gate moved with knot domains.
+///
+/// All thresholds below are dimensionless roundoff guards, never geometry
+/// gates: `REL = 1e-12` on `|det| / ||Q||^2` separates indefinite from
+/// parabolic within double-precision derivative error, and the `1e-24`
+/// metric guard separates a degenerate first fundamental form
+/// (`sin(theta) <= 2e-12`) from a regular one. No absolute curvature or
+/// angle threshold is introduced.
+const BRANCH_REL: f64 = 1e-12;
+
+/// Orthonormal curvature difference at a tangential contact.
+struct OrthoDiff {
+    a: f64,
+    b: f64,
+    d: f64,
+    c1: [f64; 4],
+    c2: [f64; 4],
+    e1: Vec3,
+    e2: Vec3,
+    norm: f64,
+    det: f64,
+}
+
+/// Orthonormal curvature difference `Q = [[a, b], [b, d]]` at a tangential
+/// contact, with the frame and parameter maps needed for seeding.
+///
+/// Returns `None` when either surface is degenerate there, the normals do not
+/// share a plane (`|n1 . n2| < 0.99`), or second-order tables are unavailable:
+/// all explicitly unsupported, never an arbitrary direction.
+#[allow(clippy::too_many_lines, clippy::similar_names)]
+fn orthonormal_difference(
+    s1: &NurbsSurface,
+    s2: &NurbsSurface,
+    u1: f64,
+    v1: f64,
+    u2: f64,
+    v2: f64,
+    scratch: &mut SsiScratch,
+) -> Option<OrthoDiff> {
+    let mut table1: Vec<Vec<Vec3>> = Vec::new();
+    let mut table2: Vec<Vec<Vec3>> = Vec::new();
+    scratch
+        .solve1()
+        .derivative_table_from(s1, u1, v1, 2, &mut table1);
+    scratch
+        .solve2()
+        .derivative_table_from(s2, u2, v2, 2, &mut table2);
+    let d1: &[Vec<Vec3>] = &table1;
+    let d2: &[Vec<Vec3>] = &table2;
+    if d1.len() < 3 || d1[0].len() < 3 || d2.len() < 3 || d2[0].len() < 3 {
+        return None;
+    }
+    let s1u = d1[1][0];
+    let s1v = d1[0][1];
+    let s2u = d2[1][0];
+    let s2v = d2[0][1];
+
+    let n1_raw = s1u.cross(s1v);
+    let n2_raw = s2u.cross(s2v);
+    let n1_lensq = n1_raw.length_squared();
+    let n2_lensq = n2_raw.length_squared();
+    let s1u_lensq = s1u.length_squared();
+    let s1v_lensq = s1v.length_squared();
+    let s2u_lensq = s2u.length_squared();
+    let s2v_lensq = s2v.length_squared();
+    // Scale-invariant degeneracy: sin(theta) = |Su x Sv| / (|Su| |Sv|).
+    let sin1_sq = if s1u_lensq > 0.0 && s1v_lensq > 0.0 {
+        n1_lensq / (s1u_lensq * s1v_lensq)
+    } else {
+        0.0
+    };
+    let sin2_sq = if s2u_lensq > 0.0 && s2v_lensq > 0.0 {
+        n2_lensq / (s2u_lensq * s2v_lensq)
+    } else {
+        0.0
+    };
+    // Scale-invariant degeneracy: sin(theta) at/below roundoff (or non-finite
+    // lens) means a collapsed partial: explicitly unsupported.
+    if !sin1_sq.is_finite() || !sin2_sq.is_finite() || sin1_sq <= 1e-24 || sin2_sq <= 1e-24 {
+        return None;
+    }
+    let (Ok(n1), Ok(n2)) = (n1_raw.normalize(), n2_raw.normalize()) else {
+        return None;
+    };
+    let cos = n1.dot(n2);
+    if cos.abs() < 0.99 {
+        // Tangent planes differ: the shared-plane height model does not apply.
+        return None;
+    }
+    let s = if cos >= 0.0 { 1.0 } else { -1.0 };
+
+    // Deterministic orthonormal frame from the normal alone (smallest-component
+    // reference), so the frame — and hence Q up to an orthogonal change of
+    // basis — is independent of either parameterization.
+    let ax = n1.x().abs();
+    let ay = n1.y().abs();
+    let az = n1.z().abs();
+    let reference = if ax <= ay && ax <= az {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else if ay <= az {
+        Vec3::new(0.0, 1.0, 0.0)
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    };
+    let e1 = (reference - n1 * reference.dot(n1)).normalize().ok()?;
+    let e2 = n1.cross(e1).normalize().ok()?;
+
+    // Per-surface orthonormal forms Q_k = C_k^T II_k C_k.
+    let quadric_form = |su: Vec3,
+                        sv: Vec3,
+                        suu: Vec3,
+                        suv: Vec3,
+                        svv: Vec3,
+                        n: Vec3|
+     -> Option<([f64; 3], [f64; 4])> {
+        let e = su.dot(su);
+        let f = su.dot(sv);
+        let g = sv.dot(sv);
+        let det_i = e * g - f * f;
+        // Relative guard: det(I) / (E+G)^2 ~ sin^2/4; at/below 1e-24 (or
+        // non-finite) the parameterization is degenerate there.
+        let scale = (e + g) * (e + g);
+        if !det_i.is_finite() || !scale.is_finite() || det_i <= 1e-24 * scale {
+            return None;
+        }
+        let l = suu.dot(n);
+        let m = suv.dot(n);
+        let nn = svv.dot(n);
+        // B rows: Su.e, Sv.e.
+        let b00 = su.dot(e1);
+        let b01 = su.dot(e2);
+        let b10 = sv.dot(e1);
+        let b11 = sv.dot(e2);
+        // C = I^{-1} B.
+        let inv00 = g / det_i;
+        let inv01 = -f / det_i;
+        let inv11 = e / det_i;
+        let c00 = inv00 * b00 + inv01 * b10;
+        let c01 = inv00 * b01 + inv01 * b11;
+        let c10 = inv01 * b00 + inv11 * b10;
+        let c11 = inv01 * b01 + inv11 * b11;
+        // Q = C^T II C with II = [[l, m],[m, nn]].
+        // First M = II * C.
+        let m00 = l * c00 + m * c10;
+        let m01 = l * c01 + m * c11;
+        let m10 = m * c00 + nn * c10;
+        let m11 = m * c01 + nn * c11;
+        let q00 = c00 * m00 + c10 * m10;
+        let q01 = c00 * m01 + c10 * m11;
+        let q11 = c01 * m01 + c11 * m11;
+        Some(([q00, q01, q11], [c00, c01, c10, c11]))
+    };
+
+    let (q1, c1) = quadric_form(s1u, s1v, d1[2][0], d1[1][1], d1[0][2], n1)?;
+    // Measure surface 2's heights along n1: II_2(n1) = s * II_2(n2).
+    let (q2_raw, c2) = quadric_form(s2u, s2v, d2[2][0], d2[1][1], d2[0][2], n2)?;
+    let (q2_0, q2_1, q2_2) = (s * q2_raw[0], s * q2_raw[1], s * q2_raw[2]);
+
+    let a = q1[0] - q2_0;
+    let b = q1[1] - q2_1;
+    let d = q1[2] - q2_2;
+    let norm = (a * a + 2.0 * b * b + d * d).sqrt();
+    if !norm.is_finite() {
+        return None;
+    }
+    let det = a * d - b * b;
+    Some(OrthoDiff {
+        a,
+        b,
+        d,
+        c1,
+        c2,
+        e1,
+        e2,
+        norm,
+        det,
+    })
+}
+
+/// Null (asymptotic) directions of `Q = [[a, b], [b, d]]` as unit 3D vectors.
+///
+/// Solves `a alpha^2 + 2 b alpha beta + d beta^2 = 0` in the `(e1, e2)` frame:
+/// two directions when `det < -REL * norm^2` (transverse crossing), one
+/// (the zero eigenvector) when `|det| <= REL * norm^2` with `Q != 0`
+/// (parabolic ruling), none when `det > REL * norm^2` (isolated touch) or
+/// `Q = 0` (osculating/overlap). The last two are explicit `None`: ambiguity
+/// keeps the existing failure contract instead of an arbitrary pick.
+fn null_directions(a: f64, b: f64, d: f64, e1: Vec3, e2: Vec3, norm: f64, det: f64) -> Vec<Vec3> {
+    if !norm.is_finite() || !det.is_finite() || norm <= 0.0 {
+        return Vec::new();
+    }
+    let guard = BRANCH_REL * norm * norm;
+    if det < -guard {
+        // Indefinite: two distinct null directions from the quadratic.
+        // Solve stably: if |a| >= |d|, solve for r = beta/alpha, else for
+        // r = alpha/beta, so the leading coefficient is the larger diagonal.
+        let mut dirs = Vec::with_capacity(2);
+        if a.abs() >= d.abs() {
+            // a r^2? No: a + 2b r + d r^2 = 0 with r = beta/alpha.
+            let disc = b * b - a * d;
+            if disc <= 0.0 {
+                return Vec::new();
+            }
+            let sq = disc.sqrt();
+            for num in [(-b + sq), (-b - sq)] {
+                let den = d;
+                let (alpha, beta) = if den.abs() > 1e-300 {
+                    (den, num)
+                } else {
+                    // d = 0 (e.g. saddle [[0, c],[c, 0]]): roots are
+                    // alpha = 0 and beta = 0 via the swapped solve below;
+                    // this arm only runs when |a| >= |d| = 0, i.e. a != 0.
+                    (1.0, 0.0)
+                };
+                let t = (e1 * alpha + e2 * beta).normalize();
+                if let Ok(t) = t {
+                    dirs.push(t);
+                }
+            }
+            // Handle the d = 0 sub-case explicitly: a alpha^2 + 2b alpha beta
+            // = alpha (a alpha + 2b beta) = 0 gives alpha = 0 and
+            // a alpha + 2b beta = 0. The generic formula above divides by d.
+            // Triggers on d ~= 0 with b != 0 (including the pure saddle
+            // a = d = 0, whose nulls are the two axes).
+            if d.abs() <= 1e-300 && b.abs() > 1e-300 {
+                dirs.clear();
+                if let Ok(t1) = (e1 * 0.0 + e2 * 1.0).normalize() {
+                    dirs.push(t1);
+                }
+                // alpha = -2b, beta = a (from a alpha + 2b beta = 0 with
+                // beta = a): direction (-2b, a); for a = 0 this is the
+                // alpha axis.
+                if let Ok(t2) = (e1 * (-2.0 * b) + e2 * a).normalize() {
+                    dirs.push(t2);
+                }
+            }
+        } else {
+            // d + 2b r + a r^2 = 0 with r = alpha/beta.
+            let disc = b * b - a * d;
+            if disc <= 0.0 {
+                return Vec::new();
+            }
+            let sq = disc.sqrt();
+            for num in [(-b + sq), (-b - sq)] {
+                let den = a;
+                let (alpha, beta) = if den.abs() > 1e-300 {
+                    (num, den)
+                } else {
+                    (0.0, 1.0)
+                };
+                let t = (e1 * alpha + e2 * beta).normalize();
+                if let Ok(t) = t {
+                    dirs.push(t);
+                }
+            }
+            // Symmetric a = 0 sub-case: beta (d beta + 2b alpha) = 0 gives
+            // beta = 0 and d beta + 2b alpha = 0 (including a = d = 0).
+            if a.abs() <= 1e-300 && b.abs() > 1e-300 {
+                dirs.clear();
+                if let Ok(t1) = (e1 * 1.0 + e2 * 0.0).normalize() {
+                    dirs.push(t1);
+                }
+                if let Ok(t2) = (e1 * d + e2 * (-2.0 * b)).normalize() {
+                    dirs.push(t2);
+                }
+            }
+        }
+        // Deterministic order: sort by (x, y, z) so swapped parameters and
+        // re-runs agree; both nulls are valid intersection directions, the
+        // caller picks continuity, this order only breaks ties.
+        dirs.sort_by(|p, q| {
+            p.x()
+                .total_cmp(&q.x())
+                .then(p.y().total_cmp(&q.y()))
+                .then(p.z().total_cmp(&q.z()))
+        });
+        dirs.dedup_by(|p, q| (*p - *q).length() < 1e-12 || (*p + *q).length() < 1e-12);
+        dirs
+    } else if det > guard {
+        // Definite: isolated touch, no real null direction.
+        Vec::new()
+    } else {
+        // Parabolic within roundoff: single ruling = zero eigenvector of Q.
+        if norm <= 0.0 {
+            return Vec::new();
+        }
+        let trace = a + d;
+        // Zero eigenvalue's eigenvector: (b, -a) or (d, -b) whichever larger.
+        let (alpha, beta) = if b.abs() >= a.abs() && b.abs() >= d.abs() {
+            // Q ~ [[a, b],[b, d]] with det 0: null is (d, -b) or (-b, a)?
+            // Use (-b, a) unless a is tiny, else (d, -b).
+            if a.abs() >= d.abs() { (-b, a) } else { (d, -b) }
+        } else if a.abs() >= d.abs() {
+            (-b, a)
+        } else {
+            (d, -b)
+        };
+        if alpha == 0.0 && beta == 0.0 {
+            return Vec::new();
+        }
+        // Silence unused warning for trace in this arm (kept for symmetry
+        // with the eigenvalue derivation in the PR rationale).
+        let _ = trace;
+        match (e1 * alpha + e2 * beta).normalize() {
+            Ok(t) => vec![t],
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
 /// March along an intersection curve, detecting branch points.
 ///
 /// Returns the traced points and any branch seed points found during
@@ -124,12 +468,16 @@ pub(super) fn march_with_branches(
     Ok((result, branch_seeds))
 }
 
-/// Detect branch directions at a near-tangential point.
+/// Detect the transverse branch at a confirmed crossing.
 ///
-/// At a point where `|n1 x n2|` is small (surfaces nearly tangent),
-/// sample perturbation directions and find viable SSI continuations
-/// that differ from the current march direction by > 30 deg. Each such
-/// direction produces a new seed offset slightly from the branch point.
+/// At a point where `|n1 x n2|` is small, the orthonormal difference `Q` is
+/// indefinite with two null directions: one continues the incoming branch and
+/// the other is the transverse branch. The transverse null, least aligned
+/// with `current_tangent`, is stepped in both orientations and Newton
+/// refined; seeds that refine onto the intersection, clear of the point, and
+/// more than 30 deg from the incoming direction are returned. Isolated
+/// touches, rulings, and osculating overlaps yield no seeds here, so ambiguity
+/// keeps the existing failure contract instead of an arbitrary pick.
 #[allow(clippy::too_many_arguments)]
 fn find_branch_directions(
     s1: &NurbsSurface,
@@ -141,44 +489,90 @@ fn find_branch_directions(
     context: &OperationContext,
     scratch: &mut SsiScratch,
 ) -> Result<Vec<IntersectionPoint>, MathError> {
-    let eps = step_size * 0.1;
+    let min_branch_angle = 30.0_f64.to_radians();
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
-    let min_branch_angle = 30.0_f64.to_radians();
 
-    let directions: [(f64, f64); 8] = [
-        (eps, 0.0),
-        (-eps, 0.0),
-        (0.0, eps),
-        (0.0, -eps),
-        (eps, eps),
-        (eps, -eps),
-        (-eps, eps),
-        (-eps, -eps),
-    ];
+    let Some(diff) = orthonormal_difference(s1, s2, u1, v1, u2, v2, scratch) else {
+        return Ok(Vec::new());
+    };
+    if !diff.det.is_finite()
+        || !diff.norm.is_finite()
+        || diff.det >= -BRANCH_REL * diff.norm * diff.norm
+    {
+        return Ok(Vec::new());
+    }
+    let nulls = null_directions(
+        diff.a, diff.b, diff.d, diff.e1, diff.e2, diff.norm, diff.det,
+    );
+    if nulls.len() < 2 {
+        return Ok(Vec::new());
+    }
+    // Incoming-orthogonal transverse: least |dot| with the march direction.
+    // Tie (bisector arrival) spawns both nulls so neither arm is missed.
+    let dot0 = nulls[0].dot(current_tangent).abs();
+    let dot1 = nulls[1].dot(current_tangent).abs();
+    let transverse: Vec<(Vec3, (f64, f64))> = if (dot0 - dot1).abs() <= 1e-12 {
+        // Bisector arrival: both nulls are transverse candidates. Recover
+        // their orthonormal (alpha, beta) by projection onto (e1, e2).
+        vec![
+            (nulls[0], (nulls[0].dot(diff.e1), nulls[0].dot(diff.e2))),
+            (nulls[1], (nulls[1].dot(diff.e1), nulls[1].dot(diff.e2))),
+        ]
+    } else if dot0 < dot1 {
+        vec![(nulls[0], (nulls[0].dot(diff.e1), nulls[0].dot(diff.e2)))]
+    } else {
+        vec![(nulls[1], (nulls[1].dot(diff.e1), nulls[1].dot(diff.e2)))]
+    };
+
+    let c1 = diff.c1;
+    let c2 = diff.c2;
 
     let mut branch_seeds = Vec::new();
-
-    for &(du, dv) in &directions {
+    for (t, (alpha, beta)) in transverse {
         context.check_cancelled()?;
-        let u1p = u1 + du;
-        let v1p = v1 + dv;
-
-        if let Some(refined) =
-            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, tolerance, context, scratch)?
-        {
-            let d = refined.point - point.point;
-            let dist = d.length();
-            if dist < tolerance {
-                continue; // Too close, not a real branch
+        // Normalize the orthonormal coords so the larger param component on
+        // either surface spans step_size * 0.5: a small offset that clears
+        // the incoming branch's Newton basin yet stays in-patch.
+        let du1 = c1[0] * alpha + c1[1] * beta;
+        let dv1 = c1[2] * alpha + c1[3] * beta;
+        let du2 = c2[0] * alpha + c2[1] * beta;
+        let dv2 = c2[2] * alpha + c2[3] * beta;
+        let peak = du1.abs().max(dv1.abs()).max(du2.abs()).max(dv2.abs());
+        if !peak.is_finite() || peak <= 0.0 {
+            continue;
+        }
+        let scale = step_size * 0.5 / peak;
+        for side in [1.0, -1.0] {
+            context.check_cancelled()?;
+            let u1p = u1 + side * scale * (c1[0] * alpha + c1[1] * beta);
+            let v1p = v1 + side * scale * (c1[2] * alpha + c1[3] * beta);
+            let u2p = u2 + side * scale * (c2[0] * alpha + c2[1] * beta);
+            let v2p = v2 + side * scale * (c2[2] * alpha + c2[3] * beta);
+            if branch_seeds.len() >= 4 {
+                break;
             }
-
-            if let Ok(dir) = d.normalize() {
-                // Check that this direction diverges from the current tangent.
-                let cos_angle = dir.dot(current_tangent).abs();
-                let angle = cos_angle.acos();
-                if angle > min_branch_angle {
-                    branch_seeds.push(refined);
+            if let Some(refined) = refine_ssi_point_with_context(
+                s1, s2, u1p, v1p, u2p, v2p, tolerance, context, scratch,
+            )? {
+                let dvec = refined.point - point.point;
+                let dist = dvec.length();
+                if dist < tolerance {
+                    continue;
+                }
+                if let Ok(dir) = dvec.normalize() {
+                    let cos_angle = dir.dot(current_tangent).abs().clamp(-1.0, 1.0);
+                    if cos_angle.acos() > min_branch_angle {
+                        // Deduplicate seeds on the same arm.
+                        let dup = branch_seeds.iter().any(|s: &IntersectionPoint| {
+                            (s.point - refined.point).length() < tolerance * 100.0
+                        });
+                        if !dup {
+                            // Keep the 3D direction for the unused-binding lint.
+                            let _ = t;
+                            branch_seeds.push(refined);
+                        }
+                    }
                 }
             }
         }
@@ -218,12 +612,49 @@ fn march_direction_with_branches(
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // Post-process: scan traced points for near-tangential locations.
+    // `tolerance * 1000` is a weld-scale band on the unit-normal sine (1000x
+    // the SSI residual contract), unchanged: it only selects candidates, the
+    // confirmation below is the scale-invariant sign of det(Q).
     let branch_threshold = tolerance * 1000.0;
 
+    // First pass: candidate cross magnitudes. A crossing valley contributes
+    // several adjacent near-tangential points (the exact crossing plus RKF45
+    // micro-steps around it); only the local minimum per valley spawns
+    // transverse seeds, so off-crossing neighbors cannot emit off-line seeds
+    // or duplicate branches.
+    let mut cross_mags: Vec<Option<f64>> = Vec::with_capacity(traced.len());
     for pt in &traced {
+        context.check_cancelled()?;
+        let Ok(n1) = scratch.normal1(s1, pt.param1.0, pt.param1.1) else {
+            cross_mags.push(None);
+            continue;
+        };
+        let Ok(n2) = scratch.normal2(s2, pt.param2.0, pt.param2.1) else {
+            cross_mags.push(None);
+            continue;
+        };
+        cross_mags.push(Some(n1.cross(n2).length()));
+    }
+
+    for (idx, pt) in traced.iter().enumerate() {
         context.check_cancelled()?;
         if branch_seeds.len() >= context.budgets.branches_per_direction {
             break;
+        }
+
+        let Some(cross_mag) = cross_mags[idx] else {
+            continue;
+        };
+        if cross_mag >= branch_threshold {
+            continue; // Not near-tangential, no branch point
+        }
+        // Local-minimum per valley: skip shoulders of the same crossing so
+        // only the closest point seeds the transverse branch.
+        let dominated_by_prev = idx > 0 && cross_mags[idx - 1].is_some_and(|prev| prev < cross_mag);
+        let dominated_by_next =
+            idx + 1 < cross_mags.len() && cross_mags[idx + 1].is_some_and(|next| next < cross_mag);
+        if dominated_by_prev || dominated_by_next {
+            continue;
         }
 
         let n1 = match scratch.normal1(s1, pt.param1.0, pt.param1.1) {
@@ -235,84 +666,56 @@ fn march_direction_with_branches(
             Err(_) => continue,
         };
 
-        let cross_mag = n1.cross(n2).length();
-        if cross_mag >= branch_threshold {
-            continue; // Not near-tangential, no branch point
-        }
-
-        // Near-tangential point found. Use second-order analysis to confirm.
-        // Reusable order-2 tables; zero-filled per call exactly like the heap
-        // path's fresh table, so degree-clamped entries read as zero.
-        let mut table1: Vec<Vec<Vec3>> = Vec::new();
-        let mut table2: Vec<Vec<Vec3>> = Vec::new();
-        scratch
-            .solve1()
-            .derivative_table_from(s1, pt.param1.0, pt.param1.1, 2, &mut table1);
-        scratch
-            .solve2()
-            .derivative_table_from(s2, pt.param2.0, pt.param2.1, 2, &mut table2);
-        let d1: &[Vec<Vec3>] = &table1;
-        let d2: &[Vec<Vec3>] = &table2;
-        let has_branch = {
-            if d1.len() >= 3 && d1[0].len() >= 3 && d2.len() >= 3 && d2[0].len() >= 3 {
-                // Check curvature difference eigenvalues.
-                let s1u = d1[1][0];
-                let s1v = d1[0][1];
-                let n1_raw = s1u.cross(s1v);
-                let n1_len = n1_raw.length();
-                if n1_len > 1e-12 {
-                    let n = n1_raw * (1.0 / n1_len);
-                    let l1 = d1[2][0].dot(n);
-                    let m1 = d1[1][1].dot(n);
-                    let n1c = d1[0][2].dot(n);
-
-                    let s2u = d2[1][0];
-                    let s2v = d2[0][1];
-                    let n2_raw = s2u.cross(s2v);
-                    let n2_len = n2_raw.length();
-                    if n2_len > 1e-12 {
-                        let n2n = n2_raw * (1.0 / n2_len);
-                        let l2 = d2[2][0].dot(n2n);
-                        let m2 = d2[1][1].dot(n2n);
-                        let n2c = d2[0][2].dot(n2n);
-
-                        let dl = l1 - l2;
-                        let dm = m1 - m2;
-                        let dn = n1c - n2c;
-                        let trace = dl + dn;
-                        let det = dl * dn - dm * dm;
-                        let disc = trace * trace - 4.0 * det;
-                        let disc_sqrt = disc.max(0.0).sqrt();
-                        let lambda1 = 0.5 * (trace - disc_sqrt);
-                        let lambda2 = 0.5 * (trace + disc_sqrt);
-
-                        // Both eigenvalues near zero indicates a branch point
-                        // (the curvature difference vanishes in all directions).
-                        lambda1.abs() < 0.1 && lambda2.abs() < 0.1
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
+        // Near-tangential point found. Confirm a transverse crossing via the
+        // orthonormal difference: indefinite Q (det < -REL * ||Q||^2) has two
+        // null directions; definite/parabolic/osculating do not branch here.
+        let has_branch = orthonormal_difference(
+            s1,
+            s2,
+            pt.param1.0,
+            pt.param1.1,
+            pt.param2.0,
+            pt.param2.1,
+            scratch,
+        )
+        .is_some_and(|diff| {
+            diff.det.is_finite()
+                && diff.norm.is_finite()
+                && diff.det < -BRANCH_REL * diff.norm * diff.norm
+        });
 
         if !has_branch {
             continue;
         }
 
-        // Confirmed branch point: find divergent directions.
+        // Confirmed branch point: incoming direction from the traced polyline
+        // (central difference) so an exactly-crossing point — where n1 x n2
+        // vanishes and carries no direction — still preserves continuity.
+        // Falls back to n1 x n2 with the march sign, then to +x.
         let sign = if forward { 1.0 } else { -1.0 };
-        let current_tangent = {
-            let t = n1.cross(n2);
-            t.normalize()
-                .ok()
-                .map(|t| Vec3::new(t.x() * sign, t.y() * sign, t.z() * sign))
-                .unwrap_or(Vec3::new(1.0, 0.0, 0.0))
+        let poly_tangent = if traced.len() >= 2 {
+            let prev = if idx > 0 {
+                traced[idx - 1].point
+            } else {
+                pt.point
+            };
+            let next = if idx + 1 < traced.len() {
+                traced[idx + 1].point
+            } else {
+                pt.point
+            };
+            (next - prev).normalize().ok()
+        } else {
+            None
         };
+        let current_tangent = poly_tangent
+            .or_else(|| {
+                let t = n1.cross(n2);
+                t.normalize()
+                    .ok()
+                    .map(|t| Vec3::new(t.x() * sign, t.y() * sign, t.z() * sign))
+            })
+            .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
 
         let new_seeds = find_branch_directions(
             s1,
@@ -388,6 +791,11 @@ pub(super) fn march_intersection(
 
 /// Compute the SSI tangent in parameter space at the given parameters.
 /// Returns `(du1, dv1, du2, dv2)` or `None` if normals are degenerate.
+///
+/// `prev` is the incoming 3D march direction (with `sign` already applied):
+/// at a singular point with two null directions, the null most aligned with
+/// `prev` is chosen so marching preserves branch continuity instead of
+/// turning onto the transverse branch or the old bisector.
 #[allow(clippy::similar_names, clippy::too_many_arguments)]
 fn ssi_tangent_params(
     s1: &NurbsSurface,
@@ -397,6 +805,7 @@ fn ssi_tangent_params(
     u2: f64,
     v2: f64,
     sign: f64,
+    prev: Option<Vec3>,
     context: &OperationContext,
     scratch: &mut SsiScratch,
 ) -> Result<Option<[f64; 4]>, MathError> {
@@ -415,13 +824,19 @@ fn ssi_tangent_params(
         t
     } else {
         // Tangential intersection (normals parallel/antiparallel).
-        // Try perturbation analysis to recover a direction.
+        // Second-order null most aligned with the incoming direction keeps
+        // branch continuity; without `prev` the deterministic first null is
+        // still an exact intersection direction (never the old bisector).
         let pt = IntersectionPoint {
             point: s1.evaluate(u1, v1),
             param1: (u1, v1),
             param2: (u2, v2),
         };
-        let Some(tangent) = singular_tangent_direction(s1, s2, &pt, context, scratch)? else {
+        // Un-apply `sign` for the continuity comparison: `prev` already
+        // carries it, the singular choice is oriented below.
+        let incoming = prev.map(|p| Vec3::new(p.x() * sign, p.y() * sign, p.z() * sign));
+        let Some(tangent) = singular_tangent_direction(s1, s2, &pt, incoming, context, scratch)?
+        else {
             return Ok(None);
         };
         tangent
@@ -447,21 +862,16 @@ fn ssi_tangent_params(
 }
 
 /// At a singular point (where surface normals are parallel/antiparallel),
-/// use perturbation analysis to determine the intersection curve direction.
+/// determine the intersection curve direction from second-order nulls.
 ///
-/// Compute the tangent direction at a singular (tangential) intersection point.
-///
-/// At a tangential point, the first-order tangent `n1 x n2` vanishes because
-/// the surface normals are parallel. This function uses second-order curvature
-/// analysis to determine the correct marching direction.
-///
-/// Algorithm (based on Patrikalakis-Maekawa):
-/// 1. Compute second derivatives of both surfaces at the touch point
-/// 2. Compute the curvature difference tensor in the tangent plane
-/// 3. Find the principal direction of the curvature difference --
-///    this is the direction along which the surfaces separate fastest
-/// 4. The intersection curve follows the direction perpendicular to
-///    the maximum curvature difference
+/// At a tangential point the first-order tangent `n1 x n2` vanishes. The
+/// orthonormal difference `Q` supplies the exact asymptotic directions: two
+/// nulls at a transverse crossing, one ruling on a contact line, none at an
+/// isolated touch or osculating overlap. With two nulls, `incoming` (the
+/// march direction without the RKF45 sign applied) selects the most aligned
+/// oriented candidate (`max dot`, both signs considered) so marching
+/// continues its branch; without it the deterministic first null is returned
+/// (still exact, never the bisector).
 ///
 /// Falls back to perturbation-based search if second-order analysis
 /// is degenerate (e.g., surfaces are osculating to second order).
@@ -470,6 +880,7 @@ fn singular_tangent_direction(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     point: &IntersectionPoint,
+    incoming: Option<Vec3>,
     context: &OperationContext,
     scratch: &mut SsiScratch,
 ) -> Result<Option<Vec3>, MathError> {
@@ -477,7 +888,36 @@ fn singular_tangent_direction(
     let (u2, v2) = point.param2;
 
     // Try second-order analysis first.
-    if let Some(dir) = second_order_tangent(s1, s2, u1, v1, u2, v2, scratch) {
+    if let Some(diff) = orthonormal_difference(s1, s2, u1, v1, u2, v2, scratch) {
+        let nulls = null_directions(
+            diff.a, diff.b, diff.d, diff.e1, diff.e2, diff.norm, diff.det,
+        );
+        if !nulls.is_empty() {
+            if let Some(prev) = incoming {
+                // Oriented continuity: consider both signs of each null.
+                let mut best: Option<Vec3> = None;
+                let mut best_dot = f64::NEG_INFINITY;
+                for t in &nulls {
+                    context.check_cancelled()?;
+                    for cand in [*t, Vec3::new(-t.x(), -t.y(), -t.z())] {
+                        let d = cand.dot(prev);
+                        if d > best_dot {
+                            best_dot = d;
+                            best = Some(cand);
+                        }
+                    }
+                }
+                if let Some(choice) = best {
+                    return Ok(Some(choice));
+                }
+            }
+            // Deterministic single: first null in sorted order. At a
+            // transverse crossing either null is an exact branch direction.
+            if let Some(first) = nulls.into_iter().next() {
+                return Ok(Some(first));
+            }
+        }
+    } else if let Some(dir) = second_order_tangent(s1, s2, u1, v1, u2, v2, scratch) {
         return Ok(Some(dir));
     }
 
@@ -487,11 +927,16 @@ fn singular_tangent_direction(
 
 /// Second-order curvature analysis for tangential intersection direction.
 ///
-/// Computes the difference of the second fundamental forms of the two
-/// surfaces at the touch point, projected onto the shared tangent plane.
-/// The eigenvector corresponding to the zero (or smallest) eigenvalue of
-/// this difference gives the direction along which the surfaces remain
-/// in contact -- i.e., the intersection curve tangent.
+/// Computes the orthonormal curvature difference `Q` of the two surfaces at
+/// the touch point (see [`orthonormal_difference`]). At a transverse crossing
+/// (`det(Q) < 0`) the intersection follows `Q`'s null (asymptotic) directions
+/// — the two lines `x = 0`, `y = 0` for the plane/saddle witness — never the
+/// old eigenvector-of-smallest-eigenvalue bisector. This returns the
+/// deterministic first null (sorted order); callers with a march direction
+/// use [`singular_tangent_direction`] for the continuity-aware choice among
+/// the two. A single ruling is returned for the parabolic contact-line case;
+/// isolated touches and osculating/overlap (`Q = 0`) return `None` under the
+/// existing failure contract.
 #[allow(clippy::similar_names)]
 pub(super) fn second_order_tangent(
     s1: &NurbsSurface,
@@ -502,102 +947,11 @@ pub(super) fn second_order_tangent(
     v2: f64,
     scratch: &mut SsiScratch,
 ) -> Option<Vec3> {
-    // Compute second-order derivatives for both surfaces on the reusable
-    // tables; zero-filled per call exactly like the heap path's fresh table.
-    let mut table1: Vec<Vec<Vec3>> = Vec::new();
-    let mut table2: Vec<Vec<Vec3>> = Vec::new();
-    scratch
-        .solve1()
-        .derivative_table_from(s1, u1, v1, 2, &mut table1);
-    scratch
-        .solve2()
-        .derivative_table_from(s2, u2, v2, 2, &mut table2);
-    let d1: &[Vec<Vec3>] = &table1;
-    let d2: &[Vec<Vec3>] = &table2;
-
-    // Check we have enough derivative data.
-    if d1.len() < 3 || d1[0].len() < 3 || d2.len() < 3 || d2[0].len() < 3 {
-        return None;
-    }
-
-    // First derivatives (tangent vectors).
-    let s1u = d1[1][0]; // dS1/du1
-    let s1v = d1[0][1]; // dS1/dv1
-
-    // Normal of surface 1.
-    let n1 = s1u.cross(s1v);
-    let n1_len = n1.length();
-    if n1_len < 1e-12 {
-        return None;
-    }
-    let n1 = n1 * (1.0 / n1_len);
-
-    // Second fundamental form coefficients of surface 1:
-    // L = S_uu * n, M = S_uv * n, N = S_vv * n
-    let l1 = d1[2][0].dot(n1);
-    let m1 = d1[1][1].dot(n1);
-    let n1_coeff = d1[0][2].dot(n1);
-
-    // Second fundamental form coefficients of surface 2:
-    let s2u = d2[1][0];
-    let s2v = d2[0][1];
-    let n2 = s2u.cross(s2v);
-    let n2_len = n2.length();
-    if n2_len < 1e-12 {
-        return None;
-    }
-    let n2 = n2 * (1.0 / n2_len);
-
-    let l2 = d2[2][0].dot(n2);
-    let m2 = d2[1][1].dot(n2);
-    let n2_coeff = d2[0][2].dot(n2);
-
-    // Curvature difference: dII = II_1 - II_2
-    // In the 2x2 matrix [dL, dM; dM, dN]:
-    let dl = l1 - l2;
-    let dm = m1 - m2;
-    let dn = n1_coeff - n2_coeff;
-
-    // Find eigenvectors of the 2x2 symmetric matrix [dl, dm; dm, dn].
-    // The eigenvector with the smaller eigenvalue gives the direction
-    // where the curvature difference is minimal -> intersection continues.
-    let trace = dl + dn;
-    let det = dl * dn - dm * dm;
-    let disc = trace * trace - 4.0 * det;
-
-    if disc < -1e-12 {
-        return None; // Complex eigenvalues (shouldn't happen for symmetric matrix)
-    }
-    let disc_sqrt = disc.max(0.0).sqrt();
-
-    let lambda1 = 0.5 * (trace - disc_sqrt);
-    let lambda2 = 0.5 * (trace + disc_sqrt);
-
-    // Pick the eigenvector corresponding to the eigenvalue closest to zero.
-    let target_lambda = if lambda1.abs() < lambda2.abs() {
-        lambda1
-    } else {
-        lambda2
-    };
-
-    // Eigenvector of [dl, dm; dm, dn] for eigenvalue l:
-    // (dl - l) x + dm y = 0 -> (x, y) = (-dm, dl - l) or (dn - l, -dm)
-    let (ex, ey) = if (dl - target_lambda).abs() > dm.abs() {
-        (-dm, dl - target_lambda)
-    } else {
-        (dn - target_lambda, -dm)
-    };
-
-    let e_len = (ex * ex + ey * ey).sqrt();
-    if e_len < 1e-12 {
-        return None; // Degenerate: curvature difference is isotropic
-    }
-
-    // Convert the 2D eigenvector (in parameter space of surface 1) back to 3D.
-    // The direction in 3D is: ex * S1_u + ey * S1_v
-    let tangent_3d = s1u * (ex / e_len) + s1v * (ey / e_len);
-
-    tangent_3d.normalize().ok()
+    let diff = orthonormal_difference(s1, s2, u1, v1, u2, v2, scratch)?;
+    let nulls = null_directions(
+        diff.a, diff.b, diff.d, diff.e1, diff.e2, diff.norm, diff.det,
+    );
+    nulls.into_iter().next()
 }
 
 /// Perturbation-based tangent direction finder (fallback).
@@ -790,7 +1144,8 @@ fn march_direction(
                 return Ok(points);
             }
 
-            let Some(result) = rkf45_step(s1, s2, &y, h, sign, context, scratch)? else {
+            let Some(result) = rkf45_step(s1, s2, &y, h, sign, prev_tangent, context, scratch)?
+            else {
                 return Ok(points);
             };
 
@@ -946,7 +1301,8 @@ fn march_direction(
 #[allow(
     clippy::many_single_char_names,
     clippy::similar_names,
-    clippy::type_complexity
+    clippy::type_complexity,
+    clippy::too_many_arguments
 )]
 fn rkf45_step(
     s1: &NurbsSurface,
@@ -954,14 +1310,16 @@ fn rkf45_step(
     y: &[f64; 4],
     h: f64,
     sign: f64,
+    prev: Option<Vec3>,
     context: &OperationContext,
     scratch: &mut SsiScratch,
 ) -> Result<Option<([f64; 4], [f64; 4])>, MathError> {
-    // Helper: evaluate f at a state, scaling by h.
+    // Helper: evaluate f at a state, scaling by h. `prev` carries the
+    // incoming march direction so singular nulls preserve continuity.
     let mut f = |state: &[f64; 4]| -> Result<Option<[f64; 4]>, MathError> {
         let clamped = constrain_state(state, s1, s2);
         let Some(t) = ssi_tangent_params(
-            s1, s2, clamped[0], clamped[1], clamped[2], clamped[3], sign, context, scratch,
+            s1, s2, clamped[0], clamped[1], clamped[2], clamped[3], sign, prev, context, scratch,
         )?
         else {
             return Ok(None);

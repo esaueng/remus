@@ -1106,6 +1106,44 @@ fn cyl_v_at_point(cyl: &remus_math::surfaces::CylindricalSurface, p: Point3) -> 
     axis.dot(to_p)
 }
 
+/// Is the plane face its own bounded disc cap about the cone axis (radius
+/// `r_p`), as opposed to a larger plate the cone passes through or stands
+/// on?
+///
+/// True when every outer-boundary vertex lies within `r_p` (plus a small
+/// tolerance) of the axis line through `axis_point` along `axis`. For a
+/// frustum's own end cap the only boundary is the rim circle of radius
+/// `r_p`, so all its vertices sit exactly on the axis-distance `r_p`; for
+/// a plate that a cone stands on (or a holed plate), the outer corners lie
+/// beyond `r_p`. Mirrors `plane_is_bounded_disc` (the cylinder version),
+/// including the holes-are-irrelevant rule: only the outer wire can reach
+/// past the cone.
+fn plane_is_bounded_disc_cone(
+    topo: &Topology,
+    face_plane: FaceId,
+    axis_point: Point3,
+    axis: Vec3,
+    r_p: f64,
+) -> Result<bool, BlendError> {
+    let radial = |p: Point3| -> f64 {
+        let d = p - axis_point;
+        let along = axis * axis.dot(d);
+        (d - along).length()
+    };
+    let tol = r_p * 1e-6 + ANALYTIC_TOL_LIN;
+    let face = topo.face(face_plane)?;
+    let wire = topo.wire(face.outer_wire())?;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let s = topo.vertex(edge.start())?.point();
+        let e = topo.vertex(edge.end())?.point();
+        if radial(s) > r_p + tol || radial(e) > r_p + tol {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Chamfer between a plane and a cylinder whose axis is parallel to the
 /// plane normal, for the convex bottom-rim case.
 ///
@@ -1342,50 +1380,58 @@ pub fn plane_cylinder_chamfer(
 }
 
 /// Fillet between a plane and a cone whose axis is parallel to the plane
-/// normal, for the convex "regular frustum bottom rim" geometry.
+/// normal, for the bounded "solid frustum cap rim" family.
 ///
-/// Returns `Some(StripeResult)` with an exact toroidal blend when the cone
-/// opens *toward* the plate (cone axis anti-parallel to the inward plane
-/// normal — this is the configuration where filleting the bottom rim of a
-/// frustum makes the corner convex from outside). Returns `None` for any
-/// other configuration so the walker handles it.
+/// Returns `Some(StripeResult)` with an exact toroidal blend when the plate
+/// is the frustum's own bounded disc cap and the cone carries the material
+/// on its axis side (face not reversed). Both cap rims of a solid frustum
+/// are covered: the base rim (cone axis anti-parallel to the inward plane
+/// normal) and the small-end rim (axis parallel to the inward normal).
+/// Returns `None` for any other configuration so the walker handles it.
 ///
 /// # Geometry
 ///
-/// At the spine point, the dihedral between outward surface normals is
-/// `π - α` (where α is the cone half-angle), so the fillet wedge half-angle
-/// is `α/2` and the rolling-ball center sits at distance `r/sin(α/2)`
-/// along the outward bisector `cos(α/2)·radial - sin(α/2)·n_p_inward`
-/// (convex) or `-cos(α/2)·radial - sin(α/2)·n_p_inward` (concave).
+/// Work in a meridian half-plane `(ρ, s)`: `ρ ≥ 0` radial from the cone
+/// axis, `s` signed distance from the plate along the inward plane normal
+/// `n` (so material is `s > 0` and the plate is `s = 0`). The cone axis is
+/// `a = σ·n` with `σ = ±1`; the rim sits at `(r_p, 0)` with
+/// `r_p = apex_height · cot(α)` (α is the `ConicalSurface` half-angle,
+/// measured from the radial plane, so `dr/dt = cot α` along the axis).
+/// The wall is the line `ρ(s) = r_p + k·s` with `k = σ·cot α`.
 ///
-/// Convex / concave is detected via `face_cone.is_reversed()`. The two
-/// cases share torus center placement (one fillet radius "below" the
-/// plate along `-n_p_inward`), minor radius (`r`), and the cone axis
-/// direction. They differ only in the major radius:
-///   - Convex (face_cone not reversed): `major = r_p + r·cot(α/2)`,
-///     plate contact at radial `r_p + r·cot(α/2) - r·sin α` outside the
-///     spine. Geometric "post-on-plate" frustum bottom rim.
-///   - Concave (face_cone reversed): `major = r_p − r·cot(α/2)`,
-///     plate contact INSIDE the spine. Geometric "tapered hole through
-///     plate" — the rolling ball lives inside the hole and above the
-///     plate material.
+/// A convex rim is rounded off by a ball rolling INSIDE the solid, so its
+/// centre is one fillet radius into the material at `(ρc, r)` and its
+/// distance to the wall line (measured on the material side) is `r`:
+/// `ρc = r_p + k·r − r·csc α = r_p − r·(1 − σ·cos α)/sin α`. That is
+/// `r_p − r·cot(α/2)` at the base rim (`σ = −1`) and `r_p − r·tan(α/2)`
+/// at the small-end rim (`σ = +1`); both contacts land INSIDE the spine
+/// on the cap disc, and the wall contact lands on the frustum wall
+/// itself at axial `r·(1 − σ·cos α)` into the material and radial
+/// `ρc + r·sin α`.
 ///
-/// At α = π/2 (degenerate "cone" approaching a cylinder), `cot(π/4) = 1`
-/// so the formulas collapse to `major = r_p ± r`, matching
-/// `plane_cylinder_fillet`'s convex/concave branches.
+/// Convex / concave is detected via `face_cone.is_reversed()` combined
+/// with whether the plane is its own bounded disc (the
+/// `plane_cylinder_fillet` `bounded == mat_inside` taxonomy): the bounded
+/// frustum family is inward in both cases. A concave rim is filled in by
+/// a ball rolling in the void, so its centre sits at `(ρc, −r)` with
+/// `ρc = r_p − r·(cot α + csc α) = r_p − r·cot(α/2)` (for the admitted
+/// `σ = +1` tapered-hole configuration) — bit-identical to the previous
+/// concave placement, which is preserved exactly.
+///
+/// At α = π/2 (degenerate "cone" approaching a cylinder), `cot(α/2) = 1`
+/// and `tan(α/2) = 1`, so the inward formulas collapse to
+/// `major = r_p − r`, matching `plane_cylinder_fillet`'s inward branch.
 ///
 /// Returns `None` when:
 ///   - the cone axis isn't parallel to the plane normal,
-///   - `axis_c · n_p_inward > -1 + tol_ang` (cone opens *away* from the
-///     plate — inverted-frustum or cup geometry; the major-radius formula
-///     differs and is left to the walker),
+///   - the rim circle is degenerate (`σ·step ≤ 0`, i.e. no cone-plate
+///     intersection, or the apex lies on the plate),
+///   - the plane is not the bounded disc cap (post-on-plate and hole-rim
+///     plates reach past the cone; left to the walker),
 ///   - the half-angle α is too close to 0 or π/2 (degenerate),
 ///   - the spine is too short,
-///   - the apex is on the plate-material side, or
-///   - the radius produces a degenerate or self-intersecting torus
-///     (concave: `r·cot(α/2) ≥ r_p` makes major non-positive, and
-///     `r·(cot(α/2) + 1) ≥ r_p` produces a spindle torus; convex always
-///     non-spindle since `r·cot(α/2) ≥ 0`).
+///   - the radius produces a degenerate torus (`major ≤ tol`; concave
+///     additionally refuses the spindle/horn regime `major − minor < tol`).
 ///
 /// # Errors
 ///
@@ -1409,26 +1455,25 @@ pub fn plane_cone_fillet(
 
     // 1) Cone axis must be parallel (up to sign) to the inward plane
     //    normal — both cases boil down to "axis points along the plate
-    //    normal." The two valid configurations differ in sign:
-    //       - Convex (post on plate): apex sits on the same side of the
-    //         plate as the cone material, so `axis_c · n_p_inward = -1`.
-    //       - Concave (tapered hole): apex sits on the empty-wedge side
-    //         (across the plate from the cone material), so
-    //         `axis_c · n_p_inward = +1`.
-    //    Either way `|n_dot| ≈ 1` must hold; the sign distinguishes the
-    //    two cases and is cross-checked against `face_cone.is_reversed()`
-    //    below.
+    //    normal." `σ = axis_c · n_p_inward = ±1` records which way: −1 at
+    //    a base rim (axis anti-parallel to the inward normal, apex on the
+    //    material side) and +1 at a small-end rim (axis parallel, apex on
+    //    the void side) or in the tapered-hole configuration.
     let axis_c = cone.axis();
     let n_dot = axis_c.dot(n_p_inward);
     if n_dot.abs() < 1.0 - tol_ang {
         return Ok(None);
     }
+    let sigma = if n_dot > 0.0 { 1.0 } else { -1.0 };
 
-    // 2) Detect concave ("tapered hole through plate") vs convex ("post on
-    //    plate") via the cone face's `reversed` flag. Both cases share
-    //    torus-center placement and tube structure; they differ only in
-    //    the sign of the `r·cot(α/2)` major-radius term.
+    // 2) Detect concave ("tapered hole through plate", face reversed, ball
+    //    in the void) vs convex ("bounded frustum cap rim", ball inside the
+    //    material) via the cone face's `reversed` flag. Which side of the
+    //    plate the ball sits on follows from this, exactly as in
+    //    `plane_cylinder_fillet` (`+n_p_inward` for convex, `-n_p_inward`
+    //    for concave).
     let concave = topo.face(face_cone)?.is_reversed();
+    let mat_inside_cone = !concave;
 
     // 3) Reject degenerate half-angles. Too close to 0 → flat disk; too
     //    close to π/2 → cylinder limit (callers should hit
@@ -1438,27 +1483,24 @@ pub fn plane_cone_fillet(
     if alpha <= 1e-3 || alpha >= std::f64::consts::FRAC_PI_2 - 1e-3 {
         return Ok(None);
     }
-    let half_alpha = alpha * 0.5;
-    let cot_half = half_alpha.tan().recip();
 
     // 4) Apex projection onto the plate. `step` is the signed distance
-    //    you move along `n_p_inward` from the apex to land on the plate.
-    //    The valid sign depends on the case:
-    //       - Convex: apex on the material side ⇒ `step < 0` (you must
-    //         move along `+n_p_inward` to reach the plate, but `step` is
-    //         the projection sign which lands negative under
-    //         `d_plane − n_p_inward·apex`).
-    //       - Concave: apex on the empty-wedge side ⇒ `step > 0`.
-    //    Reject `step ≈ 0` (apex on the plate ⇒ degenerate `r_p = 0`).
+    //    you move along `n_p_inward` from the apex to land on the plate;
+    //    `p_axis_on_plane` is the axis-plate intersection (the contact
+    //    circles' centre). The rim circle exists exactly when the cone's
+    //    axial parameter at the plate, `t_rim = σ·step`, is positive —
+    //    i.e. `σ·step > 0`. That single gate admits the base rim
+    //    (`σ = −1`, apex on the material side, `step < 0`), the small-end
+    //    rim (`σ = +1`, apex across the plate, `step > 0`) and the
+    //    tapered hole (`σ = +1`, `step > 0`), and declines everything
+    //    else. Reject `step ≈ 0` (apex on the plate ⇒ degenerate
+    //    `r_p = 0`).
     let apex = cone.apex();
     let step = d_plane - n_p_inward.dot(Vec3::new(apex.x(), apex.y(), apex.z()));
     if step.abs() <= tol_lin {
         return Ok(None);
     }
-    // Cross-check the case against the apex-side: convex requires `step < 0`
-    // and concave requires `step > 0`. If they disagree the topology is
-    // not the regular-frustum geometry the formulas below assume.
-    if (concave && step <= 0.0) || (!concave && step >= 0.0) {
+    if sigma * step <= 0.0 {
         return Ok(None);
     }
     let apex_height = step.abs();
@@ -1468,14 +1510,34 @@ pub fn plane_cone_fillet(
     //    intersection circle has this radius).
     let r_p = apex_height * (alpha.cos() / alpha.sin());
 
-    // 6) Major / minor radii and torus center. Convex adds `r·cot(α/2)`
-    //    to the spine radius; concave subtracts it. Concave additionally
-    //    needs `r·(cot(α/2) + 1) ≤ r_p` to keep `major ≥ minor`
-    //    (otherwise the construction becomes a spindle torus, which is
-    //    invalid as a fillet surface). The convex case is always
-    //    non-spindle since `r·cot(α/2) ≥ 0`.
-    let signed_offset = if concave { -1.0 } else { 1.0 };
-    let major_radius = r_p + signed_offset * radius * cot_half;
+    // 5b) Bounded-disc taxonomy (mirrors `plane_cylinder_fillet`'s
+    //     `plane_bounded == mat_inside` table). The contact circle must lie
+    //     on the plane face: a frustum cap stops at the rim, so the contact
+    //     runs INSIDE the spine; a plate the cone passes through (or stands
+    //     on) reaches past it. Only the bounded family is supported here —
+    //     anything else declines to the walker.
+    let plane_bounded = plane_is_bounded_disc_cone(topo, face_plane, p_axis_on_plane, axis_c, r_p)?;
+    if !plane_bounded {
+        return Ok(None);
+    }
+    let convex = plane_bounded == mat_inside_cone;
+
+    // 6) Rolling-ball placement from the meridian construction (see the
+    //    `# Geometry` section above). With wall slope `k = σ·cot α` and
+    //    `csc α = 1/sin α`, the ball centre rides at axial `ball_s = ±r`
+    //    along `n_p_inward` (`+r` into the material for convex, `−r` into
+    //    the void for concave) and radial
+    //    `major = r_p + k·ball_s − r·csc α`. For the admitted `σ = +1`
+    //    concave case this reduces to the previous
+    //    `r_p − r·cot(α/2)` placement bit-for-bit up to round-off, so the
+    //    tapered-hole behavior is unchanged; for convex it is the mirrored
+    //    torus fix (B67): the ball moves from the empty side onto the
+    //    material side and the major radius from outside the spine to
+    //    inside it.
+    let k_slope = sigma * (alpha.cos() / alpha.sin());
+    let csc_alpha = 1.0 / alpha.sin();
+    let ball_s = if convex { radius } else { -radius };
+    let major_radius = r_p + k_slope * ball_s - radius * csc_alpha;
     let minor_radius = radius;
     if major_radius <= tol_lin {
         return Ok(None);
@@ -1487,14 +1549,15 @@ pub fn plane_cone_fillet(
     if concave && major_radius - minor_radius < tol_lin {
         return Ok(None);
     }
-    // Torus center sits one fillet radius below the plate (in the
-    // -n_p_inward direction, where the empty wedge is).
-    let torus_center = p_axis_on_plane - n_p_inward * radius;
-    // Torus axis = -n_p_inward (= +axis_c for the regular-frustum case
-    // where axis_c · n_p_inward = -1). With this convention sin(v) points
-    // away from the plate, so plate contact is at v = 3π/2 (sin v = -1
-    // pulls the tube point back toward +n_p_inward) and cone contact is
-    // at v = atan2(cos α, -sin α).
+    // Torus center sits one fillet radius off the plate along the ball
+    // side: `+n_p_inward` into the material for a convex rim (the ball
+    // rolls inside the solid), `-n_p_inward` into the void for a concave
+    // rim (the ball fills the corner). This mirrors
+    // `plane_cylinder_fillet`'s `z_axis_dir` choice; the previous code put
+    // both cases on the void side (B67's mirrored torus).
+    let torus_center = p_axis_on_plane + n_p_inward * ball_s;
+    // Torus axis = -n_p_inward (the axis line is what matters; the sign is
+    // absorbed by the downstream band-orientation logic).
     let axis_dir = -n_p_inward;
 
     // 7) Spine: detect closed-circle case so we can spin a full 2π without
@@ -1546,21 +1609,18 @@ pub fn plane_cone_fillet(
 
     // 10) 3D contact curves.
     //     Plate contact: circle of radius `major_radius` around the cone
-    //       axis, on the plate.
-    //     Cone contact: circle on the analytical cone surface; for
-    //       convex it lands BELOW the plate at axial `-r·(1 + cos α)`
-    //       (on the cone's analytical extension below the frustum), and
-    //       for concave ABOVE the plate at `+r·(1 + cos α)` (between
-    //       apex and plate). The axial direction toward both is the
-    //       empty-wedge direction `-n_p_inward`. The radial offset from
-    //       `major_radius` to the cone-side contact also flips sign:
-    //       `-r·sin α` for convex (contact tucks INSIDE the spine on
-    //       the cone-extension side) and `+r·sin α` for concave (contact
-    //       hangs OUTSIDE the inner-hole spine on the cone above).
+    //       axis, on the plate (inside the spine for the bounded family).
+    //     Cone contact: foot of the perpendicular from the ball centre to
+    //       the wall, on the material side for convex (at axial
+    //       `ball_s − r·σ·cos α` along `n_p_inward`, i.e. `+r·(1+cos α)`
+    //       above the base plate and `+r·(1−cos α)` below the small-end
+    //       cap) and on the void side for concave (the previous
+    //       `−r·(1+cos α)` placement, unchanged). Its radius is
+    //       `major + r·sin α` — outward toward the wall in every case.
     let contact_plane_radius = major_radius;
-    let contact_cone_radius = (major_radius - signed_offset * radius * alpha.sin()).max(tol_lin);
-    let contact_cone_axial_magnitude = radius * (1.0 + alpha.cos());
-    let cone_contact_center = p_axis_on_plane + (-n_p_inward) * contact_cone_axial_magnitude;
+    let contact_cone_radius = (major_radius + radius * alpha.sin()).max(tol_lin);
+    let cone_contact_s = ball_s - radius * sigma * alpha.cos();
+    let cone_contact_center = p_axis_on_plane + n_p_inward * cone_contact_s;
 
     let contact_plane_circle = remus_math::curves::Circle3D::with_axes(
         p_axis_on_plane,
@@ -1604,8 +1664,9 @@ pub fn plane_cone_fillet(
     let p_cone_at = |u: f64| contact_cone_circle.evaluate(u);
     let center_at = |u: f64| {
         // Ball trajectory: same circle as `contact_plane_circle` but lifted
-        // by `-r·n_p_inward` (one fillet radius into the empty wedge).
-        contact_plane_circle.evaluate(u) + (-n_p_inward) * radius
+        // by `ball_s·n_p_inward` (one fillet radius onto the ball side —
+        // into the material for convex, into the void for concave).
+        contact_plane_circle.evaluate(u) + n_p_inward * ball_s
     };
     let plane_uv_at = |u: f64| plane_adapter.project_point(p_plane_at(u));
     let section_start = CircSection {
