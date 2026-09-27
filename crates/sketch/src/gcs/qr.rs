@@ -13,9 +13,11 @@ pub struct QrResult {
     /// Row-major storage: Householder vectors below diagonal, R on/above.
     data: Vec<f64>,
     /// Householder scaling factors (one per column processed).
+    #[allow(dead_code)]
     tau: Vec<f64>,
     /// Column permutation: `perm[k]` is the original column index of
     /// the k-th pivot column.
+    #[allow(dead_code)]
     perm: Vec<usize>,
     /// Number of rows.
     m: usize,
@@ -144,6 +146,203 @@ impl QrResult {
         }
     }
 
+    /// Factorize in place, reusing caller-owned scratch (PERF-S03).
+    ///
+    /// Same matrix layout and numerical operation order as [`Self::factorize`],
+    /// but `tau`, `perm` and `col_norms` are resized and fully overwritten
+    /// instead of allocated, and the factored matrix is left in `data`
+    /// without the owned `data.to_vec()` copy. `perm` is reinitialized to
+    /// `0..n` on every call so a previous solve's permutation cannot leak
+    /// into a resized system.
+    #[allow(clippy::too_many_lines, clippy::missing_panics_doc)]
+    pub fn factorize_reuse(
+        data: &mut [f64],
+        m: usize,
+        n: usize,
+        tau: &mut Vec<f64>,
+        perm: &mut Vec<usize>,
+        col_norms: &mut Vec<f64>,
+    ) {
+        debug_assert!(
+            data.len() >= m * n,
+            "data length {} < m*n = {}",
+            data.len(),
+            m * n
+        );
+
+        let k = m.min(n);
+        tau.resize(k, 0.0);
+        perm.clear();
+        perm.extend(0..n);
+        col_norms.resize(n, 0.0);
+
+        // Column norms for pivoting
+        for j in 0..n {
+            let mut s = 0.0;
+            for i in 0..m {
+                let v = data[i * n + j];
+                s += v * v;
+            }
+            col_norms[j] = s;
+        }
+
+        for step in 0..k {
+            // Column pivoting: find column with largest remaining norm
+            let mut best_col = step;
+            let mut best_norm = col_norms[step];
+            for j in (step + 1)..n {
+                if col_norms[j] > best_norm {
+                    best_norm = col_norms[j];
+                    best_col = j;
+                }
+            }
+
+            if best_col != step {
+                for i in 0..m {
+                    data.swap(i * n + step, i * n + best_col);
+                }
+                col_norms.swap(step, best_col);
+                perm.swap(step, best_col);
+            }
+
+            // Compute Householder reflector for column `step`, rows step..m
+            let mut norm_sq = 0.0;
+            for i in step..m {
+                let v = data[i * n + step];
+                norm_sq += v * v;
+            }
+
+            if norm_sq < 1e-300 {
+                tau[step] = 0.0;
+                continue;
+            }
+
+            let norm = norm_sq.sqrt();
+            let alpha = data[step * n + step];
+            let beta = if alpha >= 0.0 { -norm } else { norm };
+            tau[step] = (beta - alpha) / beta;
+            let scale = 1.0 / (alpha - beta);
+
+            for i in (step + 1)..m {
+                data[i * n + step] *= scale;
+            }
+            data[step * n + step] = beta;
+
+            // Apply reflector to remaining columns
+            for j in (step + 1)..n {
+                let mut dot = data[step * n + j];
+                for i in (step + 1)..m {
+                    dot += data[i * n + step] * data[i * n + j];
+                }
+                let t = tau[step] * dot;
+                data[step * n + j] -= t;
+                for i in (step + 1)..m {
+                    data[i * n + j] -= data[i * n + step] * t;
+                }
+            }
+
+            // Update remaining column norms (downdate).
+            // Periodic recomputation prevents accumulated rounding errors
+            // from corrupting pivot selection in large systems.
+            let recompute_interval = (k / 4).max(1);
+            let needs_recompute = (step + 1) % recompute_interval == 0;
+
+            for j in (step + 1)..n {
+                if needs_recompute {
+                    // Full recomputation from the sub-column below the diagonal
+                    let mut s = 0.0;
+                    for i in (step + 1)..m {
+                        let v = data[i * n + j];
+                        s += v * v;
+                    }
+                    col_norms[j] = s;
+                } else {
+                    let v = data[step * n + j];
+                    col_norms[j] -= v * v;
+                    if col_norms[j] < 0.0 {
+                        col_norms[j] = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compute Q^T * b into `out` (PERF-S03).
+    ///
+    /// Same operation order as [`Self::qt_mul`]; `out` is fully overwritten
+    /// from `b` so no stale entries survive a resize.
+    pub fn qt_mul_into(
+        factored: &[f64],
+        tau: &[f64],
+        m: usize,
+        n: usize,
+        b: &[f64],
+        out: &mut [f64],
+    ) {
+        debug_assert!(out.len() >= m);
+        debug_assert!(b.len() >= m);
+        out[..m].copy_from_slice(&b[..m]);
+        let k = m.min(n);
+        for step in 0..k {
+            if tau[step].abs() < 1e-300 {
+                continue;
+            }
+            let mut dot = out[step];
+            for i in (step + 1)..m {
+                dot += factored[i * n + step] * out[i];
+            }
+            let t = tau[step] * dot;
+            out[step] -= t;
+            for i in (step + 1)..m {
+                out[i] -= factored[i * n + step] * t;
+            }
+        }
+    }
+
+    /// Solve least-squares into `out` (PERF-S03).
+    ///
+    /// Same operation order as [`Self::solve_least_squares`]; `out` (len `n`)
+    /// is fully overwritten via the permutation, and `tmp_qtb` (len `m`) /
+    /// `tmp_z` (len `n`) are solve-local scratch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_least_squares_into(
+        factored: &[f64],
+        tau: &[f64],
+        perm: &[usize],
+        m: usize,
+        n: usize,
+        b: &[f64],
+        out: &mut [f64],
+        tmp_qtb: &mut [f64],
+        tmp_z: &mut [f64],
+    ) {
+        debug_assert!(out.len() >= n);
+        debug_assert!(tmp_qtb.len() >= m);
+        debug_assert!(tmp_z.len() >= n);
+        Self::qt_mul_into(factored, tau, m, n, b, &mut tmp_qtb[..m]);
+        let k = m.min(n);
+
+        for v in tmp_z.iter_mut().take(n) {
+            *v = 0.0;
+        }
+        // Back-substitute R * z = qtb[0..k]
+        for i in (0..k).rev() {
+            let rii = factored[i * n + i];
+            if rii.abs() < 1e-300 {
+                continue;
+            }
+            let mut s = tmp_qtb[i];
+            for j in (i + 1)..k.min(n) {
+                s -= factored[i * n + j] * tmp_z[j];
+            }
+            tmp_z[i] = s / rii;
+        }
+
+        for (i, &pi) in perm.iter().enumerate().take(n) {
+            out[pi] = tmp_z[i];
+        }
+    }
+
     /// Numerical rank, counting diagonal elements of R with
     /// `|R[i,i]| > tol * |R[0,0]|`.
     #[must_use]
@@ -169,6 +368,10 @@ impl QrResult {
     }
 
     /// Compute Q^T * b.
+    ///
+    /// Retained for the QR unit tests and `dof` callers; the solver loop
+    /// uses [`Self::qt_mul_into`] with reused scratch instead.
+    #[allow(dead_code)]
     pub fn qt_mul(&self, b: &[f64]) -> Vec<f64> {
         let mut result = b.to_vec();
         let k = self.m.min(self.n);
@@ -191,6 +394,10 @@ impl QrResult {
 
     /// Solve the least-squares problem min ||Jx - b|| via back-substitution
     /// on the R factor, then unpermute.
+    ///
+    /// Retained for the QR unit tests; the solver loop uses
+    /// [`Self::solve_least_squares_into`] with reused scratch instead.
+    #[allow(dead_code)]
     pub fn solve_least_squares(&self, b: &[f64]) -> Vec<f64> {
         let qtb = self.qt_mul(b);
         let k = self.m.min(self.n);
