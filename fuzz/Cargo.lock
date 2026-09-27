@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "remus-algo"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "log",
  "remus-math",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "remus-blend"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "log",
  "remus-math",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "remus-check"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "remus-geometry",
  "remus-math",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "remus-geometry"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "remus-math",
  "thiserror",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "remus-heal"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "bitflags",
  "log",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "remus-io"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "quick-xml",
  "remus-math",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "remus-math"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "log",
  "robust",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "remus-offset"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "log",
  "remus-geometry",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "remus-operations"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "log",
  "rayon",
@@ -436,14 +436,14 @@ dependencies = [
 
 [[package]]
 name = "remus-sketch"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "remus-topology"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "remus-math",
  "smallvec",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "remus-wasm"
-version = "2.130.2"
+version = "2026.1.0"
 dependencies = [
  "log",
  "remus-algo",

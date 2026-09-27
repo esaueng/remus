@@ -9,6 +9,11 @@ fork must not publish until the ownership requirements in
 - [ ] Record the exact commit, upstream base, fork-only diff, and clean status.
 - [ ] Confirm the tag, `crates/wasm/Cargo.toml`, generated `package.json`,
   changelog, and release notes use the same version.
+- [ ] Check the proposed version against `docs/VERSIONING.md`, including the
+  year/release/patch decision and migration notes for public contract changes.
+- [ ] Confirm all publishable Rust crate manifests and exact sibling pins use
+  the release version, and both WASM npm packages were built from the same
+  source commit.
 - [ ] Confirm root and xtask lockfiles are committed and unchanged by builds.
 - [ ] Review all changes since the previous tag; identify public behavior or
   format changes and supply migration notes where required.
