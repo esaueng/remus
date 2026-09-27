@@ -1,0 +1,2346 @@
+{
+  "meta": {
+    "scope": "mutating BrepKernel JS exports and their O4.7 typed-result twins",
+    "source": "crates/wasm/src via js_name discovery; generated-package provenance tracked separately",
+    "covered_schema": "solid_envelope",
+    "detail": "queries (&self) carry no rows; every mutating export carries exactly one row"
+  },
+  "rows": [
+    {
+      "js": "addHolesToFace",
+      "rust": "add_holes_to_face",
+      "file": "bindings/query.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "approximateCurve",
+      "rust": "approximate_curve",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "approximateCurveLspia",
+      "rust": "approximate_curve_lspia",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "approximateSurfaceLspia",
+      "rust": "approximate_surface_lspia",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "assemblyAddChild",
+      "rust": "assembly_add_child",
+      "file": "bindings/assembly.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O5.4",
+      "reason": "assembly session CRUD; occurrence-identity scope, not a modeling twin"
+    },
+    {
+      "js": "assemblyAddRoot",
+      "rust": "assembly_add_root",
+      "file": "bindings/assembly.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O5.4",
+      "reason": "assembly session CRUD; occurrence-identity scope, not a modeling twin"
+    },
+    {
+      "js": "assemblyNew",
+      "rust": "assembly_new",
+      "file": "bindings/assembly.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O5.4",
+      "reason": "assembly session CRUD; occurrence-identity scope, not a modeling twin"
+    },
+    {
+      "js": "booleanCompoundRegions",
+      "rust": "boolean_compound_regions",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean variant (n-ary/compound/regions); O4.7 solid twin pending"
+    },
+    {
+      "js": "booleanRegions",
+      "rust": "boolean_regions",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean variant (n-ary/compound/regions); O4.7 solid twin pending"
+    },
+    {
+      "js": "booleanWithCancellation",
+      "rust": "boolean_with_cancellation",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the cancellable envelope; the cancellation surface itself"
+    },
+    {
+      "js": "booleanWithQuality",
+      "rust": "boolean_with_quality",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the quality envelope; the disclosed-approximation surface itself"
+    },
+    {
+      "js": "chamfer",
+      "rust": "chamfer_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by chamferDetailed; direct/batch code parity with chamferDetailed",
+      "twin": "chamferDetailed",
+      "batch_ops": [
+        "chamferDetailed"
+      ],
+      "witnesses": [
+        "exact_twins_match_both_batch_contracts_and_the_legacy_geometry",
+        "invalid_handle_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "blend_engine_refusals_match_legacy_batch_v2_and_roll_back",
+        "argument_refusals_are_typed_data",
+        "poisoned_kernel_refuses_every_twin_as_data"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "chamferDetailed",
+      "rust": "chamfer_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "chamferDistanceAngle",
+      "rust": "chamfer_distance_angle",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by chamferDistanceAngleDetailed; direct/batch code parity with chamferDistanceAngleDetailed",
+      "twin": "chamferDistanceAngleDetailed",
+      "batch_ops": [
+        "chamferDistanceAngleDetailed"
+      ],
+      "witnesses": [
+        "exact_blend_variants_match_both_batch_contracts_and_the_legacy_geometry",
+        "blend_variant_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "poisoned_kernel_refuses_every_twin_as_data",
+        "offset_exact_only_refuses_sampled_nurbs_before_touching_topology"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "chamferDistanceAngleDetailed",
+      "rust": "chamfer_distance_angle_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "chamferDistanceAngleWithEvolution",
+      "rust": "chamfer_distance_angle_with_evolution",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "chamferJournaled",
+      "rust": "chamfer_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "chamferV2",
+      "rust": "chamfer_v2",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by chamferV2Detailed; direct/batch code parity with chamferV2Detailed",
+      "twin": "chamferV2Detailed",
+      "batch_ops": [
+        "chamferV2Detailed"
+      ],
+      "witnesses": [
+        "exact_blend_variants_match_both_batch_contracts_and_the_legacy_geometry",
+        "blend_variant_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "poisoned_kernel_refuses_every_twin_as_data",
+        "offset_exact_only_refuses_sampled_nurbs_before_touching_topology"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "chamferV2Detailed",
+      "rust": "chamfer_v2_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "chamferWithEvolution",
+      "rust": "chamfer_with_evolution",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "checkpoint",
+      "rust": "checkpoint",
+      "file": "bindings/checkpoint.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B29",
+      "reason": "session checkpoint; transaction-scoped, no solid twin applicable"
+    },
+    {
+      "js": "circularPattern",
+      "rust": "circular_pattern",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "circularPatternJournaled",
+      "rust": "circular_pattern_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "compoundCut",
+      "rust": "compound_cut",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean variant (n-ary/compound/regions); O4.7 solid twin pending"
+    },
+    {
+      "js": "convertToBspline",
+      "rust": "convert_to_bspline",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "convertToElementary",
+      "rust": "convert_to_elementary",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "convexHull",
+      "rust": "convex_hull",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "B6 convex-hull/Minkowski family; O4.7 solid twin pending"
+    },
+    {
+      "js": "copyAndTransformSolid",
+      "rust": "copy_and_transform_solid",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "copyFace",
+      "rust": "copy_face",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face-handle result; face-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "copySolid",
+      "rust": "copy_solid",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "copyWire",
+      "rust": "copy_wire",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "wire-handle result; wire-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "curveDegreeElevate",
+      "rust": "curve_degree_elevate",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "curveKnotInsert",
+      "rust": "curve_knot_insert",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "curveKnotRemove",
+      "rust": "curve_knot_remove",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "curveSplit",
+      "rust": "curve_split",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "multi-handle result; multi-value typed envelope pending, not the solid envelope"
+    },
+    {
+      "js": "cut",
+      "rust": "cut",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by cutDetailed; direct/batch code parity with cut",
+      "twin": "cutDetailed",
+      "batch_ops": [
+        "cut"
+      ],
+      "witnesses": [
+        "detailed_binary_boolean_successes_return_live_handles",
+        "detailed_binary_boolean_refusals_match_batch_v2_codes",
+        "cut_detailed_readme_example_matches_batch_v2",
+        "cut_detailed_operation_refusal_matches_batch_v2_and_rolls_back"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "cutDetailed",
+      "rust": "cut_detailed",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "cutJournaled",
+      "rust": "cut_journaled",
+      "file": "bindings/naming.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "cutWithEntityEvolution",
+      "rust": "cut_with_entity_evolution",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "cutWithEvolution",
+      "rust": "cut_with_evolution",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "cutWithOptions",
+      "rust": "cut_with_options",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean option variant; O4.7 solid twin pending"
+    },
+    {
+      "js": "defeature",
+      "rust": "defeature",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "defeatureJournaled",
+      "rust": "defeature_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "deleteSolid",
+      "rust": "delete_solid",
+      "file": "bindings/lifecycle.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B29",
+      "reason": "entity retirement with stale-handle contract; no solid twin applicable"
+    },
+    {
+      "js": "deserializeSheet",
+      "rust": "deserialize_sheet",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O4.6",
+      "reason": "arena import into the session; serialization-policy scope, not a modeling twin"
+    },
+    {
+      "js": "deserializeSheets",
+      "rust": "deserialize_sheets",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O4.6",
+      "reason": "arena import into the session; serialization-policy scope, not a modeling twin"
+    },
+    {
+      "js": "deserializeSolid",
+      "rust": "deserialize_solid",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O4.6",
+      "reason": "arena import into the session; serialization-policy scope, not a modeling twin"
+    },
+    {
+      "js": "deserializeSolids",
+      "rust": "deserialize_solids",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O4.6",
+      "reason": "arena import into the session; serialization-policy scope, not a modeling twin"
+    },
+    {
+      "js": "deserializeWire",
+      "rust": "deserialize_wire",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O4.6",
+      "reason": "arena import into the session; serialization-policy scope, not a modeling twin"
+    },
+    {
+      "js": "deserializeWires",
+      "rust": "deserialize_wires",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O4.6",
+      "reason": "arena import into the session; serialization-policy scope, not a modeling twin"
+    },
+    {
+      "js": "discardCheckpoint",
+      "rust": "discard_checkpoint",
+      "file": "bindings/checkpoint.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B29",
+      "reason": "session checkpoint disposal; no solid twin applicable"
+    },
+    {
+      "js": "draft",
+      "rust": "draft_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "draft; O4.7 solid twin pending"
+    },
+    {
+      "js": "draftJournaled",
+      "rust": "draft_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "executeBatch",
+      "rust": "execute_batch",
+      "file": "bindings/batch.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "batch dispatcher itself; covered via per-op arms, never twinned"
+    },
+    {
+      "js": "executeBatchV2",
+      "rust": "execute_batch_v2",
+      "file": "bindings/batch.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "batch dispatcher itself; covered via per-op arms, never twinned"
+    },
+    {
+      "js": "extrude",
+      "rust": "extrude_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by extrudeDetailed; direct/batch code parity with extrudeDetailed",
+      "twin": "extrudeDetailed",
+      "batch_ops": [
+        "extrudeDetailed"
+      ],
+      "witnesses": [
+        "extrude_rectangle_matches_area_times_distance_at_all_scales",
+        "extrude_circle_matches_pi_r_squared_h",
+        "extrude_holed_rectangle_subtracts_hole_exactly",
+        "extrude_negative_distance_extrudes_opposite_with_same_volume",
+        "extrude_rigid_placement_preserves_volume",
+        "argument_refusals_are_typed_data",
+        "handle_refusals_match_legacy_batch_v2_and_preserve_handles",
+        "detailed_batch_rejects_malformed_optional_numbers_without_mutation",
+        "every_success_reports_exact_with_no_approximate_branch"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "extrudeDetailed",
+      "rust": "extrude_detailed",
+      "file": "bindings/construction_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "faceFaceBlend",
+      "rust": "face_face_blend",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face-face blend sheet; O4.7 solid twin pending"
+    },
+    {
+      "js": "faceFaceBlendWithHoldLine",
+      "rust": "face_face_blend_with_hold_line",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face-face blend sheet; O4.7 solid twin pending"
+    },
+    {
+      "js": "fillCoonsPatch",
+      "rust": "fill_coons_patch",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "Coons patch fill; O4.7 solid twin pending"
+    },
+    {
+      "js": "fillet",
+      "rust": "fillet_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by filletDetailed; direct/batch code parity with filletDetailed",
+      "twin": "filletDetailed",
+      "batch_ops": [
+        "filletDetailed"
+      ],
+      "witnesses": [
+        "exact_twins_match_both_batch_contracts_and_the_legacy_geometry",
+        "invalid_handle_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "blend_engine_refusals_match_legacy_batch_v2_and_roll_back",
+        "argument_refusals_are_typed_data",
+        "poisoned_kernel_refuses_every_twin_as_data",
+        "saddle_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "filletDetailed",
+      "rust": "fillet_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "filletJournaled",
+      "rust": "fillet_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "filletV2",
+      "rust": "fillet_v2",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by filletV2Detailed; direct/batch code parity with filletV2Detailed",
+      "twin": "filletV2Detailed",
+      "batch_ops": [
+        "filletV2Detailed"
+      ],
+      "witnesses": [
+        "exact_blend_variants_match_both_batch_contracts_and_the_legacy_geometry",
+        "blend_variant_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "poisoned_kernel_refuses_every_twin_as_data",
+        "walking_variant_exact_only_refuses_the_saddle_wall_with_rollback",
+        "offset_exact_only_refuses_sampled_nurbs_before_touching_topology"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "filletV2Detailed",
+      "rust": "fillet_v2_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "filletVariable",
+      "rust": "fillet_variable",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by filletVariableDetailed; direct/batch code parity with filletVariableDetailed",
+      "twin": "filletVariableDetailed",
+      "batch_ops": [
+        "filletVariableDetailed"
+      ],
+      "witnesses": [
+        "variable_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it",
+        "variable_fillet_spec_refusals_match_legacy_batch_v2",
+        "poisoned_kernel_refuses_every_twin_as_data"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "filletVariableDetailed",
+      "rust": "fillet_variable_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "filletWithEvolution",
+      "rust": "fillet_with_evolution",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "fixFaceOrientations",
+      "rust": "fix_face_orientations",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "fixShapeWithConfig",
+      "rust": "fix_shape_with_config",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "returns a JSON string; tsify typed twin pending per O4.7(b)"
+    },
+    {
+      "js": "fixShapeWithConfigJournaled",
+      "rust": "fix_shape_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "fromBREP",
+      "rust": "from_brep",
+      "file": "bindings/query.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "fuse",
+      "rust": "fuse",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by fuseDetailed; direct/batch code parity with fuse",
+      "twin": "fuseDetailed",
+      "batch_ops": [
+        "fuse"
+      ],
+      "witnesses": [
+        "detailed_binary_boolean_successes_return_live_handles",
+        "detailed_binary_boolean_refusals_match_batch_v2_codes"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "fuseAll",
+      "rust": "fuse_all",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean variant (n-ary/compound/regions); O4.7 solid twin pending"
+    },
+    {
+      "js": "fuseDetailed",
+      "rust": "fuse_detailed",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "fuseJournaled",
+      "rust": "fuse_journaled",
+      "file": "bindings/naming.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "fuseWithEntityEvolution",
+      "rust": "fuse_with_entity_evolution",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "fuseWithEvolution",
+      "rust": "fuse_with_evolution",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "fuseWithOptions",
+      "rust": "fuse_with_options",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean option variant; O4.7 solid twin pending"
+    },
+    {
+      "js": "gcsAddArc",
+      "rust": "gcs_add_arc",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsAddCircle",
+      "rust": "gcs_add_circle",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsAddConstraint",
+      "rust": "gcs_add_constraint",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsAddLine",
+      "rust": "gcs_add_line",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsAddPoint",
+      "rust": "gcs_add_point",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsDof",
+      "rust": "gcs_dof",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS solver verdict; qualified by the B16 matrix, not a solid twin"
+    },
+    {
+      "js": "gcsNew",
+      "rust": "gcs_new",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsRemoveConstraint",
+      "rust": "gcs_remove_constraint",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsSetPoint",
+      "rust": "gcs_set_point",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsSolve",
+      "rust": "gcs_solve",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "GCS solver verdict; qualified by the B16 matrix, not a solid twin"
+    },
+    {
+      "js": "gcsSolveDetailed",
+      "rust": "gcs_solve_detailed",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "already typed with the solve diagnostics (JSON string); qualified by the B16 matrix"
+    },
+    {
+      "js": "gridPattern",
+      "rust": "grid_pattern",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "guidedSweep",
+      "rust": "guided_sweep",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "healSolid",
+      "rust": "heal_solid",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "healSolidDetailed",
+      "rust": "heal_solid_detailed",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the heal envelope (JSON string); tsify replacement pending per O4.7(b), tracked as an uncovered heal row on healSolid"
+    },
+    {
+      "js": "helicalSweep",
+      "rust": "helical_sweep",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "import3mf",
+      "rust": "import_3mf",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B31",
+      "reason": "translator-module mesh import; ships in remus-wasm-io; result-contract decision in B31"
+    },
+    {
+      "js": "importGlb",
+      "rust": "import_glb",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B31",
+      "reason": "translator-module mesh import; ships in remus-wasm-io; result-contract decision in B31"
+    },
+    {
+      "js": "importIges",
+      "rust": "import_iges",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O5.1",
+      "reason": "translator-module import; ships in remus-wasm-io, not the kernel package; kernel-twin scope tracks kernel methods"
+    },
+    {
+      "js": "importIndexedMesh",
+      "rust": "import_indexed_mesh",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B31",
+      "reason": "translator-module mesh import; ships in remus-wasm-io; result-contract decision in B31"
+    },
+    {
+      "js": "importObj",
+      "rust": "import_obj",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B31",
+      "reason": "translator-module mesh import; ships in remus-wasm-io; result-contract decision in B31"
+    },
+    {
+      "js": "importPly",
+      "rust": "import_ply",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B31",
+      "reason": "translator-module mesh import; ships in remus-wasm-io; result-contract decision in B31"
+    },
+    {
+      "js": "importStep",
+      "rust": "import_step",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O5.1",
+      "reason": "translator-module import; ships in remus-wasm-io, not the kernel package; kernel-twin scope tracks kernel methods"
+    },
+    {
+      "js": "importStepBodies",
+      "rust": "import_step_bodies",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O5.1",
+      "reason": "translator-module import; ships in remus-wasm-io, not the kernel package; kernel-twin scope tracks kernel methods"
+    },
+    {
+      "js": "importStepWithReport",
+      "rust": "import_step_with_report",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O5.1",
+      "reason": "translator-module import; ships in remus-wasm-io, not the kernel package; kernel-twin scope tracks kernel methods"
+    },
+    {
+      "js": "importStepWithValidation",
+      "rust": "import_step_with_validation",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O5.1",
+      "reason": "translator-module import; ships in remus-wasm-io, not the kernel package; kernel-twin scope tracks kernel methods"
+    },
+    {
+      "js": "importStl",
+      "rust": "import_stl",
+      "file": "bindings/io.rs",
+      "gate": "io",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B31",
+      "reason": "translator-module mesh import; ships in remus-wasm-io; result-contract decision in B31"
+    },
+    {
+      "js": "imprint",
+      "rust": "imprint_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "interpolatePoints",
+      "rust": "interpolate_points",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "interpolateSurface",
+      "rust": "interpolate_surface",
+      "file": "bindings/nurbs.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "edge-curve op; non-solid typed result pending, not the solid envelope"
+    },
+    {
+      "js": "intersect",
+      "rust": "intersect_solids",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by intersectDetailed; direct/batch code parity with intersect",
+      "twin": "intersectDetailed",
+      "batch_ops": [
+        "intersect"
+      ],
+      "witnesses": [
+        "detailed_binary_boolean_successes_return_live_handles",
+        "detailed_binary_boolean_refusals_match_batch_v2_codes"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "intersectDetailed",
+      "rust": "intersect_detailed",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "intersectJournaled",
+      "rust": "intersect_journaled",
+      "file": "bindings/naming.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "intersectWithEntityEvolution",
+      "rust": "intersect_with_entity_evolution",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "intersectWithEvolution",
+      "rust": "intersect_with_evolution",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "intersectWithOptions",
+      "rust": "intersect_with_options",
+      "file": "bindings/booleans.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "boolean option variant; O4.7 solid twin pending"
+    },
+    {
+      "js": "journalBarrier",
+      "rust": "journal_barrier",
+      "file": "bindings/naming.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "explicit journal barrier; evolution-audit scope, not a modeling twin"
+    },
+    {
+      "js": "liftCurve2dToPlane",
+      "rust": "lift_curve2d_to_plane",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "linearPattern",
+      "rust": "linear_pattern",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "linearPatternJournaled",
+      "rust": "linear_pattern_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "loft",
+      "rust": "loft_faces",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "loftSmooth",
+      "rust": "loft_smooth_faces",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "loftWithOptions",
+      "rust": "loft_with_options",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeBox",
+      "rust": "make_box_solid",
+      "file": "bindings/primitives.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "primitive constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCircle",
+      "rust": "make_circle",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCircleArc3d",
+      "rust": "make_circle_arc_3d",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCircleEdge",
+      "rust": "make_circle_edge",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCircleEdgeWithRef",
+      "rust": "make_circle_edge_with_ref",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCircleFace",
+      "rust": "make_circle_face",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCompound",
+      "rust": "make_compound",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCone",
+      "rust": "make_cone_solid",
+      "file": "bindings/primitives.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "primitive constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeCylinder",
+      "rust": "make_cylinder_solid",
+      "file": "bindings/primitives.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "primitive constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeEllipseArc3d",
+      "rust": "make_ellipse_arc_3d",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeEllipseEdge",
+      "rust": "make_ellipse_edge",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeEllipseEdgeWithRef",
+      "rust": "make_ellipse_edge_with_ref",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeEllipsoid",
+      "rust": "make_ellipsoid_solid",
+      "file": "bindings/primitives.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "primitive constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeFaceFromWire",
+      "rust": "make_face_from_wire",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeFaceFromWires",
+      "rust": "make_face_from_wires",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeLineEdge",
+      "rust": "make_line_edge",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeNurbsEdge",
+      "rust": "make_nurbs_edge",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makePlanarFaceFromWire",
+      "rust": "make_planar_face_from_wire",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makePolygon",
+      "rust": "make_polygon",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face-handle result; face-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "makePolygonWire",
+      "rust": "make_polygon_wire",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeRectangle",
+      "rust": "make_rectangle",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeRegularPolygonWire",
+      "rust": "make_regular_polygon_wire",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeSheetBody",
+      "rust": "make_sheet_body",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeSolid",
+      "rust": "make_solid_from_faces",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "makeSphere",
+      "rust": "make_sphere_solid",
+      "file": "bindings/primitives.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "primitive constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeTangentArc3d",
+      "rust": "make_tangent_arc_3d",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeTorus",
+      "rust": "make_torus_solid",
+      "file": "bindings/primitives.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "primitive constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeVertex",
+      "rust": "make_vertex",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeWire",
+      "rust": "make_wire",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "mergeCoincidentVertices",
+      "rust": "merge_coincident_vertices",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "minkowskiSum",
+      "rust": "minkowski_sum",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "B6 convex-hull/Minkowski family; O4.7 solid twin pending"
+    },
+    {
+      "js": "mirror",
+      "rust": "mirror_solid",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "transform/pattern family; O4.7 solid twin pending"
+    },
+    {
+      "js": "moveFaces",
+      "rust": "move_faces_binding",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "direct edit; O4.7 solid twin pending"
+    },
+    {
+      "js": "moveFacesJournaled",
+      "rust": "move_faces_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "multiSectionSweep",
+      "rust": "multi_section_sweep",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "mutualTrimSheets",
+      "rust": "mutual_trim_sheets_body",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "multi-handle result; multi-value typed envelope pending, not the solid envelope"
+    },
+    {
+      "js": "offsetDetailed",
+      "rust": "offset_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "offsetFace",
+      "rust": "offset_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face-handle result; face-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "offsetFaceWithQuality",
+      "rust": "offset_face_with_quality",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the face-offset quality envelope; the disclosed-approximation surface itself"
+    },
+    {
+      "js": "offsetJournaled",
+      "rust": "offset_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "offsetSolid",
+      "rust": "offset_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by offsetDetailed; direct/batch code parity with offsetDetailed",
+      "twin": "offsetDetailed",
+      "batch_ops": [
+        "offsetDetailed"
+      ],
+      "witnesses": [
+        "exact_twins_match_both_batch_contracts_and_the_legacy_geometry",
+        "invalid_handle_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "argument_refusals_are_typed_data",
+        "poisoned_kernel_refuses_every_twin_as_data",
+        "offset_exact_only_refuses_sampled_nurbs_before_touching_topology"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "offsetSolidV2",
+      "rust": "offset_solid_v2",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "exact offset wrapper; O4.7 solid twin pending (offsetSolid is covered via offsetDetailed)"
+    },
+    {
+      "js": "offsetWire",
+      "rust": "offset_wire",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "wire-handle result; wire-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "offsetWire2DWithJoin",
+      "rust": "offset_wire_2d_with_join",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "wire-handle result; wire-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "offsetWireWithJoinType",
+      "rust": "offset_wire_with_join_type",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "wire-handle result; wire-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "pipe",
+      "rust": "pipe_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "propagateAttributesForOp",
+      "rust": "propagate_attributes_for_op_js",
+      "file": "bindings/naming.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "B18",
+      "reason": "attribute propagation; B18 evolution-audit scope"
+    },
+    {
+      "js": "pushPullFace",
+      "rust": "push_pull_face_binding",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "direct edit; O4.7 solid twin pending"
+    },
+    {
+      "js": "removeBlendsJournaled",
+      "rust": "remove_blends_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "removeDegenerateEdges",
+      "rust": "remove_degenerate_edges",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "removeHolesFromFace",
+      "rust": "remove_holes_from_face",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face-handle result; face-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "repairSolid",
+      "rust": "repair_solid",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "repairSolidDetailed",
+      "rust": "repair_solid_detailed",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the repair envelope (JSON string); tsify replacement pending per O4.7(b), tracked as an uncovered heal row on repairSolid"
+    },
+    {
+      "js": "replaceSurfaceJournaled",
+      "rust": "replace_surface_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "resizeBlend",
+      "rust": "resize_blend_binding",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "direct edit; O4.7 solid twin pending"
+    },
+    {
+      "js": "resizeBlendJournaled",
+      "rust": "resize_blend_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "resizeBlendWithEvolution",
+      "rust": "resize_blend_with_evolution_binding",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "resizeCylindricalFace",
+      "rust": "resize_cylindrical_face_binding",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "direct edit; O4.7 solid twin pending"
+    },
+    {
+      "js": "resizeCylindricalFaceJournaled",
+      "rust": "resize_cylindrical_face_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "restore",
+      "rust": "restore",
+      "file": "bindings/checkpoint.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B29",
+      "reason": "session restore; transaction-scoped, no solid twin applicable"
+    },
+    {
+      "js": "reverseShape",
+      "rust": "reverse_shape",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "orientation flip; O4.7 solid twin pending"
+    },
+    {
+      "js": "revolve",
+      "rust": "revolve_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by revolveDetailed; direct/batch code parity with revolveDetailed",
+      "twin": "revolveDetailed",
+      "batch_ops": [
+        "revolveDetailed"
+      ],
+      "witnesses": [
+        "revolve_rectangle_full_gives_cylinder",
+        "revolve_offset_rectangle_gives_annulus",
+        "revolve_partial_gives_sector_fraction",
+        "revolve_disc_offset_gives_torus",
+        "revolve_scales_and_translated_placement",
+        "degrees_to_radians_conversion_is_exact",
+        "argument_refusals_are_typed_data",
+        "handle_refusals_match_legacy_batch_v2_and_preserve_handles",
+        "detailed_batch_rejects_malformed_optional_numbers_without_mutation",
+        "unsupported_partial_revolve_refuses_with_rollback",
+        "every_success_reports_exact_with_no_approximate_branch"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "revolveDetailed",
+      "rust": "revolve_detailed",
+      "file": "bindings/construction_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "runHealPipeline",
+      "rust": "run_heal_pipeline",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "returns a JSON string; tsify typed twin pending per O4.7(b)"
+    },
+    {
+      "js": "runHealPipelineJournaled",
+      "rust": "heal_pipeline_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "section",
+      "rust": "section_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "multi-handle result; multi-value typed envelope pending, not the solid envelope"
+    },
+    {
+      "js": "setFaceName",
+      "rust": "set_face_name",
+      "file": "bindings/naming.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "O5.2",
+      "reason": "attribute write; attribute-scope contract, not a solid twin"
+    },
+    {
+      "js": "sewFaces",
+      "rust": "sew_faces",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "shell",
+      "rust": "shell_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "O4.7",
+      "reason": "typed by shellDetailed; direct/batch code parity with shellDetailed",
+      "twin": "shellDetailed",
+      "batch_ops": [
+        "shellDetailed"
+      ],
+      "witnesses": [
+        "exact_twins_match_both_batch_contracts_and_the_legacy_geometry",
+        "invalid_handle_refusals_match_legacy_batch_v2_and_mutate_nothing",
+        "argument_refusals_are_typed_data",
+        "poisoned_kernel_refuses_every_twin_as_data",
+        "shell_twin_keeps_the_legacy_exact_only_refusal_and_discloses_opt_in"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "shellDetailed",
+      "rust": "shell_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "shellWithQuality",
+      "rust": "shell_with_quality",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the shell quality envelope; the disclosed-approximation surface itself"
+    },
+    {
+      "js": "sketchAddArc",
+      "rust": "sketch_add_arc",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "sketchAddCircle",
+      "rust": "sketch_add_circle",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "sketchAddConstraint",
+      "rust": "sketch_add_constraint",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "sketchAddPoint",
+      "rust": "sketch_add_point",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "sketchDof",
+      "rust": "sketch_dof",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch solver verdict; qualified by the B16 matrix, not a solid twin"
+    },
+    {
+      "js": "sketchNew",
+      "rust": "sketch_new",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "sketchSolve",
+      "rust": "sketch_solve",
+      "file": "bindings/sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B16",
+      "reason": "sketch solver verdict; qualified by the B16 matrix, not a solid twin"
+    },
+    {
+      "js": "solidFromShell",
+      "rust": "solid_from_shell",
+      "file": "bindings/shapes.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "shell-to-solid construction; O4.7 solid twin pending"
+    },
+    {
+      "js": "split",
+      "rust": "split_solid",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "multi-handle result; multi-value typed envelope pending, not the solid envelope"
+    },
+    {
+      "js": "splitBySheet",
+      "rust": "split_by_sheet_body",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sheet-split solid; O4.7 solid twin pending"
+    },
+    {
+      "js": "sweep",
+      "rust": "sweep_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "sweepAlongEdges",
+      "rust": "sweep_along_edges",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "sweepSmooth",
+      "rust": "sweep_smooth_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "sweepWire",
+      "rust": "sweep_wire",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "sweepWithOptions",
+      "rust": "sweep_with_options",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "thicken",
+      "rust": "thicken_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face thickening; O4.7 solid twin pending"
+    },
+    {
+      "js": "transformFace",
+      "rust": "transform_face",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "in-place mutation returning void; typed status pending, never a forced solid envelope"
+    },
+    {
+      "js": "transformSolid",
+      "rust": "transform_solid_binding",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "in-place mutation returning void; typed status pending, never a forced solid envelope"
+    },
+    {
+      "js": "transformWire",
+      "rust": "transform_wire",
+      "file": "bindings/transforms.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "in-place mutation returning void; typed status pending, never a forced solid envelope"
+    },
+    {
+      "js": "trimSheetBySheet",
+      "rust": "trim_sheet_by_sheet_body",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sheet trim; sheet-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "trimSheetBySolid",
+      "rust": "trim_sheet_by_solid_body",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "sheet trim; sheet-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "unifyFaces",
+      "rust": "unify_faces",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "returns merged-face count; typed status pending (Checked variant returns a JSON string)"
+    },
+    {
+      "js": "unifyFacesChecked",
+      "rust": "unify_faces_checked",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "already typed with the unify report (JSON string); tsify replacement pending per O4.7(b)"
+    },
+    {
+      "js": "untrimFace",
+      "rust": "untrim_face",
+      "file": "bindings/operations.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "face untrim; face-typed twin pending, not the solid envelope"
+    },
+    {
+      "js": "weldShellsAndFaces",
+      "rust": "weld_shells_and_faces",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "heal family; O4.7 tsify twin pending"
+    }
+  ]
+}
