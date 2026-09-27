@@ -26,10 +26,10 @@ permissions:
 # branch commit (it dangles after squash-merge, PR #499); land the callee
 # change first, then re-pin to that squash commit in a follow-up, checking
 # `git merge-base --is-ancestor <sha> origin/main` and the file content.
-# 2a735434 is the squash of PR #614, which introduced the sharded callee.
+# Keep the callee commit when merging so this pin remains on main.
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded.yml@5f92f4c6aa51fe97d71b05251bd43d0455ca7699
+    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded.yml@5c68ffc41b6bfe0ace6245db397b65adf3176e0e
     permissions:
       contents: read
       pull-requests: read
