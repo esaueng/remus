@@ -991,6 +991,30 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - construction twins refuse closed spline chord approximation');
 }
 
+{
+  const k = new BrepKernel();
+  const spline = k.makeNurbsEdge(
+    2, 0, 0, 2, 2, 0, 2,
+    Float64Array.from([0, 0, 0, 1, 1, 1]),
+    Float64Array.from([2, 0, 0, 3, 1, 0, 2, 2, 0]),
+    Float64Array.from([1, 1, 1]),
+  );
+  const edges = Uint32Array.from([
+    spline,
+    k.makeLineEdge(2, 2, 0, 0, 2, 0),
+    k.makeLineEdge(0, 2, 0, 0, 0, 0),
+    k.makeLineEdge(0, 0, 0, 2, 0, 0),
+  ]);
+  const face = k.makePlanarFaceFromWire(k.makeWire(edges, true));
+  const direct = k.revolveDetailed(face, 0, 0, 0, 0, 1, 0, 360);
+  assert.equal(direct.code, 'exact_only_unattainable');
+  const batch = JSON.parse(k.executeBatchV2(JSON.stringify([
+    { op: 'revolveDetailed', args: { face, axisY: 1, angle: 360 } },
+  ])));
+  assert.equal(batch[0].ok.code, direct.code);
+  console.log('ok - revolveDetailed refuses open spline chord approximation');
+}
+
 // A stored/transported payload is untrusted input: malformed versions,
 // incomplete coverage and contradictory result claims must fail closed.
 {

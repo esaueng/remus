@@ -123,8 +123,8 @@ reports `approximate`.
 
 The fourth slice covers the construction twins `extrudeDetailed` and
 `revolveDetailed`, twins of `extrude` and `revolve` on the same engine
-paths on supported profiles. Closed curves that the native engines would
-split into line chords refuse as `exact_only_unattainable`; supported
+paths on supported profiles. Curves that the native engines would
+replace with line chords refuse as `exact_only_unattainable`; supported
 successes disclose `details.quality: "exact"` and there is no `exactOnly`
 flag. `revolve`
 accepts degrees in `(0, 360]` and converts to radians for the native
