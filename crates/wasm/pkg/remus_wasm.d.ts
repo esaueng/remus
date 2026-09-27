@@ -3359,7 +3359,7 @@ export class BrepKernel {
      * order (finite `ox`, `oy`, `oz`, `dx`, `dy`, `dz`, `angle_degrees`,
      * then the `(0, 360]` range check, then the face handle), the same
      * degrees-to-radians conversion, and the same engine for exact-supported
-     * profiles. Closed profiles needing line chords refuse with
+     * profiles. Curved profiles needing line chords refuse with
      * `exact_only_unattainable`; the legacy method is unchanged. Success has
      * `details.quality: "exact"`.
      */
