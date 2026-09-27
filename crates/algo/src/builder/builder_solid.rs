@@ -4044,7 +4044,7 @@ fn merge_needs_flip(
 /// one line twice) still proceed, preserving closure. Wires that are already
 /// single-edged are spur-bound either way and do not count.
 /// `replacements` holds the unifications decided so far, applied
-/// transitively in the simulation.
+/// transitively before and after the proposed merge.
 fn unification_collapses_wire(
     topo: &Topology,
     face_ids: &[FaceId],
@@ -4052,35 +4052,28 @@ fn unification_collapses_wire(
     canonical: EdgeId,
     dup: EdgeId,
 ) -> Result<bool, AlgoError> {
+    let resolve = |mut eid: EdgeId| -> EdgeId {
+        while let Some(&(target, _)) = replacements.get(&eid) {
+            eid = target;
+        }
+        eid
+    };
+    let resolved_canonical = resolve(canonical);
     for &fid in face_ids {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             let wire = topo.wire(wid)?;
-            let slots: Vec<EdgeId> = wire.edges().iter().map(OrientedEdge::edge).collect();
-            if !slots.contains(&dup) {
+            let pre: HashSet<EdgeId> = wire.edges().iter().map(|oe| resolve(oe.edge())).collect();
+            if pre.len() <= 1 || !pre.contains(&dup) {
                 continue;
             }
-            let mut pre = HashSet::new();
-            for &slot in &slots {
-                pre.insert(slot);
-            }
-            if pre.len() <= 1 {
-                continue;
-            }
-            let resolve = |mut eid: EdgeId| -> EdgeId {
-                if eid == dup {
-                    return canonical;
-                }
-                while let Some(&(target, _)) = replacements.get(&eid) {
-                    eid = target;
-                }
-                eid
-            };
-            let mut post = HashSet::new();
-            for &slot in &slots {
-                post.insert(resolve(slot));
-            }
-            if post.len() <= 1 {
+            if pre
+                .iter()
+                .map(|&eid| if eid == dup { resolved_canonical } else { eid })
+                .collect::<HashSet<_>>()
+                .len()
+                <= 1
+            {
                 return Ok(true);
             }
         }
@@ -5827,6 +5820,79 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn duplicate_edge_merge_detects_lens_through_same_family_alias() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::{edge::Edge, face::Face, vertex::Vertex, wire::Wire};
+
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(-1.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let line = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let arc = |topo: &mut Topology| {
+            let mut edge = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some((std::f64::consts::PI, std::f64::consts::TAU)));
+            topo.add_edge(edge)
+        };
+        let canonical_arc = arc(&mut topo);
+        let alias_arc = arc(&mut topo);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(line, true),
+                    OrientedEdge::new(alias_arc, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let aliases = HashMap::from([(alias_arc, (canonical_arc, false))]);
+        let without_alias =
+            unification_collapses_wire(&topo, &[face], &HashMap::new(), line, canonical_arc)
+                .unwrap();
+        let with_alias =
+            unification_collapses_wire(&topo, &[face], &aliases, line, canonical_arc).unwrap();
+        assert!(!without_alias);
+        assert!(with_alias);
+
+        let mate_wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(canonical_arc, true),
+                    OrientedEdge::new(line, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let mate_face = topo.add_face(Face::new(
+            mate_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let mut faces = [face, mate_face];
+        merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+        let lens = topo
+            .wire(topo.face(faces[0]).unwrap().outer_wire())
+            .unwrap();
+        assert_ne!(lens.edges()[0].edge(), lens.edges()[1].edge());
+        assert_eq!(lens.edges()[1].edge(), canonical_arc);
+    }
+
     #[test]
     fn duplicate_edge_merge_preserves_complementary_nurbs_branches() {
         use remus_math::nurbs::curve::NurbsCurve;
