@@ -638,6 +638,12 @@ struct ProfileEdge {
     interior: Vec<Point3>,
 }
 
+struct AnalyticFullRevolutionPlan {
+    radial: Vec3,
+    ccw: bool,
+    profile: Vec<ProfileEdge>,
+}
+
 /// Classify one profile edge for the analytic full-revolution path, or `None`
 /// when the edge has no unambiguous closed-form revolution face (spline,
 /// axis-touching arc, sphere/spindle arc, degenerate cone angle).
@@ -731,6 +737,41 @@ fn try_analytic_full_revolution(
     axis: Vec3,
     is_full: bool,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
+    let Some(plan) = analytic_full_revolution_plan(topo, face, axis_origin, axis, is_full)? else {
+        return Ok(None);
+    };
+    Ok(Some(build_analytic_revolution(
+        topo,
+        axis_origin,
+        axis,
+        plan.radial,
+        plan.ccw,
+        &plan.profile,
+    )?))
+}
+
+/// Read-only eligibility shared by the native fast path and exact-only WASM binding.
+///
+/// # Errors
+///
+/// Returns an error for invalid topology or edge parameter authority.
+pub fn supports_analytic_full_revolution(
+    topo: &Topology,
+    face: FaceId,
+    axis_origin: Point3,
+    axis_direction: Vec3,
+) -> Result<bool, crate::OperationsError> {
+    let axis = axis_direction.normalize()?;
+    Ok(analytic_full_revolution_plan(topo, face, axis_origin, axis, true)?.is_some())
+}
+
+fn analytic_full_revolution_plan(
+    topo: &Topology,
+    face: FaceId,
+    axis_origin: Point3,
+    axis: Vec3,
+    is_full: bool,
+) -> Result<Option<AnalyticFullRevolutionPlan>, crate::OperationsError> {
     if !is_full {
         return Ok(None);
     }
@@ -857,17 +898,11 @@ fn try_analytic_full_revolution(
     if area2.abs() <= scale * scale * DEGENERATE_PROFILE_AREA_REL_TOL {
         return Ok(None); // degenerate (zero-area) profile — defer
     }
-    let ccw = area2 > 0.0;
-
-    Some(build_analytic_revolution(
-        topo,
-        axis_origin,
-        axis,
-        e_r,
-        ccw,
-        &profile,
-    ))
-    .transpose()
+    Ok(Some(AnalyticFullRevolutionPlan {
+        radial: e_r,
+        ccw: area2 > 0.0,
+        profile,
+    }))
 }
 
 /// Build the periodic faces for a classified analytic full revolution (see
@@ -1133,8 +1168,8 @@ fn try_circle_revolution_torus(
     if !face_data.inner_wires().is_empty() {
         return Ok(None);
     }
-    let normal = match face_data.surface() {
-        FaceSurface::Plane { normal, .. } => *normal,
+    let (normal, plane_d) = match face_data.surface() {
+        FaceSurface::Plane { normal, d } => (*normal, *d),
         _ => return Ok(None),
     };
 
@@ -1157,7 +1192,9 @@ fn try_circle_revolution_torus(
     let tol = Tolerance::new();
     // The axis must lie in the profile plane (perpendicular to its normal),
     // else the swept surface is not a torus of revolution.
-    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL {
+    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL
+        || (dot_normal_point(normal, axis_origin) - plane_d).abs() > tol.linear * 100.0
+    {
         return Ok(None);
     }
 
@@ -2141,6 +2178,42 @@ mod tests {
                 .unwrap()
                 .is_valid()
         );
+    }
+
+    #[test]
+    fn circle_torus_shortcut_refuses_axis_outside_profile_plane() {
+        use remus_topology::builder::make_circle_edge;
+
+        let mut topo = Topology::new();
+        let circle = make_circle_edge(
+            &mut topo,
+            Point3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1e-7,
+        )
+        .unwrap();
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(circle, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let result = try_circle_revolution_torus(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            2.0 * PI,
+            true,
+        )
+        .unwrap();
+        assert!(result.is_none());
+        assert_eq!(topo.num_solids(), 0);
     }
 
     #[test]
