@@ -359,15 +359,20 @@ pub fn grid_pattern_with_evolution(
     count_x: usize,
     count_y: usize,
 ) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
-        grid_pattern_impl(
-            topo, solid, dir_x, dir_y, spacing_x, spacing_y, count_x, count_y,
-        )
-    })
+    grid_pattern_with_entity_history(
+        topo, solid, dir_x, dir_y, spacing_x, spacing_y, count_x, count_y,
+    )
+    .map(|(compound, history)| (compound, history.map))
 }
 
+/// [`grid_pattern`] with total copy-time lineage: the legacy face map plus
+/// the edge/vertex `(source, copy)` correspondence the journal needs.
+///
+/// `source_edges` / `source_vertices` are the pre-build source indices;
+/// `edge_copies` / `vertex_copies` are sorted `(source, copy)` pairs by
+/// construction, never by coordinate matching.
 #[allow(clippy::too_many_arguments)]
-fn grid_pattern_impl(
+pub(crate) fn grid_pattern_with_entity_history(
     topo: &mut Topology,
     solid: SolidId,
     dir_x: Vec3,
@@ -376,7 +381,25 @@ fn grid_pattern_impl(
     spacing_y: f64,
     count_x: usize,
     count_y: usize,
-) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        grid_pattern_full_impl(
+            topo, solid, dir_x, dir_y, spacing_x, spacing_y, count_x, count_y,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grid_pattern_full_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    dir_x: Vec3,
+    dir_y: Vec3,
+    spacing_x: f64,
+    spacing_y: f64,
+    count_x: usize,
+    count_y: usize,
+) -> Result<(CompoundId, PatternEntityHistory), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if count_x < 1 || count_y < 1 {
@@ -427,7 +450,7 @@ fn grid_pattern_impl(
         }
     }
 
-    finish_pattern(topo, solids, tracker).map(|(compound, history)| (compound, history.map))
+    finish_pattern(topo, solids, tracker)
 }
 
 fn finish_pattern(
