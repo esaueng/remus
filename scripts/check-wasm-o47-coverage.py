@@ -77,10 +77,13 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
     for path in sorted(root.rglob("*.rs")):
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        depths, _ = rust_lines_with_depth(lines)
+        depths, code_lines = rust_lines_with_depth(lines)
         rel = path.relative_to(root).as_posix()
         parent_gate = file_gate(root, rel)
         for match in EXPORT_RE.finditer(text):
+            attr_index = text.count("\n", 0, match.start())
+            if "#[wasm_bindgen" not in code_lines[attr_index]:
+                continue
             js = match.group("js")
             rust = match.group("rust")
             params = match.group("params")
@@ -91,7 +94,12 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
                 else ("imm" if "&self" in params else "static")
             )
             fn_index = text.count("\n", 0, match.start("rust"))
-            gate = public_gate(export_gate(lines, depths, fn_index, rel, parent_gate))
+            if not re.search(
+                rf"\bpub\s+(?:(?:async|unsafe)\s+)*fn\s+{re.escape(rust)}\b",
+                code_lines[fn_index],
+            ):
+                continue
+            gate = public_gate(export_gate(code_lines, depths, fn_index, rel, parent_gate))
             exports.append(
                 {
                     "js": js,
@@ -105,15 +113,15 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
     return exports
 
 
-def own_attr_block(lines: list[str], index: int, depths: list[int]) -> str:
+def own_attr_block(code_lines: list[str], index: int, depths: list[int]) -> str:
     """Attributes and comments directly above an item, including multiline attrs."""
     block: list[str] = []
     cursor = index - 1
     while cursor >= 0 and depths[cursor] == depths[index]:
-        stripped = lines[cursor].strip()
+        stripped = code_lines[cursor].strip()
         if re.match(r"^(?:(?:pub(?:\([^)]*\))?)\s+)?(?:fn|async|impl|mod|const|type|use|struct|enum)\b", stripped) or stripped.startswith("}") or stripped.endswith(";"):
             break
-        block.append(lines[cursor])
+        block.append(code_lines[cursor])
         cursor -= 1
     return "\n".join(reversed(block))
 
@@ -185,17 +193,17 @@ def file_gate(root: Path, rel: str) -> str:
                 if (parent.parent / target).resolve() == (root / rel).resolve():
                     return "conditional"
             lines = parent_text.splitlines()
-            depths, _ = rust_lines_with_depth(lines)
+            depths, code_lines = rust_lines_with_depth(lines)
             gates.append(attribute_gate(inner_file_attrs(lines)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
             module_item = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\b")
             declared = False
-            for line_index, line in enumerate(lines):
+            for line_index, line in enumerate(code_lines):
                 if depths[line_index] != 0:
                     continue
                 if declaration.match(line):
                     declared = True
-                    gates.append(attribute_gate(own_attr_block(lines, line_index, depths)))
+                    gates.append(attribute_gate(own_attr_block(code_lines, line_index, depths)))
                 elif module_item.match(line):
                     # This file layout requires following declarations inside
                     # the inline module. Until then, refuse coverage claims.
@@ -210,12 +218,12 @@ def file_gate(root: Path, rel: str) -> str:
     return combine_gates(*gates)
 
 
-def export_gate(lines: list[str], depths: list[int], index: int, rel: str, parent_gate: str) -> str:
+def export_gate(code_lines: list[str], depths: list[int], index: int, rel: str, parent_gate: str) -> str:
     """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
-    gates = [attribute_gate(own_attr_block(lines, index, depths))]
+    gates = [attribute_gate(own_attr_block(code_lines, index, depths))]
     for ancestor in range(index):
         if not re.match(
-            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:impl|mod)\b", lines[ancestor]
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:impl|mod)\b", code_lines[ancestor]
         ):
             continue
         base = depths[ancestor]
@@ -227,15 +235,15 @@ def export_gate(lines: list[str], depths: list[int], index: int, rel: str, paren
         )
         if body is None or not all(depths[child] > base for child in range(body, index + 1)):
             continue
-        header = "\n".join(lines[ancestor:body])
+        header = "\n".join(code_lines[ancestor:body])
         if ";" in header or "{" not in header:
             continue
         # A split header can hide an enclosing cfg from this lightweight
         # source parser. Refuse a coverage claim until it is parsed fully.
         gates.append(
             "conditional"
-            if "{" not in lines[ancestor]
-            else attribute_gate(own_attr_block(lines, ancestor, depths))
+            if "{" not in code_lines[ancestor]
+            else attribute_gate(own_attr_block(code_lines, ancestor, depths))
         )
     return combine_gates(
         "io" if rel.startswith("bindings/io") else parent_gate,
@@ -376,16 +384,16 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         rel = path.relative_to(root).as_posix()
-        depths, _ = rust_lines_with_depth(lines)
-        exported_impl = wasm_impl_lines(lines, depths)
-        for index, line in enumerate(lines):
+        depths, code_lines = rust_lines_with_depth(lines)
+        exported_impl = wasm_impl_lines(code_lines, depths)
+        for index, line in enumerate(code_lines):
             match = re.match(r"\s*pub\s+(?:(?:async|unsafe)\s+)*fn\s+(\w+)", line)
             if not match:
                 continue
             fn_name = match.group(1)
             if (fn_name, rel) in known_exports:
                 continue
-            block = own_attr_block(lines, index, depths)
+            block = own_attr_block(code_lines, index, depths)
             if "wasm_bindgen" not in block and index not in exported_impl:
                 continue
             if "constructor" in block:
@@ -417,7 +425,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
     if dispatch is None:
         raise ValueError("batch dispatch_op method is missing")
     dispatch_gate = export_gate(
-        lines, depths, dispatch, "bindings/batch.rs",
+        code_lines, depths, dispatch, "bindings/batch.rs",
         file_gate(root, "bindings/batch.rs"),
     )
     method_depth = depths[dispatch]
