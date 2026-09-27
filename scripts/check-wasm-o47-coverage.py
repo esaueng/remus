@@ -191,17 +191,34 @@ def file_gate(root: Path, rel: str) -> str:
 
 def export_gate(lines: list[str], depths: list[int], index: int, rel: str, parent_gate: str) -> str:
     """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
-    attributes = [own_attr_block(lines, index, depths)]
+    gates = [attribute_gate(own_attr_block(lines, index, depths))]
     for ancestor in range(index):
-        if not re.match(r"^\s*(?:pub\s+)?(?:impl|mod)\b.*\{", lines[ancestor]):
+        if not re.match(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:impl|mod)\b", lines[ancestor]
+        ):
             continue
-        if depths[ancestor] >= depths[index]:
+        base = depths[ancestor]
+        if base >= depths[index]:
             continue
-        if all(depths[child] > depths[ancestor] for child in range(ancestor + 1, index + 1)):
-            attributes.append(own_attr_block(lines, ancestor, depths))
+        body = next(
+            (child for child in range(ancestor + 1, index + 1) if depths[child] > base),
+            None,
+        )
+        if body is None or not all(depths[child] > base for child in range(body, index + 1)):
+            continue
+        header = "\n".join(lines[ancestor:body])
+        if ";" in header or "{" not in header:
+            continue
+        # A split header can hide an enclosing cfg from this lightweight
+        # source parser. Refuse a coverage claim until it is parsed fully.
+        gates.append(
+            "conditional"
+            if "{" not in lines[ancestor]
+            else attribute_gate(own_attr_block(lines, ancestor, depths))
+        )
     return combine_gates(
         "io" if rel.startswith("bindings/io") else parent_gate,
-        *(attribute_gate(block) for block in attributes),
+        *gates,
     )
 
 
