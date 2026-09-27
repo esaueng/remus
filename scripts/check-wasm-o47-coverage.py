@@ -65,7 +65,7 @@ EXPORT_RE = re.compile(
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
 BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
-CFG_ATTR_RE = re.compile(r'^\s*#\[\s*(cfg|cfg_attr)\s*\(([^]]*)\)\s*\]', re.MULTILINE)
+CFG_ATTR_RE = re.compile(r'#\[\s*(cfg|cfg_attr)\s*\(([^]]*)\)\s*\]', re.MULTILINE)
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
 SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
 SOLID_HANDLE = "Result<u32, JsError>"
@@ -127,7 +127,8 @@ def combine_gates(*gates: str) -> str:
 def attribute_gate(attributes: str) -> str:
     """Conservatively classify cfgs for the shipped no-feature build."""
     gates: list[str] = []
-    for match in CFG_ATTR_RE.finditer(attributes):
+    _, code_lines = rust_lines_with_depth(attributes.splitlines())
+    for match in CFG_ATTR_RE.finditer("\n".join(code_lines)):
         expr = re.sub(r"\s+", "", match.group(2))
         if match.group(1) == "cfg" and expr == 'feature="io"':
             gates.append("io")
@@ -164,8 +165,18 @@ def file_gate(root: Path, rel: str) -> str:
     for index, name in enumerate(parts):
         if parent.is_file():
             parent_text = parent.read_text(encoding="utf-8")
-            for override in re.finditer(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', parent_text):
-                if (parent.parent / override.group(1)).resolve() == (root / rel).resolve():
+            for override in re.finditer(r'#\[\s*path\s*=\s*([^]]+)\]', parent_text):
+                literal = re.fullmatch(
+                    r'(?:r(?P<hash>#{0,16})"(?P<raw>.*?)"(?P=hash)|"(?P<plain>[^"]+)")',
+                    override.group(1).strip(),
+                    re.DOTALL,
+                )
+                if literal is None:
+                    return "conditional"
+                target = literal.group("raw")
+                if target is None:
+                    target = literal.group("plain")
+                if (parent.parent / target).resolve() == (root / rel).resolve():
                     return "conditional"
             lines = parent_text.splitlines()
             depths, _ = rust_lines_with_depth(lines)
