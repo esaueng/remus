@@ -23,6 +23,10 @@ def version(value):
     return tuple(map(int, value.split('.')))
 
 
+def remus_version(parts):
+    return parts[0] >= 2026 and parts[1] >= 1
+
+
 def contract(package):
     # Nested conditional-export ordering is significant to Node resolution.
     return json.dumps({key: package[key] for key in sorted(package) if key not in PROVENANCE})
@@ -35,6 +39,10 @@ def check(base, head=None):
     new = [version(package['version']) for package in after]
     if old[0] != old[1] or new[0] != new[1]:
         raise ValueError('Kernel and translator versions must match')
+    if not remus_version(new[0]) and not (old[0][0] < 2026 and new[0] == old[0]):
+        raise ValueError('Changed kernel packages must use Remus calendar versions')
+    if old[0][0] < 2026 and old[0][:2] != (2, 130):
+        raise ValueError('Only the inherited 2.130.x series may transition to Remus calendar versions')
     args = ['diff', '--name-only', '-z', '--no-renames']
     args += [base, head] if head else ['--cached', base]
     paths = git(*args, '--', *ROOTS).split('\0')
