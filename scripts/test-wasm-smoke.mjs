@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
+import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -1424,5 +1425,12 @@ runZeroAreaMeshExportRegression({ BrepKernel, RemusIo });
 // through-hole hole counts, degenerate InvalidInput, split halves with
 // volume-sum/material oracles, and typed refusals with session preservation.
 runB6SectionSplitPackaged({ BrepKernel });
+
+// 17. Journaled circular-pattern packaged-runtime witnesses (actual WASM
+// execution, not native contract tests): origin count-2 and offset count-3
+// copies through direct, batch v1 and batch v2 with rotated-vertex,
+// volume/census, original-versus-generated, journal, and typed-refusal
+// oracles plus session preservation.
+runCircularPatternPackaged({ BrepKernel });
 
 console.log('\nAll smoke tests passed');
