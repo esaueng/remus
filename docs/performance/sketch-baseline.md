@@ -103,6 +103,117 @@ exactly with native. Wall times agree within run-to-run noise on this
 host; no cross-runtime conclusion is drawn (different builds, same
 solver).
 
+## Fresh packaged-WASM evidence from `49099bc6` (`2.130.56`) — same-source native/WASM
+
+Historical rows above (committed package `2.130.54` from `09cf1cd7`
+against native source `895fc75d`) are kept separately labeled and are not
+rewritten. This section adds representative same-source evidence: the
+native worker and the freshly built/installed kernel package come from
+the same recorded source (`49099bc6b4e7f1d2a0273e15fb120c021ce641e6`,
+origin/main). Workload IDs, dimensions, expected outcomes, and solver
+settings are unchanged (manifest sha256
+`714f71ad1c09e4ff381994172598d594e1a86b1dd91de33aca4704175963c81e`,
+identical to the historical manifest).
+
+Source: `49099bc6b4e7f1d2a0273e15fb120c021ce641e6` (origin/main at task
+start; Rust source unchanged by the harness-only changes in this slice —
+new JS witnesses plus docs/smoke wiring — working-tree sha256
+`5812d029ae6ea7f555eef2f9d3e1af9b64db88cb448d98983b1013f1e596d74f`
+at run time).
+Native worker: `crates/wasm/examples/sketch_baseline.rs` built with
+`cargo build --locked --profile profiling -p remus-wasm --example
+sketch_baseline --message-format=json --offline`
+(rustc 1.96.0 `ac68faa20 2026-05-25`, cargo 1.96.0, node v24.14.0,
+python 3.12.3, Linux 7.1.5 x86_64, AMD Ryzen 9 5900XT, 32 logical CPUs).
+Native binary sha256
+`7a5e524e076aa91b4afa5961b45ea3833c7b92deb1bb097aecf7438bdc108284`.
+Manifest sha256 above; harness sha256 `run.py 7a7ee92f…`,
+`wasm.cjs baa068d0…`, `sketch_baseline.rs 3b992144…` (full hashes in
+`run.json`).
+Kernel package `2.130.56` (fresh `cargo xtask wasm-build` from the same
+source; matches active refresh `codex/wasm-refresh-49099bc6…` → `2.130.56`):
+`remus_wasm_bg.wasm d4729644528601f2205dedd21670fdc4049e98aada921b6337fd9babdb7e5464`,
+`remus_wasm_node.cjs d4e0f7b21634882dbd3d10ae5855545c59a19d99e2e2eace4ccefb465d33a914`,
+`package.json c32b0af0df3df75ed255b4b715a2c8db9bdc398e1eb8505e41fa71378168e81e`.
+Translator package `2.130.56` from the same build:
+`remus_wasm_io_bg.wasm 0677102098aedea4a81febc2239879d5061fa68f5d322a26dcc75e0706f779be`,
+`remus_wasm_io_node.cjs e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37`.
+Both packages validated by `cargo xtask wasm-build` (dual-target merge +
+wasm-opt, smoke plus installed-tarball consumer checks pass).
+Representative run directory:
+`target/performance-sketch/20260927T020658.910192Z`
+(3 processes × 5 retained samples + 1 warmup per process native — 15
+retained per native cell; 1 process × 5 retained samples + 1 warmup for
+WASM — 5 retained per WASM cell).
+Bounded smoke directory:
+`target/performance-sketch/20260927T020428.463948Z`
+(1 process × 1 retained sample + 1 warmup; all smoke cells correctness-passed,
+including the same three representative WASM cells).
+
+Reproduce the recorded run from the witness commit
+`787bb1732185ed3241616a9c7255a54ba3273bb5`, whose Rust source is
+unchanged from `49099bc6b4e7f1d2a0273e15fb120c021ce641e6`. The
+witness commit supplies `scripts/circular-pattern-packaged.mjs` and its
+smoke-suite wiring; the source commit alone does not contain them.
+
+```bash
+git fetch origin pull/724/head
+test "$(git rev-parse FETCH_HEAD)" = 787bb1732185ed3241616a9c7255a54ba3273bb5
+git switch --detach 787bb1732185ed3241616a9c7255a54ba3273bb5
+cargo xtask wasm-build
+node scripts/test-wasm-smoke.mjs
+node scripts/circular-pattern-packaged.mjs
+python3 scripts/performance/sketch/run.py --offline --smoke
+python3 scripts/performance/sketch/run.py --offline --case independent_solved_100 --case coupled_chain_100 --case drag_100
+python3 -m unittest discover -s scripts/performance/sketch -p 'test_*.py' -v
+cargo test -p remus-sketch --test gcs_perf_identity
+```
+
+Representative same-source correctness (all retained samples agree;
+solver `tolerance 1e-10`, `max_iter 100`, drag 20 steps of
+`(+0.5, +0.25)` on chain point 25; construction outside the timer):
+
+| Case / mode | Params×Eqs | Expected | Native iters (rank/dof) | WASM iters (rank/dof) | Agreement |
+| --- | ---: | --- | ---: | ---: | --- |
+| independent_solved_100 solve / detailed | 100×100 | solved | 8 / 8 (100/0) | 8 / 8 (100/0) | exact |
+| coupled_chain_100 solve / detailed | 100×100 | solved | 5 / 5 (100/0) | 5 / 5 (100/0) | exact |
+| drag_100 solve (20 steps) / detailed | 100×100 | solved per step | 100 total (5/step) | 100 total (5/step) | exact |
+
+Provisional timings from the noisy host (diagnostic only — no
+performance conclusion; see limitations):
+
+| Case / mode | Native median ms (15 samples) | WASM median ms (5 samples) |
+| --- | ---: | ---: |
+| independent_solved_100 solve / detailed | 4.20 / 4.83 | 4.96 / 5.48 |
+| coupled_chain_100 solve / detailed | 2.63 / 3.14 | 3.20 / 4.03 |
+| drag_100 solve (20 steps) / detailed | 56.28 / 65.54 | 60.08 / 72.07 |
+
+Native process medians stay within ~10% of the cell median except one
+`independent_solved_100/detailed` process at 5.11 vs 4.83 cell median;
+WASM ranges span 4.82–6.90 (solved/solve) and 60.02–63.09 (drag/solve).
+Full min/max plus per-process medians are in `summary.json`; no
+p95/p99 is estimated (sample counts do not qualify tail independence).
+
+Limitations stated honestly:
+
+- The host was not quiet: concurrent profiling builds in sibling
+  worktrees drove load average ~60 during the representative run
+  (multiple `rustc --profile profiling` jobs). Wall times are therefore
+  provisional and are not a performance baseline update; correctness and
+  provenance are the claimed evidence, timing is reported as observed
+  without a speedup or regression conclusion.
+- Different builds, same solver: native (profiling release) and WASM
+  (optimized wasm-pack + wasm-opt) timings are never compared as
+  speedups, matching the historical section's discipline.
+- Coverage is representative, not full: only the three 100-param
+  `WASM_COVERAGE` cells ran through freshly installed packages; the
+  10/1000/10000-param, redundant, and inconsistent rows ran natively
+  only in the smoke/full harnesses or remain historical. Workload IDs,
+  dimensions, expected outcomes, and solver settings were not changed.
+- No timing assertion exists in any test; `gcs_perf_identity.rs` and
+  `test_run.py` still gate identity/dimensions/classifications and
+  collector failure paths only.
+
 ## Top measured costs
 
 1. **Dense QR per iteration dominates everything.** At 1000 params a
