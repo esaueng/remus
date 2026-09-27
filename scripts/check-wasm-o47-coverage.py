@@ -196,16 +196,25 @@ def export_gate(lines: list[str], depths: list[int], index: int, rel: str, paren
 
 def arm_gate(lines: list[str], index: int) -> str:
     """Availability of one batch match arm from its adjacent cfg attributes."""
-    block: list[str] = []
+    blocks: list[str] = []
     cursor = index - 1
     while cursor >= 0:
         stripped = lines[cursor].strip()
-        if not (stripped.startswith("#[") or stripped.startswith("//") or not stripped):
+        if not stripped or stripped.startswith("//"):
+            cursor -= 1
+            continue
+        if not re.search(r"\]\s*(?://.*)?$", stripped):
             break
-        block.append(lines[cursor])
+        end = cursor
+        while cursor >= 0 and not lines[cursor].lstrip().startswith("#["):
+            if re.search(r"=>|[{};]", lines[cursor]):
+                return attribute_gate("\n".join(reversed(blocks)))
+            cursor -= 1
+        if cursor < 0:
+            break
+        blocks.append("\n".join(lines[cursor : end + 1]))
         cursor -= 1
-    attrs = "\n".join(block)
-    return attribute_gate(attrs)
+    return attribute_gate("\n".join(reversed(blocks)))
 
 
 def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
