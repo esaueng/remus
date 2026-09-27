@@ -36,11 +36,10 @@
 //!
 //! # Resource release
 //!
-//! Dropping the session drops the device, pipelines, globals, and any cached
-//! targets/readback buffers in turn; wgpu releases the underlying GPU
-//! resources. Replacing cached targets on a size change drops the old
-//! textures and buffers before the new ones are stored, so at most one size's
-//! targets are alive at a time.
+//! Dropping the session drops its device, pipelines, globals, and cached
+//! target handles. On a size change, old target handles are dropped before
+//! allocating replacements. The GPU may defer physical reclamation until
+//! submitted work completes.
 
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
