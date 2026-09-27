@@ -18,7 +18,7 @@
 //! - Skipped by prepared draws: [`OffscreenSession::draw_prepared`] reuses a
 //!   [`PreparedSolid`](crate::PreparedSolid)'s uploaded geometry, so
 //!   camera-only frames tessellate and upload nothing (partial PERF-R02; see
-//!   [`crate::prepared`] for the asset contract).
+//!   [`PreparedSolid`](crate::PreparedSolid) for the asset contract).
 //! - Explicitly out of scope (see PERF-R02 remainder/R04): automatic topology
 //!   revision tracking, dirty-face invalidation, incremental tessellation,
 //!   asynchronous readback, compute-mesher changes, and window-viewer changes.
@@ -413,7 +413,7 @@ impl OffscreenSession {
     /// Preparing replacement geometry is always explicit — call `prepare`
     /// again after topology edits and drop (or overwrite) the old asset; the
     /// old asset keeps drawing its snapshot until released and never refreshes
-    /// itself. See [`crate::prepared`] for the full asset contract.
+    /// itself. See [`PreparedSolid`](crate::PreparedSolid) for the full asset contract.
     ///
     /// # Errors
     ///
@@ -466,7 +466,7 @@ impl OffscreenSession {
     /// from previous draws — none of them rebuilds the asset. The asset must
     /// have been prepared on this session; a foreign asset is refused with
     /// [`RenderError::WrongSession`] before any GPU work. See
-    /// [`crate::prepared`] for the asset contract.
+    /// [`PreparedSolid`](crate::PreparedSolid) for the asset contract.
     ///
     /// # Errors
     ///
