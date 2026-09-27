@@ -806,7 +806,87 @@ class O47CoverageFixtures(unittest.TestCase):
             gate.attribute_gate('#[cfg(any(feature = "io", feature = "workflow-probes"))]'),
             "conditional",
         )
-        self.assertEqual(gate.attribute_gate('#[cfg(not(feature = "io"))]'), "shipped")
+        self.assertEqual(
+            gate.public_gate(gate.attribute_gate('#[cfg(not(feature = "io"))]')),
+            "shipped",
+        )
+
+    def test_contradictory_io_twin_gates_fail_closed(self):
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
+        sources = {
+            "same_scope": twin.replace(
+                '    #[wasm_bindgen(js_name',
+                '    #[cfg(feature = "io")] #[cfg(not(feature = "io"))]\n'
+                '    #[wasm_bindgen(js_name',
+            ),
+            "ancestor": ('#[cfg(not(feature = "io"))]\n' + twin).replace(
+                '    #[wasm_bindgen(js_name',
+                '    #[cfg(feature = "io")]\n    #[wasm_bindgen(js_name',
+            ),
+        }
+        for placement, gated_twin in sources.items():
+            with self.subTest(placement=placement):
+                directory = make_tree(
+                    {
+                        "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                        + gated_twin,
+                        "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                        "witness.rs": WITNESS_RS.format(name="fuse_success"),
+                    }
+                )
+                exports = gate.discover_from_files(directory / "crates/wasm/src")
+                self.assertEqual(
+                    next(e for e in exports if e["js"] == "fuseDetailed")["gate"],
+                    "conditional",
+                )
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                        {
+                            "js": "fuseDetailed", "rust": "fuse_detailed",
+                            "file": "bindings/booleans.rs", "gate": "conditional",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "typed twin",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("only available under 'conditional'" in item for item in violations),
+                    violations,
+                )
+
+    def test_contradictory_io_batch_arm_gates_fail_closed(self):
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                + TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed"),
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse").replace(
+                    '            "fuse" =>',
+                    '            #[cfg(feature = "io")] #[cfg(not(feature = "io"))]\n'
+                    '            "fuse" =>',
+                ),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        root = directory / "crates/wasm/src"
+        self.assertEqual(gate.batch_ops(root)["fuse"], "conditional")
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "bindings/booleans.rs", "gate": "shipped",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("arm is only available under 'conditional'" in item for item in violations),
+            violations,
+        )
 
     def test_negated_io_cfg_and_doc_example_stay_shipped(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
