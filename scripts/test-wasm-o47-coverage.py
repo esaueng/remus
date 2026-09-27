@@ -509,6 +509,7 @@ class O47CoverageFixtures(unittest.TestCase):
             "macro_rules\n!\noptional_twin {",
             "macro_rules /* comment */ ! optional_twin {",
             "macro_rules ! r#optional_twin {",
+            "macro_rules ! optiónal_twin {",
         ):
             with self.subTest(header=header):
                 directory = make_tree(
@@ -624,6 +625,25 @@ class O47CoverageFixtures(unittest.TestCase):
         )
         exports = gate.discover_from_files(directory / "crates/wasm/src")
         self.assertEqual(next(e for e in exports if e["js"] == "fuse")["gate"], "shipped")
+
+    def test_macro_like_text_in_literals_does_not_gate_live_export(self):
+        for literal in (
+            '"first\nmacro_rules! fake {\n"',
+            'r#"first\nmacro_rules ! fake {\n"#',
+        ):
+            with self.subTest(literal=literal):
+                directory = make_tree(
+                    {
+                        "bindings/booleans.rs": f"const FAKE: &str = {literal};\n"
+                        + MUT_EXPORT.format(js="fuse", rust="fuse"),
+                        "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                    }
+                )
+                exports = gate.discover_from_files(directory / "crates/wasm/src")
+                self.assertEqual(
+                    next(e for e in exports if e["js"] == "fuse")["gate"],
+                    "shipped",
+                )
 
     def test_multiline_ancestor_header_fails_closed(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
