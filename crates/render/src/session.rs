@@ -332,8 +332,9 @@ impl OffscreenSession {
             .as_ref()
             .is_none_or(|t| t.width != width || t.height != height);
         if needs_rebuild {
-            // Drop the old targets first (assignment drops), so at most one
-            // size's textures + readback buffers are alive at a time.
+            // Release the old textures and readback buffers before allocating
+            // a replacement near the adapter's memory limit.
+            drop(self.targets.take());
             self.targets = Some(CachedTargets::build(&self.ctx.device, width, height));
             self.target_rebuilds += 1;
         }
