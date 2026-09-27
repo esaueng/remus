@@ -15,6 +15,14 @@ function parseVersion(value) {
   return parts;
 }
 
+function isRemusVersion(parts) {
+  return parts[0] >= 2026 && parts[1] >= 1;
+}
+
+function isLegacyVersion(parts) {
+  return parts[0] === 2 && parts[1] === 130;
+}
+
 function compare(a, b) {
   for (let i = 0; i < 3; i++) {
     if (a[i] !== b[i]) return a[i] - b[i];
@@ -25,6 +33,10 @@ function compare(a, b) {
 export function nextVersion(previous, declared, changed) {
   const before = parseVersion(previous);
   const requested = parseVersion(declared);
+  if (!isRemusVersion(requested) || (!isRemusVersion(before) && !isLegacyVersion(before))) {
+    throw new Error(`Expected a Remus calendar version, got ${previous} -> ${declared}`);
+  }
+  if (isLegacyVersion(before)) return declared;
   if (compare(requested, before) > 0) return declared;
   if (!changed) return previous;
   if (!Number.isSafeInteger(before[2] + 1)) throw new Error('Patch version overflow');

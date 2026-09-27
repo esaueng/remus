@@ -1,6 +1,14 @@
 # Changelog
 
+Remus numbering starts at `2026.1.0`. Earlier `2.130.x` entries below are
+historical predecessor-line records, retained for provenance. The
+[versioning policy](docs/VERSIONING.md) defines future Remus numbers.
+
 ## Unreleased
+
+### Versioning
+
+* Adopt the `YYYY.RELEASE.PATCH` Remus scheme, beginning at `2026.1.0`.
 
 ### ⚠ BREAKING CHANGES
 
