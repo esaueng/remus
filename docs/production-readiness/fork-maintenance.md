@@ -26,6 +26,10 @@ promise an upstream disclosure SLA that this fork has not formally adopted.
 
 ## Release ownership
 
+Remus uses the [calendar versioning policy](../VERSIONING.md) beginning at
+`2026.1.0`. Historical `2.130.x` references remain as provenance, not the
+version sequence for new packages.
+
 This fork must not publish Rust crates or npm packages or create GitHub releases
 until named maintainers, package identity, vulnerability intake,
 signing/provenance, rollback, and yanking authority are established. The
