@@ -49,6 +49,7 @@ mod compute_mesh;
 mod error;
 mod mesh;
 mod pipeline;
+mod session;
 #[cfg(feature = "window")]
 mod viewer;
 
@@ -60,6 +61,7 @@ pub use compute_mesh::{
 };
 pub use error::RenderError;
 pub use pipeline::probe_adapter;
+pub use session::OffscreenSession;
 #[cfg(feature = "window")]
 pub use viewer::{ViewOpts, view_solid};
 
