@@ -23,11 +23,24 @@ use crate::IoError;
 /// The 3MF model namespace.
 const NS_3MF: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
 
+/// Write-coalescing buffer for the streamed model XML entry.
+///
+/// Small XML events (one per vertex/triangle) are coalesced into 32 KiB
+/// chunks before reaching the ZIP deflate encoder. This is a fixed
+/// auxiliary buffer: it does not grow with object count or mesh size.
+const MODEL_XML_BUF_CAP: usize = 32 * 1024;
+
 /// Write one or more solids to a 3MF byte buffer.
 ///
 /// Each solid is tessellated (all face meshes merged) and written as a
 /// separate `<object>` in the model XML. The `deflection` parameter
 /// controls tessellation density — smaller values produce finer meshes.
+///
+/// The model XML is streamed directly into its ZIP entry one solid mesh at
+/// a time: peak intermediate mesh storage is one solid's mesh, not a merged
+/// mesh of every solid, and no complete model-XML buffer is ever staged.
+/// The returned archive buffer still scales with file size: this is a
+/// bounded intermediate-memory improvement, not constant-memory export.
 ///
 /// # Errors
 ///
@@ -36,6 +49,9 @@ const NS_3MF: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 /// - `deflection` is not positive and finite
 /// - Tessellation of any face fails
 /// - ZIP or XML writing fails
+///
+/// A failure returns `Err` without a partial successful document; the input
+/// topology is only borrowed and is left unchanged.
 pub fn write_threemf(
     topo: &Topology,
     solids: &[SolidId],
@@ -52,41 +68,92 @@ pub fn write_threemf(
         });
     }
 
-    let meshes: Vec<TriangleMesh> = solids
-        .iter()
-        .map(|&solid_id| tessellate_solid(topo, solid_id, deflection))
-        .collect::<Result<_, _>>()?;
+    let buf = Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(buf);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-    // Validate every mesh has at least one triangle (3MF requires geometry).
-    for (i, mesh) in meshes.iter().enumerate() {
-        if mesh.indices.len() < 3 {
-            return Err(IoError::InvalidTopology {
-                reason: format!("solid {i} tessellated to zero triangles"),
-            });
+    zip.start_file("[Content_Types].xml", options)?;
+    zip.write_all(CONTENT_TYPES_XML)?;
+
+    zip.start_file("_rels/.rels", options)?;
+    zip.write_all(RELS_XML)?;
+
+    zip.start_file("3D/3dmodel.model", options)?;
+    {
+        let mut buffered = std::io::BufWriter::with_capacity(MODEL_XML_BUF_CAP, &mut zip);
+        {
+            let mut writer = Writer::new_with_indent(&mut buffered, b' ', 1);
+            writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+
+            let mut model = BytesStart::new("model");
+            model.push_attribute(("xmlns", NS_3MF));
+            model.push_attribute(("unit", "millimeter"));
+            writer.write_event(Event::Start(model))?;
+
+            writer.write_event(Event::Start(BytesStart::new("resources")))?;
+            for (i, &solid_id) in solids.iter().enumerate() {
+                let mesh = tessellate_solid(topo, solid_id, deflection)?;
+                validate_solid_mesh(&mesh, i)?;
+                write_object(&mut writer, i, &mesh)?;
+            }
+            writer.write_event(Event::End(BytesEnd::new("resources")))?;
+
+            writer.write_event(Event::Start(BytesStart::new("build")))?;
+            for i in 0..solids.len() {
+                let mut item = BytesStart::new("item");
+                let id_str = (i + 1).to_string();
+                item.push_attribute(("objectid", id_str.as_str()));
+                writer.write_event(Event::Empty(item))?;
+            }
+            writer.write_event(Event::End(BytesEnd::new("build")))?;
+
+            writer.write_event(Event::End(BytesEnd::new("model")))?;
         }
-        if mesh.indices.len() % 3 != 0 {
-            return Err(IoError::InvalidTopology {
-                reason: format!(
-                    "solid {i} has {} indices (not a multiple of 3)",
-                    mesh.indices.len()
-                ),
-            });
-        }
+        std::io::Write::flush(&mut buffered)?;
     }
 
-    let model_xml = write_model_xml(&meshes)?;
-    write_zip(&model_xml)
+    let cursor = zip.finish()?;
+    Ok(cursor.into_inner())
+}
+
+/// Validate a tessellated solid mesh carries 3MF geometry.
+fn validate_solid_mesh(mesh: &TriangleMesh, index: usize) -> Result<(), IoError> {
+    if mesh.indices.len() < 3 {
+        return Err(IoError::InvalidTopology {
+            reason: format!("solid {index} tessellated to zero triangles"),
+        });
+    }
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "solid {index} has {} indices (not a multiple of 3)",
+                mesh.indices.len()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Write already-tessellated meshes to 3MF format as bytes.
 ///
-/// Each mesh is filtered through [`crate::retain_nondegenerate_triangles`] —
-/// the same degenerate-facet removal the solid writer applies — then
-/// validated the same way [`write_threemf`] validates its tessellation
-/// (at least one triangle, index count a multiple of three) and serialized
-/// verbatim. This is the mesh-level seam of [`write_threemf`]: it exists so
-/// the export contract (no exact zero-area facet reaches a serialized file)
-/// can be exercised on controlled meshes without a B-rep in the loop.
+/// Each mesh is filtered through the same degenerate-facet rule the solid
+/// writer applies ([`crate::retain_nondegenerate_triangles`]: exact
+/// zero-area or non-finite triangles are dropped, every finite nonzero-area
+/// triangle is kept) — then validated the same way [`write_threemf`]
+/// validates its tessellation (at least one triangle, index count a
+/// multiple of three) and serialized verbatim. This is the mesh-level seam
+/// of [`write_threemf`]: it exists so the export contract (no exact
+/// zero-area facet reaches a serialized file) can be exercised on
+/// controlled meshes without a B-rep in the loop.
+///
+/// Filtering borrows each caller-supplied mesh and streams its kept
+/// triangles: no cloned copy of every mesh is ever retained. Peak
+/// intermediate mesh storage is one mesh's filtered index view, not a
+/// cloned `Vec<TriangleMesh>` of the whole input, and no complete
+/// model-XML buffer is staged. The input slice is only borrowed and is
+/// left unchanged. The returned archive buffer still scales with file
+/// size: this is a bounded intermediate-memory improvement, not
+/// constant-memory export.
 ///
 /// # Errors
 ///
@@ -94,38 +161,144 @@ pub fn write_threemf(
 /// - `meshes` is empty
 /// - Any mesh has fewer than three indices, or a non-multiple-of-three
 ///   index count, after filtering
+/// - Any triangle index is out of bounds for its mesh's positions
 /// - ZIP or XML writing fails
+///
+/// A failure returns `Err` without a partial successful document.
 pub fn write_mesh_threemf(meshes: &[TriangleMesh]) -> Result<Vec<u8>, IoError> {
     if meshes.is_empty() {
         return Err(IoError::InvalidTopology {
             reason: "no meshes to export".to_string(),
         });
     }
-    let filtered: Vec<TriangleMesh> = meshes
-        .iter()
-        .map(|mesh| {
-            let mut filtered = mesh.clone();
-            crate::retain_nondegenerate_triangles(&mut filtered);
-            filtered
-        })
-        .collect();
-    for (i, mesh) in filtered.iter().enumerate() {
-        if mesh.indices.len() < 3 {
-            return Err(IoError::InvalidTopology {
-                reason: format!("mesh {i} tessellated to zero triangles"),
-            });
+
+    let buf = Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(buf);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    zip.start_file("[Content_Types].xml", options)?;
+    zip.write_all(CONTENT_TYPES_XML)?;
+
+    zip.start_file("_rels/.rels", options)?;
+    zip.write_all(RELS_XML)?;
+
+    zip.start_file("3D/3dmodel.model", options)?;
+    {
+        let mut buffered = std::io::BufWriter::with_capacity(MODEL_XML_BUF_CAP, &mut zip);
+        {
+            let mut writer = Writer::new_with_indent(&mut buffered, b' ', 1);
+            writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+
+            let mut model = BytesStart::new("model");
+            model.push_attribute(("xmlns", NS_3MF));
+            model.push_attribute(("unit", "millimeter"));
+            writer.write_event(Event::Start(model))?;
+
+            writer.write_event(Event::Start(BytesStart::new("resources")))?;
+            for (i, mesh) in meshes.iter().enumerate() {
+                validate_borrowed_mesh(mesh, i)?;
+                write_object_filtered(&mut writer, i, mesh)?;
+            }
+            writer.write_event(Event::End(BytesEnd::new("resources")))?;
+
+            writer.write_event(Event::Start(BytesStart::new("build")))?;
+            for i in 0..meshes.len() {
+                let mut item = BytesStart::new("item");
+                let id_str = (i + 1).to_string();
+                item.push_attribute(("objectid", id_str.as_str()));
+                writer.write_event(Event::Empty(item))?;
+            }
+            writer.write_event(Event::End(BytesEnd::new("build")))?;
+
+            writer.write_event(Event::End(BytesEnd::new("model")))?;
         }
-        if mesh.indices.len() % 3 != 0 {
-            return Err(IoError::InvalidTopology {
-                reason: format!(
-                    "mesh {i} has {} indices (not a multiple of 3)",
-                    mesh.indices.len()
-                ),
-            });
+        std::io::Write::flush(&mut buffered)?;
+    }
+
+    let cursor = zip.finish()?;
+    Ok(cursor.into_inner())
+}
+
+/// Check a caller-supplied mesh can be filtered to 3MF geometry.
+///
+/// Mirrors the post-filter validation the solid writer applies: at least
+/// one kept triangle and a multiple-of-three index count. Out-of-bounds
+/// indices are a typed refusal here; the in-place provider filter would
+/// index them directly.
+fn validate_borrowed_mesh(mesh: &TriangleMesh, index: usize) -> Result<(), IoError> {
+    if mesh.indices.len() < 3 {
+        return Err(IoError::InvalidTopology {
+            reason: format!("mesh {index} tessellated to zero triangles"),
+        });
+    }
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "mesh {index} has {} indices (not a multiple of 3)",
+                mesh.indices.len()
+            ),
+        });
+    }
+    let kept = count_kept_triangles(mesh, index)?;
+    if kept == 0 {
+        return Err(IoError::InvalidTopology {
+            reason: format!("mesh {index} tessellated to zero triangles"),
+        });
+    }
+    Ok(())
+}
+
+/// Count triangles the degenerate filter would keep, refusing
+/// out-of-bounds indices instead of indexing them directly.
+fn count_kept_triangles(mesh: &TriangleMesh, index: usize) -> Result<usize, IoError> {
+    let mut kept = 0usize;
+    for tri in mesh.indices.chunks_exact(3) {
+        let (a, b, c) = triangle_positions(mesh, tri, index)?;
+        if is_nondegenerate(a, b, c) {
+            kept += 1;
         }
     }
-    let model_xml = write_model_xml(&filtered)?;
-    write_zip(&model_xml)
+    Ok(kept)
+}
+
+/// Resolve one triangle's positions, refusing out-of-bounds indices.
+fn triangle_positions(
+    mesh: &TriangleMesh,
+    tri: &[u32],
+    mesh_index: usize,
+) -> Result<
+    (
+        remus_math::vec::Point3,
+        remus_math::vec::Point3,
+        remus_math::vec::Point3,
+    ),
+    IoError,
+> {
+    let i0 = tri[0] as usize;
+    let i1 = tri[1] as usize;
+    let i2 = tri[2] as usize;
+    if i0 >= mesh.positions.len() || i1 >= mesh.positions.len() || i2 >= mesh.positions.len() {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "mesh {mesh_index} has triangle index out of bounds: [{}, {}, {}] but only {} vertices",
+                tri[0],
+                tri[1],
+                tri[2],
+                mesh.positions.len(),
+            ),
+        });
+    }
+    Ok((mesh.positions[i0], mesh.positions[i1], mesh.positions[i2]))
+}
+
+/// The provider filter predicate: keep every finite nonzero-area triangle.
+fn is_nondegenerate(
+    a: remus_math::vec::Point3,
+    b: remus_math::vec::Point3,
+    c: remus_math::vec::Point3,
+) -> bool {
+    let area_squared = (b - a).cross(c - a).length_squared();
+    area_squared.is_finite() && area_squared > 0.0
 }
 
 /// Tessellate all faces of a solid into a single merged [`TriangleMesh`].
@@ -142,41 +315,13 @@ fn tessellate_solid(
     Ok(mesh)
 }
 
-/// Build the `3dmodel.model` XML document.
-fn write_model_xml(meshes: &[TriangleMesh]) -> Result<Vec<u8>, IoError> {
-    let mut buf = Vec::new();
-    let mut writer = Writer::new_with_indent(&mut buf, b' ', 1);
-
-    writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
-
-    let mut model = BytesStart::new("model");
-    model.push_attribute(("xmlns", NS_3MF));
-    model.push_attribute(("unit", "millimeter"));
-    writer.write_event(Event::Start(model))?;
-
-    writer.write_event(Event::Start(BytesStart::new("resources")))?;
-    for (i, mesh) in meshes.iter().enumerate() {
-        write_object(&mut writer, i, mesh)?;
-    }
-    writer.write_event(Event::End(BytesEnd::new("resources")))?;
-
-    writer.write_event(Event::Start(BytesStart::new("build")))?;
-    for i in 0..meshes.len() {
-        let mut item = BytesStart::new("item");
-        let id_str = (i + 1).to_string();
-        item.push_attribute(("objectid", id_str.as_str()));
-        writer.write_event(Event::Empty(item))?;
-    }
-    writer.write_event(Event::End(BytesEnd::new("build")))?;
-
-    writer.write_event(Event::End(BytesEnd::new("model")))?;
-
-    Ok(buf)
-}
-
 /// Write a single `<object>` element containing `<mesh>` data.
-fn write_object(
-    writer: &mut Writer<&mut Vec<u8>>,
+///
+/// The mesh is already filtered (solid path) or is written via
+/// [`write_object_filtered`] (borrowed-mesh path); indices are serialized
+/// verbatim in stored order, preserving winding.
+fn write_object<W: std::io::Write>(
+    writer: &mut Writer<W>,
     index: usize,
     mesh: &TriangleMesh,
 ) -> Result<(), IoError> {
@@ -216,6 +361,58 @@ fn write_object(
     Ok(())
 }
 
+/// Write a single `<object>` from a borrowed caller mesh, keeping only the
+/// triangles the provider filter keeps.
+///
+/// Positions are serialized verbatim (including any unused vertices, as the
+/// historic writer did); triangle indices are serialized verbatim in stored
+/// order for kept triangles, preserving winding. The caller mesh is only
+/// borrowed.
+fn write_object_filtered<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    index: usize,
+    mesh: &TriangleMesh,
+) -> Result<(), IoError> {
+    let id_str = (index + 1).to_string();
+
+    let mut object = BytesStart::new("object");
+    object.push_attribute(("id", id_str.as_str()));
+    object.push_attribute(("type", "model"));
+    writer.write_event(Event::Start(object))?;
+
+    writer.write_event(Event::Start(BytesStart::new("mesh")))?;
+
+    writer.write_event(Event::Start(BytesStart::new("vertices")))?;
+    for pos in &mesh.positions {
+        let mut vertex = BytesStart::new("vertex");
+        vertex.push_attribute(("x", format_f64(pos.x()).as_str()));
+        vertex.push_attribute(("y", format_f64(pos.y()).as_str()));
+        vertex.push_attribute(("z", format_f64(pos.z()).as_str()));
+        writer.write_event(Event::Empty(vertex))?;
+    }
+    writer.write_event(Event::End(BytesEnd::new("vertices")))?;
+
+    writer.write_event(Event::Start(BytesStart::new("triangles")))?;
+    for tri in mesh.indices.chunks_exact(3) {
+        let (a, b, c) = triangle_positions(mesh, tri, index)?;
+        if !is_nondegenerate(a, b, c) {
+            continue;
+        }
+        let mut triangle = BytesStart::new("triangle");
+        triangle.push_attribute(("v1", tri[0].to_string().as_str()));
+        triangle.push_attribute(("v2", tri[1].to_string().as_str()));
+        triangle.push_attribute(("v3", tri[2].to_string().as_str()));
+        writer.write_event(Event::Empty(triangle))?;
+    }
+    writer.write_event(Event::End(BytesEnd::new("triangles")))?;
+
+    writer.write_event(Event::End(BytesEnd::new("mesh")))?;
+
+    writer.write_event(Event::End(BytesEnd::new("object")))?;
+
+    Ok(())
+}
+
 /// Format a float for XML output (enough precision, no trailing noise).
 fn format_f64(v: f64) -> String {
     // Use enough digits for sub-micron precision in millimeters.
@@ -234,25 +431,6 @@ const RELS_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#;
-
-/// Pack the model XML and required metadata into a ZIP archive.
-fn write_zip(model_xml: &[u8]) -> Result<Vec<u8>, IoError> {
-    let buf = Cursor::new(Vec::new());
-    let mut zip = ZipWriter::new(buf);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    zip.start_file("[Content_Types].xml", options)?;
-    zip.write_all(CONTENT_TYPES_XML)?;
-
-    zip.start_file("_rels/.rels", options)?;
-    zip.write_all(RELS_XML)?;
-
-    zip.start_file("3D/3dmodel.model", options)?;
-    zip.write_all(model_xml)?;
-
-    let cursor = zip.finish()?;
-    Ok(cursor.into_inner())
-}
 
 #[cfg(test)]
 mod tests {
