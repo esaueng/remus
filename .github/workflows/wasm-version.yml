@@ -16,7 +16,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Check version guard regressions
-        run: python3 scripts/test-wasm-version-guard.py
+        run: |
+          python3 scripts/test-wasm-version-guard.py
+          bash scripts/test-pin-sibling-versions.sh
       - name: Check committed package versions against the integration base
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}

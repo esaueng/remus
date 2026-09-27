@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Re-pin every workspace remus dependency to the exact remus-math crate
-# version. The Apache line keeps per-crate versions rather than a shared
-# workspace package version, so math is the release-version source of truth
-# for the Rust workspace crates.
+# Re-pin every workspace remus dependency, including the facade crate, to the
+# exact remus-math version. Math is the source of truth for the Rust release
+# train; the generated WASM npm packages may advance patches between cuts.
 
 command -v perl >/dev/null || {
   echo "perl is required but not installed."
@@ -23,9 +22,9 @@ if [ -z "$WS_VERSION" ]; then
 fi
 
 # Rewrite only workspace sibling entries, leaving third-party requirements and
-# the independently versioned WASM package untouched.
+# the WASM crate manifests untouched.
 perl -i -pe '
-  s/^(remus-[a-z]+ *= *\{path *= *"[^"]*", *version *= *")=?[^"]*(")/$1='"$WS_VERSION"'$2/
+  s/^(remus(?:-[a-z]+)? *= *\{path *= *"[^"]*", *version *= *")=?[^"]*(")/$1='"$WS_VERSION"'$2/
 ' "$MANIFEST"
 
 echo "pinned workspace sibling requirements to =$WS_VERSION"
