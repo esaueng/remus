@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
@@ -209,6 +210,31 @@ fn survey_shell(
     Ok((wire_ids, usage))
 }
 
+/// Cell coordinate in the endpoint-neighborhood grid (PERF-H02).
+type EndpointCell = (i64, i64, i64);
+
+/// Largest exactly-representable grid coordinate (`2^53`), matching
+/// `fix::vertex_merge` so both indexes fall back on the same inputs.
+const MAX_EXACT_ENDPOINT_CELL: f64 = 9_007_199_254_740_992.0;
+
+/// Outcome of [`plan_merges_with_stats`], including the exact-pair work the
+/// index skipped. `plans` and `declined` are the only values that reach
+/// sewing; the counters exist for equivalence tests and scaling reports.
+#[allow(dead_code)]
+struct SewPlanOutcome {
+    plans: Vec<Merge>,
+    declined: usize,
+    /// Exact `endpoints_coincide` evaluations performed.
+    endpoint_checks: u64,
+    /// Exact `curves_agree` evaluations performed.
+    curve_checks: u64,
+    /// Index-proposed `(i, j)` examinations, including merged-source skips
+    /// that never reach the exact predicate.
+    candidate_exams: u64,
+    /// True when degenerate input forced the exact all-pairs fallback.
+    fell_back_to_all_pairs: bool,
+}
+
 /// Pair up free edges that share both endpoints *and* the curve between
 /// them. Returns the merges to perform and the number of coincident pairs
 /// declined.
@@ -217,12 +243,59 @@ fn plan_merges(
     free: &[FreeEdge],
     tolerance: f64,
 ) -> Result<(Vec<Merge>, usize), HealError> {
+    let outcome = plan_merges_with_stats(topo, free, tolerance)?;
+    Ok((outcome.plans, outcome.declined))
+}
+
+/// Indexed planner entry point.
+///
+/// The endpoint-neighborhood grid only selects candidates; the existing
+/// `endpoints_coincide` + `curves_agree` + `pcurve_keys_available` decision
+/// process is the final authority, unchanged from the legacy scan. No
+/// curve-signature pruning is performed: a general finite-span bounding
+/// system is outside this slice.
+fn plan_merges_with_stats(
+    topo: &Topology,
+    free: &[FreeEdge],
+    tolerance: f64,
+) -> Result<SewPlanOutcome, HealError> {
+    if free.len() < 2 {
+        return Ok(SewPlanOutcome {
+            plans: Vec::new(),
+            declined: 0,
+            endpoint_checks: 0,
+            curve_checks: 0,
+            candidate_exams: 0,
+            fell_back_to_all_pairs: false,
+        });
+    }
+    if !tolerance.is_finite() || tolerance <= 0.0 || !endpoint_grid_applicable(free, tolerance) {
+        return plan_merges_all_pairs(topo, free, tolerance, true);
+    }
+    plan_merges_indexed(topo, free, tolerance)
+}
+
+/// Exact legacy all-pairs loop, preserved as the degenerate-input fallback
+/// and as the equivalence oracle for tests.
+///
+/// Predicate (`dist² < tol²`, strict), tolerance policy, canonical survivor
+/// (`free[i]` keeps, `free[j]` drops), deterministic `i`-then-`j` order,
+/// consumed-edge skips, ambiguity refusals, and `declined` accounting are
+/// bit-identical to the pre-PERF-H02 scan.
+fn plan_merges_all_pairs(
+    topo: &Topology,
+    free: &[FreeEdge],
+    tolerance: f64,
+    fell_back: bool,
+) -> Result<SewPlanOutcome, HealError> {
     let tol_sq = tolerance * tolerance;
     // An edge is consumed once it has been sewn, or once it has been ruled
     // out as an arbitrary choice among several valid partners.
     let mut consumed = vec![false; free.len()];
     let mut plans = Vec::new();
     let mut declined = 0;
+    let mut endpoint_checks = 0u64;
+    let mut curve_checks = 0u64;
 
     for i in 0..free.len() {
         if consumed[i] {
@@ -236,63 +309,280 @@ fn plan_merges(
             if consumed[j] {
                 continue;
             }
+            endpoint_checks += 1;
             let (fwd_ok, rev_ok) = endpoints_coincide(&free[i], &free[j], tol_sq);
             if !fwd_ok && !rev_ok {
                 continue;
             }
             any_coincident = true;
             // Shared endpoints prove nothing about the span between them.
-            if fwd_ok && curves_agree(topo, &free[i], &free[j], false, tolerance)? {
-                candidates.push((j, false));
-            } else if rev_ok && curves_agree(topo, &free[i], &free[j], true, tolerance)? {
-                candidates.push((j, true));
+            if fwd_ok {
+                curve_checks += 1;
+                if curves_agree(topo, &free[i], &free[j], false, tolerance)? {
+                    candidates.push((j, false));
+                    continue;
+                }
+            }
+            if rev_ok {
+                curve_checks += 1;
+                if curves_agree(topo, &free[i], &free[j], true, tolerance)? {
+                    candidates.push((j, true));
+                }
             }
         }
 
-        if candidates.len() == 1 {
-            let (j, reversed) = candidates[0];
-            if pcurve_keys_available(topo, free[i].id, free[j].id, reversed) {
-                consumed[i] = true;
-                consumed[j] = true;
-                plans.push(Merge {
-                    keep: free[i].id,
-                    drop: free[j].id,
-                    reversed,
-                });
-            } else {
-                // Merging would put two uses of one edge on one face in the
-                // same direction, which is not a manifold boundary.
-                log::debug!(
-                    "sew_shell: declining {:?}/{:?} — pcurve use key already occupied",
-                    free[i].id,
-                    free[j].id
-                );
-                declined += 1;
-            }
-        } else if candidates.len() > 1 {
-            // More than one valid partner is a non-manifold junction. Picking
-            // one would be arbitrary, so pick none — and consume the whole
-            // group, or the leftovers would pair off by iteration order.
-            log::debug!(
-                "sew_shell: declining {:?} — {} coincident partners",
-                free[i].id,
-                candidates.len()
-            );
-            consumed[i] = true;
-            for &(j, _) in &candidates {
-                consumed[j] = true;
-            }
-            declined += 1;
-        } else if any_coincident {
-            log::debug!(
-                "sew_shell: declining {:?} — endpoints match a partner but the curves do not",
-                free[i].id
-            );
-            declined += 1;
+        declined += decide_merge(
+            topo,
+            free,
+            &mut consumed,
+            &mut plans,
+            i,
+            &candidates,
+            any_coincident,
+        );
+    }
+
+    let candidate_exams = endpoint_checks;
+    Ok(SewPlanOutcome {
+        plans,
+        declined,
+        endpoint_checks,
+        curve_checks,
+        candidate_exams,
+        fell_back_to_all_pairs: fell_back,
+    })
+}
+
+/// Indexed candidate discovery.
+///
+/// Endpoints are bucketed into a single uniform grid with cell size
+/// `tolerance`: each free edge contributes its start cell and (when distinct)
+/// its end cell. When `dist < tol`, per-axis `|d| < tol` forces the floored
+/// cell coordinates to differ by at most one per axis, so every pair the
+/// existing endpoint predicate would admit shares a 27-neighborhood around at
+/// least one endpoint pair. The index is therefore *conservative*: it can
+/// propose extra nearby pairs (edges sharing a single endpoint, e.g. corner
+/// neighbors), but never misses an eligible one. Every candidate is
+/// re-checked with the exact `endpoints_coincide` predicate before
+/// `curves_agree` runs, so single-endpoint neighbors cost one cheap exact
+/// rejection and no curve sampling.
+///
+/// The union is sorted ascending so the inner scan visits `j` in the same
+/// order as the legacy loop restricted to coincident pairs; far pairs the
+/// legacy loop would have skipped with `continue` cannot change the outcome.
+/// No curve-signature pruning is performed.
+#[allow(clippy::too_many_lines)]
+fn plan_merges_indexed(
+    topo: &Topology,
+    free: &[FreeEdge],
+    tolerance: f64,
+) -> Result<SewPlanOutcome, HealError> {
+    let tol_sq = tolerance * tolerance;
+    let n = free.len();
+
+    let start_cells: Vec<EndpointCell> = free
+        .iter()
+        .map(|e| endpoint_cell(&e.start_pos, tolerance))
+        .collect();
+    let end_cells: Vec<EndpointCell> = free
+        .iter()
+        .map(|e| endpoint_cell(&e.end_pos, tolerance))
+        .collect();
+    // Single endpoint map: each edge appears under its start cell and (when
+    // distinct) its end cell. Buckets grow in index order.
+    let mut endpoint_map: DetHashMap<EndpointCell, Vec<usize>> = DetHashMap::default();
+    for (idx, (s, e)) in start_cells.iter().zip(end_cells.iter()).enumerate() {
+        endpoint_map.entry(*s).or_default().push(idx);
+        if e != s {
+            endpoint_map.entry(*e).or_default().push(idx);
         }
     }
 
-    Ok((plans, declined))
+    let mut consumed = vec![false; n];
+    let mut plans = Vec::new();
+    let mut declined = 0;
+    let mut endpoint_checks = 0u64;
+    let mut curve_checks = 0u64;
+    let mut candidate_exams = 0u64;
+    // Scratch buffers reused across `i` to keep sparse memory linear.
+    let mut union = Vec::new();
+
+    for i in 0..n {
+        if consumed[i] {
+            continue;
+        }
+
+        collect_two_neighborhoods(&endpoint_map, &start_cells[i], &end_cells[i], &mut union);
+        // Legacy order is ascending `j`; the index must not reorder it.
+        union.retain(|&j| j > i);
+        candidate_exams += union.len() as u64;
+
+        let mut candidates: Vec<(usize, bool)> = Vec::new();
+        let mut any_coincident = false;
+
+        for &j in &union {
+            if consumed[j] {
+                continue;
+            }
+            endpoint_checks += 1;
+            let (fwd_ok, rev_ok) = endpoints_coincide(&free[i], &free[j], tol_sq);
+            if !fwd_ok && !rev_ok {
+                continue;
+            }
+            any_coincident = true;
+            // Shared endpoints prove nothing about the span between them.
+            if fwd_ok {
+                curve_checks += 1;
+                if curves_agree(topo, &free[i], &free[j], false, tolerance)? {
+                    candidates.push((j, false));
+                    continue;
+                }
+            }
+            if rev_ok {
+                curve_checks += 1;
+                if curves_agree(topo, &free[i], &free[j], true, tolerance)? {
+                    candidates.push((j, true));
+                }
+            }
+        }
+
+        declined += decide_merge(
+            topo,
+            free,
+            &mut consumed,
+            &mut plans,
+            i,
+            &candidates,
+            any_coincident,
+        );
+    }
+
+    Ok(SewPlanOutcome {
+        plans,
+        declined,
+        endpoint_checks,
+        curve_checks,
+        candidate_exams,
+        fell_back_to_all_pairs: false,
+    })
+}
+
+/// Shared merge decision for one `i`, identical for both planners.
+///
+/// Returns the `declined` increment (0 or 1). Consumes `i` (and its partners
+/// on ambiguity) and pushes at most one plan, preserving canonical survivor
+/// choice (`free[i]` keeps), per-use pcurve gating, and ambiguity refusals:
+/// several eligible partners remain ambiguous rather than becoming an
+/// arbitrary pair.
+fn decide_merge(
+    topo: &Topology,
+    free: &[FreeEdge],
+    consumed: &mut [bool],
+    plans: &mut Vec<Merge>,
+    i: usize,
+    candidates: &[(usize, bool)],
+    any_coincident: bool,
+) -> usize {
+    if candidates.len() == 1 {
+        let (j, reversed) = candidates[0];
+        if pcurve_keys_available(topo, free[i].id, free[j].id, reversed) {
+            consumed[i] = true;
+            consumed[j] = true;
+            plans.push(Merge {
+                keep: free[i].id,
+                drop: free[j].id,
+                reversed,
+            });
+            0
+        } else {
+            // Merging would put two uses of one edge on one face in the
+            // same direction, which is not a manifold boundary.
+            log::debug!(
+                "sew_shell: declining {:?}/{:?} — pcurve use key already occupied",
+                free[i].id,
+                free[j].id
+            );
+            1
+        }
+    } else if candidates.len() > 1 {
+        // More than one valid partner is a non-manifold junction. Picking
+        // one would be arbitrary, so pick none — and consume the whole
+        // group, or the leftovers would pair off by iteration order.
+        log::debug!(
+            "sew_shell: declining {:?} — {} coincident partners",
+            free[i].id,
+            candidates.len()
+        );
+        consumed[i] = true;
+        for &(j, _) in candidates {
+            consumed[j] = true;
+        }
+        1
+    } else if any_coincident {
+        log::debug!(
+            "sew_shell: declining {:?} — endpoints match a partner but the curves do not",
+            free[i].id
+        );
+        1
+    } else {
+        0
+    }
+}
+
+/// Whether the endpoint grid can represent every free edge conservatively.
+fn endpoint_grid_applicable(free: &[FreeEdge], tolerance: f64) -> bool {
+    free.iter().all(|e| {
+        endpoint_finite_in_range(&e.start_pos, tolerance)
+            && endpoint_finite_in_range(&e.end_pos, tolerance)
+    })
+}
+
+fn endpoint_finite_in_range(p: &Point3, tolerance: f64) -> bool {
+    p.x().is_finite()
+        && p.y().is_finite()
+        && p.z().is_finite()
+        && (p.x() / tolerance).abs() <= MAX_EXACT_ENDPOINT_CELL
+        && (p.y() / tolerance).abs() <= MAX_EXACT_ENDPOINT_CELL
+        && (p.z() / tolerance).abs() <= MAX_EXACT_ENDPOINT_CELL
+}
+
+fn endpoint_cell(p: &Point3, tolerance: f64) -> EndpointCell {
+    (
+        (p.x() / tolerance).floor() as i64,
+        (p.y() / tolerance).floor() as i64,
+        (p.z() / tolerance).floor() as i64,
+    )
+}
+
+/// Union of the 27 neighborhoods around `center`, sorted ascending.
+///
+/// Each index appears in exactly one bucket, so the union has no duplicates;
+/// Union of the 27-neighborhoods around two endpoint cells, sorted ascending
+/// and deduplicated.
+///
+/// Each edge appears under at most two cells, so the same index can surface
+/// twice (once via `start`, once via `end`); sorting plus dedup restores one
+/// ascending list for the deterministic scan.
+fn collect_two_neighborhoods(
+    map: &DetHashMap<EndpointCell, Vec<usize>>,
+    start: &EndpointCell,
+    end: &EndpointCell,
+    out: &mut Vec<usize>,
+) {
+    out.clear();
+    for center in [start, end] {
+        for dx in -1..=1_i64 {
+            for dy in -1..=1_i64 {
+                for dz in -1..=1_i64 {
+                    if let Some(bucket) = map.get(&(center.0 + dx, center.1 + dy, center.2 + dz)) {
+                        out.extend_from_slice(bucket);
+                    }
+                }
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
 }
 
 /// Whether two free edges share both endpoints, forwards and/or reversed.
@@ -1421,5 +1711,477 @@ mod tests {
         remus_topology::validation::validate_shell_closed(topo.shell(shell_id).unwrap(), &topo)
             .expect("sewn rim leaves a closed shell");
         assert_wires_chain(&topo, shell_id);
+    }
+
+    // PERF-H02 equivalence: the indexed planner must return every pair the
+    // legacy endpoint predicate would admit, with identical merge decisions.
+    // Each fixture runs both planners on the same `free` snapshot and asserts
+    // identical plans (canonical survivor, reversed sense), declined counts,
+    // and that the index never evaluates more exact pairs than all-pairs.
+    fn free_snapshot(topo: &Topology, ids: &[EdgeId]) -> Vec<FreeEdge> {
+        let mut free: Vec<FreeEdge> = ids
+            .iter()
+            .map(|&id| {
+                let edge = topo.edge(id).unwrap();
+                let (start, end) = (edge.start(), edge.end());
+                FreeEdge {
+                    id,
+                    start_pos: topo.vertex(start).unwrap().point(),
+                    end_pos: topo.vertex(end).unwrap().point(),
+                }
+            })
+            .collect();
+        free.sort_by_key(|e| e.id.index());
+        free
+    }
+
+    fn assert_planners_agree(topo: &Topology, free: &[FreeEdge], tolerance: f64) -> SewPlanOutcome {
+        let reference = plan_merges_all_pairs(topo, free, tolerance, false).unwrap();
+        let indexed = plan_merges_with_stats(topo, free, tolerance).unwrap();
+        // Indexed must not fall back on well-formed inputs covered here;
+        // fallback cases assert `fell_back_to_all_pairs` explicitly.
+        assert!(
+            !indexed.fell_back_to_all_pairs,
+            "indexed planner fell back on a well-formed fixture"
+        );
+        assert_eq!(
+            reference.declined, indexed.declined,
+            "declined counts must match the reference"
+        );
+        assert_eq!(
+            reference.plans.len(),
+            indexed.plans.len(),
+            "plan counts must match the reference"
+        );
+        for (a, b) in reference.plans.iter().zip(indexed.plans.iter()) {
+            assert_eq!(a.keep, b.keep, "canonical survivor must match");
+            assert_eq!(a.drop, b.drop, "dropped edge must match");
+            assert_eq!(a.reversed, b.reversed, "reversed sense must match");
+        }
+        assert!(
+            indexed.endpoint_checks <= reference.endpoint_checks.max(1),
+            "index must not evaluate more endpoint pairs than all-pairs ({} vs {})",
+            indexed.endpoint_checks,
+            reference.endpoint_checks
+        );
+        assert_eq!(
+            indexed.curve_checks, reference.curve_checks,
+            "curve-compatibility checks must match exactly"
+        );
+        indexed
+    }
+
+    fn line_edge_between(topo: &mut Topology, a: Point3, b: Point3) -> EdgeId {
+        let va = topo.add_vertex(Vertex::new(a, TOL));
+        let vb = topo.add_vertex(Vertex::new(b, TOL));
+        topo.add_edge(Edge::new(va, vb, EdgeCurve::Line))
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_reversed_edges() {
+        // Same segment opposite directions: forward match on one pair,
+        // reversed match on the other. Both planners must pick the same
+        // survivor and sense.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let e0 = line_edge_between(&mut topo, p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0));
+        let e1 = line_edge_between(&mut topo, p(1.0, 0.0, 0.0), p(0.0, 0.0, 0.0));
+        let e2 = line_edge_between(&mut topo, p(5.0, 5.0, 5.0), p(6.0, 5.0, 5.0));
+        let free = free_snapshot(&topo, &[e0, e1, e2]);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 1);
+        assert!(outcome.plans[0].reversed);
+        assert_eq!(outcome.declined, 0);
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_closed_circular_edges() {
+        // Two closed rims sharing one seam point: both endpoint orientations
+        // match trivially, interior sampling settles the direction.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let circle = Circle3D::new(p(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+        let rim0 = circle_edge(&mut topo, seam, seam, circle);
+        let circle1 = Circle3D::new(p(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let seam1 = topo.add_vertex(Vertex::new(circle1.evaluate(0.0), TOL));
+        let rim1 = circle_edge(&mut topo, seam1, seam1, circle1);
+        // A far closed rim that must never become a candidate.
+        let far_circle = Circle3D::new(p(50.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let far_seam = topo.add_vertex(Vertex::new(far_circle.evaluate(0.0), TOL));
+        let far_rim = circle_edge(&mut topo, far_seam, far_seam, far_circle);
+        let free = free_snapshot(&topo, &[rim0, rim1, far_rim]);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 1);
+        assert_eq!(outcome.declined, 0);
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_seam_uses_with_opposite_winding() {
+        // Two closed rims on the same circle but opposite orientation (seam
+        // uses): endpoints coincide trivially, interior sampling settles the
+        // sense. Both planners must reach the same reversed decision.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let circle_fwd = Circle3D::new(p(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let circle_rev = Circle3D::new(p(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 1.0).unwrap();
+        let seam0 = topo.add_vertex(Vertex::new(circle_fwd.evaluate(0.0), TOL));
+        let rim0 = circle_edge(&mut topo, seam0, seam0, circle_fwd);
+        let seam1 = topo.add_vertex(Vertex::new(circle_rev.evaluate(0.0), TOL));
+        let rim1 = circle_edge(&mut topo, seam1, seam1, circle_rev);
+        let free = free_snapshot(&topo, &[rim0, rim1]);
+        let reference = plan_merges_all_pairs(&topo, &free, 1e-6, false).unwrap();
+        let indexed = plan_merges_with_stats(&topo, &free, 1e-6).unwrap();
+        assert_eq!(reference.declined, indexed.declined);
+        assert_eq!(reference.plans.len(), indexed.plans.len());
+        for (a, b) in reference.plans.iter().zip(indexed.plans.iter()) {
+            assert_eq!(a.keep, b.keep);
+            assert_eq!(a.drop, b.drop);
+            assert_eq!(a.reversed, b.reversed);
+        }
+        // Whatever the winding decides (merge or decline), the index must not
+        // invent a second opinion.
+        assert!(indexed.endpoint_checks <= reference.endpoint_checks.max(1));
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_pcurve_key_availability() {
+        // `pcurve_keys_available` is the final gate after curve agreement.
+        // Both planners call it identically; pin that a fresh pair is
+        // available and stays available through the indexed path.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let e0 = line_edge_between(&mut topo, p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0));
+        let e1 = line_edge_between(&mut topo, p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0));
+        assert!(pcurve_keys_available(&topo, e0, e1, false));
+        assert!(pcurve_keys_available(&topo, e0, e1, true));
+        let free = free_snapshot(&topo, &[e0, e1]);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 1);
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_chord_arc_pairs() {
+        // Chord and arc share both endpoints but carry different curves:
+        // coincident endpoints, declined curves.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let chord = line_edge_between(&mut topo, p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0));
+        let va = topo.add_vertex(Vertex::new(p(0.0, 0.0, 0.0), TOL));
+        let vb = topo.add_vertex(Vertex::new(p(1.0, 0.0, 0.0), TOL));
+        let arc_circle = Circle3D::new(p(0.5, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
+        let arc = circle_edge(&mut topo, va, vb, arc_circle);
+        let far = line_edge_between(&mut topo, p(20.0, 0.0, 0.0), p(21.0, 0.0, 0.0));
+        let free = free_snapshot(&topo, &[chord, arc, far]);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 0);
+        assert_eq!(outcome.declined, 1);
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_unequal_trims_sharing_endpoints() {
+        // Same circle, same endpoints, opposite bulges (upper vs lower
+        // semicircle): unequal trims, disagreeing interiors.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let upper = Circle3D::new(p(0.5, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
+        let lower = Circle3D::new(p(0.5, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 0.5).unwrap();
+        let ua = topo.add_vertex(Vertex::new(p(0.0, 0.0, 0.0), TOL));
+        let ub = topo.add_vertex(Vertex::new(p(1.0, 0.0, 0.0), TOL));
+        let la = topo.add_vertex(Vertex::new(p(0.0, 0.0, 0.0), TOL));
+        let lb = topo.add_vertex(Vertex::new(p(1.0, 0.0, 0.0), TOL));
+        let e_upper = circle_edge(&mut topo, ua, ub, upper);
+        let e_lower = circle_edge(&mut topo, la, lb, lower);
+        let free = free_snapshot(&topo, &[e_upper, e_lower]);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 0);
+        assert_eq!(outcome.declined, 1);
+    }
+
+    #[test]
+    fn indexed_matches_reference_across_cell_boundaries() {
+        // Pair straddling the cell border at x = 10*tol, 4e-9 apart:
+        // eligible and in neighboring cells.
+        let tol = 1e-7;
+        let mut topo = Topology::new();
+        let a0 = Point3::new(10.0 * tol - 2e-9, 0.0, 0.0);
+        let a1 = Point3::new(11.0 * tol - 2e-9, 0.0, 0.0);
+        let b0 = Point3::new(10.0 * tol + 2e-9, 0.0, 0.0);
+        let b1 = Point3::new(11.0 * tol + 2e-9, 0.0, 0.0);
+        let e0 = line_edge_between(&mut topo, a0, a1);
+        let e1 = line_edge_between(&mut topo, b0, b1);
+        // Pair exactly tol apart: strict `<` keeps them distinct.
+        let e2 = line_edge_between(
+            &mut topo,
+            Point3::new(0.0, 5.0, 0.0),
+            Point3::new(1.0, 5.0, 0.0),
+        );
+        let e3 = line_edge_between(
+            &mut topo,
+            Point3::new(tol, 5.0, 0.0),
+            Point3::new(1.0 + tol, 5.0, 0.0),
+        );
+        let free = free_snapshot(&topo, &[e0, e1, e2, e3]);
+        let outcome = assert_planners_agree(&topo, &free, tol);
+        assert_eq!(outcome.plans.len(), 1);
+        assert_eq!(outcome.declined, 0);
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_negative_and_large_coordinates() {
+        let tol = 1e-7;
+        let mut topo = Topology::new();
+        let e0 = line_edge_between(
+            &mut topo,
+            Point3::new(-100.0, -200.0, -300.0),
+            Point3::new(-99.0, -200.0, -300.0),
+        );
+        let e1 = line_edge_between(
+            &mut topo,
+            Point3::new(-100.0 + 5e-8, -200.0, -300.0),
+            Point3::new(-99.0 + 5e-8, -200.0, -300.0),
+        );
+        let e2 = line_edge_between(
+            &mut topo,
+            Point3::new(1e6, 2e6, -1e6),
+            Point3::new(1e6 + 1.0, 2e6, -1e6),
+        );
+        let e3 = line_edge_between(
+            &mut topo,
+            Point3::new(1e6 + 5e-8, 2e6, -1e6),
+            Point3::new(1e6 + 1.0 + 5e-8, 2e6, -1e6),
+        );
+        let e4 = line_edge_between(
+            &mut topo,
+            Point3::new(1e6 + 100.0, 2e6, -1e6),
+            Point3::new(1e6 + 101.0, 2e6, -1e6),
+        );
+        let free = free_snapshot(&topo, &[e0, e1, e2, e3, e4]);
+        let outcome = assert_planners_agree(&topo, &free, tol);
+        assert_eq!(outcome.plans.len(), 2);
+        assert_eq!(outcome.declined, 0);
+    }
+
+    #[test]
+    fn indexed_matches_reference_on_tolerance_boundaries() {
+        let tol = 1e-7;
+        // Just below tol: eligible. Exactly tol: strict `<` declines.
+        // Just above tol: declines.
+        let mut topo = Topology::new();
+        let base0 = Point3::new(0.0, 0.0, 0.0);
+        let base1 = Point3::new(1.0, 0.0, 0.0);
+        let e0 = line_edge_between(&mut topo, base0, base1);
+        let e1 = line_edge_between(
+            &mut topo,
+            Point3::new(tol * (1.0 - 1e-9), 0.0, 0.0),
+            Point3::new(1.0 + tol * (1.0 - 1e-9), 0.0, 0.0),
+        );
+        let free = free_snapshot(&topo, &[e0, e1]);
+        let outcome = assert_planners_agree(&topo, &free, tol);
+        assert_eq!(outcome.plans.len(), 1);
+
+        let mut topo = Topology::new();
+        let f0 = line_edge_between(&mut topo, base0, base1);
+        let f1 = line_edge_between(
+            &mut topo,
+            Point3::new(tol, 0.0, 0.0),
+            Point3::new(1.0 + tol, 0.0, 0.0),
+        );
+        let free = free_snapshot(&topo, &[f0, f1]);
+        let outcome = assert_planners_agree(&topo, &free, tol);
+        assert_eq!(outcome.plans.len(), 0);
+        assert_eq!(outcome.declined, 0);
+    }
+
+    #[test]
+    fn indexed_preserves_ambiguity_for_three_or_more_partners() {
+        // Four coincident lines along one segment: every eligible partner
+        // must remain ambiguous rather than becoming an arbitrary pair.
+        let p = Point3::new;
+        let mut topo = Topology::new();
+        let ids: Vec<EdgeId> = (0..4)
+            .map(|_| line_edge_between(&mut topo, p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)))
+            .collect();
+        let far = line_edge_between(&mut topo, p(30.0, 0.0, 0.0), p(31.0, 0.0, 0.0));
+        let mut all = ids;
+        all.push(far);
+        let free = free_snapshot(&topo, &all);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 0);
+        assert_eq!(outcome.declined, 1);
+        // A second group of three elsewhere declines independently.
+        let mut topo = Topology::new();
+        let group_a: Vec<EdgeId> = (0..3)
+            .map(|_| line_edge_between(&mut topo, p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)))
+            .collect();
+        let group_b: Vec<EdgeId> = (0..3)
+            .map(|_| line_edge_between(&mut topo, p(10.0, 0.0, 0.0), p(11.0, 0.0, 0.0)))
+            .collect();
+        let mut all = group_a;
+        all.extend(group_b);
+        let free = free_snapshot(&topo, &all);
+        let outcome = assert_planners_agree(&topo, &free, 1e-6);
+        assert_eq!(outcome.plans.len(), 0);
+        assert_eq!(outcome.declined, 2);
+    }
+
+    #[test]
+    fn degenerate_inputs_fall_back_without_changing_the_plan() {
+        // Non-finite coordinates force the exact all-pairs fallback with an
+        // identical plan.
+        let mut topo = Topology::new();
+        let e0 = line_edge_between(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let e1 = line_edge_between(
+            &mut topo,
+            Point3::new(5e-8, 0.0, 0.0),
+            Point3::new(1.0 + 5e-8, 0.0, 0.0),
+        );
+        let mut free = free_snapshot(&topo, &[e0, e1]);
+        free[1].start_pos = Point3::new(f64::NAN, 0.0, 0.0);
+        let reference = plan_merges_all_pairs(&topo, &free, 1e-6, false).unwrap();
+        let indexed = plan_merges_with_stats(&topo, &free, 1e-6).unwrap();
+        assert!(indexed.fell_back_to_all_pairs);
+        assert_eq!(reference.declined, indexed.declined);
+        assert_eq!(reference.plans.len(), indexed.plans.len());
+
+        // Degenerate tolerance falls back too.
+        let mut topo = Topology::new();
+        let d0 = line_edge_between(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let d1 = line_edge_between(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let free = free_snapshot(&topo, &[d0, d1]);
+        for tol in [0.0, -1e-7, f64::NAN, f64::INFINITY] {
+            let indexed = plan_merges_with_stats(&topo, &free, tol).unwrap();
+            assert!(indexed.fell_back_to_all_pairs, "tol {tol}");
+            let reference = plan_merges_all_pairs(&topo, &free, tol, false).unwrap();
+            assert_eq!(reference.declined, indexed.declined);
+            assert_eq!(reference.plans.len(), indexed.plans.len());
+        }
+
+        // Coordinates beyond the exact-integer grid range fall back.
+        let mut topo = Topology::new();
+        let b0 = line_edge_between(
+            &mut topo,
+            Point3::new(1e16, 0.0, 0.0),
+            Point3::new(1e16 + 1.0, 0.0, 0.0),
+        );
+        let b1 = line_edge_between(
+            &mut topo,
+            Point3::new(1e16 + 5e-8, 0.0, 0.0),
+            Point3::new(1e16 + 1.0 + 5e-8, 0.0, 0.0),
+        );
+        let free = free_snapshot(&topo, &[b0, b1]);
+        let indexed = plan_merges_with_stats(&topo, &free, 1e-7).unwrap();
+        assert!(indexed.fell_back_to_all_pairs);
+    }
+
+    #[test]
+    fn sparse_model_pays_no_endpoint_checks() {
+        // 400 far-apart lines: nothing eligible, index proposes nothing.
+        let mut topo = Topology::new();
+        let ids: Vec<EdgeId> = (0..400)
+            .map(|i| {
+                line_edge_between(
+                    &mut topo,
+                    Point3::new(i as f64 * 10.0, 0.0, 0.0),
+                    Point3::new(i as f64 * 10.0 + 1.0, 0.0, 0.0),
+                )
+            })
+            .collect();
+        let free = free_snapshot(&topo, &ids);
+        let reference = plan_merges_all_pairs(&topo, &free, 1e-7, false).unwrap();
+        let indexed = plan_merges_with_stats(&topo, &free, 1e-7).unwrap();
+        assert_eq!(reference.plans.len(), 0);
+        assert_eq!(indexed.plans.len(), 0);
+        assert_eq!(indexed.endpoint_checks, 0);
+        assert_eq!(indexed.candidate_exams, 0);
+        assert_eq!(indexed.curve_checks, 0);
+        assert!(reference.endpoint_checks > 70_000);
+    }
+
+    #[test]
+    fn randomized_fixtures_match_reference() {
+        struct Lcg(u64);
+        impl Lcg {
+            fn next(&mut self) -> u64 {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (self.0 >> 33) & 0x7fff_ffff
+            }
+            fn next_f64(&mut self) -> f64 {
+                f64::from(self.next() as u32) / f64::from(u32::MAX)
+            }
+        }
+        let tol = 1e-7;
+        for (size, seed) in [(17, 0xabcd), (100, 0x55aa), (200, 0xbeef)] {
+            // Sparse grid with a negative offset (cell-boundary coverage).
+            let mut topo = Topology::new();
+            let ids: Vec<EdgeId> = (0..size)
+                .map(|i| {
+                    line_edge_between(
+                        &mut topo,
+                        Point3::new(-50.0 + i as f64 * 1.7, 3.25, -1.5),
+                        Point3::new(-50.0 + i as f64 * 1.7 + 1.0, 3.25, -1.5),
+                    )
+                })
+                .collect();
+            let free = free_snapshot(&topo, &ids);
+            assert_planners_agree(&topo, &free, tol);
+
+            // Clustered triples with deterministic jitter.
+            let mut topo = Topology::new();
+            let mut rng = Lcg(seed);
+            let ids: Vec<EdgeId> = (0..size)
+                .map(|i| {
+                    let base = (i / 3) as f64 * 2.3 - 100.0;
+                    let jx = (rng.next_f64() - 0.5) * 1.2e-7;
+                    let jy = (rng.next_f64() - 0.5) * 1.2e-7;
+                    line_edge_between(
+                        &mut topo,
+                        Point3::new(base + jx, jy, 0.0),
+                        Point3::new(base + jx + 1.0, jy, 0.0),
+                    )
+                })
+                .collect();
+            let free = free_snapshot(&topo, &ids);
+            assert_planners_agree(&topo, &free, tol);
+        }
+    }
+
+    #[test]
+    fn plan_is_deterministic_across_runs() {
+        let mut topo = Topology::new();
+        let ids: Vec<EdgeId> = (0..200)
+            .map(|i| {
+                line_edge_between(
+                    &mut topo,
+                    Point3::new(i as f64 * 1.1, 0.0, 0.0),
+                    Point3::new(i as f64 * 1.1 + 1.0, 0.0, 0.0),
+                )
+            })
+            .collect();
+        let free = free_snapshot(&topo, &ids);
+        let a = plan_merges_with_stats(&topo, &free, 1e-7).unwrap();
+        let b = plan_merges_with_stats(&topo, &free, 1e-7).unwrap();
+        assert_eq!(a.plans.len(), b.plans.len());
+        for (x, y) in a.plans.iter().zip(b.plans.iter()) {
+            assert_eq!(x.keep, y.keep);
+            assert_eq!(x.drop, y.drop);
+            assert_eq!(x.reversed, y.reversed);
+        }
+        assert_eq!(a.declined, b.declined);
     }
 }
