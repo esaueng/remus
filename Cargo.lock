@@ -2090,7 +2090,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "remus"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "remus-check",
  "remus-heal",
@@ -2103,7 +2103,7 @@ dependencies = [
 
 [[package]]
 name = "remus-algo"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "criterion",
  "log",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "remus-blend"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "criterion",
  "log",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "remus-check"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "proptest",
  "remus-geometry",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "remus-geometry"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "proptest",
  "remus-math",
@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "remus-heal"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "log",
@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "remus-io"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "criterion",
  "log",
@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "remus-math"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "criterion",
  "log",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "remus-offset"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "log",
  "remus-check",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "remus-operations"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "criterion",
  "env_logger",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "remus-render"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "bytemuck",
  "image",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "remus-sketch"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "criterion",
  "proptest",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "remus-topology"
-version = "0.1.0"
+version = "2026.1.0"
 dependencies = [
  "proptest",
  "remus-math",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "remus-wasm"
-version = "2.130.2"
+version = "2026.1.0"
 dependencies = [
  "log",
  "remus",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "remus-wasm-io"
-version = "2.130.2"
+version = "2026.1.0"
 dependencies = [
  "remus-io",
  "remus-math",

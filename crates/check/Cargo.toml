@@ -5,7 +5,7 @@ license.workspace = true
 name = "remus-check"
 repository.workspace = true
 rust-version.workspace = true
-version = "0.1.0"
+version = "2026.1.0"
 
 [features]
 # Deterministic work counters for the PERF-Q01 classification-reuse guard.
