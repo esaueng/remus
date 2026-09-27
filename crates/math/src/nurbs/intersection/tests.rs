@@ -1635,7 +1635,7 @@ fn ssi_results_are_invariant_under_projective_weight_scaling() {
 // the foot of a perpendicular. None of them compares against earlier output.
 mod marching_oracles {
     use super::*;
-    use crate::context::OperationContext;
+    use crate::context::{CancellationToken, OperationContext, WorkBudgets};
 
     use super::super::surface_marching::{march_with_branches, surface_newton_step};
     use crate::nurbs::surface::DerivativeScratch;
@@ -1856,15 +1856,13 @@ mod marching_oracles {
         assert!(branches.iter().any(|b| b.point.x() < 0.0));
     }
 
-    /// Ready-repro for B66. At a transversal crossing the curvature
+    /// B66 (fixed). At a transversal crossing the orthonormal curvature
     /// difference of the two surfaces is indefinite (here `±c` in the `xy`
     /// frame), and the branch directions are its null (asymptotic) directions,
-    /// the lines `x = 0` and `y = 0`. The marcher confirms a branch only when
-    /// both eigenvalues are below an absolute 0.1, so a steeper saddle's
-    /// crossing goes unreported, and `second_order_tangent` returns the
-    /// eigenvector of the smaller-magnitude eigenvalue: the bisector.
+    /// the lines `x = 0` and `y = 0`. Branch confirmation uses the
+    /// scale-invariant sign of `det(Q)` and the tangent is a null direction,
+    /// never the old absolute-`0.1` eigenvalue gate or its bisector.
     #[test]
-    #[ignore = "open: B66 — SSI branch points: absolute eigenvalue gate and bisector tangent"]
     fn steep_saddle_crossing_reports_its_branch_and_asymptotic_tangent() {
         let c = 0.2;
         let s1 = saddle(c);
@@ -1894,6 +1892,542 @@ mod marching_oracles {
                 .iter()
                 .any(|b| b.point.y().abs() < 1e-9 && b.point.x().abs() > 10.0 * tol),
             "crossing passed without a transverse branch: {branches:?}"
+        );
+    }
+
+    /// B66 curvature sweep: below, near, and above the old `0.1` failure
+    /// threshold. The old gate admitted `c = 0.02` (`|lambda| = 0.08`) and
+    /// refused `c >= 0.03` (`|lambda| >= 0.12`); the indefinite sign reports
+    /// all four, with an asymptotic (axis) tangent each time.
+    #[test]
+    fn saddle_crossing_branch_across_curvatures() {
+        for c in [0.02, 0.03, 0.2, 1.0] {
+            let s1 = saddle(c);
+            let s2 = plane_z0(-1.5, 1.5, -1.5, 1.5);
+            let tol = 1e-7;
+            let t = second_order_tangent(&s1, &s2, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new())
+                .expect("indefinite Q has null directions");
+            assert!(
+                t.x().abs().min(t.y().abs()) < 1e-9 && t.z().abs() < 1e-9,
+                "c={c}: tangent must follow x = 0 or y = 0, got {t:?}"
+            );
+            let seed = refine_ssi_point(&s1, &s2, 0.5, 0.8, 0.5, 0.7, tol).unwrap();
+            let (traced, branches) = march_with_branches(
+                &s1,
+                &s2,
+                &seed,
+                0.05,
+                tol,
+                &OperationContext::new(),
+                &mut SsiScratch::new(),
+            )
+            .unwrap();
+            assert!(
+                traced.iter().any(|p| p.point.y() < 0.0)
+                    && traced.iter().any(|p| p.point.y() > 0.0),
+                "c={c}: trace must pass the crossing"
+            );
+            for b in &branches {
+                let p = b.point;
+                assert!(p.z().abs() <= tol, "c={c}: branch off plane: {p:?}");
+                assert!(
+                    (p.z() - c * p.x() * p.y()).abs() <= tol,
+                    "c={c}: branch off saddle: {p:?}"
+                );
+                assert!(p.y().abs() < 1e-9, "c={c}: branch not on y = 0: {p:?}");
+                assert!(
+                    p.x().abs() > 10.0 * tol,
+                    "c={c}: branch on traced arm: {p:?}"
+                );
+            }
+            assert!(
+                branches.iter().any(|b| b.point.x() > 0.0)
+                    && branches.iter().any(|b| b.point.x() < 0.0),
+                "c={c}: transverse line needs both arms: {branches:?}"
+            );
+        }
+    }
+
+    /// Physically identical saddle over `[-1, 1]^2` with rescaled knot
+    /// domains. Bilinear evaluation is linear in each knot span, so new knots
+    /// only reparameterize: `Q` and its nulls are unchanged, and the same
+    /// transverse branch must report.
+    fn saddle_wide_knots(c: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 5.0, 5.0],
+            vec![0.0, 0.0, 5.0, 5.0],
+            vec![
+                vec![Point3::new(-1.0, -1.0, c), Point3::new(-1.0, 1.0, -c)],
+                vec![Point3::new(1.0, -1.0, -c), Point3::new(1.0, 1.0, c)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    fn plane_wide_knots(x0: f64, x1: f64, y0: f64, y1: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 2.0, 2.0],
+            vec![0.0, 0.0, 2.0, 2.0],
+            vec![
+                vec![Point3::new(x0, y0, 0.0), Point3::new(x0, y1, 0.0)],
+                vec![Point3::new(x1, y0, 0.0), Point3::new(x1, y1, 0.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    /// The same saddle with parameters swapped (transposed net) and mirrored
+    /// (reversed `u`): the physical patch `z = c·x·y` over `[-1, 1]^2` is
+    /// unchanged, only its parameterization moves.
+    fn saddle_swapped(c: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-1.0, -1.0, c), Point3::new(1.0, -1.0, -c)],
+                vec![Point3::new(-1.0, 1.0, -c), Point3::new(1.0, 1.0, c)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    fn saddle_reversed_u(c: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(1.0, -1.0, -c), Point3::new(1.0, 1.0, c)],
+                vec![Point3::new(-1.0, -1.0, c), Point3::new(-1.0, 1.0, -c)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    /// B66 reparameterization invariance: knot rescaling, swapped and reversed
+    /// parameters of a physically identical saddle/plane still confirm the
+    /// crossing with an axis tangent and transverse seeds on `y = 0`.
+    #[test]
+    fn saddle_crossing_invariant_under_reparameterization() {
+        let c = 0.2;
+        let tol = 1e-7;
+        // (saddle, plane, seed1, seed2, step): seeds map the physical point
+        // (0, 0.6) into each parameterization.
+        let cases = vec![
+            (
+                saddle(c),
+                plane_z0(-1.5, 1.5, -1.5, 1.5),
+                (0.5, 0.8),
+                (0.5, 0.7),
+                0.05,
+            ),
+            (
+                saddle_wide_knots(c),
+                plane_wide_knots(-1.5, 1.5, -1.5, 1.5),
+                (2.5, 4.0),
+                (1.0, 1.4),
+                0.05,
+            ),
+            (
+                saddle_swapped(c),
+                plane_z0(-1.5, 1.5, -1.5, 1.5),
+                (0.8, 0.5),
+                (0.5, 0.7),
+                0.05,
+            ),
+            (
+                saddle_reversed_u(c),
+                plane_z0(-1.5, 1.5, -1.5, 1.5),
+                (0.5, 0.8),
+                (0.5, 0.7),
+                0.05,
+            ),
+        ];
+        for (idx, (s1, s2, g1, g2, step)) in cases.into_iter().enumerate() {
+            // Evaluate at the crossing itself: midpoint of each domain.
+            let (cu1, cu2) = (
+                (s1.domain_u().0 + s1.domain_u().1) * 0.5,
+                (s2.domain_u().0 + s2.domain_u().1) * 0.5,
+            );
+            let (cv1, cv2) = (
+                (s1.domain_v().0 + s1.domain_v().1) * 0.5,
+                (s2.domain_v().0 + s2.domain_v().1) * 0.5,
+            );
+            let t = second_order_tangent(&s1, &s2, cu1, cv1, cu2, cv2, &mut SsiScratch::new())
+                .expect("reparameterized crossing has null directions");
+            assert!(
+                t.x().abs().min(t.y().abs()) < 1e-9 && t.z().abs() < 1e-9,
+                "case {idx}: tangent must follow an axis, got {t:?}"
+            );
+            let _ = t;
+            let seed = refine_ssi_point(&s1, &s2, g1.0, g1.1, g2.0, g2.1, tol).unwrap();
+            assert!(
+                seed.point.x().abs() < 1e-9,
+                "case {idx}: seed must start on x = 0: {seed:?}"
+            );
+            let (_, branches) = march_with_branches(
+                &s1,
+                &s2,
+                &seed,
+                step,
+                tol,
+                &OperationContext::new(),
+                &mut SsiScratch::new(),
+            )
+            .unwrap();
+            // Transverse line y = 0 within the Newton basin (100x tol); the
+            // finder already enforces > 30 deg from the incoming branch.
+            assert!(
+                branches
+                    .iter()
+                    .any(|b| b.point.y().abs() <= 100.0 * tol && b.point.x() > 10.0 * tol),
+                "case {idx}: missing +x transverse arm: {branches:?}"
+            );
+            assert!(
+                branches
+                    .iter()
+                    .any(|b| b.point.y().abs() <= 100.0 * tol && b.point.x() < -10.0 * tol),
+                "case {idx}: missing -x transverse arm: {branches:?}"
+            );
+        }
+    }
+
+    /// Uniform scale plus a rigid placement applied to both surfaces together.
+    /// Curvatures scale as `1/s` (the `det/||Q||^2` ratio is invariant) and
+    /// null directions rotate with the bodies: residuals and tangents are
+    /// checked against the transformed lines, not the axes.
+    fn transform_surface(
+        s: &NurbsSurface,
+        cos: f64,
+        sin: f64,
+        tx: f64,
+        ty: f64,
+        tz: f64,
+        scale: f64,
+    ) -> NurbsSurface {
+        let cps = s.control_points();
+        let ws = s.weights();
+        let moved: Vec<Vec<Point3>> = cps
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|p| {
+                        let (x, y, z) = (p.x() * scale, p.y() * scale, p.z() * scale);
+                        Point3::new(cos * x - sin * y + tx, sin * x + cos * y + ty, z + tz)
+                    })
+                    .collect()
+            })
+            .collect();
+        NurbsSurface::new(
+            s.degree_u(),
+            s.degree_v(),
+            s.knots_u().to_vec(),
+            s.knots_v().to_vec(),
+            moved,
+            ws.to_vec(),
+        )
+        .unwrap()
+    }
+
+    fn point_to_segment(p: Point3, a: Point3, b: Point3) -> f64 {
+        let ab = b - a;
+        let ap = p - a;
+        let denom = ab.dot(ab);
+        if denom < 1e-30 {
+            return ap.length();
+        }
+        let t = (ap.dot(ab) / denom).clamp(0.0, 1.0);
+        (p - Point3::new(a.x() + t * ab.x(), a.y() + t * ab.y(), a.z() + t * ab.z())).length()
+    }
+
+    #[test]
+    fn saddle_crossing_invariant_under_scale_and_placement() {
+        let c = 0.2;
+        let theta = 37.0_f64.to_radians();
+        let (cos, sin) = (theta.cos(), theta.sin());
+        for scale in [0.1, 1.0, 10.0] {
+            let tol = 1e-7 * scale;
+            let (tx, ty, tz) = (13.0, -7.0, 5.0);
+            let s1 = transform_surface(&saddle(c), cos, sin, tx, ty, tz, scale);
+            let s2 =
+                transform_surface(&plane_z0(-1.5, 1.5, -1.5, 1.5), cos, sin, tx, ty, tz, scale);
+            // Transformed lines: x = 0 over t in [-1, 1] maps to
+            // (-sin*t*s + tx, cos*t*s + ty, tz); y = 0 maps to
+            // (cos*t*s + tx, sin*t*s + ty, tz).
+            let line_x0 = (
+                Point3::new(sin * scale + tx, -cos * scale + ty, tz),
+                Point3::new(-sin * scale + tx, cos * scale + ty, tz),
+            );
+            let line_y0 = (
+                Point3::new(-cos * scale + tx, -sin * scale + ty, tz),
+                Point3::new(cos * scale + tx, sin * scale + ty, tz),
+            );
+            let dir_x0 = line_x0.1 - line_x0.0;
+            let dir_y0 = line_y0.1 - line_y0.0;
+            let t = second_order_tangent(&s1, &s2, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new())
+                .expect("placed crossing has null directions");
+            let par_x0 = t.cross(dir_x0).length() / (t.length() * dir_x0.length());
+            let par_y0 = t.cross(dir_y0).length() / (t.length() * dir_y0.length());
+            assert!(
+                par_x0.min(par_y0) < 1e-9,
+                "scale {scale}: tangent must parallel a branch line: {t:?}"
+            );
+            let seed = refine_ssi_point(&s1, &s2, 0.5, 0.8, 0.5, 0.7, tol).unwrap();
+            let (traced, branches) = march_with_branches(
+                &s1,
+                &s2,
+                &seed,
+                0.05,
+                tol,
+                &OperationContext::new(),
+                &mut SsiScratch::new(),
+            )
+            .unwrap();
+            let crossing = Point3::new(tx, ty, tz);
+            let ux0 = dir_x0.normalize().expect("x0 line direction");
+            let uy0 = dir_y0.normalize().expect("y0 line direction");
+            // Traced (incoming x = 0 line) stays on both surfaces and spans
+            // both sides of the crossing.
+            for q in &traced {
+                assert!(
+                    (s1.evaluate(q.param1.0, q.param1.1) - q.point).length() <= tol,
+                    "scale {scale}: trace off saddle: {q:?}"
+                );
+                assert!(
+                    (s2.evaluate(q.param2.0, q.param2.1) - q.point).length() <= tol,
+                    "scale {scale}: trace off plane: {q:?}"
+                );
+            }
+            let mut side_pos = false;
+            let mut side_neg = false;
+            for q in &traced {
+                let s = (q.point - crossing).dot(ux0);
+                if s > 10.0 * tol {
+                    side_pos = true;
+                }
+                if s < -10.0 * tol {
+                    side_neg = true;
+                }
+            }
+            assert!(
+                side_pos && side_neg,
+                "scale {scale}: trace must span the crossing"
+            );
+            for b in &branches {
+                let p = b.point;
+                assert!(
+                    (s1.evaluate(b.param1.0, b.param1.1) - p).length() <= tol,
+                    "scale {scale}: branch off saddle: {p:?}"
+                );
+                assert!(
+                    (s2.evaluate(b.param2.0, b.param2.1) - p).length() <= tol,
+                    "scale {scale}: branch off plane: {p:?}"
+                );
+                // Transverse = the y = 0 line (x-axis segment after placement).
+                assert!(
+                    point_to_segment(p, line_y0.0, line_y0.1) <= 1e-9 * scale.max(1.0) + tol,
+                    "scale {scale}: branch not on transverse line: {p:?}"
+                );
+                assert!(
+                    point_to_segment(p, line_x0.0, line_x0.1) > 10.0 * tol,
+                    "scale {scale}: branch on traced arm: {p:?}"
+                );
+            }
+            assert!(
+                branches
+                    .iter()
+                    .any(|b| { (b.point - crossing).dot(uy0) > 10.0 * tol }),
+                "scale {scale}: missing + transverse arm: {branches:?}"
+            );
+            assert!(
+                branches
+                    .iter()
+                    .any(|b| { (b.point - crossing).dot(uy0) < -10.0 * tol }),
+                "scale {scale}: missing - transverse arm: {branches:?}"
+            );
+        }
+    }
+
+    /// Non-branch tangencies keep the explicit failure contract: an isolated
+    /// dome touch has no null direction, a contact line has a single ruling
+    /// (not a branch), coincident planes are osculating, and perpendicular
+    /// planes are not a shared-plane case at all.
+    #[test]
+    fn non_branch_tangencies_keep_the_explicit_failure_contract() {
+        let tol = 1e-7;
+        // Isolated touch: dome peak against its tangent plane (definite Q).
+        let dome = super::dome_surface();
+        let peak_z = dome.evaluate(0.5, 0.5).z();
+        let cap = super::flat_plane_at_z(peak_z);
+        assert!(
+            second_order_tangent(&dome, &cap, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new()).is_none(),
+            "isolated touch must not invent a direction"
+        );
+        // Contact line: single ruling, no transverse branch.
+        let cyl = half_cylinder_on_plane(1.0, 4.0);
+        let plane = plane_z0(-2.0, 2.0, -1.0, 5.0);
+        let ruling = second_order_tangent(&cyl, &plane, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new())
+            .expect("contact line has a ruling");
+        assert!(
+            (ruling.y().abs() - 1.0).abs() < 1e-12,
+            "ruling must be ±y, got {ruling:?}"
+        );
+        let seed = refine_ssi_point(&cyl, &plane, 0.5, 0.5, 0.5, 0.5, tol).unwrap();
+        let (_, branches) = march_with_branches(
+            &cyl,
+            &plane,
+            &seed,
+            0.05,
+            tol,
+            &OperationContext::new(),
+            &mut SsiScratch::new(),
+        )
+        .unwrap();
+        assert!(
+            branches.is_empty(),
+            "contact line must not branch: {branches:?}"
+        );
+        // Coincident planes: Q = 0, no direction, no branch.
+        let a = plane_z0(-1.0, 1.0, -1.0, 1.0);
+        let b = plane_z0(-1.0, 1.0, -1.0, 1.0);
+        assert!(
+            second_order_tangent(&a, &b, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new()).is_none(),
+            "overlap must not invent a direction"
+        );
+        // Perpendicular planes: distinct tangent planes, unsupported.
+        let vertical = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-1.0, 0.0, -1.0), Point3::new(-1.0, 0.0, 1.0)],
+                vec![Point3::new(1.0, 0.0, -1.0), Point3::new(1.0, 0.0, 1.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        assert!(
+            second_order_tangent(&a, &vertical, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new())
+                .is_none(),
+            "non-parallel planes are not a singular case"
+        );
+    }
+
+    /// Public result: `intersect_nurbs_nurbs` on the steep saddle covers both
+    /// lines with every point on both surfaces, no far bisector diagonal, and
+    /// no far L-turn mixing both lines in one curve. Far-field arm coverage
+    /// requires the north x = 0 arm and both y = 0 arms (the seeder's south
+    /// far field is sparse; the march-level sweep above pins the south arm).
+    #[test]
+    fn public_intersection_covers_both_saddle_lines() {
+        let c = 0.2;
+        let s1 = saddle(c);
+        let s2 = plane_z0(-1.5, 1.5, -1.5, 1.5);
+        let curves =
+            super::super::surface_seeding::intersect_nurbs_nurbs(&s1, &s2, 10, 0.02).unwrap();
+        assert!(!curves.is_empty(), "steep saddle must intersect");
+        let pts: Vec<Point3> = curves
+            .iter()
+            .flat_map(|q| q.points.iter().map(|p| p.point))
+            .collect();
+        // Every public point lies on both surfaces (validation contract).
+        for q in curves.iter().flat_map(|q| q.points.iter()) {
+            assert!(
+                (s1.evaluate(q.param1.0, q.param1.1) - q.point).length() <= 1e-5,
+                "public point off saddle: {q:?}"
+            );
+            assert!(
+                (s2.evaluate(q.param2.0, q.param2.1) - q.point).length() <= 1e-5,
+                "public point off plane: {q:?}"
+            );
+        }
+        // Far-field arm coverage: north x = 0 plus both y = 0 arms (the
+        // march-level sweep pins the south x = 0 arm through the crossing).
+        // Half-lines (not windows) so fragmentation gaps cannot fail coverage.
+        assert!(
+            pts.iter().any(|p| p.x().abs() < 0.15 && p.y() > 0.45),
+            "missing +y x=0 arm"
+        );
+        assert!(
+            pts.iter().any(|p| p.y().abs() < 0.15 && p.x() > 0.45),
+            "missing +x y=0 arm"
+        );
+        assert!(
+            pts.iter().any(|p| p.y().abs() < 0.15 && p.x() < -0.45),
+            "missing -x y=0 arm"
+        );
+        // No far bisector diagonal and no far L-turn: beyond 0.2 of the
+        // crossing every point is on a single line.
+        for q in curves.iter().flat_map(|q| q.points.iter()) {
+            let (x, y) = (q.point.x().abs(), q.point.y().abs());
+            if x.max(y) > 0.2 {
+                assert!(x.min(y) < 2e-4, "far corner-turning point: {q:?}");
+            }
+        }
+        for (i, q) in curves.iter().enumerate() {
+            let mut far_x0 = false;
+            let mut far_y0 = false;
+            for p in &q.points {
+                let (x, y) = (p.point.x().abs(), p.point.y().abs());
+                if x.max(y) > 0.2 {
+                    if x < 2e-4 {
+                        far_x0 = true;
+                    }
+                    if y < 2e-4 {
+                        far_y0 = true;
+                    }
+                }
+            }
+            assert!(
+                !(far_x0 && far_y0),
+                "curve {i} mixes both lines far from the crossing"
+            );
+        }
+    }
+
+    /// Budgets and cancellation are preserved: zero branch budget yields no
+    /// branch seeds, and a cancelled context fails closed instead of marching.
+    #[test]
+    fn branch_detection_respects_budgets_and_cancellation() {
+        let c = 0.2;
+        let s1 = saddle(c);
+        let s2 = plane_z0(-1.5, 1.5, -1.5, 1.5);
+        let tol = 1e-7;
+        let seed = refine_ssi_point(&s1, &s2, 0.5, 0.8, 0.5, 0.7, tol).unwrap();
+        let (_, branches) = march_with_branches(
+            &s1,
+            &s2,
+            &seed,
+            0.05,
+            tol,
+            &OperationContext::new()
+                .with_budgets(WorkBudgets::new().with_branches_per_direction(0)),
+            &mut SsiScratch::new(),
+        )
+        .unwrap();
+        assert!(
+            branches.is_empty(),
+            "zero branch budget must yield no seeds"
+        );
+        let token = CancellationToken::new();
+        token.cancel();
+        let ctx = OperationContext::new().with_cancellation(token);
+        let err = march_with_branches(&s1, &s2, &seed, 0.05, tol, &ctx, &mut SsiScratch::new());
+        assert!(
+            matches!(err, Err(crate::MathError::Cancelled)),
+            "cancelled march must fail closed, got {err:?}"
         );
     }
 
