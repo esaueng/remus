@@ -3774,12 +3774,11 @@ mod closed_rim_oracles {
     /// normal `(1, k)/√(1 + k²)`. The ball touches the base, so `zc = r`, and
     /// sits `r` inside the wall: `ρc = 2 − k·zc − r·√(1 + k²)`.
     ///
-    /// Ready-repro for B67: the analytic plane-cone arm places the ball on the
-    /// empty side of the rim (tube centre at `z = −r`, major radius
-    /// `r_p + r·cot(α/2)`), growing the base disc past the rim instead of
-    /// rounding the corner.
+    /// Regression for B67 (fixed): the analytic plane-cone arm used to place
+    /// the ball on the empty side of the rim (tube centre at `z = −r`,
+    /// major radius `r_p + r·cot(α/2)`), growing the base disc past the rim
+    /// instead of rounding the corner.
     #[test]
-    #[ignore = "open: B67 — plane-cone rim fillet builds the mirrored torus (ball outside the material)"]
     fn frustum_base_rim_fillet_matches_the_cone_plane_rolling_ball() {
         let (k, h, r) = (0.25_f64, 2.0, 0.3);
         let mut topo = Topology::new();
@@ -3817,11 +3816,12 @@ mod closed_rim_oracles {
     /// normal `(1, k)/√(1 + k²)`. The ball touches the cap, so `zc = H − r`,
     /// and sits `r` inside the wall: `ρc = 2 − k·zc − r·√(1 + k²)`.
     ///
-    /// Ready-repro for B67: the analytic plane-cone arm declines a cone that
-    /// flares away from the plate, the walker's NURBS band has no closed-rim
-    /// assembler, and the trim path refuses with `TrimmingFailure`.
+    /// Regression for B67 (fixed): the analytic plane-cone arm used to
+    /// decline a cone flaring away from the plate, the walker's NURBS band
+    /// had no closed-rim assembler, and the trim path refused with
+    /// `TrimmingFailure`. The arm now covers the small-end configuration
+    /// (`σ = +1`, `major = r_p − r·tan(α/2)`).
     #[test]
-    #[ignore = "open: B67 — small-end frustum rim fillet refuses (TrimmingFailure)"]
     fn frustum_small_end_rim_fillet_matches_the_cone_plane_rolling_ball() {
         let (k, h, r) = (0.25_f64, 2.0, 0.3);
         let mut topo = Topology::new();
