@@ -179,11 +179,19 @@ fn ensure_exact_revolve_profile(
         if edge.start() != edge.end() {
             return None;
         }
-        let FaceSurface::Plane { normal, .. } = profile.surface() else {
+        let FaceSurface::Plane { normal, d } = profile.surface() else {
             return None;
         };
         let axis = direction.normalize().ok()?;
-        if !normal.dot(axis).is_finite() || normal.dot(axis).abs() > 1e-9 {
+        let axis_plane_offset = normal.x().mul_add(
+            origin.x(),
+            normal.y().mul_add(origin.y(), normal.z() * origin.z()),
+        ) - d;
+        if !normal.dot(axis).is_finite()
+            || normal.dot(axis).abs() > 1e-9
+            || !axis_plane_offset.is_finite()
+            || axis_plane_offset.abs() > Tolerance::new().linear * 100.0
+        {
             return None;
         }
         let radial = circle.center() - origin;

@@ -1168,8 +1168,8 @@ fn try_circle_revolution_torus(
     if !face_data.inner_wires().is_empty() {
         return Ok(None);
     }
-    let normal = match face_data.surface() {
-        FaceSurface::Plane { normal, .. } => *normal,
+    let (normal, plane_d) = match face_data.surface() {
+        FaceSurface::Plane { normal, d } => (*normal, *d),
         _ => return Ok(None),
     };
 
@@ -1192,7 +1192,9 @@ fn try_circle_revolution_torus(
     let tol = Tolerance::new();
     // The axis must lie in the profile plane (perpendicular to its normal),
     // else the swept surface is not a torus of revolution.
-    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL {
+    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL
+        || (dot_normal_point(normal, axis_origin) - plane_d).abs() > tol.linear * 100.0
+    {
         return Ok(None);
     }
 
@@ -2176,6 +2178,42 @@ mod tests {
                 .unwrap()
                 .is_valid()
         );
+    }
+
+    #[test]
+    fn circle_torus_shortcut_refuses_axis_outside_profile_plane() {
+        use remus_topology::builder::make_circle_edge;
+
+        let mut topo = Topology::new();
+        let circle = make_circle_edge(
+            &mut topo,
+            Point3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1e-7,
+        )
+        .unwrap();
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(circle, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let result = try_circle_revolution_torus(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            2.0 * PI,
+            true,
+        )
+        .unwrap();
+        assert!(result.is_none());
+        assert_eq!(topo.num_solids(), 0);
     }
 
     #[test]

@@ -761,6 +761,23 @@ fn analytic_arc_profile_keeps_exact_full_revolution() {
 }
 
 #[test]
+fn circle_revolution_refuses_axis_outside_profile_plane() {
+    let mut kernel = BrepKernel::new();
+    let face = disc_face(&mut kernel, 10.0, 0.0, 1.0);
+    let before = counts(&kernel);
+    let direct = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 360.0));
+    assert_eq!(direct["code"], "exact_only_unattainable", "{direct}");
+    assert_eq!(counts(&kernel), before);
+
+    let batch = batch_v2(
+        &mut kernel,
+        &json!([{"op": "revolveDetailed", "args": {"face": face, "originZ": 10.0, "axisY": 1.0, "angle": 360.0}}]),
+    );
+    assert_eq!(batch[0]["ok"], direct);
+    assert_eq!(counts(&kernel), before);
+}
+
+#[test]
 fn elliptical_hole_refuses_chorded_extrusion() {
     let mut kernel = BrepKernel::new();
     let face = elliptical_hole_face(&mut kernel);

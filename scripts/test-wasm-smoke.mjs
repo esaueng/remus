@@ -1028,6 +1028,19 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - revolveDetailed admits analytic full-turn arc and refuses chorded partial');
 }
 
+{
+  const k = new BrepKernel();
+  const circle = k.makeCircleEdge(10, 0, 0, 0, 0, 1, 1);
+  const face = k.makePlanarFaceFromWire(k.makeWire(Uint32Array.of(circle), true));
+  const direct = k.revolveDetailed(face, 0, 0, 10, 0, 1, 0, 360);
+  assert.equal(direct.code, 'exact_only_unattainable');
+  const batch = JSON.parse(k.executeBatchV2(JSON.stringify([
+    { op: 'revolveDetailed', args: { face, originZ: 10, axisY: 1, angle: 360 } },
+  ])));
+  assert.deepEqual(batch[0].ok, direct);
+  console.log('ok - revolveDetailed refuses offset-axis circle as non-toroidal');
+}
+
 // A stored/transported payload is untrusted input: malformed versions,
 // incomplete coverage and contradictory result claims must fail closed.
 {
