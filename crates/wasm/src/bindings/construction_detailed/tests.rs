@@ -10,7 +10,8 @@
 //! additional exact-only policy and leave the legacy path available.
 //!
 //! Both twins are exact-only: profiles requiring closed-curve chord splitting
-//! refuse, so there is no `approximate` success and no `exactOnly` flag.
+//! or curved revolution fallback chording refuse, so there is no
+//! `approximate` success and no `exactOnly` flag.
 //! Every supported success below pins `quality: "exact"`.
 //!
 //! Batch parity replays the detailed op on an identically built twin kernel:
@@ -22,6 +23,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use serde_json::{Value, json};
+
+use remus_geometry::convert::circle_to_nurbs;
+use remus_math::curves::Circle3D;
+use remus_math::vec::{Point3, Vec3};
 
 use crate::handles::face_id_to_u32;
 use crate::kernel::BrepKernel;
@@ -116,6 +121,59 @@ fn generic_closed_nurbs_face(kernel: &mut BrepKernel) -> u32 {
                 0.0, 0.0,
             ],
             vec![1.0; 6],
+        )
+        .unwrap();
+    let wire = kernel.make_wire(vec![edge], true).unwrap();
+    kernel.make_planar_face_from_wire(wire).unwrap()
+}
+
+fn open_spline_profile_face(kernel: &mut BrepKernel) -> u32 {
+    let spline = kernel
+        .make_nurbs_edge_impl(
+            2.0,
+            0.0,
+            0.0,
+            2.0,
+            2.0,
+            0.0,
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![2.0, 0.0, 0.0, 3.0, 1.0, 0.0, 2.0, 2.0, 0.0],
+            vec![1.0; 3],
+        )
+        .unwrap();
+    let edges = vec![
+        spline,
+        kernel.make_line_edge(2.0, 2.0, 0.0, 0.0, 2.0, 0.0).unwrap(),
+        kernel.make_line_edge(0.0, 2.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
+        kernel.make_line_edge(0.0, 0.0, 0.0, 2.0, 0.0, 0.0).unwrap(),
+    ];
+    let wire = kernel.make_wire(edges, true).unwrap();
+    kernel.make_planar_face_from_wire(wire).unwrap()
+}
+
+fn recognized_nurbs_circle_face(kernel: &mut BrepKernel) -> u32 {
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let nurbs = circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU).unwrap();
+    let (start_param, end_param) = nurbs.domain();
+    let start = nurbs.evaluate(start_param);
+    let end = nurbs.evaluate(end_param);
+    let edge = kernel
+        .make_nurbs_edge_impl(
+            start.x(),
+            start.y(),
+            start.z(),
+            end.x(),
+            end.y(),
+            end.z(),
+            u32::try_from(nurbs.degree()).unwrap(),
+            nurbs.knots().to_vec(),
+            nurbs
+                .control_points()
+                .iter()
+                .flat_map(|point| [point.x(), point.y(), point.z()])
+                .collect(),
+            nurbs.weights().to_vec(),
         )
         .unwrap();
     let wire = kernel.make_wire(vec![edge], true).unwrap();
@@ -633,6 +691,43 @@ fn closed_spline_profile_refuses_chorded_extrusion() {
     let legacy = batch_v2(
         &mut legacy_kernel,
         &json!([{"op": "extrude", "args": {"face": legacy_face, "dz": 1.0, "distance": 2.0}}]),
+    );
+    assert!(
+        legacy[0]["ok"].is_number(),
+        "legacy path must stay available: {legacy}"
+    );
+}
+
+#[test]
+fn recognized_nurbs_circle_keeps_exact_extrusion() {
+    let mut kernel = BrepKernel::new();
+    let face = recognized_nurbs_circle_face(&mut kernel);
+    let result = envelope(kernel.extrude_detailed_impl(face, 0.0, 0.0, 1.0, 2.0));
+    let solid = assert_exact_success(&result, "extrude");
+    assert!((volume(&kernel, solid, 0.01) - 2.0 * std::f64::consts::PI).abs() < 1e-5);
+}
+
+#[test]
+fn open_spline_profile_refuses_chorded_revolution() {
+    let mut kernel = BrepKernel::new();
+    let face = open_spline_profile_face(&mut kernel);
+    let before = counts(&kernel);
+    let direct = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 360.0));
+    assert_eq!(direct["code"], "exact_only_unattainable", "{direct}");
+    assert_eq!(counts(&kernel), before);
+
+    let batch = batch_v2(
+        &mut kernel,
+        &json!([{"op": "revolveDetailed", "args": {"face": face, "axisY": 1.0, "angle": 360.0}}]),
+    );
+    assert_eq!(batch[0]["ok"], direct);
+    assert_eq!(counts(&kernel), before);
+
+    let mut legacy_kernel = BrepKernel::new();
+    let legacy_face = open_spline_profile_face(&mut legacy_kernel);
+    let legacy = batch_v2(
+        &mut legacy_kernel,
+        &json!([{"op": "revolve", "args": {"face": legacy_face, "axisY": 1.0, "angle": 360.0}}]),
     );
     assert!(
         legacy[0]["ok"].is_number(),
