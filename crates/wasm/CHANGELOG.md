@@ -37,7 +37,8 @@
   as the boolean twins. The twins refuse profiles that the native engines
   would split into line chords (`exact_only_unattainable`); extrusion retains
   recognized NURBS circles on its analytic path, while revolution refuses
-  curved fallback bands outside the true-circle torus path. Every
+  curved fallback bands outside the true-circle torus and fully analytic
+  full-turn paths. Every
   success discloses `details.quality: "exact"` and there is no `exactOnly`
   flag. Other refusals carry the legacy failure's code and category with
   `details.operation` naming the op. `revolveDetailed` preserves the

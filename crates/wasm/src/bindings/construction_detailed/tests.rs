@@ -180,6 +180,19 @@ fn recognized_nurbs_circle_face(kernel: &mut BrepKernel) -> u32 {
     kernel.make_planar_face_from_wire(wire).unwrap()
 }
 
+fn analytic_arc_profile_face(kernel: &mut BrepKernel) -> u32 {
+    let arc = kernel
+        .make_circle_arc_3d(
+            10.0, 0.0, -3.0, 10.0, 0.0, 3.0, 10.0, 0.0, 0.0, 0.0, -1.0, 0.0,
+        )
+        .unwrap();
+    let diameter = kernel
+        .make_line_edge(10.0, 0.0, 3.0, 10.0, 0.0, -3.0)
+        .unwrap();
+    let wire = kernel.make_wire(vec![arc, diameter], true).unwrap();
+    kernel.make_planar_face_from_wire(wire).unwrap()
+}
+
 fn elliptical_hole_face(kernel: &mut BrepKernel) -> u32 {
     let outer = kernel
         .make_polygon_wire(vec![
@@ -733,6 +746,18 @@ fn open_spline_profile_refuses_chorded_revolution() {
         legacy[0]["ok"].is_number(),
         "legacy path must stay available: {legacy}"
     );
+}
+
+#[test]
+fn analytic_arc_profile_keeps_exact_full_revolution() {
+    let mut kernel = BrepKernel::new();
+    let face = analytic_arc_profile_face(&mut kernel);
+    let full = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 360.0));
+    let solid = assert_exact_success(&full, "revolve");
+    assert!(volume(&kernel, solid, 0.01) > 0.0);
+
+    let partial = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 180.0));
+    assert_eq!(partial["code"], "exact_only_unattainable", "{partial}");
 }
 
 #[test]

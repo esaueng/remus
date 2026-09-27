@@ -1015,6 +1015,19 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - revolveDetailed refuses open spline chord approximation');
 }
 
+{
+  const k = new BrepKernel();
+  const arc = k.makeCircleArc3d(10, 0, -3, 10, 0, 3, 10, 0, 0, 0, -1, 0);
+  const diameter = k.makeLineEdge(10, 0, 3, 10, 0, -3);
+  const face = k.makePlanarFaceFromWire(k.makeWire(Uint32Array.of(arc, diameter), true));
+  const full = k.revolveDetailed(face, 0, 0, 0, 0, 0, 1, 360);
+  assert.equal(full.status, 'ok');
+  assert.equal(full.details.quality, 'exact');
+  const partial = k.revolveDetailed(face, 0, 0, 0, 0, 0, 1, 180);
+  assert.equal(partial.code, 'exact_only_unattainable');
+  console.log('ok - revolveDetailed admits analytic full-turn arc and refuses chorded partial');
+}
+
 // A stored/transported payload is untrusted input: malformed versions,
 // incomplete coverage and contradictory result claims must fail closed.
 {
