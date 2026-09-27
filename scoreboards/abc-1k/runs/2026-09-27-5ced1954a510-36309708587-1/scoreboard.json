@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "models": 1000,
+  "passed": 155,
+  "failed": 845,
+  "stages": {
+    "boolean": {
+      "passed": 157,
+      "failed": 843
+    },
+    "read": {
+      "passed": 193,
+      "failed": 807
+    },
+    "round_trip": {
+      "passed": 155,
+      "failed": 845
+    },
+    "tessellate": {
+      "passed": 155,
+      "failed": 845
+    },
+    "validate": {
+      "passed": 182,
+      "failed": 818
+    }
+  },
+  "failure_categories": {
+    "internal": 1,
+    "invalid_input": 800,
+    "invalid_topology": 18,
+    "resource_limit": 9,
+    "tolerance_violation": 2,
+    "unsupported": 15
+  },
+  "boolean_exact": 621,
+  "boolean_approximate": 61
+}

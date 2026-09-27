@@ -1,25 +1,25 @@
 # Remus gauntlet scoreboard
 
-Models: 153 passed / 1000 total (15.30%).
+Models: 155 passed / 1000 total (15.50%).
 
 | Stage | Passed | Failed | Pass rate |
 | --- | ---: | ---: | ---: |
-| read | 192 | 808 | 19.20% |
+| read | 193 | 807 | 19.30% |
 | validate | 182 | 818 | 18.20% |
-| boolean | 156 | 844 | 15.60% |
-| tessellate | 153 | 847 | 15.30% |
-| round_trip | 153 | 847 | 15.30% |
+| boolean | 157 | 843 | 15.70% |
+| tessellate | 155 | 845 | 15.50% |
+| round_trip | 155 | 845 | 15.50% |
 
 ## Boolean quality
 
-- Exact: 613
-- Approximate: 68
+- Exact: 621
+- Approximate: 61
 
 ## Failure taxonomy
 
 - `internal`: 1
-- `invalid_input`: 801
+- `invalid_input`: 800
 - `invalid_topology`: 18
 - `resource_limit`: 9
-- `tolerance_violation`: 3
+- `tolerance_violation`: 2
 - `unsupported`: 15
