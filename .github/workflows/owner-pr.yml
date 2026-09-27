@@ -208,7 +208,7 @@ jobs:
           toolchain: "1.96.0"
           components: clippy,rustfmt,rust-src
           targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         if: inputs.heavy
         with:
           tool: nextest
@@ -232,7 +232,7 @@ jobs:
         run: /usr/bin/time -v cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
-      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         if: inputs.docs
         with:
           tool: mdbook@0.4.52
