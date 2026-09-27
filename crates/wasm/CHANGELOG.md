@@ -32,6 +32,19 @@
 
 ### Features
 
+* Add `extrudeDetailed` and `revolveDetailed` (direct and batch), typed
+  O4.7 twins of `extrude` and `revolve` with the same envelope and rollback
+  as the boolean twins. The twins refuse profiles that the native engines
+  would split into line chords (`exact_only_unattainable`); extrusion retains
+  recognized NURBS circles on its analytic path, while revolution refuses
+  curved fallback bands outside the true-circle torus and fully analytic
+  full-turn paths. The torus path requires the revolution axis to lie in the
+  profile plane. Every
+  success discloses `details.quality: "exact"` and there is no `exactOnly`
+  flag. Other refusals carry the legacy failure's code and category with
+  `details.operation` naming the op. `revolveDetailed` preserves the
+  degrees-in-`(0, 360]` to radians conversion exactly. The batch ops return
+  the same envelope as their `ok` value. Legacy methods are unchanged.
 * Add `filletV2Detailed`, `chamferV2Detailed`,
   `chamferDistanceAngleDetailed`, and `filletVariableDetailed` (direct and
   batch), typed O4.7 twins of the blend variants with the same envelope,
