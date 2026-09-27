@@ -225,24 +225,10 @@ def file_gate(root: Path, rel: str) -> str:
 
 def export_gate(code_lines: list[str], depths: list[int], index: int, rel: str, parent_gate: str) -> str:
     """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
+    if macro_body_contains(code_lines, index):
+        return "conditional"
     gates = [attribute_gate(own_attr_block(code_lines, index, depths))]
     for ancestor in range(index):
-        if macro := re.match(r"^\s*macro_rules!\s*\w+\b(?P<tail>.*)", code_lines[ancestor]):
-            base = depths[ancestor]
-            open_line = ancestor
-            opener = macro.group("tail").lstrip()
-            if not opener:
-                open_line = next(
-                    (child for child in range(ancestor + 1, index) if code_lines[child].strip()),
-                    index,
-                )
-                opener = code_lines[open_line].lstrip()
-            body = open_line + 1
-            if opener.startswith("{") and body <= index and depths[body] > base and all(
-                depths[child] > base for child in range(body, index + 1)
-            ):
-                gates.append("conditional")
-            continue
         if not re.match(
             r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:impl|mod)\b", code_lines[ancestor]
         ):
@@ -366,6 +352,60 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
             cursor += 1
         code_lines.append("".join(code))
     return depths, code_lines
+
+
+def macro_body_contains(code_lines: list[str], index: int) -> bool:
+    """Whether an export is textually inside any macro_rules token tree."""
+    source = "\n".join(code_lines)
+    line = code_lines[index]
+    method = re.search(r"\bpub\s+(?:(?:async|unsafe)\s+)*fn\b", line)
+    target = sum(len(item) + 1 for item in code_lines[:index])
+    target += method.start() if method else 0
+    closers = {"{": "}", "(": ")", "[": "]"}
+    for macro in re.finditer(r"^\s*macro_rules!\s*\w+\b", source, re.MULTILINE):
+        cursor = macro.end()
+        while cursor < len(source) and source[cursor].isspace():
+            cursor += 1
+        if cursor >= len(source) or source[cursor] not in closers:
+            continue
+        opener = cursor
+        stack: list[str] = []
+        while cursor < len(source):
+            raw = re.match(r'r(#+)?"', source[cursor:])
+            if raw:
+                closing = '"' + (raw.group(1) or "")
+                end = source.find(closing, cursor + len(raw.group()))
+                cursor = len(source) if end < 0 else end + len(closing)
+                continue
+            if source[cursor] == '"':
+                cursor += 1
+                while cursor < len(source):
+                    if source[cursor] == "\\":
+                        cursor += 2
+                    elif source[cursor] == '"':
+                        cursor += 1
+                        break
+                    else:
+                        cursor += 1
+                continue
+            char = re.match(r"'(?:\\.|[^'\\])'", source[cursor:])
+            if char:
+                cursor += len(char.group())
+                continue
+            token = source[cursor]
+            if token in closers:
+                stack.append(closers[token])
+            elif stack and token == stack[-1]:
+                stack.pop()
+                if not stack:
+                    if opener < target < cursor:
+                        return True
+                    break
+            cursor += 1
+        else:
+            if opener < target:
+                return True
+    return False
 
 
 def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
