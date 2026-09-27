@@ -12,12 +12,16 @@
 //!   uniform + bind group, mesh + edge pipelines (both variants, so edge
 //!   toggles never rebuild), and offscreen targets + readback buffers while
 //!   the size stays constant.
-//! - Rebuilt per frame: tessellation, GPU vertex/index/edge buffers, globals
-//!   contents (camera, ambient), and the clear color. Targets are recreated
-//!   when `width`/`height` change.
-//! - Explicitly out of scope (see PERF-R02/R04): persistent geometry caching,
-//!   incremental tessellation, asynchronous readback, compute-mesher changes,
-//!   and window-viewer changes.
+//! - Rebuilt per frame by [`OffscreenSession::render`]: tessellation, GPU
+//!   vertex/index/edge buffers, globals contents (camera, ambient), and the
+//!   clear color. Targets are recreated when `width`/`height` change.
+//! - Skipped by prepared draws: [`OffscreenSession::draw_prepared`] reuses a
+//!   [`PreparedSolid`](crate::PreparedSolid)'s uploaded geometry, so
+//!   camera-only frames tessellate and upload nothing (partial PERF-R02; see
+//!   [`crate::prepared`] for the asset contract).
+//! - Explicitly out of scope (see PERF-R02 remainder/R04): automatic topology
+//!   revision tracking, dirty-face invalidation, incremental tessellation,
+//!   asynchronous readback, compute-mesher changes, and window-viewer changes.
 //!
 //! # Failure policy
 //!
@@ -41,18 +45,28 @@
 //! allocating replacements. The GPU may defer physical reclamation until
 //! submitted work completes.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
 
 use crate::camera::Camera;
 use crate::error::RenderError;
-use crate::mesh::RenderMesh;
+use crate::mesh::{EdgeVertex, RenderMesh, Vertex};
 use crate::pipeline::{
     COLOR_FORMAT_OFFSCREEN, DEPTH_FORMAT, GeometryBuffers, Globals, GlobalsBinding, GpuContext,
     ID_FORMAT, PassTargets, Pipelines, build_globals, encode_scene, map_and_read,
     padded_bytes_per_row, unpad_to_rgba, unpad_to_u32,
 };
+use crate::prepared::{
+    PrepareTimings, PreparedDrawOpts, PreparedDrawTimings, PreparedSolid, PreparedStats,
+};
 use crate::{MAX_OFFSCREEN_PIXELS, RenderOpts, RenderOutput};
+
+/// Source of unique [`OffscreenSession`] ids (prepared-asset affinity tokens).
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Cached offscreen targets for one `width` x `height` size.
 ///
@@ -166,6 +180,9 @@ impl CachedTargets {
 /// thread that renders; do not share one across threads.
 pub struct OffscreenSession {
     ctx: GpuContext,
+    /// Unique affinity token: prepared assets record it and refuse to draw on
+    /// any other session (see [`RenderError::WrongSession`]).
+    session_id: u64,
     adapter_info: String,
     max_texture_dimension_2d: u32,
     // Retained to keep the pipeline layout alive for the session lifetime;
@@ -177,6 +194,16 @@ pub struct OffscreenSession {
     pipelines_without_edges: Pipelines,
     targets: Option<CachedTargets>,
     target_rebuilds: u64,
+    /// Successful [`OffscreenSession::prepare`] calls (each tessellates and
+    /// uploads exactly once).
+    prepare_calls: u64,
+    /// Successful [`OffscreenSession::draw_prepared`] calls (each skips
+    /// tessellation and upload).
+    prepared_draw_calls: u64,
+    /// CPU-side phase timings of the last `prepare`, for benchmarking.
+    last_prepare_timings: Option<PrepareTimings>,
+    /// GPU-side phase timings of the last `draw_prepared`, for benchmarking.
+    last_draw_timings: Option<PreparedDrawTimings>,
     failed: Option<String>,
 }
 
@@ -226,6 +253,7 @@ impl OffscreenSession {
 
         Ok(Self {
             ctx,
+            session_id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             adapter_info,
             max_texture_dimension_2d,
             pipeline_layout,
@@ -234,8 +262,21 @@ impl OffscreenSession {
             pipelines_without_edges,
             targets: None,
             target_rebuilds: 0,
+            prepare_calls: 0,
+            prepared_draw_calls: 0,
+            last_prepare_timings: None,
+            last_draw_timings: None,
             failed: None,
         })
+    }
+
+    /// Unique id of this session, bound at creation.
+    ///
+    /// Prepared assets record the id of their preparing session; drawing an
+    /// asset on any other session fails with [`RenderError::WrongSession`].
+    #[must_use]
+    pub fn session_id(&self) -> u64 {
+        self.session_id
     }
 
     /// Adapter backend/name/type selected at creation (real GPU or software
@@ -262,6 +303,39 @@ impl OffscreenSession {
     #[must_use]
     pub fn target_rebuilds(&self) -> u64 {
         self.target_rebuilds
+    }
+
+    /// Successful [`OffscreenSession::prepare`] calls.
+    ///
+    /// Each prepare tessellates and uploads exactly once; with
+    /// [`OffscreenSession::prepared_draw_calls`] this proves skipped work: N
+    /// prepared draws after one prepare performed N frames with one
+    /// tessellation and one upload.
+    #[must_use]
+    pub fn prepare_calls(&self) -> u64 {
+        self.prepare_calls
+    }
+
+    /// Successful [`OffscreenSession::draw_prepared`] calls.
+    ///
+    /// Each of these skipped tessellation and geometry upload entirely.
+    #[must_use]
+    pub fn prepared_draw_calls(&self) -> u64 {
+        self.prepared_draw_calls
+    }
+
+    /// CPU-side phase timings of the last successful `prepare`
+    /// (tessellation vs. upload split), or `None` before the first prepare.
+    #[must_use]
+    pub fn last_prepare_timings(&self) -> Option<PrepareTimings> {
+        self.last_prepare_timings
+    }
+
+    /// GPU-side phase timings of the last successful `draw_prepared`
+    /// (submit vs. readback split), or `None` before the first prepared draw.
+    #[must_use]
+    pub fn last_draw_timings(&self) -> Option<PreparedDrawTimings> {
+        self.last_draw_timings
     }
 
     /// Whether the session is poisoned by a device-level failure.
@@ -317,7 +391,149 @@ impl OffscreenSession {
         // Tessellation runs before any GPU work so a tessellation failure
         // never touches (or poisons) GPU state.
         let mesh = RenderMesh::build(topo, solid, opts.deflection)?;
-        let (width, height) = (opts.width, opts.height);
+        let geometry = GeometryBuffers::new(&self.ctx.device, &mesh);
+        let (output, _submit, _readback) = self.draw_frame(
+            mesh.center,
+            &geometry,
+            !mesh.edge_vertices.is_empty(),
+            cam,
+            opts.width,
+            opts.height,
+            opts.edges,
+            opts.background,
+            opts.ambient,
+        )?;
+        Ok(output)
+    }
+
+    /// Prepare `solid` for repeated drawing: tessellate once at `deflection`
+    /// and upload the geometry to this session's device.
+    ///
+    /// Returns an immutable [`PreparedSolid`] snapshot bound to this session.
+    /// Preparing replacement geometry is always explicit — call `prepare`
+    /// again after topology edits and drop (or overwrite) the old asset; the
+    /// old asset keeps drawing its snapshot until released and never refreshes
+    /// itself. See [`crate::prepared`] for the full asset contract.
+    ///
+    /// # Errors
+    ///
+    /// - [`RenderError::DeviceLost`] if the session is poisoned.
+    /// - [`RenderError::Operations`] / [`RenderError::Topology`] /
+    ///   [`RenderError::MeshData`] on tessellation failure (session stays usable).
+    pub fn prepare(
+        &mut self,
+        topo: &Topology,
+        solid: SolidId,
+        deflection: f64,
+    ) -> Result<PreparedSolid, RenderError> {
+        if let Some(reason) = self.failed.as_ref() {
+            return Err(RenderError::DeviceLost(reason.clone()));
+        }
+        // Tessellation runs before any GPU work so a tessellation failure
+        // never touches (or poisons) GPU state.
+        let t0 = Instant::now();
+        let mesh = RenderMesh::build(topo, solid, deflection)?;
+        let tessellate = t0.elapsed();
+        let t0 = Instant::now();
+        let geometry = GeometryBuffers::new(&self.ctx.device, &mesh);
+        let upload = t0.elapsed();
+
+        let has_edges = !mesh.edge_vertices.is_empty();
+        let stats = PreparedStats {
+            triangles: mesh.indices.len() / 3,
+            vertices: mesh.vertices.len(),
+            edge_segments: mesh.edge_vertices.len() / 2,
+            vertex_bytes: mesh.vertices.len() * std::mem::size_of::<Vertex>(),
+            index_bytes: mesh.indices.len() * std::mem::size_of::<u32>(),
+            edge_bytes: mesh.edge_vertices.len() * std::mem::size_of::<EdgeVertex>(),
+            deflection,
+        };
+        let asset = PreparedSolid {
+            geometry,
+            center: mesh.center,
+            session_id: self.session_id,
+            has_edges,
+            stats,
+        };
+        self.prepare_calls += 1;
+        self.last_prepare_timings = Some(PrepareTimings { tessellate, upload });
+        Ok(asset)
+    }
+
+    /// Draw a [`PreparedSolid`] without tessellating or uploading geometry.
+    ///
+    /// The camera, size, edge toggle, background, and ambient may all differ
+    /// from previous draws — none of them rebuilds the asset. The asset must
+    /// have been prepared on this session; a foreign asset is refused with
+    /// [`RenderError::WrongSession`] before any GPU work. See
+    /// [`crate::prepared`] for the asset contract.
+    ///
+    /// # Errors
+    ///
+    /// - [`RenderError::DeviceLost`] if the session is poisoned.
+    /// - [`RenderError::WrongSession`] if `asset` was prepared on another
+    ///   session (session stays usable).
+    /// - [`RenderError::InvalidSize`] / [`RenderError::PixelBudgetExceeded`] /
+    ///   [`RenderError::SizeTooLarge`] on bad dimensions (session stays usable).
+    /// - [`RenderError::BufferMap`] / [`RenderError::Poll`] on GPU readback
+    ///   failure (poisons the session; the next call returns `DeviceLost`).
+    pub fn draw_prepared(
+        &mut self,
+        asset: &PreparedSolid,
+        cam: &Camera,
+        opts: &PreparedDrawOpts,
+    ) -> Result<RenderOutput, RenderError> {
+        if let Some(reason) = self.failed.as_ref() {
+            return Err(RenderError::DeviceLost(reason.clone()));
+        }
+        // Device-bound buffers must never cross devices: refuse before any
+        // GPU work so a foreign asset can neither trip GPU validation nor
+        // poison this session.
+        if asset.session_id != self.session_id {
+            return Err(RenderError::WrongSession {
+                expected: asset.session_id,
+                actual: self.session_id,
+            });
+        }
+        validate_session_size(opts.width, opts.height)?;
+        let (output, submit, readback) = self.draw_frame(
+            asset.center,
+            &asset.geometry,
+            asset.has_edges,
+            cam,
+            opts.width,
+            opts.height,
+            opts.edges,
+            opts.background,
+            opts.ambient,
+        )?;
+        self.prepared_draw_calls += 1;
+        self.last_draw_timings = Some(PreparedDrawTimings { submit, readback });
+        Ok(output)
+    }
+
+    /// Draw one frame from already-uploaded `geometry`.
+    ///
+    /// Shared verbatim by [`OffscreenSession::render`] (which tessellates and
+    /// uploads first) and [`OffscreenSession::draw_prepared`] (which reuses a
+    /// prepared asset), so the two paths cannot drift. Returns the output plus
+    /// the submit-phase and readback-phase durations for benchmarking.
+    ///
+    /// `SizeTooLarge` leaves the session usable; GPU readback failures poison
+    /// it (the next call on any path returns `DeviceLost`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_frame(
+        &mut self,
+        center: Point3,
+        geometry: &GeometryBuffers,
+        has_edges: bool,
+        cam: &Camera,
+        width: u32,
+        height: u32,
+        edges: bool,
+        background: [f32; 4],
+        ambient: f32,
+    ) -> Result<(RenderOutput, std::time::Duration, std::time::Duration), RenderError> {
         if width > self.max_texture_dimension_2d || height > self.max_texture_dimension_2d {
             return Err(RenderError::SizeTooLarge {
                 width,
@@ -341,16 +557,16 @@ impl OffscreenSession {
             RenderError::DeviceLost("session targets missing after rebuild".into())
         })?;
 
-        let with_edges = opts.edges && !mesh.edge_vertices.is_empty();
+        let with_edges = edges && has_edges;
         let pipelines = if with_edges {
             &self.pipelines_with_edges
         } else {
             &self.pipelines_without_edges
         };
 
-        let globals = build_globals(cam, mesh.center, opts.ambient);
+        let t0 = Instant::now();
+        let globals = build_globals(cam, center, ambient);
         self.globals.upload(&self.ctx.queue, &globals);
-        let geometry = GeometryBuffers::new(&self.ctx.device, &mesh);
 
         let mut encoder = self
             .ctx
@@ -362,12 +578,12 @@ impl OffscreenSession {
             &mut encoder,
             pipelines,
             &self.globals,
-            &geometry,
+            geometry,
             &PassTargets {
                 color: &targets.color_view,
                 id: &targets.id_view,
                 depth: &targets.depth_view,
-                background: opts.background,
+                background,
             },
         );
         encoder.copy_texture_to_buffer(
@@ -405,9 +621,11 @@ impl OffscreenSession {
             targets.extent,
         );
         self.ctx.queue.submit(Some(encoder.finish()));
+        let submit = t0.elapsed();
 
         // Map + read. A device-level failure poisons the session; validation
         // and tessellation failures above never reach here, so they never poison.
+        let t0 = Instant::now();
         let color_bytes = match map_and_read(&self.ctx.device, &targets.color_readback) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -425,13 +643,18 @@ impl OffscreenSession {
 
         let color = unpad_to_rgba(&color_bytes, width, height, targets.color_padded_bpr);
         let id_buffer = unpad_to_u32(&id_bytes, width, height, targets.id_padded_bpr);
+        let readback = t0.elapsed();
 
-        Ok(RenderOutput {
-            color,
-            id_buffer,
-            width,
-            height,
-        })
+        Ok((
+            RenderOutput {
+                color,
+                id_buffer,
+                width,
+                height,
+            },
+            submit,
+            readback,
+        ))
     }
 }
 
