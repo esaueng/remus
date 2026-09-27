@@ -61,6 +61,17 @@ impl DoglegWorkspace {
         Self::default()
     }
 
+    /// Residual vector at the solver's final iterate.
+    ///
+    /// Valid only after [`solve_dogleg_fill`] returns: every exit path leaves
+    /// the residuals evaluated at the returned `params` in `r` (the
+    /// small-step exit copies its trial evaluation across). Callers must not
+    /// read this before a solve or after reusing the workspace.
+    #[must_use]
+    pub fn final_residuals(&self) -> &[f64] {
+        &self.r
+    }
+
     /// Size all buffers for `m` residuals and `n` params.
     ///
     /// Existing capacity is retained; contents are not meaningful until
@@ -121,6 +132,23 @@ pub struct SolveResult {
     pub max_residual: f64,
 }
 
+/// Evaluation counts for one [`solve_dogleg_fill`] call (PERF-S06).
+///
+/// Every residual, Jacobian and QR-factorization evaluation the solver
+/// performs is counted exactly once, at the call site. Diagnostics sharing
+/// (PERF-S06) reports these alongside its own follow-up evaluations so a
+/// measurement can tell solver-loop work apart from post-solve analysis
+/// work. Counts carry no numerical meaning; they only tally calls.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SolveStats {
+    /// Calls to `residual_fill` (each evaluates all `m` residuals).
+    pub residual_evals: usize,
+    /// Calls to `jacobian_fill` (each evaluates the full `m × n` Jacobian).
+    pub jacobian_evals: usize,
+    /// Householder QR factorizations of the working Jacobian.
+    pub qr_factorizations: usize,
+}
+
 /// DogLeg trust-region solver for the system `r(params) = 0`.
 ///
 /// - `params`: initial parameter values (modified in-place on success)
@@ -162,6 +190,7 @@ where
         let j = jacobian_fn(p);
         out.copy_from_slice(&j);
     };
+    let mut stats = SolveStats::default();
     solve_dogleg_fill(
         params,
         &mut residual_fill,
@@ -170,6 +199,7 @@ where
         max_iter,
         tol,
         &mut ws,
+        &mut stats,
     )
 }
 
@@ -180,10 +210,17 @@ where
 /// - `jacobian_fill(p, out)`: overwrites `out[m*n]` with the row-major
 ///   Jacobian at `p` (must fully overwrite; zero before accumulating).
 /// - `workspace`: solve-local scratch, sized via [`DoglegWorkspace::ensure`].
+/// - `stats`: tallies every residual, Jacobian and QR evaluation (PERF-S06).
 ///
 /// Matrix layout, numerical operation order, convergence thresholds,
 /// trust-region decisions and iteration accounting match [`solve_dogleg`]
 /// exactly; only storage is reused.
+///
+/// On return, [`DoglegWorkspace::final_residuals`] holds the residual vector
+/// evaluated at the returned `params`, on every exit path: the loop-top,
+/// stationary-point, budget-exhausted and empty-system paths evaluate there
+/// directly, and the small-step path copies its trial evaluation across so
+/// no caller reads a stale iterate.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub fn solve_dogleg_fill<F, G>(
     params: &mut [f64],
@@ -193,6 +230,7 @@ pub fn solve_dogleg_fill<F, G>(
     max_iter: usize,
     tol: f64,
     workspace: &mut DoglegWorkspace,
+    stats: &mut SolveStats,
 ) -> SolveResult
 where
     F: FnMut(&[f64], &mut Vec<f64>),
@@ -204,6 +242,7 @@ where
         workspace.ensure(m, n);
         workspace.r.clear();
         residual_fill(params, &mut workspace.r);
+        stats.residual_evals += 1;
         let max_r = max_abs_residual(&workspace.r);
         return SolveResult {
             converged: max_r < tol,
@@ -224,6 +263,7 @@ where
     for iteration in 0..max_iter {
         ws.r.clear();
         residual_fill(params, &mut ws.r);
+        stats.residual_evals += 1;
         let max_r = max_abs_residual(&ws.r);
 
         if max_r < tol {
@@ -238,6 +278,7 @@ where
         // the gradient and predicted-reduction computations; factorize the
         // working copy in place with reused QR scratch (no owned copy).
         jacobian_fill(params, &mut ws.jac_orig);
+        stats.jacobian_evals += 1;
         ws.jac_work.copy_from_slice(&ws.jac_orig);
         QrResult::factorize_reuse(
             &mut ws.jac_work,
@@ -247,6 +288,7 @@ where
             &mut ws.perm,
             &mut ws.col_norms,
         );
+        stats.qr_factorizations += 1;
 
         // Gauss-Newton step: solve J * h_gn = -r
         for (d, &v) in ws.neg_r.iter_mut().zip(ws.r.iter()) {
@@ -299,6 +341,7 @@ where
         }
         ws.r_trial.clear();
         residual_fill(&ws.trial, &mut ws.r_trial);
+        stats.residual_evals += 1;
 
         let cost_current: f64 = ws.r.iter().map(|&v| v * v).sum::<f64>() * 0.5;
         let cost_trial: f64 = ws.r_trial.iter().map(|&v| v * v).sum::<f64>() * 0.5;
@@ -340,7 +383,12 @@ where
         if h_norm < 1e-15 * (1.0 + param_norm) {
             ws.r_trial.clear();
             residual_fill(params, &mut ws.r_trial);
+            stats.residual_evals += 1;
             let final_max = max_abs_residual(&ws.r_trial);
+            // Canonical final state: later readers (PERF-S06) must see the
+            // residuals at the returned params, not the loop-top iterate.
+            ws.r.clear();
+            ws.r.extend_from_slice(&ws.r_trial);
             return SolveResult {
                 converged: final_max < tol,
                 iterations: iteration + 1,
@@ -351,6 +399,7 @@ where
 
     ws.r.clear();
     residual_fill(params, &mut ws.r);
+    stats.residual_evals += 1;
     let max_r = max_abs_residual(&ws.r);
     SolveResult {
         converged: max_r < tol,

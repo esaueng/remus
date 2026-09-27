@@ -13,7 +13,8 @@ use super::dof::{self, DofAnalysis};
 use super::entity::{
     ArcData, ArcId, CircleData, CircleId, GenArena, LineData, LineId, ParamRef, PointData, PointId,
 };
-use super::solver::{DoglegWorkspace, SolveResult};
+use super::final_eval::FinalEvaluation;
+use super::solver::{DoglegWorkspace, SolveResult, SolveStats};
 
 /// The geometric constraint system.
 ///
@@ -57,6 +58,35 @@ impl Default for GcsSystem {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Evaluation counts for one `solve_detailed` call (PERF-S06).
+///
+/// Splits the call into solver-loop work ([`SolveStats`]) and post-solve
+/// analysis work so a measurement can report where a residual, Jacobian or
+/// QR evaluation happened. The shared path performs exactly one analysis
+/// Jacobian plus one QR; the only residual re-evaluations it performs are
+/// the fallback (identity mismatch or defensive length check, unreachable in
+/// production) and the restored-state pass after a rollback (a genuinely
+/// different state, so sharing would be wrong there).
+///
+/// Fields are read by the in-crate PERF-S06 tests, which do not compile into
+/// the lib target — hence the allowance, mirroring `solve_dogleg`.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(dead_code)]
+pub struct DetailedCounts {
+    /// Solver-loop evaluations (residuals, Jacobians, factorizations).
+    pub solver: SolveStats,
+    /// Fresh Jacobian evaluations for the rank analysis (0 or 1).
+    pub analysis_jacobian_evals: usize,
+    /// Fresh QR factorizations for the rank analysis (0 or 1).
+    pub analysis_qr_factorizations: usize,
+    /// Residual re-evaluations the shared path declined (fresh fallback).
+    pub fallback_residual_passes: usize,
+    /// Residual evaluations at the restored state after a rollback.
+    pub restored_state_passes: usize,
+    /// Whether the per-constraint report came from the shared vector.
+    pub shared_residuals_used: bool,
 }
 
 impl GcsSystem {
@@ -367,6 +397,26 @@ impl GcsSystem {
         max_iterations: usize,
         tolerance: f64,
     ) -> Result<SolveResult, SketchError> {
+        let (result, _eval, _stats) = self.solve_impl(max_iterations, tolerance)?;
+        Ok(result)
+    }
+
+    /// Solve, capturing the final-iterate evaluation and loop counts.
+    ///
+    /// Behavior matches [`solve`](Self::solve) exactly (same params written,
+    /// same result); the capture lets [`solve_detailed`](Self::solve_detailed)
+    /// reuse the final evaluation instead of re-measuring it. Nothing is
+    /// retained on the system: the capture is returned to the caller and
+    /// dropped unless consumed by the same diagnostics call.
+    ///
+    /// The `Result` wrapper is retained for future error paths, matching
+    /// [`solve`](Self::solve).
+    #[allow(clippy::unnecessary_wraps)]
+    fn solve_impl(
+        &mut self,
+        max_iterations: usize,
+        tolerance: f64,
+    ) -> Result<(SolveResult, FinalEvaluation, SolveStats), SketchError> {
         self.rebuild_if_dirty();
 
         let n = self.param_map.len();
@@ -386,11 +436,19 @@ impl GcsSystem {
                 eval_residuals(&entry.constraint, &snap, &mut residuals);
             }
             let max_r = max_abs_residual(&residuals);
-            return Ok(SolveResult {
+            let result = SolveResult {
                 converged: max_r < tolerance,
                 iterations: 0,
                 max_residual: max_r,
-            });
+            };
+            let eval = FinalEvaluation::capture(&[], &residuals, self.constraint_rows());
+            // One full residual evaluation happened above (counted for
+            // PERF-S06 even though the solver loop never ran).
+            let stats = SolveStats {
+                residual_evals: 1,
+                ..SolveStats::default()
+            };
+            return Ok((result, eval, stats));
         }
 
         let mut params = self.extract_params();
@@ -446,6 +504,7 @@ impl GcsSystem {
         };
 
         let mut workspace = DoglegWorkspace::new();
+        let mut stats = SolveStats::default();
         let result = super::solver::solve_dogleg_fill(
             &mut params,
             &mut residual_fill,
@@ -454,11 +513,25 @@ impl GcsSystem {
             max_iterations,
             tolerance,
             &mut workspace,
+            &mut stats,
         );
 
         self.write_params(&params);
 
-        Ok(result)
+        let eval =
+            FinalEvaluation::capture(&params, workspace.final_residuals(), self.constraint_rows());
+        Ok((result, eval, stats))
+    }
+
+    /// `(constraint id, residual row count)` in evaluation (arena) order.
+    ///
+    /// Part of the [`FinalEvaluation`] identity: any add/remove between
+    /// capture and reuse changes this layout and forces fresh evaluation.
+    fn constraint_rows(&self) -> Vec<(ConstraintId, usize)> {
+        self.constraints
+            .iter()
+            .map(|(cid, e)| (cid, residual_count(&e.constraint)))
+            .collect()
     }
 
     /// Solve, then report everything the attempt established — transactionally.
@@ -478,6 +551,14 @@ impl GcsSystem {
     /// constraints are flagged as such rather than being attributed to a
     /// caller's constraint. See [`SolveDiagnostics`].
     ///
+    /// Measurement reuses the solver's own final evaluation (PERF-S06): the
+    /// per-constraint residuals are derived from the final residual vector
+    /// after verifying it still describes the live system, and a single
+    /// snapshot backs the fresh Jacobian the rank analysis needs. No
+    /// factorization is ever reused — an accepted final step can invalidate
+    /// the loop's previous one — and any identity mismatch falls back to
+    /// fully fresh evaluation with identical results.
+    ///
     /// # Errors
     ///
     /// Propagates any error from [`solve`](Self::solve).
@@ -486,12 +567,33 @@ impl GcsSystem {
         max_iterations: usize,
         tolerance: f64,
     ) -> Result<SolveDiagnostics, SketchError> {
+        let (diagnostics, _counts) = self.solve_detailed_counted(max_iterations, tolerance)?;
+        Ok(diagnostics)
+    }
+
+    /// [`solve_detailed`](Self::solve_detailed) plus evaluation counts.
+    ///
+    /// `solve_detailed` discards the counts; tests and the PERF-S06 report
+    /// use them to tell solver-loop work apart from post-solve analysis.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`solve`](Self::solve).
+    pub fn solve_detailed_counted(
+        &mut self,
+        max_iterations: usize,
+        tolerance: f64,
+    ) -> Result<(SolveDiagnostics, DetailedCounts), SketchError> {
         self.rebuild_if_dirty();
 
         // Snapshot for rollback before anything is mutated.
         let before = self.extract_params();
 
-        let result = self.solve(max_iterations, tolerance)?;
+        let (result, eval, stats) = self.solve_impl(max_iterations, tolerance)?;
+        let mut counts = DetailedCounts {
+            solver: stats,
+            ..DetailedCounts::default()
+        };
 
         // Measure at the solver's final iterate, *before* any rollback. This
         // is the informative state: constraints the system can satisfy have
@@ -499,40 +601,139 @@ impl GcsSystem {
         // where the system could not reconcile. Measuring after a rollback
         // would instead report the untouched starting geometry, where every
         // constraint — satisfiable or not — still reads large.
-        let analysis = self.dof();
-        let (residuals, internal_max_residual) = self.constraint_residuals();
+        let n = self.param_map.len();
+        let m: usize = self
+            .constraints
+            .iter()
+            .map(|(_, e)| residual_count(&e.constraint))
+            .sum();
+
+        let (analysis, residuals, internal_max_residual) = if n == 0 || m == 0 {
+            // Degenerate dimensions have no Jacobian to share: measure
+            // everything fresh, exactly as before.
+            counts.fallback_residual_passes += 1;
+            let analysis = self.dof();
+            let (residuals, internal_max) = self.constraint_residuals();
+            (analysis, residuals, internal_max)
+        } else if self.eval_matches(&eval, m, n) {
+            // Shared path: one snapshot backs the fresh Jacobian the rank
+            // needs; per-constraint residuals slice the verified final
+            // vector instead of re-evaluating every constraint.
+            let snap = self.build_snapshot();
+            let jac = self.jacobian_for_snapshot(&snap, m, n);
+            counts.analysis_jacobian_evals += 1;
+            let analysis = dof::analyze(&jac, m, n);
+            counts.analysis_qr_factorizations += 1;
+            if let Some((residuals, internal_max)) = self.derive_shared_residuals(&eval) {
+                counts.shared_residuals_used = true;
+                (analysis, residuals, internal_max)
+            } else {
+                // Defensive length mismatch: same fresh fallback.
+                // Unreachable — the solver emits exactly one entry per
+                // equation — but a silent wrong slice is worse than a
+                // repeated evaluation.
+                counts.fallback_residual_passes += 1;
+                let (residuals, internal_max) = self.constraint_residuals();
+                (analysis, residuals, internal_max)
+            }
+        } else {
+            // Identity mismatch means the capture is not this state: measure
+            // everything fresh (identical results, one extra residual pass).
+            // Unreachable in production — capture and measurement bracket no
+            // mutation — but proven by tests.
+            counts.fallback_residual_passes += 1;
+            let analysis = self.dof();
+            let (residuals, internal_max) = self.constraint_residuals();
+            (analysis, residuals, internal_max)
+        };
 
         let rolled_back = !result.converged;
         let published_max_residual = if rolled_back {
             self.write_params(&before);
-            let (restored, _) = self.constraint_residuals();
-            fold_max_residual(&restored)
+            // Restored geometry is a different state from the attempt, so it
+            // is always freshly measured — never shared. Only the fold max is
+            // needed (the attempt's per-constraint report is already filed),
+            // which skips the discarded report allocation with identical value.
+            counts.restored_state_passes += 1;
+            self.current_max_residual()
         } else {
             fold_max_residual(&residuals)
         };
 
         let redundant = analysis.rank < analysis.num_equations;
 
-        Ok(SolveDiagnostics {
-            converged: result.converged,
-            iterations: result.iterations,
-            max_residual: result.max_residual,
-            published_max_residual,
-            dof: analysis.dof,
-            rank: analysis.rank,
-            num_params: analysis.num_params,
-            num_equations: analysis.num_equations,
-            residuals,
-            internal_max_residual,
-            rolled_back,
-            redundant,
-            classification: classify_solve(
-                result.converged,
-                analysis.dof,
-                analysis.rank,
-                analysis.num_equations,
-            ),
-        })
+        Ok((
+            SolveDiagnostics {
+                converged: result.converged,
+                iterations: result.iterations,
+                max_residual: result.max_residual,
+                published_max_residual,
+                dof: analysis.dof,
+                rank: analysis.rank,
+                num_params: analysis.num_params,
+                num_equations: analysis.num_equations,
+                residuals,
+                internal_max_residual,
+                rolled_back,
+                redundant,
+                classification: classify_solve(
+                    result.converged,
+                    analysis.dof,
+                    analysis.rank,
+                    analysis.num_equations,
+                ),
+            },
+            counts,
+        ))
+    }
+
+    /// Whether a solve-local capture still describes the live system.
+    fn eval_matches(&self, eval: &FinalEvaluation, m: usize, n: usize) -> bool {
+        eval.matches(&self.extract_params(), &self.constraint_rows(), m, n)
+    }
+
+    /// Derive the per-constraint residual report from a verified capture.
+    ///
+    /// Slices the shared flat residual vector by the capture's row layout
+    /// and applies the same NaN-propagating fold and internal-flag rules as
+    /// [`constraint_residuals`](Self::constraint_residuals). Returns `None`
+    /// when the flat vector does not match the row layout (defensive only:
+    /// the solver always emits exactly one entry per equation); the caller
+    /// then measures fresh. Call only after [`eval_matches`](Self::eval_matches).
+    fn derive_shared_residuals(
+        &self,
+        eval: &FinalEvaluation,
+    ) -> Option<(Vec<ConstraintResidual>, f64)> {
+        let flat = eval.residuals();
+        let rows = eval.rows();
+        let total: usize = rows.iter().map(|(_, count)| *count).sum();
+        if flat.len() != total {
+            return None;
+        }
+        let internal: std::collections::HashSet<ConstraintId> =
+            self.arc_internal_constraints.values().copied().collect();
+
+        let mut out = Vec::with_capacity(rows.len());
+        let mut internal_max = 0.0_f64;
+        let mut offset = 0_usize;
+        for (cid, count) in rows {
+            let slice = flat.get(offset..offset.saturating_add(*count))?;
+            if slice.len() != *count {
+                return None;
+            }
+            offset += *count;
+            let max_abs = max_abs_residual(slice);
+            let is_internal = internal.contains(cid);
+            if is_internal && (max_abs.is_nan() || max_abs > internal_max) {
+                internal_max = max_abs;
+            }
+            out.push(ConstraintResidual {
+                constraint: *cid,
+                max_abs_residual: max_abs,
+                internal: is_internal,
+            });
+        }
+        Some((out, internal_max))
     }
 
     /// Whether a constraint was created by the kernel rather than the caller.
@@ -550,7 +751,11 @@ impl GcsSystem {
     ///
     /// Order follows the constraint arena's slot order, which is stable for a
     /// given sequence of add/remove calls.
-    fn constraint_residuals(&self) -> (Vec<ConstraintResidual>, f64) {
+    ///
+    /// Fresh evaluation, never shared: the PERF-S06 tests use this as the
+    /// independent oracle the shared diagnostics path is compared against.
+    #[must_use]
+    pub fn constraint_residuals(&self) -> (Vec<ConstraintResidual>, f64) {
         let snap = self.build_snapshot();
         let internal: std::collections::HashSet<ConstraintId> =
             self.arc_internal_constraints.values().copied().collect();
@@ -597,9 +802,19 @@ impl GcsSystem {
             };
         }
 
-        let params = self.extract_params();
         let snap = self.build_snapshot();
-        let mut jac = vec![0.0; m * n];
+        let jac = self.jacobian_for_snapshot(&snap, m, n);
+        dof::analyze(&jac, m, n)
+    }
+
+    /// Row-major Jacobian at the entities held by `snap`.
+    ///
+    /// Shared by the fresh [`dof`](Self::dof) path and the PERF-S06 fused
+    /// diagnostics path so both factorize the same matrix. Neither path
+    /// reuses a factorization: the caller factorizes the returned matrix at
+    /// the state it was evaluated at.
+    fn jacobian_for_snapshot(&self, snap: &EntitySnapshot, m: usize, n: usize) -> Vec<f64> {
+        let mut jac = vec![0.0; m.saturating_mul(n)];
         let mut row = 0;
         {
             let mut jw = JacobianWriter {
@@ -608,13 +823,26 @@ impl GcsSystem {
                 param_index: &self.param_index,
             };
             for (_, entry) in self.constraints.iter() {
-                eval_jacobian(&entry.constraint, &snap, &mut jw, row);
+                eval_jacobian(&entry.constraint, snap, &mut jw, row);
                 row += residual_count(&entry.constraint);
             }
         }
-        let _ = params; // params were needed to build snapshot
+        jac
+    }
 
-        dof::analyze(&jac, m, n)
+    /// Largest absolute residual over all equations at the current state.
+    ///
+    /// Same value as folding [`constraint_residuals`](Self::constraint_residuals)'s
+    /// report (max over the union, NaN-propagating both ways), without
+    /// building the per-constraint report. Used for `published_max_residual`
+    /// after a rollback, where only the fold max is reported.
+    fn current_max_residual(&self) -> f64 {
+        let snap = self.build_snapshot();
+        let mut residuals = Vec::new();
+        for (_, entry) in self.constraints.iter() {
+            eval_residuals(&entry.constraint, &snap, &mut residuals);
+        }
+        max_abs_residual(&residuals)
     }
 
     /// Iterate over all points.
@@ -633,7 +861,10 @@ impl GcsSystem {
     }
 
     /// Rebuild parameter map if dirty.
-    fn rebuild_if_dirty(&mut self) {
+    ///
+    /// Visible within the crate for the PERF-S06 oracle tests, which must snapshot
+    /// pre-solve parameters in the same rebuilt state production measures.
+    pub fn rebuild_if_dirty(&mut self) {
         if !self.dirty {
             return;
         }
@@ -661,7 +892,11 @@ impl GcsSystem {
     }
 
     /// Extract parameter values from entities.
-    fn extract_params(&self) -> Vec<f64> {
+    ///
+    /// Visible within the crate for the PERF-S06 oracle tests, which snapshot geometry
+    /// through the same path the rollback uses.
+    #[must_use]
+    pub fn extract_params(&self) -> Vec<f64> {
         self.param_map
             .iter()
             .map(|pr| match pr {
@@ -673,7 +908,11 @@ impl GcsSystem {
     }
 
     /// Write parameter values back to entities.
-    fn write_params(&mut self, params: &[f64]) {
+    ///
+    /// Visible within the crate for the PERF-S06 oracle tests, which roll back through
+    /// the same path production uses (the independence under test is the
+    /// fresh residual/Jacobian evaluation, not the param write).
+    pub fn write_params(&mut self, params: &[f64]) {
         for (i, pr) in self.param_map.iter().enumerate() {
             match pr {
                 ParamRef::PointX(id) => {
@@ -873,7 +1112,7 @@ impl GcsSystem {
 }
 
 /// Largest per-constraint residual in a report, propagating NaN.
-fn fold_max_residual(residuals: &[ConstraintResidual]) -> f64 {
+pub fn fold_max_residual(residuals: &[ConstraintResidual]) -> f64 {
     let mut max = 0.0_f64;
     for r in residuals {
         if r.max_abs_residual.is_nan() {
@@ -891,7 +1130,7 @@ fn fold_max_residual(residuals: &[ConstraintResidual]) -> f64 {
 /// `f64::max` returns the non-NaN operand, which would silently turn a poisoned
 /// residual (from a stale handle) into a clean zero. Diagnostics must not lie
 /// about that, so NaN short-circuits.
-fn max_abs_residual(values: &[f64]) -> f64 {
+pub fn max_abs_residual(values: &[f64]) -> f64 {
     let mut max = 0.0_f64;
     for &v in values {
         let a = v.abs();
