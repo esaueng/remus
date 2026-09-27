@@ -65,6 +65,11 @@ EXPORT_RE = re.compile(
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
 BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
+CFG_IO_RE = re.compile(r'^\s*#\[cfg\([^]]*\bfeature\s*=\s*"io"', re.DOTALL | re.MULTILINE)
+CFG_NOT_IO_RE = re.compile(
+    r'^\s*#\[cfg\(\s*not\s*\(\s*feature\s*=\s*"io"\s*\)\s*\)\s*\]$',
+    re.MULTILINE,
+)
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
 SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
 SOLID_HANDLE = "Result<u32, JsError>"
@@ -75,6 +80,8 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
     exports: list[dict] = []
     for path in sorted(root.rglob("*.rs")):
         text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        depths, _ = rust_lines_with_depth(lines)
         rel = path.relative_to(root).as_posix()
         for match in EXPORT_RE.finditer(text):
             js = match.group("js")
@@ -86,7 +93,8 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
                 if "&mut self" in params
                 else ("imm" if "&self" in params else "static")
             )
-            gate = "io" if rel.startswith("bindings/io") else "shipped"
+            fn_index = text.count("\n", 0, match.start("rust"))
+            gate = export_gate(lines, depths, fn_index, rel)
             exports.append(
                 {
                     "js": js,
@@ -100,23 +108,49 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
     return exports
 
 
-def own_attr_block(lines: list[str], index: int) -> str:
-    """The contiguous attribute/comment block directly above a `pub fn`.
+def own_attr_block(lines: list[str], index: int, depths: list[int]) -> str:
+    """Attributes and comments directly above an item, including multiline attrs."""
+    block: list[str] = []
+    cursor = index - 1
+    while cursor >= 0 and depths[cursor] == depths[index]:
+        stripped = lines[cursor].strip()
+        if re.match(r"^(?:(?:pub(?:\([^)]*\))?)\s+)?(?:fn|async|impl|mod|const|type|use|struct|enum)\b", stripped) or stripped.startswith("}") or stripped.endswith(";"):
+            break
+        block.append(lines[cursor])
+        cursor -= 1
+    return "\n".join(reversed(block))
 
-    Walks upward over `#[...]`, `///`, `//`, and blank lines only, so an
-    `impl`-level `#[wasm_bindgen]` header further up is never mistaken
-    for this function's own attribute.
-    """
+
+def export_gate(lines: list[str], depths: list[int], index: int, rel: str) -> str:
+    """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
+    if rel.startswith("bindings/io"):
+        return "io"
+    attributes = [own_attr_block(lines, index, depths)]
+    for ancestor in range(index):
+        if not re.match(r"^\s*(?:pub\s+)?(?:impl|mod)\b.*\{", lines[ancestor]):
+            continue
+        if depths[ancestor] >= depths[index]:
+            continue
+        if all(depths[child] > depths[ancestor] for child in range(ancestor + 1, index + 1)):
+            attributes.append(own_attr_block(lines, ancestor, depths))
+    for block in attributes:
+        if CFG_IO_RE.search(CFG_NOT_IO_RE.sub("", block)):
+            return "io"
+    return "shipped"
+
+
+def arm_gate(lines: list[str], index: int) -> str:
+    """Availability of one batch match arm from its adjacent cfg attributes."""
     block: list[str] = []
     cursor = index - 1
     while cursor >= 0:
         stripped = lines[cursor].strip()
-        if stripped.startswith("#[") or stripped.startswith("///") or stripped.startswith("//") or stripped == "":
-            block.append(lines[cursor])
-            cursor -= 1
-        else:
+        if not (stripped.startswith("#[") or stripped.startswith("//") or not stripped):
             break
-    return "\n".join(reversed(block))
+        block.append(lines[cursor])
+        cursor -= 1
+    attrs = "\n".join(block)
+    return "io" if CFG_IO_RE.search(CFG_NOT_IO_RE.sub("", attrs)) else "shipped"
 
 
 def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
@@ -235,7 +269,7 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
             fn_name = match.group(1)
             if (fn_name, rel) in known_exports:
                 continue
-            block = own_attr_block(lines, index)
+            block = own_attr_block(lines, index, depths)
             if "wasm_bindgen" not in block and index not in exported_impl:
                 continue
             if "constructor" in block:
@@ -255,8 +289,8 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
     return problems
 
 
-def batch_ops(root: Path = WASM_SRC) -> set[str]:
-    """Top-level `match op` arms in `dispatch_op`, excluding other matches."""
+def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
+    """Top-level `dispatch_op` arms and their shipped/optional-I/O gates."""
     text = (root / "bindings" / "batch.rs").read_text(encoding="utf-8")
     lines = text.splitlines()
     depths, code_lines = rust_lines_with_depth(lines)
@@ -293,12 +327,15 @@ def batch_ops(root: Path = WASM_SRC) -> set[str]:
         (index for index in range(match_line + 1, method_end) if depths[index] < arm_depth),
         method_end,
     )
-    return {
-        match.group("op")
-        for index in range(match_line + 1, match_end)
-        if depths[index] == arm_depth
-        and (match := BATCH_OP_RE.match(code_lines[index]))
-    }
+    result: dict[str, str] = {}
+    for index in range(match_line + 1, match_end):
+        if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
+            continue
+        op = match.group("op")
+        gate = arm_gate(lines, index)
+        if op not in result or gate == "shipped":
+            result[op] = gate
+    return result
 
 
 def witness_exists(name: str, root: Path = WASM_SRC) -> bool:
@@ -329,7 +366,7 @@ def load_baseline(path: Path = BASELINE) -> dict:
 def verify(
     exports: list[dict],
     baseline: dict,
-    ops: set[str],
+    ops: dict[str, str],
     root: Path = WASM_SRC,
 ) -> tuple[list[str], list[str], dict]:
     """Check discovery against the baseline.
@@ -423,6 +460,12 @@ def verify(
                     violations.append(
                         f"VIOLATION: {js} requires batch dispatch {op!r}, "
                         f"but bindings/batch.rs has no such arm"
+                    )
+                elif ops[op] != by_js_source.get(js, {}).get("gate"):
+                    violations.append(
+                        f"VIOLATION: {js} requires batch dispatch {op!r} "
+                        f"under {by_js_source.get(js, {}).get('gate')!r}, "
+                        f"but its arm is only available under {ops[op]!r}"
                     )
             for witness in row.get("witnesses", []):
                 if not witness_exists(witness, root):
