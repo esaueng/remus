@@ -4081,6 +4081,39 @@ fn unification_collapses_wire(
     Ok(false)
 }
 
+/// A section spline may be a fitted copy of a straight boundary, or the
+/// curved side of a lens. Positive NURBS weights make the curve a convex
+/// combination of its control points, so this certifies that the entire
+/// carrier lies within the fitted-seam band of the chord before collapse.
+fn nurbs_is_line_like(
+    topo: &Topology,
+    line: &remus_topology::edge::Edge,
+    spline: &remus_topology::edge::Edge,
+) -> Result<bool, AlgoError> {
+    // Existing fitted seam copies can wobble by ~5e-5. A 1e-4 band retains
+    // those merges while rejecting a section that leaves the chord.
+    const FIT_BAND: f64 = 1e-4;
+    let EdgeCurve::NurbsCurve(curve) = spline.curve() else {
+        return Ok(false);
+    };
+    let start = topo.vertex(line.start())?.point();
+    let end = topo.vertex(line.end())?.point();
+    let delta = end - start;
+    let length_sq = delta.dot(delta);
+    let distance = |point: Point3| {
+        if length_sq <= MERGE_TOL * MERGE_TOL {
+            (point - start).length()
+        } else {
+            let t = ((point - start).dot(delta) / length_sq).clamp(0.0, 1.0);
+            (point - (start + delta * t)).length()
+        }
+    };
+    Ok(curve.control_points().iter().all(|&point| {
+        let d = distance(point);
+        d.is_finite() && d <= FIT_BAND
+    }))
+}
+
 /// Merge duplicate edges across selected faces by quantized endpoint position.
 ///
 /// For each group of edges with the same quantized start/end positions,
@@ -4291,10 +4324,10 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
         // patch `[chord, arc]`) would degenerate to a doubled edge — deleted
         // by the spur step — while the neighbor face keeps the wrong curve.
         // Refusing that pair preserves both curves. Every other cross-kind
-        // pair keeps the historical merge: NURBS-involving pairs are fitted
-        // copies (their gaps are fit-wobble scale, e.g. chord-discretized
-        // seams that must unify for closure), and pairs in distinct wires
-        // cannot degenerate a face at all.
+        // pair keeps the historical merge. A line/NURBS pair may also bound
+        // a real lens; preserve it unless its control net certifies a
+        // line-like fitted carrier.
+        // Line-like fitted seams still unify for closure.
         let leftovers: Vec<EdgeId> = members
             .into_iter()
             .filter(|id| !replacements.contains_key(id))
@@ -4317,10 +4350,27 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                         EdgeCurve::Line
                     )
                 );
-                if mixed_line_conic
+                let mixed_line_nurbs = matches!(
+                    (canon_edge.curve(), dup_edge.curve()),
+                    (EdgeCurve::Line, EdgeCurve::NurbsCurve(_))
+                        | (EdgeCurve::NurbsCurve(_), EdgeCurve::Line)
+                );
+                if (mixed_line_conic || mixed_line_nurbs)
                     && unification_collapses_wire(topo, face_ids, &replacements, canonical, dup)?
                 {
-                    continue;
+                    let line_like_nurbs = if mixed_line_nurbs {
+                        let (line, spline) = if matches!(canon_edge.curve(), EdgeCurve::Line) {
+                            (canon_edge, dup_edge)
+                        } else {
+                            (dup_edge, canon_edge)
+                        };
+                        nurbs_is_line_like(topo, line, spline)?
+                    } else {
+                        false
+                    };
+                    if mixed_line_conic || !line_like_nurbs {
+                        continue;
+                    }
                 }
                 let needs_flip = merge_needs_flip(topo, canonical, dup, tol)?;
                 replacements.insert(dup, (canonical, needs_flip));
@@ -5891,6 +5941,70 @@ mod tests {
             .unwrap();
         assert_ne!(lens.edges()[0].edge(), lens.edges()[1].edge());
         assert_eq!(lens.edges()[1].edge(), canonical_arc);
+    }
+
+    #[test]
+    fn duplicate_edge_merge_distinguishes_curved_and_line_like_nurbs_lenses() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::{edge::Edge, face::Face, vertex::Vertex, wire::Wire};
+
+        for (bow, spline_first, expect_distinct) in [
+            (1.0, false, true),
+            (1.0, true, true),
+            (5e-5, false, false),
+            (5e-5, true, false),
+        ] {
+            let mut topo = Topology::new();
+            let a = Point3::new(-1.0, 0.0, 0.0);
+            let b = Point3::new(1.0, 0.0, 0.0);
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let curve = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![a, Point3::new(0.0, bow, 0.0), b],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let mut spline = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+            spline.set_trim(Some((0.0, 1.0)));
+            let line = Edge::new(va, vb, EdgeCurve::Line);
+            let (line_id, spline_id) = if spline_first {
+                let spline_id = topo.add_edge(spline);
+                (topo.add_edge(line), spline_id)
+            } else {
+                let line_id = topo.add_edge(line);
+                (line_id, topo.add_edge(spline))
+            };
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(line_id, true),
+                        OrientedEdge::new(spline_id, false),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            );
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let mut faces = [face];
+            merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+            let result = topo
+                .wire(topo.face(faces[0]).unwrap().outer_wire())
+                .unwrap();
+            assert_eq!(
+                result.edges()[0].edge() != result.edges()[1].edge(),
+                expect_distinct,
+                "bow={bow}, spline_first={spline_first}"
+            );
+        }
     }
 
     #[test]
