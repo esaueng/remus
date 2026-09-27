@@ -153,15 +153,19 @@ def attribute_gate(attributes: str) -> str:
     return combine_gates(*gates)
 
 
-def inner_file_attrs(code_lines: list[str]) -> str:
-    """Collect file-level inner attributes, including multiline cfgs."""
+def inner_file_attrs(code_lines: list[str], depths: list[int]) -> str:
+    """Collect leading file-level inner attributes, including multiline cfgs."""
     attrs: list[str] = []
     collecting = False
-    for line in code_lines:
+    for index, line in enumerate(code_lines):
+        if depths[index] != 0:
+            break
         stripped = line.strip()
         if stripped.startswith("#!["):
             collecting = True
         elif not collecting:
+            if stripped:
+                break
             continue
         attrs.append(line.replace("#![", "#[", 1))
         if stripped.endswith("]"):
@@ -194,7 +198,7 @@ def file_gate(root: Path, rel: str) -> str:
                     return "conditional"
             lines = parent_text.splitlines()
             depths, code_lines = rust_lines_with_depth(lines)
-            gates.append(attribute_gate(inner_file_attrs(code_lines)))
+            gates.append(attribute_gate(inner_file_attrs(code_lines, depths)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
             module_item = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\b")
             declared = False
@@ -214,8 +218,8 @@ def file_gate(root: Path, rel: str) -> str:
         parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
     if parent.is_file():
         lines = parent.read_text(encoding="utf-8").splitlines()
-        _, code_lines = rust_lines_with_depth(lines)
-        gates.append(attribute_gate(inner_file_attrs(code_lines)))
+        depths, code_lines = rust_lines_with_depth(lines)
+        gates.append(attribute_gate(inner_file_attrs(code_lines, depths)))
     return combine_gates(*gates)
 
 

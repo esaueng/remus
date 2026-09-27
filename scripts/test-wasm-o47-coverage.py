@@ -1006,6 +1006,22 @@ class O47CoverageFixtures(unittest.TestCase):
         exports = gate.discover_from_files(directory / "crates/wasm/src")
         self.assertEqual(next(e for e in exports if e["js"] == "fuseDetailed")["gate"], "shipped")
 
+    def test_nested_inner_cfg_does_not_gate_parent_file(self):
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                + 'mod test_support {\n    #![cfg(feature = "io")]\n}\n',
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        exports = gate.discover_from_files(directory / "crates/wasm/src")
+        self.assertEqual(next(e for e in exports if e["js"] == "fuse")["gate"], "shipped")
+        violations, _, _, _ = run_gate(
+            directory, [uncovered_row("fuse", "fuse", "bindings/booleans.rs")]
+        )
+        self.assertFalse(violations, violations)
+
     def test_non_solid_forced_into_solid_schema_fails(self):
         for return_type in ("Result<Vec<u32>, JsError>", "Result<String, JsError>", "Result<(), JsError>"):
             with self.subTest(return_type=return_type):
