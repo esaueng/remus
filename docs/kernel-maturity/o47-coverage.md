@@ -27,12 +27,14 @@ For `covered` rows the gate additionally enforces:
 
 * the twin returns `Result<tsify::Ts<SolidOperationDetailedResult>, JsError>`
   (the solid envelope);
+* the twin is available under the same shipped/optional-I/O feature gate
+  as the legacy export;
 * the legacy method itself returns `Result<u32, JsError>` (one solid
   handle) -- a `Vec<u32>`, `()`, or JSON-string method can never be `covered` with the solid
   envelope. Non-solid and lifecycle methods need their own schema, never
   a forced solid twin;
 * every `batch_ops` entry has a top-level `match op` arm in
-  `bindings/batch.rs`'s `dispatch_op` method.
+  `bindings/batch.rs`'s `dispatch_op` method under the same feature gate.
   Boolean twins (`fuseDetailed`, `cutDetailed`, `intersectDetailed`)
   intentionally have no same-named batch arm: their contract is code
   parity with the legacy `fuse`/`cut`/`intersect` batch ops, and the
