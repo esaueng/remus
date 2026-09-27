@@ -48,7 +48,7 @@ unknown syntax) from `STALE` (the baseline names an export the source no
 longer contains: a removed export or an obsolete exception). Both fail
 the gate; both are fixed in the same PR that changes the source.
 
-Unknown source syntax -- a `pub fn` or `pub async fn` carrying a `wasm_bindgen` attribute
+Unknown source syntax -- a `pub fn` or `pub async fn` inside a `#[wasm_bindgen] impl BrepKernel` block or carrying its own `wasm_bindgen` attribute
 that is neither a `js_name` export, a `constructor`, nor a bare `getter`
 -- fails loudly. It must never silently disappear from discovery. Known
 non-inventory shapes are `constructor` (session creation) and bare
