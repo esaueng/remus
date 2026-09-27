@@ -247,6 +247,8 @@ jobs:
           check "Deterministic hashing ratchet" ./scripts/check-det-hash.sh
           check "Wildcard-arm ratchet" ./scripts/check-wildcard-arms.sh
           check "Wildcard ratchet tests" python3 scripts/test-wildcard-arms.py
+          check "O4.7 twin coverage" python3 scripts/check-wasm-o47-coverage.py
+          check "O4.7 coverage fixtures" python3 scripts/test-wasm-o47-coverage.py
           check "Edge-domain authority" ./scripts/check-edge-domain-authority.py
           check "Documentation paths" ./scripts/check-doc-paths.sh
           check "Documentation module map" ./scripts/check-doc-module-map.py
