@@ -66,7 +66,7 @@ EXPORT_RE = re.compile(
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
 BATCH_OP_RE = re.compile(r'^\s*"(?P<op>[A-Za-z0-9_]+)"\s*=>')
-CFG_ATTR_RE = re.compile(r'#\[\s*(cfg|cfg_attr)\s*\(([^]]*)\)\s*\]', re.MULTILINE)
+CFG_PREFIX_RE = re.compile(r'#\s*\[\s*(cfg|cfg_attr)\s*\(', re.MULTILINE)
 WITNESS_RE_TEMPLATE = r"fn\s+{name}\s*\("
 SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
 SOLID_HANDLE = "Result<u32, JsError>"
@@ -157,8 +157,24 @@ def attribute_gate(attributes: str) -> str:
     """Conservatively classify cfgs for the shipped no-feature build."""
     gates: list[str] = []
     _, code_lines = rust_lines_with_depth(attributes.splitlines())
-    for match in CFG_ATTR_RE.finditer("\n".join(code_lines)):
-        expr = re.sub(r"\s+", "", match.group(2))
+    source = "\n".join(code_lines)
+    masked = mask_rust_literals(source)
+    for match in CFG_PREFIX_RE.finditer(masked):
+        cursor = match.end()
+        depth = 1
+        while cursor < len(masked) and depth:
+            if masked[cursor] == "(":
+                depth += 1
+            elif masked[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        end = cursor - 1
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if depth or cursor >= len(masked) or masked[cursor] != "]":
+            gates.append("conditional")
+            continue
+        expr = re.sub(r"\s+", "", source[match.end() : end])
         if match.group(1) == "cfg" and expr == 'feature="io"':
             gates.append("io")
         elif match.group(1) == "cfg" and expr == 'not(feature="io")':

@@ -426,6 +426,46 @@ class O47CoverageFixtures(unittest.TestCase):
                     violations,
                 )
 
+    def test_cfg_attr_with_bracketed_doc_cannot_certify_twin(self):
+        attr = '#[cfg_attr(not(feature = "io"), cfg(any()), doc = "see [guide]")]'
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
+            '    #[wasm_bindgen(js_name',
+            f'    {attr}\n    #[wasm_bindgen(js_name',
+        )
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse") + twin,
+                "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        exports = gate.discover_from_files(directory / "crates/wasm/src")
+        self.assertEqual(
+            next(e for e in exports if e["js"] == "fuseDetailed")["gate"],
+            "conditional",
+        )
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "bindings/booleans.rs", "gate": "conditional",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("only available under 'conditional'" in item for item in violations),
+            violations,
+        )
+        self.assertEqual(
+            gate.attribute_gate('#[doc = "see #[cfg(feature = \\"io\\")] guide"]'),
+            "shipped",
+        )
+        self.assertEqual(gate.attribute_gate('# [cfg(feature = "io")]'), "io")
+
     def test_block_comment_cannot_hide_twin_cfg(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
             '    #[wasm_bindgen(js_name',
