@@ -163,7 +163,11 @@ def file_gate(root: Path, rel: str) -> str:
     gates: list[str] = []
     for index, name in enumerate(parts):
         if parent.is_file():
-            lines = parent.read_text(encoding="utf-8").splitlines()
+            parent_text = parent.read_text(encoding="utf-8")
+            for override in re.finditer(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', parent_text):
+                if (parent.parent / override.group(1)).resolve() == (root / rel).resolve():
+                    return "conditional"
+            lines = parent_text.splitlines()
             depths, _ = rust_lines_with_depth(lines)
             gates.append(attribute_gate(inner_file_attrs(lines)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
