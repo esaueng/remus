@@ -72,15 +72,29 @@ SOLID_ENVELOPE = "Result<tsify::Ts<SolidOperationDetailedResult>, JsError>"
 SOLID_HANDLE = "Result<u32, JsError>"
 
 
-def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
-    """Parse exports from the working tree (used by the gate and tests)."""
-    exports: list[dict] = []
-    for path in sorted(root.rglob("*.rs")):
+def parsed_source(
+    path: Path, cache: dict[Path, tuple[str, list[str], list[int], list[str]]]
+) -> tuple[str, list[str], list[int], list[str]]:
+    if path not in cache:
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
         depths, code_lines = rust_lines_with_depth(lines)
+        cache[path] = text, lines, depths, code_lines
+    return cache[path]
+
+
+def discover_from_files(
+    root: Path = WASM_SRC,
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] | None = None,
+) -> list[dict]:
+    """Parse exports from the working tree (used by the gate and tests)."""
+    if source_cache is None:
+        source_cache = {}
+    exports: list[dict] = []
+    for path in sorted(root.rglob("*.rs")):
+        text, _, depths, code_lines = parsed_source(path, source_cache)
         rel = path.relative_to(root).as_posix()
-        parent_gate = file_gate(root, rel)
+        parent_gate = file_gate(root, rel, source_cache)
         for match in EXPORT_RE.finditer(text):
             attr_index = text.count("\n", 0, match.start())
             if "#[wasm_bindgen" not in code_lines[attr_index]:
@@ -174,8 +188,14 @@ def inner_file_attrs(code_lines: list[str], depths: list[int]) -> str:
     return "\n".join(attrs)
 
 
-def file_gate(root: Path, rel: str) -> str:
+def file_gate(
+    root: Path,
+    rel: str,
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] | None = None,
+) -> str:
     """Follow out-of-line module declarations and crate/file attributes."""
+    if source_cache is None:
+        source_cache = {}
     parts = list(Path(rel).with_suffix("").parts)
     if parts[-1] == "mod":
         parts.pop()
@@ -183,7 +203,7 @@ def file_gate(root: Path, rel: str) -> str:
     gates: list[str] = []
     for index, name in enumerate(parts):
         if parent.is_file() and parent != root / rel:
-            parent_text = parent.read_text(encoding="utf-8")
+            parent_text, _, depths, code_lines = parsed_source(parent, source_cache)
             for override in re.finditer(r'#\[\s*path\s*=\s*([^]]+)\]', parent_text):
                 literal = re.fullmatch(
                     r'(?:r(?P<hash>#{0,16})"(?P<raw>.*?)"(?P=hash)|"(?P<plain>[^"]+)")',
@@ -197,8 +217,6 @@ def file_gate(root: Path, rel: str) -> str:
                     target = literal.group("plain")
                 if (parent.parent / target).resolve() == (root / rel).resolve():
                     return "conditional"
-            lines = parent_text.splitlines()
-            depths, code_lines = rust_lines_with_depth(lines)
             gates.append(attribute_gate(inner_file_attrs(code_lines, depths)))
             declaration = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\s*;")
             module_item = re.compile(rf"^\s*(?:(?:pub(?:\([^)]*\))?)\s+)?mod\s+{re.escape(name)}\b")
@@ -218,8 +236,7 @@ def file_gate(root: Path, rel: str) -> str:
         prefix = root.joinpath(*parts[:index + 1])
         parent = prefix / "mod.rs" if (prefix / "mod.rs").is_file() else prefix.with_suffix(".rs")
     if parent.is_file():
-        lines = parent.read_text(encoding="utf-8").splitlines()
-        depths, code_lines = rust_lines_with_depth(lines)
+        _, _, depths, code_lines = parsed_source(parent, source_cache)
         gates.append(attribute_gate(inner_file_attrs(code_lines, depths)))
     return combine_gates(*gates)
 
@@ -456,7 +473,11 @@ def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
     return result
 
 
-def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
+def find_unknown_syntax(
+    root: Path = WASM_SRC,
+    exports: list[dict] | None = None,
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] | None = None,
+) -> list[str]:
     """Find `pub fn` items under `wasm_bindgen` that match no known shape.
 
     Known shapes: a `js_name` export (captured by discovery), a
@@ -467,16 +488,19 @@ def find_unknown_syntax(root: Path = WASM_SRC) -> list[str]:
     `js_name` (including a misspelled `js_nam`) -- must fail the gate.
     Unknown items must never silently disappear from discovery.
     """
+    if source_cache is None:
+        source_cache = {}
     problems: list[str] = []
-    known_exports = {(e["rust"], e["file"]) for e in discover_from_files(root)}
+    if exports is None:
+        exports = discover_from_files(root, source_cache)
+    known_exports = {(e["rust"], e["file"]) for e in exports}
     for path in sorted(root.rglob("*.rs")):
         # Test companions never ship exports; production `_impl` bodies
         # live in plain `impl` blocks without `wasm_bindgen`.
         if path.name == "tests.rs" or "/tests/" in path.as_posix():
             continue
-        lines = path.read_text(encoding="utf-8").splitlines()
+        _, _, depths, code_lines = parsed_source(path, source_cache)
         rel = path.relative_to(root).as_posix()
-        depths, code_lines = rust_lines_with_depth(lines)
         exported_impl = wasm_impl_lines(code_lines, depths)
         for index, line in enumerate(code_lines):
             match = re.match(r"\s*pub\s+(?:(?:async|unsafe)\s+)*fn\s+(\w+)", line)
@@ -736,12 +760,13 @@ def verify(
 
 
 def main() -> int:
+    source_cache: dict[Path, tuple[str, list[str], list[int], list[str]]] = {}
     try:
-        exports = discover_from_files()
+        exports = discover_from_files(source_cache=source_cache)
     except OSError as error:
         print(f"check-wasm-o47-coverage: cannot read source: {error}")
         return 2
-    unknown = find_unknown_syntax()
+    unknown = find_unknown_syntax(exports=exports, source_cache=source_cache)
     try:
         baseline = load_baseline()
     except (OSError, ValueError) as error:

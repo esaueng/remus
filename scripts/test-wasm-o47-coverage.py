@@ -18,6 +18,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 GATE_PATH = Path(__file__).with_name("check-wasm-o47-coverage.py")
 _SPEC = importlib.util.spec_from_file_location("o47_gate", GATE_PATH)
@@ -134,8 +135,9 @@ def covered_row(
 
 def run_gate(directory: Path, baseline_rows: list[dict]):
     root = directory / "crates" / "wasm" / "src"
-    exports = gate.discover_from_files(root)
-    unknown = gate.find_unknown_syntax(root)
+    source_cache = {}
+    exports = gate.discover_from_files(root, source_cache)
+    unknown = gate.find_unknown_syntax(root, exports, source_cache)
     baseline = gate.load_baseline(write_baseline(directory, baseline_rows))
     ops = gate.batch_ops(root)
     violations, stale, counts = gate.verify(exports, baseline, ops, root)
@@ -143,6 +145,16 @@ def run_gate(directory: Path, baseline_rows: list[dict]):
 
 
 class O47CoverageFixtures(unittest.TestCase):
+    def test_unknown_syntax_reuses_discovery(self):
+        directory = make_tree(
+            {"bindings/operations.rs": MUT_EXPORT.format(js="doThing", rust="do_thing")}
+        )
+        root = directory / "crates/wasm/src"
+        source_cache = {}
+        exports = gate.discover_from_files(root, source_cache)
+        with mock.patch.object(gate, "discover_from_files", side_effect=AssertionError):
+            self.assertEqual(gate.find_unknown_syntax(root, exports, source_cache), [])
+
     def test_clean_tree_passes(self):
         directory = make_tree(
             {
