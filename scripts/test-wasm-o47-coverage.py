@@ -648,6 +648,7 @@ class O47CoverageFixtures(unittest.TestCase):
             ("parent", '#[cfg(feature = "io")]\npub mod optional;\n', twin),
             ("file", "pub mod optional;\n", '#![cfg(feature = "io")]\n' + twin),
             ("multiline_file", "pub mod optional;\n", '#![cfg(\n    feature = "io"\n)]\n' + twin),
+            ("commented_bracket", "pub mod optional;\n", '#![cfg(\n    feature = "io" // ]\n)]\n' + twin),
         ):
             with self.subTest(placement=placement):
                 directory = make_tree(
