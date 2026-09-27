@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -354,16 +355,63 @@ def rust_lines_with_depth(lines: list[str]) -> tuple[list[int], list[str]]:
     return depths, code_lines
 
 
+@lru_cache(maxsize=64)
+def mask_rust_literals(source: str) -> str:
+    """Mask literal tokens while preserving offsets and line breaks."""
+    masked = list(source)
+
+    def hide(start: int, end: int) -> None:
+        for offset in range(start, end):
+            if masked[offset] != "\n":
+                masked[offset] = " "
+
+    raw_pattern = re.compile(r'(?:b)?r(#+)?"')
+    quote_pattern = re.compile(r'(?:b|c)?"')
+    char_pattern = re.compile(r"(?:b)?'(?:\\u\{[^}]+\}|\\.|[^'\\])'")
+    cursor = 0
+    while cursor < len(source):
+        raw = raw_pattern.match(source, cursor)
+        if raw:
+            closing = '"' + (raw.group(1) or "")
+            end = source.find(closing, cursor + len(raw.group()))
+            end = len(source) if end < 0 else end + len(closing)
+            hide(cursor, end)
+            cursor = end
+            continue
+        quote = quote_pattern.match(source, cursor)
+        if quote:
+            start = cursor
+            cursor += len(quote.group())
+            while cursor < len(source):
+                if source[cursor] == "\\":
+                    cursor += 2
+                elif source[cursor] == '"':
+                    cursor += 1
+                    break
+                else:
+                    cursor += 1
+            hide(start, min(cursor, len(source)))
+            continue
+        char = char_pattern.match(source, cursor)
+        if char:
+            end = cursor + len(char.group())
+            hide(cursor, end)
+            cursor = end
+            continue
+        cursor += 1
+    return "".join(masked)
+
+
 def macro_body_contains(code_lines: list[str], index: int) -> bool:
     """Whether an export is textually inside any macro_rules token tree."""
-    source = "\n".join(code_lines)
+    source = mask_rust_literals("\n".join(code_lines))
     line = code_lines[index]
     method = re.search(r"\bpub\s+(?:(?:async|unsafe)\s+)*fn\b", line)
     target = sum(len(item) + 1 for item in code_lines[:index])
     target += method.start() if method else 0
     closers = {"{": "}", "(": ")", "[": "]"}
     for macro in re.finditer(
-        r"^[ \t]*macro_rules\s*!\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*\b",
+        r"^[ \t]*macro_rules\s*!\s*(?:r#)?[^\s{(\[]+(?=\s*[{(\[])",
         source,
         re.MULTILINE,
     ):
@@ -375,27 +423,6 @@ def macro_body_contains(code_lines: list[str], index: int) -> bool:
         opener = cursor
         stack: list[str] = []
         while cursor < len(source):
-            raw = re.match(r'r(#+)?"', source[cursor:])
-            if raw:
-                closing = '"' + (raw.group(1) or "")
-                end = source.find(closing, cursor + len(raw.group()))
-                cursor = len(source) if end < 0 else end + len(closing)
-                continue
-            if source[cursor] == '"':
-                cursor += 1
-                while cursor < len(source):
-                    if source[cursor] == "\\":
-                        cursor += 2
-                    elif source[cursor] == '"':
-                        cursor += 1
-                        break
-                    else:
-                        cursor += 1
-                continue
-            char = re.match(r"'(?:\\.|[^'\\])'", source[cursor:])
-            if char:
-                cursor += len(char.group())
-                continue
             token = source[cursor]
             if token in closers:
                 stack.append(closers[token])
