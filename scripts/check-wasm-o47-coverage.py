@@ -91,7 +91,7 @@ def discover_from_files(root: Path = WASM_SRC) -> list[dict]:
                 else ("imm" if "&self" in params else "static")
             )
             fn_index = text.count("\n", 0, match.start("rust"))
-            gate = export_gate(lines, depths, fn_index, rel, parent_gate)
+            gate = public_gate(export_gate(lines, depths, fn_index, rel, parent_gate))
             exports.append(
                 {
                     "js": js,
@@ -119,9 +119,15 @@ def own_attr_block(lines: list[str], index: int, depths: list[int]) -> str:
 
 
 def combine_gates(*gates: str) -> str:
-    if "conditional" in gates:
+    if "conditional" in gates or ("io" in gates and "no_io" in gates):
         return "conditional"
-    return "io" if "io" in gates else "shipped"
+    if "io" in gates:
+        return "io"
+    return "no_io" if "no_io" in gates else "shipped"
+
+
+def public_gate(gate: str) -> str:
+    return "shipped" if gate == "no_io" else gate
 
 
 def attribute_gate(attributes: str) -> str:
@@ -133,7 +139,7 @@ def attribute_gate(attributes: str) -> str:
         if match.group(1) == "cfg" and expr == 'feature="io"':
             gates.append("io")
         elif match.group(1) == "cfg" and expr == 'not(feature="io")':
-            gates.append("shipped")
+            gates.append("no_io")
         else:
             gates.append("conditional")
     return combine_gates(*gates)
@@ -442,7 +448,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
         if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
             continue
         op = match.group("op")
-        gate = combine_gates(dispatch_gate, arm_gate(code_lines, index))
+        gate = public_gate(combine_gates(dispatch_gate, arm_gate(code_lines, index)))
         if op not in result or gate == "shipped":
             result[op] = gate
     return result
