@@ -432,11 +432,34 @@ fn clipped_area(mut poly: Vec<(f64, f64)>, planes: &[(f64, f64, f64)]) -> f64 {
 /// r6 h6 cylinder cut by a 6 × 1 × 6.5 slab tilted 30° about x. The slab's
 /// faces meet the wall in ellipses.
 fn tilted_slab_cut(topo: &mut Topology) -> remus_topology::solid::SolidId {
+    tilted_slab_cut_placed(topo, 1.0, 0.0, [0.0, 0.0, 0.0])
+}
+
+/// [`tilted_slab_cut`] with the whole construction scaled by `scale`, the
+/// stock pre-rotated about its axis by `stock_rz` (an axisymmetric operand,
+/// so the solid is unchanged while the wall chart's seam — and with it the
+/// trim lattice phase — moves), and both operands rigidly translated by
+/// `shift`. Volume scales by `scale`³; rotation and translation hold it.
+fn tilted_slab_cut_placed(
+    topo: &mut Topology,
+    scale: f64,
+    stock_rz: f64,
+    shift: [f64; 3],
+) -> remus_topology::solid::SolidId {
     use std::f64::consts::FRAC_PI_6;
-    let stock = crate::primitives::make_cylinder(topo, 6.0, 6.0).unwrap();
-    let tool = crate::primitives::make_box(topo, 6.0, 1.0, 6.5).unwrap();
-    let placement = Mat4::translation(-4.0, -4.0, -4.0) * Mat4::rotation_x(FRAC_PI_6);
+    let stock = crate::primitives::make_cylinder(topo, 6.0 * scale, 6.0 * scale).unwrap();
+    if stock_rz != 0.0 {
+        crate::transform::transform_solid(topo, stock, &Mat4::rotation_z(stock_rz)).unwrap();
+    }
+    let tool = crate::primitives::make_box(topo, 6.0 * scale, 1.0 * scale, 6.5 * scale).unwrap();
+    let placement =
+        Mat4::translation(-4.0 * scale, -4.0 * scale, -4.0 * scale) * Mat4::rotation_x(FRAC_PI_6);
     crate::transform::transform_solid(topo, tool, &placement).unwrap();
+    if shift != [0.0, 0.0, 0.0] {
+        let rigid = Mat4::translation(shift[0], shift[1], shift[2]);
+        crate::transform::transform_solid(topo, stock, &rigid).unwrap();
+        crate::transform::transform_solid(topo, tool, &rigid).unwrap();
+    }
     crate::boolean::boolean(topo, crate::boolean::BooleanOp::Cut, stock, tool).unwrap()
 }
 
@@ -571,21 +594,54 @@ fn stepped_rim_wall_stays_within_the_chord_bound() {
 }
 
 /// Ready-repro (B69): with the densification capped to its budget, the
-/// tilted-slab wall still sags 2.2 × the deflection at 0.002 and 4.8 × at
-/// 0.0015, next to the slot's straight end generator (x = 2), where the
-/// capped rows leave the grid columns between the line and the trim unused
-/// and the CDT fans the line's endpoints to a column ~0.5 away. Volume is
-/// already within 1e-4 there. Exit: this passes.
+/// tilted-slab wall sagged 2.2 × the deflection at 0.002 and 4.8 × at
+/// 0.0015, next to the slot's straight end generator (x = 2). The capped
+/// rows (11 of 84 wanted at 0.002, 8 at 0.0015) left the lattice 7 × sparser
+/// along the rulings than around the wall, so the off-lattice ellipse-guard
+/// points fanned 4–6 columns wide in Delaunay's eyes and their chords cut
+/// the cylinder. Fusing the band's containment and clearance scans into one
+/// pass funds roughly twice the rows under the unchanged cap, restoring a
+/// near-isotropic lattice whose guard fans stay local. Volume was already
+/// within 1e-4 throughout. Exit: this passes.
 #[test]
-#[ignore = "open: B69 — budget-capped trim rows still sag past 2× deflection beside a line trim"]
 fn ellipse_trimmed_wall_stays_within_the_chord_bound_at_capped_rows() {
+    // Unit scale: the whole deflection sweep, including the residual pair.
     let exact = tilted_slab_cut_volume();
     let mut topo = Topology::new();
     let solid = tilted_slab_cut(&mut topo);
-    for deflection in [0.002, 0.0015] {
+    for deflection in [0.05, 0.01, 0.005, 0.003, 0.002, 0.0015, 0.001] {
         let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
         assert_faces_follow_their_carriers(&faces, deflection, "tilted slab");
         assert_volume_within_chord_bound(&mesh, exact, deflection, "tilted slab");
+    }
+    // A pre-rotated axisymmetric stock moves the wall chart's seam, hence
+    // the trim lattice phase, over unchanged geometry.
+    let mut topo = Topology::new();
+    let solid = tilted_slab_cut_placed(&mut topo, 1.0, 0.7, [0.0, 0.0, 0.0]);
+    for deflection in [0.002, 0.0015] {
+        let what = "tilted slab, reseamed stock";
+        let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
+        assert_faces_follow_their_carriers(&faces, deflection, what);
+        assert_volume_within_chord_bound(&mesh, exact, deflection, what);
+    }
+    // A rigid translation of both operands exercises weld-scale numerics far
+    // from the origin over the same solid.
+    let mut topo = Topology::new();
+    let solid = tilted_slab_cut_placed(&mut topo, 1.0, 0.0, [13.0, -7.0, 5.0]);
+    let what = "tilted slab, translated";
+    let (mesh, faces) = closed_mesh_by_face(&topo, solid, 0.002);
+    assert_faces_follow_their_carriers(&faces, 0.002, what);
+    assert_volume_within_chord_bound(&mesh, exact, 0.002, what);
+    // Tenfold scale with dimensionally correct physical deflection covers
+    // the residual regime at a different absolute budget point.
+    let exact = exact * 1e3;
+    let mut topo = Topology::new();
+    let solid = tilted_slab_cut_placed(&mut topo, 10.0, 0.0, [0.0, 0.0, 0.0]);
+    for deflection in [0.02, 0.015] {
+        let what = "tilted slab at 10x";
+        let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
+        assert_faces_follow_their_carriers(&faces, deflection, what);
+        assert_volume_within_chord_bound(&mesh, exact, deflection, what);
     }
 }
 
