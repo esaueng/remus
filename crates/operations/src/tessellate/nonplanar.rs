@@ -3201,12 +3201,13 @@ pub(super) fn tessellate_nonplanar_cdt(
                 let hi = (curved_v_max + dense_dv).min(v_max);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let wanted = (((hi - lo) / dense_dv).ceil() as usize).max(1);
-                // This loop includes both end rows and scans the complete
-                // boundary once for containment and (for interior points)
-                // once more for clearance. Bound that multiplicative work
-                // before doing any classification or allocation: take as
-                // many of the wanted rows as the polygon classification
-                // budget admits (see `dense_trim_rows_within_budget`).
+                // This loop includes both end rows and classifies every
+                // candidate against the complete boundary in a single fused
+                // containment-and-clearance scan (see
+                // `classify_dense_candidate`). Bound that work before doing
+                // any classification or allocation: take as many of the
+                // wanted rows as the polygon classification budget admits
+                // (see `dense_trim_rows_within_budget`).
                 let rows = dense_trim_rows_within_budget(wanted, n_u, boundary_uv_ref.len());
                 let dense_candidates = n_u.saturating_sub(1).checked_mul(rows.saturating_add(1));
                 // If not even one row fits, keep the already-bounded base
@@ -3218,36 +3219,27 @@ pub(super) fn tessellate_nonplanar_cdt(
                     && validate_interior_polygon_work(
                         dense_candidates,
                         Some(boundary_uv_ref.len()),
-                        2,
+                        1,
                     )
                     .is_ok()
                 {
                     let boundary_cdt: Vec<Point2> =
                         boundary_uv_ref.iter().map(|&(u, v)| to_cdt(u, v)).collect();
                     let clearance = 0.4 * du / n_u as f64;
-                    let clear_of_boundary = |point: Point2| {
-                        (0..boundary_cdt.len()).all(|index| {
-                            let a = boundary_cdt[index];
-                            let b = boundary_cdt[(index + 1) % boundary_cdt.len()];
-                            let ab = b - a;
-                            let length_squared = ab.dot(ab);
-                            let t = if length_squared > 1.0e-30 {
-                                ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
-                            } else {
-                                0.0
-                            };
-                            let foot = Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
-                            (point - foot).length() > clearance
-                        })
-                    };
                     for row in 0..=rows {
                         let v = lo + (hi - lo) * (row as f64 / rows as f64);
                         for column in 1..n_u {
                             let u = u_min + du * (column as f64 / n_u as f64);
                             let point = to_cdt(u, v);
-                            if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v))
-                                && clear_of_boundary(point)
-                            {
+                            let (inside, clear) = classify_dense_candidate(
+                                boundary_uv_ref,
+                                &boundary_cdt,
+                                u,
+                                v,
+                                point,
+                                clearance,
+                            );
+                            if inside && clear {
                                 interior_pts.push(point);
                             }
                         }
@@ -3830,8 +3822,9 @@ fn stepped_rim_interior_points(
 
 /// Dense trim-band rows, capped to what the interior polygon budget admits.
 ///
-/// The band's `rows + 1` lines of `n_u - 1` columns each scan the
-/// `boundary`-sample trim twice, so they cost `(n_u - 1)(rows + 1)·2·boundary`
+/// The band's `rows + 1` lines of `n_u - 1` columns each classify against the
+/// `boundary`-sample trim in one fused containment-and-clearance scan (see
+/// `classify_dense_candidate`), so they cost `(n_u - 1)(rows + 1)·boundary`
 /// tests against [`MAX_INTERIOR_POLYGON_TESTS`]. Past that budget the whole
 /// band used to be dropped, leaving the trim valley to the base grid's
 /// single mid-height row whenever `interior_rows_for_boundary` keeps its
@@ -3841,10 +3834,7 @@ fn stepped_rim_interior_points(
 /// manifold mesh. Fewer rows still support the valley, so keep as many as
 /// fit; zero only when not even one row does.
 fn dense_trim_rows_within_budget(wanted: usize, n_u: usize, boundary: usize) -> usize {
-    let per_row = n_u
-        .saturating_sub(1)
-        .saturating_mul(boundary)
-        .saturating_mul(2);
+    let per_row = n_u.saturating_sub(1).saturating_mul(boundary);
     MAX_INTERIOR_POLYGON_TESTS
         .checked_div(per_row)
         .map_or(wanted, |fit| wanted.min(fit.saturating_sub(1)))
@@ -5434,6 +5424,65 @@ pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::P
     winding != 0
 }
 
+/// Containment and trim clearance of one dense-band candidate in a single
+/// boundary scan.
+///
+/// The band used to classify each candidate twice against the same boundary:
+/// once for containment ([`point_in_polygon_2d`]) and, when inside, once more
+/// for clearance from the trim. Fusing the two scans halves the polygon work
+/// the [`MAX_INTERIOR_POLYGON_TESTS`] budget must cover, so the unchanged cap
+/// admits roughly twice the rows. The verdicts are exactly the sequential
+/// ones: the winding accumulation is [`point_in_polygon_2d`]'s loop verbatim
+/// in raw `(u, v)` space, and the distance test is the old `clear_of_boundary`
+/// body verbatim in CDT space; only the segment loop is shared. A failed
+/// clearance cannot short-circuit the scan because the winding verdict still
+/// needs every segment.
+fn classify_dense_candidate(
+    boundary_uv: &[(f64, f64)],
+    boundary_cdt: &[remus_math::vec::Point2],
+    u: f64,
+    v: f64,
+    point: remus_math::vec::Point2,
+    clearance: f64,
+) -> (bool, bool) {
+    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
+    // site, so both index ranges coincide.
+    let mut winding = 0i32;
+    let mut clear = true;
+    for i in 0..boundary_uv.len() {
+        let j = (i + 1) % boundary_uv.len();
+        let yi = boundary_uv[i].1;
+        let yj = boundary_uv[j].1;
+        if yi <= v {
+            if yj > v {
+                let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
+                    - (u - boundary_uv[i].0) * (yj - yi);
+                if cross > 0.0 {
+                    winding += 1;
+                }
+            }
+        } else if yj <= v {
+            let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
+                - (u - boundary_uv[i].0) * (yj - yi);
+            if cross < 0.0 {
+                winding -= 1;
+            }
+        }
+        let a = boundary_cdt[i];
+        let b = boundary_cdt[j];
+        let ab = b - a;
+        let length_squared = ab.dot(ab);
+        let t = if length_squared > 1.0e-30 {
+            ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let foot = remus_math::vec::Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
+        clear = (point - foot).length() > clearance && clear;
+    }
+    (winding != 0, clear)
+}
+
 /// The `shared_revolved` guard admits only cylinders and cones; any other
 /// surface reaching that match yields an empty face mesh (never a panic).
 fn unreachable_default_mesh() -> TriangleMesh {
@@ -5708,18 +5757,114 @@ mod interior_grid_limit_tests {
 
     #[test]
     fn rejects_dense_grid_actual_row_count() {
-        // The dense loop visits rows + 1 rather than rows - 1. With two full
-        // boundary scans, that actual candidate count exceeds the work cap.
+        // The dense loop visits rows + 1 rather than rows - 1. That actual
+        // candidate count exceeds the work cap even at one boundary scan per
+        // candidate (the fused containment-and-clearance pass).
         let columns = 1_000_usize;
         let rows = 1_000_usize;
         let actual_candidates = (columns - 1).checked_mul(rows + 1);
-        assert!(validate_interior_polygon_work(actual_candidates, Some(6), 2).is_err());
+        assert!(validate_interior_polygon_work(actual_candidates, Some(11), 1).is_err());
     }
 
     #[test]
     fn rejects_polygon_work_overflow() {
         assert!(validate_interior_polygon_work(Some(usize::MAX), Some(2), 2).is_err());
         assert!(validate_interior_polygon_work(Some(2), None, 2).is_err());
+    }
+
+    /// The fused dense-band scan must return exactly the sequential verdicts:
+    /// [`point_in_polygon_2d`] containment plus the old `clear_of_boundary`
+    /// clearance, over concave and convex trims, raw and CDT-scaled frames,
+    /// on both sides of the clearance threshold — including a degenerate
+    /// zero-length boundary segment.
+    #[test]
+    fn fused_dense_classification_matches_sequential_scans() {
+        use remus_math::vec::Point2;
+
+        use super::{classify_dense_candidate, point_in_polygon_2d};
+
+        fn sequential_clear(boundary_cdt: &[Point2], point: Point2, clearance: f64) -> bool {
+            (0..boundary_cdt.len()).all(|index| {
+                let a = boundary_cdt[index];
+                let b = boundary_cdt[(index + 1) % boundary_cdt.len()];
+                let ab = b - a;
+                let length_squared = ab.dot(ab);
+                let t = if length_squared > 1.0e-30 {
+                    ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let foot = Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
+                (point - foot).length() > clearance
+            })
+        }
+
+        // Concave slot mouth with a duplicated vertex (degenerate segment).
+        let notch: Vec<(f64, f64)> = vec![
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 3.0),
+            (2.5, 3.0),
+            (2.0, 1.2),
+            (2.0, 1.2),
+            (1.5, 3.0),
+            (0.0, 3.0),
+        ];
+        // Convex 64-gon approximating a circular trim.
+        let disc: Vec<(f64, f64)> = (0..64)
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let a = k as f64 / 64.0 * std::f64::consts::TAU;
+                (5.0 + 2.0 * a.cos(), 5.0 + 2.0 * a.sin())
+            })
+            .collect();
+        for polygon in [&notch, &disc] {
+            let (lo_u, hi_u) = polygon
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(u, _)| {
+                    (lo.min(u), hi.max(u))
+                });
+            let (lo_v, hi_v) = polygon
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+                    (lo.min(v), hi.max(v))
+                });
+            for v_scale in [1.0, std::f64::consts::TAU / 6.0] {
+                let boundary_cdt: Vec<Point2> = polygon
+                    .iter()
+                    .map(|&(u, v)| Point2::new(u, v * v_scale))
+                    .collect();
+                for clearance in [0.0073, 0.05] {
+                    for iu in 0..=40 {
+                        for iv in 0..=40 {
+                            #[allow(clippy::cast_precision_loss)]
+                            let u = lo_u + (hi_u - lo_u) * iu as f64 / 40.0;
+                            #[allow(clippy::cast_precision_loss)]
+                            let v = lo_v + (hi_v - lo_v) * iv as f64 / 40.0;
+                            let point = Point2::new(u, v * v_scale);
+                            let (inside, clear) = classify_dense_candidate(
+                                polygon,
+                                &boundary_cdt,
+                                u,
+                                v,
+                                point,
+                                clearance,
+                            );
+                            assert_eq!(
+                                inside,
+                                point_in_polygon_2d(polygon, Point2::new(u, v)),
+                                "containment differs at ({u}, {v})"
+                            );
+                            assert_eq!(
+                                clear,
+                                sequential_clear(&boundary_cdt, point, clearance),
+                                "clearance differs at ({u}, {v})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
