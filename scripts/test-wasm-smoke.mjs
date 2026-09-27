@@ -703,6 +703,88 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - offsetJournaled direct/batch face, edge and vertex evolution');
 }
 
+// O4.7 boolean twins: fuseDetailed, cutDetailed and intersectDetailed
+// return the typed envelope (never throw on a refusal), carry the same
+// code as the legacy op's executeBatchV2 error, and roll a refusal back.
+// There is deliberately no same-named batch op: the batch contract is the
+// legacy op, and the witnesses below pin direct/batch code parity through
+// it (the Rust contract tests pin the same equality natively).
+{
+  const k = new BrepKernel();
+  const a = k.makeBox(2, 2, 2);
+  const b = k.makeBox(1, 1, 1);
+  for (const [label, call, legacyOp, expectedVolume] of [
+    ['fuseDetailed', (kk, x, y) => kk.fuseDetailed(x, y), 'fuse', 8],
+    ['cutDetailed', (kk, x, y) => kk.cutDetailed(x, y), 'cut', 7],
+    ['intersectDetailed', (kk, x, y) => kk.intersectDetailed(x, y), 'intersect', 1],
+  ]) {
+    const result = call(k, a, b);
+    assert.equal(result.status, 'ok', `${label}: ${JSON.stringify(result)}`);
+    assert.equal(result.code, null);
+    assert.equal(result.category, null);
+    assert.deepEqual(result.details, {});
+    assert.ok(Math.abs(k.volume(result.value, DEFLECTION) - expectedVolume) < 1e-9);
+
+    const batchKernel = new BrepKernel();
+    const batch = JSON.parse(
+      batchKernel.executeBatchV2(
+        JSON.stringify([
+          { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+          { op: 'makeBox', args: { width: 1, height: 1, depth: 1 } },
+          { op: legacyOp, args: { solidA: 0, solidB: 1 } },
+          { op: 'volume', args: { solid: 2, deflection: DEFLECTION } },
+        ]),
+      ),
+    );
+    assert.ok(typeof batch[2].ok === 'number', `${label} batch: ${JSON.stringify(batch)}`);
+    assert.ok(Math.abs(batch[3].ok - expectedVolume) < 1e-9);
+    console.log(`ok - ${label}: exact, disclosed, direct/batch parity`);
+  }
+
+  const before = k.volume(a, DEFLECTION);
+  for (const [label, legacyOp] of [
+    ['fuseDetailed', 'fuse'],
+    ['cutDetailed', 'cut'],
+    ['intersectDetailed', 'intersect'],
+  ]) {
+    const refused =
+      label === 'fuseDetailed'
+        ? k.fuseDetailed(a, 0xffffffff)
+        : label === 'cutDetailed'
+          ? k.cutDetailed(0xffffffff, b)
+          : k.intersectDetailed(a, 0xffffffff);
+    assert.equal(refused.status, 'error');
+    assert.equal(refused.code, 'invalid_handle');
+    assert.equal(refused.category, 'invalid_input');
+    assert.equal(refused.value, null);
+    assert.ok(typeof refused.details.message === 'string');
+
+    const batch = JSON.parse(
+      k.executeBatchV2(
+        JSON.stringify([
+          {
+            op: legacyOp,
+            args:
+              label === 'cutDetailed'
+                ? { solidA: 0xffffffff, solidB: b }
+                : { solidA: a, solidB: 0xffffffff },
+          },
+        ]),
+      ),
+    );
+    const batchCode = batch[0].error.details.kernelCode ?? batch[0].error.code;
+    assert.equal(refused.code, batchCode, `${label}: direct/batch code parity`);
+    assert.equal(refused.category, batch[0].error.category);
+  }
+  assert.ok(Math.abs(k.volume(a, DEFLECTION) - before) < 1e-9);
+
+  const selfCut = k.cutDetailed(a, a);
+  assert.equal(selfCut.status, 'error');
+  assert.equal(selfCut.value, null);
+  assert.ok(Math.abs(k.volume(a, DEFLECTION) - before) < 1e-9);
+  console.log('ok - boolean twins: typed refusals with rollback');
+}
+
 // O4.7 modifier twins: each returns the typed envelope (never throws on a
 // refusal), discloses quality, matches the `executeBatchV2` op of the same
 // name exactly, and rolls a refusal back.
