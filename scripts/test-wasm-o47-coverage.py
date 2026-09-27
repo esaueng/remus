@@ -572,6 +572,41 @@ class O47CoverageFixtures(unittest.TestCase):
             violations,
         )
 
+    def test_gated_match_expression_cannot_cover_shipped_method(self):
+        batch = BATCH_RS.format(ops="fuse").replace(
+            "        match op {",
+            '        #[cfg(feature = "io")]\n        match op {',
+        ).replace(
+            "        }\n    }\n}",
+            '        }\n        #[cfg(not(feature = "io"))]\n        { 0 }\n    }\n}',
+        )
+        directory = make_tree(
+            {
+                "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                + TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed"),
+                "bindings/batch.rs": batch,
+                "witness.rs": WITNESS_RS.format(name="fuse_success"),
+            }
+        )
+        root = directory / "crates/wasm/src"
+        self.assertEqual(gate.batch_ops(root)["fuse"], "io")
+        violations, _, _, _ = run_gate(
+            directory,
+            [
+                covered_row("fuse", "fuse", "fuseDetailed", ["fuse"], ["fuse_success"]),
+                {
+                    "js": "fuseDetailed", "rust": "fuse_detailed",
+                    "file": "bindings/booleans.rs", "gate": "shipped",
+                    "class": "special_case", "coverage": "special",
+                    "owner": "O4.7", "reason": "typed twin",
+                },
+            ],
+        )
+        self.assertTrue(
+            any("arm is only available under 'io'" in item for item in violations),
+            violations,
+        )
+
     def test_multiline_io_batch_arm_cannot_cover_shipped_method(self):
         directory = make_tree(
             {

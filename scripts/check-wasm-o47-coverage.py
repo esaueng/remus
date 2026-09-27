@@ -424,7 +424,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
     lines = text.splitlines()
     depths, code_lines = rust_lines_with_depth(lines)
     dispatch = next(
-        (index for index, line in enumerate(lines) if re.match(r"^\s*fn dispatch_op\s*\(", line)),
+        (index for index, line in enumerate(code_lines) if re.match(r"^\s*fn dispatch_op\s*\(", line)),
         None,
     )
     if dispatch is None:
@@ -455,6 +455,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
     )
     if match_line is None:
         raise ValueError("batch dispatch_op match op is missing")
+    match_gate = attribute_gate(own_attr_block(code_lines, match_line, depths))
     arm_depth = depths[match_line] + 1
     match_end = next(
         (index for index in range(match_line + 1, method_end) if depths[index] < arm_depth),
@@ -465,7 +466,9 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
         if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
             continue
         op = match.group("op")
-        gate = public_gate(combine_gates(dispatch_gate, arm_gate(code_lines, index)))
+        gate = public_gate(
+            combine_gates(dispatch_gate, match_gate, arm_gate(code_lines, index))
+        )
         if op not in result or gate == "shipped":
             result[op] = gate
     return result
