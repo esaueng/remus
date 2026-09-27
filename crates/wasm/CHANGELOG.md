@@ -34,8 +34,10 @@
 
 * Add `extrudeDetailed` and `revolveDetailed` (direct and batch), typed
   O4.7 twins of `extrude` and `revolve` with the same envelope and rollback
-  as the boolean twins. The twins refuse closed profiles that the native
-  engines would split into line chords (`exact_only_unattainable`), so every
+  as the boolean twins. The twins refuse profiles that the native engines
+  would split into line chords (`exact_only_unattainable`); extrusion retains
+  recognized NURBS circles on its analytic path, while revolution refuses
+  curved fallback bands outside the true-circle torus path. Every
   success discloses `details.quality: "exact"` and there is no `exactOnly`
   flag. Other refusals carry the legacy failure's code and category with
   `details.operation` naming the op. `revolveDetailed` preserves the

@@ -11,10 +11,10 @@
 //! - **refused**: `status: "error"` with the kernel diagnostic `code` and
 //!   `category`, and the topology rolled back to its pre-call state.
 //!
-//! The twins are exact-only. Open profile curves keep their exact swept
-//! carriers. A closed curve that the native engine would split into line
-//! chords is refused before mutation; a true circular profile whose
-//! revolution takes the analytic torus path remains supported. There is no
+//! The twins are exact-only. Extrusion keeps open profile curves on exact
+//! swept carriers. Revolution refuses curved profiles whose fallback bands
+//! or later rings use line chords; a true circular profile whose revolution
+//! takes the analytic torus path remains supported. There is no
 //! `approximate` success or `exactOnly` flag: supported profiles commit with
 //! `quality: "exact"`, while chorded profiles return `exact_only_unattainable`.
 //!
@@ -55,7 +55,7 @@ const QUALITY_EXACT: &str = "exact";
 
 fn chorded_profile_refusal(operation: &str) -> StructuredWasmError {
     StructuredWasmError::exact_only_unattainable(format!(
-        "{operation} would replace a closed profile curve with line chords"
+        "{operation} would replace a profile curve with line chords"
     ))
 }
 
@@ -78,7 +78,14 @@ fn ensure_exact_extrude_profile(topo: &Topology, face: FaceId) -> Result<(), Str
                 EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => true,
                 EdgeCurve::Circle(_) => !is_inner || wire.edges().len() == 1,
                 EdgeCurve::Ellipse(_) => !is_inner,
-                EdgeCurve::NurbsCurve(_) => false,
+                EdgeCurve::NurbsCurve(nurbs) => {
+                    use remus_geometry::convert::{RecognizedCurve, recognize_curve};
+                    match recognize_curve(nurbs, Tolerance::new().linear * 100.0) {
+                        RecognizedCurve::Circle { .. } => !is_inner || wire.edges().len() == 1,
+                        RecognizedCurve::Ellipse { .. } => !is_inner,
+                        _ => false,
+                    }
+                }
             };
             if !stays_exact {
                 return Err(chorded_profile_refusal("extrude"));
@@ -129,20 +136,23 @@ fn ensure_exact_revolve_profile(
             return Ok(());
         }
     }
-    let mut has_closed_curve = false;
+    let mut has_curved_edge = false;
     for wire_id in
         std::iter::once(profile.outer_wire()).chain(profile.inner_wires().iter().copied())
     {
         for oriented in topo.wire(wire_id)?.edges() {
             let edge = topo.edge(oriented.edge())?;
-            has_closed_curve |= edge.start() == edge.end()
-                && matches!(
-                    edge.curve(),
-                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
-                );
+            has_curved_edge |= matches!(
+                edge.curve(),
+                EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_)
+            );
         }
     }
-    if !has_closed_curve {
+    if !has_curved_edge {
         return Ok(());
     }
 
@@ -218,7 +228,7 @@ impl BrepKernel {
     /// order (finite `ox`, `oy`, `oz`, `dx`, `dy`, `dz`, `angle_degrees`,
     /// then the `(0, 360]` range check, then the face handle), the same
     /// degrees-to-radians conversion, and the same engine for exact-supported
-    /// profiles. Closed profiles needing line chords refuse with
+    /// profiles. Curved profiles needing line chords refuse with
     /// `exact_only_unattainable`; the legacy method is unchanged. Success has
     /// `details.quality: "exact"`.
     #[wasm_bindgen(js_name = "revolveDetailed")]
