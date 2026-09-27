@@ -3964,3 +3964,190 @@ fn non_finite_volumes_fail_closed_form_oracles() {
         assert!(rel_err(value, 32.0) > REL_SLACK);
     }
 }
+
+/// B68 regression (2026-09-27): box–cylinder intersect dropped the z=0
+/// segment patch, reading 1.896 against the closed form 2.418 (−21.6 %)
+/// while fuse, cut, validation, and ray-cast probes all stayed green.
+///
+/// Witness from proptest seed
+/// `5ebb16425dadf9e4dedf51a1d93b5e45189aa7248db04b32b30afe2561cbca46`
+/// (committed in `prop_boolean_invariants.proptest-regressions` with this
+/// fix): stock box 3.5×1×2.5 at the origin; tool cylinder r=1.5/h=3.5 built
+/// at the origin, rotated about Z by π/2 (a no-op for the cylinder — it only
+/// moves the seam), then translated by (1.75, 1.75, −1.75). This is the
+/// generator's construction order (`build_pair`); do not substitute a
+/// visually similar pair.
+///
+/// Root cause (crates/algo/src/builder/builder_solid.rs): the assembly
+/// duplicate-edge merge unified the bottom patch's wall∩plane arc into the
+/// box-edge chord on endpoint-pair identity alone. The patch degenerated to
+/// a doubled edge (deleted by the spur step) and the wall kept the chord;
+/// the tessellator stitched the gap with an inward flap (−0.53). The merge
+/// now unifies same-kind copies first and absorbs leftover cross-kind edges
+/// only when no face loop collapses to a single repeated edge.
+///
+/// Inclusion–exclusion alone cannot identify the faulty leg, so every leg
+/// is judged against the hand-derived closed form below (independent of
+/// every kernel measurement path): the z-overlap of box [0,2.5] and
+/// cylinder [−1.75,1.75] is h=1.75; the (x,y) overlap of box [0,3.5]×[0,1]
+/// with the disc (x−1.75)²+(y−1.75)²≤1.5² is the cap y∈[0.25,1], fully
+/// inside the box x-range (half-chord at y=1 is √(1.5²−0.75²)=1.299<1.75).
+#[test]
+fn b68_box_cylinder_intersect_lens() {
+    use remus_operations::primitives::{make_box, make_cylinder};
+    use remus_topology::face::FaceSurface;
+
+    // Closed-form intersection oracle ≈ 2.418352844 (area 2·(F(1.5)−F(0.75))
+    // times z-height 1.75, F the circular-segment antiderivative).
+    let r = 1.5;
+    let f = |u: f64| 0.5 * u * (r * r - u * u).sqrt() + 0.5 * r * r * (u / r).asin();
+    let want_inter = 2.0 * (f(1.5) - f(0.75)) * 1.75;
+    let va = closed_box(3.5, 1.0, 2.5);
+    let vb = closed_cylinder(1.5, 3.5);
+    let want_fuse = va + vb - want_inter;
+    let want_cut = va - want_inter;
+
+    // Fresh operands per op (booleans retire entities), placed exactly as
+    // the generator places them: stock at the origin, tool rotated then
+    // translated.
+    let run = |op: BooleanOp| -> (Topology, SolidId) {
+        let mut topo = Topology::new();
+        let a = make_box(&mut topo, 3.5, 1.0, 2.5).expect("valid box");
+        let b = make_cylinder(&mut topo, 1.5, 3.5).expect("valid cylinder");
+        let m =
+            Mat4::translation(1.75, 1.75, -1.75) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
+        remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+        let o = exact_boolean(&mut topo, op, a, b).expect("exact boolean succeeds");
+        check_exact_quality(&o, "b68").expect("exact quality");
+        (topo, o.solid)
+    };
+
+    // Pin the operand closed forms through the kernel volume reading first
+    // (oracle-path check, not a boolean check).
+    {
+        let mut topo = Topology::new();
+        let a = make_box(&mut topo, 3.5, 1.0, 2.5).expect("valid box");
+        let b = make_cylinder(&mut topo, 1.5, 3.5).expect("valid cylinder");
+        assert!(
+            rel_err(vol(&topo, a), va) <= 1e-6,
+            "b68 operand A closed form broken"
+        );
+        assert!(
+            rel_err(vol(&topo, b), vb) <= 1e-6,
+            "b68 operand B closed form broken"
+        );
+    }
+
+    let check_leg = |(topo, s): &(Topology, SolidId), want: f64, what: &str| {
+        check_valid_closed_oriented(topo, *s, what).expect("B-Rep fully valid");
+        check_watertight_mesh_scaled(topo, *s, what).expect("mesh watertight");
+        let v = vol(topo, *s);
+        assert!(
+            rel_err(v, want) <= 1e-3,
+            "b68 {what}: volume {v:.9} against closed form {want:.9}"
+        );
+        check_translation_invariant_scaled(topo, *s, what).expect("translation invariant");
+        v
+    };
+
+    let fuse = run(BooleanOp::Fuse);
+    let inter = run(BooleanOp::Intersect);
+    let cut = run(BooleanOp::Cut);
+    let vf = check_leg(&fuse, want_fuse, "b68 fuse");
+    let vi = check_leg(&inter, want_inter, "b68 intersect");
+    let vc = check_leg(&cut, want_cut, "b68 cut");
+
+    // The restored bottom patch: 4 analytic faces (wall + 3 planes), never a
+    // mesh-fallback triangle soup.
+    let faces = solid_faces(&fuse.0, fuse.1).expect("faces");
+    assert_eq!(faces.len(), 9, "b68 fuse keeps all 9 faces");
+    let faces = solid_faces(&inter.0, inter.1).expect("faces");
+    assert_eq!(faces.len(), 4, "b68 intersect keeps wall + 3 planes");
+    let (mut planes, mut cylinders) = (0, 0);
+    for &fid in &faces {
+        match inter.0.face(fid).expect("face").surface() {
+            FaceSurface::Plane { .. } => planes += 1,
+            FaceSurface::Cylinder(_) => cylinders += 1,
+            other => panic!("b68 intersect: non-analytic face {other:?}"),
+        }
+    }
+    assert_eq!((planes, cylinders), (3, 1), "b68 intersect census");
+
+    // Both set identities over the closed forms (either one alone can hide
+    // correlated errors; the absolute oracles above carry the other half).
+    assert!(
+        rel_err(vf + vi, va + vb) <= 1e-3,
+        "b68 inclusion-exclusion: fuse {vf:.9} + inter {vi:.9} != A {va:.9} + B {vb:.9}"
+    );
+    assert!(
+        rel_err(vc + vi, va) <= 1e-3,
+        "b68 cut complement: cut {vc:.9} + inter {vi:.9} != A {va:.9}"
+    );
+
+    // Swapped engine operand order: intersection is commutative as sets.
+    {
+        let mut topo = Topology::new();
+        let a = make_box(&mut topo, 3.5, 1.0, 2.5).expect("valid box");
+        let b = make_cylinder(&mut topo, 1.5, 3.5).expect("valid cylinder");
+        let m =
+            Mat4::translation(1.75, 1.75, -1.75) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
+        remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+        let o = exact_boolean(&mut topo, BooleanOp::Intersect, b, a)
+            .expect("exact swapped intersect succeeds");
+        check_exact_quality(&o, "b68 swapped").expect("exact quality");
+        check_valid_closed_oriented(&topo, o.solid, "b68 swapped").expect("B-Rep fully valid");
+        check_watertight_mesh_scaled(&topo, o.solid, "b68 swapped").expect("mesh watertight");
+        let v = vol(&topo, o.solid);
+        assert!(
+            rel_err(v, want_inter) <= 1e-3,
+            "b68 swapped intersect: volume {v:.9} against closed form {want_inter:.9}"
+        );
+    }
+
+    // Nearby offsets and the 1e-3/1e3 scale band: identities hold, every leg
+    // stays exact, valid, and watertight.
+    for (ox, oy, oz, scale, tag) in [
+        (1.80, 1.75, -1.75, 1.0_f64, "nearby+x"),
+        (1.75, 1.70, -1.75, 1.0_f64, "nearby-y"),
+        (1.75, 1.75, -1.75, 1e-3_f64, "scale-down"),
+        (1.75, 1.75, -1.75, 1e3_f64, "scale-up"),
+    ] {
+        let ea = va * scale.powi(3);
+        let eb = vb * scale.powi(3);
+        let mut vs = [0.0; 3];
+        for (i, op) in [BooleanOp::Fuse, BooleanOp::Intersect, BooleanOp::Cut]
+            .iter()
+            .enumerate()
+        {
+            // Fresh operands per op.
+            let mut topo = Topology::new();
+            let a = make_box(&mut topo, 3.5 * scale, 1.0 * scale, 2.5 * scale).expect("valid box");
+            let b = make_cylinder(&mut topo, 1.5 * scale, 3.5 * scale).expect("valid cylinder");
+            let m = Mat4::translation(ox * scale, oy * scale, oz * scale)
+                * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
+            remus_operations::transform::transform_solid(&mut topo, b, &m)
+                .expect("placement applies");
+            let what = format!("b68 {tag} {op:?}");
+            let o = match exact_boolean(&mut topo, *op, a, b) {
+                Ok(o) => o,
+                Err(e) => panic!("{what}: exact boolean refused: {e:?}"),
+            };
+            check_exact_quality(&o, &what).expect("exact quality");
+            check_valid_closed_oriented(&topo, o.solid, &what).expect("B-Rep fully valid");
+            check_watertight_mesh_scaled(&topo, o.solid, &what).expect("mesh watertight");
+            vs[i] = vol(&topo, o.solid);
+        }
+        assert!(
+            rel_err(vs[0] + vs[1], ea + eb) <= REL_SLACK,
+            "b68 {tag} inclusion-exclusion: {} + {} != {ea} + {eb}",
+            vs[0],
+            vs[1]
+        );
+        assert!(
+            rel_err(vs[2] + vs[1], ea) <= REL_SLACK,
+            "b68 {tag} cut complement: {} + {} != {ea}",
+            vs[2],
+            vs[1]
+        );
+    }
+}
