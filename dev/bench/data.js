@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790492458900,
+  "lastUpdate": 1790494953206,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -72511,6 +72511,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 94762,
             "range": "± 1429",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "42021eb3cbffc942977b6a2798d898eb61010414",
+          "message": "chore(release): establish Remus calendar versions on current main (#772)",
+          "timestamp": "2026-09-27T00:32:30-07:00",
+          "tree_id": "c5471f053c28f78b8871ff4f360aa4c44687287f",
+          "url": "https://github.com/esaueng/remus/commit/42021eb3cbffc942977b6a2798d898eb61010414"
+        },
+        "date": 1790494951501,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1218993,
+            "range": "± 5445",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1326360,
+            "range": "± 10994",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26574,
+            "range": "± 663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 10849033,
+            "range": "± 49055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 10915641,
+            "range": "± 280885",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 10545988,
+            "range": "± 60208",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1066897,
+            "range": "± 8133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17257940,
+            "range": "± 205743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31031587,
+            "range": "± 632769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 88,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 41,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 192,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 145,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 627,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 136,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 324,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 217,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 465,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 871,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2435,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 65,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 500785,
+            "range": "± 1078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 7662558,
+            "range": "± 47270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 152070,
+            "range": "± 242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 458214,
+            "range": "± 7053",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 62949,
+            "range": "± 200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 943154,
+            "range": "± 2727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10806224,
+            "range": "± 40990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 768872,
+            "range": "± 5108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1125966,
+            "range": "± 5075",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 79866,
+            "range": "± 482",
             "unit": "ns/iter"
           }
         ]
