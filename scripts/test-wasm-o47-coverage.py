@@ -479,6 +479,53 @@ class O47CoverageFixtures(unittest.TestCase):
                     violations,
                 )
 
+    def test_dispatch_parent_gate_cannot_cover_shipped_legacy_export(self):
+        batch = BATCH_RS.format(ops="fuse")
+        cases = {
+            "method": batch.replace(
+                "    fn dispatch_op", '    #[cfg(feature = "io")]\n    fn dispatch_op'
+            ),
+            "impl": batch.replace(
+                "impl BrepKernel", '#[cfg(feature = "io")]\nimpl BrepKernel'
+            ),
+            "file": '#![cfg(feature = "io")]\n' + batch,
+            "parent_module": batch,
+        }
+        for placement, batch_source in cases.items():
+            with self.subTest(placement=placement):
+                directory = make_tree(
+                    {
+                        "lib.rs": "mod bindings;\n",
+                        "bindings/mod.rs": (
+                            '#[cfg(feature = "io")]\nmod batch;\n'
+                            if placement == "parent_module" else "mod batch;\n"
+                        ),
+                        "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse")
+                        + TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed"),
+                        "bindings/batch.rs": batch_source,
+                        "witness.rs": WITNESS_RS.format(name="fuse_success"),
+                    }
+                )
+                root = directory / "crates/wasm/src"
+                self.assertEqual(gate.batch_ops(root)["fuse"], "io")
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row("fuse", "fuse", "fuseDetailed", ["fuse"],
+                                    ["fuse_success"]),
+                        {
+                            "js": "fuseDetailed", "rust": "fuse_detailed",
+                            "file": "bindings/booleans.rs", "gate": "shipped",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "typed twin",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("arm is only available under 'io'" in item for item in violations),
+                    violations,
+                )
+
     def test_negated_io_cfg_and_doc_example_stay_shipped(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
             '    #[wasm_bindgen(js_name',

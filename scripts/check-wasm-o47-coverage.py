@@ -347,6 +347,10 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
     )
     if dispatch is None:
         raise ValueError("batch dispatch_op method is missing")
+    dispatch_gate = export_gate(
+        lines, depths, dispatch, "bindings/batch.rs",
+        file_io_gate(root, "bindings/batch.rs"),
+    )
     method_depth = depths[dispatch]
     method_body = next(
         (index for index in range(dispatch + 1, len(lines)) if depths[index] > method_depth),
@@ -379,7 +383,7 @@ def batch_ops(root: Path = WASM_SRC) -> dict[str, str]:
         if depths[index] != arm_depth or not (match := BATCH_OP_RE.match(code_lines[index])):
             continue
         op = match.group("op")
-        gate = arm_gate(lines, index)
+        gate = "io" if dispatch_gate == "io" else arm_gate(lines, index)
         if op not in result or gate == "shipped":
             result[op] = gate
     return result
