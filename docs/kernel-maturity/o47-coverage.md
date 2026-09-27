@@ -30,7 +30,8 @@ For `covered` rows the gate additionally enforces:
   `()`, or JSON-string method can never be `covered` with the solid
   envelope. Non-solid and lifecycle methods need their own schema, never
   a forced solid twin;
-* every `batch_ops` entry has a dispatch arm in `bindings/batch.rs`.
+* every `batch_ops` entry has a top-level `match op` arm in
+  `bindings/batch.rs`'s `dispatch_op` method.
   Boolean twins (`fuseDetailed`, `cutDetailed`, `intersectDetailed`)
   intentionally have no same-named batch arm: their contract is code
   parity with the legacy `fuse`/`cut`/`intersect` batch ops, and the
