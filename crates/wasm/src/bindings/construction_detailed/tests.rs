@@ -576,6 +576,48 @@ fn degrees_to_radians_conversion_is_exact() {
 // ── Argument refusals: typed data, legacy parity, rollback ────────────
 
 #[test]
+fn detailed_batch_rejects_malformed_optional_numbers_without_mutation() {
+    let mut kernel = BrepKernel::new();
+    let face = rect_face(&mut kernel, 2.0, 3.0);
+    let before = counts(&kernel);
+
+    for (operation, fields) in [
+        ("extrudeDetailed", &["dx", "dy", "dz", "distance"][..]),
+        (
+            "revolveDetailed",
+            &["originX", "originY", "originZ", "axisX", "axisY", "axisZ"][..],
+        ),
+    ] {
+        for field in fields {
+            let mut args = json!({"face": face, "angle": 90.0});
+            args[*field] = json!("oops");
+            let ops = json!([{"op": operation, "args": args}]);
+
+            let v2 = batch_v2(&mut kernel, &ops);
+            assert_eq!(
+                v2[0]["error"]["code"], "invalid_argument",
+                "{operation}.{field}: {v2}"
+            );
+            assert!(v2[0]["ok"].is_null(), "{operation}.{field}: {v2}");
+
+            let legacy = batch_legacy(&mut kernel, &ops);
+            assert!(
+                legacy[0]["error"].as_str().unwrap().contains(field),
+                "{operation}.{field}: {legacy}"
+            );
+            assert_eq!(counts(&kernel), before, "{operation}.{field}: mutated");
+        }
+    }
+
+    let defaults = batch_v2(
+        &mut kernel,
+        &json!([{"op": "extrudeDetailed", "args": {"face": face, "dx": null, "dz": null}}]),
+    );
+    let solid = assert_exact_success(&defaults[0]["ok"], "extrude");
+    assert!((volume(&kernel, solid, 0.01) - 6.0).abs() < 1e-6);
+}
+
+#[test]
 fn argument_refusals_are_typed_data() {
     let mut kernel = BrepKernel::new();
     let face = rect_face(&mut kernel, 2.0, 3.0);

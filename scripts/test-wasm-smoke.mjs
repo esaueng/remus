@@ -888,6 +888,11 @@ for (const operation of ['fillet', 'chamfer']) {
     ),
   );
   assert.deepEqual(batch[0].ok, extruded);
+  const malformed = JSON.parse(batchKernel.executeBatchV2(JSON.stringify([
+    { op: 'extrudeDetailed', args: { face, dx: 'oops' } },
+  ])));
+  assert.equal(malformed[0].error.code, 'invalid_argument');
+  assert.equal(malformed[0].ok, undefined);
   const legacyBatchKernel = new BrepKernel();
   assert.equal(legacyBatchKernel.makeRectangle(2, 3), face);
   const legacyBatch = JSON.parse(
@@ -945,6 +950,11 @@ for (const operation of ['fillet', 'chamfer']) {
     ),
   );
   assert.deepEqual(batch[0].ok, revolved);
+  const malformed = JSON.parse(batchKernel.executeBatchV2(JSON.stringify([
+    { op: 'revolveDetailed', args: { face, angle: 360, axisX: 'oops' } },
+  ])));
+  assert.equal(malformed[0].error.code, 'invalid_argument');
+  assert.equal(malformed[0].ok, undefined);
 
   // 180 degrees is exactly half the full cylinder: the native operation
   // received pi radians, not 180 radians.
