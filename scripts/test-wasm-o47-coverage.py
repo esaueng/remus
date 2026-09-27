@@ -441,6 +441,44 @@ class O47CoverageFixtures(unittest.TestCase):
             violations,
         )
 
+    def test_out_of_line_module_gate_cannot_cover_shipped_legacy_export(self):
+        twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
+        for placement, module_source, twin_source in (
+            ("parent", '#[cfg(feature = "io")]\npub mod optional;\n', twin),
+            ("file", "pub mod optional;\n", '#![cfg(feature = "io")]\n' + twin),
+            ("multiline_file", "pub mod optional;\n", '#![cfg(\n    feature = "io"\n)]\n' + twin),
+        ):
+            with self.subTest(placement=placement):
+                directory = make_tree(
+                    {
+                        "lib.rs": "mod bindings;\n",
+                        "bindings/mod.rs": module_source,
+                        "bindings/booleans.rs": MUT_EXPORT.format(js="fuse", rust="fuse"),
+                        "bindings/optional.rs": twin_source,
+                        "bindings/batch.rs": BATCH_RS.format(ops="fuse"),
+                        "witness.rs": WITNESS_RS.format(name="fuse_success"),
+                    }
+                )
+                exports = gate.discover_from_files(directory / "crates/wasm/src")
+                self.assertEqual(next(e for e in exports if e["js"] == "fuseDetailed")["gate"], "io")
+                violations, _, _, _ = run_gate(
+                    directory,
+                    [
+                        covered_row("fuse", "fuse", "fuseDetailed", ["fuse"],
+                                    ["fuse_success"], "bindings/optional.rs"),
+                        {
+                            "js": "fuseDetailed", "rust": "fuse_detailed",
+                            "file": "bindings/optional.rs", "gate": "io",
+                            "class": "special_case", "coverage": "special",
+                            "owner": "O4.7", "reason": "typed twin",
+                        },
+                    ],
+                )
+                self.assertTrue(
+                    any("only available under 'io'" in item for item in violations),
+                    violations,
+                )
+
     def test_negated_io_cfg_and_doc_example_stay_shipped(self):
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed").replace(
             '    #[wasm_bindgen(js_name',
