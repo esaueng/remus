@@ -227,6 +227,19 @@ def export_gate(code_lines: list[str], depths: list[int], index: int, rel: str, 
     """Shipped or optional-I/O availability from file, method, and ancestor attrs."""
     gates = [attribute_gate(own_attr_block(code_lines, index, depths))]
     for ancestor in range(index):
+        if re.match(r"^\s*macro_rules!\s*\w+\b", code_lines[ancestor]):
+            base = depths[ancestor]
+            body = next(
+                (child for child in range(ancestor + 1, index + 1) if depths[child] > base),
+                None,
+            )
+            if body is not None:
+                header = "\n".join(code_lines[ancestor:body])
+                if "{" in header and ";" not in header and all(
+                    depths[child] > base for child in range(body, index + 1)
+                ):
+                    gates.append("conditional")
+            continue
         if not re.match(
             r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:impl|mod)\b", code_lines[ancestor]
         ):
