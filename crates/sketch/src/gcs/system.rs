@@ -13,7 +13,7 @@ use super::dof::{self, DofAnalysis};
 use super::entity::{
     ArcData, ArcId, CircleData, CircleId, GenArena, LineData, LineId, ParamRef, PointData, PointId,
 };
-use super::solver::{self, SolveResult};
+use super::solver::{DoglegWorkspace, SolveResult};
 
 /// The geometric constraint system.
 ///
@@ -395,7 +395,6 @@ impl GcsSystem {
 
         let mut params = self.extract_params();
         let param_index = self.param_index.clone();
-        let param_map = self.param_map.clone();
 
         let constraints: Vec<Constraint> = self
             .constraints
@@ -403,40 +402,58 @@ impl GcsSystem {
             .map(|(_, e)| e.constraint.clone())
             .collect();
 
-        let residual_fn = |p: &[f64]| -> Vec<f64> {
-            let snap = build_snapshot_from_params(p, &param_map, &param_index, self);
-            let mut r = Vec::with_capacity(m);
-            for c in &constraints {
-                eval_residuals(c, &snap, &mut r);
-            }
-            r
+        // Solve-local snapshot storage (PERF-S03): cleared and refilled on
+        // every residual/Jacobian evaluation instead of reallocated.
+        // Separate stores for the residual and Jacobian paths so the two
+        // fill closures own disjoint scratch. Nothing is retained across
+        // solves; capacities are per-solve only.
+        let mut snap_r = EntitySnapshot {
+            points: HashMap::with_capacity(self.points.len()),
+            lines: HashMap::with_capacity(self.lines.len()),
+            circles: HashMap::with_capacity(self.circles.len()),
+            arcs: HashMap::with_capacity(self.arcs.len()),
+        };
+        let mut snap_j = EntitySnapshot {
+            points: HashMap::with_capacity(self.points.len()),
+            lines: HashMap::with_capacity(self.lines.len()),
+            circles: HashMap::with_capacity(self.circles.len()),
+            arcs: HashMap::with_capacity(self.arcs.len()),
         };
 
-        let jacobian_fn = |p: &[f64]| -> Vec<f64> {
-            let snap = build_snapshot_from_params(p, &param_map, &param_index, self);
-            let mut jac = vec![0.0; m * n];
+        let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
+            refresh_snapshot_from_params(&mut snap_r, p, &param_index, self);
+            out.clear();
+            for c in &constraints {
+                eval_residuals(c, &snap_r, out);
+            }
+        };
+
+        let mut jacobian_fill = |p: &[f64], out: &mut [f64]| {
+            refresh_snapshot_from_params(&mut snap_j, p, &param_index, self);
+            out.fill(0.0);
             let mut row = 0;
             {
                 let mut jw = JacobianWriter {
-                    data: &mut jac,
+                    data: out,
                     ncols: n,
                     param_index: &param_index,
                 };
                 for c in &constraints {
-                    eval_jacobian(c, &snap, &mut jw, row);
+                    eval_jacobian(c, &snap_j, &mut jw, row);
                     row += residual_count(c);
                 }
             }
-            jac
         };
 
-        let result = solver::solve_dogleg(
+        let mut workspace = DoglegWorkspace::new();
+        let result = super::solver::solve_dogleg_fill(
             &mut params,
-            &residual_fn,
-            &jacobian_fn,
+            &mut residual_fill,
+            &mut jacobian_fill,
             m,
             max_iterations,
             tolerance,
+            &mut workspace,
         );
 
         self.write_params(&params);
@@ -888,51 +905,47 @@ fn max_abs_residual(values: &[f64]) -> f64 {
     max
 }
 
-/// Build a snapshot from parameter values (used in solver closures).
-fn build_snapshot_from_params(
+/// Refresh solve-local snapshot storage from parameter values (PERF-S03).
+///
+/// Values and arena iteration order match the previous per-evaluation
+/// snapshot build; the four maps are `clear`ed (capacity retained) and
+/// refilled instead of reallocated. No topology change occurs during a solve, so capacities
+/// stabilize after the first evaluation and later evaluations allocate
+/// nothing. `clear` removes every entry, so a resized later solve cannot
+/// observe a previous solve's leftovers (workspaces are solve-local anyway).
+fn refresh_snapshot_from_params(
+    snap: &mut EntitySnapshot,
     params: &[f64],
-    _param_map: &[ParamRef],
     param_index: &HashMap<ParamRef, usize>,
     sys: &GcsSystem,
-) -> EntitySnapshot {
-    let points = sys
-        .points
-        .iter()
-        .map(|(id, data)| {
-            let x = param_index
-                .get(&ParamRef::PointX(id))
-                .map_or(data.x, |&i| params[i]);
-            let y = param_index
-                .get(&ParamRef::PointY(id))
-                .map_or(data.y, |&i| params[i]);
-            (id, (x, y))
-        })
-        .collect();
+) {
+    snap.points.clear();
+    for (id, data) in sys.points.iter() {
+        let x = param_index
+            .get(&ParamRef::PointX(id))
+            .map_or(data.x, |&i| params[i]);
+        let y = param_index
+            .get(&ParamRef::PointY(id))
+            .map_or(data.y, |&i| params[i]);
+        snap.points.insert(id, (x, y));
+    }
 
-    let lines = sys.lines.iter().map(|(id, d)| (id, (d.p1, d.p2))).collect();
+    snap.lines.clear();
+    for (id, d) in sys.lines.iter() {
+        snap.lines.insert(id, (d.p1, d.p2));
+    }
 
-    let circles = sys
-        .circles
-        .iter()
-        .map(|(id, data)| {
-            let r = param_index
-                .get(&ParamRef::CircleRadius(id))
-                .map_or(data.radius, |&i| params[i]);
-            (id, (data.center, r))
-        })
-        .collect();
+    snap.circles.clear();
+    for (id, data) in sys.circles.iter() {
+        let r = param_index
+            .get(&ParamRef::CircleRadius(id))
+            .map_or(data.radius, |&i| params[i]);
+        snap.circles.insert(id, (data.center, r));
+    }
 
-    let arcs = sys
-        .arcs
-        .iter()
-        .map(|(id, d)| (id, (d.center, d.start, d.end)))
-        .collect();
-
-    EntitySnapshot {
-        points,
-        lines,
-        circles,
-        arcs,
+    snap.arcs.clear();
+    for (id, d) in sys.arcs.iter() {
+        snap.arcs.insert(id, (d.center, d.start, d.end));
     }
 }
 

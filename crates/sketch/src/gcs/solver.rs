@@ -7,6 +7,88 @@
 
 use super::qr::QrResult;
 
+/// Solve-local reusable scratch for the DogLeg loop (PERF-S03).
+///
+/// All buffers are sized once per `solve` call (`m` residuals, `n` params)
+/// and reused across iterations. Nothing is retained across solves, so a
+/// later solve with different dimensions resizes instead of reusing stale
+/// extents. Every buffer is fully overwritten before it is read in each
+/// iteration; no iteration consumes a previous iteration's leftovers.
+#[derive(Debug, Default)]
+pub struct DoglegWorkspace {
+    /// Saved pre-factorization Jacobian (`m*n`, row-major).
+    jac_orig: Vec<f64>,
+    /// Working copy factorized in place (`m*n`).
+    jac_work: Vec<f64>,
+    /// Current residuals (`m`).
+    r: Vec<f64>,
+    /// Trial residuals (`m`).
+    r_trial: Vec<f64>,
+    /// Negated residuals (`m`).
+    neg_r: Vec<f64>,
+    /// Gradient `J^T r` (`n`).
+    g: Vec<f64>,
+    /// `J*g` (`m`).
+    jg: Vec<f64>,
+    /// `J*h` (`m`).
+    jh: Vec<f64>,
+    /// Gauss-Newton step (`n`).
+    h_gn: Vec<f64>,
+    /// Steepest-descent step (`n`).
+    h_sd: Vec<f64>,
+    /// Selected DogLeg step (`n`).
+    h: Vec<f64>,
+    /// Trial params (`n`).
+    trial: Vec<f64>,
+    /// `h_gn - h_sd` scratch (`n`).
+    diff: Vec<f64>,
+    /// Householder scales (`k = min(m,n)`).
+    tau: Vec<f64>,
+    /// Column permutation (`n`).
+    perm: Vec<usize>,
+    /// Column norms for pivoting (`n`).
+    col_norms: Vec<f64>,
+    /// `Q^T b` scratch (`m`).
+    qtb: Vec<f64>,
+    /// Back-substitution scratch (`n`).
+    z: Vec<f64>,
+}
+
+impl DoglegWorkspace {
+    /// Create empty scratch; buffers are sized on first use.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Size all buffers for `m` residuals and `n` params.
+    ///
+    /// Existing capacity is retained; contents are not meaningful until
+    /// each buffer is overwritten in the loop.
+    pub fn ensure(&mut self, m: usize, n: usize) {
+        let mn = m.saturating_mul(n);
+        let k = m.min(n);
+        self.jac_orig.resize(mn, 0.0);
+        self.jac_work.resize(mn, 0.0);
+        self.r.resize(m, 0.0);
+        self.r_trial.resize(m, 0.0);
+        self.neg_r.resize(m, 0.0);
+        self.g.resize(n, 0.0);
+        self.jg.resize(m, 0.0);
+        self.jh.resize(m, 0.0);
+        self.h_gn.resize(n, 0.0);
+        self.h_sd.resize(n, 0.0);
+        self.h.resize(n, 0.0);
+        self.trial.resize(n, 0.0);
+        self.diff.resize(n, 0.0);
+        self.tau.resize(k, 0.0);
+        self.perm.resize(n, 0);
+        self.col_norms.resize(n, 0.0);
+        self.qtb.resize(m, 0.0);
+        self.z.resize(n, 0.0);
+    }
+}
+
 /// Largest absolute residual, propagating NaN.
 ///
 /// `f64::max` returns the non-NaN operand, so a max-fold over residuals
@@ -49,7 +131,16 @@ pub struct SolveResult {
 /// - `tol`: convergence tolerance on max |residual|
 ///
 /// Returns the solve result. On convergence, `params` holds the solution.
-#[allow(clippy::too_many_lines)]
+///
+/// Solve-local workspaces back the iteration loop (PERF-S03); the
+/// `Vec`-returning closures still allocate their temporaries, while all
+/// solver-owned gradient, product and step vectors plus the QR copy are
+/// reused. Callers that can fill caller-owned buffers should prefer
+/// [`solve_dogleg_fill`], which avoids those temporaries as well.
+///
+/// Retained for the solver unit tests; production `GcsSystem::solve` uses
+/// [`solve_dogleg_fill`] with reusable snapshot storage.
+#[allow(dead_code)]
 pub fn solve_dogleg<F, G>(
     params: &mut [f64],
     residual_fn: &F,
@@ -62,16 +153,67 @@ where
     F: Fn(&[f64]) -> Vec<f64>,
     G: Fn(&[f64]) -> Vec<f64>,
 {
+    let mut ws = DoglegWorkspace::new();
+    let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
+        out.clear();
+        out.extend(residual_fn(p));
+    };
+    let mut jacobian_fill = |p: &[f64], out: &mut [f64]| {
+        let j = jacobian_fn(p);
+        out.copy_from_slice(&j);
+    };
+    solve_dogleg_fill(
+        params,
+        &mut residual_fill,
+        &mut jacobian_fill,
+        num_residuals,
+        max_iter,
+        tol,
+        &mut ws,
+    )
+}
+
+/// DogLeg trust-region solver writing into caller-owned buffers (PERF-S03).
+///
+/// - `residual_fill(p, out)`: overwrites `out` with exactly `num_residuals`
+///   residuals at `p` (may reuse `out`'s capacity via `clear` + `push`).
+/// - `jacobian_fill(p, out)`: overwrites `out[m*n]` with the row-major
+///   Jacobian at `p` (must fully overwrite; zero before accumulating).
+/// - `workspace`: solve-local scratch, sized via [`DoglegWorkspace::ensure`].
+///
+/// Matrix layout, numerical operation order, convergence thresholds,
+/// trust-region decisions and iteration accounting match [`solve_dogleg`]
+/// exactly; only storage is reused.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub fn solve_dogleg_fill<F, G>(
+    params: &mut [f64],
+    residual_fill: &mut F,
+    jacobian_fill: &mut G,
+    num_residuals: usize,
+    max_iter: usize,
+    tol: f64,
+    workspace: &mut DoglegWorkspace,
+) -> SolveResult
+where
+    F: FnMut(&[f64], &mut Vec<f64>),
+    G: FnMut(&[f64], &mut [f64]),
+{
     let n = params.len();
-    if n == 0 || num_residuals == 0 {
-        let r = residual_fn(params);
-        let max_r = max_abs_residual(&r);
+    let m = num_residuals;
+    if n == 0 || m == 0 {
+        workspace.ensure(m, n);
+        workspace.r.clear();
+        residual_fill(params, &mut workspace.r);
+        let max_r = max_abs_residual(&workspace.r);
         return SolveResult {
             converged: max_r < tol,
             iterations: 0,
             max_residual: max_r,
         };
     }
+
+    workspace.ensure(m, n);
+    let ws = workspace;
 
     // Scale-aware initial trust radius
     let param_norm: f64 = params.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -80,8 +222,9 @@ where
     let mut delta = (1.0_f64).max(0.1 * param_norm).min(delta_max);
 
     for iteration in 0..max_iter {
-        let r = residual_fn(params);
-        let max_r = max_abs_residual(&r);
+        ws.r.clear();
+        residual_fill(params, &mut ws.r);
+        let max_r = max_abs_residual(&ws.r);
 
         if max_r < tol {
             return SolveResult {
@@ -91,28 +234,37 @@ where
             };
         }
 
-        // Build Jacobian. Save a copy before factorization, since QR modifies
-        // the matrix in-place and we need the original values for the gradient
-        // and predicted-reduction computations below.
-        let jac_orig = jacobian_fn(params);
-        let mut jac = jac_orig.clone();
-        let qr = QrResult::factorize(&mut jac, num_residuals, n);
+        // Build Jacobian. Keep the pre-factorization copy (`jac_orig`) for
+        // the gradient and predicted-reduction computations; factorize the
+        // working copy in place with reused QR scratch (no owned copy).
+        jacobian_fill(params, &mut ws.jac_orig);
+        ws.jac_work.copy_from_slice(&ws.jac_orig);
+        QrResult::factorize_reuse(
+            &mut ws.jac_work,
+            m,
+            n,
+            &mut ws.tau,
+            &mut ws.perm,
+            &mut ws.col_norms,
+        );
 
         // Gauss-Newton step: solve J * h_gn = -r
-        let neg_r: Vec<f64> = r.iter().map(|&v| -v).collect();
-        let h_gn = qr.solve_least_squares(&neg_r);
+        for (d, &v) in ws.neg_r.iter_mut().zip(ws.r.iter()) {
+            *d = -v;
+        }
+        solve_gn_step(ws, m, n);
 
         // Gradient: g = J^T * r  (use the saved pre-factorization Jacobian)
-        let mut g = vec![0.0; n];
-        for i in 0..num_residuals {
+        ws.g.fill(0.0);
+        for i in 0..m {
             for j in 0..n {
-                g[j] += jac_orig[i * n + j] * r[i];
+                ws.g[j] += ws.jac_orig[i * n + j] * ws.r[i];
             }
         }
 
         // Steepest descent step: h_sd = -alpha * g
         // alpha = ||g||² / ||J*g||²
-        let g_norm_sq: f64 = g.iter().map(|&v| v * v).sum();
+        let g_norm_sq: f64 = ws.g.iter().map(|&v| v * v).sum();
         if g_norm_sq < 1e-300 {
             // Zero gradient — we're at a stationary point
             return SolveResult {
@@ -122,43 +274,48 @@ where
             };
         }
 
-        let mut jg = vec![0.0; num_residuals];
-        for i in 0..num_residuals {
+        ws.jg.fill(0.0);
+        for i in 0..m {
             for j in 0..n {
-                jg[i] += jac_orig[i * n + j] * g[j];
+                ws.jg[i] += ws.jac_orig[i * n + j] * ws.g[j];
             }
         }
-        let jg_norm_sq: f64 = jg.iter().map(|&v| v * v).sum();
+        let jg_norm_sq: f64 = ws.jg.iter().map(|&v| v * v).sum();
         let alpha = if jg_norm_sq > 1e-300 {
             g_norm_sq / jg_norm_sq
         } else {
             1.0
         };
 
-        let h_sd: Vec<f64> = g.iter().map(|&v| -alpha * v).collect();
+        for (d, &v) in ws.h_sd.iter_mut().zip(ws.g.iter()) {
+            *d = -alpha * v;
+        }
 
-        let h = dogleg_step(&h_gn, &h_sd, delta);
-        let h_norm = h.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        dogleg_step_into(&ws.h_gn, &ws.h_sd, delta, &mut ws.h, &mut ws.diff);
+        let h_norm = ws.h.iter().map(|&v| v * v).sum::<f64>().sqrt();
 
-        let trial: Vec<f64> = params.iter().zip(h.iter()).map(|(&p, &d)| p + d).collect();
-        let r_trial = residual_fn(&trial);
+        for (t, (&p, &d)) in ws.trial.iter_mut().zip(params.iter().zip(ws.h.iter())) {
+            *t = p + d;
+        }
+        ws.r_trial.clear();
+        residual_fill(&ws.trial, &mut ws.r_trial);
 
-        let cost_current: f64 = r.iter().map(|&v| v * v).sum::<f64>() * 0.5;
-        let cost_trial: f64 = r_trial.iter().map(|&v| v * v).sum::<f64>() * 0.5;
+        let cost_current: f64 = ws.r.iter().map(|&v| v * v).sum::<f64>() * 0.5;
+        let cost_trial: f64 = ws.r_trial.iter().map(|&v| v * v).sum::<f64>() * 0.5;
         let actual_reduction = cost_current - cost_trial;
 
         // Predicted reduction from linear model
-        let mut jh = vec![0.0; num_residuals];
-        for i in 0..num_residuals {
+        ws.jh.fill(0.0);
+        for i in 0..m {
             for j in 0..n {
-                jh[i] += jac_orig[i * n + j] * h[j];
+                ws.jh[i] += ws.jac_orig[i * n + j] * ws.h[j];
             }
         }
         let predicted: f64 = {
             let mut pred = 0.0;
-            for i in 0..num_residuals {
-                pred += r[i] * jh[i];
-                pred += 0.5 * jh[i] * jh[i];
+            for i in 0..m {
+                pred += ws.r[i] * ws.jh[i];
+                pred += 0.5 * ws.jh[i] * ws.jh[i];
             }
             -pred
         };
@@ -177,12 +334,13 @@ where
         }
 
         if rho > 0.0 {
-            params.copy_from_slice(&trial);
+            params.copy_from_slice(&ws.trial);
         }
 
         if h_norm < 1e-15 * (1.0 + param_norm) {
-            let final_r = residual_fn(params);
-            let final_max = max_abs_residual(&final_r);
+            ws.r_trial.clear();
+            residual_fill(params, &mut ws.r_trial);
+            let final_max = max_abs_residual(&ws.r_trial);
             return SolveResult {
                 converged: final_max < tol,
                 iterations: iteration + 1,
@@ -191,8 +349,9 @@ where
         }
     }
 
-    let r = residual_fn(params);
-    let max_r = max_abs_residual(&r);
+    ws.r.clear();
+    residual_fill(params, &mut ws.r);
+    let max_r = max_abs_residual(&ws.r);
     SolveResult {
         converged: max_r < tol,
         iterations: max_iter,
@@ -200,13 +359,37 @@ where
     }
 }
 
-/// Compute the DogLeg step: choose GN, SD, or a blend based on trust radius.
-fn dogleg_step(h_gn: &[f64], h_sd: &[f64], delta: f64) -> Vec<f64> {
+/// Gauss-Newton solve `J h_gn = -r` using the factored `jac_work` in `ws`.
+///
+/// Split out so the borrow checker sees disjoint field accesses without
+/// whole-struct borrows or per-iteration allocations.
+fn solve_gn_step(ws: &mut DoglegWorkspace, m: usize, n: usize) {
+    let DoglegWorkspace {
+        jac_work,
+        tau,
+        perm,
+        neg_r,
+        h_gn,
+        qtb,
+        z,
+        ..
+    } = ws;
+    QrResult::solve_least_squares_into(jac_work, tau, perm, m, n, neg_r, h_gn, qtb, z);
+}
+
+/// Compute the DogLeg step into `out` (PERF-S03).
+///
+/// Same layout and operation order as [`dogleg_step`]; `diff_tmp` backs the
+/// `h_gn - h_sd` interpolation scratch. `out` and `diff_tmp` are fully
+/// overwritten on the paths that read them, so no stale step survives a
+/// resize.
+fn dogleg_step_into(h_gn: &[f64], h_sd: &[f64], delta: f64, out: &mut [f64], diff_tmp: &mut [f64]) {
     let gn_norm = h_gn.iter().map(|&v| v * v).sum::<f64>().sqrt();
 
     // If GN step is within trust region, use it
     if gn_norm <= delta {
-        return h_gn.to_vec();
+        out.copy_from_slice(h_gn);
+        return;
     }
 
     let sd_norm = h_sd.iter().map(|&v| v * v).sum::<f64>().sqrt();
@@ -214,17 +397,22 @@ fn dogleg_step(h_gn: &[f64], h_sd: &[f64], delta: f64) -> Vec<f64> {
     // If even SD step exceeds trust region, scale it down
     if sd_norm >= delta {
         let scale = delta / sd_norm;
-        return h_sd.iter().map(|&v| v * scale).collect();
+        for (d, &v) in out.iter_mut().zip(h_sd.iter()) {
+            *d = v * scale;
+        }
+        return;
     }
 
     // Interpolate between SD and GN: h = h_sd + t * (h_gn - h_sd)
     // Find t such that ||h_sd + t * (h_gn - h_sd)|| = delta
-    let diff: Vec<f64> = h_gn.iter().zip(h_sd.iter()).map(|(&g, &s)| g - s).collect();
+    for (d, (&g, &s)) in diff_tmp.iter_mut().zip(h_gn.iter().zip(h_sd.iter())) {
+        *d = g - s;
+    }
 
-    let a: f64 = diff.iter().map(|&v| v * v).sum();
+    let a: f64 = diff_tmp.iter().map(|&v| v * v).sum();
     let b: f64 = h_sd
         .iter()
-        .zip(diff.iter())
+        .zip(diff_tmp.iter())
         .map(|(&s, &d)| s * d)
         .sum::<f64>()
         * 2.0;
@@ -235,10 +423,9 @@ fn dogleg_step(h_gn: &[f64], h_sd: &[f64], delta: f64) -> Vec<f64> {
     let t = (-b + discriminant.sqrt()) / (2.0 * a);
     let t = t.clamp(0.0, 1.0);
 
-    h_sd.iter()
-        .zip(diff.iter())
-        .map(|(&s, &d)| s + t * d)
-        .collect()
+    for (o, (&s, &d)) in out.iter_mut().zip(h_sd.iter().zip(diff_tmp.iter())) {
+        *o = s + t * d;
+    }
 }
 
 #[cfg(test)]
