@@ -30,10 +30,9 @@
 //!   - *Plane*: a linear coordinate over a planar patch attains its maximum
 //!     on the boundary (a non-constant linear function has no interior
 //!     critical point), so the wire bound suffices;
-//!   - *Cylinder*: a linear coordinate has no interior critical point on a
-//!     cylinder (the axis is never parallel to the radial normal), and along
-//!     a critical generator line the coordinate is constant, hence also
-//!     attained where the line meets the boundary — the wire bound suffices;
+//!   - *Cylinder*: the narrow-phase projected trim predicate can admit the
+//!     opposite generator on a wrapped patch, so edge-only bounds stay on
+//!     the mandatory path;
 //!   - *Cone*: as for the cylinder, plus the apex (the only singular
 //!     point), included when the trim predicate accepts it;
 //!   - *Sphere*: the six axis poles (the only interior critical points of
@@ -149,7 +148,8 @@ pub fn face_bound(topo: &Topology, face_id: FaceId) -> Result<FaceBound, CheckEr
     // Carrier interior. `None` means "no finite interior bound available":
     // unbounded carriers with no wire extent are unknown.
     let interior_unknown: Option<&'static str> = match &surface {
-        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) => None,
+        FaceSurface::Plane { .. } => None,
+        FaceSurface::Cylinder(_) => Some("cylinder_projection_outside_edge_bounds"),
         FaceSurface::Cone(cone) => {
             let apex = cone_apex(cone);
             if point_is_finite(apex) && accepts(&apex) {
@@ -573,7 +573,7 @@ fn expand_along_axis(
     if hi < c + radius {
         max = match axis {
             0 => Point3::new(c + radius, max.y(), max.z()),
-            1 => Point3::new(max.x(), c + radius, max.y()),
+            1 => Point3::new(max.x(), c + radius, max.z()),
             _ => Point3::new(max.x(), max.y(), c + radius),
         };
     }
@@ -735,6 +735,64 @@ mod tests {
         let bound = torus_bounds(&torus);
         assert!(bound.is_prunable());
         assert!(bound.aabb().max.x() > 1.0001);
+    }
+
+    #[test]
+    fn cylinder_projection_stays_on_mandatory_path() {
+        use remus_math::surfaces::CylindricalSurface;
+
+        let cylinder =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), 1.0)
+                .unwrap();
+        let mut topo = Topology::new();
+        let points = [
+            cylinder.evaluate(0.1, 0.0),
+            cylinder.evaluate(0.2, 0.0),
+            cylinder.evaluate(0.2, 1.0),
+            cylinder.evaluate(0.1, 1.0),
+        ];
+        let vertices = points.map(|point| topo.add_vertex(Vertex::new(point, TOL)));
+        let edges = (0..4)
+            .map(|i| {
+                topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % 4],
+                    EdgeCurve::Line,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .iter()
+                    .map(|&edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(remus_topology::face::Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(cylinder),
+        ));
+        let bound = face_bound(&topo, face).unwrap();
+        assert!(!bound.prunable);
+        assert_eq!(
+            bound.unprunable_reason,
+            Some("cylinder_projection_outside_edge_bounds")
+        );
+    }
+
+    #[test]
+    fn y_axis_expansion_preserves_existing_z_extent() {
+        let anchor = Aabb3 {
+            min: Point3::new(-1.0, 0.0, -3.0),
+            max: Point3::new(1.0, 0.1, 4.0),
+        };
+        let expanded = expand_along_axis(Some(anchor), Point3::new(0.0, 0.0, 0.0), 1.0, 1).unwrap();
+        assert!(expanded.max.y() >= 1.0);
+        assert!(expanded.max.z() >= 4.0);
     }
 
     #[test]
