@@ -1403,6 +1403,63 @@ fn with_context_default_matches_legacy_entry_point() {
 }
 
 #[test]
+fn ssi_backtracking_persists_constrained_boundary_trial() {
+    use crate::context::OperationContext;
+
+    let rational = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ],
+        vec![vec![0.1, 0.1], vec![1.0, 1.0]],
+    )
+    .unwrap();
+    let target_x = 0.04 / (0.1 + 0.9 * 0.04);
+    let cross_plane = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![
+                Point3::new(target_x, 0.0, -0.5),
+                Point3::new(target_x, 0.0, 0.5),
+            ],
+            vec![
+                Point3::new(target_x, 1.0, -0.5),
+                Point3::new(target_x, 1.0, 0.5),
+            ],
+        ],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap();
+    let refined = refine_ssi_point_with_context(
+        &rational,
+        &cross_plane,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        1e-8,
+        &OperationContext::new(),
+        &mut SsiScratch::new(),
+    )
+    .unwrap()
+    .expect("an accepted clamped step must converge from the domain boundary");
+    assert!((refined.param1.0 - 0.04).abs() < 1e-6);
+    assert!(
+        (rational.evaluate(refined.param1.0, refined.param1.1)
+            - cross_plane.evaluate(refined.param2.0, refined.param2.1))
+        .length()
+            < 1e-8
+    );
+}
+
+#[test]
 fn caller_newton_budget_is_authoritative_for_ssi_refinement() {
     use crate::context::{OperationContext, WorkBudgets};
 
@@ -2828,4 +2885,354 @@ fn spatial_chain_matches_oracle_on_degenerate_inputs() {
         })
         .collect();
     check_chains_equivalent(&hug, cell);
+}
+
+// -- Bounded steep-weight height-field vs plane (Fuzz Smoke 36309258004) --
+//
+// Minimized from crash-506735a50d63b425afa86e72b81905b8c753090e: a 4x2
+// bilinear rational patch whose top-row weights (3.5) outweigh the lower
+// rows (0.25) 14x. The weight ratio concentrates most of the top span's
+// motion in the first 10% of its parameter range, so full Gauss-Newton
+// steps overshoot and the coupled 4D refinement diverges even 0.03 away
+// from the root. Subdivision (depth 6) and grid (5x5) seeds both miss the
+// section the opposite corners guarantee by continuity, and the generic
+// NURBS-NURBS path returns zero curves. The dedicated plane path always
+// found it (sign-change seeding + gradient descent).
+//
+// The fix is a backtracking line search in `refine_ssi_point_with_context`:
+// halve the Gauss-Newton step until the constrained residual decreases,
+// falling back to alternating projection only when no damped step is a
+// descent direction. Acceptance tolerances and work budgets are unchanged.
+mod steep_section_36309258004 {
+    use super::*;
+    use crate::context::{OperationContext, WorkBudgets};
+
+    const TOP_W: f64 = 3.5;
+    const ROW_W: f64 = 0.25;
+    const PLANE_H: f64 = -0.5;
+
+    fn height_field(scale: f64, top_w: f64) -> NurbsSurface {
+        let cps = vec![
+            vec![
+                Point3::new(0.0, 0.0, -scale),
+                Point3::new(0.0, scale, -scale),
+            ],
+            vec![
+                Point3::new(scale / 3.0, 0.0, -scale),
+                Point3::new(scale / 3.0, scale, -scale),
+            ],
+            vec![
+                Point3::new(2.0 * scale / 3.0, 0.0, -0.6 * scale),
+                Point3::new(2.0 * scale / 3.0, scale, -0.6 * scale),
+            ],
+            vec![
+                Point3::new(scale, 0.0, scale),
+                Point3::new(scale, scale, scale),
+            ],
+        ];
+        let wts = vec![
+            vec![ROW_W, ROW_W],
+            vec![ROW_W, ROW_W],
+            vec![ROW_W, ROW_W],
+            vec![top_w, top_w],
+        ];
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            cps,
+            wts,
+        )
+        .unwrap()
+    }
+
+    fn plane(scale: f64, height: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![
+                    Point3::new(0.0, 0.0, height),
+                    Point3::new(0.0, scale, height),
+                ],
+                vec![
+                    Point3::new(scale, 0.0, height),
+                    Point3::new(scale, scale, height),
+                ],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn fuzz_budgets() -> WorkBudgets {
+        WorkBudgets::new()
+            .with_march_steps(48)
+            .with_queue_size(16)
+            .with_segments(8)
+            .with_branches_per_direction(4)
+            .with_newton_iterations(12)
+            .with_subdivision_depth(6)
+    }
+
+    fn assert_section(
+        surf: &NurbsSurface,
+        plane: &NurbsSurface,
+        plane_height: f64,
+        scale: f64,
+        curves: &[super::super::IntersectionCurve],
+    ) {
+        assert!(
+            !curves.is_empty(),
+            "bounded NURBS SSI missed a section guaranteed by opposite surface corners"
+        );
+        let tol = scale.mul_add(1.0e-3, 1.0e-6);
+        let slack = f64::EPSILON * 32.0;
+        let in_domain =
+            |v: f64, d: (f64, f64)| v.is_finite() && v >= d.0 - slack && v <= d.1 + slack;
+        for ic in curves {
+            for s in &ic.points {
+                assert!(in_domain(s.param1.0, surf.domain_u()), "u1 out of domain");
+                assert!(in_domain(s.param1.1, surf.domain_v()), "v1 out of domain");
+                assert!(in_domain(s.param2.0, plane.domain_u()), "u2 out of domain");
+                assert!(in_domain(s.param2.1, plane.domain_v()), "v2 out of domain");
+                let on_s = surf.evaluate(s.param1.0, s.param1.1);
+                let on_p = plane.evaluate(s.param2.0, s.param2.1);
+                assert!(
+                    (on_s - s.point).length() <= tol,
+                    "SSI point missed the height field"
+                );
+                assert!(
+                    (on_p - s.point).length() <= tol,
+                    "SSI point missed the plane surface"
+                );
+                assert!(
+                    (s.point.z() - plane_height).abs() <= tol,
+                    "SSI point violated the independent plane equation"
+                );
+            }
+            // The fitted curve itself must stay on the section plane.
+            let (t0, t1) = ic.curve.domain();
+            for k in 0..=4 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * f64::from(k) / 4.0;
+                let p = ic.curve.evaluate(t);
+                assert!(
+                    (p.z() - plane_height).abs() <= tol * 20.0,
+                    "fitted SSI curve violated the independent plane equation"
+                );
+            }
+        }
+    }
+
+    /// Flipped-operand oracle: param1 lives on the plane, param2 on the
+    /// height field. Same tolerances and plane-equation check as above.
+    fn assert_section_flipped(
+        surf: &NurbsSurface,
+        plane: &NurbsSurface,
+        plane_height: f64,
+        scale: f64,
+        curves: &[super::super::IntersectionCurve],
+    ) {
+        assert!(
+            !curves.is_empty(),
+            "bounded NURBS SSI missed a section guaranteed by opposite surface corners"
+        );
+        let tol = scale.mul_add(1.0e-3, 1.0e-6);
+        let slack = f64::EPSILON * 32.0;
+        let in_domain =
+            |v: f64, d: (f64, f64)| v.is_finite() && v >= d.0 - slack && v <= d.1 + slack;
+        for ic in curves {
+            for s in &ic.points {
+                assert!(in_domain(s.param1.0, plane.domain_u()), "u1 out of domain");
+                assert!(in_domain(s.param1.1, plane.domain_v()), "v1 out of domain");
+                assert!(in_domain(s.param2.0, surf.domain_u()), "u2 out of domain");
+                assert!(in_domain(s.param2.1, surf.domain_v()), "v2 out of domain");
+                let on_p = plane.evaluate(s.param1.0, s.param1.1);
+                let on_s = surf.evaluate(s.param2.0, s.param2.1);
+                assert!(
+                    (on_s - s.point).length() <= tol,
+                    "SSI point missed the height field"
+                );
+                assert!(
+                    (on_p - s.point).length() <= tol,
+                    "SSI point missed the plane surface"
+                );
+                assert!(
+                    (s.point.z() - plane_height).abs() <= tol,
+                    "SSI point violated the independent plane equation"
+                );
+            }
+            let (t0, t1) = ic.curve.domain();
+            for k in 0..=4 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * f64::from(k) / 4.0;
+                let p = ic.curve.evaluate(t);
+                assert!(
+                    (p.z() - plane_height).abs() <= tol * 20.0,
+                    "fitted SSI curve violated the independent plane equation"
+                );
+            }
+        }
+    }
+
+    /// The minimized crash: fails before the line-search fix (zero curves),
+    /// passes after (one section curve on the plane).
+    #[test]
+    fn steep_weight_section_is_found() {
+        let scale = 1.0;
+        let surf = height_field(scale, TOP_W);
+        // Opposite corners straddle the plane by continuity, so the section
+        // is non-vacuous independently of the SSI machinery.
+        assert!(surf.evaluate(0.0, 0.0).z() < PLANE_H);
+        assert!(surf.evaluate(1.0, 1.0).z() > PLANE_H);
+        let plane = plane(scale, PLANE_H);
+        let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+        let curves = intersect_nurbs_nurbs_with_context(&surf, &plane, 5, 0.0, &ctx).unwrap();
+        assert_section(&surf, &plane, PLANE_H, scale, &curves);
+    }
+
+    /// Supported family around the crash: weight ratios, plane heights,
+    /// scales, operand order, parameter reversals, and a rigid placement.
+    /// Every case carries the same corner-straddle guarantee and the same
+    /// dual-surface plus plane-equation oracle as the base regression.
+    #[test]
+    fn steep_weight_section_family() {
+        // Weight ratios 1x (uniform, positive control) and 14x (the crash).
+        for top_w in [1.0, TOP_W] {
+            // Plane heights spanning the patch interior.
+            for h in [-0.9, -0.5, 0.0, 0.5, 0.9] {
+                let scale = 1.0;
+                let surf = height_field(scale, top_w);
+                assert!(surf.evaluate(0.0, 0.0).z() < h, "top_w={top_w} h={h}");
+                assert!(surf.evaluate(1.0, 1.0).z() > h, "top_w={top_w} h={h}");
+                let pl = plane(scale, h);
+                let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+                // Both operand orders. In the flipped call param1 lives on
+                // the plane and param2 on the height field, so the oracle
+                // must swap accordingly.
+                for (a, b, flip) in [(&surf, &pl, false), (&pl, &surf, true)] {
+                    let curves = intersect_nurbs_nurbs_with_context(a, b, 5, 0.0, &ctx).unwrap();
+                    if flip {
+                        assert_section_flipped(&surf, &pl, h, scale, &curves);
+                    } else {
+                        assert_section(a, b, h, scale, &curves);
+                    }
+                }
+            }
+        }
+
+        // Scales from the fuzz target.
+        for scale in [0.1, 1.0, 10.0] {
+            let h = -0.5 * scale;
+            let surf = height_field(scale, TOP_W);
+            let pl = plane(scale, h);
+            assert!(surf.evaluate(0.0, 0.0).z() < h);
+            assert!(surf.evaluate(1.0, 1.0).z() > h);
+            let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+            let curves = intersect_nurbs_nurbs_with_context(&surf, &pl, 5, 0.0, &ctx).unwrap();
+            assert_section(&surf, &pl, h, scale, &curves);
+        }
+
+        // Parameter-direction reversal preserves the geometry (mirrored
+        // parameters evaluate identically) and the section.
+        {
+            let scale = 1.0;
+            let surf = height_field(scale, TOP_W);
+            let pl = plane(scale, PLANE_H);
+            let rev_u = reverse_u(&surf);
+            let rev_v = reverse_v(&surf);
+            for p in [(0.2, 0.3), (0.67, 0.5), (0.9, 0.8)] {
+                let a = surf.evaluate(p.0, p.1);
+                let b = rev_u.evaluate(1.0 - p.0, p.1);
+                let c = rev_v.evaluate(p.0, 1.0 - p.1);
+                assert!((a - b).length() < 1e-9, "u-reversal changed geometry");
+                assert!((a - c).length() < 1e-9, "v-reversal changed geometry");
+            }
+            let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+            for rev in [&rev_u, &rev_v] {
+                let curves = intersect_nurbs_nurbs_with_context(rev, &pl, 5, 0.0, &ctx).unwrap();
+                assert_section(rev, &pl, PLANE_H, scale, &curves);
+            }
+        }
+
+        // Rigid placement: translate both surfaces; the section translates.
+        {
+            let (tx, ty, tz) = (5.0, -3.0, 2.0);
+            let scale = 1.0;
+            let surf = height_field(scale, TOP_W);
+            let moved = translate(&surf, tx, ty, tz);
+            let h = PLANE_H + tz;
+            let pl = plane(scale, PLANE_H);
+            let moved_plane = translate(&pl, tx, ty, tz);
+            let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+            let curves =
+                intersect_nurbs_nurbs_with_context(&moved, &moved_plane, 5, 0.0, &ctx).unwrap();
+            assert_section(&moved, &moved_plane, h, scale, &curves);
+        }
+    }
+
+    fn reverse_u(s: &NurbsSurface) -> NurbsSurface {
+        let mut cps = s.control_points().to_vec();
+        cps.reverse();
+        let mut wts = s.weights().to_vec();
+        wts.reverse();
+        let ku: Vec<f64> = s.knots_u().iter().rev().map(|k| 1.0 - k).collect();
+        NurbsSurface::new(
+            s.degree_u(),
+            s.degree_v(),
+            ku,
+            s.knots_v().to_vec(),
+            cps,
+            wts,
+        )
+        .unwrap()
+    }
+
+    fn reverse_v(s: &NurbsSurface) -> NurbsSurface {
+        let cps: Vec<Vec<Point3>> = s
+            .control_points()
+            .iter()
+            .map(|row| row.iter().rev().copied().collect())
+            .collect();
+        let wts: Vec<Vec<f64>> = s
+            .weights()
+            .iter()
+            .map(|row| row.iter().rev().copied().collect())
+            .collect();
+        let kv: Vec<f64> = s.knots_v().iter().rev().map(|k| 1.0 - k).collect();
+        NurbsSurface::new(
+            s.degree_u(),
+            s.degree_v(),
+            s.knots_u().to_vec(),
+            kv,
+            cps,
+            wts,
+        )
+        .unwrap()
+    }
+
+    fn translate(s: &NurbsSurface, tx: f64, ty: f64, tz: f64) -> NurbsSurface {
+        let cps: Vec<Vec<Point3>> = s
+            .control_points()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|p| Point3::new(p.x() + tx, p.y() + ty, p.z() + tz))
+                    .collect()
+            })
+            .collect();
+        NurbsSurface::new(
+            s.degree_u(),
+            s.degree_v(),
+            s.knots_u().to_vec(),
+            s.knots_v().to_vec(),
+            cps,
+            s.weights().to_vec(),
+        )
+        .unwrap()
+    }
 }
