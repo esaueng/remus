@@ -53,3 +53,16 @@ boolean healing/acceptance work as future attribution targets. Its Builder
 timing includes classification and cannot establish that classification itself
 is a hotspot. No Boolean acceptance, validation, tolerance, or rollback change
 is justified by that coarse breakdown.
+
+## Paired WASM artifact
+
+`cargo xtask wasm-build` rebuilt both packages from source commit
+`584dc208d66c432562c5c7864cfbcef360a3406e` at version `2026.1.4`.
+Both package validators, the eight versioning fixtures, runtime smoke suite,
+and installed-tarball consumer regressions passed. JS entrypoints and type
+signatures are unchanged.
+
+| Package | WASM bytes | SHA-256 |
+| --- | ---: | --- |
+| remus-wasm | 9,276,335 | `e65c11adc38149d6d74b98551fc2c65fc144820e5d4c997807e2ade581522e97` |
+| remus-wasm-io | 2,786,743 | `44230c6d7799017c227775a93d5e97aa8923b27f6d553377369e57fb85c252e2` |
