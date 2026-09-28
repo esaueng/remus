@@ -1,6 +1,6 @@
 //! Conservative bounds over finite curve spans.
 //!
-//! Every function returns a [`FiniteBound`](super::FiniteBound): either a
+//! Every function returns a [`FiniteBound`]: either a
 //! certified conservative box (usable for pruning) or an explicitly unknown
 //! fallback that never prunes. See [`super`] for the proof sketches.
 //!
