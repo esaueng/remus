@@ -772,6 +772,15 @@ fn unknown_entity_label(raw: &str) -> String {
     raw.to_ascii_uppercase()
 }
 
+/// Use the retained source token for unknown types on refusal paths.
+fn diagnostic_entity_type(entity: &StepEntity<'_>) -> String {
+    if entity.kind == EntityKind::Unknown {
+        unknown_entity_label(entity.type_str())
+    } else {
+        entity.kind.as_str().to_string()
+    }
+}
+
 /// Parse all entity instances from the DATA section.
 ///
 /// The returned map borrows the input in the common path: entity type tokens
@@ -4159,7 +4168,7 @@ impl<'a> StepBuilder<'a> {
                 self.build_bspline_surface(surface_ref, &bspline_attrs, is_rational)
             }
             _ => Err(IoError::UnsupportedEntity {
-                entity: entity_type.as_str().to_string(),
+                entity: diagnostic_entity_type(entity),
             }),
         }
     }
@@ -5123,7 +5132,7 @@ impl<'a> StepBuilder<'a> {
                 self.build_bspline_curve2d(curve_ref, &bspline_attrs, rational)
             }
             _ => Err(IoError::UnsupportedEntity {
-                entity: format!("{} (2D curve #{curve_ref})", entity.kind.as_str()),
+                entity: format!("{} (2D curve #{curve_ref})", diagnostic_entity_type(entity)),
             }),
         }
     }
@@ -6397,7 +6406,7 @@ impl<'a> StepBuilder<'a> {
                 self.build_bspline_curve(curve_ref, &bspline_attrs, is_rational)
             }
             _ => Err(IoError::UnsupportedEntity {
-                entity: format!("{} (curve #{curve_ref})", entity_type.as_str()),
+                entity: format!("{} (curve #{curve_ref})", diagnostic_entity_type(entity)),
             }),
         }
     }
@@ -13619,6 +13628,27 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let mut topo = Topology::new();
         let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_surface(surface_id)
+    }
+
+    #[test]
+    fn unsupported_unknown_entities_report_source_type() {
+        let surface_error = surface_geometry("#5=OFFSET_SURFACE('',#2,1.0);", 5).unwrap_err();
+        assert!(matches!(surface_error, IoError::UnsupportedEntity { .. }));
+        assert!(surface_error.to_string().contains("OFFSET_SURFACE"));
+
+        let curve_error = curve_geometry("#5=MY_CURVE();", 5).unwrap_err();
+        assert!(matches!(curve_error, IoError::UnsupportedEntity { .. }));
+        assert!(curve_error.to_string().contains("MY_CURVE"));
+
+        let step = step_file("#5=MY_2D_CURVE();");
+        let entities = parse_step_entities(&step, ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+        let curve2d_error = builder.build_curve2d_basis(5).unwrap_err();
+        assert!(matches!(curve2d_error, IoError::UnsupportedEntity { .. }));
+        assert!(curve2d_error.to_string().contains("MY_2D_CURVE"));
     }
 
     /// Resolve one `AXIS2_PLACEMENT_3D` through the real parse + build path,
