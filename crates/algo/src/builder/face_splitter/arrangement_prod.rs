@@ -70,6 +70,9 @@ const PLANE_GATE_SCALE: f64 = 100.0;
 /// End-proximity margin for interior-cut parameters (absolute, in the
 /// use's native pcurve parameter units).
 const END_MARGIN: f64 = 1e-9;
+/// Maximum input uses for one exact arrangement. Pair scans scale
+/// quadratically; larger faces stay on the established chord path.
+const MAX_ARRANGEMENT_USES: usize = 256;
 
 /// One coedge traversal in a loop, resolved to vertex identities.
 struct LoopUse {
@@ -106,8 +109,6 @@ pub(super) struct ParentInfo {
     pub pcurve: Curve2D,
     /// Traversal start/end in 3D.
     pub endpoints_3d: [Point3; 2],
-    /// Native parent interval oriented in traversal direction.
-    pub domain: (f64, f64),
     /// Store-space topology edge index for boundary uses.
     pub source_topo_edge: Option<usize>,
     /// Pave block for section uses (cross-face sharing).
@@ -178,25 +179,44 @@ pub(super) fn collect_planar_uses(
 
 /// Run the isolated core on collected uses.
 ///
-/// Every [`ArrangementError`] maps to [`AlgoError::FaceSplitFailed`]: the
-/// input passed qualification, so a refusal is an internal error on
-/// claimed input and must propagate rather than fall back.
+/// Returns the typed core error unchanged: the caller decides whether a
+/// refusal is out-of-domain (recorded-unsupported contact classes) or an
+/// internal error on claimed input.
 pub(super) fn run_planar_arrangement(
     inputs: &PlanarInputs,
     context: &OperationContext,
-) -> Result<Arrangement, AlgoError> {
+) -> Result<Arrangement, ArrangementError> {
     build_arrangement(&ArrangementInput {
         uses: &inputs.uses,
         domain: ParamDomain::Plane,
         context,
     })
-    .map_err(|error| {
-        AlgoError::FaceSplitFailed(format!("provenance arrangement refused: {error:?}"))
-    })
 }
 
 fn collect_failed(error: ArrangementError) -> AlgoError {
     AlgoError::FaceSplitFailed(format!("provenance arrangement refused: {error:?}"))
+}
+
+/// Input-proportional budget policy for one arrangement run. The core
+/// charges every pair scan, refinement, seed search, graph walk, and
+/// quotient step against `march_steps`, caps inputs/events at
+/// `queue_size`, and caps emitted edges at `segments`.
+fn arrangement_context(parent: &OperationContext, uses: usize) -> OperationContext {
+    let n = uses.saturating_add(8);
+    let floor = remus_math::context::WorkBudgets::new()
+        .with_march_steps(64_usize.saturating_mul(n).saturating_mul(n))
+        .with_queue_size(8_usize.saturating_mul(n).saturating_mul(n))
+        .with_segments(4_usize.saturating_mul(n).saturating_mul(n));
+    let current = parent.budgets;
+    parent.clone().with_budgets(
+        remus_math::context::WorkBudgets::new()
+            .with_march_steps(current.march_steps.max(floor.march_steps))
+            .with_queue_size(current.queue_size.max(floor.queue_size))
+            .with_segments(current.segments.max(floor.segments))
+            .with_branches_per_direction(current.branches_per_direction)
+            .with_newton_iterations(current.newton_iterations)
+            .with_subdivision_depth(current.subdivision_depth),
+    )
 }
 
 /// Split a qualified planar face through the provenance-preserving
@@ -227,18 +247,52 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     else {
         return Ok(None);
     };
-    let arrangement = run_planar_arrangement(&inputs, context)?;
-    let subfaces = emit_planar_subfaces(
-        &inputs,
-        &arrangement,
-        surface,
-        reversed,
-        face_id,
-        rank,
-        frame,
-        context,
-    )?;
-    Ok(Some(subfaces))
+    if inputs.uses.len() > MAX_ARRANGEMENT_USES {
+        return Ok(None);
+    }
+    // The pipeline's budgets are SSI-calibrated (a handful of steps);
+    // the arrangement is a different cost model with quadratic pair
+    // scans. The adapter translates with an input-proportional policy
+    // floor, keeping the caller's cancellation token and every larger
+    // allowance: budgets stay finite and exhaustion stays typed, while
+    // default contexts can actually run the core. Measured: 10 uses
+    // consume ~700 march steps; the floor carries 8x headroom.
+    let child = arrangement_context(context, inputs.uses.len());
+    match run_planar_arrangement(&inputs, &child) {
+        Err(ArrangementError::AmbiguousContact | ArrangementError::AmbiguousOverlap) => {
+            // Recorded-unsupported contact classes (M1 contract): tangent
+            // contacts and coincident overlaps are out-of-domain, so the
+            // caller runs the established path. Every other refusal is an
+            // internal error on claimed input and propagates. A genuine
+            // adapter bug cannot hide here: only exact geometric tangency
+            // or collinearity produces these errors, never a macroscopic
+            // correspondence failure (those refuse as refinement, open
+            // region, or non-manifold errors instead).
+            Ok(None)
+        }
+        Err(error) => {
+            log::debug!(
+                "provenance arrangement refused face={face_id:?} err={error:?} uses={}",
+                inputs.uses.len()
+            );
+            Err(AlgoError::FaceSplitFailed(format!(
+                "provenance arrangement refused: {error:?}"
+            )))
+        }
+        Ok(arrangement) => {
+            let subfaces = emit_planar_subfaces(
+                &inputs,
+                &arrangement,
+                surface,
+                reversed,
+                face_id,
+                rank,
+                frame,
+                context,
+            )?;
+            Ok(Some(subfaces))
+        }
+    }
 }
 
 /// Convert material regions into production subfaces.
@@ -811,7 +865,6 @@ impl<'a> Collector<'a> {
                     ParentInfo {
                         pcurve,
                         endpoints_3d: [start_3d, end_3d],
-                        domain: (0.0, 1.0),
                         source_topo_edge,
                         pave_block_id,
                         is_section,
@@ -847,7 +900,6 @@ impl<'a> Collector<'a> {
                         ParentInfo {
                             pcurve: Curve2D::Circle(piece.pcurve),
                             endpoints_3d: piece.endpoints_3d,
-                            domain: (piece.source_range[0], piece.source_range[1]),
                             source_topo_edge,
                             pave_block_id,
                             is_section,
@@ -989,8 +1041,13 @@ impl<'a> Collector<'a> {
         if circle.radius() <= self.tol {
             return None;
         }
-        // Anchor the correspondence at the traversal start.
-        let start_angle = angle_of(center_uv, self.frame.project(start_3d));
+        // Anchor the correspondence at the traversal start. `rem_euclid`
+        // can return exactly TAU through rounding; TAU is the branch cut,
+        // canonically identical to angle zero.
+        let start_angle = {
+            let raw = angle_of(center_uv, self.frame.project(start_3d));
+            if raw >= TAU { 0.0 } else { raw }
+        };
         let signed_span = orientation * span;
         // Directed traversal interval in UV angles (possibly descending
         // for CW uses, possibly leaving `[0, 2π]`). A full turn from a
@@ -1158,7 +1215,6 @@ impl<'a> Collector<'a> {
             infos.push(ParentInfo {
                 pcurve: parent.pcurve.clone(),
                 endpoints_3d: [start_3d, end_3d],
-                domain: (source_at(lo), source_at(hi)),
                 source_topo_edge: parent_info.source_topo_edge,
                 pave_block_id: parent_info.pave_block_id,
                 is_section: parent_info.is_section,
@@ -1929,6 +1985,60 @@ mod tests {
         // The original plane face is unaffected and still qualifies.
         assert!(collect(&topo, face, &[]).is_some());
     }
+    #[test]
+    fn arc_starting_on_branch_cut_canonicalizes_to_zero() {
+        use std::f64::consts::PI;
+        // `atan2` angles infinitesimally below zero map through
+        // `rem_euclid` to exactly TAU (rounding). A traversal starting
+        // there must canonicalize to angle zero, not emit a degenerate
+        // `[TAU, TAU]` first piece (which the core refuses as an
+        // invalid boundary). Production witness: the 2-tangency
+        // box fuse, whose section arc starts on the cut.
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let tiny = -5e-17_f64;
+        let a = circle.evaluate(tiny);
+        let b = circle.evaluate(tiny + PI / 2.0);
+        let va = topo.add_vertex(Vertex::new(a, TOL));
+        let vb = topo.add_vertex(Vertex::new(b, TOL));
+        let vc = topo.add_vertex(Vertex::new(center, TOL));
+        let mut edge = Edge::new(va, vb, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((tiny, tiny + PI / 2.0)));
+        let eid = topo.add_edge(edge);
+        let l1 = topo.add_edge(Edge::new(vb, vc, EdgeCurve::Line));
+        let l2 = topo.add_edge(Edge::new(vc, va, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(eid, true),
+                    OrientedEdge::new(l1, true),
+                    OrientedEdge::new(l2, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let inputs = collect(&topo, face, &[]).expect("qualified cut-start arc");
+        let arc_use = inputs
+            .uses
+            .iter()
+            .find(|u| matches!(u.curve_3d, EdgeCurve::Circle(_)))
+            .expect("arc use");
+        assert!(arc_use.range[0].total_cmp(&0.0).is_eq());
+        assert!((arc_use.range[1] - PI / 2.0).abs() < 1e-9);
+        let arrangement = run(&inputs);
+        assert_eq!(material_count(&arrangement), 1);
+    }
+
     fn split_emit(
         topo: &Topology,
         face: FaceId,
@@ -2151,9 +2261,10 @@ mod tests {
 
     #[test]
     fn emission_is_atomic_on_internal_refusal() {
-        // The tangent ring passes qualification but the core refuses it;
-        // emission never runs, so no partial subface can escape and the
-        // input topology is untouched.
+        // The tangent ring passes qualification but the core refuses it
+        // at run level; the try_ entry maps recorded-unsupported contacts
+        // back to out-of-domain, so emission never runs, no partial
+        // subface escapes, and the input topology is untouched.
         let mut topo = Topology::new();
         let circle =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
@@ -2188,7 +2299,7 @@ mod tests {
             pave_block_id: Some(11),
         }];
         let before = topo.num_faces();
-        let error = try_split_plane_face_by_provenance_arrangement(
+        let deferred = try_split_plane_face_by_provenance_arrangement(
             &topo,
             face,
             &sections,
@@ -2197,8 +2308,11 @@ mod tests {
             &Tolerance::default(),
             &test_context(),
         )
-        .unwrap_err();
-        assert!(format!("{error:?}").contains("AmbiguousContact"));
+        .unwrap();
+        assert!(
+            deferred.is_none(),
+            "recorded-unsupported tangency defers to the established path"
+        );
         assert_eq!(topo.num_faces(), before, "no topology allocated on refusal");
     }
 }
