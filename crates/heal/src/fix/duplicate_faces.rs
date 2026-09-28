@@ -102,6 +102,7 @@ type Signature = (usize, Vec<usize>);
 type Cell3 = (i64, i64, i64);
 /// Bucket coordinates for one candidate face.
 type Bucket = (Signature, (Cell3, Cell3));
+type BucketIndex = DetHashMap<Signature, DetHashMap<(Cell3, Cell3), Vec<usize>>>;
 
 /// One directed boundary segment of a supported planar face.
 #[derive(Debug, Clone)]
@@ -152,11 +153,8 @@ impl BoundarySeg {
 /// Spatial-bucket anchor for one segment: closed rims anchor at their
 /// (phase-invariant) center, everything else at its start.
 ///
-/// Conservativeness: matching loops have elementwise-compatible segments —
-/// line/open-arc starts coincide and closed-rim centers coincide (compared
-/// within tolerance) — so the anchors' means coincide within tolerance too.
-/// Using the seam vertex for rims would make the bucket seam-dependent and
-/// split true matches.
+/// Closed rims use the center so different seam vertices share a key. A
+/// second center key catches their tolerance-close open-arc matches.
 fn bucket_anchor(seg: &BoundarySeg) -> Point3 {
     match *seg {
         BoundarySeg::Line { start } => start,
@@ -762,11 +760,19 @@ fn plan_duplicate_removals(
     // Per-face bucket keys; faces without a conservative key fall back to
     // universal candidacy (compared against every other face).
     let mut keys: Vec<Option<Bucket>> = Vec::with_capacity(n);
+    let mut rim_keys: Vec<Option<Bucket>> = Vec::with_capacity(n);
     let mut any_fallback = false;
     for d in descriptors {
-        let key = bucket_key(d, tolerance);
+        let rim_center = near_full_arc_center(d, tolerance);
+        let rim_key = rim_center.and_then(|center| bucket_key_at(d, tolerance, center));
+        let key = if rim_center.is_some() && rim_key.is_none() {
+            None
+        } else {
+            bucket_key(d, tolerance)
+        };
         any_fallback |= key.is_none();
         keys.push(key);
+        rim_keys.push(rim_key);
     }
     if any_fallback && keys.iter().all(Option::is_none) {
         return all_pairs_plan(descriptors, tolerance, true, &compatible);
@@ -775,16 +781,14 @@ fn plan_duplicate_removals(
     // Buckets grow in index order, so every bucket is ascending by construction.
     // Two levels (signature, then spatial cells) so halo lookups never clone
     // the hole-signature vector.
-    let mut buckets: DetHashMap<Signature, DetHashMap<(Cell3, Cell3), Vec<usize>>> =
-        DetHashMap::default();
+    let mut buckets = BucketIndex::default();
+    let mut rim_buckets = BucketIndex::default();
     for (idx, key) in keys.iter().enumerate() {
-        if let Some((signature, cells)) = key {
-            buckets
-                .entry(signature.clone())
-                .or_default()
-                .entry(*cells)
-                .or_default()
-                .push(idx);
+        if let Some(key) = key {
+            insert_bucket(&mut buckets, key, idx);
+        }
+        if let Some(key) = &rim_keys[idx] {
+            insert_bucket(&mut rim_buckets, key, idx);
         }
     }
 
@@ -803,29 +807,10 @@ fn plan_duplicate_removals(
         match &keys[j] {
             // Degenerate descriptor: every earlier face is a candidate.
             None => scratch.extend(0..j),
-            Some((signature, ((nx, ny, nz), (cx, cy, cz)))) => {
-                let inner = buckets.get(signature);
-                for dx in -1..=1_i64 {
-                    for dy in -1..=1_i64 {
-                        for dz in -1..=1_i64 {
-                            for dnx in -1..=1_i64 {
-                                for dny in -1..=1_i64 {
-                                    for dnz in -1..=1_i64 {
-                                        let hit = inner.as_ref().and_then(|inner| {
-                                            inner.get(&(
-                                                (nx + dnx, ny + dny, nz + dnz),
-                                                (cx + dx, cy + dy, cz + dz),
-                                            ))
-                                        });
-                                        if let Some(bucket) = hit {
-                                            let len = bucket.partition_point(|&i| i < j);
-                                            scratch.extend_from_slice(&bucket[..len]);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            Some(key) => {
+                collect_bucket_halo(&buckets, key, j, &mut scratch);
+                if let Some(rim_key) = &rim_keys[j] {
+                    collect_bucket_halo(&rim_buckets, rim_key, j, &mut scratch);
                 }
                 // Universal candidates: fallback faces below `j`.
                 for (i, key) in keys.iter().enumerate().take(j) {
@@ -861,6 +846,42 @@ fn plan_duplicate_removals(
         candidate_exams,
         exact_comparisons,
         fell_back_to_all_pairs: false,
+    }
+}
+
+fn insert_bucket(index: &mut BucketIndex, key: &Bucket, face_index: usize) {
+    index
+        .entry(key.0.clone())
+        .or_default()
+        .entry(key.1)
+        .or_default()
+        .push(face_index);
+}
+
+fn collect_bucket_halo(index: &BucketIndex, key: &Bucket, before: usize, out: &mut Vec<usize>) {
+    let (signature, ((nx, ny, nz), (cx, cy, cz))) = key;
+    let inner = index.get(signature);
+    for dx in -1..=1_i64 {
+        for dy in -1..=1_i64 {
+            for dz in -1..=1_i64 {
+                for dnx in -1..=1_i64 {
+                    for dny in -1..=1_i64 {
+                        for dnz in -1..=1_i64 {
+                            let hit = inner.and_then(|inner| {
+                                inner.get(&(
+                                    (nx + dnx, ny + dny, nz + dnz),
+                                    (cx + dx, cy + dy, cz + dz),
+                                ))
+                            });
+                            if let Some(bucket) = hit {
+                                let len = bucket.partition_point(|&i| i < before);
+                                out.extend_from_slice(&bucket[..len]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -912,11 +933,31 @@ fn all_pairs_plan(
 /// Conservative bucket key for one descriptor, or `None` when no safe key
 /// exists (the face becomes a universal candidate).
 fn bucket_key(descriptor: &FaceDescriptor, tolerance: f64) -> Option<Bucket> {
+    bucket_key_at(descriptor, tolerance, descriptor.centroid)
+}
+
+/// A single near-full outer arc can compare with an identity-closed rim.
+/// Both need a circle-center key because the open arc's seam is arbitrary.
+fn near_full_arc_center(descriptor: &FaceDescriptor, tolerance: f64) -> Option<Point3> {
+    let [
+        BoundarySeg::Arc {
+            center,
+            radius,
+            sweep,
+            ..
+        },
+    ] = descriptor.outer.as_slice()
+    else {
+        return None;
+    };
+    ((std::f64::consts::TAU - sweep).abs() < angle_tolerance(tolerance, *radius)).then_some(*center)
+}
+
+fn bucket_key_at(descriptor: &FaceDescriptor, tolerance: f64, c: Point3) -> Option<Bucket> {
     let n = descriptor.normal;
     if !n.x().is_finite() || !n.y().is_finite() || !n.z().is_finite() {
         return None;
     }
-    let c = descriptor.centroid;
     if !c.x().is_finite() || !c.y().is_finite() || !c.z().is_finite() {
         return None;
     }
@@ -2515,6 +2556,62 @@ mod tests {
             assert_shell_removals(&topo, shell, 1e-7).pairs.is_empty(),
             "opposite full-rim winding must be preserved"
         );
+    }
+
+    #[test]
+    fn closed_rim_and_tolerance_closed_arc_share_candidates() {
+        use std::f64::consts::TAU;
+
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let rim = add_disc(&mut topo, center, 1.0, std::f64::consts::FRAC_PI_2);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let gap = 1e-8;
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(TAU - gap), 1e-7));
+        let mut arc = Edge::new(start, end, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((0.0, TAU - gap)));
+        let arc = topo.add_edge(arc);
+        let chord = topo.add_edge(Edge::new(end, start, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
+                true,
+            )
+            .unwrap(),
+        );
+        let near_rim = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let a = describe_face(&topo, rim, 1e-7).unwrap().unwrap();
+        let b = describe_face(&topo, near_rim, 1e-7).unwrap().unwrap();
+        assert!(faces_are_duplicates(&a, &b, 1e-7), "a={a:?} b={b:?}");
+        let shell = topo.add_shell(Shell::new(vec![rim, near_rim]).unwrap());
+        assert_eq!(assert_shell_removals(&topo, shell, 1e-7).pairs.len(), 1);
+    }
+
+    #[test]
+    fn separated_disc_rims_keep_sparse_candidate_cost() {
+        let mut topo = Topology::new();
+        let faces = (0..32)
+            .map(|i| {
+                add_disc(
+                    &mut topo,
+                    Point3::new(f64::from(i) * 4.0, 0.0, 0.0),
+                    1.0,
+                    0.0,
+                )
+            })
+            .collect();
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty());
+        assert_eq!(plan.exact_comparisons, 0);
     }
 
     #[test]
