@@ -29,6 +29,23 @@ pub enum RenderError {
     #[error("render session device lost (session poisoned): {0}")]
     DeviceLost(String),
 
+    /// A prepared-render asset was drawn on a different session than the one
+    /// that prepared it. GPU buffers are device-bound, so the draw is refused
+    /// before touching the GPU; the refusing session stays usable. Prepare on
+    /// the drawing session (or draw on the preparing session) instead.
+    /// `expected` is the preparing session's id
+    /// ([`OffscreenSession::session_id`](crate::OffscreenSession::session_id));
+    /// `actual` is the drawing session's id.
+    #[error(
+        "prepared asset belongs to session {expected}, not this session ({actual}); prepare on the drawing session instead"
+    )]
+    WrongSession {
+        /// Id of the session that prepared the asset.
+        expected: u64,
+        /// Id of the session asked to draw it.
+        actual: u64,
+    },
+
     /// The requested render dimensions were invalid (zero width or height).
     #[error("invalid render size: width and height must be non-zero, got {width}x{height}")]
     InvalidSize {
