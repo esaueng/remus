@@ -83,4 +83,5 @@ if grep -Fq 'HEAD:main' "$PUBLISH_WORKFLOW"; then
   exit 1
 fi
 python3 "$SCRIPT_DIR/test-package-refresh-pr.py"
+python3 "$SCRIPT_DIR/test-notify-openzcad-package.py"
 echo "Publish credential contract OK."
