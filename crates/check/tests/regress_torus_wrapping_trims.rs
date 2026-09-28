@@ -22,6 +22,7 @@
 use std::f64::consts::{PI, TAU};
 
 use remus_check::classify::surface_point_in_face;
+use remus_check::properties::face_integrator::{integrate_face, integrate_face_area};
 use remus_math::curves::Circle3D;
 use remus_math::surfaces::ToroidalSurface;
 use remus_math::vec::{Point3, Vec3};
@@ -37,6 +38,31 @@ const MINOR: f64 = 0.5;
 
 fn torus() -> ToroidalSurface {
     ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), MAJOR, MINOR).unwrap()
+}
+
+#[test]
+fn tube_wrapping_band_area_uses_the_same_rims_and_orientation() {
+    let s = torus();
+    for toward_plus_v in [true, false] {
+        let mut topo = Topology::new();
+        let outer = ring(
+            &mut topo,
+            meridian(4.0, toward_plus_v),
+            s.evaluate(4.0, 0.3),
+        );
+        let inner = ring(
+            &mut topo,
+            meridian(1.0, !toward_plus_v),
+            s.evaluate(1.0, 2.0),
+        );
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(s.clone())));
+        for reversed in [false, true] {
+            topo.face_mut(face).unwrap().set_reversed(reversed);
+            let full = integrate_face(&topo, face, 8).unwrap().area;
+            let area = integrate_face_area(&topo, face, 8).unwrap();
+            assert_eq!(area.to_bits(), full.to_bits());
+        }
+    }
 }
 
 /// A circle edge spanning `start` to `end` counter-clockwise about the
