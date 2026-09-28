@@ -461,7 +461,6 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     if inputs.uses.len() > MAX_ARRANGEMENT_USES {
         return Ok(None);
     }
-
     if uses_have_degenerate_contact(&inputs.uses, tol.linear) {
         log::debug!(
             "provenance arrangement declined face={face_id:?}: interior tangent/overlap contact"
@@ -480,21 +479,25 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
         Err(
             ArrangementError::AmbiguousContact
             | ArrangementError::AmbiguousOverlap
-            | ArrangementError::IntersectionRefinementFailed,
+            | ArrangementError::IntersectionRefinementFailed
+            | ArrangementError::NonManifoldEmbedding,
         ) => {
             // Geometric refusals (M1 contract): tangent contacts, coincident
-            // overlaps, and unrefinable crossings are out-of-domain, so the
-            // caller runs the established path. A tangent or grazing
-            // crossing has no transverse refinement — the core's twin
-            // events land within roundoff with no endpoint certificate to
-            // adopt — and that outcome is geometric, not an adapter bug:
-            // real models carry dust-scale grazing caps (a boss arc poking
-            // 0.001 past a wall with crossings 0.28 apart). Every other
-            // refusal is an internal error on claimed input and propagates.
-            // Declining never produces wrong geometry (the established path
-            // is the shipped baseline); a correspondence regression would
-            // show up as lost engagement in the differential suite, which
-            // pins improvement on transverse input.
+            // overlaps, unrefinable crossings, and non-manifold event graphs
+            // are out-of-domain, so the caller runs the established path. A
+            // tangent or grazing crossing has no transverse refinement — the
+            // core's twin events land within roundoff with no endpoint
+            // certificate to adopt — and that outcome is geometric, not an
+            // adapter bug: real models carry dust-scale grazing caps (a boss
+            // arc poking 0.001 past a wall with crossings 0.28 apart) and
+            // dust-scale junction clusters (a 0.01-long edge where three
+            // curves meet within 0.01 on a tangency meridian), neither of
+            // which embeds manifoldly. Every other refusal is an internal
+            // error on claimed input and propagates. Declining never
+            // produces wrong geometry (the established path is the shipped
+            // baseline); a correspondence regression would show up as lost
+            // engagement in the differential suite, which pins improvement
+            // on transverse input.
             log::debug!(
                 "provenance arrangement declined face={face_id:?} err=geometric uses={}",
                 inputs.uses.len()
@@ -528,7 +531,14 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
                     );
                     Ok(None)
                 }
-                result => result.map(Some),
+                Err(error) if is_mixed_use_run(&error) => {
+                    log::debug!(
+                        "provenance arrangement declined face={face_id:?}: {MIXED_USE_RUN}"
+                    );
+                    Ok(None)
+                }
+                Ok(subfaces) => Ok(Some(subfaces)),
+                Err(error) => Err(error),
             }
         }
     }
