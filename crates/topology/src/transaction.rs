@@ -51,7 +51,8 @@ impl Coordinator {
 /// Coordinates a host's rollback boundary with nested native transactions.
 /// Dropping a snapshot commits that scope; [`Self::restore`] rolls it back.
 /// Unlike a user checkpoint, rollback undoes retirements too. Host-owned state
-/// outside `Topology` is not captured.
+/// outside `Topology` is not captured. The compatibility restore method keeps
+/// checkpoint retirement semantics for callers that already relied on them.
 #[derive(Debug)]
 #[must_use]
 pub struct RollbackSnapshot(Arc<Topology>);
@@ -71,6 +72,13 @@ impl RollbackSnapshot {
     /// marks. Pre-existing handles survive; failed allocations stay stale.
     pub fn restore(self, topo: &mut Topology) {
         topo.restore_for_rollback(&self.0);
+    }
+
+    /// Restore with checkpoint-barrier retirement semantics. This retains
+    /// the older failure policy of callers that used
+    /// [`Topology::restore_preserving_handle_slots`] directly.
+    pub fn restore_preserving_handle_slots(self, topo: &mut Topology) {
+        topo.restore_preserving_handle_slots(&self.0);
     }
 }
 
