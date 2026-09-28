@@ -196,6 +196,8 @@ struct FaceDescriptor {
 struct DuplicatePlan {
     /// `(survivor, removed)` pairs in ascending removed-face order.
     pairs: Vec<(FaceId, FaceId)>,
+    /// Geometric matches retained because attributes prohibit removal.
+    vetoed: Vec<(FaceId, FaceId)>,
     /// Candidate examinations, including removed-anchor skips that never
     /// reach the exact predicate.
     candidate_exams: u64,
@@ -267,30 +269,24 @@ fn fix_shell_duplicate_faces(
     }
     descriptors.sort_by_key(|d| d.face.index());
 
-    let plan = plan_duplicate_removals(&descriptors, tol);
-
-    // Attribute compatibility (contract §8): face attributes are application
-    // vocabulary the kernel never synthesizes or merges, so a removed face
-    // carrying attributes the survivor lacks — or conflicting values —
-    // vetoes that pair and both faces stay. Dropping vetoed pairs is always
-    // safe: a removed face never anchors another pair, so keeping more can
-    // never strand a dangling reference.
-    let mut pairs: Vec<(FaceId, FaceId)> = Vec::with_capacity(plan.pairs.len());
-    let mut vetoed: Vec<String> = Vec::new();
-    for (survivor, removed) in &plan.pairs {
-        let survivor_attrs = topo.attributes().face(*survivor);
-        let removed_attrs = topo.attributes().face(*removed);
-        let compatible = match (survivor_attrs, removed_attrs) {
+    // A vetoed face remains an anchor for later candidates. Decide attribute
+    // compatibility during grouping, before marking a geometric match removed.
+    let plan = plan_duplicate_removals(&descriptors, tol, |survivor, removed| {
+        match (
+            topo.attributes().face(survivor),
+            topo.attributes().face(removed),
+        ) {
             (_, None) => true,
             (Some(kept), Some(dropped)) => kept == dropped,
             (None, Some(_)) => false,
-        };
-        if compatible {
-            pairs.push((*survivor, *removed));
-        } else {
-            vetoed.push(format!("F{}<-F{}", survivor.index(), removed.index()));
         }
-    }
+    });
+    let pairs = &plan.pairs;
+    let mut vetoed: Vec<String> = plan
+        .vetoed
+        .iter()
+        .map(|(survivor, removed)| format!("F{}<-F{}", survivor.index(), removed.index()))
+        .collect();
     vetoed.sort();
     if !vetoed.is_empty() {
         ctx.info(format!(
@@ -316,7 +312,7 @@ fn fix_shell_duplicate_faces(
 
     // The lowest-index member of each group is never recorded as removed, so
     // at least one face always survives — the shell can't be emptied.
-    for (_, removed) in &pairs {
+    for (_, removed) in pairs {
         ctx.reshape.remove_face(*removed);
     }
     let removed = pairs.len();
@@ -478,18 +474,12 @@ fn describe_wire(
     Ok(Some(normalized))
 }
 
-/// Closed-edge position coincidence band, mirroring
-/// [`EdgeCurve::reconstruct_domain_from_endpoints`](remus_topology::edge::EdgeCurve::reconstruct_domain_from_endpoints).
-/// Below this band an open arc's endpoints are read as a closed rim; the
-/// choice cannot change a match verdict (comment at the call site).
-const CLOSED_POSITION_EPS: f64 = 1e-9;
-
 /// Describe one circle-arc segment, or `None` when it leaves the supported
 /// domain.
 ///
 /// The span comes from the edge's authoritative domain (stored trim when
-/// present, endpoint reconstruction otherwise). Closed edges (shared vertex
-/// or coincident endpoints) canonicalize to a full sweep with no seam phase,
+/// present, endpoint reconstruction otherwise). Identity-closed edges
+/// canonicalize to a full sweep with no seam phase,
 /// so rims with different seam vertices still match. Open-arc sweeps are
 /// canonicalized to the face-normal side, making the comparison independent
 /// of the stored circle's arbitrary `u_axis`/normal choices.
@@ -538,7 +528,7 @@ fn describe_arc(
         return None;
     }
 
-    let closed = edge.is_closed() || (start - end).length() < CLOSED_POSITION_EPS;
+    let closed = edge.is_closed();
     if closed {
         return Some(BoundarySeg::Arc {
             start,
@@ -727,18 +717,23 @@ fn angle_tolerance(tolerance: f64, radius: f64) -> f64 {
 /// Streaming `j`-ascending scan with an in-neighborhood ascending-`i`
 /// candidate walk: equivalent to the all-pairs reference over the same order
 /// (module docs), minus provably non-matching pairs.
-fn plan_duplicate_removals(descriptors: &[FaceDescriptor], tolerance: f64) -> DuplicatePlan {
+fn plan_duplicate_removals(
+    descriptors: &[FaceDescriptor],
+    tolerance: f64,
+    compatible: impl Fn(FaceId, FaceId) -> bool,
+) -> DuplicatePlan {
     let n = descriptors.len();
     if n < 2 {
         return DuplicatePlan {
             pairs: Vec::new(),
+            vetoed: Vec::new(),
             candidate_exams: 0,
             exact_comparisons: 0,
             fell_back_to_all_pairs: false,
         };
     }
     if !tolerance.is_finite() || tolerance <= 0.0 {
-        return all_pairs_plan(descriptors, tolerance, true);
+        return all_pairs_plan(descriptors, tolerance, true, &compatible);
     }
 
     // Per-face bucket keys; faces without a conservative key fall back to
@@ -751,7 +746,7 @@ fn plan_duplicate_removals(descriptors: &[FaceDescriptor], tolerance: f64) -> Du
         keys.push(key);
     }
     if any_fallback && keys.iter().all(Option::is_none) {
-        return all_pairs_plan(descriptors, tolerance, true);
+        return all_pairs_plan(descriptors, tolerance, true, &compatible);
     }
 
     // Buckets grow in index order, so every bucket is ascending by construction.
@@ -772,6 +767,7 @@ fn plan_duplicate_removals(descriptors: &[FaceDescriptor], tolerance: f64) -> Du
 
     let mut removed: Vec<bool> = vec![false; n];
     let mut pairs: Vec<(FaceId, FaceId)> = Vec::new();
+    let mut vetoed: Vec<(FaceId, FaceId)> = Vec::new();
     let mut candidate_exams = 0u64;
     let mut exact_comparisons = 0u64;
     let mut scratch: Vec<usize> = Vec::new();
@@ -825,15 +821,20 @@ fn plan_duplicate_removals(descriptors: &[FaceDescriptor], tolerance: f64) -> Du
             }
             exact_comparisons += 1;
             if faces_are_duplicates(&descriptors[i], &descriptors[j], tolerance) {
-                removed[j] = true;
-                pairs.push((descriptors[i].face, descriptors[j].face));
-                break;
+                let pair = (descriptors[i].face, descriptors[j].face);
+                if compatible(pair.0, pair.1) {
+                    removed[j] = true;
+                    pairs.push(pair);
+                    break;
+                }
+                vetoed.push(pair);
             }
         }
     }
 
     DuplicatePlan {
         pairs,
+        vetoed,
         candidate_exams,
         exact_comparisons,
         fell_back_to_all_pairs: false,
@@ -849,10 +850,12 @@ fn all_pairs_plan(
     descriptors: &[FaceDescriptor],
     tolerance: f64,
     fell_back: bool,
+    compatible: &impl Fn(FaceId, FaceId) -> bool,
 ) -> DuplicatePlan {
     let n = descriptors.len();
     let mut removed = vec![false; n];
     let mut pairs: Vec<(FaceId, FaceId)> = Vec::new();
+    let mut vetoed: Vec<(FaceId, FaceId)> = Vec::new();
     let mut exact_comparisons = 0u64;
     for i in 0..n {
         if removed[i] {
@@ -864,13 +867,19 @@ fn all_pairs_plan(
             }
             exact_comparisons += 1;
             if faces_are_duplicates(&descriptors[i], &descriptors[j], tolerance) {
-                removed[j] = true;
-                pairs.push((descriptors[i].face, descriptors[j].face));
+                let pair = (descriptors[i].face, descriptors[j].face);
+                if compatible(pair.0, pair.1) {
+                    removed[j] = true;
+                    pairs.push(pair);
+                } else {
+                    vetoed.push(pair);
+                }
             }
         }
     }
     DuplicatePlan {
         pairs,
+        vetoed,
         candidate_exams: exact_comparisons,
         exact_comparisons,
         fell_back_to_all_pairs: fell_back,
@@ -1285,7 +1294,7 @@ mod tests {
         descriptors: &[FaceDescriptor],
         tolerance: f64,
     ) -> DuplicatePlan {
-        let plan = plan_duplicate_removals(descriptors, tolerance);
+        let plan = plan_duplicate_removals(descriptors, tolerance, |_, _| true);
         let reference = reference_all_pairs(descriptors, tolerance);
         // Same decisions (survivor and removed per pair), up to emission
         // order: the plan streams `j`-ascending (pairs sorted by removed
@@ -1306,7 +1315,7 @@ mod tests {
             "plan pairs must stream in ascending removed-face order"
         );
         // The index may only skip exact evaluations, never change the outcome.
-        let dense = all_pairs_plan(descriptors, tolerance, false);
+        let dense = all_pairs_plan(descriptors, tolerance, false, &|_, _| true);
         assert_eq!(dense.pairs, reference);
         assert!(
             plan.exact_comparisons <= dense.exact_comparisons.max(1),
@@ -1764,7 +1773,7 @@ mod tests {
         let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
         let descriptors = describe_shell(&topo, shell, 1e-7);
         for tol in [0.0, -1e-7, f64::NAN, f64::INFINITY] {
-            let plan = plan_duplicate_removals(&descriptors, tol);
+            let plan = plan_duplicate_removals(&descriptors, tol, |_, _| true);
             assert!(plan.fell_back_to_all_pairs, "tol {tol}");
             assert_eq!(plan.pairs, reference_all_pairs(&descriptors, tol));
         }
@@ -1787,7 +1796,7 @@ mod tests {
         let b = add_quad(&mut topo, mk(0.0));
         let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
         let descriptors = describe_shell(&topo, shell, 1e-7);
-        let plan = plan_duplicate_removals(&descriptors, 1e-7);
+        let plan = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
         assert!(plan.fell_back_to_all_pairs);
         assert_eq!(plan.pairs, vec![(a, b)]);
     }
@@ -2021,7 +2030,7 @@ mod tests {
                     .map(|d| bucket_key(d, 1e-7).unwrap())
                     .collect();
                 let start = Instant::now();
-                let plan = plan_duplicate_removals(&descriptors, 1e-7);
+                let plan = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
                 let elapsed = start.elapsed();
                 let reference = reference_all_pairs(&descriptors, 1e-7);
                 let mut planned = plan.pairs.clone();
@@ -2029,7 +2038,7 @@ mod tests {
                 planned.sort_by_key(|p| (p.0.index(), p.1.index()));
                 expected.sort_by_key(|p| (p.0.index(), p.1.index()));
                 assert_eq!(planned, expected, "plan must equal reference");
-                let dense = all_pairs_plan(&descriptors, 1e-7, false);
+                let dense = all_pairs_plan(&descriptors, 1e-7, false, &|_, _| true);
                 eprintln!(
                     "{:>14} {:>6} {:>8} {:>10} {:>10} {:>10} {:>10.2}",
                     name,
@@ -2065,8 +2074,8 @@ mod tests {
         }
         let shell = topo.add_shell(Shell::new(faces).unwrap());
         let descriptors = describe_shell(&topo, shell, 1e-7);
-        let a = plan_duplicate_removals(&descriptors, 1e-7);
-        let b = plan_duplicate_removals(&descriptors, 1e-7);
+        let a = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
+        let b = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
         assert_eq!(a.pairs, b.pairs);
         assert_eq!(a.candidate_exams, b.candidate_exams);
         assert_eq!(a.exact_comparisons, b.exact_comparisons);
@@ -2456,6 +2465,42 @@ mod tests {
         ));
         let shell = topo.add_shell(Shell::new(vec![one, split]).unwrap());
         assert_eq!(assert_shell_removals(&topo, shell, 1e-7).pairs.len(), 1);
+    }
+
+    #[test]
+    fn explicit_near_seam_arcs_preserve_their_different_sweeps() {
+        use std::f64::consts::TAU;
+
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let gap = 5.0e-10;
+        let mut faces = Vec::new();
+        for (start_param, end_param) in [(0.0, gap), (gap, TAU)] {
+            let start = topo.add_vertex(Vertex::new(circle.evaluate(start_param), 1e-7));
+            let end = topo.add_vertex(Vertex::new(circle.evaluate(end_param), 1e-7));
+            let mut arc = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+            arc.set_trim(Some((start_param, end_param)));
+            let arc = topo.add_edge(arc);
+            let chord = topo.add_edge(Edge::new(end, start, EdgeCurve::Line));
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
+                    true,
+                )
+                .unwrap(),
+            );
+            faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        assert!(assert_shell_removals(&topo, shell, 1e-7).pairs.is_empty());
     }
 
     #[test]
@@ -3029,6 +3074,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn vetoed_face_still_anchors_a_later_compatible_duplicate() {
+        let mut topo = Topology::new();
+        let mut faces = Vec::new();
+        for dx in [0.0, 6.0e-8, 1.2e-7] {
+            faces.push(add_triangle(
+                &mut topo,
+                Point3::new(dx, 0.0, 0.0),
+                Point3::new(1.0 + dx, 0.0, 0.0),
+                Point3::new(dx, 1.0, 0.0),
+            ));
+        }
+        topo.set_face_attributes(faces[0], named("first")).unwrap();
+        for &face in &faces[1..] {
+            topo.set_face_attributes(face, named("later")).unwrap();
+        }
+        let shell = topo.add_shell(Shell::new(faces.clone()).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 1);
+        assert!(!ctx.reshape.is_face_removed(faces[1]));
+        assert!(ctx.reshape.is_face_removed(faces[2]));
     }
 
     #[test]
