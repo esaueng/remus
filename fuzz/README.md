@@ -10,7 +10,11 @@ rejection of corrupted construction data, evaluates points and derivatives,
 and intersects every valid patch with a horizontal NURBS plane. Returned SSI
 points, parameters, and fitted curves must satisfy the plane equation and
 re-evaluate on both input surfaces. Its corpus includes a clustered marching
-section that previously made a cubic refit leave the known plane.
+section that previously made a cubic refit leave the known plane, and a
+steep-weight section (Fuzz Smoke 36309258004) whose 14x top-row weights
+concentrated the top span's motion so full Gauss-Newton steps overshot and
+both seeders missed the corner-guaranteed section; the refiner now
+backtracks until the residual decreases.
 
 `topology_mutation` builds a bounded box (census and `dx * dy * dz` known by
 construction) and drives byte-selected topology mutations over it:
