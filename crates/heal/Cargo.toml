@@ -16,8 +16,13 @@ remus-topology.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
 remus-topology = {workspace = true, features = ["test-utils"]}
+
+[[bench]]
+harness = false
+name = "duplicate_faces"
 
 [lints]
 workspace = true
