@@ -181,6 +181,8 @@ struct FaceDescriptor {
     face: FaceId,
     /// Effective plane normal (stored normal, negated when reversed).
     normal: Vec3,
+    /// Plane offset measured along the effective unit normal.
+    plane_d: f64,
     /// Canonicalized outer boundary loop.
     outer: Vec<BoundarySeg>,
     /// Canonicalized hole loops (stored wire order; matched bijectively).
@@ -363,25 +365,31 @@ fn describe_face(
     tolerance: f64,
 ) -> Result<Option<FaceDescriptor>, HealError> {
     let face = topo.face(face_id)?;
-    let FaceSurface::Plane { normal, .. } = face.surface() else {
+    let FaceSurface::Plane { normal, d } = face.surface() else {
         return Ok(None);
     };
-    let normal = if face.is_reversed() {
-        -*normal
+    let normal_length = normal.length();
+    if !normal_length.is_finite() || normal_length <= 0.0 || !d.is_finite() {
+        return Ok(None);
+    }
+    let scale = if face.is_reversed() {
+        -1.0 / normal_length
     } else {
-        *normal
+        1.0 / normal_length
     };
-    if !normal.x().is_finite() || !normal.y().is_finite() || !normal.z().is_finite() {
+    let normal = *normal * scale;
+    let plane_d = *d * scale;
+    if !plane_d.is_finite() {
         return Ok(None);
     }
 
-    let outer = match describe_wire(topo, face.outer_wire(), normal, tolerance)? {
+    let outer = match describe_wire(topo, face.outer_wire(), (normal, plane_d), tolerance)? {
         Some(boundary) => boundary,
         None => return Ok(None),
     };
     let mut holes = Vec::with_capacity(face.inner_wires().len());
     for &hole in face.inner_wires() {
-        match describe_wire(topo, hole, normal, tolerance)? {
+        match describe_wire(topo, hole, (normal, plane_d), tolerance)? {
             Some(boundary) => holes.push(boundary),
             None => return Ok(None),
         }
@@ -392,6 +400,7 @@ fn describe_face(
     Ok(Some(FaceDescriptor {
         face: face_id,
         normal,
+        plane_d,
         outer,
         holes,
         centroid,
@@ -403,10 +412,12 @@ fn describe_face(
 fn describe_wire(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
-    face_normal: Vec3,
+    support: (Vec3, f64),
     tolerance: f64,
 ) -> Result<Option<Vec<BoundarySeg>>, HealError> {
     use remus_topology::edge::EdgeCurve;
+
+    let (face_normal, plane_d) = support;
 
     let wire = topo.wire(wire_id)?;
     if wire.edges().is_empty() {
@@ -422,6 +433,13 @@ fn describe_wire(
         let edge = topo.edge(oe.edge())?;
         let start: Point3 = topo.vertex(oe.oriented_start(edge))?.point();
         let end: Point3 = topo.vertex(oe.oriented_end(edge))?.point();
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        if [start, end].iter().any(|&p| {
+            let residual = face_normal.dot(p - origin) - plane_d;
+            !residual.is_finite() || residual.abs() >= tolerance
+        }) {
+            return Ok(None);
+        }
         if let Some(prev) = prev_end {
             if (start - prev).length() >= tolerance {
                 return Ok(None);
@@ -433,7 +451,11 @@ fn describe_wire(
         match edge.curve() {
             EdgeCurve::Line => segs.push(BoundarySeg::Line { start }),
             EdgeCurve::Circle(circle) => {
-                match describe_arc(circle, edge, start, end, face_normal, tolerance) {
+                let edge_start = topo.vertex(edge.start())?.point();
+                let edge_end = topo.vertex(edge.end())?.point();
+                let (t0, t1) = edge.domain_with_endpoints(edge_start, edge_end);
+                let domain = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
+                match describe_arc(circle, edge, start, end, domain, support, tolerance) {
                     Some(seg) => segs.push(seg),
                     None => return Ok(None),
                 }
@@ -476,10 +498,13 @@ fn describe_arc(
     edge: &remus_topology::edge::Edge,
     start: Point3,
     end: Point3,
-    face_normal: Vec3,
+    domain: (f64, f64),
+    support: (Vec3, f64),
     tolerance: f64,
 ) -> Option<BoundarySeg> {
     use std::f64::consts::TAU;
+
+    let (face_normal, plane_d) = support;
 
     let center = circle.center();
     let radius = circle.radius();
@@ -495,12 +520,13 @@ fn describe_arc(
     if !axis.x().is_finite() || !axis.y().is_finite() || !axis.z().is_finite() {
         return None;
     }
-    // The circle must lie in the face plane: transverse axis or off-plane
-    // center means degenerate input — refuse, never approximate.
-    if axis.dot(face_normal).abs() < 1.0 - NORMAL_PARALLEL_COS_TOL {
+    // An angled circle can leave the plane between on-plane endpoints.
+    // Its largest normal displacement from its center is radius × sin(angle).
+    if radius * axis.cross(face_normal).length() >= tolerance {
         return None;
     }
-    if ((center - start).dot(face_normal)).abs() >= tolerance {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    if (face_normal.dot(center - origin) - plane_d).abs() >= tolerance {
         return None;
     }
     // Both endpoints must sit on the circle: vertices off a fitted curve are
@@ -523,24 +549,30 @@ fn describe_arc(
             closed: true,
         });
     }
-    let (t0, t1) = edge.domain_with_endpoints(start, end);
+    let (t0, t1) = domain;
     if !t0.is_finite() || !t1.is_finite() {
         return None;
     }
     let delta = t1 - t0;
-    // A valid open-arc span lies strictly inside one full turn. Anything else
-    // is degenerate authority — refuse rather than reinterpret. (Whether a
-    // sub-`CLOSED_POSITION_EPS` gap reads as closed above cannot change a
-    // match verdict: the reconstructed sweep of such a gap agrees with `TAU`
-    // within the angular tolerance the predicate allows.)
-    if delta <= 1e-12 || delta > TAU + 1e-9 {
+    if delta.abs() <= 1e-12 || delta.abs() > TAU + 1e-9 {
         return None;
     }
-    let sweep = if axis.dot(face_normal) > 0.0 {
+    if (circle.evaluate(t0) - start).length() >= tolerance
+        || (circle.evaluate(t1) - end).length() >= tolerance
+    {
+        return None;
+    }
+    // The face-normal chart has one canonical positive direction. A reverse
+    // authored span traces the same short arc as a reversed circle frame.
+    let signed = if axis.dot(face_normal) > 0.0 {
         delta
     } else {
-        TAU - delta
+        -delta
     };
+    let sweep = signed.rem_euclid(TAU);
+    if sweep <= 1e-12 {
+        return None;
+    }
     Some(BoundarySeg::Arc {
         start,
         end,
@@ -652,7 +684,7 @@ fn mergeable_joint(segs: &[BoundarySeg], i: usize, tolerance: f64) -> bool {
 
 /// Merge the circular joint `(i, j = i+1 mod n)`; caller checked
 /// [`mergeable_joint`].
-fn merge_joint(segs: &[BoundarySeg], i: usize, j: usize, _tolerance: f64) -> BoundarySeg {
+fn merge_joint(segs: &[BoundarySeg], i: usize, j: usize, tolerance: f64) -> BoundarySeg {
     match (&segs[i], &segs[j]) {
         (BoundarySeg::Line { start: a }, BoundarySeg::Line { .. }) => {
             BoundarySeg::Line { start: *a }
@@ -668,17 +700,19 @@ fn merge_joint(segs: &[BoundarySeg], i: usize, j: usize, _tolerance: f64) -> Bou
                 ..
             },
             BoundarySeg::Arc { end, sweep: s2, .. },
-        ) => BoundarySeg::Arc {
-            start: *start,
-            end: *end,
-            center: *center,
-            radius: *radius,
-            sweep: *s1 + *s2,
-            // Merged arcs keep explicit endpoints (a two-edge full circle
-            // still has a seam vertex); only single closed-rim edges are
-            // phase-invariant.
-            closed: false,
-        },
+        ) => {
+            let sweep = *s1 + *s2;
+            let full = sweep >= std::f64::consts::TAU - angle_tolerance(tolerance, *radius)
+                && (*start - *end).length() < tolerance;
+            BoundarySeg::Arc {
+                start: *start,
+                end: *end,
+                center: *center,
+                radius: *radius,
+                sweep: if full { std::f64::consts::TAU } else { sweep },
+                closed: full,
+            }
+        }
     }
 }
 
@@ -899,6 +933,15 @@ fn faces_are_duplicates(a: &FaceDescriptor, b: &FaceDescriptor, tolerance: f64) 
     }
     if a.normal.dot(b.normal) < 1.0 - NORMAL_PARALLEL_COS_TOL {
         return false;
+    }
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    for point in [a.centroid, b.centroid] {
+        let position = point - origin;
+        if (a.normal.dot(position) - a.plane_d).abs() >= tolerance
+            || (b.normal.dot(position) - b.plane_d).abs() >= tolerance
+        {
+            return false;
+        }
     }
     if !loops_coincide_with_same_winding(&a.outer, &b.outer, tolerance) {
         return false;
@@ -1761,10 +1804,10 @@ mod tests {
                 faces.push(add_quad(
                     &mut topo,
                     [
-                        Point3::new(x, 3.25, -1.5),
-                        Point3::new(x + 1.0, 3.25, -1.5),
-                        Point3::new(x + 1.0, 4.25, -1.5),
-                        Point3::new(x, 4.25, -1.5),
+                        Point3::new(x, 3.25, 0.0),
+                        Point3::new(x + 1.0, 3.25, 0.0),
+                        Point3::new(x + 1.0, 4.25, 0.0),
+                        Point3::new(x, 4.25, 0.0),
                     ],
                 ));
             }
@@ -1774,10 +1817,10 @@ mod tests {
                 faces.push(add_quad(
                     &mut topo,
                     [
-                        Point3::new(x, 3.25, -1.5),
-                        Point3::new(x + 1.0, 3.25, -1.5),
-                        Point3::new(x + 1.0, 4.25, -1.5),
-                        Point3::new(x, 4.25, -1.5),
+                        Point3::new(x, 3.25, 0.0),
+                        Point3::new(x + 1.0, 3.25, 0.0),
+                        Point3::new(x + 1.0, 4.25, 0.0),
+                        Point3::new(x, 4.25, 0.0),
                     ],
                 ));
             }
@@ -2344,6 +2387,30 @@ mod tests {
     }
 
     #[test]
+    fn off_carrier_plane_with_coincident_lines_is_refused() {
+        let mut topo = Topology::new();
+        let a = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let b = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        topo.face_mut(b).unwrap().set_surface(FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 1.0,
+        });
+        assert!(describe_face(&topo, b, 1e-7).unwrap().is_none());
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        assert!(assert_shell_removals(&topo, shell, 1e-7).pairs.is_empty());
+    }
+
+    #[test]
     fn disc_rims_match_regardless_of_seam_vertex() {
         // Same geometric rim, seam vertices 90° apart: the closed rim carries
         // no phase, so the pair matches.
@@ -2354,6 +2421,41 @@ mod tests {
         let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
         let plan = assert_shell_removals(&topo, shell, 1e-7);
         assert_eq!(plan.pairs.len(), 1, "seam position must not matter");
+    }
+
+    #[test]
+    fn split_full_rim_matches_single_rim_across_seams() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let one = add_disc(&mut topo, center, 1.0, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let a = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::FRAC_PI_2),
+            1e-7,
+        ));
+        let b = topo.add_vertex(Vertex::new(
+            circle.evaluate(3.0 * std::f64::consts::FRAC_PI_2),
+            1e-7,
+        ));
+        let ab = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+        let ba = topo.add_edge(Edge::new(b, a, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(ab, true), OrientedEdge::new(ba, true)],
+                true,
+            )
+            .unwrap(),
+        );
+        let split = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![one, split]).unwrap());
+        assert_eq!(assert_shell_removals(&topo, shell, 1e-7).pairs.len(), 1);
     }
 
     #[test]
@@ -2454,6 +2556,37 @@ mod tests {
             1,
             "cyclic shift + arc subdivision must match"
         );
+    }
+
+    #[test]
+    fn reversed_authoritative_arc_matches_same_rounded_region() {
+        let mut topo = Topology::new();
+        let a = add_rounded_corner(&mut topo, 0, false);
+        let b = add_rounded_corner(&mut topo, 0, false);
+        let arc_id = topo
+            .wire(topo.face(b).unwrap().outer_wire())
+            .unwrap()
+            .edges()
+            .iter()
+            .map(OrientedEdge::edge)
+            .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
+            .unwrap();
+        let old_circle = match topo.edge(arc_id).unwrap().curve() {
+            EdgeCurve::Circle(circle) => circle.clone(),
+            _ => unreachable!(),
+        };
+        let reversed = old_circle.reversed();
+        let edge = topo.edge(arc_id).unwrap();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        let t0 = reversed.project(start);
+        let t1 = t0 - std::f64::consts::FRAC_PI_2;
+        assert!((reversed.evaluate(t1) - end).length() < 1e-7);
+        let edge = topo.edge_mut(arc_id).unwrap();
+        edge.set_curve(EdgeCurve::Circle(reversed));
+        edge.set_trim(Some((t0, t1)));
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        assert_eq!(assert_shell_removals(&topo, shell, 1e-7).pairs.len(), 1);
     }
 
     #[test]
