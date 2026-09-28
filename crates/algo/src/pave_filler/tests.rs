@@ -7,6 +7,7 @@
     clippy::print_stderr
 )]
 
+use remus_math::context::OperationContext;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
@@ -2058,6 +2059,7 @@ fn build_fuse_n_two_interpenetrating_boxes_matches_two_solid() {
         &store.sources,
         &store.face_source,
         tol,
+        &OperationContext::new(),
     )
     .unwrap();
 
@@ -2096,6 +2098,7 @@ fn build_fuse_n_three_interpenetrating_boxes_is_watertight() {
         &store.sources,
         &store.face_source,
         tol,
+        &OperationContext::new(),
     )
     .unwrap();
 
@@ -2132,6 +2135,7 @@ fn nway_fuse(offsets: &[[f64; 3]]) -> (Topology, remus_topology::solid::SolidId)
         &store.sources,
         &store.face_source,
         tol,
+        &OperationContext::new(),
     )
     .unwrap()
 }
