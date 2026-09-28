@@ -11,7 +11,7 @@ use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
-use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::face::{Face, FaceId, FaceSurface};
 
 use super::PropertiesOptions;
 use crate::CheckError;
@@ -258,6 +258,10 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
     rule: IntegrationRule<'_>,
 ) -> Result<FaceContribution, CheckError> {
     let face = topo.face(face_id)?;
+    if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+        // Extent and UV bounds sample curves before trim construction.
+        check_trim_point_budget(topo, face)?;
+    }
     let reversed = face.is_reversed();
     let sign = if reversed { -1.0 } else { 1.0 };
 
@@ -613,6 +617,28 @@ const TRIM_SAMPLES: usize = 128;
 /// service. This ceiling still accommodates detailed production trims while
 /// placing a hard upper bound on the superlinear portion of the work.
 const MAX_TRIM_POINTS: usize = 4096;
+
+fn check_trim_point_budget(topo: &Topology, face: &Face) -> Result<(), CheckError> {
+    let mut trim_points = 0_usize;
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        for oriented_edge in wire.edges() {
+            let edge = topo.edge(oriented_edge.edge())?;
+            let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+                1
+            } else {
+                TRIM_SAMPLES
+            };
+            trim_points = trim_points.saturating_add(samples);
+            if trim_points > MAX_TRIM_POINTS {
+                return Err(CheckError::IntegrationFailed(format!(
+                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The `v` extent a face's own boundary curves cover on its surface.
 ///
@@ -1089,24 +1115,6 @@ where
     };
 
     let face = topo.face(face_id)?;
-    let mut trim_points = 0_usize;
-    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        let wire = topo.wire(wire_id)?;
-        for oriented_edge in wire.edges() {
-            let edge = topo.edge(oriented_edge.edge())?;
-            let samples = if matches!(edge.curve(), EdgeCurve::Line) {
-                1
-            } else {
-                TRIM_SAMPLES
-            };
-            trim_points = trim_points.saturating_add(samples);
-            if trim_points > MAX_TRIM_POINTS {
-                return Err(CheckError::IntegrationFailed(format!(
-                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
-                )));
-            }
-        }
-    }
     let outer = crate::util::wire_polygon_curve_sampled(
         topo,
         face.outer_wire(),
