@@ -28,10 +28,26 @@ const MAX_MINKOWSKI_POINT_SUMS: usize = 1_000_000;
 /// The box extends from `(0, 0, 0)` to `(dx, dy, dz)`.
 /// One corner sits at the origin; the opposite at `(dx, dy, dz)`.
 ///
+/// Construction runs in an append-only transaction scope (PERF-T03): a pure
+/// allocation path commits at O(new content) with no document snapshot, and
+/// a mid-build failure retires every staged allocation instead of leaving
+/// partial topology behind.
+///
 /// # Errors
 ///
 /// Returns an error if any dimension is non-finite, zero, or negative.
 pub fn make_box(
+    topo: &mut Topology,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    let (solid, _) =
+        remus_topology::transaction::run_append_only(topo, |t| make_box_impl(t, dx, dy, dz))?;
+    Ok(solid)
+}
+
+fn make_box_impl(
     topo: &mut Topology,
     dx: f64,
     dy: f64,

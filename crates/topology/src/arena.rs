@@ -256,6 +256,33 @@ impl<T> Arena<T> {
 }
 
 impl<T: Clone> Arena<T> {
+    /// Rewinds one slot to its pre-scope state without ever reusing it.
+    ///
+    /// `Some(value)` writes the value back and revives the slot; `None`
+    /// retires the slot, keeping its post-scope value as an inaccessible
+    /// tombstone so a stale handle can never alias a later entity.
+    /// Out-of-range indices are silently ignored (unreachable through the
+    /// transaction API, which only records slots it has seen).
+    pub(crate) fn rewind_slot(&mut self, index: usize, value: Option<T>) {
+        let Some(is_live) = self.live.get_mut(index) else {
+            return;
+        };
+        if let Some(value) = value {
+            if !*is_live {
+                self.live_len += 1;
+            }
+            *is_live = true;
+            if let Some(slot) = self.items.get_mut(index) {
+                *slot = value;
+            }
+        } else {
+            if *is_live {
+                self.live_len -= 1;
+            }
+            *is_live = false;
+        }
+    }
+
     /// Restore live entries from `snapshot` without reusing any slot that has
     /// existed in this arena.
     ///
@@ -396,6 +423,34 @@ mod tests {
         let id = arena.alloc("second".into());
         assert_eq!(arena.len(), 2);
         assert_eq!(arena.get(id).unwrap(), "second");
+    }
+
+    #[test]
+    fn rewind_slot_restores_values_and_liveness_without_reuse() {
+        let mut arena = Arena::new();
+        let keep = arena.alloc("keep".to_owned());
+        let victim = arena.alloc("victim".to_owned());
+
+        // Overwrite rewind: value and liveness come back.
+        arena.retire(victim);
+        arena.rewind_slot(victim.index(), Some("victim".to_owned()));
+        assert_eq!(arena.get(victim).map(String::as_str), Some("victim"));
+        assert_eq!(arena.len(), 2);
+
+        // Allocation rewind: the slot retires as a tombstone holding its
+        // post-scope value, and the index is never reissued.
+        let staged = arena.alloc("staged".to_owned());
+        arena.rewind_slot(staged.index(), None);
+        assert!(arena.get(staged).is_none());
+        assert!(arena.id_from_index(staged.index()).is_none());
+        assert_eq!(arena.len(), 2);
+        let fresh = arena.alloc("fresh".to_owned());
+        assert!(fresh.index() > staged.index());
+
+        // Out-of-range rewind is a silent no-op.
+        arena.rewind_slot(9999, Some("ghost".to_owned()));
+        assert_eq!(arena.len(), 3);
+        assert_eq!(arena.get(keep).map(String::as_str), Some("keep"));
     }
 
     #[test]

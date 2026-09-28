@@ -5,8 +5,8 @@
 //! its result fails validation — the pre-operation state is restored
 //! exactly. A failed operation never exposes partial topology.
 //!
-//! Guarantees, inherited from
-//! [`Topology::restore_for_rollback`](crate::Topology::restore_for_rollback):
+//! Guarantees, inherited from the undo log (see
+//! [`Topology::undo_rewind_scope`](crate::Topology::undo_rewind_scope)):
 //!
 //! - **Atomicity**: on failure, every entity allocated by the operation is
 //!   retired, every retirement it staged is undone, and every other
@@ -17,61 +17,88 @@
 //!   fail typed lookups permanently and can never alias a later entity
 //!   (arena slots are high-water preserved, never reused).
 //!
-//! Unchanged nested entry states share one immutable full snapshot. Every
-//! mutable topology access invalidates sharing, so a nested scope after outer
-//! work still owns a genuine savepoint. The outer snapshot and changed-state
-//! savepoints remain O(document size); this is not mutation-local undo.
+//! Rollback storage is mutation-local (PERF-T02): capturing a scope is O(1)
+//! and records scale with state the scope actually wrote, never with
+//! unrelated document size. No scope clones the document for its entry
+//! state. Dropping a snapshot commits its scope (records merge into the
+//! enclosing scope, or are released when the last scope closes); the merge
+//! of a dropped scope is applied lazily on the next transaction access.
 //!
 //! These free functions are the standard implementation; ad-hoc
 //! snapshot/restore pairs in operation code should migrate onto them so
 //! the contract has one implementation to audit.
 
 use crate::Topology;
-use std::sync::{Arc, Weak};
+use crate::topology::undo_log::UndoMark;
 
-/// Per-topology, non-retaining coordination of active savepoints.
-#[derive(Debug, Default)]
-pub(crate) struct Coordinator(Weak<Topology>);
-
-impl Clone for Coordinator {
-    fn clone(&self) -> Self {
-        // Independent clones must never reuse the source's active savepoint.
-        Self::default()
-    }
-}
-
-impl Coordinator {
-    pub(crate) fn invalidate(&mut self) {
-        self.0 = Weak::new();
-    }
-}
-
-/// An immutable transaction entry state, shared only until a mutable access.
+/// A transaction scope over a [`Topology`].
 ///
 /// Coordinates a host's rollback boundary with nested native transactions.
-/// Dropping a snapshot commits that scope; [`Self::restore`] rolls it back.
-/// Unlike a user checkpoint, rollback undoes retirements too. Host-owned state
-/// outside `Topology` is not captured.
+/// Dropping a snapshot commits that scope (lazily merged on next access);
+/// [`Self::restore`] rolls it back; [`Self::commit`] commits it eagerly.
+/// Unlike a user checkpoint, rollback undoes retirements too. Host-owned
+/// state outside `Topology` is not captured.
+///
+/// A snapshot must be restored into the same [`Topology`] value it was
+/// captured from: the rollback records live in that value, not in the
+/// snapshot. Cloning the topology starts independent coordination, so a
+/// snapshot never follows its value across a clone.
 #[derive(Debug)]
 #[must_use]
-pub struct RollbackSnapshot(Arc<Topology>);
+pub struct RollbackSnapshot {
+    mark: UndoMark,
+    generation: u64,
+    /// Liveness token for the scope entry in the topology's scope stack;
+    /// dropping the snapshot lets the entry be reclaimed lazily (commit).
+    /// Never read directly: its strong count is the liveness signal.
+    #[allow(dead_code)]
+    alive: std::sync::Arc<()>,
+}
 
 impl RollbackSnapshot {
-    /// Capture this scope's entry state. Unchanged nested scopes share storage.
+    /// Capture this scope's entry state. Capture is O(1): no document data
+    /// is copied, whatever the nesting depth or document size.
     pub fn capture(topo: &mut Topology) -> Self {
-        if let Some(snapshot) = topo.savepoint.0.upgrade() {
-            return Self(snapshot);
+        let ticket = topo.undo_begin_scope();
+        Self {
+            mark: ticket.mark,
+            generation: topo.undo_generation(),
+            alive: ticket.alive,
         }
-        let snapshot = Arc::new(topo.clone());
-        topo.savepoint.0 = Arc::downgrade(&snapshot);
-        Self(snapshot)
     }
 
     /// Restore live state while preserving allocation and journal high-water
     /// marks. Pre-existing handles survive; failed allocations stay stale.
     pub fn restore(self, topo: &mut Topology) {
-        topo.restore_for_rollback(&self.0);
+        if topo.undo_generation() != self.generation {
+            // A foreign-lineage restore swapped state underneath this scope
+            // and invalidated its mark; there is no entry state to return
+            // to. No such interleaving exists in the audited call graph
+            // (every foreign restore uses a same-lineage snapshot), so this
+            // is unreachable through the transaction API.
+            return;
+        }
+        topo.undo_rewind_scope(self.mark);
     }
+
+    /// Commit this scope eagerly: its records merge into the enclosing
+    /// scope, or are released when the last scope closes. Dropping the
+    /// snapshot without restoring commits lazily with the same effect.
+    pub fn commit(self, topo: &mut Topology) {
+        topo.undo_commit_scope(self.mark);
+    }
+}
+
+/// Which storage path an append-only scope took (PERF-T03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendPath {
+    /// The scope wrote only new content and committed without copying
+    /// unrelated state.
+    AppendOnly,
+    /// The scope attempted a pre-existing write, was rewound at O(new
+    /// content), and the operation was re-executed under the full
+    /// transaction path. The result is identical; only the cost differs.
+    FullFallback,
 }
 
 /// Runs `operation` transactionally: on `Err`, the topology is restored to
@@ -87,7 +114,10 @@ pub fn run_transacted<T, E>(
 ) -> Result<T, E> {
     let snapshot = RollbackSnapshot::capture(topo);
     match operation(topo) {
-        Ok(value) => Ok(value),
+        Ok(value) => {
+            snapshot.commit(topo);
+            Ok(value)
+        }
         Err(error) => {
             snapshot.restore(topo);
             Err(error)
@@ -114,10 +144,84 @@ pub fn run_validated<T, E>(
 ) -> Result<T, E> {
     let snapshot = RollbackSnapshot::capture(topo);
     let result = operation(topo).and_then(|value| validate(topo, &value).map(|()| value));
-    if result.is_err() {
-        snapshot.restore(topo);
+    match result {
+        Ok(value) => {
+            snapshot.commit(topo);
+            Ok(value)
+        }
+        Err(error) => {
+            snapshot.restore(topo);
+            Err(error)
+        }
     }
-    result
+}
+
+/// Runs a constructor that is expected to only allocate, with a guard
+/// against writes to pre-existing state.
+///
+/// While the guard is armed, any write to a pre-existing slot, any
+/// destruction of a pre-existing index or attribute entry, and any wholesale
+/// history replacement trips the guard *before* the write lands. A tripped
+/// (or failed) scope is rewound — retiring every allocation it made without
+/// reissuing IDs — and, when tripped, the operation is re-executed once
+/// under the full [`run_transacted`] path, returning
+/// [`AppendPath::FullFallback`]. A clean scope commits at O(new content)
+/// and returns [`AppendPath::AppendOnly`].
+///
+/// The operation must be re-runnable (pure construction): a tripped scope
+/// runs it twice. Its observable result is identical on either path; only
+/// the transaction cost differs.
+///
+/// # Errors
+///
+/// Returns `operation`'s error unchanged after rolling back. Guard trips
+/// never surface: they resolve into the fallback retry internally.
+pub fn run_append_only<T, E>(
+    topo: &mut Topology,
+    mut operation: impl FnMut(&mut Topology) -> Result<T, E>,
+) -> Result<(T, AppendPath), E> {
+    let snapshot = RollbackSnapshot::capture(topo);
+    topo.arm_append();
+    match operation(topo) {
+        Ok(value) => {
+            let tripped = topo.disarm_append();
+            if tripped {
+                snapshot.restore(topo);
+                retry_full(topo, &mut operation)
+            } else {
+                snapshot.commit(topo);
+                Ok((value, AppendPath::AppendOnly))
+            }
+        }
+        Err(error) => {
+            let tripped = topo.disarm_append();
+            snapshot.restore(topo);
+            if tripped {
+                retry_full(topo, &mut operation)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Re-executes a tripped append-only operation under the full path, with the
+/// guard disarmed so pre-existing writes proceed with mutation-local undo.
+fn retry_full<T, E>(
+    topo: &mut Topology,
+    operation: &mut impl FnMut(&mut Topology) -> Result<T, E>,
+) -> Result<(T, AppendPath), E> {
+    let snapshot = RollbackSnapshot::capture(topo);
+    match operation(topo) {
+        Ok(value) => {
+            snapshot.commit(topo);
+            Ok((value, AppendPath::FullFallback))
+        }
+        Err(error) => {
+            snapshot.restore(topo);
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +371,49 @@ mod tests {
         crate::validation::validate_face_loops(&topo, face).unwrap();
     }
 
+    #[test]
+    fn compound_and_compsolid_rollback_keeps_allocations_stale() {
+        use crate::compound::Compound;
+        use crate::compsolid::CompSolid;
+
+        // Compounds have no mutation or retirement API (immutable after
+        // construction), so their undo coverage is allocation rollback plus
+        // the overwrite-record round trip through the `*_mut` accessors.
+        let mut topo = Topology::new();
+        let solid = topo.add_empty_solid();
+        let compound = topo.add_compound(Compound::new(vec![solid]));
+        let compsolid = topo.add_compsolid(CompSolid::new(vec![solid], vec![]));
+        let slots_before = topo.allocated_slot_count();
+
+        let mut leaked = None;
+        let err = run_transacted(&mut topo, |topo| {
+            let staged_compound = topo.add_compound(Compound::new(vec![solid]));
+            let staged_compsolid = topo.add_compsolid(CompSolid::new(vec![solid], vec![]));
+            // Overwrite records execute (nothing observable to write back —
+            // the entities are immutable — but the guard and log paths run).
+            topo.compound_mut(compound)?;
+            topo.compsolid_mut(compsolid)?;
+            leaked = Some((staged_compound, staged_compsolid));
+            Err::<(), _>(TopologyError::WireNotClosed)
+        })
+        .unwrap_err();
+        assert!(matches!(err, TopologyError::WireNotClosed));
+
+        // Pre-existing handles survive; staged allocations stay stale and
+        // later allocations append above the preserved high-water mark.
+        assert!(topo.compound(compound).is_ok());
+        assert!(topo.compsolid(compsolid).is_ok());
+        let (staged_compound, staged_compsolid) = leaked.unwrap();
+        assert!(topo.compound(staged_compound).is_err());
+        assert!(topo.compsolid(staged_compsolid).is_err());
+        assert!(topo.allocated_slot_count() >= slots_before);
+        let fresh = topo.add_compound(Compound::new(vec![solid]));
+        assert_ne!(
+            fresh, staged_compound,
+            "a rolled-back slot must never be reissued"
+        );
+        assert!(topo.compound(staged_compound).is_err());
+    }
     #[test]
     fn failure_undoes_an_in_window_deletion() {
         // delete_solid retires a pre-existing tree. Rolled back, the solid
