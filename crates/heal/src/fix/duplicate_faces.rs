@@ -10,9 +10,14 @@
 //! duplication. The geometric predicate ([`faces_are_duplicates`]) is the
 //! final authority — candidate buckets (PERF-H03) only select pairs to test.
 //!
-//! Currently supported domain: unperforated planar polygon faces (all-`Line`
-//! outer boundary). Curved carriers, non-line boundaries, and perforated
-//! faces are skipped (left in place, fail-closed).
+//! Currently supported domain: planar faces whose outer and hole boundaries
+//! are built from `Line` segments and `Circle` arcs (open arcs and closed
+//! rims). Supporting-plane agreement, oriented outer-region equality, and
+//! one-to-one hole correspondence are all required; cyclic wire starts and
+//! collinear/same-circle subdivision differences are normalized, while chords
+//! are never equated with arcs. Curved carriers, ellipse/hyperbola/parabola/
+//! NURBS boundaries, and anything unclassifiable are skipped (left in place,
+//! fail-closed).
 //!
 //! ## Candidate discovery (PERF-H03)
 //!
@@ -27,16 +32,19 @@
 //! Descriptors and their conservativeness proof (a true match can never be
 //! split across buckets):
 //!
-//! - **Edge count** (exact key component): the predicate requires equal
-//!   boundary lengths, so different counts never match.
+//! - **Boundary signature** (exact key components): outer segment count plus
+//!   the sorted hole segment counts. The predicate requires equal counts on
+//!   both, so different signatures never match.
 //! - **Effective-normal cell** (halo 1, cell `8e-3` per component): a true
 //!   match satisfies `na·nb ≥ 1 − 1e-6`, i.e. an angle below ~`1.5e-3` rad,
 //!   hence per-component `|Δ| < 8e-3`. Two values closer than one cell width
 //!   differ by at most one in floored cell coordinates, so every true match
 //!   shares the 27-neighborhood.
-//! - **Boundary-centroid cell** (halo 1, cell = `tol` per axis): coincident
-//!   boundaries differ pointwise by `< tol`, so their means differ per-axis
-//!   by `< tol` and again share the 27-neighborhood.
+//! - **Boundary-centroid cell** (halo 1, cell = `tol` per axis): the anchor
+//!   means of coincident outer boundaries differ per-axis by `< tol` —
+//!   anchors are segment starts, except closed rims which anchor at their
+//!   phase-invariant circle centers (seam vertices would make the bucket
+//!   seam-dependent) — so true matches again share the 27-neighborhood.
 //!
 //! Faces whose descriptors cannot be established conservatively (non-finite
 //! normal or centroid, centroid quotient beyond the exact-integer grid range,
@@ -87,8 +95,83 @@ const NORMAL_CELL: f64 = 8e-3;
 /// Largest exactly-representable grid coordinate (`2^53`).
 const MAX_EXACT_CELL: f64 = 9_007_199_254_740_992.0;
 
+/// Bucket coordinates for one candidate face: outer segment count, sorted
+/// hole segment counts, normal cell, centroid cell.
+type Signature = (usize, Vec<usize>);
+/// Integer cell coordinates.
+type Cell3 = (i64, i64, i64);
 /// Bucket coordinates for one candidate face.
-type Bucket = (usize, (i64, i64, i64), (i64, i64, i64));
+type Bucket = (Signature, (Cell3, Cell3));
+
+/// One directed boundary segment of a supported planar face.
+#[derive(Debug, Clone)]
+enum BoundarySeg {
+    /// Straight segment starting at `start` (end is the next segment's start;
+    /// the loop closes onto the first start).
+    Line {
+        /// Segment start point.
+        start: Point3,
+    },
+    /// Circular arc from `start` to `end` on one supporting circle.
+    ///
+    /// `sweep` is the canonical sweep as seen from the face-normal side, in
+    /// `(0, TAU]`: the stored-circle `u_axis` choice is construction
+    /// metadata, so spans are compared through frame-invariant start/end
+    /// points plus this canonical sweep instead of raw parameters. Closed
+    /// rims (`closed`, full circle) carry no seam phase at all: two rims on
+    /// one circle match regardless of seam vertices, and an open arc whose
+    /// gap is invisible at tolerance compares by circle and sweep alone.
+    Arc {
+        /// Arc start point.
+        start: Point3,
+        /// Arc end point.
+        end: Point3,
+        /// Circle center (lies in the face plane).
+        center: Point3,
+        /// Circle radius.
+        radius: f64,
+        /// Canonical sweep in `(0, TAU]`.
+        sweep: f64,
+        /// Full-circle rim (seam phase is meaningless).
+        closed: bool,
+    },
+}
+
+impl BoundarySeg {
+    /// Segment start point (arcs and lines alike).
+    fn start(&self) -> Point3 {
+        match *self {
+            Self::Line { start } => start,
+            Self::Arc { start, .. } => start,
+        }
+    }
+}
+
+/// Spatial-bucket anchor for one segment: closed rims anchor at their
+/// (phase-invariant) center, everything else at its start.
+///
+/// Conservativeness: matching loops have elementwise-compatible segments —
+/// line/open-arc starts coincide and closed-rim centers coincide (compared
+/// within tolerance) — so the anchors' means coincide within tolerance too.
+/// Using the seam vertex for rims would make the bucket seam-dependent and
+/// split true matches.
+fn bucket_anchor(seg: &BoundarySeg) -> Point3 {
+    match *seg {
+        BoundarySeg::Line { start } => start,
+        BoundarySeg::Arc {
+            start,
+            center,
+            closed,
+            ..
+        } => {
+            if closed {
+                center
+            } else {
+                start
+            }
+        }
+    }
+}
 
 /// Eligible-face descriptor for duplicate comparison, in ascending `FaceId`
 /// order.
@@ -98,9 +181,11 @@ struct FaceDescriptor {
     face: FaceId,
     /// Effective plane normal (stored normal, negated when reversed).
     normal: Vec3,
-    /// Ordered outer-boundary vertices.
-    points: Vec<Point3>,
-    /// Mean of the boundary vertices (spatial bucket center).
+    /// Canonicalized outer boundary loop.
+    outer: Vec<BoundarySeg>,
+    /// Canonicalized hole loops (stored wire order; matched bijectively).
+    holes: Vec<Vec<BoundarySeg>>,
+    /// Mean of the outer-loop segment starts (spatial bucket center).
     centroid: Point3,
 }
 
@@ -120,13 +205,15 @@ struct DuplicatePlan {
 
 /// Detect and remove geometrically duplicate faces within each shell of a solid.
 ///
-/// This conservative pass only compares unperforated planar polygon faces.
-/// Their ordered outer-boundary vertices must coincide with the same winding
-/// (allowing a cyclic shift), and their effective normals must agree. Oppositely
-/// oriented coincident faces are preserved: removing one would silently choose
-/// a side of a zero-thickness or otherwise malformed region. Curved edges and
-/// surfaces, NURBS, and perforated faces are skipped because proving their
-/// trimmed regions equal requires a parameter-space comparison.
+/// Compares planar faces whose boundaries are built from `Line` segments and
+/// `Circle` arcs, with and without holes. Ordered outer boundaries must
+/// coincide with the same winding (allowing cyclic shifts and normalized
+/// subdivision differences), holes must correspond one-to-one, and effective
+/// normals must agree. Oppositely oriented coincident faces are preserved:
+/// removing one would silently choose a side of a zero-thickness or
+/// otherwise malformed region. Other carriers and boundary curves are
+/// skipped because proving their trimmed regions equal is outside the
+/// supported contract.
 ///
 /// Comparisons stay within each shell: coincident boundaries in different
 /// shells do not establish that either face use can be removed.
@@ -172,39 +259,9 @@ fn fix_shell_duplicate_faces(
     // shell face order or bucket layout.
     let mut descriptors: Vec<FaceDescriptor> = Vec::new();
     for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        if !face.inner_wires().is_empty() {
-            continue;
+        if let Some(descriptor) = describe_face(topo, fid, tol)? {
+            descriptors.push(descriptor);
         }
-        let FaceSurface::Plane { normal, .. } = face.surface() else {
-            continue;
-        };
-        let normal = if face.is_reversed() {
-            -*normal
-        } else {
-            *normal
-        };
-
-        let wire = topo.wire(face.outer_wire())?;
-        let mut points = Vec::with_capacity(wire.edges().len());
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-                points.clear();
-                break;
-            }
-            points.push(topo.vertex(oe.oriented_start(edge))?.point());
-        }
-        if points.is_empty() {
-            continue;
-        }
-        let centroid = mean_point(&points);
-        descriptors.push(FaceDescriptor {
-            face: fid,
-            normal,
-            points,
-            centroid,
-        });
     }
     descriptors.sort_by_key(|d| d.face.index());
 
@@ -259,6 +316,349 @@ fn fix_shell_duplicate_faces(
     ))
 }
 
+/// Build the duplicate descriptor for one face, or `None` when the face is
+/// outside the supported domain (left in place, fail-closed).
+///
+/// Supported: planar carrier with outer and hole boundaries built from `Line`
+/// segments and `Circle` arcs. Refused (`None`): non-planar carriers,
+/// ellipse/hyperbola/parabola/NURBS boundary curves, degenerate or
+/// unclassifiable loops (open loops, off-circle vertices, off-plane circle
+/// centers, non-transverse circle axes, invalid spans).
+///
+/// # Errors
+///
+/// Returns [`HealError`] when entity lookups fail.
+fn describe_face(
+    topo: &Topology,
+    face_id: FaceId,
+    tolerance: f64,
+) -> Result<Option<FaceDescriptor>, HealError> {
+    let face = topo.face(face_id)?;
+    let FaceSurface::Plane { normal, .. } = face.surface() else {
+        return Ok(None);
+    };
+    let normal = if face.is_reversed() {
+        -*normal
+    } else {
+        *normal
+    };
+    if !normal.x().is_finite() || !normal.y().is_finite() || !normal.z().is_finite() {
+        return Ok(None);
+    }
+
+    let outer = match describe_wire(topo, face.outer_wire(), normal, tolerance)? {
+        Some(boundary) => boundary,
+        None => return Ok(None),
+    };
+    let mut holes = Vec::with_capacity(face.inner_wires().len());
+    for &hole in face.inner_wires() {
+        match describe_wire(topo, hole, normal, tolerance)? {
+            Some(boundary) => holes.push(boundary),
+            None => return Ok(None),
+        }
+    }
+
+    let starts: Vec<Point3> = outer.iter().map(bucket_anchor).collect();
+    let centroid = mean_point(&starts);
+    Ok(Some(FaceDescriptor {
+        face: face_id,
+        normal,
+        outer,
+        holes,
+        centroid,
+    }))
+}
+
+/// Build the canonicalized segment loop for one boundary wire, or `None`
+/// when the wire leaves the supported domain.
+fn describe_wire(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+    face_normal: Vec3,
+    tolerance: f64,
+) -> Result<Option<Vec<BoundarySeg>>, HealError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let wire = topo.wire(wire_id)?;
+    if wire.edges().is_empty() {
+        return Ok(None);
+    }
+    let mut segs = Vec::with_capacity(wire.edges().len());
+    // Interior connectivity is validated joint by joint: every segment must
+    // start where the previous one ended (within tolerance). The merge
+    // machinery below relies on connected chains; a gapped wire is refused.
+    let mut first_start: Option<Point3> = None;
+    let mut prev_end: Option<Point3> = None;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let start: Point3 = topo.vertex(oe.oriented_start(edge))?.point();
+        let end: Point3 = topo.vertex(oe.oriented_end(edge))?.point();
+        if let Some(prev) = prev_end {
+            if (start - prev).length() >= tolerance {
+                return Ok(None);
+            }
+        } else {
+            first_start = Some(start);
+        }
+        prev_end = Some(end);
+        match edge.curve() {
+            EdgeCurve::Line => segs.push(BoundarySeg::Line { start }),
+            EdgeCurve::Circle(circle) => {
+                match describe_arc(circle, edge, start, end, face_normal, tolerance) {
+                    Some(seg) => segs.push(seg),
+                    None => return Ok(None),
+                }
+            }
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => return Ok(None),
+        }
+    }
+    // The loop must close: the last segment must return to the first start.
+    match (first_start, prev_end) {
+        (Some(first), Some(last)) if (last - first).length() < tolerance => {}
+        _ => return Ok(None),
+    }
+    let normalized = normalize_subdivision(segs, tolerance);
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(normalized))
+}
+
+/// Closed-edge position coincidence band, mirroring
+/// [`EdgeCurve::reconstruct_domain_from_endpoints`](remus_topology::edge::EdgeCurve::reconstruct_domain_from_endpoints).
+/// Below this band an open arc's endpoints are read as a closed rim; the
+/// choice cannot change a match verdict (comment at the call site).
+const CLOSED_POSITION_EPS: f64 = 1e-9;
+
+/// Describe one circle-arc segment, or `None` when it leaves the supported
+/// domain.
+///
+/// The span comes from the edge's authoritative domain (stored trim when
+/// present, endpoint reconstruction otherwise). Closed edges (shared vertex
+/// or coincident endpoints) canonicalize to a full sweep with no seam phase,
+/// so rims with different seam vertices still match. Open-arc sweeps are
+/// canonicalized to the face-normal side, making the comparison independent
+/// of the stored circle's arbitrary `u_axis`/normal choices.
+fn describe_arc(
+    circle: &remus_math::curves::Circle3D,
+    edge: &remus_topology::edge::Edge,
+    start: Point3,
+    end: Point3,
+    face_normal: Vec3,
+    tolerance: f64,
+) -> Option<BoundarySeg> {
+    use std::f64::consts::TAU;
+
+    let center = circle.center();
+    let radius = circle.radius();
+    let axis = circle.normal();
+    for v in [center, start, end] {
+        if !v.x().is_finite() || !v.y().is_finite() || !v.z().is_finite() {
+            return None;
+        }
+    }
+    if !radius.is_finite() || radius <= 0.0 || !tolerance.is_finite() || tolerance <= 0.0 {
+        return None;
+    }
+    if !axis.x().is_finite() || !axis.y().is_finite() || !axis.z().is_finite() {
+        return None;
+    }
+    // The circle must lie in the face plane: transverse axis or off-plane
+    // center means degenerate input — refuse, never approximate.
+    if axis.dot(face_normal).abs() < 1.0 - NORMAL_PARALLEL_COS_TOL {
+        return None;
+    }
+    if ((center - start).dot(face_normal)).abs() >= tolerance {
+        return None;
+    }
+    // Both endpoints must sit on the circle: vertices off a fitted curve are
+    // exactly the case endpoint reconstruction gets wrong, so refuse.
+    if ((start - center).length() - radius).abs() >= tolerance {
+        return None;
+    }
+    if ((end - center).length() - radius).abs() >= tolerance {
+        return None;
+    }
+
+    let closed = edge.is_closed() || (start - end).length() < CLOSED_POSITION_EPS;
+    if closed {
+        return Some(BoundarySeg::Arc {
+            start,
+            end,
+            center,
+            radius,
+            sweep: TAU,
+            closed: true,
+        });
+    }
+    let (t0, t1) = edge.domain_with_endpoints(start, end);
+    if !t0.is_finite() || !t1.is_finite() {
+        return None;
+    }
+    let delta = t1 - t0;
+    // A valid open-arc span lies strictly inside one full turn. Anything else
+    // is degenerate authority — refuse rather than reinterpret. (Whether a
+    // sub-`CLOSED_POSITION_EPS` gap reads as closed above cannot change a
+    // match verdict: the reconstructed sweep of such a gap agrees with `TAU`
+    // within the angular tolerance the predicate allows.)
+    if delta <= 1e-12 || delta > TAU + 1e-9 {
+        return None;
+    }
+    let sweep = if axis.dot(face_normal) > 0.0 {
+        delta
+    } else {
+        TAU - delta
+    };
+    Some(BoundarySeg::Arc {
+        start,
+        end,
+        center,
+        radius,
+        sweep,
+        closed: false,
+    })
+}
+
+/// Normalize valid subdivision differences without moving any vertex.
+///
+/// Drops degenerate (zero-length within tolerance) line segments, merges
+/// consecutive collinear line segments, and merges consecutive same-circle
+/// arcs. Only intermediate vertices strictly inside the surviving chord/arc
+/// disappear, so no thin region can be snapped away: opposite sides are never
+/// neighbors, and any deviation above tolerance blocks the merge. Restart
+/// after each merge keeps indices trivially valid; at most `n` merges happen
+/// on an `n`-segment loop. Deterministic: fixed circular order,
+/// first-mergeable-joint wins, no hashing.
+fn normalize_subdivision(mut segs: Vec<BoundarySeg>, tolerance: f64) -> Vec<BoundarySeg> {
+    loop {
+        if segs.len() < 2 {
+            break;
+        }
+        let mut joint = None;
+        for i in 0..segs.len() {
+            if mergeable_joint(&segs, i, tolerance) {
+                joint = Some(i);
+                break;
+            }
+        }
+        let Some(i) = joint else { break };
+        let j = (i + 1) % segs.len();
+        let merged = merge_joint(&segs, i, j, tolerance);
+        if j == 0 {
+            // Wrap joint (last, first): the merged segment takes the head.
+            segs = std::iter::once(merged)
+                .chain(segs.drain(1..segs.len() - 1))
+                .collect();
+        } else {
+            segs[i] = merged;
+            segs.remove(j);
+        }
+    }
+    segs
+}
+
+/// Whether the circular joint `(i, j = i+1 mod n)` may be merged.
+fn mergeable_joint(segs: &[BoundarySeg], i: usize, tolerance: f64) -> bool {
+    let n = segs.len();
+    let j = (i + 1) % n;
+    let k = (j + 1) % n;
+    match (&segs[i], &segs[j]) {
+        (BoundarySeg::Line { start: a }, BoundarySeg::Line { start: b }) => {
+            let c = segs[k].start();
+            if (*b - *a).length() < tolerance {
+                // Degenerate segment: traces nothing, always droppable.
+                return true;
+            }
+            if (c - *a).length() < tolerance {
+                // Degenerate chord with a real segment: keep, never collapse.
+                return false;
+            }
+            // `b` strictly between `a` and `c`, within tolerance of the chord.
+            let chord = c - *a;
+            let deviation = (*b - *a).cross(chord).length() / chord.length();
+            deviation < tolerance && (*b - *a).dot(chord) > 0.0 && (*b - c).dot(*a - c) > 0.0
+        }
+        (BoundarySeg::Arc { .. }, BoundarySeg::Line { start: b }) => {
+            // Degenerate line after an arc: drop the line, keep the arc.
+            (segs[k].start() - *b).length() < tolerance
+        }
+        (BoundarySeg::Line { start: a }, arc @ BoundarySeg::Arc { .. }) => {
+            // Degenerate line before an arc: drop the line, keep the arc.
+            (arc.start() - *a).length() < tolerance
+        }
+        (
+            BoundarySeg::Arc {
+                center: c1,
+                radius: r1,
+                sweep: s1,
+                ..
+            },
+            BoundarySeg::Arc {
+                start,
+                center: c2,
+                radius: r2,
+                sweep: s2,
+                ..
+            },
+        ) => {
+            use std::f64::consts::TAU;
+            let prev_end = match &segs[i] {
+                BoundarySeg::Arc { end, .. } => *end,
+                BoundarySeg::Line { .. } => return false,
+            };
+            // Contiguous on one circle (canonical sweeps are comparable: both
+            // were canonicalized to the face-normal side at build time), and
+            // the merged arc must not exceed one full turn (so closed rims,
+            // sweep TAU, never absorb a neighbor).
+            (*start - prev_end).length() < tolerance
+                && (*c1 - *c2).length() < tolerance
+                && (*r1 - *r2).abs() < tolerance
+                && *s1 + *s2 <= TAU + angle_tolerance(tolerance, r1.max(*r2))
+        }
+    }
+}
+
+/// Merge the circular joint `(i, j = i+1 mod n)`; caller checked
+/// [`mergeable_joint`].
+fn merge_joint(segs: &[BoundarySeg], i: usize, j: usize, _tolerance: f64) -> BoundarySeg {
+    match (&segs[i], &segs[j]) {
+        (BoundarySeg::Line { start: a }, BoundarySeg::Line { .. }) => {
+            BoundarySeg::Line { start: *a }
+        }
+        (arc, BoundarySeg::Line { .. }) => arc.clone(),
+        (BoundarySeg::Line { .. }, arc) => arc.clone(),
+        (
+            BoundarySeg::Arc {
+                start,
+                center,
+                radius,
+                sweep: s1,
+                ..
+            },
+            BoundarySeg::Arc { end, sweep: s2, .. },
+        ) => BoundarySeg::Arc {
+            start: *start,
+            end: *end,
+            center: *center,
+            radius: *radius,
+            sweep: *s1 + *s2,
+            // Merged arcs keep explicit endpoints (a two-edge full circle
+            // still has a seam vertex); only single closed-rim edges are
+            // phase-invariant.
+            closed: false,
+        },
+    }
+}
+
+/// Angular tolerance for comparing two arc sweeps of radius `radius`:
+/// the angle subtending one linear tolerance.
+fn angle_tolerance(tolerance: f64, radius: f64) -> f64 {
+    tolerance / radius.max(tolerance)
+}
+
 /// Plan duplicate removals over index-ordered descriptors.
 ///
 /// Streaming `j`-ascending scan with an in-neighborhood ascending-`i`
@@ -292,10 +692,18 @@ fn plan_duplicate_removals(descriptors: &[FaceDescriptor], tolerance: f64) -> Du
     }
 
     // Buckets grow in index order, so every bucket is ascending by construction.
-    let mut buckets: DetHashMap<Bucket, Vec<usize>> = DetHashMap::default();
+    // Two levels (signature, then spatial cells) so halo lookups never clone
+    // the hole-signature vector.
+    let mut buckets: DetHashMap<Signature, DetHashMap<(Cell3, Cell3), Vec<usize>>> =
+        DetHashMap::default();
     for (idx, key) in keys.iter().enumerate() {
-        if let Some(key) = key {
-            buckets.entry(*key).or_default().push(idx);
+        if let Some((signature, cells)) = key {
+            buckets
+                .entry(signature.clone())
+                .or_default()
+                .entry(*cells)
+                .or_default()
+                .push(idx);
         }
     }
 
@@ -310,21 +718,24 @@ fn plan_duplicate_removals(descriptors: &[FaceDescriptor], tolerance: f64) -> Du
             continue;
         }
         scratch.clear();
-        match keys[j] {
+        match &keys[j] {
             // Degenerate descriptor: every earlier face is a candidate.
             None => scratch.extend(0..j),
-            Some((count, (nx, ny, nz), (cx, cy, cz))) => {
+            Some((signature, ((nx, ny, nz), (cx, cy, cz)))) => {
+                let inner = buckets.get(signature);
                 for dx in -1..=1_i64 {
                     for dy in -1..=1_i64 {
                         for dz in -1..=1_i64 {
                             for dnx in -1..=1_i64 {
                                 for dny in -1..=1_i64 {
                                     for dnz in -1..=1_i64 {
-                                        if let Some(bucket) = buckets.get(&(
-                                            count,
-                                            (nx + dnx, ny + dny, nz + dnz),
-                                            (cx + dx, cy + dy, cz + dz),
-                                        )) {
+                                        let hit = inner.as_ref().and_then(|inner| {
+                                            inner.get(&(
+                                                (nx + dnx, ny + dny, nz + dnz),
+                                                (cx + dx, cy + dy, cz + dz),
+                                            ))
+                                        });
+                                        if let Some(bucket) = hit {
                                             let len = bucket.partition_point(|&i| i < j);
                                             scratch.extend_from_slice(&bucket[..len]);
                                         }
@@ -422,45 +833,150 @@ fn bucket_key(descriptor: &FaceDescriptor, tolerance: f64) -> Option<Bucket> {
         return None;
     }
     Some((
-        descriptor.points.len(),
+        boundary_signature(descriptor),
         (
-            (n.x() / NORMAL_CELL).floor() as i64,
-            (n.y() / NORMAL_CELL).floor() as i64,
-            (n.z() / NORMAL_CELL).floor() as i64,
-        ),
-        (
-            cell(c.x()).floor() as i64,
-            cell(c.y()).floor() as i64,
-            cell(c.z()).floor() as i64,
+            (
+                (n.x() / NORMAL_CELL).floor() as i64,
+                (n.y() / NORMAL_CELL).floor() as i64,
+                (n.z() / NORMAL_CELL).floor() as i64,
+            ),
+            (
+                cell(c.x()).floor() as i64,
+                cell(c.y()).floor() as i64,
+                cell(c.z()).floor() as i64,
+            ),
         ),
     ))
 }
 
+/// Exact boundary signature: outer segment count plus sorted hole segment
+/// counts. The predicate requires equality on both, so this key component
+/// can never exclude a true match.
+fn boundary_signature(descriptor: &FaceDescriptor) -> Signature {
+    let mut hole_lens: Vec<usize> = descriptor.holes.iter().map(Vec::len).collect();
+    hole_lens.sort_unstable();
+    (descriptor.outer.len(), hole_lens)
+}
+
 /// Exact duplicate predicate — the final authority.
 ///
-/// Effective normals must agree within [`NORMAL_PARALLEL_COS_TOL`] and the
-/// ordered outer boundaries must coincide pointwise within `tolerance` under
-/// some cyclic shift with the same winding.
+/// Effective normals must agree within [`NORMAL_PARALLEL_COS_TOL`], the
+/// oriented outer boundaries must coincide under some cyclic shift with the
+/// same winding, and holes must correspond one-to-one with coincident
+/// boundaries (hole storage order is arbitrary, so matching is by search).
 fn faces_are_duplicates(a: &FaceDescriptor, b: &FaceDescriptor, tolerance: f64) -> bool {
-    if a.points.len() != b.points.len() {
+    if a.outer.len() != b.outer.len() || a.holes.len() != b.holes.len() {
         return false;
     }
     if a.normal.dot(b.normal) < 1.0 - NORMAL_PARALLEL_COS_TOL {
         return false;
     }
-    boundaries_coincide_with_same_winding(&a.points, &b.points, tolerance)
+    if !loops_coincide_with_same_winding(&a.outer, &b.outer, tolerance) {
+        return false;
+    }
+    holes_correspond(&a.holes, &b.holes, tolerance)
 }
 
-fn boundaries_coincide_with_same_winding(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
+/// Whether two boundary loops trace the same oriented region: equal segment
+/// counts with elementwise-compatible segments under some cyclic shift, same
+/// winding (reversed order never matches).
+fn loops_coincide_with_same_winding(a: &[BoundarySeg], b: &[BoundarySeg], tolerance: f64) -> bool {
     if a.is_empty() || a.len() != b.len() {
         return false;
     }
-
     (0..b.len()).any(|offset| {
-        (a[0] - b[offset]).length() < tolerance
-            && (0..a.len())
-                .all(|index| (a[index] - b[(offset + index) % b.len()]).length() < tolerance)
+        segs_compatible(&a[0], &b[offset], tolerance)
+            && (1..a.len())
+                .all(|index| segs_compatible(&a[index], &b[(offset + index) % b.len()], tolerance))
     })
+}
+
+/// Whether two same-position segments trace the same directed curve piece:
+/// same kind (a chord never matches an arc) and — for arcs — the same
+/// supporting circle and canonical sweep. Endpoints must coincide except
+/// where a closed rim is involved: rims carry no seam phase, so rim–rim
+/// pairs compare by circle and sweep alone, and rim–arc pairs additionally
+/// require the arc's gap to be invisible at tolerance (via sweep agreement —
+/// a real gap changes the sweep beyond the angular tolerance).
+fn segs_compatible(a: &BoundarySeg, b: &BoundarySeg, tolerance: f64) -> bool {
+    match (a, b) {
+        (BoundarySeg::Line { start: s1 }, BoundarySeg::Line { start: s2 }) => {
+            (*s1 - *s2).length() < tolerance
+        }
+        (
+            BoundarySeg::Arc {
+                start: s1,
+                end: e1,
+                center: c1,
+                radius: r1,
+                sweep: w1,
+                closed: k1,
+            },
+            BoundarySeg::Arc {
+                start: s2,
+                end: e2,
+                center: c2,
+                radius: r2,
+                sweep: w2,
+                closed: k2,
+            },
+        ) => {
+            (*c1 - *c2).length() < tolerance
+                && (*r1 - *r2).abs() < tolerance
+                && (*w1 - *w2).abs() < angle_tolerance(tolerance, r1.max(*r2))
+                && (*k1 && *k2
+                    || (*s1 - *s2).length() < tolerance && (*e1 - *e2).length() < tolerance)
+        }
+        (BoundarySeg::Line { .. }, BoundarySeg::Arc { .. })
+        | (BoundarySeg::Arc { .. }, BoundarySeg::Line { .. }) => false,
+    }
+}
+
+/// Whether every hole of `a` coincides with exactly one hole of `b` and vice
+/// versa (equal counts checked by the caller).
+///
+/// Deterministic augmenting-path matching in stored order: complete (finds a
+/// bijection whenever one exists), so recognition never depends on hole
+/// storage order. Greedy failure would keep genuine duplicates; search
+/// completeness is part of the contract proof (one-to-one correspondence).
+fn holes_correspond(a: &[Vec<BoundarySeg>], b: &[Vec<BoundarySeg>], tolerance: f64) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // match_b[j] = index in `a` currently claiming hole `j` of `b`.
+    let mut match_b: Vec<Option<usize>> = vec![None; b.len()];
+    for i in 0..a.len() {
+        let mut seen = vec![false; b.len()];
+        if !augment_hole(i, a, b, tolerance, &mut seen, &mut match_b) {
+            return false;
+        }
+    }
+    true
+}
+
+/// One DFS step of the hole bijection search.
+fn augment_hole(
+    i: usize,
+    a: &[Vec<BoundarySeg>],
+    b: &[Vec<BoundarySeg>],
+    tolerance: f64,
+    seen: &mut [bool],
+    match_b: &mut [Option<usize>],
+) -> bool {
+    for (j, hole_b) in b.iter().enumerate() {
+        if seen[j] {
+            continue;
+        }
+        if !loops_coincide_with_same_winding(&a[i], hole_b, tolerance) {
+            continue;
+        }
+        seen[j] = true;
+        if match_b[j].is_none_or(|prev| augment_hole(prev, a, b, tolerance, seen, match_b)) {
+            match_b[j] = Some(i);
+            return true;
+        }
+    }
+    false
 }
 
 fn mean_point(points: &[Point3]) -> Point3 {
@@ -475,6 +991,7 @@ fn mean_point(points: &[Point3]) -> Point3 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use remus_math::curves::Circle3D;
     use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::face::Face;
     use remus_topology::shell::Shell;
@@ -542,48 +1059,20 @@ mod tests {
         shell: remus_topology::shell::ShellId,
         tol: f64,
     ) -> Vec<FaceDescriptor> {
-        let _ = tol;
         let mut out = Vec::new();
         for &fid in topo.shell(shell).unwrap().faces() {
-            let face = topo.face(fid).unwrap();
-            if !face.inner_wires().is_empty() {
-                continue;
+            if let Some(descriptor) = describe_face(topo, fid, tol).unwrap() {
+                out.push(descriptor);
             }
-            let FaceSurface::Plane { normal, .. } = face.surface() else {
-                continue;
-            };
-            let normal = if face.is_reversed() {
-                -*normal
-            } else {
-                *normal
-            };
-            let wire = topo.wire(face.outer_wire()).unwrap();
-            let mut points = Vec::new();
-            for oe in wire.edges() {
-                let edge = topo.edge(oe.edge()).unwrap();
-                if !matches!(edge.curve(), EdgeCurve::Line) {
-                    points.clear();
-                    break;
-                }
-                points.push(topo.vertex(oe.oriented_start(edge)).unwrap().point());
-            }
-            if points.is_empty() {
-                continue;
-            }
-            let centroid = mean_point(&points);
-            out.push(FaceDescriptor {
-                face: fid,
-                normal,
-                points,
-                centroid,
-            });
         }
         out.sort_by_key(|d| d.face.index());
         out
     }
 
     /// Independent all-pairs oracle over the same descriptor order: legacy
-    /// `i`-outer loop, own predicate evaluation, no buckets.
+    /// `i`-outer loop, own predicate evaluation written separately from the
+    /// production predicate (own loop walk, own hole bijection, own arc
+    /// comparison), no buckets.
     fn reference_all_pairs(
         descriptors: &[FaceDescriptor],
         tolerance: f64,
@@ -599,20 +1088,125 @@ mod tests {
                 if removed[j] {
                     continue;
                 }
-                let a = &descriptors[i];
-                let b = &descriptors[j];
-                let same_len = a.points.len() == b.points.len();
-                let same_normal = a.normal.dot(b.normal) >= 1.0 - NORMAL_PARALLEL_COS_TOL;
-                if same_len
-                    && same_normal
-                    && boundaries_coincide_with_same_winding(&a.points, &b.points, tolerance)
-                {
+                if reference_duplicates(&descriptors[i], &descriptors[j], tolerance) {
                     removed[j] = true;
-                    pairs.push((a.face, b.face));
+                    pairs.push((descriptors[i].face, descriptors[j].face));
                 }
             }
         }
         pairs
+    }
+
+    /// Independently written duplicate check over descriptor data.
+    fn reference_duplicates(a: &FaceDescriptor, b: &FaceDescriptor, tol: f64) -> bool {
+        if a.outer.len() != b.outer.len() || a.holes.len() != b.holes.len() {
+            return false;
+        }
+        if a.normal.dot(b.normal) < 1.0 - NORMAL_PARALLEL_COS_TOL {
+            return false;
+        }
+        if !reference_loops_match(&a.outer, &b.outer, tol) {
+            return false;
+        }
+        if a.holes.len() != b.holes.len() {
+            return false;
+        }
+        // Independent hole bijection: exhaustive permutation search over the
+        // (small) hole sets instead of the production augmenting-path match.
+        let mut order: Vec<usize> = (0..b.holes.len()).collect();
+        loop {
+            let matched = a
+                .holes
+                .iter()
+                .zip(order.iter())
+                .all(|(ha, &jb)| reference_loops_match(ha, &b.holes[jb], tol));
+            if matched {
+                return true;
+            }
+            if !next_permutation(&mut order) {
+                return false;
+            }
+        }
+    }
+
+    /// Independently written oriented-loop coincidence: cyclic-shift walk with
+    /// per-kind endpoint comparison.
+    fn reference_loops_match(a: &[BoundarySeg], b: &[BoundarySeg], tol: f64) -> bool {
+        if a.is_empty() || a.len() != b.len() {
+            return false;
+        }
+        for offset in 0..b.len() {
+            let mut ok = true;
+            for (index, sa) in a.iter().enumerate() {
+                if !reference_segs_match(sa, &b[(offset + index) % b.len()], tol) {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Independently written segment comparison (mirrors the production
+    /// closed-rim rule: rims compare by circle and sweep alone).
+    fn reference_segs_match(a: &BoundarySeg, b: &BoundarySeg, tol: f64) -> bool {
+        match (a, b) {
+            (BoundarySeg::Line { start: s1 }, BoundarySeg::Line { start: s2 }) => {
+                (*s1 - *s2).length() < tol
+            }
+            (
+                BoundarySeg::Arc {
+                    start: s1,
+                    end: e1,
+                    center: c1,
+                    radius: r1,
+                    sweep: w1,
+                    closed: k1,
+                },
+                BoundarySeg::Arc {
+                    start: s2,
+                    end: e2,
+                    center: c2,
+                    radius: r2,
+                    sweep: w2,
+                    closed: k2,
+                },
+            ) => {
+                (*c1 - *c2).length() < tol
+                    && (*r1 - *r2).abs() < tol
+                    && (*w1 - *w2).abs() < tol / r1.max(*r2).max(tol)
+                    && (*k1 && *k2 || (*s1 - *s2).length() < tol && (*e1 - *e2).length() < tol)
+            }
+            _ => false,
+        }
+    }
+
+    /// Lexicographic next permutation; false when the last one was reached.
+    fn next_permutation(order: &mut [usize]) -> bool {
+        if order.len() < 2 {
+            return false;
+        }
+        let mut i = order.len() - 2;
+        loop {
+            if order[i] < order[i + 1] {
+                break;
+            }
+            if i == 0 {
+                order.reverse();
+                return false;
+            }
+            i -= 1;
+        }
+        let mut j = order.len() - 1;
+        while order[j] <= order[i] {
+            j -= 1;
+        }
+        order.swap(i, j);
+        order[i + 1..].reverse();
+        true
     }
 
     fn assert_plan_equals_reference(
@@ -621,9 +1215,23 @@ mod tests {
     ) -> DuplicatePlan {
         let plan = plan_duplicate_removals(descriptors, tolerance);
         let reference = reference_all_pairs(descriptors, tolerance);
+        // Same decisions (survivor and removed per pair), up to emission
+        // order: the plan streams `j`-ascending (pairs sorted by removed
+        // face), the reference scans `i`-outer (pairs sorted by survivor).
+        // Both orders are deterministic; only the sets must agree.
+        let mut planned = plan.pairs.clone();
+        let mut expected = reference.clone();
+        planned.sort_by_key(|p| (p.0.index(), p.1.index()));
+        expected.sort_by_key(|p| (p.0.index(), p.1.index()));
         assert_eq!(
-            plan.pairs, reference,
-            "indexed plan must equal the all-pairs reference (survivor, order, removals)"
+            planned, expected,
+            "indexed plan must equal the all-pairs reference (survivor, removals)"
+        );
+        assert!(
+            plan.pairs
+                .windows(2)
+                .all(|w| w[0].1.index() < w[1].1.index()),
+            "plan pairs must stream in ascending removed-face order"
         );
         // The index may only skip exact evaluations, never change the outcome.
         let dense = all_pairs_plan(descriptors, tolerance, false);
@@ -1207,6 +1815,65 @@ mod tests {
     }
 
     #[test]
+    fn randomized_holed_fixtures_match_reference() {
+        // 0-2 holes per face from deterministic placement; every third face
+        // duplicates an earlier one (sometimes with holes reordered).
+        let tol = 1e-7;
+        for size in [3, 17, 80] {
+            let mut topo = Topology::new();
+            let mut rng = Lcg(0xB017 + size as u64);
+            let mut faces = Vec::new();
+            let hole_spot = |k: usize| {
+                let bx = (k % 5) as f64 * 10.0;
+                let by = (k / 5 % 5) as f64 * 10.0;
+                [
+                    [bx + 1.0, by + 1.0, 0.0],
+                    [bx + 2.0, by + 1.0, 0.0],
+                    [bx + 2.0, by + 2.0, 0.0],
+                    [bx + 1.0, by + 2.0, 0.0],
+                ]
+            };
+            for i in 0..size {
+                if i % 3 == 2 && !faces.is_empty() {
+                    // Duplicate face 0's geometry with fresh topology; even
+                    // iterations reverse the hole storage order.
+                    let flip = (i / 3) % 2 == 0;
+                    let mut hs = vec![hole_spot(0)];
+                    if i % 2 == 0 {
+                        hs.push(hole_spot(1));
+                    }
+                    if flip {
+                        hs.reverse();
+                    }
+                    let ox = 0.0 + (rng.next_f64() - 0.5) * 1e-9;
+                    let shifted: [Point3; 4] =
+                        UNIT_OUTER.map(|p| Point3::new(p.x() + ox, p.y(), p.z()));
+                    faces.push(add_holed_quad(&mut topo, shifted, &hs));
+                    continue;
+                }
+                let ox = (i as f64) * 10.0;
+                let outer = [
+                    Point3::new(ox, 0.0, 0.0),
+                    Point3::new(ox + 4.0, 0.0, 0.0),
+                    Point3::new(ox + 4.0, 4.0, 0.0),
+                    Point3::new(ox, 4.0, 0.0),
+                ];
+                let mut hs = Vec::new();
+                if rng.next_f64() < 0.7 {
+                    hs.push(hole_spot(i));
+                }
+                if rng.next_f64() < 0.3 {
+                    hs.push(hole_spot(i + 100));
+                }
+                faces.push(add_holed_quad(&mut topo, outer, &hs));
+            }
+            let shell = topo.add_shell(Shell::new(faces).unwrap());
+            let descriptors = describe_shell(&topo, shell, tol);
+            assert_plan_equals_reference(&descriptors, tol);
+        }
+    }
+
+    #[test]
     fn plan_is_deterministic_across_runs() {
         let mut topo = Topology::new();
         let mut rng = Lcg(0xbeef);
@@ -1232,5 +1899,777 @@ mod tests {
         assert_eq!(a.pairs, b.pairs);
         assert_eq!(a.candidate_exams, b.candidate_exams);
         assert_eq!(a.exact_comparisons, b.exact_comparisons);
+    }
+
+    // ── M3: perforated planar faces ──
+
+    /// Hole corner specification (4 corners as [x, y, z] triples).
+    type HoleCorners = [[f64; 3]; 4];
+
+    /// Add a planar (+Z) quad with `holes` inner quad wires.
+    fn add_holed_quad(topo: &mut Topology, outer: [Point3; 4], holes: &[HoleCorners]) -> FaceId {
+        let mut quad_wire = |corners: &[Point3]| {
+            let vs: Vec<_> = corners
+                .iter()
+                .map(|p| topo.add_vertex(Vertex::new(*p, 1e-7)))
+                .collect();
+            let es: Vec<_> = (0..4)
+                .map(|i| topo.add_edge(Edge::new(vs[i], vs[(i + 1) % 4], EdgeCurve::Line)))
+                .collect();
+            topo.add_wire(
+                Wire::new(
+                    es.into_iter().map(|e| OrientedEdge::new(e, true)).collect(),
+                    true,
+                )
+                .unwrap(),
+            )
+        };
+        let outer_wire = quad_wire(&outer);
+        let hole_wires: Vec<_> = holes
+            .iter()
+            .map(|h| quad_wire(&h.map(|p| Point3::new(p[0], p[1], p[2]))))
+            .collect();
+        topo.add_face(Face::new(
+            outer_wire,
+            hole_wires,
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    const UNIT_OUTER: [Point3; 4] = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(4.0, 0.0, 0.0),
+        Point3::new(4.0, 4.0, 0.0),
+        Point3::new(0.0, 4.0, 0.0),
+    ];
+    const HOLE_A: HoleCorners = [
+        [1.0, 1.0, 0.0],
+        [2.0, 1.0, 0.0],
+        [2.0, 2.0, 0.0],
+        [1.0, 2.0, 0.0],
+    ];
+    const HOLE_B: HoleCorners = [
+        [2.5, 2.5, 0.0],
+        [3.0, 2.5, 0.0],
+        [3.0, 3.0, 0.0],
+        [2.5, 3.0, 0.0],
+    ];
+
+    fn assert_shell_removals(
+        topo: &Topology,
+        shell: remus_topology::shell::ShellId,
+        tol: f64,
+    ) -> DuplicatePlan {
+        let descriptors = describe_shell(topo, shell, tol);
+        assert_plan_equals_reference(&descriptors, tol)
+    }
+
+    #[test]
+    fn holed_duplicates_match_with_same_holes() {
+        let mut topo = Topology::new();
+        let a = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A]);
+        let b = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A]);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1);
+    }
+
+    #[test]
+    fn holed_duplicates_match_with_reordered_holes() {
+        // Hole storage order is arbitrary: two holes stored in opposite
+        // order still correspond one-to-one via the bijection search.
+        let mut topo = Topology::new();
+        let a = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A, HOLE_B]);
+        let b = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_B, HOLE_A]);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1);
+    }
+
+    #[test]
+    fn holed_faces_keep_genuine_hole_differences() {
+        // Same outer, but: missing hole, extra hole, shifted hole.
+        let shifted: HoleCorners = [
+            [1.0 + 5e-6, 1.0, 0.0],
+            [2.0 + 5e-6, 1.0, 0.0],
+            [2.0 + 5e-6, 2.0, 0.0],
+            [1.0 + 5e-6, 2.0, 0.0],
+        ];
+        let cases: [(&str, Vec<HoleCorners>, Vec<HoleCorners>); 3] = [
+            ("missing_hole", vec![HOLE_A, HOLE_B], vec![HOLE_A]),
+            ("extra_hole", vec![HOLE_A], vec![HOLE_A, HOLE_B]),
+            ("shifted_hole", vec![HOLE_A], vec![shifted]),
+        ];
+        for (label, holes_a, holes_b) in cases {
+            let mut topo = Topology::new();
+            let a = add_holed_quad(&mut topo, UNIT_OUTER, &holes_a);
+            let b = add_holed_quad(&mut topo, UNIT_OUTER, &holes_b);
+            let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+            let plan = assert_shell_removals(&topo, shell, 1e-7);
+            assert!(
+                plan.pairs.is_empty(),
+                "{label}: hole difference must be kept"
+            );
+        }
+    }
+
+    #[test]
+    fn holed_face_keeps_unholed_twin() {
+        let mut topo = Topology::new();
+        let a = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A]);
+        let b = add_quad(&mut topo, UNIT_OUTER);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "perforated vs clean must be kept");
+    }
+
+    #[test]
+    fn holed_face_keeps_reversed_hole_winding() {
+        // Same hole region, opposite hole traversal: a reversed
+        // representation the comparator does not normalize — fail-closed.
+        let mut topo = Topology::new();
+        let a = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A]);
+        let mut reversed_hole = HOLE_A;
+        reversed_hole.reverse();
+        let b = add_holed_quad(&mut topo, UNIT_OUTER, &[reversed_hole]);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(
+            plan.pairs.is_empty(),
+            "reversed hole winding is kept, not normalized"
+        );
+    }
+
+    // ── M3: subdivision normalization ──
+
+    /// Quad whose first side is split at `fractions` (collinear vertices).
+    fn add_subdivided_quad(topo: &mut Topology, fractions: &[f64]) -> FaceId {
+        let a = Point3::new(0.0, 0.0, 0.0);
+        let b = Point3::new(4.0, 0.0, 0.0);
+        let c = Point3::new(4.0, 4.0, 0.0);
+        let d = Point3::new(0.0, 4.0, 0.0);
+        let mut pts = vec![a];
+        for f in fractions {
+            pts.push(Point3::new(4.0 * f, 0.0, 0.0));
+        }
+        pts.push(b);
+        pts.push(c);
+        pts.push(d);
+        let vs: Vec<_> = pts
+            .iter()
+            .map(|p| topo.add_vertex(Vertex::new(*p, 1e-7)))
+            .collect();
+        let es: Vec<_> = (0..vs.len())
+            .map(|i| topo.add_edge(Edge::new(vs[i], vs[(i + 1) % vs.len()], EdgeCurve::Line)))
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                es.into_iter().map(|e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    #[test]
+    fn collinear_subdivision_matches_clean_boundary() {
+        let mut topo = Topology::new();
+        let clean = add_quad(&mut topo, UNIT_OUTER);
+        let split = add_subdivided_quad(&mut topo, &[0.25, 0.5, 0.75]);
+        let shell = topo.add_shell(Shell::new(vec![clean, split]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1, "collinear splits normalize away");
+    }
+
+    #[test]
+    fn stepped_side_is_not_snapped_away() {
+        // A 5*tol inward step on one side is a genuine region difference:
+        // normalization moves no vertex, so the step survives and the pair
+        // is kept.
+        let mut topo = Topology::new();
+        let clean = add_quad(&mut topo, UNIT_OUTER);
+        let stepped = add_quad(
+            &mut topo,
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 5e-7, 0.0),
+                Point3::new(4.0, 4.0, 0.0),
+                Point3::new(0.0, 4.0, 0.0),
+            ],
+        );
+        let shell = topo.add_shell(Shell::new(vec![clean, stepped]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "stepped side must be kept");
+    }
+
+    #[test]
+    fn inward_spike_is_not_snapped_away() {
+        // Same endpoints, but one boundary detours inward by 5*tol through
+        // an extra vertex: less material, so the pair is kept.
+        let mut topo = Topology::new();
+        let clean = add_quad(&mut topo, UNIT_OUTER);
+        let vs: Vec<_> = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 5e-7, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(4.0, 4.0, 0.0),
+            Point3::new(0.0, 4.0, 0.0),
+        ]
+        .iter()
+        .map(|p| topo.add_vertex(Vertex::new(*p, 1e-7)))
+        .collect();
+        let es: Vec<_> = (0..vs.len())
+            .map(|i| topo.add_edge(Edge::new(vs[i], vs[(i + 1) % vs.len()], EdgeCurve::Line)))
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                es.into_iter().map(|e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let spiked = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![clean, spiked]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "inward spike must be kept");
+    }
+
+    #[test]
+    fn degenerate_zero_length_edge_normalizes_away() {
+        // A doubled vertex (zero-length edge) traces nothing: it normalizes
+        // away and the pair matches.
+        let mut topo = Topology::new();
+        let clean = add_quad(&mut topo, UNIT_OUTER);
+        let vs: Vec<_> = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(4.0, 4.0, 0.0),
+            Point3::new(0.0, 4.0, 0.0),
+        ]
+        .iter()
+        .map(|p| topo.add_vertex(Vertex::new(*p, 1e-7)))
+        .collect();
+        let es: Vec<_> = (0..vs.len())
+            .map(|i| topo.add_edge(Edge::new(vs[i], vs[(i + 1) % vs.len()], EdgeCurve::Line)))
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                es.into_iter().map(|e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let doubled = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![clean, doubled]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1, "doubled vertex normalizes away");
+    }
+
+    // ── M3: circle/arc boundaries ──
+
+    /// Add a planar (+Z, d=0) disc face: one closed circle edge with the seam
+    /// vertex at `seam_angle`.
+    fn add_disc(topo: &mut Topology, center: Point3, radius: f64, seam_angle: f64) -> FaceId {
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+        let seam = Point3::new(
+            center.x() + radius * seam_angle.cos(),
+            center.y() + radius * seam_angle.sin(),
+            center.z(),
+        );
+        let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let edge = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    #[test]
+    fn disc_rims_match_regardless_of_seam_vertex() {
+        // Same geometric rim, seam vertices 90° apart: the closed rim carries
+        // no phase, so the pair matches.
+        let mut topo = Topology::new();
+        let center = Point3::new(1.0, 2.0, 0.0);
+        let a = add_disc(&mut topo, center, 1.5, 0.0);
+        let b = add_disc(&mut topo, center, 1.5, std::f64::consts::FRAC_PI_2);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1, "seam position must not matter");
+    }
+
+    #[test]
+    fn discs_keep_radius_and_center_differences() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        for (label, other) in [
+            ("radius", (Point3::new(0.0, 0.0, 0.0), 1.5 + 5e-6)),
+            ("center", (Point3::new(5e-6, 0.0, 0.0), 1.5)),
+        ] {
+            let mut topo = Topology::new();
+            let a = add_disc(&mut topo, center, 1.5, 0.0);
+            let b = add_disc(&mut topo, other.0, other.1, 0.0);
+            let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+            let plan = assert_shell_removals(&topo, shell, 1e-7);
+            assert!(plan.pairs.is_empty(), "{label} difference must be kept");
+        }
+    }
+
+    #[test]
+    fn disc_keeps_same_area_square() {
+        // Equal area proves nothing: a disc and a square of equal area bound
+        // different regions (and different segment kinds).
+        let mut topo = Topology::new();
+        let disc = add_disc(&mut topo, Point3::new(0.0, 0.0, 0.0), 1.0, 0.0);
+        let side = std::f64::consts::PI.sqrt();
+        let square = add_quad(
+            &mut topo,
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(side, 0.0, 0.0),
+                Point3::new(side, side, 0.0),
+                Point3::new(0.0, side, 0.0),
+            ],
+        );
+        let shell = topo.add_shell(Shell::new(vec![disc, square]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "disc vs square must be kept");
+    }
+
+    /// Build the rounded-corner square: [0,2]² with the (2,2) corner rounded
+    /// at radius 0.5 (3 lines + 1 quarter arc). `rotate` starts the wire at a
+    /// different edge (cyclic shift); `split_arc` halves the arc into two
+    /// same-circle arcs (subdivision difference).
+    fn add_rounded_corner(topo: &mut Topology, rotate: usize, split_arc: bool) -> FaceId {
+        let pt = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let p00 = topo.add_vertex(Vertex::new(pt(0.0, 0.0), 1e-7));
+        let p20 = topo.add_vertex(Vertex::new(pt(2.0, 0.0), 1e-7));
+        let p215 = topo.add_vertex(Vertex::new(pt(2.0, 1.5), 1e-7));
+        let p152 = topo.add_vertex(Vertex::new(pt(1.5, 2.0), 1e-7));
+        let p02 = topo.add_vertex(Vertex::new(pt(0.0, 2.0), 1e-7));
+        let center = Point3::new(1.5, 1.5, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
+        let e0 = topo.add_edge(Edge::new(p00, p20, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(p20, p215, EdgeCurve::Line));
+        let mut oes = vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, true)];
+        if split_arc {
+            let pmid = topo.add_vertex(Vertex::new(
+                pt(
+                    1.5 + 0.5 * std::f64::consts::FRAC_1_SQRT_2,
+                    1.5 + 0.5 * std::f64::consts::FRAC_1_SQRT_2,
+                ),
+                1e-7,
+            ));
+            let ea = topo.add_edge(Edge::new(p215, pmid, EdgeCurve::Circle(circle.clone())));
+            let eb = topo.add_edge(Edge::new(pmid, p152, EdgeCurve::Circle(circle)));
+            oes.push(OrientedEdge::new(ea, true));
+            oes.push(OrientedEdge::new(eb, true));
+        } else {
+            let ea = topo.add_edge(Edge::new(p215, p152, EdgeCurve::Circle(circle)));
+            oes.push(OrientedEdge::new(ea, true));
+        }
+        let e3 = topo.add_edge(Edge::new(p152, p02, EdgeCurve::Line));
+        let e4 = topo.add_edge(Edge::new(p02, p00, EdgeCurve::Line));
+        oes.push(OrientedEdge::new(e3, true));
+        oes.push(OrientedEdge::new(e4, true));
+        let rot = rotate % oes.len();
+        oes.rotate_left(rot);
+        let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    #[test]
+    fn rounded_corners_match_across_cyclic_shift_and_arc_split() {
+        let mut topo = Topology::new();
+        let a = add_rounded_corner(&mut topo, 0, false);
+        let b = add_rounded_corner(&mut topo, 3, true);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(
+            plan.pairs.len(),
+            1,
+            "cyclic shift + arc subdivision must match"
+        );
+    }
+
+    #[test]
+    fn chord_is_never_equated_with_arc() {
+        // Same corner points, but one face closes the rounded corner with a
+        // straight chord while the other carries the arc: same endpoints,
+        // different regions — kept.
+        let mut topo = Topology::new();
+        let arc_face = add_rounded_corner(&mut topo, 0, false);
+        let q = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let p00 = topo.add_vertex(Vertex::new(q(0.0, 0.0), 1e-7));
+        let p20 = topo.add_vertex(Vertex::new(q(2.0, 0.0), 1e-7));
+        let p215 = topo.add_vertex(Vertex::new(q(2.0, 1.5), 1e-7));
+        let p152 = topo.add_vertex(Vertex::new(q(1.5, 2.0), 1e-7));
+        let p02 = topo.add_vertex(Vertex::new(q(0.0, 2.0), 1e-7));
+        let mk = |a, b| Edge::new(a, b, EdgeCurve::Line);
+        let e0 = topo.add_edge(mk(p00, p20));
+        let e1 = topo.add_edge(mk(p20, p215));
+        let e2 = topo.add_edge(mk(p215, p152));
+        let e3 = topo.add_edge(mk(p152, p02));
+        let e4 = topo.add_edge(mk(p02, p00));
+        let oes = vec![
+            OrientedEdge::new(e0, true),
+            OrientedEdge::new(e1, true),
+            OrientedEdge::new(e2, true),
+            OrientedEdge::new(e3, true),
+            OrientedEdge::new(e4, true),
+        ];
+        let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+        let chord_face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![arc_face, chord_face]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "chord vs arc must be kept");
+    }
+
+    #[test]
+    fn gapped_arc_loop_keeps_closed_rim() {
+        // A nearly-closed arc (350° span) closed by a chord vs the true disc
+        // rim: genuinely different boundaries — kept.
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let rim = add_disc(&mut topo, center, 1.0, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let gap = 10.0_f64.to_radians();
+        let a0 = gap / 2.0;
+        let a1 = std::f64::consts::TAU - gap / 2.0;
+        let pa = Point3::new(a0.cos(), a0.sin(), 0.0);
+        let pb = Point3::new(a1.cos(), a1.sin(), 0.0);
+        let va = topo.add_vertex(Vertex::new(pa, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(pb, 1e-7));
+        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle)));
+        let chord = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
+                true,
+            )
+            .unwrap(),
+        );
+        let gapped = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![rim, gapped]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "gapped arc must not match the rim");
+    }
+
+    #[test]
+    fn disc_rims_match_across_flipped_circle_frame() {
+        // Same rim on a circle whose stored frame is flipped (opposite
+        // normal): closed rims canonicalize to a full sweep either way.
+        let mut topo = Topology::new();
+        let center = Point3::new(1.0, 2.0, 0.0);
+        let a = add_disc(&mut topo, center, 1.5, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.5).unwrap();
+        let flipped = circle.reversed();
+        let seam = flipped.evaluate(1.0);
+        let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let edge = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(flipped)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let b = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1, "flipped rim frame must match");
+    }
+
+    #[test]
+    fn same_geometric_arc_matches_across_flipped_frame() {
+        // Same geometric quarter arc, endpoints shared as frame-invariant
+        // points, on circles whose stored frames are flipped: the canonical
+        // sweep absorbs the frame flip. The flipped frame traverses
+        // (1,0)->(0,1) the short way only when the edge direction is
+        // complemented too, so the twin edge runs (0,1)->(1,0) on the flipped
+        // circle while the wire keeps the same traversal via a reversed use.
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let flipped = circle.reversed();
+        let pa = Point3::new(1.0, 0.0, 0.0);
+        let pb = Point3::new(0.0, 1.0, 0.0);
+        let pc = Point3::new(-0.5, -0.5, 0.0);
+        // Face A: arc (1,0)->(0,1), quarter sweep, +Z frame.
+        let va = topo.add_vertex(Vertex::new(pa, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(pb, 1e-7));
+        let vc = topo.add_vertex(Vertex::new(pc, 1e-7));
+        let arc_a = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle)));
+        let lab_a = topo.add_edge(Edge::new(vb, vc, EdgeCurve::Line));
+        let lac_a = topo.add_edge(Edge::new(vc, va, EdgeCurve::Line));
+        let wire_a = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(arc_a, true),
+                    OrientedEdge::new(lab_a, true),
+                    OrientedEdge::new(lac_a, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let a = topo.add_face(Face::new(
+            wire_a,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        // Face B: same geometric arc as (0,1)->(1,0) on the flipped circle,
+        // used backwards so the wire traverses (1,0)->(0,1) identically.
+        let wa = topo.add_vertex(Vertex::new(pa, 1e-7));
+        let wb = topo.add_vertex(Vertex::new(pb, 1e-7));
+        let wc = topo.add_vertex(Vertex::new(pc, 1e-7));
+        let arc_b = topo.add_edge(Edge::new(wb, wa, EdgeCurve::Circle(flipped)));
+        let lab_b = topo.add_edge(Edge::new(wb, wc, EdgeCurve::Line));
+        let lac_b = topo.add_edge(Edge::new(wc, wa, EdgeCurve::Line));
+        let wire_b = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(arc_b, false),
+                    OrientedEdge::new(lab_b, true),
+                    OrientedEdge::new(lac_b, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let b = topo.add_face(Face::new(
+            wire_b,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs.len(), 1, "frame flip must canonicalize away");
+    }
+
+    #[test]
+    fn reversed_arc_traversal_is_kept() {
+        // Same rounded corner traced backwards: opposite winding, same
+        // unoriented region — kept, like the line-only opposite-winding pin.
+        let mut topo = Topology::new();
+        let forward = add_rounded_corner(&mut topo, 0, false);
+        // Rebuild the same loop backwards: reversed edge order, flipped uses.
+        let face = topo.face(forward).unwrap().clone();
+        let wire = topo.wire(face.outer_wire()).unwrap().clone();
+        let oes: Vec<OrientedEdge> = wire
+            .edges()
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+        let wire_id = topo.add_wire(Wire::new(oes, true).unwrap());
+        let backward = topo.add_face(Face::new(
+            wire_id,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![forward, backward]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert!(plan.pairs.is_empty(), "reversed traversal must be kept");
+    }
+
+    #[test]
+    fn unsupported_curves_and_carriers_are_refused() {
+        // Ellipse / NURBS boundaries and non-planar carriers never enter the
+        // candidate set: identical twins are left in place with no removal
+        // and no error.
+        use remus_math::curves::Ellipse3D;
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_math::surfaces::CylindricalSurface;
+        let mut topo = Topology::new();
+        // Ellipse-bounded planar twins.
+        let ellipse = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            1.0,
+        )
+        .unwrap();
+        let mut ellipse_faces = Vec::new();
+        for _ in 0..2 {
+            let v0 = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+            let edge = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Ellipse(ellipse.clone())));
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            ellipse_faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        // NURBS-bounded planar twins (straight segment as degree-1 NURBS).
+        let nurbs = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(5.0, 0.0, 0.0), Point3::new(6.0, 0.0, 0.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        let mut nurbs_faces = Vec::new();
+        for _ in 0..2 {
+            let v0 = topo.add_vertex(Vertex::new(Point3::new(5.0, 0.0, 0.0), 1e-7));
+            let v1 = topo.add_vertex(Vertex::new(Point3::new(6.0, 0.0, 0.0), 1e-7));
+            let v2 = topo.add_vertex(Vertex::new(Point3::new(5.5, 1.0, 0.0), 1e-7));
+            let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs.clone())));
+            let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+            let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(e0, true),
+                        OrientedEdge::new(e1, true),
+                        OrientedEdge::new(e2, true),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            );
+            nurbs_faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        // Cylindrical-carrier planar-boundary twins.
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap();
+        let mut cyl_faces = Vec::new();
+        for _ in 0..2 {
+            cyl_faces.push(add_triangle(
+                &mut topo,
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(11.0, 0.0, 0.0),
+                Point3::new(10.0, 1.0, 0.0),
+            ));
+            let last = *cyl_faces.last().unwrap();
+            topo.face_mut(last)
+                .unwrap()
+                .set_surface(FaceSurface::Cylinder(cyl.clone()));
+        }
+        let mut all = ellipse_faces;
+        all.extend(nurbs_faces);
+        all.extend(cyl_faces);
+        let shell = topo.add_shell(Shell::new(all).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 0, "unsupported twins are refused");
+        assert!(ctx.reshape.is_empty());
+    }
+
+    #[test]
+    fn off_circle_and_off_plane_arcs_are_refused() {
+        // Arc endpoints off the circle, off-plane circle center, and a
+        // transverse circle axis all refuse the face (kept, no removal).
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let good = add_disc(&mut topo, center, 1.0, 0.0);
+        // Off-circle vertex: radius 1 + 5*tol at the seam.
+        let bad_circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let off_pt = Point3::new(1.0 + 5e-7, 0.0, 0.0);
+        let v_off = topo.add_vertex(Vertex::new(off_pt, 1e-7));
+        let e_off = topo.add_edge(Edge::new(v_off, v_off, EdgeCurve::Circle(bad_circle)));
+        let w_off = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_off, true)], true).unwrap());
+        let off_face = topo.add_face(Face::new(
+            w_off,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        // Transverse axis: 5° tilt off the face normal.
+        let tilt = 5.0_f64.to_radians();
+        let tilted_circle =
+            Circle3D::new(center, Vec3::new(tilt.sin(), 0.0, tilt.cos()), 1.0).unwrap();
+        let tilt_pt = tilted_circle.evaluate(0.0);
+        let v_tilt = topo.add_vertex(Vertex::new(tilt_pt, 1e-7));
+        let e_tilt = topo.add_edge(Edge::new(v_tilt, v_tilt, EdgeCurve::Circle(tilted_circle)));
+        let w_tilt = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_tilt, true)], true).unwrap());
+        let tilt_face = topo.add_face(Face::new(
+            w_tilt,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![good, off_face, tilt_face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 0, "degenerate arcs are refused");
+        assert!(ctx.reshape.is_empty());
     }
 }
