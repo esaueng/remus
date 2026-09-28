@@ -18,6 +18,7 @@ pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 
 pub use conversion::collect_wire_points;
 
+use remus_math::context::OperationContext;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -5446,6 +5447,7 @@ pub fn split_face_2d(
         Vec<remus_topology::edge::EdgeId>,
         impl std::hash::BuildHasher,
     >,
+    context: &OperationContext,
     split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let run_impl = move |secs: &[SectionEdge]| {
@@ -5458,6 +5460,7 @@ pub fn split_face_2d(
             frame,
             info,
             edge_images,
+            context,
             split_registry,
         )
     };
@@ -5694,6 +5697,7 @@ fn split_face_2d_impl(
         Vec<remus_topology::edge::EdgeId>,
         impl std::hash::BuildHasher,
     >,
+    _context: &OperationContext,
     mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let face = match topo.face(face_id) {
@@ -9174,6 +9178,7 @@ mod tests {
                     None,
                     None,
                     &std::collections::HashMap::new(),
+                    &OperationContext::new(),
                     None,
                 )
                 .unwrap();
@@ -9861,6 +9866,7 @@ mod tests {
             None,
             None,
             &images,
+            &OperationContext::new(),
             None,
         )
         .unwrap();
@@ -9971,6 +9977,7 @@ mod tests {
                 v_periodic: false,
             }),
             &std::collections::HashMap::new(),
+            &OperationContext::new(),
             None,
         )
         .unwrap()
