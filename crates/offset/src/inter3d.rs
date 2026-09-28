@@ -223,6 +223,15 @@ fn try_perpendicular_cap_circle(
     d: f64,
     analytic: AnalyticSurface<'_>,
 ) -> Option<Vec<Point3>> {
+    // Work with a unit plane equation so the sampling frame is orthonormal.
+    // Unit normals pass through bit-identical (`x / 1.0 == x`); anything
+    // else takes the legacy path's own normalization.
+    let len = normal.length();
+    if !len.is_finite() || len <= 0.0 {
+        return None;
+    }
+    let normal = normal * (1.0 / len);
+    let d = d / len;
     let (center, radius) = match analytic {
         AnalyticSurface::Cylinder(cyl) => {
             let axis = cyl.axis();
