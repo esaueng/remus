@@ -946,10 +946,59 @@ pub(super) fn refine_ssi_point_with_context(
         });
 
         if let Some(delta) = delta {
-            state[0] += delta[0];
-            state[1] += delta[1];
-            state[2] += delta[2];
-            state[3] += delta[3];
+            // Backtracking line search on the Gauss-Newton step.
+            //
+            // Rational surfaces with large weight ratios concentrate most of
+            // a span's motion in a small parameter interval (a 14x ratio
+            // moves ~60% of the way in the first 10% of the span), so a full
+            // step routinely overshoots across the sharp gradient and the
+            // iteration diverges even from guesses 0.03 away from the root.
+            // Halving until the constrained residual decreases widens the
+            // basin without touching acceptance tolerances or work budgets.
+            let mut accepted = false;
+            for div in [1.0, 2.0, 4.0, 8.0, 16.0] {
+                let cand = [
+                    state[0] + delta[0] / div,
+                    state[1] + delta[1] / div,
+                    state[2] + delta[2] / div,
+                    state[3] + delta[3] / div,
+                ];
+                let cc = constrain_state(&cand, s1, s2);
+                let q1 = s1.evaluate(cc[0], cc[1]);
+                let q2 = s2.evaluate(cc[2], cc[3]);
+                if (q1 - q2).length() < residual {
+                    state = cand;
+                    accepted = true;
+                    break;
+                }
+            }
+            if !accepted {
+                // No damped Gauss-Newton step is a descent direction here
+                // (constraints or a locally bad linear model) -- fall back
+                // to alternating projection for this iteration.
+                let (du2, dv2) =
+                    surface_newton_step(scratch.solve2(), s2, cstate[2], cstate[3], p1);
+                state[2] += du2;
+                state[3] += dv2;
+                let p2_new = s2.evaluate(
+                    constrain_param(
+                        state[2],
+                        s2.domain_u().0,
+                        s2.domain_u().1,
+                        s2.is_periodic_u(),
+                    ),
+                    constrain_param(
+                        state[3],
+                        s2.domain_v().0,
+                        s2.domain_v().1,
+                        s2.is_periodic_v(),
+                    ),
+                );
+                let (du1, dv1) =
+                    surface_newton_step(scratch.solve1(), s1, cstate[0], cstate[1], p2_new);
+                state[0] += du1;
+                state[1] += dv1;
+            }
         } else {
             // Still singular after regularization -- fall back to alternating projection.
             let (du2, dv2) = surface_newton_step(scratch.solve2(), s2, cstate[2], cstate[3], p1);
