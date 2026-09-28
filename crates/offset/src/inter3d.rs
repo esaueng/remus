@@ -248,8 +248,7 @@ fn try_perpendicular_cap_circle(
             // Signed axial distance from the apex to the plane. The wall is
             // a single nappe: a non-positive station is the degenerate apex
             // section or a plane wholly outside it.
-            let station =
-                (d - dot_point_normal(normal, cone.apex())) / normal.dot(axis);
+            let station = (d - dot_point_normal(normal, cone.apex())) / normal.dot(axis);
             if !station.is_finite() || station <= 0.0 {
                 return None;
             }

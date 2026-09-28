@@ -30,11 +30,11 @@
 use remus_math::mat::Mat4;
 use remus_offset::{OffsetOptions, offset_solid};
 use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_cone, make_cylinder};
 use remus_operations::tessellate::non_manifold_edge_count;
 use remus_operations::tessellate::tessellate_solid;
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
-use remus_operations::primitives::{make_cone, make_cylinder};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::explorer::solid_faces;
@@ -204,10 +204,7 @@ fn assert_cone_offsets(scale: f64, sign: f64) {
     let axial_to_apex = small * h / (big - small);
     let apex_height = axial_to_apex + h;
     let slant = apex_height.hypot(big);
-    let (k_bottom, k_top) = (
-        (slant + big) / apex_height,
-        (slant - big) / apex_height,
-    );
+    let (k_bottom, k_top) = ((slant + big) / apex_height, (slant - big) / apex_height);
     let (big_o, small_o, h_o) = (big + k_bottom * d, small + k_top * d, h + 2.0 * d);
     let expected =
         std::f64::consts::PI * h_o / 3.0 * (big_o.powi(2) + big_o * small_o + small_o.powi(2));
