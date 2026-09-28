@@ -26,7 +26,7 @@
 
 use std::f64::consts::TAU;
 
-use remus_check::properties::face_integrator::integrate_face;
+use remus_check::properties::face_integrator::{integrate_face, integrate_face_area};
 use remus_math::curves::Circle3D;
 use remus_math::surfaces::CylindricalSurface;
 use remus_math::vec::{Point3, Vec3};
@@ -150,6 +150,10 @@ fn a_hole_in_a_trimmed_curved_patch_is_not_material() {
     let face = topo.add_face(Face::new(outer, vec![hole], FaceSurface::Cylinder(s)));
 
     let c = integrate_face(&topo, face, 8).unwrap();
+    assert_eq!(
+        integrate_face_area(&topo, face, 8).unwrap().to_bits(),
+        c.area.to_bits()
+    );
 
     let untrimmed = R * 2.0 * 10.0;
     let removed = R * 1.0 * 4.0;
@@ -199,6 +203,10 @@ fn a_hole_in_a_full_revolution_wall_is_not_material() {
     let face = topo.add_face(Face::new(outer, vec![hole], FaceSurface::Cylinder(s)));
 
     let c = integrate_face(&topo, face, 8).unwrap();
+    assert_eq!(
+        integrate_face_area(&topo, face, 8).unwrap().to_bits(),
+        c.area.to_bits()
+    );
 
     let untrimmed = R * TAU * 10.0;
     let removed = R * 1.0 * 4.0;
@@ -227,6 +235,10 @@ fn a_wall_bounded_by_closed_edges_is_not_zero() {
         let face = topo.add_face(Face::new(outer, vec![far], FaceSurface::Cylinder(s)));
 
         let c = integrate_face(&topo, face, 8).unwrap();
+        assert_eq!(
+            integrate_face_area(&topo, face, 8).unwrap().to_bits(),
+            c.area.to_bits()
+        );
 
         let area = R * TAU * H;
         assert!(
@@ -259,6 +271,9 @@ fn excessive_curved_trim_complexity_is_rejected() {
     let face = topo.add_face(Face::new(outer, holes, FaceSurface::Cylinder(s)));
 
     let error = integrate_face(&topo, face, 8).expect_err("trim budget must be enforced");
+    let area_error =
+        integrate_face_area(&topo, face, 8).expect_err("area trim budget must be enforced");
+    assert_eq!(area_error.to_string(), error.to_string());
     assert!(
         error.to_string().contains("trim exceeds the 4096-point"),
         "unexpected error: {error}"
