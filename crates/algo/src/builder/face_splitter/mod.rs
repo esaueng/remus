@@ -8,8 +8,7 @@
 #[allow(dead_code)]
 mod arrangement;
 // Production adapter onto the core (O2.3c): qualified planar faces with
-// provenance-preserving uses. Dispatch migrates in O2.3d.
-#[allow(dead_code)]
+// provenance-preserving uses, dispatched from `split_face_2d_impl`.
 mod arrangement_prod;
 #[cfg(test)]
 mod closed_form_split_tests;
@@ -5701,7 +5700,7 @@ fn split_face_2d_impl(
         Vec<remus_topology::edge::EdgeId>,
         impl std::hash::BuildHasher,
     >,
-    _context: &OperationContext,
+    context: &OperationContext,
     mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let face = match topo.face(face_id) {
@@ -7632,6 +7631,36 @@ fn split_face_2d_impl(
             attach_whole_holes(&mut result, &passthrough_inner_wires);
         }
         return Ok(result);
+    }
+
+    // Provenance-preserving planar arrangement (O2.3c/d). Qualified
+    // line/circle faces route through the exact-event core, which refines
+    // crossings analytically and emits with source provenance instead of
+    // chord-quantized identity. Single-section faces stay on the
+    // established paths (the greedy walk owns plain dividers; the
+    // internal-loops path owns contractible rings). Out-of-domain inputs
+    // (`None`) fall through to the special cases below; a refusal on
+    // qualified input (`Err`) is an internal error and propagates — it
+    // never degrades into an unsplit face or a fallback. Adoption mirrors
+    // the adjacent gates: strictly more regions than the wire builder, or
+    // a demonstrably broken greedy trace.
+    if sections.len() >= 2 && is_plane && !holes_integrated && original_inner_wires.is_empty() {
+        let greedy_broken_here = wire_loops_self_cross(&loops, tol.linear)
+            || greedy_outer_loops_nested(&loops, cw_loops)
+            || wire_loops_have_degenerate_area(&loops, tol.linear);
+        match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
+            topo, face_id, sections, rank, frame, tol, context,
+        )? {
+            Some(result) if result.len() > loops.len() || greedy_broken_here => {
+                log::debug!(
+                    "split_face_2d: face {face_id:?} routed to provenance arrangement ({} regions vs {})",
+                    result.len(),
+                    loops.len()
+                );
+                return Ok(result);
+            }
+            Some(_) | None => {}
+        }
     }
 
     // Geometric crossing/T-junction split. The wire builder under-partitions
