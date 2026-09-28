@@ -4801,7 +4801,7 @@ impl<'a> StepBuilder<'a> {
             return Err(IoError::UnsupportedEntity {
                 entity: format!(
                     "{} (PCURVE #{pcurve_ref} representation #{representation})",
-                    representation_entity.kind.as_str()
+                    diagnostic_entity_type(representation_entity)
                 ),
             });
         }
