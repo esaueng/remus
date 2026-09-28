@@ -515,14 +515,16 @@ fn point_is_finite(p: Point3) -> bool {
 
 /// Which world axis the torus axis aligns with, if any.
 ///
-/// Returns `0/1/2` when `|axis·ê| > 1 − 1e−9`; otherwise `None` (tilted).
+/// The axial-ring shortcut is sound only for exact alignment. Even a tiny
+/// tilt lets the major radius extend the nominal axial coordinate.
 fn torus_axis_alignment(axis: Vec3) -> Option<usize> {
-    const ALIGN: f64 = 1.0 - 1e-9;
-    if axis.x().abs() > ALIGN {
+    let zero = |value: f64| value.abs().total_cmp(&0.0).is_eq();
+    let unit = |value: f64| value.abs().total_cmp(&1.0).is_eq();
+    if unit(axis.x()) && zero(axis.y()) && zero(axis.z()) {
         Some(0)
-    } else if axis.y().abs() > ALIGN {
+    } else if zero(axis.x()) && unit(axis.y()) && zero(axis.z()) {
         Some(1)
-    } else if axis.z().abs() > ALIGN {
+    } else if zero(axis.x()) && zero(axis.y()) && unit(axis.z()) {
         Some(2)
     } else {
         None
@@ -714,6 +716,25 @@ mod tests {
             "torus bound must span the axial ring, got max.z={}",
             bound.aabb.max.z()
         );
+    }
+
+    #[test]
+    fn near_axis_torus_uses_full_carrier_bound() {
+        use remus_math::surfaces::ToroidalSurface;
+
+        let torus = ToroidalSurface::with_axis(
+            Point3::new(0.0, 0.0, 0.0),
+            10.0,
+            1.0,
+            Vec3::new(1.0, 3.0e-5, 0.0),
+        )
+        .unwrap();
+        // A tiny tilt still lets the major radius contribute to x extent;
+        // the exact x-axis shortcut would expand x by only the minor radius.
+        assert!(torus_axis_alignment(torus.z_axis()).is_none());
+        let bound = torus_bounds(&torus);
+        assert!(bound.is_prunable());
+        assert!(bound.aabb().max.x() > 1.0001);
     }
 
     #[test]
