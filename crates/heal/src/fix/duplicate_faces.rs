@@ -574,9 +574,9 @@ fn describe_arc(
     {
         return None;
     }
-    // The face-normal chart has one canonical positive direction. A reverse
-    // authored span traces the same short arc as a reversed circle frame.
-    let sweep = signed.rem_euclid(TAU);
+    // Magnitude permits same-direction arc subdivisions to coalesce;
+    // `positive` keeps the face-normal traversal direction independent.
+    let sweep = signed.abs();
     if sweep <= 1e-12 {
         return None;
     }
@@ -2549,6 +2549,51 @@ mod tests {
             },
         ));
         let shell = topo.add_shell(Shell::new(vec![one, split]).unwrap());
+        assert_eq!(assert_shell_removals(&topo, shell, 1e-7).pairs.len(), 1);
+    }
+
+    #[test]
+    fn clockwise_split_arcs_match_one_clockwise_half_arc() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+
+        fn add_half_disc(topo: &mut Topology, split: bool) -> FaceId {
+            let circle =
+                Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+            let start = topo.add_vertex(Vertex::new(circle.evaluate(PI), 1e-7));
+            let end = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+            let mut arcs = Vec::new();
+            if split {
+                let middle = topo.add_vertex(Vertex::new(circle.evaluate(FRAC_PI_2), 1e-7));
+                for (from, to, t0, t1) in [
+                    (start, middle, PI, FRAC_PI_2),
+                    (middle, end, FRAC_PI_2, 0.0),
+                ] {
+                    let mut edge = Edge::new(from, to, EdgeCurve::Circle(circle.clone()));
+                    edge.set_trim(Some((t0, t1)));
+                    arcs.push(OrientedEdge::new(topo.add_edge(edge), true));
+                }
+            } else {
+                let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+                edge.set_trim(Some((PI, 0.0)));
+                arcs.push(OrientedEdge::new(topo.add_edge(edge), true));
+            }
+            let chord = topo.add_edge(Edge::new(end, start, EdgeCurve::Line));
+            arcs.push(OrientedEdge::new(chord, true));
+            let wire = topo.add_wire(Wire::new(arcs, true).unwrap());
+            topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ))
+        }
+
+        let mut topo = Topology::new();
+        let whole = add_half_disc(&mut topo, false);
+        let split = add_half_disc(&mut topo, true);
+        let shell = topo.add_shell(Shell::new(vec![whole, split]).unwrap());
         assert_eq!(assert_shell_removals(&topo, shell, 1e-7).pairs.len(), 1);
     }
 
