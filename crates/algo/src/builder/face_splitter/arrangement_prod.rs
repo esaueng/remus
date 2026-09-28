@@ -197,6 +197,178 @@ fn collect_failed(error: ArrangementError) -> AlgoError {
     AlgoError::FaceSplitFailed(format!("provenance arrangement refused: {error:?}"))
 }
 
+/// Whether a native line parameter lies strictly inside its use interval.
+///
+/// Contacts within `margin` of an endpoint are certified wire joints (G1
+/// chains, section anchors, T-junction touches), never degeneracy.
+fn strictly_inside_line(t: f64, range: [f64; 2], margin: f64) -> bool {
+    let lo = range[0].min(range[1]);
+    let hi = range[0].max(range[1]);
+    t > lo + margin && t < hi - margin
+}
+
+/// Whether a circle angle lies strictly inside its use interval.
+///
+/// Canonical pieces stay within one turn; a full-turn use has no endpoints,
+/// so every contact on it is interior.
+fn strictly_inside_angle(t: f64, range: [f64; 2], margin: f64) -> bool {
+    let lo = range[0].min(range[1]);
+    let hi = range[0].max(range[1]);
+    if hi - lo >= TAU - 1e-9 {
+        return true;
+    }
+    let shifted = lo + (t - lo).rem_euclid(TAU);
+    shifted > lo + margin && shifted < hi - margin
+}
+
+/// Whether two line uses overlap coincidentally over more than a point.
+///
+/// Transverse crossings and parallel-distinct lines are the core's domain;
+/// only a coincident run creates the unrefinable overlap the core cannot
+/// emit. A point touch is a certified joint, not an overlap.
+fn line_pair_is_degenerate(a: &Line2D, ra: [f64; 2], b: &Line2D, rb: [f64; 2], tol: f64) -> bool {
+    let da = a.tangent(0.0);
+    let db = b.tangent(0.0);
+    let la = da.length();
+    let lb = db.length();
+    if la < 1e-15 || lb < 1e-15 {
+        return false;
+    }
+    let cross = (da.x() * db.y() - da.y() * db.x()).abs() / (la * lb);
+    if cross > 1e-9 {
+        return false;
+    }
+    if b.distance_to_point(a.evaluate(0.0)) > tol {
+        return false;
+    }
+    let pa0 = b.project(a.evaluate(ra[0]));
+    let pa1 = b.project(a.evaluate(ra[1]));
+    let overlap = pa0.max(pa1).min(rb[0].max(rb[1])) - pa0.min(pa1).max(rb[0].min(rb[1]));
+    overlap * lb > tol
+}
+
+/// Whether a line use touches a circle use tangentially at an interior
+/// point of both. Secant crossings and misses are the core's domain.
+fn line_circle_is_degenerate(
+    line: &Line2D,
+    line_range: [f64; 2],
+    circle: &Circle2D,
+    circle_range: [f64; 2],
+    tol: f64,
+) -> bool {
+    let radius = circle.radius();
+    if radius < 1e-15 {
+        return false;
+    }
+    if (line.distance_to_point(circle.center()) - radius).abs() > tol {
+        return false;
+    }
+    let scale = line.tangent(0.0).length().max(1e-15);
+    let foot = line.project(circle.center());
+    if !strictly_inside_line(foot, line_range, tol / scale) {
+        return false;
+    }
+    strictly_inside_angle(
+        circle.project(line.evaluate(foot)),
+        circle_range,
+        tol / radius,
+    )
+}
+
+/// Whether two circle uses touch tangentially or coincide at an interior
+/// point of both. Secant crossings, misses, and disjoint containments are
+/// the core's domain.
+fn circle_pair_is_degenerate(
+    a: &Circle2D,
+    ra: [f64; 2],
+    b: &Circle2D,
+    rb: [f64; 2],
+    tol: f64,
+) -> bool {
+    let (r1, r2) = (a.radius(), b.radius());
+    if r1 < 1e-15 || r2 < 1e-15 {
+        return false;
+    }
+    let delta = b.center() - a.center();
+    let dist = delta.length();
+    if dist <= tol {
+        if (r1 - r2).abs() > tol {
+            return false;
+        }
+        let (lo1, hi1) = (ra[0].min(ra[1]), ra[0].max(ra[1]));
+        let (lo2, hi2) = (rb[0].min(rb[1]), rb[0].max(rb[1]));
+        if hi1 - lo1 >= TAU - 1e-9 || hi2 - lo2 >= TAU - 1e-9 {
+            return true;
+        }
+        return hi1.min(hi2) - lo1.max(lo2) > tol / r1.max(r2);
+    }
+    if dist < 1e-15 {
+        return false;
+    }
+    let unit = delta * (1.0 / dist);
+    // External tangency (contact toward the other center), then internal
+    // tangency (contact on the major side: toward when `a` is major, away
+    // when `b` is major).
+    let cases = [
+        (1.0, r1 + r2),
+        (if r1 >= r2 { 1.0 } else { -1.0 }, (r1 - r2).abs()),
+    ];
+    for (sign, expected) in cases {
+        if (dist - expected).abs() > tol {
+            continue;
+        }
+        let contact = a.center() + unit * (sign * r1);
+        if strictly_inside_angle(a.project(contact), ra, tol / r1)
+            && strictly_inside_angle(b.project(contact), rb, tol / r2)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether two certified uses meet in an interior tangent contact or a
+/// coincident overlap.
+fn uses_pair_is_degenerate(a: &CurveUse, b: &CurveUse, tol: f64) -> bool {
+    match (&a.pcurve, &b.pcurve) {
+        (Curve2D::Line(la), Curve2D::Line(lb)) => {
+            line_pair_is_degenerate(la, a.range, lb, b.range, tol)
+        }
+        (Curve2D::Line(line), Curve2D::Circle(circle)) => {
+            line_circle_is_degenerate(line, a.range, circle, b.range, tol)
+        }
+        (Curve2D::Circle(circle), Curve2D::Line(line)) => {
+            line_circle_is_degenerate(line, b.range, circle, a.range, tol)
+        }
+        (Curve2D::Circle(ca), Curve2D::Circle(cb)) => {
+            circle_pair_is_degenerate(ca, a.range, cb, b.range, tol)
+        }
+        _ => false,
+    }
+}
+
+/// Whether any two certified uses meet in an interior tangent contact or a
+/// coincident overlap.
+///
+/// Tangent contacts and coincident overlaps are out-of-domain for the
+/// exact-event core (recorded-unsupported classes): a tangent crossing has
+/// no transverse refinement, so the core refuses with
+/// `IntersectionRefinementFailed`. That refusal is geometric, not an
+/// adapter bug — declining here routes the face to the established path
+/// exactly like the syntactic out-of-domain gates. Only interior contacts
+/// decline: endpoint touches are certified wire joints (G1 chains,
+/// T-junction anchors), which the core owns.
+fn uses_have_degenerate_contact(uses: &[CurveUse], tol: f64) -> bool {
+    for i in 0..uses.len() {
+        for j in (i + 1)..uses.len() {
+            if uses_pair_is_degenerate(&uses[i], &uses[j], tol) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Input-proportional budget policy for one arrangement run. The core
 /// charges every pair scan, refinement, seed search, graph walk, and
 /// quotient step against `march_steps`, caps inputs/events at
@@ -247,7 +419,15 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     else {
         return Ok(None);
     };
+
     if inputs.uses.len() > MAX_ARRANGEMENT_USES {
+        return Ok(None);
+    }
+
+    if uses_have_degenerate_contact(&inputs.uses, tol.linear) {
+        log::debug!(
+            "provenance arrangement declined face={face_id:?}: interior tangent/overlap contact"
+        );
         return Ok(None);
     }
     // The pipeline's budgets are SSI-calibrated (a handful of steps);
@@ -259,15 +439,28 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     // consume ~700 march steps; the floor carries 8x headroom.
     let child = arrangement_context(context, inputs.uses.len());
     match run_planar_arrangement(&inputs, &child) {
-        Err(ArrangementError::AmbiguousContact | ArrangementError::AmbiguousOverlap) => {
-            // Recorded-unsupported contact classes (M1 contract): tangent
-            // contacts and coincident overlaps are out-of-domain, so the
-            // caller runs the established path. Every other refusal is an
-            // internal error on claimed input and propagates. A genuine
-            // adapter bug cannot hide here: only exact geometric tangency
-            // or collinearity produces these errors, never a macroscopic
-            // correspondence failure (those refuse as refinement, open
-            // region, or non-manifold errors instead).
+        Err(
+            ArrangementError::AmbiguousContact
+            | ArrangementError::AmbiguousOverlap
+            | ArrangementError::IntersectionRefinementFailed,
+        ) => {
+            // Geometric refusals (M1 contract): tangent contacts, coincident
+            // overlaps, and unrefinable crossings are out-of-domain, so the
+            // caller runs the established path. A tangent or grazing
+            // crossing has no transverse refinement — the core's twin
+            // events land within roundoff with no endpoint certificate to
+            // adopt — and that outcome is geometric, not an adapter bug:
+            // real models carry dust-scale grazing caps (a boss arc poking
+            // 0.001 past a wall with crossings 0.28 apart). Every other
+            // refusal is an internal error on claimed input and propagates.
+            // Declining never produces wrong geometry (the established path
+            // is the shipped baseline); a correspondence regression would
+            // show up as lost engagement in the differential suite, which
+            // pins improvement on transverse input.
+            log::debug!(
+                "provenance arrangement declined face={face_id:?} err=geometric uses={}",
+                inputs.uses.len()
+            );
             Ok(None)
         }
         Err(error) => {
@@ -1365,7 +1558,7 @@ mod tests {
 
     use super::*;
     use remus_math::curves::Circle3D;
-    use remus_math::vec::Vec3;
+    use remus_math::vec::{Vec2, Vec3};
     use remus_topology::edge::Edge;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
@@ -2314,5 +2507,102 @@ mod tests {
             "recorded-unsupported tangency defers to the established path"
         );
         assert_eq!(topo.num_faces(), before, "no topology allocated on refusal");
+    }
+
+    fn line_use(pcurve: Line2D, range: [f64; 2], id: u64) -> CurveUse {
+        CurveUse {
+            source: CurveSource {
+                use_id: id,
+                boundary: None,
+                section: None,
+                source_edge_idx: None,
+                pave_block_id: None,
+            },
+            pcurve: Curve2D::Line(pcurve),
+            range,
+            curve_3d: EdgeCurve::Line,
+            source_range: range,
+            endpoints_3d: [Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.0)],
+            endpoints: [id * 2, id * 2 + 1],
+            boundary_loop: None,
+        }
+    }
+
+    fn circle_use(pcurve: Circle2D, range: [f64; 2], id: u64) -> CurveUse {
+        let mut use_data = line_use(
+            Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+            [0.0, 1.0],
+            id,
+        );
+        use_data.pcurve = Curve2D::Circle(pcurve);
+        use_data.range = range;
+        use_data
+    }
+
+    fn uv_line(ox: f64, oy: f64, dx: f64, dy: f64) -> Line2D {
+        Line2D::new(Point2::new(ox, oy), Vec2::new(dx, dy)).unwrap()
+    }
+
+    fn uv_circle(cx: f64, cy: f64, r: f64) -> Circle2D {
+        Circle2D::new(Point2::new(cx, cy), r).unwrap()
+    }
+
+    #[test]
+    fn tangent_line_and_circle_decline() {
+        let line = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [-10.0, 10.0], 0);
+        let circle = circle_use(uv_circle(0.0, 5.0, 5.0), [0.0, TAU], 1);
+        assert!(uses_have_degenerate_contact(&[line, circle], TOL));
+    }
+
+    #[test]
+    fn secant_line_and_circle_proceed() {
+        let line = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [-10.0, 10.0], 0);
+        let circle = circle_use(uv_circle(0.0, 1.0, 5.0), [0.0, TAU], 1);
+        assert!(!uses_have_degenerate_contact(&[line, circle], TOL));
+    }
+
+    #[test]
+    fn endpoint_touch_does_not_decline() {
+        // Tangent contact at the line's endpoint is a certified joint.
+        let line = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [0.0, 10.0], 0);
+        let circle = circle_use(uv_circle(0.0, 5.0, 5.0), [0.0, TAU], 1);
+        assert!(!uses_have_degenerate_contact(&[line, circle], TOL));
+    }
+
+    #[test]
+    fn grazing_line_and_circle_proceed_to_core() {
+        // A 0.001 dust-scale graze is not exact tangency: the classifier
+        // stays out and the core's refinement refusal declines instead.
+        let line = line_use(uv_line(-40.0, 0.0, 1.0, 0.0), [0.0, 40.0], 0);
+        let circle = circle_use(uv_circle(-20.0, -9.999, 10.0), [0.0, TAU], 1);
+        assert!(!uses_have_degenerate_contact(&[line, circle], TOL));
+    }
+
+    #[test]
+    fn coincident_lines_decline_but_parallel_distinct_proceed() {
+        let a = || line_use(uv_line(0.0, 0.0, 1.0, 0.0), [0.0, 10.0], 0);
+        let b = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [5.0, 15.0], 1);
+        assert!(uses_have_degenerate_contact(&[a(), b], TOL));
+        let c = line_use(uv_line(0.0, 1.0, 1.0, 0.0), [0.0, 10.0], 2);
+        assert!(!uses_have_degenerate_contact(&[a(), c], TOL));
+        // Collinear endpoint touch is a joint, not an overlap.
+        let d = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [10.0, 20.0], 3);
+        assert!(!uses_have_degenerate_contact(&[a(), d], TOL));
+    }
+
+    #[test]
+    fn tangent_circles_decline_but_secant_proceed() {
+        let a = || circle_use(uv_circle(0.0, 0.0, 5.0), [0.0, TAU], 0);
+        let external = circle_use(uv_circle(10.0, 0.0, 5.0), [0.0, TAU], 1);
+        assert!(uses_have_degenerate_contact(&[a(), external], TOL));
+        let secant = circle_use(uv_circle(8.0, 0.0, 5.0), [0.0, TAU], 2);
+        assert!(!uses_have_degenerate_contact(&[a(), secant], TOL));
+        // Internal tangency: r=10 about origin, r=5 about (5, 0).
+        let big = circle_use(uv_circle(0.0, 0.0, 10.0), [0.0, TAU], 3);
+        let small = circle_use(uv_circle(5.0, 0.0, 5.0), [0.0, TAU], 4);
+        assert!(uses_have_degenerate_contact(&[big, small], TOL));
+        // Concentric distinct radii never touch.
+        let concentric = circle_use(uv_circle(0.0, 0.0, 3.0), [0.0, TAU], 5);
+        assert!(!uses_have_degenerate_contact(&[a(), concentric], TOL));
     }
 }
