@@ -460,6 +460,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         if all_endpoints {
             continue;
         }
+
         for incidence in &vertex.incidences {
             work.step()?;
             let u = &uses[uses
