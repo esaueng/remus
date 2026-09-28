@@ -29,7 +29,7 @@ use crate::{DeleteSolidError, TopologyError};
 #[path = "undo_log.rs"]
 pub(crate) mod undo_log;
 
-use undo_log::{ArenaTag, UndoLog};
+use undo_log::{ArenaTag, UndoBase, UndoLog};
 
 /// Dimensional class of a topological body.
 ///
@@ -133,8 +133,23 @@ impl Clone for Topology {
     /// counter below must be cloned. The undo log itself is never shared —
     /// the clone records the source's lineage and starts empty.
     fn clone(&self) -> Self {
+        // An unchanged intermediate clone still represents the original
+        // source log position. Its empty private log must not erase that
+        // position when another snapshot is cloned from it.
+        let base = if self.undo.records.is_empty()
+            && self.undo.generation == 0
+            && self.mutation_ticks == self.undo.base.ticks
+        {
+            self.undo.base
+        } else {
+            UndoBase {
+                generation: self.undo.generation,
+                log_len: self.undo.records.len(),
+                ticks: self.mutation_ticks,
+            }
+        };
         Self {
-            undo: UndoLog::fresh_for_clone(self.undo.generation, self.undo.records.len()),
+            undo: UndoLog::fresh_for_clone(base),
             vertices: self.vertices.clone(),
             edges: self.edges.clone(),
             wires: self.wires.clone(),
