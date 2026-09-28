@@ -341,14 +341,44 @@ fn shell_with_evolution_impl(
     // The qualified fold-removal cell starts from a hole-free planar prism.
     // A pocket or bore gives the generated skin additional, legitimate face
     // connectivity that geometry alone cannot distinguish from the collapsed
-    // component proof, so those solids stay on the established shell gate.
+    // component proof, so faces with inner wires stay on the established
+    // shell gate.
     // Judged per connected lump of the outer shell, not per body: a disjoint
     // fuse (box + far sphere, Fuzz Smoke 2026-09-22) carries an all-planar
     // lump whose inner prism can fully collapse while the curved lump keeps
     // the whole-body test false, and the inverted cavity then shipped through
-    // the ordinary gate. The fold remover only ever sees the generated skins
-    // of the planar lumps.
-    let planar_fold_sources: HashSet<usize> =
+    // the ordinary gate.
+    // Hole-free planar faces are collected per lump for open shells (the
+    // established gate: the rim joins outer and inner into one component,
+    // so the fold remover must only see all-planar lumps), and per hole-free
+    // lump for closed hollows: a box cut by a sphere (Fuzz Smoke 2026-09-27,
+    // `modifier_ops` crash-c74759d0, 8 faces, no holes) collapses its thin
+    // planar walls exactly like the standalone box, but the all-planar gate
+    // let the mixed plane-plus-sphere lump through and the crossed inner
+    // walls (1.0 - 2*0.6 < 0) meshed open at fine deflection while passing
+    // coarsely. Lumps carrying a pocket or bore (any inner wire) stay on the
+    // established gate, preserving the pocketed-block and drilled-sphere
+    // hollows. The fold remover only removes the qualified all-planar
+    // L-prism cell; a closed mixed hole-free lump with a folded planar
+    // subset fails closed as unqualified rather than shipping an inverted
+    // cavity.
+    let planar_fold_sources: HashSet<usize> = if open_faces.is_empty() {
+        crate::boolean::assembly::face_components(topo, solid)
+            .into_iter()
+            .filter(|component| {
+                component.iter().all(|face_id| {
+                    topo.face(*face_id)
+                        .is_ok_and(|face| face.inner_wires().is_empty())
+                })
+            })
+            .flatten()
+            .filter(|face_id| {
+                topo.face(*face_id)
+                    .is_ok_and(|face| matches!(face.surface(), FaceSurface::Plane { .. }))
+            })
+            .map(remus_topology::arena::Id::index)
+            .collect()
+    } else {
         crate::boolean::assembly::face_components(topo, solid)
             .into_iter()
             .filter(|component| {
@@ -361,7 +391,8 @@ fn shell_with_evolution_impl(
             })
             .flatten()
             .map(remus_topology::arena::Id::index)
-            .collect();
+            .collect()
+    };
 
     let open_set: HashSet<usize> = open_faces.iter().map(|f| f.index()).collect();
 
