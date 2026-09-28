@@ -906,6 +906,64 @@ fn closed_equatorial_circle_selects_north_hemisphere() {
 }
 
 #[test]
+fn exact_only_refuses_projection_drift_during_execution() {
+    let matrix = Mat4::translation(1.0e9, -1.0e9, 1.0e9)
+        * Mat4::rotation_x(0.37)
+        * Mat4::scale(2.0, 0.5, 1.5);
+    let mut topo = Topology::new();
+    let solid = make_capped_sphere(&mut topo, 1.0, 0.0);
+    let before: Vec<_> = topo
+        .vertices()
+        .iter()
+        .map(|(_, vertex)| vertex.point())
+        .collect();
+    let result =
+        transform::transform_solid_detailed(&mut topo, solid, &matrix, TransformPolicy::ExactOnly);
+    assert!(
+        matches!(
+            result,
+            Err(remus_operations::OperationsError::ExactOnlyUnattainable)
+        ),
+        "execution must refuse a post-preflight fit, got {result:?}"
+    );
+    let after: Vec<_> = topo
+        .vertices()
+        .iter()
+        .map(|(_, vertex)| vertex.point())
+        .collect();
+    assert_eq!(before, after);
+
+    let mut copy_topo = Topology::new();
+    let source = make_capped_sphere(&mut copy_topo, 1.0, 0.0);
+    let before: Vec<_> = copy_topo
+        .vertices()
+        .iter()
+        .map(|(_, vertex)| vertex.point())
+        .collect();
+    let face_count = copy_topo.num_faces();
+    let copy_result = remus_operations::copy::copy_and_transform_solid_detailed(
+        &mut copy_topo,
+        source,
+        &matrix,
+        TransformPolicy::ExactOnly,
+    );
+    assert!(
+        matches!(
+            copy_result,
+            Err(remus_operations::OperationsError::ExactOnlyUnattainable)
+        ),
+        "copy execution must refuse a post-preflight fit, got {copy_result:?}"
+    );
+    assert_eq!(copy_topo.num_faces(), face_count);
+    let after: Vec<_> = copy_topo
+        .vertices()
+        .iter()
+        .map(|(_, vertex)| vertex.point())
+        .collect();
+    assert_eq!(before, after);
+}
+
+#[test]
 fn latitude_band_is_fitted_disclosed_or_exact_only_refused() {
     let radius = 1.5;
     let (v_lo, v_hi) = (0.35, 0.9);
@@ -1045,6 +1103,53 @@ fn copy_detailed_matches_in_place_on_same_inputs() {
     assert_valid(&topo2, copied);
     // Source untouched by the copy path.
     assert_carriers(&topo2, source2, &["sphere", "sphere"]);
+}
+
+#[test]
+fn copied_chart_conversion_discards_source_pcurves() {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_topology::pcurve::PCurve;
+
+    let mut topo = Topology::new();
+    let source = primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let source_side = remus_topology::explorer::solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap();
+    let bottom = topo
+        .wire(topo.face(source_side).unwrap().outer_wire())
+        .unwrap()
+        .edges()[0];
+    let (t0, t1) = topo.edge(bottom.edge()).unwrap().trim().unwrap();
+    topo.set_pcurve_oriented(
+        bottom.edge(),
+        source_side,
+        bottom.is_forward(),
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            t0,
+            t1,
+        ),
+    )
+    .unwrap();
+    assert_eq!(topo.pcurves_for_face(source_side).len(), 1);
+
+    let (copied, report) = remus_operations::copy::copy_and_transform_solid_detailed(
+        &mut topo,
+        source,
+        &Mat4::scale(2.0, 0.5, 1.5),
+        TransformPolicy::ExactOnly,
+    )
+    .unwrap();
+    assert!(report.is_exact());
+    let copied_side = remus_topology::explorer::solid_faces(&topo, copied)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .unwrap();
+    assert!(topo.pcurves_for_face(copied_side).is_empty());
+    assert_eq!(topo.pcurves_for_face(source_side).len(), 1);
 }
 
 #[test]

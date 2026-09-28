@@ -877,7 +877,10 @@ pub fn transform_solid_detailed(
     let determinant = linear_determinant(matrix);
     let reversing = determinant < 0.0;
     let similarity = is_uniform_scale(matrix);
-    let mut recorder = TransformRecorder::new(reversing, true);
+    let mut recorder = TransformRecorder::new(
+        reversing,
+        matches!(policy, TransformPolicy::AllowApproximate),
+    );
     run_transacted(topo, |live| {
         execute_solid_transform(live, solid, matrix, &mut recorder)
     })?;
