@@ -175,6 +175,7 @@ Quick reference — find the right file for any task:
 | NURBS → analytic curve recognition | `convert/recognize_curve.rs` |
 | NURBS → analytic surface recognition | `convert/recognize_surface.rs` |
 | Algebraic qualification of affine degree-one NURBS plane patches | `convert/certified_plane.rs` |
+| Conservative finite-domain bounds with explicit confidence | `bounds/` (mod, curve, surface) |
 | Error types | `error.rs` |
 
 ### L1: topology (`crates/topology/src/`)
@@ -338,6 +339,7 @@ Quick reference — find the right file for any task:
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
+| Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
 | Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
 | Deterministic work counters for the point-classification hot path (`perf-counters` feature) | `perf.rs` |
