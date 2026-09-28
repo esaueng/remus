@@ -7,6 +7,7 @@
 //! controlled by [`FixConfig`] tri-state modes.
 
 pub mod config;
+pub(crate) mod duplicate_faces;
 pub mod edge;
 pub mod face;
 pub mod shell;
