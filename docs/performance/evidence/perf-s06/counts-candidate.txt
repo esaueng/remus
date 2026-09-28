@@ -1,0 +1,5 @@
+PERF-S06 independent_solved_100 iters=8 conv=true | solver res=17 jac=8 qr=8 | shared=true fallback=0 analysis_jac=1 analysis_qr=1 restored=0 | oracle final_passes=1 restored=0
+PERF-S06 independent_under_100 iters=8 conv=true | solver res=17 jac=8 qr=8 | shared=true fallback=0 analysis_jac=1 analysis_qr=1 restored=0 | oracle final_passes=1 restored=0
+PERF-S06 coupled_chain_100 iters=5 conv=true | solver res=11 jac=5 qr=5 | shared=true fallback=0 analysis_jac=1 analysis_qr=1 restored=0 | oracle final_passes=1 restored=0
+PERF-S06 redundant_100 iters=8 conv=true | solver res=17 jac=8 qr=8 | shared=true fallback=0 analysis_jac=1 analysis_qr=1 restored=0 | oracle final_passes=1 restored=0
+PERF-S06 inconsistent_100 iters=49 conv=false | solver res=99 jac=49 qr=49 | shared=true fallback=0 analysis_jac=1 analysis_qr=1 restored=1 | oracle final_passes=1 restored=1
