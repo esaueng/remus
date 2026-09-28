@@ -457,6 +457,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Solid → GPU vertex/index/edge buffers | `mesh.rs` |
 | wgpu device setup, render passes, readback | `pipeline.rs` |
 | Reusable offscreen rendering session | `session.rs` |
+| Explicit prepared-render assets for camera-only frames | `prepared.rs` |
 | GPU compute mesher for analytic quadrics | `compute_mesh.rs` |
 | Interactive viewer (feature = `window`) | `viewer.rs` |
 | Error types | `error.rs` |
