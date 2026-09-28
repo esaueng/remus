@@ -122,3 +122,17 @@ each entry is appended when the step completes, never rewritten.
   RUSTFLAGS="-C debuginfo=0"` (env-only). All suites green; see evidence
   report for the rollup and the two disclosed caveats (allocator lottery
   in single-box absolutes; no browser-wide claim).
+
+## 2026-09-28 — full verification complete, PR #817 opened
+
+- Operations integration tail finished: 191 suites / 2392 tests, 0 failed
+  (background run, `cargo test -p remus-operations --tests`).
+- Remaining matrix: render lib 15 pass; wasm-io + remus facade pass;
+  render GPU integration (`compute_mesh_lod`) SIGSEGVs identically on the
+  pristine `bf46fdc0` baseline worktree — no adapter in this sandbox,
+  pre-existing and unrelated (render untouched by this change).
+- Final rollup: topology 386, operations lib 1224, operations integration
+  2392, wasm lib 615, algo lib 419, io lib 406 + all io suites, all L0-L2
+  suites green; strict clippy, fmt, boundaries, det-hash, doc-paths,
+  wasm32 check green.
+- PR: https://github.com/esaueng/remus/pull/817 (review only, not merged).
