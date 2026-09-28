@@ -166,7 +166,15 @@ Last-resort ordering kept: established plane paths run first (their
 mesh-coordinated outputs are what the tessellator is calibrated on);
 the exact arrangement is reserved for faces no established splitter can
 partition. Validation: algo 455, arrangement_prod 35 (incl. 6 classifier
-tests), L-cut regress 4, WASM lib 615/615, census 50 exact-analytic,
-clippy/boundaries clean; operations full suite running.
+tests), L-cut regress 4, WASM lib 615/615, operations full 4064/4064,
+io full 662/662, wasm-io 8/8, census 50 exact-analytic, clippy/boundaries
+clean. Refusal pins hold post-change (tangent_boss, plain_batch_booleans,
+compound_cut). render compute_mesh_lod SIGSEGVs in sandbox GPU teardown
+(no GFA in its path — make_cylinder + wgpu only; environmental).
+
+Nub follow-up (fixed `fdcd960e`): the dovetail back-edge nub
+(tangency-meridian, dust-scale junction cluster) aborted exact cut via
+unmapped `NonManifoldEmbedding` → same fail-safe mapping (geometric,
+declines; witness documented in the mapping comment).
 
 Then roadmap update + one review-ready PR (no merge/deploy).
