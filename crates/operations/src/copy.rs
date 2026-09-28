@@ -653,7 +653,10 @@ pub fn copy_and_transform_solid_detailed(
     let determinant = crate::transform::linear_determinant(matrix);
     let reversing = determinant < 0.0;
     let similarity = crate::transform::is_similarity(matrix);
-    let mut recorder = TransformRecorder::new(reversing, true);
+    let mut recorder = TransformRecorder::new(
+        reversing,
+        matches!(policy, TransformPolicy::AllowApproximate),
+    );
     let copied = remus_topology::transaction::run_transacted(topo, |live| {
         copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
     })?;
@@ -668,6 +671,7 @@ fn copy_and_transform_solid_impl(
     recorder: &mut TransformRecorder,
 ) -> Result<SolidId, crate::OperationsError> {
     let normal_matrix = matrix.inverse()?.transpose();
+    let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
     let certificates = crate::transform::translation_edge_certificates(
         topo,
         &remus_topology::explorer::solid_edges(topo, solid_id)?
@@ -840,6 +844,7 @@ fn copy_and_transform_solid_impl(
 
     let mut new_shell_ids = Vec::new();
     let mut copied_face_ids = HashMap::new();
+    let mut chart_replaced_faces = Vec::new();
     for ssnap in &shell_snaps {
         let mut new_face_ids = Vec::new();
         for fsnap in &ssnap.faces {
@@ -875,6 +880,11 @@ fn copy_and_transform_solid_impl(
                 &normal_matrix,
                 recorder,
             )?;
+            if matches!(topo.face(new_fid)?.surface(), FaceSurface::Nurbs(_))
+                && (!matches!(&fsnap.surface, FaceSurface::Nurbs(_)) || chart_reversing)
+            {
+                chart_replaced_faces.push(new_fid);
+            }
             if let Some(attributes) = fsnap.attributes.clone() {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
@@ -889,6 +899,16 @@ fn copy_and_transform_solid_impl(
         let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
         let edge = remapped_authority_edge(&edge_map, &snapshot)?;
         restore_face_coedge_authority(topo, face, edge, snapshot)?;
+    }
+    for face in chart_replaced_faces {
+        let uses: Vec<_> = topo
+            .pcurves_for_face(face)
+            .into_iter()
+            .map(|(edge, forward, _)| (edge, forward))
+            .collect();
+        for (edge, forward) in uses {
+            topo.remove_pcurve_oriented(edge, face, forward)?;
+        }
     }
 
     let new_outer = new_shell_ids[0];
