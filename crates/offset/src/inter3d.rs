@@ -108,6 +108,19 @@ pub fn intersect_faces_3d(
 /// Grid resolution for analytic-analytic intersection marching.
 const ANALYTIC_GRID_RES: usize = 32;
 
+/// Cosine slack for recognizing a cap plane as perpendicular to a wall axis.
+///
+/// Dimensionless and generous: a rigid placement preserves perpendicularity
+/// to floating-point roundoff (~1e-16), far inside this band, while a plane
+/// this close to perpendicular has a circle-vs-ellipse deviation (~r·θ²)
+/// far below every downstream tolerance, so either reading builds the same
+/// edge.
+const CAP_PERPENDICULAR_SLACK: f64 = 1e-9;
+
+/// Samples on a cap circle section, including the duplicate seam point that
+/// closes the chain (`n + 1` points over one turn).
+const N_CAP_CIRCLE_SAMPLES: usize = 64;
+
 /// Dispatch intersection based on surface types.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn intersect_surface_pair(
@@ -175,6 +188,9 @@ fn try_plane_analytic(
     let Some(analytic) = to_analytic(surf_b) else {
         return Ok(None);
     };
+    if let Some(points) = try_perpendicular_cap_circle(*normal, *d, analytic) {
+        return Ok(Some(points));
+    }
     let curves = intersect_plane_analytic(analytic, *normal, *d).map_err(|e| {
         OffsetError::IntersectionFailed {
             face_a,
@@ -183,6 +199,105 @@ fn try_plane_analytic(
         }
     })?;
     Ok(Some(extract_points(&curves)))
+}
+
+/// Sample the circle section of a cap plane perpendicular to a cylinder or
+/// cone wall directly from the offset carriers, when the pair qualifies.
+///
+/// The sampled legacy entry point (`intersect_plane_analytic`) solves each
+/// wall generatrix for its axial parameter and keeps only `|v| <= 100.0` —
+/// an absolute window in model units. The offset cap of a larger body sits
+/// past that window (cylinder cap at axial `v = h + d = 2.2r`, cone cap at
+/// slant `|v| ≈ 2.7r`), so every sample is dropped and the faces reach loop
+/// reconstruction with no edges (B55). The closed form here — axis/plane
+/// intersection for the center, carrier radius at that station — carries
+/// only scale-relative roundoff: 65 uniform points with a duplicate seam
+/// sample, the same chain convention the legacy sampler emits.
+///
+/// Returns `None` when the pair is not a perpendicular cap section (oblique
+/// or axis-parallel planes, the cone's degenerate or unreached nappe, or a
+/// non-finite construction) so the caller keeps the legacy sampled path
+/// bit-for-bit there.
+fn try_perpendicular_cap_circle(
+    normal: Vec3,
+    d: f64,
+    analytic: AnalyticSurface<'_>,
+) -> Option<Vec<Point3>> {
+    let (center, radius) = match analytic {
+        AnalyticSurface::Cylinder(cyl) => {
+            let axis = cyl.axis();
+            if normal.dot(axis).abs() <= 1.0 - CAP_PERPENDICULAR_SLACK {
+                return None;
+            }
+            let station = (d - dot_point_normal(normal, cyl.origin())) / normal.dot(axis);
+            if !station.is_finite() {
+                return None;
+            }
+            let center = Point3::new(
+                cyl.origin().x() + station * axis.x(),
+                cyl.origin().y() + station * axis.y(),
+                cyl.origin().z() + station * axis.z(),
+            );
+            (center, cyl.radius())
+        }
+        AnalyticSurface::Cone(cone) => {
+            let axis = cone.axis();
+            if normal.dot(axis).abs() <= 1.0 - CAP_PERPENDICULAR_SLACK {
+                return None;
+            }
+            // Signed axial distance from the apex to the plane. The wall is
+            // a single nappe: a non-positive station is the degenerate apex
+            // section or a plane wholly outside it.
+            let station =
+                (d - dot_point_normal(normal, cone.apex())) / normal.dot(axis);
+            if !station.is_finite() || station <= 0.0 {
+                return None;
+            }
+            let (sin_a, cos_a) = cone.half_angle().sin_cos();
+            let radius = station * cos_a / sin_a;
+            if !radius.is_finite() || radius <= 0.0 {
+                return None;
+            }
+            let center = Point3::new(
+                cone.apex().x() + station * axis.x(),
+                cone.apex().y() + station * axis.y(),
+                cone.apex().z() + station * axis.z(),
+            );
+            (center, radius)
+        }
+        AnalyticSurface::Sphere(_) | AnalyticSurface::Torus(_) => return None,
+        AnalyticSurface::Plane { .. } => return None,
+    };
+    Some(sample_cap_circle(normal, center, radius))
+}
+
+/// Sample one full turn of a cap circle in a plane frame built from its
+/// normal.
+fn sample_cap_circle(normal: Vec3, center: Point3, radius: f64) -> Vec<Point3> {
+    let helper = if normal.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let unit = normal.cross(helper).normalize().unwrap_or(helper);
+    let side = normal.cross(unit);
+    (0..=N_CAP_CIRCLE_SAMPLES)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let theta = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+            let (sin_t, cos_t) = theta.sin_cos();
+            Point3::new(
+                center.x() + radius * (cos_t * unit.x() + sin_t * side.x()),
+                center.y() + radius * (cos_t * unit.y() + sin_t * side.y()),
+                center.z() + radius * (cos_t * unit.z() + sin_t * side.z()),
+            )
+        })
+        .collect()
+}
+
+/// Dot product of a plane normal with a position vector.
+fn dot_point_normal(normal: Vec3, point: Point3) -> f64 {
+    normal.x() * point.x() + normal.y() * point.y() + normal.z() * point.z()
 }
 
 /// Convert a `FaceSurface` to an `AnalyticSurface` if applicable.
