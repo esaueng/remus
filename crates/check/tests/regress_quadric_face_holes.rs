@@ -366,3 +366,28 @@ fn excessive_curved_trim_complexity_is_rejected() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn oversized_curved_outer_wire_is_rejected_before_sampling() {
+    let s = cylinder();
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
+    let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+    let end = topo.add_vertex(Vertex::new(circle.evaluate(std::f64::consts::PI), TOL));
+    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+    // The invalid trim distinguishes an early budget refusal from curve walking.
+    edge.set_trim(Some((1.0, 0.0)));
+    let curved_edge = OrientedEdge::new(topo.add_edge(edge), true);
+    let outer = topo.add_wire(Wire::new(vec![curved_edge; 33], true).unwrap());
+    let face = topo.add_face(Face::new(outer, vec![], FaceSurface::Cylinder(s)));
+
+    for error in [
+        integrate_face(&topo, face, 8).unwrap_err(),
+        integrate_face_area(&topo, face, 8).unwrap_err(),
+    ] {
+        assert!(
+            error.to_string().contains("trim exceeds the 4096-point"),
+            "unexpected error: {error}"
+        );
+    }
+}
