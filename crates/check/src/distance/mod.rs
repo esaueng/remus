@@ -8,11 +8,11 @@
 
 pub(crate) mod analytic;
 pub(crate) mod edge;
+pub mod face_bounds;
 
 use std::collections::HashSet;
 
 use remus_math::aabb::Aabb3;
-use remus_math::bvh::Bvh;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::{FaceId, FaceSurface};
@@ -38,68 +38,206 @@ pub struct DistanceResult {
     pub point_b: Point3,
 }
 
+/// Statistics for a point-to-solid distance query.
+///
+/// Reports how much of the model the branch-and-bound traversal actually
+/// evaluated, so PERF-Q04 pruning effectiveness is measurable rather than
+/// assumed. All counts are deterministic for a fixed input.
+#[derive(Debug, Clone, Copy)]
+pub struct DistanceStats {
+    /// Total faces visited (outer plus inner shells).
+    pub faces_total: usize,
+    /// Faces with certified conservative bounds (pruning candidates).
+    pub faces_prunable: usize,
+    /// Faces with unknown bounds, always evaluated exhaustively.
+    pub faces_mandatory: usize,
+    /// Narrow-phase evaluations actually performed.
+    pub faces_evaluated: usize,
+    /// Prunable faces skipped by a mathematically justified bound
+    /// (`lower > best`, so ties are always evaluated).
+    pub faces_skipped_by_bound: usize,
+    /// Candidates whose narrow phase returned no result. They never improve
+    /// the best distance and are reported here, never silently discarded.
+    pub narrow_phase_failures: usize,
+}
+
+/// A prunable face candidate with its precomputed lower bound.
+struct WorkItem {
+    face: FaceId,
+    lower_sq: f64,
+}
+
 /// Compute the minimum distance from a point to a solid.
 ///
-/// Uses BVH over face AABBs for acceleration. Dispatches per face type:
-/// planar (point-to-polygon), analytic (closed-form), NURBS (Newton projection).
+/// Traverses prunable faces in ascending lower-bound order (a linear
+/// best-first branch-and-bound scan) against a valid upper-bound witness,
+/// while faces with unknown bounds stay on a mandatory exhaustive side
+/// path. Dispatches per face type: planar (point-to-polygon), analytic
+/// (closed-form), NURBS (Newton projection).
+///
+/// Measurement note (PERF-Q04): for a single query over precomputed face
+/// bounds, a sorted linear scan dominates a BVH tree traversal — both visit
+/// candidates in the same lower-bound order and skip the same provably
+/// useless set, while the tree additionally pays SAH construction and heap
+/// traffic (240 faces: 43µs linear versus 325µs tree in release; see the
+/// `distance_q04_perf` probe). No BVH is built here; the mandatory side
+/// list carries every face whose bound cannot justify pruning.
 ///
 /// # Errors
 ///
 /// Returns an error if any topology entity is missing.
-#[allow(clippy::too_many_lines)]
 pub fn point_to_solid(
     topo: &Topology,
     point: Point3,
     solid: SolidId,
 ) -> Result<DistanceResult, CheckError> {
+    Ok(point_to_solid_impl(topo, point, solid, true)?.0)
+}
+
+/// Compute the minimum distance from a point to a solid, with statistics.
+///
+/// Uses the same branch-and-bound traversal as [`point_to_solid`] and
+/// additionally reports pruning effectiveness.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity is missing.
+pub fn point_to_solid_with_stats(
+    topo: &Topology,
+    point: Point3,
+    solid: SolidId,
+) -> Result<(DistanceResult, DistanceStats), CheckError> {
+    point_to_solid_impl(topo, point, solid, true)
+}
+
+/// Compute the minimum distance from a point to a solid without pruning.
+///
+/// Evaluates every face with the same narrow phase ([`point_to_face`]) in
+/// the same deterministic order the branch-and-bound path uses, but never
+/// skips a candidate. This is the independent oracle for the accelerated
+/// path: both modes must agree on distance, and on the closest point
+/// whenever the minimum is unique. Local Newton locality is shared, not
+/// cured — this mode is exhaustive over faces, not a global NURBS
+/// certificate.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity is missing.
+pub fn point_to_solid_exhaustive(
+    topo: &Topology,
+    point: Point3,
+    solid: SolidId,
+) -> Result<(DistanceResult, DistanceStats), CheckError> {
+    point_to_solid_impl(topo, point, solid, false)
+}
+
+/// Shared point-to-solid implementation.
+///
+/// `prune` selects branch-and-bound (`true`) or forced-exhaustive
+/// (`false`) traversal. Both modes build the same face bounds first (so
+/// missing-entity errors are identical), evaluate the mandatory side path
+/// first in face-index order, then walk prunable faces in ascending
+/// lower-bound order with face-index tie-breaks, updating the best on
+/// strict improvement only. The accelerated mode additionally skips a
+/// prunable face only when `lower > best`, which can never change the
+/// winner; ties are always evaluated.
+#[allow(clippy::too_many_lines)]
+fn point_to_solid_impl(
+    topo: &Topology,
+    point: Point3,
+    solid: SolidId,
+    prune: bool,
+) -> Result<(DistanceResult, DistanceStats), CheckError> {
     let face_ids = collect_solid_faces(topo, solid)?;
 
-    let mut face_aabbs: Vec<(usize, Aabb3)> = Vec::with_capacity(face_ids.len());
-    for (i, &fid) in face_ids.iter().enumerate() {
-        let aabb = crate::util::face_aabb(topo, fid)?;
-        face_aabbs.push((i, aabb));
+    // Bounds first: identical errors in both modes, and every topology
+    // entity the narrow phase can touch is validated here, so traversal
+    // itself cannot hit a missing entity that exhaustive mode would report.
+    let bounds: Vec<face_bounds::FaceBound> = face_ids
+        .iter()
+        .map(|&fid| face_bounds::face_bound(topo, fid))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut mandatory: Vec<FaceId> = Vec::new();
+    let mut prunable: Vec<WorkItem> = Vec::new();
+    for (fid, bound) in face_ids.iter().zip(bounds.iter()) {
+        if bound.prunable {
+            prunable.push(WorkItem {
+                face: *fid,
+                lower_sq: bound.aabb.distance_squared_to_point(point),
+            });
+        } else {
+            mandatory.push(*fid);
+        }
     }
-    let bvh = Bvh::build(&face_aabbs);
+    prunable.sort_by(|a, b| {
+        a.lower_sq
+            .total_cmp(&b.lower_sq)
+            .then_with(|| a.face.index().cmp(&b.face.index()))
+    });
 
     let mut best_dist = f64::INFINITY;
     let mut best_point = point;
+    let mut evaluated = 0usize;
+    let mut failures = 0usize;
 
-    // Sort candidates by AABB distance to point for early termination.
-    let mut candidates: Vec<usize> = (0..face_aabbs.len()).collect();
-    candidates.sort_by(|&a, &b| {
-        let da = face_aabbs[a].1.distance_squared_to_point(point);
-        let db = face_aabbs[b].1.distance_squared_to_point(point);
-        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    if let Some(closest_idx) = bvh.query_closest(point)
-        && let Some(pos) = candidates
-            .iter()
-            .position(|&i| face_aabbs[i].0 == closest_idx)
-    {
-        candidates.swap(0, pos);
-    }
-
-    for idx in candidates {
-        let aabb_dist_sq = face_aabbs[idx].1.distance_squared_to_point(point);
-        if aabb_dist_sq > best_dist * best_dist {
-            continue; // not break — BVH swap may have reordered candidates
-        }
-        let face_idx = face_aabbs[idx].0;
-        let fid = face_ids[face_idx];
-        if let Ok(Some((dist, closest))) = point_to_face(topo, point, fid)
-            && dist < best_dist
-        {
-            best_dist = dist;
-            best_point = closest;
+    // Mandatory side path: exhaustive, in face-index order, establishing the
+    // upper-bound witness for branch-and-bound.
+    for &fid in &mandatory {
+        if let Some((dist, closest)) = point_to_face(topo, point, fid)? {
+            evaluated += 1;
+            if dist < best_dist {
+                best_dist = dist;
+                best_point = closest;
+            }
+        } else {
+            evaluated += 1;
+            failures += 1;
         }
     }
 
-    Ok(DistanceResult {
-        distance: best_dist,
-        point_a: point,
-        point_b: best_point,
-    })
+    let mut stats = DistanceStats {
+        faces_total: face_ids.len(),
+        faces_prunable: prunable.len(),
+        faces_mandatory: mandatory.len(),
+        faces_evaluated: 0,
+        faces_skipped_by_bound: 0,
+        narrow_phase_failures: 0,
+    };
+
+    // Prunable faces in ascending lower-bound order. The accelerated mode
+    // skips a face only when `lower > best`: the true face distance is at
+    // least the box distance, so a skipped face can never beat — or tie —
+    // the running best, and the winner matches forced-exhaustive traversal
+    // bit for bit. Ties (`lower == best`) are always evaluated.
+    for item in &prunable {
+        if prune && item.lower_sq > best_dist * best_dist {
+            stats.faces_skipped_by_bound += 1;
+            continue;
+        }
+        if let Some((dist, closest)) = point_to_face(topo, point, item.face)? {
+            evaluated += 1;
+            if dist < best_dist {
+                best_dist = dist;
+                best_point = closest;
+            }
+        } else {
+            evaluated += 1;
+            failures += 1;
+        }
+    }
+
+    stats.faces_evaluated = evaluated;
+    stats.narrow_phase_failures = failures;
+
+    Ok((
+        DistanceResult {
+            distance: best_dist,
+            point_a: point,
+            point_b: best_point,
+        },
+        stats,
+    ))
 }
 
 /// Compute distance from a point to a single face, dispatching by surface type.
