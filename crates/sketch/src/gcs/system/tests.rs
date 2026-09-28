@@ -4,6 +4,42 @@ use crate::gcs::diagnostics::SolveClassification;
 const TOL: f64 = 1e-10;
 
 #[test]
+fn plain_solve_skips_diagnostics_capture() {
+    let mut sys = GcsSystem::new();
+    let p = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 7.0,
+            fixed: false,
+        })
+        .unwrap();
+    sys.add_constraint(Constraint::FixX(p, 2.0)).unwrap();
+
+    let (plain, capture, _) = sys.solve_impl(100, TOL, false).unwrap();
+    assert!(plain.converged);
+    assert!(capture.is_none());
+    assert!((sys.point(p).unwrap().x - 2.0).abs() < TOL);
+
+    let (detailed, capture, _) = sys.solve_impl(100, TOL, true).unwrap();
+    assert!(detailed.converged);
+    assert!(capture.is_some());
+
+    let mut fixed = GcsSystem::new();
+    let p = fixed
+        .add_point(PointData {
+            x: 2.0,
+            y: 3.0,
+            fixed: true,
+        })
+        .unwrap();
+    fixed.add_constraint(Constraint::FixX(p, 2.0)).unwrap();
+    let (_, capture, _) = fixed.solve_impl(100, TOL, false).unwrap();
+    assert!(capture.is_none());
+    let (_, capture, _) = fixed.solve_impl(100, TOL, true).unwrap();
+    assert!(capture.is_some());
+}
+
+#[test]
 fn fix_xy_converges() {
     let mut sys = GcsSystem::new();
     let p = sys
