@@ -7,6 +7,10 @@
 // Isolated qualification core; production dispatch migrates in O2.3c/d.
 #[allow(dead_code)]
 mod arrangement;
+// Production adapter onto the core (O2.3c): qualified planar faces with
+// provenance-preserving uses. Dispatch migrates in O2.3d.
+#[allow(dead_code)]
+mod arrangement_prod;
 #[cfg(test)]
 mod closed_form_split_tests;
 mod containment;
