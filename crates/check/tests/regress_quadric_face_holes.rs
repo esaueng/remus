@@ -26,7 +26,7 @@
 
 use std::f64::consts::TAU;
 
-use remus_check::properties::face_integrator::integrate_face;
+use remus_check::properties::face_integrator::{integrate_face, integrate_face_area};
 use remus_math::curves::Circle3D;
 use remus_math::surfaces::CylindricalSurface;
 use remus_math::vec::{Point3, Vec3};
@@ -150,6 +150,10 @@ fn a_hole_in_a_trimmed_curved_patch_is_not_material() {
     let face = topo.add_face(Face::new(outer, vec![hole], FaceSurface::Cylinder(s)));
 
     let c = integrate_face(&topo, face, 8).unwrap();
+    assert_eq!(
+        integrate_face_area(&topo, face, 8).unwrap().to_bits(),
+        c.area.to_bits()
+    );
 
     let untrimmed = R * 2.0 * 10.0;
     let removed = R * 1.0 * 4.0;
@@ -199,12 +203,103 @@ fn a_hole_in_a_full_revolution_wall_is_not_material() {
     let face = topo.add_face(Face::new(outer, vec![hole], FaceSurface::Cylinder(s)));
 
     let c = integrate_face(&topo, face, 8).unwrap();
+    assert_eq!(
+        integrate_face_area(&topo, face, 8).unwrap().to_bits(),
+        c.area.to_bits()
+    );
 
     let untrimmed = R * TAU * 10.0;
     let removed = R * 1.0 * 4.0;
     let area = untrimmed - removed;
     assert_close(c.area, area, untrimmed, "bored wall area");
     assert_close(c.volume, R / 3.0 * area, untrimmed, "bored wall volume");
+}
+
+/// Split semicircular rims put opposite vertices exactly half a period apart.
+/// Vertex-only UV unwrapping chooses the wrong branch at each such jump and
+/// previously widened the integration interval to 3π rather than 2π.
+#[test]
+fn split_semicircle_rims_integrate_one_cylinder_revolution() {
+    let s = cylinder();
+    let mut topo = Topology::new();
+    let height = 17.0;
+    let bottom0 = topo.add_vertex(Vertex::new(s.evaluate(0.0, 0.0), TOL));
+    let bottom_half = topo.add_vertex(Vertex::new(s.evaluate(std::f64::consts::PI, 0.0), TOL));
+    let top0 = topo.add_vertex(Vertex::new(s.evaluate(0.0, height), TOL));
+    let top_half = topo.add_vertex(Vertex::new(s.evaluate(std::f64::consts::PI, height), TOL));
+    let seam = topo.add_edge(Edge::new(top0, bottom0, EdgeCurve::Line));
+    let make_arc = |topo: &mut Topology, start, end, circle: &Circle3D, trim| {
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+        edge.set_trim(Some(trim));
+        topo.add_edge(edge)
+    };
+    let bottom_circle = Circle3D::new_with_ref(
+        s.evaluate(0.0, 0.0) - s.x_axis() * R,
+        s.axis(),
+        R,
+        s.x_axis(),
+    )
+    .unwrap();
+    let top_circle = Circle3D::new_with_ref(
+        s.evaluate(0.0, height) - s.x_axis() * R,
+        -s.axis(),
+        R,
+        s.x_axis(),
+    )
+    .unwrap();
+    let bottom_a = make_arc(
+        &mut topo,
+        bottom0,
+        bottom_half,
+        &bottom_circle,
+        (0.0, std::f64::consts::PI),
+    );
+    let bottom_b = make_arc(
+        &mut topo,
+        bottom_half,
+        bottom0,
+        &bottom_circle,
+        (std::f64::consts::PI, TAU),
+    );
+    let top_a = make_arc(
+        &mut topo,
+        top0,
+        top_half,
+        &top_circle,
+        (0.0, std::f64::consts::PI),
+    );
+    let top_b = make_arc(
+        &mut topo,
+        top_half,
+        top0,
+        &top_circle,
+        (std::f64::consts::PI, TAU),
+    );
+    let outer = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(bottom_a, true),
+                OrientedEdge::new(bottom_b, true),
+                OrientedEdge::new(seam, false),
+                OrientedEdge::new(top_a, true),
+                OrientedEdge::new(top_b, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(outer, vec![], FaceSurface::Cylinder(s)));
+
+    let c = integrate_face(&topo, face, 8).unwrap();
+    let area = R * TAU * height;
+    assert_close(c.area, area, area, "split-rim wall area");
+    assert_close(
+        c.volume.abs(),
+        R / 3.0 * area,
+        area,
+        "split-rim wall volume",
+    );
 }
 
 /// Defect 2: a wall whose whole boundary is closed edges.
@@ -227,6 +322,10 @@ fn a_wall_bounded_by_closed_edges_is_not_zero() {
         let face = topo.add_face(Face::new(outer, vec![far], FaceSurface::Cylinder(s)));
 
         let c = integrate_face(&topo, face, 8).unwrap();
+        assert_eq!(
+            integrate_face_area(&topo, face, 8).unwrap().to_bits(),
+            c.area.to_bits()
+        );
 
         let area = R * TAU * H;
         assert!(
@@ -259,8 +358,36 @@ fn excessive_curved_trim_complexity_is_rejected() {
     let face = topo.add_face(Face::new(outer, holes, FaceSurface::Cylinder(s)));
 
     let error = integrate_face(&topo, face, 8).expect_err("trim budget must be enforced");
+    let area_error =
+        integrate_face_area(&topo, face, 8).expect_err("area trim budget must be enforced");
+    assert_eq!(area_error.to_string(), error.to_string());
     assert!(
         error.to_string().contains("trim exceeds the 4096-point"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn oversized_curved_outer_wire_is_rejected_before_sampling() {
+    let s = cylinder();
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
+    let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+    let end = topo.add_vertex(Vertex::new(circle.evaluate(std::f64::consts::PI), TOL));
+    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+    // The invalid trim distinguishes an early budget refusal from curve walking.
+    edge.set_trim(Some((1.0, 0.0)));
+    let curved_edge = OrientedEdge::new(topo.add_edge(edge), true);
+    let outer = topo.add_wire(Wire::new(vec![curved_edge; 33], true).unwrap());
+    let face = topo.add_face(Face::new(outer, vec![], FaceSurface::Cylinder(s)));
+
+    for error in [
+        integrate_face(&topo, face, 8).unwrap_err(),
+        integrate_face_area(&topo, face, 8).unwrap_err(),
+    ] {
+        assert!(
+            error.to_string().contains("trim exceeds the 4096-point"),
+            "unexpected error: {error}"
+        );
+    }
 }

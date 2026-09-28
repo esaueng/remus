@@ -11,7 +11,7 @@ use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
-use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::face::{Face, FaceId, FaceSurface};
 
 use super::PropertiesOptions;
 use crate::CheckError;
@@ -149,7 +149,7 @@ pub fn integrate_face(
     face_id: FaceId,
     gauss_order: usize,
 ) -> Result<FaceContribution, CheckError> {
-    integrate_face_impl(
+    integrate_face_impl::<false>(
         topo,
         face_id,
         IntegrationRule {
@@ -159,6 +159,32 @@ pub fn integrate_face(
             reference: Point3::new(0.0, 0.0, 0.0),
         },
     )
+}
+
+/// Integrate a face's area with the same fixed quadrature and trim rule as
+/// [`integrate_face`]. Parametric faces skip positional moments; planar faces
+/// retain the shared exact boundary integrator.
+///
+/// # Errors
+///
+/// Returns the same topology, domain, and integration errors as
+/// [`integrate_face`] for the same face and order.
+pub fn integrate_face_area(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+) -> Result<f64, CheckError> {
+    Ok(integrate_face_impl::<true>(
+        topo,
+        face_id,
+        IntegrationRule {
+            order: gauss_order,
+            adaptive: None,
+            knots: None,
+            reference: Point3::new(0.0, 0.0, 0.0),
+        },
+    )?
+    .area)
 }
 
 /// Integrate a face with the validated numerical controls in [`PropertiesOptions`].
@@ -214,7 +240,7 @@ pub fn integrate_face_about(
             "integration reference point must be finite".into(),
         ));
     }
-    integrate_face_impl(
+    integrate_face_impl::<false>(
         topo,
         face_id,
         IntegrationRule {
@@ -226,12 +252,16 @@ pub fn integrate_face_about(
     )
 }
 
-fn integrate_face_impl(
+fn integrate_face_impl<const AREA_ONLY: bool>(
     topo: &Topology,
     face_id: FaceId,
     rule: IntegrationRule<'_>,
 ) -> Result<FaceContribution, CheckError> {
     let face = topo.face(face_id)?;
+    if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+        // Extent and UV bounds sample curves before trim construction.
+        check_trim_point_budget(topo, face)?;
+    }
     let reversed = face.is_reversed();
     let sign = if reversed { -1.0 } else { 1.0 };
 
@@ -248,7 +278,15 @@ fn integrate_face_impl(
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
-            integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
+            integrate_with_trimming::<_, AREA_ONLY>(
+                s,
+                u_range,
+                v_range,
+                rule,
+                sign,
+                &uv,
+                PatchScale::ANGULAR,
+            )
         }
         FaceSurface::Cone(s) => {
             // A cone's boundary extent alone under-spans a pointed face: the
@@ -267,7 +305,7 @@ fn integrate_face_impl(
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
-            integrate_with_trimming_to_pole(
+            integrate_with_trimming_to_pole::<_, AREA_ONLY>(
                 s,
                 u_range,
                 v_range,
@@ -455,7 +493,7 @@ fn integrate_face_impl(
                         .fold(f64::NEG_INFINITY, f64::max);
                     uv.boundary.u_center = f64::midpoint(u_min, u_max);
                     uv.u_periodic = false;
-                    return integrate_parametric(
+                    return integrate_parametric::<_, AREA_ONLY>(
                         s,
                         (u_min, u_max),
                         full.1,
@@ -466,10 +504,20 @@ fn integrate_face_impl(
                     );
                 }
             }
-            integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
+            integrate_with_trimming::<_, AREA_ONLY>(
+                s,
+                u_range,
+                v_range,
+                rule,
+                sign,
+                &uv,
+                PatchScale::ANGULAR,
+            )
         }
         FaceSurface::Torus(s) => {
-            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, rule, sign)? {
+            if let Some(band) =
+                integrate_torus_tube_band::<AREA_ONLY>(topo, face_id, s, rule, sign)?
+            {
                 return Ok(band);
             }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
@@ -479,7 +527,15 @@ fn integrate_face_impl(
             // to be unwrapped on that axis too or a seam-crossing band lands in
             // a different branch than the range above.
             let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true, false)?;
-            integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
+            integrate_with_trimming::<_, AREA_ONLY>(
+                s,
+                u_range,
+                v_range,
+                rule,
+                sign,
+                &uv,
+                PatchScale::ANGULAR,
+            )
         }
         FaceSurface::Nurbs(s) => {
             let rule = IntegrationRule {
@@ -506,7 +562,7 @@ fn integrate_face_impl(
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;
             let uv = build_face_uv(topo, face_id, project, periodic_u, false, false)?;
-            integrate_with_trimming(
+            integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
                 v_range,
@@ -561,6 +617,28 @@ const TRIM_SAMPLES: usize = 128;
 /// service. This ceiling still accommodates detailed production trims while
 /// placing a hard upper bound on the superlinear portion of the work.
 const MAX_TRIM_POINTS: usize = 4096;
+
+fn check_trim_point_budget(topo: &Topology, face: &Face) -> Result<(), CheckError> {
+    let mut trim_points = 0_usize;
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        for oriented_edge in wire.edges() {
+            let edge = topo.edge(oriented_edge.edge())?;
+            let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+                1
+            } else {
+                TRIM_SAMPLES
+            };
+            trim_points = trim_points.saturating_add(samples);
+            if trim_points > MAX_TRIM_POINTS {
+                return Err(CheckError::IntegrationFailed(format!(
+                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The `v` extent a face's own boundary curves cover on its surface.
 ///
@@ -633,7 +711,7 @@ pub fn integrate_torus_band_face(
     let FaceSurface::Torus(torus) = face.surface() else {
         return Ok(None);
     };
-    integrate_torus_tube_band(
+    integrate_torus_tube_band::<false>(
         topo,
         face_id,
         torus,
@@ -653,7 +731,7 @@ pub fn integrate_torus_band_face(
 /// breaks at every rim sample, sweep spans between the rims); the default
 /// controls and the order-only API keep the fixed rule.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-fn integrate_torus_tube_band(
+fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     topo: &Topology,
     face_id: FaceId,
     torus: &remus_math::surfaces::ToroidalSurface,
@@ -791,7 +869,7 @@ fn integrate_torus_tube_band(
                 let mid = a + (patch as f64 + 0.5) * step;
                 for gu in gauss {
                     let u = (step / 2.0).mul_add(gu.x, mid);
-                    acc.add(
+                    acc.add::<_, AREA_ONLY>(
                         torus,
                         u,
                         v,
@@ -1037,24 +1115,6 @@ where
     };
 
     let face = topo.face(face_id)?;
-    let mut trim_points = 0_usize;
-    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        let wire = topo.wire(wire_id)?;
-        for oriented_edge in wire.edges() {
-            let edge = topo.edge(oriented_edge.edge())?;
-            let samples = if matches!(edge.curve(), EdgeCurve::Line) {
-                1
-            } else {
-                TRIM_SAMPLES
-            };
-            trim_points = trim_points.saturating_add(samples);
-            if trim_points > MAX_TRIM_POINTS {
-                return Err(CheckError::IntegrationFailed(format!(
-                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
-                )));
-            }
-        }
-    }
     let outer = crate::util::wire_polygon_curve_sampled(
         topo,
         face.outer_wire(),
@@ -1365,13 +1425,17 @@ fn face_uv_bounds(
             .iter()
             .any(|oe| topo.edge(oe.edge()).is_ok_and(|e| curved(e.curve()))))
     };
+    // A periodic face with curved edges needs intermediate samples even when
+    // the edges are analytic circles: two semicircles have endpoints exactly
+    // pi apart, where shortest-step unwrapping is ambiguous. Using those
+    // vertices alone can widen one revolution into a 3pi integration range.
     if matches!(
         face.surface(),
         FaceSurface::Sphere(_) | FaceSurface::Cone(_)
     ) || (matches!(
         face.surface(),
         FaceSurface::Cylinder(_) | FaceSurface::Torus(_)
-    ) && outer_has_edge(|c| matches!(c, EdgeCurve::NurbsCurve(_)))?)
+    ) && outer_has_edge(|c| !matches!(c, EdgeCurve::Line))?)
         // A NURBS face bounded by an arc bulges past the arc's ends the same
         // way: the disc a peg cuts from a converted bar's top reaches 0.76
         // beyond the chord vertex that bounds it, and a vertex-only window
@@ -2720,7 +2784,7 @@ impl Accumulator {
     /// `scratch` is thread-local reuse storage for the NURBS derivative
     /// solve; other surfaces ignore it. Callers must not share one scratch
     /// across threads.
-    fn add<S: ParametricSurface + ?Sized>(
+    fn add<S: ParametricSurface + ?Sized, const AREA_ONLY: bool>(
         &mut self,
         surface: &S,
         u: f64,
@@ -2735,8 +2799,6 @@ impl Accumulator {
         // before trusting them, so analytic surfaces (whose default ignores
         // the hint) and NURBS faces alike get exactly the unhinted answer.
         let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
-        let p = p - reference;
-
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(
             du.y() * dv.z() - du.z() * dv.y(),
@@ -2746,6 +2808,11 @@ impl Accumulator {
         let n_len = n.length();
 
         self.area += w * n_len;
+
+        if AREA_ONLY {
+            return;
+        }
+        let p = p - reference;
 
         // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
         self.vol += w * p.dot(n) / 3.0;
@@ -2904,7 +2971,7 @@ fn interior_knots(knots: &[f64], range: (f64, f64)) -> Vec<f64> {
 /// happen to land inside: masking alone left the two lobes of a cross-drilled
 /// bore wall 0.16 % short of their closed form.
 #[allow(clippy::cast_precision_loss)]
-fn integrate_parametric<S: ParametricSurface>(
+fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
@@ -3013,7 +3080,7 @@ fn integrate_parametric<S: ParametricSurface>(
                             let v_mid = dv_patch.mul_add(iv as f64, a) + v_scale;
                             for gpv in gauss_pts {
                                 let v = v_scale.mul_add(gpv.x, v_mid);
-                                acc.add(
+                                acc.add::<_, AREA_ONLY>(
                                     surface,
                                     u,
                                     v,
@@ -3044,7 +3111,7 @@ fn integrate_parametric<S: ParametricSurface>(
                     if !trim.accepts(u, v) {
                         continue;
                     }
-                    acc.add(
+                    acc.add::<_, AREA_ONLY>(
                         surface,
                         u,
                         v,
@@ -3071,7 +3138,7 @@ fn integrate_parametric<S: ParametricSurface>(
 /// point-in-polygon test rejects valid interior samples. Those cases integrate
 /// the analytic surface over its true domain instead, and only the face's
 /// holes are removed.
-fn integrate_with_trimming<S: ParametricSurface>(
+fn integrate_with_trimming<S: ParametricSurface, const AREA_ONLY: bool>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
@@ -3080,7 +3147,9 @@ fn integrate_with_trimming<S: ParametricSurface>(
     uv: &FaceUv,
     scale: PatchScale,
 ) -> Result<FaceContribution, CheckError> {
-    integrate_with_trimming_to_pole(surface, u_range, v_range, rule, sign, uv, scale, None)
+    integrate_with_trimming_to_pole::<_, AREA_ONLY>(
+        surface, u_range, v_range, rule, sign, uv, scale, None,
+    )
 }
 
 /// [`integrate_with_trimming`] with an explicit pole for the single-rim
@@ -3088,7 +3157,7 @@ fn integrate_with_trimming<S: ParametricSurface>(
 /// interior side; a cone has one apex, at `apex_v`, and a single-rim cone
 /// face always closes on it regardless of how the rim is wound.
 #[allow(clippy::too_many_arguments)]
-fn integrate_with_trimming_to_pole<S: ParametricSurface>(
+fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
@@ -3100,7 +3169,15 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
 ) -> Result<FaceContribution, CheckError> {
     let holes_only = UvTrim::holes_of(uv);
     if uv.boundary.points.len() < 3 {
-        return integrate_parametric(surface, u_range, v_range, rule, sign, &holes_only, scale);
+        return integrate_parametric::<_, AREA_ONLY>(
+            surface,
+            u_range,
+            v_range,
+            rule,
+            sign,
+            &holes_only,
+            scale,
+        );
     }
 
     let u_min = uv
@@ -3148,7 +3225,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
             .min_by(|a, b| (a - v_min).abs().total_cmp(&(b - v_min).abs()))
             .unwrap_or(v_pole);
         let v_dom = (v_min.min(v_far), v_min.max(v_far));
-        integrate_parametric(
+        integrate_parametric::<_, AREA_ONLY>(
             surface,
             (u_min, u_min + tau),
             v_dom,
@@ -3160,7 +3237,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
     } else if full_revolution {
         // Full-revolution band (cone/cylinder): integrate the whole revolution
         // over the band's v-extent.
-        integrate_parametric(
+        integrate_parametric::<_, AREA_ONLY>(
             surface,
             (u_min, u_min + tau),
             (v_min, v_max),
@@ -3172,9 +3249,17 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
     } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
         // Collapsed polygon (e.g. a closed torus whose seam projects to a
         // point): trust the analytic full-domain range from `face_uv_bounds`.
-        integrate_parametric(surface, u_range, v_range, rule, sign, &holes_only, scale)
+        integrate_parametric::<_, AREA_ONLY>(
+            surface,
+            u_range,
+            v_range,
+            rule,
+            sign,
+            &holes_only,
+            scale,
+        )
     } else {
-        integrate_parametric(
+        integrate_parametric::<_, AREA_ONLY>(
             surface,
             u_range,
             v_range,
