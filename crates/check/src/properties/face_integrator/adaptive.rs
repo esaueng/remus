@@ -172,7 +172,7 @@ impl<S: ParametricSurface> Integrator<'_, S> {
         for gu in gauss_legendre_points(self.options.gauss_order) {
             for gv in gauss_legendre_points(self.options.gauss_order) {
                 let mut a = Accumulator::default();
-                a.add(
+                a.add::<_, false>(
                     self.surface,
                     uh.mul_add(gu.x, f64::midpoint(u.0, u.1)),
                     vh.mul_add(gv.x, f64::midpoint(v.0, v.1)),
@@ -442,7 +442,7 @@ impl SlicedIntegrator<'_> {
                             (outer, inner)
                         };
                         let mut acc = Accumulator::default();
-                        acc.add(
+                        acc.add::<_, false>(
                             self.surface,
                             u,
                             v,
