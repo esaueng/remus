@@ -29,4 +29,3 @@ Found 4 outliers among 20 measurements (20.00%)
   1 (5.00%) low mild
   2 (10.00%) high mild
   1 (5.00%) high severe
-
