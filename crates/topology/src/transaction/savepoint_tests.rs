@@ -272,6 +272,23 @@ fn only_unchanged_entry_states_share_storage() {
 }
 
 #[test]
+fn shared_snapshot_keeps_checkpoint_retirement_policy() {
+    let mut topo = Topology::new();
+    let existing = topo.add_empty_solid();
+    let outer = RollbackSnapshot::capture(&mut topo);
+    let inner = RollbackSnapshot::capture(&mut topo);
+    assert!(Arc::ptr_eq(&outer.0, &inner.0));
+
+    let failed = seed(&mut topo);
+    topo.delete_solid(existing).unwrap();
+    inner.restore_preserving_handle_slots(&mut topo);
+
+    assert!(topo.solid(existing).is_err());
+    assert!(topo.vertex(failed).is_err());
+    assert_ne!(seed(&mut topo), failed);
+}
+
+#[test]
 fn independent_clone_and_journal_only_changes_do_not_share_snapshots() {
     let (mut t, _, _, _) = fixture();
     let outer = RollbackSnapshot::capture(&mut t);

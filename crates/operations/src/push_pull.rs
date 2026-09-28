@@ -108,7 +108,7 @@ pub(crate) fn move_faces_with_entity_evolution(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<DirectEditEvolution, crate::OperationsError> {
-    let snapshot = topo.clone();
+    let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
         let boundary_pairs;
         let source_faces = solid_faces(topo, solid)?;
@@ -223,7 +223,7 @@ pub(crate) fn move_faces_with_entity_evolution(
     })();
 
     if outcome.is_err() {
-        topo.restore_preserving_handle_slots(&snapshot);
+        snapshot.restore_preserving_handle_slots(topo);
     }
     outcome
 }
