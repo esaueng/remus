@@ -110,10 +110,10 @@ pub fn move_faces_with_entity_map(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<MoveFacesEntityResult, OffsetError> {
-    let snapshot = topo.clone();
+    let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let result = move_faces_impl(topo, solid, faces, distance);
     if result.is_err() {
-        topo.restore_preserving_handle_slots(&snapshot);
+        snapshot.restore_preserving_handle_slots(topo);
     }
     result
 }
