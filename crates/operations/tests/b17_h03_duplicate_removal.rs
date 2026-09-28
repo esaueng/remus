@@ -100,7 +100,18 @@ fn inject_duplicate_of(topo: &mut Topology, solid: SolidId, face: remus_topology
                 // in traversal order unconditionally: preserving the source
                 // edge's natural direction here would reverse backward-used
                 // edges and flip the winding (plus break connectivity).
-                topo.add_edge(Edge::new(verts[k], verts[k + 1], edge.curve().clone()))
+                let end = if edge.is_closed() {
+                    verts[k]
+                } else {
+                    verts[k + 1]
+                };
+                let mut copy = Edge::new(verts[k], end, edge.curve().clone());
+                copy.set_trim(edge.trim().map(
+                    |(t0, t1)| {
+                        if oe.is_forward() { (t0, t1) } else { (t1, t0) }
+                    },
+                ));
+                topo.add_edge(copy)
             })
             .collect();
         let forward: Vec<OrientedEdge> = edges
