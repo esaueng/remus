@@ -55,10 +55,10 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::face_loop::LoopId;
 
 use super::super::plane_frame::PlaneFrame;
-use super::super::split_types::SectionEdge;
+use super::super::split_types::{OrientedPCurveEdge, SectionEdge, SplitSubFace};
 use super::arrangement::{
-    Arrangement, ArrangementError, ArrangementInput, BoundarySource, CurveSource, CurveUse,
-    ParamDomain, build_arrangement,
+    Arrangement, ArrangementError, ArrangementHalfEdge, ArrangementInput, BoundarySource,
+    CurveSource, CurveUse, ParamDomain, build_arrangement,
 };
 use crate::ds::Rank;
 use crate::error::AlgoError;
@@ -182,7 +182,7 @@ pub(super) fn collect_planar_uses(
 /// input passed qualification, so a refusal is an internal error on
 /// claimed input and must propagate rather than fall back.
 pub(super) fn run_planar_arrangement(
-    inputs: PlanarInputs,
+    inputs: &PlanarInputs,
     context: &OperationContext,
 ) -> Result<Arrangement, AlgoError> {
     build_arrangement(&ArrangementInput {
@@ -197,6 +197,241 @@ pub(super) fn run_planar_arrangement(
 
 fn collect_failed(error: ArrangementError) -> AlgoError {
     AlgoError::FaceSplitFailed(format!("provenance arrangement refused: {error:?}"))
+}
+
+/// Split a qualified planar face through the provenance-preserving
+/// arrangement.
+///
+/// Returns `Ok(None)` when the face is out-of-domain (the caller runs the
+/// established path). A core refusal on qualified input is an internal
+/// error and propagates. Construction is atomic: collection, arrangement,
+/// and emission are pure and allocate no topology, so any failure leaves
+/// the caller's topology untouched.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn try_split_plane_face_by_provenance_arrangement(
+    topo: &Topology,
+    face_id: FaceId,
+    sections: &[SectionEdge],
+    rank: Rank,
+    frame: &PlaneFrame,
+    tol: &Tolerance,
+    context: &OperationContext,
+) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
+    let face = match topo.face(face_id) {
+        Ok(face) => face,
+        Err(_) => return Ok(None),
+    };
+    let surface = face.surface().clone();
+    let reversed = face.is_reversed();
+    let Some(inputs) = collect_planar_uses(topo, face_id, sections, rank, frame, tol, context)?
+    else {
+        return Ok(None);
+    };
+    let arrangement = run_planar_arrangement(&inputs, context)?;
+    let subfaces = emit_planar_subfaces(
+        &inputs,
+        &arrangement,
+        surface,
+        reversed,
+        face_id,
+        rank,
+        frame,
+        context,
+    )?;
+    Ok(Some(subfaces))
+}
+
+/// Convert material regions into production subfaces.
+///
+/// Every disconnected material region is preserved with its holes; each
+/// region carries its certified interior seed as the classification
+/// point, so downstream classification consumes arrangement-certified
+/// interiors instead of re-searching the surface. Holes attach as inner
+/// wires in traced order. New edges retain source provenance
+/// (`source_edge_idx`, full-span `pave_block_id`, boundary
+/// `source_topo_edge`) and strict native parameter domains; subspans of
+/// a split section drop the pave block exactly like the established
+/// splitter's split pieces, leaving cross-face sharing to the
+/// position-based duplicate-edge merge.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_planar_subfaces(
+    inputs: &PlanarInputs,
+    arrangement: &Arrangement,
+    surface: FaceSurface,
+    reversed: bool,
+    parent: FaceId,
+    rank: Rank,
+    frame: &PlaneFrame,
+    context: &OperationContext,
+) -> Result<Vec<SplitSubFace>, AlgoError> {
+    let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
+    let carriers: BTreeMap<u64, &CurveUse> = arrangement
+        .sources
+        .iter()
+        .map(|use_data| (use_data.source.use_id, use_data))
+        .collect();
+    let mut subfaces = Vec::new();
+    for region in &arrangement.regions {
+        context.check_cancelled().map_err(cancelled)?;
+        if !region.material {
+            continue;
+        }
+        let outer = emit_cycle_wire(
+            inputs,
+            arrangement,
+            &carriers,
+            &arrangement.cycles[region.outer].edges,
+            context,
+        )?;
+        if outer.is_empty() {
+            return Err(collect_failed(ArrangementError::OpenRegion));
+        }
+        let mut inner_wires = Vec::new();
+        for hole in &region.holes {
+            context.check_cancelled().map_err(cancelled)?;
+            let wire = emit_cycle_wire(
+                inputs,
+                arrangement,
+                &carriers,
+                &arrangement.cycles[*hole].edges,
+                context,
+            )?;
+            if wire.is_empty() {
+                return Err(collect_failed(ArrangementError::OpenRegion));
+            }
+            inner_wires.push(wire);
+        }
+        subfaces.push(SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: outer,
+            inner_wires,
+            reversed,
+            parent,
+            rank,
+            precomputed_interior: Some(frame.evaluate(region.interior.x(), region.interior.y())),
+        });
+    }
+    Ok(subfaces)
+}
+
+/// Build one wire from a traced half-edge cycle, preserving order.
+fn emit_cycle_wire(
+    inputs: &PlanarInputs,
+    arrangement: &Arrangement,
+    carriers: &BTreeMap<u64, &CurveUse>,
+    cycle: &[usize],
+    context: &OperationContext,
+) -> Result<Vec<OrientedPCurveEdge>, AlgoError> {
+    let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
+    let mut wire = Vec::with_capacity(cycle.len());
+    for &half_idx in cycle {
+        context.check_cancelled().map_err(cancelled)?;
+        let half = &arrangement.half_edges[half_idx];
+        wire.push(emit_wire_edge(
+            inputs,
+            arrangement,
+            carriers,
+            half,
+            context,
+        )?);
+    }
+    Ok(wire)
+}
+
+/// Build one production wire edge from an arrangement half-edge.
+///
+/// Geometry comes from the half-edge's exact endpoints (3D) and chart
+/// vertices (UV); the carrier and lineage come from the originating
+/// input use. Circle sub-edges carry their exact native subspan with
+/// the traversal-oriented forward flag; lines carry no trim, matching
+/// production convention.
+fn emit_wire_edge(
+    inputs: &PlanarInputs,
+    arrangement: &Arrangement,
+    carriers: &BTreeMap<u64, &CurveUse>,
+    half: &ArrangementHalfEdge,
+    context: &OperationContext,
+) -> Result<OrientedPCurveEdge, AlgoError> {
+    let internal = |detail: &str| {
+        AlgoError::FaceSplitFailed(format!("provenance arrangement emission failed: {detail}"))
+    };
+    let tolerance = context.tolerance.linear;
+    let position = half
+        .source
+        .source_edge_idx
+        .ok_or_else(|| internal("missing source index"))?;
+    let parent = inputs
+        .parents
+        .get(position)
+        .ok_or_else(|| internal("stale source index"))?;
+    let carrier = carriers
+        .get(&half.source.use_id)
+        .ok_or_else(|| internal("stale use id"))?;
+    let start_uv = arrangement.vertices[half.from].uv;
+    let end_uv = arrangement.vertices[half.to].uv;
+    let (pcurve, trim, forward) = match &carrier.curve_3d {
+        EdgeCurve::Line => {
+            let direction = end_uv - start_uv;
+            if direction.length() <= f64::EPSILON {
+                return Err(internal("degenerate line sub-edge"));
+            }
+            let Ok(line) = Line2D::new(start_uv, direction) else {
+                return Err(internal("degenerate line sub-edge"));
+            };
+            (Curve2D::Line(line), None, true)
+        }
+        EdgeCurve::Circle(_) => {
+            let Curve2D::Circle(_) = parent.pcurve else {
+                return Err(internal("circle sub-edge without circle pcurve"));
+            };
+            let source_range = half.source_range;
+            if !source_range[0].is_finite() || !source_range[1].is_finite() {
+                return Err(internal("non-finite circle subspan"));
+            }
+            (
+                parent.pcurve.clone(),
+                Some((source_range[0], source_range[1])),
+                source_range[1] >= source_range[0],
+            )
+        }
+        _ => return Err(internal("non-line/circle carrier")),
+    };
+    // Pave-block sharing only for full-span sections: subspans drop it
+    // exactly like the established splitter's split pieces, so vertex
+    // resolution never snaps a piece to its parent's unsplit endpoints.
+    // Untouched uses pass through bitwise-identical, so exact comparison
+    // is the correct untouched detector (not a tolerance comparison).
+    let full_span = same_interval(carrier.range, half.range)
+        && same_interval(carrier.source_range, half.source_range);
+    let pave_block_id = if full_span {
+        half.source.pave_block_id
+    } else {
+        None
+    };
+    // The carried trim must reproduce the wire endpoints through the
+    // carrier. This duplicates the downstream preflight at emission
+    // time so a pairing bug fails here with provenance attached,
+    // never as a silent weld or a far-away topology error.
+    if let (EdgeCurve::Circle(circle), Some((t0, t1))) = (&carrier.curve_3d, trim) {
+        let start_ok = (circle.evaluate(t0) - half.endpoints_3d[0]).length() <= tolerance
+            && (circle.evaluate(t1) - half.endpoints_3d[1]).length() <= tolerance;
+        if !start_ok {
+            return Err(internal("circle subspan endpoints mismatch carrier"));
+        }
+    }
+    Ok(OrientedPCurveEdge {
+        curve_3d: carrier.curve_3d.clone(),
+        trim,
+        pcurve,
+        start_uv,
+        end_uv,
+        start_3d: half.endpoints_3d[0],
+        end_3d: half.endpoints_3d[1],
+        forward,
+        source_edge_idx: half.source.source_edge_idx,
+        pave_block_id,
+        source_topo_edge: parent.source_topo_edge,
+    })
 }
 
 /// One circle piece in traversal order: analytic pcurve, canonical range,
@@ -984,6 +1219,11 @@ fn eval_pcurve(use_data: &CurveUse, t: f64) -> Point2 {
     use_data.pcurve.evaluate(t)
 }
 
+/// Bitwise interval equality for untouched-use detection.
+fn same_interval(a: [f64; 2], b: [f64; 2]) -> bool {
+    a[0].total_cmp(&b[0]).is_eq() && a[1].total_cmp(&b[1]).is_eq()
+}
+
 fn roundoff(p: Point2) -> f64 {
     64.0 * f64::EPSILON * (1.0 + p.x().abs() + p.y().abs())
 }
@@ -1187,7 +1427,7 @@ mod tests {
         .unwrap()
     }
 
-    fn run(inputs: PlanarInputs) -> Arrangement {
+    fn run(inputs: &PlanarInputs) -> Arrangement {
         run_planar_arrangement(inputs, &test_context()).unwrap()
     }
 
@@ -1215,7 +1455,7 @@ mod tests {
         let inputs = collect(&topo, face, &sections).expect("qualified planar X");
         // 4 boundary uses split at the four T feet, plus 2 sections.
         assert_eq!(inputs.uses.len(), 10);
-        let arrangement = run(inputs);
+        let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 4);
         assert!((material_area(&arrangement) - 4.0).abs() < 1e-9);
         for half in &arrangement.half_edges {
@@ -1234,7 +1474,7 @@ mod tests {
             line_section(Point3::new(1.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
         ];
         let inputs = collect(&topo, face, &sections).expect("qualified planar T");
-        let arrangement = run(inputs);
+        let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 3);
         assert!((material_area(&arrangement) - 4.0).abs() < 1e-9);
     }
@@ -1279,7 +1519,7 @@ mod tests {
             Point3::new(root, 1.0, 0.0),
         )];
         let inputs = collect(&topo, face, &sections).expect("qualified disc");
-        let arrangement = run(inputs);
+        let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 2);
         let cap = 4.0 * PI / 3.0 - root;
         let mut areas: Vec<f64> = arrangement
@@ -1364,7 +1604,7 @@ mod tests {
             .filter(|t| t.total_cmp(&0.0).is_eq() || t.total_cmp(&TAU).is_eq())
             .count();
         assert_eq!(cut_count, 2, "one shared branch cut");
-        let arrangement = run(inputs);
+        let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 1);
     }
 
@@ -1424,7 +1664,7 @@ mod tests {
             let expected = plane_frame().project(arc_use.endpoints_3d[end]);
             assert!((uv - expected).length() < 1e-12);
         }
-        let arrangement = run(inputs);
+        let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 1);
     }
 
@@ -1472,7 +1712,7 @@ mod tests {
         ));
         let inputs = collect(&topo, face, &[]).expect("qualified holed face");
         assert_eq!(inputs.uses.len(), 8);
-        let arrangement = run(inputs);
+        let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 1);
         assert!((material_area(&arrangement) - 12.0).abs() < 1e-9);
         assert_eq!(arrangement.regions.iter().filter(|r| r.material).count(), 1);
@@ -1593,7 +1833,7 @@ mod tests {
             pave_block_id: Some(11),
         }];
         let inputs = collect(&topo, face, &sections).expect("tangent is gated in");
-        let error = run_planar_arrangement(inputs, &test_context()).unwrap_err();
+        let error = run_planar_arrangement(&inputs, &test_context()).unwrap_err();
         assert!(
             format!("{error:?}").contains("AmbiguousContact"),
             "unexpected {error:?}"
@@ -1614,7 +1854,7 @@ mod tests {
                 .with_queue_size(0)
                 .with_segments(0),
         );
-        let error = run_planar_arrangement(inputs, &starved).unwrap_err();
+        let error = run_planar_arrangement(&inputs, &starved).unwrap_err();
         assert!(
             format!("{error:?}").contains("WorkBudgetExceeded"),
             "unexpected {error:?}"
@@ -1632,7 +1872,7 @@ mod tests {
         let token = remus_math::context::CancellationToken::new();
         token.cancel();
         let cancelled = OperationContext::new().with_cancellation(token);
-        let error = run_planar_arrangement(inputs, &cancelled).unwrap_err();
+        let error = run_planar_arrangement(&inputs, &cancelled).unwrap_err();
         assert!(
             format!("{error:?}").contains("Cancelled"),
             "unexpected {error:?}"
@@ -1688,5 +1928,277 @@ mod tests {
         assert!(collect(&topo, cylinder_face, &[]).is_none());
         // The original plane face is unaffected and still qualifies.
         assert!(collect(&topo, face, &[]).is_some());
+    }
+    fn split_emit(
+        topo: &Topology,
+        face: FaceId,
+        sections: &[SectionEdge],
+    ) -> Option<Vec<SplitSubFace>> {
+        try_split_plane_face_by_provenance_arrangement(
+            topo,
+            face,
+            sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &test_context(),
+        )
+        .unwrap()
+    }
+
+    /// Every wire closes head-to-tail within the operation tolerance.
+    fn assert_closed(wire: &[OrientedPCurveEdge]) {
+        assert!(!wire.is_empty());
+        for pair in wire.windows(2) {
+            assert!(
+                (pair[0].end_3d - pair[1].start_3d).length() <= 1e-7,
+                "wire gap {:?} -> {:?}",
+                pair[0].end_3d,
+                pair[1].start_3d
+            );
+        }
+        let (first, last) = (&wire[0], &wire[wire.len() - 1]);
+        assert!((last.end_3d - first.start_3d).length() <= 1e-7);
+    }
+
+    fn uv_polygon_area(wire: &[OrientedPCurveEdge]) -> f64 {
+        let mut area = 0.0;
+        for edge in wire {
+            area += edge.start_uv.x() * edge.end_uv.y() - edge.end_uv.x() * edge.start_uv.y();
+        }
+        area * 0.5
+    }
+
+    fn point_in_uv_polygon(point: Point2, wire: &[OrientedPCurveEdge]) -> bool {
+        let mut inside = false;
+        for edge in wire {
+            let (a, b) = (edge.start_uv, edge.end_uv);
+            if (a.y() > point.y()) != (b.y() > point.y()) {
+                let x = a.x() + (point.y() - a.y()) / (b.y() - a.y()) * (b.x() - a.x());
+                if x > point.x() {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
+    #[test]
+    fn emit_crossing_lines_produces_four_classified_subfaces() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0)),
+            line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
+        ];
+        let subfaces = split_emit(&topo, face, &sections).expect("qualified planar X");
+        assert_eq!(subfaces.len(), 4);
+        let mut total = 0.0;
+        for sub in &subfaces {
+            assert_closed(&sub.outer_wire);
+            assert!(sub.inner_wires.is_empty());
+            assert_eq!(sub.parent, face);
+            assert_eq!(sub.rank, Rank::A);
+            assert!(!sub.reversed);
+            assert!(matches!(sub.surface, FaceSurface::Plane { .. }));
+            total += uv_polygon_area(&sub.outer_wire).abs();
+            // Split section pieces drop the pave block like the
+            // established splitter's split pieces do.
+            for edge in &sub.outer_wire {
+                if matches!(edge.curve_3d, EdgeCurve::Line) && edge.source_topo_edge.is_none() {
+                    assert!(
+                        edge.pave_block_id.is_none(),
+                        "split section piece must not keep its pave block"
+                    );
+                }
+            }
+            // The certified interior classifies inside its own region.
+            let interior = sub.precomputed_interior.expect("certified seed");
+            assert!((interior.z()).abs() < 1e-12);
+            let uv = plane_frame().project(interior);
+            assert!(point_in_uv_polygon(uv, &sub.outer_wire));
+        }
+        assert!((total - 4.0).abs() < 1e-9, "total {total}");
+    }
+
+    #[test]
+    fn emit_t_junction_keeps_shared_section_provenance() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0)),
+            line_section(Point3::new(1.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
+        ];
+        let subfaces = split_emit(&topo, face, &sections).expect("qualified planar T");
+        assert_eq!(subfaces.len(), 3);
+        // The shared T foot (1, 1) appears as a wire vertex on every
+        // region touching it.
+        let mut foot_uses = 0;
+        for sub in &subfaces {
+            assert_closed(&sub.outer_wire);
+            for edge in &sub.outer_wire {
+                for end in [edge.start_3d, edge.end_3d] {
+                    if (end - Point3::new(1.0, 1.0, 0.0)).length() < 1e-9 {
+                        foot_uses += 1;
+                    }
+                }
+            }
+        }
+        assert!(foot_uses >= 6, "T foot shared, got {foot_uses}");
+    }
+
+    #[test]
+    fn emit_disc_chord_keeps_analytic_trims() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        let eid = topo.add_edge(edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let root = 3.0_f64.sqrt();
+        let sections = [line_section(
+            Point3::new(-root, 1.0, 0.0),
+            Point3::new(root, 1.0, 0.0),
+        )];
+        let subfaces = split_emit(&topo, face, &sections).expect("qualified disc");
+        assert_eq!(subfaces.len(), 2);
+        // Every circle sub-edge carries an exact native subspan; the
+        // boundary spans rejoin to the full turn (major arc preserved).
+        let mut covered = 0.0;
+        for sub in &subfaces {
+            assert_closed(&sub.outer_wire);
+            for edge in &sub.outer_wire {
+                if matches!(edge.curve_3d, EdgeCurve::Circle(_)) {
+                    let (t0, t1) = edge.trim.expect("circle sub-edge trim");
+                    assert!(t0.is_finite() && t1.is_finite() && (t1 - t0).abs() > 1e-12);
+                    if edge.source_topo_edge.is_some() {
+                        covered += (t1 - t0).abs();
+                    }
+                }
+            }
+        }
+        assert!((covered - TAU).abs() < 1e-9, "covered {covered}");
+        // Both regions keep analytic circle edges (never chorded lines).
+        for sub in &subfaces {
+            assert!(
+                sub.outer_wire
+                    .iter()
+                    .any(|e| matches!(e.curve_3d, EdgeCurve::Circle(_))),
+                "disc region lost its arc"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_holed_face_carries_hole_and_interior() {
+        let mut topo = Topology::new();
+        let mut wire_of = |points: &[Point3; 4]| {
+            let mut vids = Vec::new();
+            for point in points {
+                vids.push(topo.add_vertex(Vertex::new(*point, TOL)));
+            }
+            let mut edges = Vec::new();
+            for i in 0..4 {
+                edges.push(topo.add_edge(Edge::new(vids[i], vids[(i + 1) % 4], EdgeCurve::Line)));
+            }
+            topo.add_wire(
+                Wire::new(
+                    edges.iter().map(|e| OrientedEdge::new(*e, true)).collect(),
+                    true,
+                )
+                .unwrap(),
+            )
+        };
+        let outer = wire_of(&[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(4.0, 4.0, 0.0),
+            Point3::new(0.0, 4.0, 0.0),
+        ]);
+        let hole = wire_of(&[
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(3.0, 1.0, 0.0),
+            Point3::new(3.0, 3.0, 0.0),
+            Point3::new(1.0, 3.0, 0.0),
+        ]);
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let subfaces = split_emit(&topo, face, &[]).expect("qualified holed face");
+        assert_eq!(subfaces.len(), 1);
+        let sub = &subfaces[0];
+        assert_closed(&sub.outer_wire);
+        assert_eq!(sub.inner_wires.len(), 1);
+        assert_closed(&sub.inner_wires[0]);
+        let interior = sub.precomputed_interior.expect("certified seed");
+        let uv = plane_frame().project(interior);
+        assert!(point_in_uv_polygon(uv, &sub.outer_wire));
+        assert!(!point_in_uv_polygon(uv, &sub.inner_wires[0]));
+    }
+
+    #[test]
+    fn emission_is_atomic_on_internal_refusal() {
+        // The tangent ring passes qualification but the core refuses it;
+        // emission never runs, so no partial subface can escape and the
+        // input topology is untouched.
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        let eid = topo.add_edge(edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let inner =
+            Circle3D::new(Point3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let proto = line_section(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let sections = [SectionEdge {
+            curve_3d: EdgeCurve::Circle(inner),
+            trim: Some((0.0, TAU)),
+            pcurve_a: proto.pcurve_a.clone(),
+            pcurve_b: proto.pcurve_b,
+            start: Point3::new(2.0, 0.0, 0.0),
+            end: Point3::new(2.0, 0.0, 0.0),
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: Some(11),
+        }];
+        let before = topo.num_faces();
+        let error = try_split_plane_face_by_provenance_arrangement(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &test_context(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:?}").contains("AmbiguousContact"));
+        assert_eq!(topo.num_faces(), before, "no topology allocated on refusal");
     }
 }
