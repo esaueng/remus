@@ -17,18 +17,26 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Confirm paired package publication
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           kernel_sha="$(gh api 'repos/esaueng/remus/commits?path=crates%2Fwasm%2Fpkg%2Fpackage.json&sha=main&per_page=1' --jq '.[0].sha')"
           io_sha="$(gh api 'repos/esaueng/remus/commits?path=crates%2Fwasm-io%2Fpkg%2Fpackage.json&sha=main&per_page=1' --jq '.[0].sha')"
-          if [[ "$kernel_sha" != "$GITHUB_SHA" || "$io_sha" != "$GITHUB_SHA" ]]; then
-            echo "::error title=Split Remus release::Both package manifests must be published by this main commit."
+          if [[ ! "$kernel_sha" =~ ^[0-9a-f]{40}$ || "$kernel_sha" != "$io_sha" ]]; then
+            echo "::error title=Split Remus release::Both package manifests must come from the same main commit."
             exit 1
           fi
+          if [[ "$kernel_sha" != "$GITHUB_SHA" ]]; then
+            echo "notify=false" >> "$GITHUB_OUTPUT"
+            echo "A newer paired package release superseded $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "notify=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
+        if: steps.release.outputs.notify == 'true'
         with:
           app-id: ${{ vars.REMUS_BOT_APP_ID }}
           private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
@@ -37,6 +45,7 @@ jobs:
           permission-contents: write
 
       - name: Start OpenZCAD updater
+        if: steps.release.outputs.notify == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
