@@ -20,8 +20,10 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
+use remus_check::properties::face_integrator::{integrate_face, integrate_face_area};
 use remus_math::mat::Mat4;
 use remus_math::vec::Vec3;
+use remus_operations::blend_ops;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::chamfer::chamfer;
 use remus_operations::copy::copy_solid;
@@ -34,6 +36,7 @@ use remus_operations::shell_op;
 use remus_operations::tessellate;
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
 
 // ---------------------------------------------------------------------------
 // Criterion config — fast defaults for development iteration
@@ -274,6 +277,28 @@ fn bench_bounding_box_x100(c: &mut Criterion) {
             }
         });
     });
+}
+
+/// Pair the fixed-order area path with the former full-moment path on the
+/// curved band of a production fillet, with shape construction outside timing.
+fn bench_fillet_face_area_paths(c: &mut Criterion) {
+    let mut topo = Topology::new();
+    let box_solid = primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    let edge = remus_topology::explorer::solid_edges(&topo, box_solid).unwrap()[0];
+    let fillet = blend_ops::fillet_cascade(&mut topo, box_solid, &[edge], 1.0).unwrap();
+    let face = remus_topology::explorer::solid_faces(&topo, fillet.solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap();
+    let mut group = c.benchmark_group("fillet curved face area");
+    group.bench_function("full moments", |b| {
+        b.iter(|| black_box(integrate_face(black_box(&topo), face, 8).unwrap().area));
+    });
+    group.bench_function("area only", |b| {
+        b.iter(|| black_box(integrate_face_area(black_box(&topo), face, 8).unwrap()));
+    });
+    group.finish();
 }
 
 // ===========================================================================
@@ -650,6 +675,7 @@ criterion_group! {
     targets =
         bench_volume_x100,
         bench_bounding_box_x100,
+        bench_fillet_face_area_paths,
 }
 
 criterion_group! {
