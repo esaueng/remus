@@ -263,6 +263,9 @@ fn fix_shell_duplicate_faces(
     // shell face order or bucket layout.
     let mut descriptors: Vec<FaceDescriptor> = Vec::new();
     for &fid in &face_ids {
+        if ctx.reshape.is_face_removed(fid) {
+            continue;
+        }
         if let Some(descriptor) = describe_face(topo, fid, tol)? {
             descriptors.push(descriptor);
         }
@@ -1366,6 +1369,21 @@ mod tests {
         let error = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap_err();
         assert!(error.to_string().contains("shared by multiple shells"));
         assert!(ctx.reshape.is_empty());
+    }
+
+    #[test]
+    fn pending_removal_cannot_anchor_another_duplicate_removal() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let prior = add_disc(&mut topo, center, 4.9e-8, 0.0);
+        let retained = add_disc(&mut topo, center, 5.1e-8, 0.0);
+        let shell = topo.add_shell(Shell::new(vec![prior, retained]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        ctx.reshape.remove_face(prior);
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 0);
+        assert!(!ctx.reshape.is_face_removed(retained));
     }
 
     #[test]
