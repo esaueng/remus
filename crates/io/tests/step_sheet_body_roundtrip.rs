@@ -174,6 +174,11 @@ fn wrong_body_class_and_malformed_constituent_fail_closed() {
         destination.num_solids(),
     );
     assert!(remus_io::step::read_step_bodies(&malformed, &mut destination).is_err());
+    let vendor_shell = valid.replacen("OPEN_SHELL", "VENDOR_OPEN_SHELL", 1);
+    let error = remus_io::step::read_step_bodies(&vendor_shell, &mut destination).unwrap_err();
+    assert!(
+        matches!(error, remus_io::IoError::UnsupportedEntity { entity } if entity.contains("VENDOR_OPEN_SHELL"))
+    );
     assert_eq!(
         (
             destination.num_vertices(),
