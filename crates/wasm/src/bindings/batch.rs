@@ -277,8 +277,10 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "compoundCut"
         | "fuseAll"
         | "transform"
+        | "transformDetailed"
         | "copySolid"
         | "copyAndTransformSolid"
+        | "copyAndTransformSolidDetailed"
         | "pushPullFace"
         | "moveFaces"
         | "resizeCylindricalFace"
@@ -1571,6 +1573,29 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(copy)))
+            }
+            // B74 typed transform twins: the direct `*Detailed` methods'
+            // bodies, so a refusal is data here too (already rolled back
+            // by that body).
+            "transformDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let matrix = args.get("matrix").ok_or("missing or invalid 'matrix'")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                let mat = super::transform_detailed::parse_transform_matrix_json(matrix)?;
+                let elems: Vec<f64> = mat.0.iter().flatten().copied().collect();
+                serde_json::to_value(self.transform_detailed_impl(solid, &elems, exact_only))
+                    .map_err(StructuredWasmError::from)
+            }
+            "copyAndTransformSolidDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let matrix = args.get("matrix").ok_or("missing or invalid 'matrix'")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                let mat = super::transform_detailed::parse_transform_matrix_json(matrix)?;
+                let elems: Vec<f64> = mat.0.iter().flatten().copied().collect();
+                serde_json::to_value(
+                    self.copy_and_transform_solid_detailed_impl(solid, &elems, exact_only),
+                )
+                .map_err(StructuredWasmError::from)
             }
             // ── Batch 8: new batch-dispatched operations ──────────────
             "pushPullFace" => {

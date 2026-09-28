@@ -105,5 +105,10 @@ python3 scripts/test-wasm-o47-coverage.py
 
 At introduction: 218 mutating exports -- 13 covered (the boolean,
 construction, and modifier solid-envelope families), 111 uncovered with
-an owner and a reason each, 94 explained special cases. The roadmap O4.7
+an owner and a reason each, 94 explained special cases. The transform
+twins (B74) add two exports and cover `copyAndTransformSolid`: 220
+mutating exports -- 14 covered, 110 uncovered, 96 special.
+`transformSolid`/`transformWire`/`transformFace` stay uncovered by
+design (void in-place mutations; `transformDetailed` is their
+special-case status surface, never a forced solid envelope). The roadmap O4.7
 row is the human-readable mirror; this baseline is the executable one.
