@@ -1365,13 +1365,17 @@ fn face_uv_bounds(
             .iter()
             .any(|oe| topo.edge(oe.edge()).is_ok_and(|e| curved(e.curve()))))
     };
+    // A periodic face with curved edges needs intermediate samples even when
+    // the edges are analytic circles: two semicircles have endpoints exactly
+    // pi apart, where shortest-step unwrapping is ambiguous. Using those
+    // vertices alone can widen one revolution into a 3pi integration range.
     if matches!(
         face.surface(),
         FaceSurface::Sphere(_) | FaceSurface::Cone(_)
     ) || (matches!(
         face.surface(),
         FaceSurface::Cylinder(_) | FaceSurface::Torus(_)
-    ) && outer_has_edge(|c| matches!(c, EdgeCurve::NurbsCurve(_)))?)
+    ) && outer_has_edge(|c| !matches!(c, EdgeCurve::Line))?)
         // A NURBS face bounded by an arc bulges past the arc's ends the same
         // way: the disc a peg cuts from a converted bar's top reaches 0.76
         // beyond the chord vertex that bounds it, and a vertex-only window
