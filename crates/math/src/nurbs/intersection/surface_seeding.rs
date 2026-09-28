@@ -967,7 +967,7 @@ pub(super) fn refine_ssi_point_with_context(
                 let q1 = s1.evaluate(cc[0], cc[1]);
                 let q2 = s2.evaluate(cc[2], cc[3]);
                 if (q1 - q2).length() < residual {
-                    state = cand;
+                    state = cc;
                     accepted = true;
                     break;
                 }

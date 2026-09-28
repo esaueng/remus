@@ -1403,6 +1403,63 @@ fn with_context_default_matches_legacy_entry_point() {
 }
 
 #[test]
+fn ssi_backtracking_persists_constrained_boundary_trial() {
+    use crate::context::OperationContext;
+
+    let rational = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ],
+        vec![vec![0.1, 0.1], vec![1.0, 1.0]],
+    )
+    .unwrap();
+    let target_x = 0.04 / (0.1 + 0.9 * 0.04);
+    let cross_plane = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![
+                Point3::new(target_x, 0.0, -0.5),
+                Point3::new(target_x, 0.0, 0.5),
+            ],
+            vec![
+                Point3::new(target_x, 1.0, -0.5),
+                Point3::new(target_x, 1.0, 0.5),
+            ],
+        ],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap();
+    let refined = refine_ssi_point_with_context(
+        &rational,
+        &cross_plane,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        1e-8,
+        &OperationContext::new(),
+        &mut SsiScratch::new(),
+    )
+    .unwrap()
+    .expect("an accepted clamped step must converge from the domain boundary");
+    assert!((refined.param1.0 - 0.04).abs() < 1e-6);
+    assert!(
+        (rational.evaluate(refined.param1.0, refined.param1.1)
+            - cross_plane.evaluate(refined.param2.0, refined.param2.1))
+        .length()
+            < 1e-8
+    );
+}
+
+#[test]
 fn caller_newton_budget_is_authoritative_for_ssi_refinement() {
     use crate::context::{OperationContext, WorkBudgets};
 
