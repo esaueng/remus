@@ -42,11 +42,12 @@
 //! core refused it; that is an internal error on claimed input and must
 //! propagate, never degrade into an unsplit face or a fallback.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
 use remus_math::context::OperationContext;
 use remus_math::curves2d::{Circle2D, Curve2D, Line2D};
+use remus_math::predicates::orient2d;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3};
 use remus_topology::Topology;
@@ -57,8 +58,8 @@ use remus_topology::face_loop::LoopId;
 use super::super::plane_frame::PlaneFrame;
 use super::super::split_types::{OrientedPCurveEdge, SectionEdge, SplitSubFace};
 use super::arrangement::{
-    Arrangement, ArrangementError, ArrangementHalfEdge, ArrangementInput, BoundarySource,
-    CurveSource, CurveUse, ParamDomain, build_arrangement,
+    Arrangement, ArrangementError, ArrangementInput, BoundarySource, CurveSource, CurveUse,
+    ParamDomain, build_arrangement,
 };
 use crate::ds::Rank;
 use crate::error::AlgoError;
@@ -90,6 +91,15 @@ struct RawPiece {
     source: [f64; 2],
 }
 
+/// One exact transverse crossing between two line uses.
+struct Crossing {
+    first: usize,
+    second: usize,
+    first_param: f64,
+    second_param: f64,
+    point: Point2,
+}
+
 /// Production inputs collected for one qualified planar face, ready for the
 /// isolated core. `parents` is indexed by the input position stored in each
 /// use's [`CurveSource::source_edge_idx`]; the M3 emitter consumes it to
@@ -100,6 +110,11 @@ pub(super) struct PlanarInputs {
     pub uses: Vec<CurveUse>,
     /// Per-input-position parent data for emission.
     pub parents: Vec<ParentInfo>,
+    /// Certificates minted for canonical branch cuts (angle zero).
+    /// These subdivide uses for the core's chart but mark no geometric
+    /// event; emission merges across them so neighboring faces never
+    /// see a T-junction there.
+    pub branch_certs: BTreeSet<u64>,
 }
 
 /// Parent data for one adapter input use.
@@ -170,7 +185,14 @@ pub(super) fn collect_planar_uses(
             return Ok(None);
         }
     }
-    collector.prejoin_endpoints(context)?;
+    // Interior concurrency first: shared-cert splits become range
+    // ends that the endpoint prejoin below then treats as joined.
+    if !collector.resolve_line_concurrency(context)? {
+        return Ok(None);
+    }
+    if !collector.prejoin_endpoints(context)? {
+        return Ok(None);
+    }
     if !collector.section_ends_resolved() {
         return Ok(None);
     }
@@ -327,6 +349,20 @@ fn circle_pair_is_degenerate(
     false
 }
 
+/// Emission refusal for a wire run spanning input uses with no kept vertex
+/// between them: the event topology cannot be emitted with exact provenance.
+/// Geometric (a grazing contact merges the joint vertex away), so the caller
+/// declines to the established path. Kept in a constant because the `try_`
+/// mapping matches on it — rewording here requires updating the mapping,
+/// and the tangent-boss batch contract pins the pairing end to end.
+const MIXED_USE_RUN: &str = "mixed-use run";
+
+/// Whether an emission failure is the geometric mixed-use refusal (decline)
+/// rather than an internal error (propagate) or cancellation (propagate).
+fn is_mixed_use_run(error: &AlgoError) -> bool {
+    matches!(error, AlgoError::FaceSplitFailed(detail) if detail.contains(MIXED_USE_RUN))
+}
+
 /// Whether two certified uses meet in an interior tangent contact or a
 /// coincident overlap.
 fn uses_pair_is_degenerate(a: &CurveUse, b: &CurveUse, tol: f64) -> bool {
@@ -395,8 +431,9 @@ fn arrangement_context(parent: &OperationContext, uses: usize) -> OperationConte
 /// arrangement.
 ///
 /// Returns `Ok(None)` when the face is out-of-domain (the caller runs the
-/// established path). A core refusal on qualified input is an internal
-/// error and propagates. Construction is atomic: collection, arrangement,
+/// established path). Geometric refusals — tangent/overlap contacts and
+/// unrefinable grazing crossings — likewise decline; any other core
+/// refusal on qualified input is an internal error and propagates. Construction is atomic: collection, arrangement,
 /// and emission are pure and allocate no topology, so any failure leaves
 /// the caller's topology untouched.
 #[allow(clippy::too_many_arguments)]
@@ -408,6 +445,7 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     frame: &PlaneFrame,
     tol: &Tolerance,
     context: &OperationContext,
+    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     let face = match topo.face(face_id) {
         Ok(face) => face,
@@ -473,7 +511,8 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
             )))
         }
         Ok(arrangement) => {
-            let subfaces = emit_planar_subfaces(
+            record_section_breaks(&inputs, &arrangement, frame, split_registry);
+            match emit_planar_subfaces(
                 &inputs,
                 &arrangement,
                 surface,
@@ -482,8 +521,132 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
                 rank,
                 frame,
                 context,
-            )?;
-            Ok(Some(subfaces))
+            ) {
+                Err(error) if is_mixed_use_run(&error) => {
+                    log::debug!(
+                        "provenance arrangement declined face={face_id:?}: {MIXED_USE_RUN}"
+                    );
+                    Ok(None)
+                }
+                result => result.map(Some),
+            }
+        }
+    }
+}
+
+/// Record section interior break points for curved neighbors.
+///
+/// Mirrors the established plane-arrangement contract: interior vertices
+/// where distinct uses meet (crossings, joints) are recorded per pave
+/// block as exact frame-evaluated points, so curved faces sharing the
+/// section curve pre-split at identical points instead of meeting the
+/// plane side in T-junctions. Canonical subdivisions (cardinal and
+/// branch cuts: single-use vertices with no event) are deliberately NOT
+/// recorded — neighbors share no event there, and recording them would
+/// hand curved faces splits the plane side itself merges away. Use ends
+/// are excluded (neighbors already share those events).
+fn record_section_breaks(
+    inputs: &PlanarInputs,
+    arrangement: &Arrangement,
+    frame: &PlaneFrame,
+    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+) {
+    let Some(registry) = split_registry else {
+        return;
+    };
+    let by_id: BTreeMap<u64, &CurveUse> = arrangement
+        .sources
+        .iter()
+        .map(|u| (u.source.use_id, u))
+        .collect();
+    // Distinct input uses meeting at each vertex, with half indices
+    // for certificate resolution.
+    let mut vertex_uses: BTreeMap<usize, BTreeSet<u64>> = BTreeMap::new();
+    let mut vertex_halves: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (hi, half) in arrangement.half_edges.iter().enumerate() {
+        vertex_uses
+            .entry(half.from)
+            .or_default()
+            .insert(half.source.use_id);
+        vertex_uses
+            .entry(half.to)
+            .or_default()
+            .insert(half.source.use_id);
+        vertex_halves.entry(half.from).or_default().push(hi);
+        vertex_halves.entry(half.to).or_default().push(hi);
+    }
+    // Whether every incidence at a vertex carries one branch-cut
+    // certificate (a canonical subdivision with no event).
+    let is_branch_cut = |vertex: usize| -> bool {
+        let Some(halves) = vertex_halves.get(&vertex) else {
+            return false;
+        };
+        let mut cert = None;
+        for &hi in halves {
+            let half = &arrangement.half_edges[hi];
+            let Some(use_data) = by_id.get(&half.source.use_id) else {
+                return false;
+            };
+            let param = if half.from == vertex {
+                half.range[0]
+            } else {
+                half.range[1]
+            };
+            let mut found = None;
+            for side in 0..2 {
+                if param.total_cmp(&use_data.range[side]).is_eq() {
+                    found = Some(use_data.endpoints[side]);
+                    break;
+                }
+            }
+            let Some(cert_here) = found else {
+                return false;
+            };
+            if cert.is_none() {
+                cert = Some(cert_here);
+            }
+            if cert != Some(cert_here) {
+                return false;
+            }
+        }
+        cert.is_some_and(|c| inputs.branch_certs.contains(&c))
+    };
+    for half in arrangement.half_edges.iter().step_by(2) {
+        let Some(position) = half.source.source_edge_idx else {
+            continue;
+        };
+        let (Some(parent), Some(source)) =
+            (inputs.parents.get(position), by_id.get(&half.source.use_id))
+        else {
+            continue;
+        };
+        if !parent.is_section {
+            continue;
+        }
+        let Some(pave_block) = half.source.pave_block_id.or(parent.pave_block_id) else {
+            continue;
+        };
+        // Interior vertices where distinct uses meet: ends are shared
+        // events already, and single-use vertices are canonical
+        // subdivisions with no event for neighbors to share.
+        for (vertex, param) in [(half.from, half.range[0]), (half.to, half.range[1])] {
+            if param.total_cmp(&source.range[0]).is_eq()
+                || param.total_cmp(&source.range[1]).is_eq()
+            {
+                continue;
+            }
+            let Some(users) = vertex_uses.get(&vertex) else {
+                continue;
+            };
+            if users.len() < 2 || is_branch_cut(vertex) {
+                continue;
+            }
+            let uv = arrangement.vertices[vertex].uv;
+            let point = frame.evaluate(uv.x(), uv.y());
+            let entry = registry.entry(pave_block).or_default();
+            if !entry.contains(&point) {
+                entry.push(point);
+            }
         }
     }
 }
@@ -562,6 +725,15 @@ pub(super) fn emit_planar_subfaces(
 }
 
 /// Build one wire from a traced half-edge cycle, preserving order.
+///
+/// Consecutive halves of one use joined at a pass-through vertex merge
+/// into a single wire edge: the vertex carries no branch (exactly four
+/// incident halves of one use: the two pieces and their twins), so it is
+/// an artifact of cardinal subdivision, not a shared event. Merging
+/// restores established-like segmentation — split at crossings and
+/// endpoints only — so neighboring faces tessellate against identical
+/// boundary vertices instead of T-junctions. Vertices shared across
+/// uses (crossings, endpoints, section feet) never merge.
 fn emit_cycle_wire(
     inputs: &PlanarInputs,
     arrangement: &Arrangement,
@@ -570,40 +742,134 @@ fn emit_cycle_wire(
     context: &OperationContext,
 ) -> Result<Vec<OrientedPCurveEdge>, AlgoError> {
     let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
+    // Per-vertex incidence across the whole arrangement.
+    let mut incidence: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (hi, half) in arrangement.half_edges.iter().enumerate() {
+        incidence.entry(half.from).or_default().push(hi);
+        incidence.entry(half.to).or_default().push(hi);
+    }
+    // Certificate carried by one half-edge end at a vertex, if that end
+    // coincides with an input-use endpoint.
+    let end_cert = |half_idx: usize, at_from: bool| -> Option<u64> {
+        let half = &arrangement.half_edges[half_idx];
+        let use_data = carriers.get(&half.source.use_id)?;
+        let param = if at_from {
+            half.range[0]
+        } else {
+            half.range[1]
+        };
+        for side in 0..2 {
+            if param.total_cmp(&use_data.range[side]).is_eq() {
+                return Some(use_data.endpoints[side]);
+            }
+        }
+        None
+    };
+    let mergeable = |vertex: usize| -> bool {
+        let Some(halves) = incidence.get(&vertex) else {
+            return false;
+        };
+        // Branch-cut force merge below handles non-quad arity.
+        if halves.len() == 4 {
+            let use_id = arrangement.half_edges[halves[0]].source.use_id;
+            if halves
+                .iter()
+                .all(|h| arrangement.half_edges[*h].source.use_id == use_id)
+            {
+                let mut undirected: Vec<usize> = halves.iter().map(|h| h / 2).collect();
+                undirected.sort_unstable();
+                undirected.dedup();
+                if undirected.len() == 2 {
+                    return true;
+                }
+            }
+        }
+        // Canonical branch cuts mark no geometric event: merge across
+        // them whenever every incidence at the vertex carries that one
+        // branch certificate. A real event coinciding with the cut
+        // contributes foreign certificates and keeps the vertex.
+        let mut certs: Vec<u64> = Vec::new();
+        for &half_idx in halves {
+            let half = &arrangement.half_edges[half_idx];
+            let at_from = half.from == vertex;
+            let Some(cert) = end_cert(half_idx, at_from) else {
+                return false;
+            };
+            certs.push(cert);
+        }
+        certs.windows(2).all(|w| w[0] == w[1])
+            && certs
+                .first()
+                .is_some_and(|c| inputs.branch_certs.contains(c))
+    };
     let mut wire = Vec::with_capacity(cycle.len());
+    // Kept vertices break runs; mergeable pass-throughs do not. A use
+    // change always lands on a kept vertex (mixed incidence), so every
+    // run is single-use. Cyclic runs wrap past the cycle end.
+    let mut kept: Vec<bool> = Vec::with_capacity(cycle.len());
     for &half_idx in cycle {
         context.check_cancelled().map_err(cancelled)?;
-        let half = &arrangement.half_edges[half_idx];
-        wire.push(emit_wire_edge(
-            inputs,
-            arrangement,
-            carriers,
-            half,
-            context,
-        )?);
+        kept.push(!mergeable(arrangement.half_edges[half_idx].from));
+    }
+    let Some(first) = kept.iter().position(|k| *k) else {
+        // Whole cycle merges: one edge (single use by the merge rule).
+        if !cycle.is_empty() {
+            wire.push(emit_wire_run(
+                inputs,
+                arrangement,
+                carriers,
+                cycle,
+                context,
+            )?);
+        }
+        return Ok(wire);
+    };
+    // Kept boundaries in cyclic order starting at `first`, plus a
+    // sentinel one full turn on; each consecutive pair bounds a run.
+    let mut boundaries = vec![first];
+    for step in 1..cycle.len() {
+        let pos = (first + step) % cycle.len();
+        if kept[pos] {
+            boundaries.push(first + step);
+        }
+    }
+    boundaries.push(first + cycle.len());
+    for pair in boundaries.windows(2) {
+        context.check_cancelled().map_err(cancelled)?;
+        let run: Vec<usize> = (pair[0]..pair[1]).map(|k| cycle[k % cycle.len()]).collect();
+        if !run.is_empty() {
+            wire.push(emit_wire_run(inputs, arrangement, carriers, &run, context)?);
+        }
     }
     Ok(wire)
 }
 
-/// Build one production wire edge from an arrangement half-edge.
+/// Build one production wire edge from a run of same-use halves.
 ///
-/// Geometry comes from the half-edge's exact endpoints (3D) and chart
-/// vertices (UV); the carrier and lineage come from the originating
-/// input use. Circle sub-edges carry their exact native subspan with
-/// the traversal-oriented forward flag; lines carry no trim, matching
-/// production convention.
-fn emit_wire_edge(
+/// Geometry comes from the run's exact endpoints (3D) and chart vertices
+/// (UV); the carrier and lineage come from the originating input use.
+/// A single-half run is the common case; longer runs merge cardinal
+/// pass-throughs back into one exact subspan. Circle edges carry their
+/// exact native subspan with the traversal-oriented forward flag; lines
+/// carry no trim, matching production convention.
+#[allow(clippy::too_many_lines)]
+fn emit_wire_run(
     inputs: &PlanarInputs,
     arrangement: &Arrangement,
     carriers: &BTreeMap<u64, &CurveUse>,
-    half: &ArrangementHalfEdge,
+    run: &[usize],
     context: &OperationContext,
 ) -> Result<OrientedPCurveEdge, AlgoError> {
     let internal = |detail: &str| {
         AlgoError::FaceSplitFailed(format!("provenance arrangement emission failed: {detail}"))
     };
     let tolerance = context.tolerance.linear;
-    let position = half
+    let first = &arrangement.half_edges[*run.first().ok_or_else(|| internal("empty run"))?];
+    let last = &arrangement.half_edges[*run.last().ok_or_else(|| internal("empty run"))?];
+    if first.source.use_id != last.source.use_id {
+        return Err(internal(MIXED_USE_RUN));
+    }
+    let position = first
         .source
         .source_edge_idx
         .ok_or_else(|| internal("missing source index"))?;
@@ -612,10 +878,20 @@ fn emit_wire_edge(
         .get(position)
         .ok_or_else(|| internal("stale source index"))?;
     let carrier = carriers
-        .get(&half.source.use_id)
+        .get(&first.source.use_id)
         .ok_or_else(|| internal("stale use id"))?;
-    let start_uv = arrangement.vertices[half.from].uv;
-    let end_uv = arrangement.vertices[half.to].uv;
+    let start_uv = arrangement.vertices[first.from].uv;
+    let end_uv = arrangement.vertices[last.to].uv;
+    // Combined native subspan across the run, in traversal order. Runs
+    // are single-use by construction; every member is checked.
+    let mut source_span = first.source_range;
+    for &half_idx in &run[1..] {
+        let half = &arrangement.half_edges[half_idx];
+        if half.source.use_id != first.source.use_id {
+            return Err(internal(MIXED_USE_RUN));
+        }
+        source_span[1] = half.source_range[1];
+    }
     let (pcurve, trim, forward) = match &carrier.curve_3d {
         EdgeCurve::Line => {
             let direction = end_uv - start_uv;
@@ -631,14 +907,13 @@ fn emit_wire_edge(
             let Curve2D::Circle(_) = parent.pcurve else {
                 return Err(internal("circle sub-edge without circle pcurve"));
             };
-            let source_range = half.source_range;
-            if !source_range[0].is_finite() || !source_range[1].is_finite() {
+            if !source_span[0].is_finite() || !source_span[1].is_finite() {
                 return Err(internal("non-finite circle subspan"));
             }
             (
                 parent.pcurve.clone(),
-                Some((source_range[0], source_range[1])),
-                source_range[1] >= source_range[0],
+                Some((source_span[0], source_span[1])),
+                source_span[1] >= source_span[0],
             )
         }
         _ => return Err(internal("non-line/circle carrier")),
@@ -648,10 +923,18 @@ fn emit_wire_edge(
     // resolution never snaps a piece to its parent's unsplit endpoints.
     // Untouched uses pass through bitwise-identical, so exact comparison
     // is the correct untouched detector (not a tolerance comparison).
-    let full_span = same_interval(carrier.range, half.range)
-        && same_interval(carrier.source_range, half.source_range);
+    // A fully re-merged run recovers its parent span (either traversal
+    // orientation) and keeps the block.
+    let run_range = [first.range[0], last.range[1]];
+    let reversed = [run_range[1], run_range[0]];
+    let run_source = source_span;
+    let reversed_source = [source_span[1], source_span[0]];
+    let full_span = (same_interval(carrier.range, run_range)
+        && same_interval(carrier.source_range, run_source))
+        || (same_interval(carrier.range, reversed)
+            && same_interval(carrier.source_range, reversed_source));
     let pave_block_id = if full_span {
-        half.source.pave_block_id
+        first.source.pave_block_id
     } else {
         None
     };
@@ -660,8 +943,8 @@ fn emit_wire_edge(
     // time so a pairing bug fails here with provenance attached,
     // never as a silent weld or a far-away topology error.
     if let (EdgeCurve::Circle(circle), Some((t0, t1))) = (&carrier.curve_3d, trim) {
-        let start_ok = (circle.evaluate(t0) - half.endpoints_3d[0]).length() <= tolerance
-            && (circle.evaluate(t1) - half.endpoints_3d[1]).length() <= tolerance;
+        let start_ok = (circle.evaluate(t0) - first.endpoints_3d[0]).length() <= tolerance
+            && (circle.evaluate(t1) - last.endpoints_3d[1]).length() <= tolerance;
         if !start_ok {
             return Err(internal("circle subspan endpoints mismatch carrier"));
         }
@@ -672,10 +955,10 @@ fn emit_wire_edge(
         pcurve,
         start_uv,
         end_uv,
-        start_3d: half.endpoints_3d[0],
-        end_3d: half.endpoints_3d[1],
+        start_3d: first.endpoints_3d[0],
+        end_3d: last.endpoints_3d[1],
         forward,
-        source_edge_idx: half.source.source_edge_idx,
+        source_edge_idx: first.source.source_edge_idx,
         pave_block_id,
         source_topo_edge: parent.source_topo_edge,
     })
@@ -700,6 +983,8 @@ struct Collector<'a> {
     /// correspondence derivation.
     cert_positions: Vec<(Point3, u64)>,
     next_fresh: u64,
+    /// Certificates minted for canonical branch cuts.
+    branch_certs: BTreeSet<u64>,
 }
 
 impl<'a> Collector<'a> {
@@ -711,6 +996,7 @@ impl<'a> Collector<'a> {
             parents: Vec::new(),
             cert_positions: Vec::new(),
             next_fresh: u64::MAX,
+            branch_certs: BTreeSet::new(),
         }
     }
 
@@ -907,6 +1193,151 @@ impl<'a> Collector<'a> {
         cert
     }
 
+    /// Resolve interior concurrent line crossings: three or more line
+    /// uses meeting at one interior point would re-derive that event
+    /// once per pair, diverging by float noise and refusing as an
+    /// unresolvable near-miss. Splitting every involved use at its own
+    /// exact crossing parameter with one shared certificate turns the
+    /// cluster into certified ends, which the core's dust-twin adoption
+    /// merges into a single vertex. Returns `Ok(false)` for degenerate
+    /// clusters (an end near the cluster without its certificate);
+    /// circle-involved interior multiways stay deferred to the
+    /// established path.
+    fn resolve_line_concurrency(&mut self, context: &OperationContext) -> Result<bool, AlgoError> {
+        let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
+        // Exact transverse crossings between line uses.
+        let mut crossings: Vec<Crossing> = Vec::new();
+        for i in 0..self.uses.len() {
+            for j in i + 1..self.uses.len() {
+                context.check_cancelled().map_err(cancelled)?;
+                let (Some(ti), Some(tj), point) =
+                    line_crossing(&self.uses[i], &self.uses[j], self.tol)
+                else {
+                    continue;
+                };
+                crossings.push(Crossing {
+                    first: i,
+                    second: j,
+                    first_param: ti,
+                    second_param: tj,
+                    point,
+                });
+            }
+        }
+        // Deterministic greedy clustering within tolerance.
+        crossings.sort_by(|a, b| {
+            a.point
+                .x()
+                .total_cmp(&b.point.x())
+                .then(a.point.y().total_cmp(&b.point.y()))
+        });
+        let mut clusters: Vec<(Point2, Vec<(usize, f64)>)> = Vec::new();
+        for crossing in &crossings {
+            context.check_cancelled().map_err(cancelled)?;
+            let mut placed = false;
+            for (center, members) in &mut clusters {
+                if (*center - crossing.point).length() <= self.tol {
+                    members.push((crossing.first, crossing.first_param));
+                    members.push((crossing.second, crossing.second_param));
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                clusters.push((
+                    crossing.point,
+                    vec![
+                        (crossing.first, crossing.first_param),
+                        (crossing.second, crossing.second_param),
+                    ],
+                ));
+            }
+        }
+        // Only multi-use clusters need shared certificates; pairs are
+        // found exactly by the core with no duplicate computation.
+        let mut cuts: BTreeMap<usize, Vec<(f64, u64)>> = BTreeMap::new();
+        for (center, members) in &clusters {
+            context.check_cancelled().map_err(cancelled)?;
+            let mut distinct: Vec<usize> = members.iter().map(|(u, _)| *u).collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if distinct.len() < 3 {
+                continue;
+            }
+            // Adopt an authoritative certificate at the cluster point
+            // when one exists; otherwise mint a fresh one.
+            let mut cluster_cert = None;
+            for (position, cert) in &self.cert_positions {
+                if (self.frame.project(*position) - *center).length() <= self.tol {
+                    cluster_cert = Some(*cert);
+                    break;
+                }
+            }
+            let cluster_cert = cluster_cert.unwrap_or_else(|| self.fresh_cert());
+            // Degenerate near-coincidence (an end at the cluster without
+            // its certificate) defers rather than misbuilds.
+            for use_data in &self.uses {
+                for end in 0..2 {
+                    if use_data.endpoints[end] != cluster_cert
+                        && (eval_pcurve(use_data, use_data.range[end]) - *center).length()
+                            <= self.tol
+                    {
+                        return Ok(false);
+                    }
+                }
+            }
+            // Split every involved use at its own exact parameter (one
+            // split per use; same-event duplicates merge within
+            // roundoff, distinct crossings stay distinct).
+            let mut per_use: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+            for (idx, param) in members {
+                per_use.entry(*idx).or_default().push(*param);
+            }
+            for (idx, mut params) in per_use {
+                params.sort_by(f64::total_cmp);
+                let mut kept: Vec<f64> = Vec::new();
+                for param in params {
+                    if kept.last().is_none_or(|prev: &f64| {
+                        (self.uses[idx].pcurve.evaluate(param)
+                            - self.uses[idx].pcurve.evaluate(*prev))
+                        .length()
+                            > roundoff(self.uses[idx].pcurve.evaluate(param))
+                    }) {
+                        kept.push(param);
+                    }
+                }
+                for param in kept {
+                    cuts.entry(idx).or_default().push((param, cluster_cert));
+                }
+            }
+        }
+        if cuts.is_empty() {
+            return Ok(true);
+        }
+        self.apply_cuts(cuts)
+    }
+
+    /// Apply collected per-target cuts in ascending target order, tracking
+    /// the cumulative index shift that splitting inserts. A dust-scale
+    /// cut table defers the whole face (see [`Self::split_use_at`]).
+    fn apply_cuts(
+        &mut self,
+        mut cuts: BTreeMap<usize, Vec<(f64, u64)>>,
+    ) -> Result<bool, AlgoError> {
+        let targets: Vec<usize> = cuts.keys().copied().collect();
+        let mut shift = 0usize;
+        for target in targets {
+            let mut list = cuts.remove(&target).unwrap_or_default();
+            list.sort_by(|a, b| a.0.total_cmp(&b.0));
+            list.dedup_by(|a, b| (a.0 - b.0).abs() <= 1e-12);
+            if !self.split_use_at(target + shift, &list)? {
+                return Ok(false);
+            }
+            shift += list.len();
+        }
+        Ok(true)
+    }
+
     /// Split uses at section endpoints landing on another use's interior.
     ///
     /// The core refines exact pair crossings but never snaps: an endpoint
@@ -914,7 +1345,7 @@ impl<'a> Collector<'a> {
     /// join is therefore established here with a shared certificate and
     /// exact subspans; the core re-derives the same event and verifies the
     /// residual.
-    fn prejoin_endpoints(&mut self, context: &OperationContext) -> Result<(), AlgoError> {
+    fn prejoin_endpoints(&mut self, context: &OperationContext) -> Result<bool, AlgoError> {
         let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
         // Section endpoints in deterministic order.
         let mut endpoints: Vec<(usize, usize)> = Vec::new();
@@ -924,23 +1355,17 @@ impl<'a> Collector<'a> {
                 endpoints.push((idx, 1));
             }
         }
-        // (target use, parameter, shared cert).
-        let mut cuts: BTreeMap<usize, Vec<(f64, u64)>> = BTreeMap::new();
+        // Candidate splits: (target use, parameter, shared cert). End-end
+        // joining needs no action (certificates are already shared), but
+        // a joint sitting on a third use's interior must split that use
+        // too: otherwise the joint's incidences plus the third use's pair
+        // hit form an uncertified multiway the core must refuse. One
+        // split per (target, event): an event is one point, so further
+        // claims collapse onto the first.
+        let mut candidates: Vec<(usize, f64, u64)> = Vec::new();
         for (idx, side) in endpoints {
             context.check_cancelled().map_err(cancelled)?;
             let cert = self.uses[idx].endpoints[side];
-            // An endpoint sharing its certificate with any other use end
-            // is already joined — certificates are unique per event, so
-            // equality alone is the certificate (positions are verified
-            // by the core, not re-welded here).
-            let joined = self
-                .uses
-                .iter()
-                .enumerate()
-                .any(|(other_idx, other)| other_idx != idx && other.endpoints.contains(&cert));
-            if joined {
-                continue;
-            }
             let uv = eval_pcurve(&self.uses[idx], self.uses[idx].range[side]);
             for (other_idx, other) in self.uses.iter().enumerate() {
                 if other_idx == idx {
@@ -948,23 +1373,21 @@ impl<'a> Collector<'a> {
                 }
                 if let Some(parameter) = interior_parameter(other, uv, self.tol)
                     && !near_use_end(other, parameter, uv)
+                    && !candidates
+                        .iter()
+                        .any(|(t, _, c)| *t == other_idx && *c == cert)
                 {
-                    cuts.entry(other_idx).or_default().push((parameter, cert));
+                    candidates.push((other_idx, parameter, cert));
                 }
             }
         }
-        let targets: Vec<usize> = cuts.keys().copied().collect();
-        // Splits insert uses, shifting later targets: track the
-        // cumulative offset so every cut lands on its original target.
-        let mut shift = 0usize;
-        for target in targets {
-            let mut list = cuts.remove(&target).unwrap_or_default();
-            list.sort_by(|a, b| a.0.total_cmp(&b.0));
-            list.dedup_by(|a, b| (a.0 - b.0).abs() <= 1e-12);
-            self.split_use_at(target + shift, &list)?;
-            shift += list.len();
+        let mut cuts: BTreeMap<usize, Vec<(f64, u64)>> = BTreeMap::new();
+        for (target, parameter, cert) in candidates {
+            cuts.entry(target).or_default().push((parameter, cert));
         }
-        Ok(())
+        // Splits insert uses, shifting later targets: tracked centrally
+        // so every cut lands on its original target.
+        self.apply_cuts(cuts)
     }
 
     /// No section endpoint may dangle: every certificate appearing on a
@@ -1288,6 +1711,14 @@ impl<'a> Collector<'a> {
             ]
         };
         let cut_cert = self.fresh_cert();
+        if pieces_raw.len() == 2 {
+            // A genuine branch split (not the degenerate single-piece
+            // path): record the cut certificate so emission can merge
+            // across it. The cut marks no geometric event, so keeping it
+            // as a wire vertex would hand neighboring faces a
+            // T-junction there.
+            self.branch_certs.insert(cut_cert);
+        }
         let mut pieces = Vec::new();
         for (piece_idx, raw) in pieces_raw.iter().enumerate() {
             // Canonical window check: every piece must lie in `[0, 2π]`.
@@ -1349,9 +1780,16 @@ impl<'a> Collector<'a> {
     /// Split target use at the given interior parameters, sharing each
     /// cut's certificate. Source subspans divide affinely, which is exact
     /// for lines (fraction space) and circles (uniform angle motion).
-    fn split_use_at(&mut self, target: usize, cuts: &[(f64, u64)]) -> Result<(), AlgoError> {
+    /// Splits a use at interior cut parameters with shared certificates.
+    ///
+    /// Returns `Ok(false)` (defer to the established weld-based paths)
+    /// when two distinct cuts land within endpoint margin of each other:
+    /// near-coincident distinct events belong to tolerance welding, not
+    /// to exact subdivision. Only a truly inconsistent cut table is an
+    /// internal error.
+    fn split_use_at(&mut self, target: usize, cuts: &[(f64, u64)]) -> Result<bool, AlgoError> {
         if cuts.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         let parent = self.uses[target].clone();
         let parent_info = self.parents[target].clone();
@@ -1378,7 +1816,7 @@ impl<'a> Collector<'a> {
         for window in bounds.windows(2) {
             let (lo, hi) = (window[0], window[1]);
             if hi - lo <= END_MARGIN {
-                return Err(collect_failed(ArrangementError::OpenRegion));
+                return Ok(false);
             }
             let fraction = |t: f64| (t - parent.range[0]) / (parent.range[1] - parent.range[0]);
             let source_at = |t: f64| {
@@ -1417,7 +1855,7 @@ impl<'a> Collector<'a> {
         self.uses.splice(target..=target, pieces);
         self.parents.splice(target..=target, infos);
         self.renumber_uses();
-        Ok(())
+        Ok(true)
     }
 
     /// Restore use-id and source-edge-index consistency after splits.
@@ -1442,6 +1880,7 @@ impl<'a> Collector<'a> {
         Some(PlanarInputs {
             uses: self.uses,
             parents: self.parents,
+            branch_certs: self.branch_certs,
         })
     }
 }
@@ -1475,6 +1914,51 @@ fn same_interval(a: [f64; 2], b: [f64; 2]) -> bool {
 
 fn roundoff(p: Point2) -> f64 {
     64.0 * f64::EPSILON * (1.0 + p.x().abs() + p.y().abs())
+}
+
+/// Exact transverse crossing between two line uses, if their interiors
+/// meet transversely. Endpoint touches are not crossings (they already
+/// carry certificates); parallel and near-parallel pairs are skipped
+/// (the core's overlap handling owns them). Any exact solve will do:
+/// the core's dust-twin adoption absorbs float noise at certified ends.
+fn line_crossing(a: &CurveUse, b: &CurveUse, tol: f64) -> (Option<f64>, Option<f64>, Point2) {
+    let (Curve2D::Line(la), Curve2D::Line(lb)) = (&a.pcurve, &b.pcurve) else {
+        return (None, None, Point2::new(0.0, 0.0));
+    };
+    let (a0, a1) = (a.pcurve.evaluate(a.range[0]), a.pcurve.evaluate(a.range[1]));
+    let (b0, b1) = (b.pcurve.evaluate(b.range[0]), b.pcurve.evaluate(b.range[1]));
+    let ar = orient2d(a0, a1, b0);
+    let as_ = orient2d(a0, a1, b1);
+    let bp = orient2d(b0, b1, a0);
+    let bq = orient2d(b0, b1, a1);
+    // Strict straddle on both sides: transverse interior crossing.
+    let straddle_a = (ar > 0.0 && as_ < 0.0) || (ar < 0.0 && as_ > 0.0);
+    let straddle_b = (bp > 0.0 && bq < 0.0) || (bp < 0.0 && bq > 0.0);
+    if !straddle_a || !straddle_b {
+        return (None, None, Point2::new(0.0, 0.0));
+    }
+    let d = la.direction();
+    let e = lb.direction();
+    let den = d.x() * e.y() - d.y() * e.x();
+    if den.abs() < 1e-12 {
+        return (None, None, Point2::new(0.0, 0.0));
+    }
+    let delta = Point2::new(b0.x() - a0.x(), b0.y() - a0.y());
+    let ta = (delta.x() * e.y() - delta.y() * e.x()) / den;
+    let tb = (delta.x() * d.y() - delta.y() * d.x()) / den;
+    // Line2D parameters are arc-length from each pcurve origin, and
+    // every line pcurve is origin-based, so solve offsets are native
+    // parameters directly (even on split sub-pieces).
+    let (pa, pb) = (ta, tb);
+    let in_a = pa > a.range[0] + END_MARGIN && pa < a.range[1] - END_MARGIN;
+    let in_b = pb > b.range[0] + END_MARGIN && pb < b.range[1] - END_MARGIN;
+    if !in_a || !in_b {
+        return (None, None, Point2::new(0.0, 0.0));
+    }
+    if (la.evaluate(ta) - lb.evaluate(tb)).length() > tol {
+        return (None, None, Point2::new(0.0, 0.0));
+    }
+    (Some(pa), Some(pb), la.evaluate(ta))
 }
 
 /// Exact parameter where `point` meets `use_data`'s curve, if strictly
@@ -2232,6 +2716,496 @@ mod tests {
         assert_eq!(material_count(&arrangement), 1);
     }
 
+    fn established_boundary(
+        topo: &Topology,
+        face: FaceId,
+        frame: &PlaneFrame,
+    ) -> Vec<OrientedPCurveEdge> {
+        let face_data = topo.face(face).unwrap();
+        let wire_pts = super::super::collect_wire_points(topo, face_data.outer_wire());
+        super::super::conversion::boundary_edges_to_pcurve(
+            topo,
+            face_data.outer_wire(),
+            face_data.surface(),
+            &wire_pts,
+            Some(frame),
+        )
+        .unwrap()
+    }
+
+    fn established_crossing(
+        topo: &Topology,
+        face: FaceId,
+        sections: &[SectionEdge],
+        frame: &PlaneFrame,
+    ) -> Option<Vec<SplitSubFace>> {
+        let face_data = topo.face(face).unwrap();
+        let boundary = established_boundary(topo, face, frame);
+        super::super::special_cases::try_split_crossing_plane_face(
+            face_data.surface(),
+            &boundary,
+            sections,
+            Rank::A,
+            false,
+            face,
+            frame,
+            &Tolerance::default(),
+        )
+        .unwrap()
+    }
+
+    fn established_disk(
+        topo: &Topology,
+        face: FaceId,
+        sections: &[SectionEdge],
+        frame: &PlaneFrame,
+    ) -> Option<Vec<SplitSubFace>> {
+        let face_data = topo.face(face).unwrap();
+        let boundary = established_boundary(topo, face, frame);
+        super::super::special_cases::try_split_disk_by_chords(
+            face_data.surface(),
+            &boundary,
+            sections,
+            Rank::A,
+            false,
+            face,
+            frame,
+            Tolerance::default().linear,
+        )
+        .unwrap()
+    }
+
+    /// Split-level differential: same region count, same total area, and
+    /// matching region centroids (each side within tolerance). Areas are
+    /// measured through dense carrier sampling in the shared split frame,
+    /// so analytic arcs compare by their true geometry, not by chorded
+    /// polygons.
+    fn assert_same_partition(
+        label: &str,
+        new_faces: &[SplitSubFace],
+        old_faces: &[SplitSubFace],
+        frame: &PlaneFrame,
+        area_tol: f64,
+    ) {
+        assert_eq!(
+            new_faces.len(),
+            old_faces.len(),
+            "{label}: region count new={} old={}",
+            new_faces.len(),
+            old_faces.len()
+        );
+        let total = |faces: &[SplitSubFace]| {
+            faces
+                .iter()
+                .map(|s| sampled_wire_moments(&s.outer_wire, frame).0.abs())
+                .sum::<f64>()
+        };
+        let (new_total, old_total) = (total(new_faces), total(old_faces));
+        assert!(
+            (new_total - old_total).abs() <= area_tol,
+            "{label}: area new={new_total} old={old_total}"
+        );
+        // Dense area centroids converge regardless of how each side
+        // segments its arcs (cardinal splits, midpoint lens cuts).
+        let mut unmatched: Vec<Point2> = old_faces
+            .iter()
+            .map(|s| sampled_wire_moments(&s.outer_wire, frame).1)
+            .collect();
+        for sub in new_faces {
+            let center = sampled_wire_moments(&sub.outer_wire, frame).1;
+            let hit = unmatched
+                .iter()
+                .position(|o| (*o - center).length() <= 1e-4);
+            assert!(hit.is_some(), "{label}: unmatched new region at {center:?}");
+            unmatched.remove(hit.unwrap());
+        }
+    }
+
+    /// True UV area and area centroid of a wire by dense carrier sampling
+    /// (4096 per arc) in the shared split frame. Lines contribute
+    /// endpoints; circles are walked in traversal order through their
+    /// carried trim.
+    fn sampled_wire_moments(wire: &[OrientedPCurveEdge], frame: &PlaneFrame) -> (f64, Point2) {
+        const SAMPLES: usize = 4096;
+        let mut points: Vec<Point2> = Vec::new();
+        for edge in wire {
+            match &edge.curve_3d {
+                EdgeCurve::Line => {
+                    if points.is_empty() {
+                        points.push(edge.start_uv);
+                    }
+                    points.push(edge.end_uv);
+                }
+                EdgeCurve::Circle(circle) => {
+                    let Some((t0, t1)) = edge.trim else {
+                        if points.is_empty() {
+                            points.push(edge.start_uv);
+                        }
+                        points.push(edge.end_uv);
+                        continue;
+                    };
+                    // Traversal runs start to end: pick the trim direction
+                    // whose carrier endpoints reproduce them.
+                    let direct = (circle.evaluate(t0) - edge.start_3d).length()
+                        + (circle.evaluate(t1) - edge.end_3d).length();
+                    let reversed = (circle.evaluate(t0) - edge.end_3d).length()
+                        + (circle.evaluate(t1) - edge.start_3d).length();
+                    let (from, to) = if direct <= reversed {
+                        (t0, t1)
+                    } else {
+                        (t1, t0)
+                    };
+                    for k in 0..=SAMPLES {
+                        #[allow(clippy::cast_precision_loss)]
+                        let f = k as f64 / SAMPLES as f64;
+                        let p3 = circle.evaluate(from + (to - from) * f);
+                        points.push(frame.project(p3));
+                    }
+                }
+                _ => {
+                    if points.is_empty() {
+                        points.push(edge.start_uv);
+                    }
+                    points.push(edge.end_uv);
+                }
+            }
+        }
+        let mut area = 0.0;
+        let mut centroid = Point2::new(0.0, 0.0);
+        for pair in points.windows(2) {
+            let cross = pair[0].x() * pair[1].y() - pair[1].x() * pair[0].y();
+            area += cross;
+            centroid = Point2::new(
+                centroid.x() + (pair[0].x() + pair[1].x()) * cross,
+                centroid.y() + (pair[0].y() + pair[1].y()) * cross,
+            );
+        }
+        area *= 0.5;
+        if area.abs() > f64::EPSILON {
+            centroid = Point2::new(centroid.x() / (6.0 * area), centroid.y() / (6.0 * area));
+        }
+        (area, centroid)
+    }
+
+    #[test]
+    fn differential_x_matches_crossing_helper() {
+        let (topo, face) = square_topology(2.0);
+        let frame = plane_frame();
+        let sections = [
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0)),
+            line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
+        ];
+        let new_faces = split_emit(&topo, face, &sections).expect("adapter X");
+        let old_faces = established_crossing(&topo, face, &sections, &frame).expect("helper X");
+        assert_same_partition("X", &new_faces, &old_faces, &frame, 1e-9);
+    }
+
+    #[test]
+    fn differential_t_matches_crossing_helper() {
+        let (topo, face) = square_topology(2.0);
+        let frame = plane_frame();
+        let sections = [
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0)),
+            line_section(Point3::new(1.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
+        ];
+        let new_faces = split_emit(&topo, face, &sections).expect("adapter T");
+        let old_faces = established_crossing(&topo, face, &sections, &frame).expect("helper T");
+        assert_same_partition("T", &new_faces, &old_faces, &frame, 1e-9);
+    }
+
+    #[test]
+    fn differential_diameter_matches_disk_helper() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        let eid = topo.add_edge(edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let frame = plane_frame();
+        let sections = [line_section(
+            Point3::new(-2.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        )];
+        let new_faces = split_emit(&topo, face, &sections).expect("adapter diameter");
+        let old_faces = established_disk(&topo, face, &sections, &frame).expect("helper diameter");
+        assert_same_partition("diameter", &new_faces, &old_faces, &frame, 1e-6);
+    }
+
+    fn partition_signature(
+        topo: &Topology,
+        face: FaceId,
+        sections: &[SectionEdge],
+        frame: &PlaneFrame,
+    ) -> (usize, f64) {
+        let inputs = collect_planar_uses(
+            topo,
+            face,
+            sections,
+            Rank::A,
+            frame,
+            &Tolerance::default(),
+            &test_context(),
+        )
+        .unwrap()
+        .expect("qualified");
+        let arrangement = run(&inputs);
+        let count = arrangement.regions.iter().filter(|r| r.material).count();
+        let area: f64 = arrangement
+            .regions
+            .iter()
+            .filter(|r| r.material)
+            .map(|r| r.area)
+            .sum();
+        (count, area)
+    }
+
+    #[test]
+    fn section_permutations_and_reversals_agree() {
+        let (topo, face) = square_topology(2.0);
+        let frame = plane_frame();
+        let a = line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0));
+        let b = line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0));
+        let rev = |s: &SectionEdge| {
+            let mut r = s.clone();
+            std::mem::swap(&mut r.start, &mut r.end);
+            r
+        };
+        let variants = [
+            vec![a.clone(), b.clone()],
+            vec![b.clone(), a.clone()],
+            vec![rev(&a), b.clone()],
+            vec![a.clone(), rev(&b)],
+            vec![rev(&b), rev(&a)],
+        ];
+        for sections in &variants {
+            let (count, area) = partition_signature(&topo, face, sections, &frame);
+            assert_eq!(count, 4);
+            assert!((area - 4.0).abs() < 1e-9, "area {area}");
+        }
+    }
+
+    #[test]
+    fn rigid_placement_keeps_partition() {
+        use remus_math::mat::Mat4;
+        // Rotate 37 degrees about z and translate off-origin, including
+        // out of the z = 0 plane frame origin used elsewhere.
+        let rotation =
+            Mat4::rotation_z(0.645_771_823_237_901_9) * Mat4::translation(7.5, -3.25, 10.0);
+        let map = |p: Point3| rotation.mul_point(p);
+        let corners = [
+            map(Point3::new(0.0, 0.0, 0.0)),
+            map(Point3::new(2.0, 0.0, 0.0)),
+            map(Point3::new(2.0, 2.0, 0.0)),
+            map(Point3::new(0.0, 2.0, 0.0)),
+        ];
+        let mut topo = Topology::new();
+        let mut vids = Vec::new();
+        for corner in corners {
+            vids.push(topo.add_vertex(Vertex::new(corner, TOL)));
+        }
+        let mut edges = Vec::new();
+        for i in 0..4 {
+            edges.push(topo.add_edge(Edge::new(vids[i], vids[(i + 1) % 4], EdgeCurve::Line)));
+        }
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|e| OrientedEdge::new(*e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane { normal, d: 10.0 },
+        ));
+        let wire_pts =
+            super::super::collect_wire_points(&topo, topo.face(face).unwrap().outer_wire());
+        let frame = PlaneFrame::from_plane_face(normal, &wire_pts);
+        let sections = [
+            line_section(
+                map(Point3::new(1.0, 0.0, 0.0)),
+                map(Point3::new(1.0, 2.0, 0.0)),
+            ),
+            line_section(
+                map(Point3::new(0.0, 1.0, 0.0)),
+                map(Point3::new(2.0, 1.0, 0.0)),
+            ),
+        ];
+        let (count, area) = partition_signature(&topo, face, &sections, &frame);
+        assert_eq!(count, 4);
+        assert!((area - 4.0).abs() < 1e-9, "area {area}");
+    }
+
+    #[test]
+    fn scale_keeps_partition_topology() {
+        for scale in [1e-3, 1e3] {
+            let (mut topo, _) = (Topology::new(), None::<FaceId>);
+            let corners = [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0 * scale, 0.0, 0.0),
+                Point3::new(2.0 * scale, 2.0 * scale, 0.0),
+                Point3::new(0.0, 2.0 * scale, 0.0),
+            ];
+            let mut vids = Vec::new();
+            for corner in corners {
+                vids.push(topo.add_vertex(Vertex::new(corner, TOL)));
+            }
+            let mut edges = Vec::new();
+            for i in 0..4 {
+                edges.push(topo.add_edge(Edge::new(vids[i], vids[(i + 1) % 4], EdgeCurve::Line)));
+            }
+            let wire = topo.add_wire(
+                Wire::new(
+                    edges.iter().map(|e| OrientedEdge::new(*e, true)).collect(),
+                    true,
+                )
+                .unwrap(),
+            );
+            let face = topo.add_face(Face::new(
+                wire,
+                Vec::new(),
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let sections = [
+                line_section(
+                    Point3::new(1.0 * scale, 0.0, 0.0),
+                    Point3::new(1.0 * scale, 2.0 * scale, 0.0),
+                ),
+                line_section(
+                    Point3::new(0.0, 1.0 * scale, 0.0),
+                    Point3::new(2.0 * scale, 1.0 * scale, 0.0),
+                ),
+            ];
+            let (count, area) = partition_signature(&topo, face, &sections, &plane_frame());
+            assert_eq!(count, 4, "scale {scale}");
+            assert!(
+                (area - 4.0 * scale * scale).abs() < 1e-6 * scale * scale,
+                "scale {scale} area {area}"
+            );
+        }
+    }
+
+    #[test]
+    fn thin_retained_strip_survives() {
+        let (topo, face) = square_topology(2.0);
+        let frame = plane_frame();
+        // Two full-width sections a micron apart: the strip between them
+        // is retained whole, not welded away.
+        let sections = [
+            line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
+            line_section(
+                Point3::new(0.0, 1.0 + 1e-6, 0.0),
+                Point3::new(2.0, 1.0 + 1e-6, 0.0),
+            ),
+        ];
+        let (count, area) = partition_signature(&topo, face, &sections, &frame);
+        assert_eq!(count, 3);
+        assert!((area - 4.0).abs() < 1e-9, "area {area}");
+        let inputs = collect(&topo, face, &sections).expect("qualified thin");
+        let arrangement = run(&inputs);
+        let mut areas: Vec<f64> = arrangement
+            .regions
+            .iter()
+            .filter(|r| r.material)
+            .map(|r| r.area)
+            .collect();
+        areas.sort_by(f64::total_cmp);
+        assert!((areas[0] - 2e-6).abs() < 2e-6 * 0.01 + 1e-12, "{areas:?}");
+    }
+
+    #[test]
+    fn reversed_wire_traversal_agrees() {
+        // Same square traversed clockwise instead of counter-clockwise.
+        let mut topo = Topology::new();
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        let mut vids = Vec::new();
+        for corner in corners {
+            vids.push(topo.add_vertex(Vertex::new(corner, TOL)));
+        }
+        let mut edges = Vec::new();
+        for i in 0..4 {
+            edges.push(topo.add_edge(Edge::new(vids[i], vids[(i + 1) % 4], EdgeCurve::Line)));
+        }
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|e| OrientedEdge::new(*e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let frame = plane_frame();
+        let sections = [
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0)),
+            line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)),
+        ];
+        let (count, area) = partition_signature(&topo, face, &sections, &frame);
+        assert_eq!(count, 4);
+        assert!((area - 4.0).abs() < 1e-9, "area {area}");
+    }
+
+    #[test]
+    fn three_section_star_extends_beyond_helper() {
+        // Three lines through the center at 60 degrees: the established
+        // crossing helper handles two or four sections only and defers
+        // (None). The arrangement partitions all six slices; each is
+        // verified against its closed-form area.
+        use std::f64::consts::PI;
+        let (topo, face) = square_topology(2.0);
+        let frame = plane_frame();
+        let center = Point3::new(1.0, 1.0, 0.0);
+        let mut sections = Vec::new();
+        for k in 0..3 {
+            let angle = k as f64 * PI / 3.0;
+            let dir = Point3::new(angle.cos(), angle.sin(), 0.0);
+            sections.push(line_section(
+                Point3::new(center.x() - dir.x() * 2.0, center.y() - dir.y() * 2.0, 0.0),
+                Point3::new(center.x() + dir.x() * 2.0, center.y() + dir.y() * 2.0, 0.0),
+            ));
+        }
+        // Clip to the square like production does: keep the in-square span.
+        let clipped: Vec<SectionEdge> = sections
+            .iter()
+            .map(|s| {
+                let clip =
+                    |p: Point3| Point3::new(p.x().clamp(0.0, 2.0), p.y().clamp(0.0, 2.0), 0.0);
+                line_section(clip(s.start), clip(s.end))
+            })
+            .collect();
+        let helper = established_crossing(&topo, face, &clipped, &frame);
+        assert!(helper.is_none(), "helper owns two/four-section stars only");
+        let (count, area) = partition_signature(&topo, face, &clipped, &frame);
+        assert_eq!(count, 6);
+        assert!((area - 4.0).abs() < 1e-9, "area {area}");
+    }
+
     fn split_emit(
         topo: &Topology,
         face: FaceId,
@@ -2245,6 +3219,7 @@ mod tests {
             &plane_frame(),
             &Tolerance::default(),
             &test_context(),
+            None,
         )
         .unwrap()
     }
@@ -2500,6 +3475,7 @@ mod tests {
             &plane_frame(),
             &Tolerance::default(),
             &test_context(),
+            None,
         )
         .unwrap();
         assert!(

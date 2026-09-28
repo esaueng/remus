@@ -7633,36 +7633,6 @@ fn split_face_2d_impl(
         return Ok(result);
     }
 
-    // Provenance-preserving planar arrangement (O2.3c/d). Qualified
-    // line/circle faces route through the exact-event core, which refines
-    // crossings analytically and emits with source provenance instead of
-    // chord-quantized identity. Single-section faces stay on the
-    // established paths (the greedy walk owns plain dividers; the
-    // internal-loops path owns contractible rings). Out-of-domain inputs
-    // (`None`) fall through to the special cases below; a refusal on
-    // qualified input (`Err`) is an internal error and propagates — it
-    // never degrades into an unsplit face or a fallback. Adoption mirrors
-    // the adjacent gates: strictly more regions than the wire builder, or
-    // a demonstrably broken greedy trace.
-    if sections.len() >= 2 && is_plane && !holes_integrated && original_inner_wires.is_empty() {
-        let greedy_broken_here = wire_loops_self_cross(&loops, tol.linear)
-            || greedy_outer_loops_nested(&loops, cw_loops)
-            || wire_loops_have_degenerate_area(&loops, tol.linear);
-        match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
-            topo, face_id, sections, rank, frame, tol, context,
-        )? {
-            Some(result) if result.len() > loops.len() || greedy_broken_here => {
-                log::debug!(
-                    "split_face_2d: face {face_id:?} routed to provenance arrangement ({} regions vs {})",
-                    result.len(),
-                    loops.len()
-                );
-                return Ok(result);
-            }
-            Some(_) | None => {}
-        }
-    }
-
     // Geometric crossing/T-junction split. The wire builder under-partitions
     // a plane face whose two sections cross (X, 4 regions) or meet in a T (one
     // section's endpoint mid-way on the other, 3 regions): it merges everything
@@ -7737,7 +7707,7 @@ fn split_face_2d_impl(
             face_id,
             frame,
             tol.linear,
-            split_registry,
+            split_registry.as_deref_mut(),
         )?;
         // Sections can trace bounded regions outside the source face. With an
         // exact polygon boundary, retain only regions whose interior belongs
@@ -7767,6 +7737,56 @@ fn split_face_2d_impl(
                 || wire_loops_have_degenerate_area(&loops, tol.linear))
         {
             return Ok(result);
+        }
+    }
+
+    // Provenance-preserving planar arrangement (O2.3c/d), last resort.
+    // Qualified line/circle faces route through the exact-event core only
+    // after every established plane path (crossing, disk, general
+    // arrangement) declines them: those paths produce mesh-coordinated
+    // outputs the downstream tessellator is calibrated on, while the
+    // exact arrangement is reserved for faces no established splitter
+    // can partition. Single-section faces stay on the established paths
+    // (the greedy walk owns plain dividers; the internal-loops path owns
+    // contractible rings). Out-of-domain inputs (`None`) keep the greedy
+    // loops; geometric refusals (tangent/overlap contacts, unrefinable
+    // grazing crossings) likewise decline, while any other refusal on
+    // qualified input (`Err`) is an internal error
+    // and propagates — it never degrades into an unsplit face or a
+    // fallback. Adoption mirrors the adjacent gates: strictly more
+    // regions than the wire builder, or a demonstrably broken greedy
+    // trace.
+    if sections.len() >= 2 && is_plane && !holes_integrated && original_inner_wires.is_empty() {
+        let greedy_broken_here = wire_loops_self_cross(&loops, tol.linear)
+            || greedy_outer_loops_nested(&loops, cw_loops)
+            || wire_loops_have_degenerate_area(&loops, tol.linear);
+        // Section breaks stage locally: the registry promises faces split
+        // at the recorded points, so breaks commit only when this
+        // arrangement is adopted. Recording a discarded arrangement would
+        // hand curved neighbors splits the plane side never took.
+        let mut staged_breaks = std::collections::HashMap::new();
+        match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
+            topo,
+            face_id,
+            sections,
+            rank,
+            frame,
+            tol,
+            context,
+            Some(&mut staged_breaks),
+        )? {
+            Some(result) if result.len() > loops.len() || greedy_broken_here => {
+                log::debug!(
+                    "split_face_2d: face {face_id:?} routed to provenance arrangement ({} regions vs {})",
+                    result.len(),
+                    loops.len()
+                );
+                if let Some(reg) = split_registry.as_mut() {
+                    reg.extend(staged_breaks);
+                }
+                return Ok(result);
+            }
+            Some(_) | None => {}
         }
     }
 
