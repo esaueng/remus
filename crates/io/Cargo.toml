@@ -37,5 +37,9 @@ remus-topology = {workspace = true, features = ["test-utils"]}
 harness = false
 name = "nurbs_properties"
 
+[[bench]]
+harness = false
+name = "step_import"
+
 [lints]
 workspace = true
