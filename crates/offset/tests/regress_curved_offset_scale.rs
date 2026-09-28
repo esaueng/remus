@@ -41,12 +41,6 @@ use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
-/// Scales under test: the historically qualified band, the transition zone
-/// around the old absolute window (`v = 100` falls at `r ≈ 45` for the
-/// outward cylinder and `r ≈ 37` for the cone), and the newly supported
-/// large scales.
-const SCALES: [f64; 9] = [1e-3, 1.0, 10.0, 30.0, 45.0, 50.0, 60.0, 100.0, 1000.0];
-
 fn placements(scale: f64) -> [Mat4; 2] {
     [
         Mat4::identity(),
@@ -229,7 +223,9 @@ fn curved_offsets_succeed_up_to_ten_units() {
 }
 
 /// B55 acceptance: the same bodies through the old refusal band and beyond,
-/// both offset directions, at the origin and under a rigid placement.
+/// both offset directions, at the origin and under a rigid placement. The
+/// 30/45/50/60 scales bracket the old absolute window (`v = 100` falls at
+/// `r ≈ 45` for the outward cylinder and `r ≈ 37` for the cone).
 #[test]
 fn curved_offsets_succeed_at_large_scale() {
     for scale in [30.0, 45.0, 50.0, 60.0, 100.0, 1000.0] {
