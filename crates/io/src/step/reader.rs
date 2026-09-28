@@ -356,69 +356,550 @@ fn read_step_impl(
 
 // ── Parsing ─────────────────────────────────────────────────────────
 
+/// Compact tag for a STEP entity type.
+///
+/// The tag is computed once at index time from the file's own type text,
+/// without heap-allocating an uppercased copy per entity. Case handling is
+/// preserved: classification is ASCII case-insensitive, so `plane`, `PLANE`
+/// and `Plane` all map to the same tag. The original spelling is retained in
+/// [`StepEntity::type_raw`] for diagnostics, and unknown types keep their raw
+/// text so an [`IoError::UnsupportedEntity`] still names the file's own token
+/// (uppercased only at error construction, once per failure, not once per
+/// entity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum EntityKind {
+    AdvancedBrepShapeRepresentation,
+    AdvancedFace,
+    AreaUnit,
+    Axis1Placement,
+    Axis2Placement2d,
+    Axis2Placement3d,
+    BoundedSurface,
+    BrepWithVoids,
+    BSplineCurve,
+    BSplineCurveWithKnots,
+    BSplineSurface,
+    BSplineSurfaceWithKnots,
+    CartesianPoint,
+    Circle,
+    ClosedShell,
+    ConicalSurface,
+    ConversionBasedUnit,
+    CylindricalSurface,
+    DefinitionalRepresentation,
+    DegenerateToroidalSurface,
+    DerivedUnitElement,
+    Direction,
+    EdgeCurve,
+    EdgeLoop,
+    Ellipse,
+    FaceBound,
+    FaceOuterBound,
+    GeometricRepresentationContext,
+    GlobalUncertaintyAssignedContext,
+    GlobalUnitAssignedContext,
+    Hyperbola,
+    IntersectionCurve,
+    ItemDefinedTransformation,
+    LengthMeasureWithUnit,
+    LengthUnit,
+    Line,
+    ManifoldSolidBrep,
+    MeasureRepresentationItem,
+    MeasureWithUnit,
+    OpenShell,
+    OrientedClosedShell,
+    OrientedEdge,
+    Parabola,
+    Pcurve,
+    Plane,
+    PlaneAngleUnit,
+    Polyline,
+    PropertyDefinition,
+    PropertyDefinitionRepresentation,
+    RationalBSplineCurve,
+    RationalBSplineSurface,
+    Representation,
+    RepresentationItem,
+    RepresentationRelationship,
+    RepresentationRelationshipWithTransformation,
+    SeamCurve,
+    ShapeAspect,
+    ShapeDefinitionRepresentation,
+    ShapeRepresentation,
+    ShapeRepresentationRelationship,
+    ShellBasedSurfaceModel,
+    SiUnit,
+    SphericalSurface,
+    SurfaceCurve,
+    SurfaceOfLinearExtrusion,
+    SurfaceOfRevolution,
+    ToroidalSurface,
+    TrimmedCurve,
+    UncertaintyMeasureWithUnit,
+    Vector,
+    VertexPoint,
+    VolumeUnit,
+    VolumeMeasure,
+    AreaMeasure,
+    /// A complex (composite) instance: `#id = ( A(...) B(...) ... )`.
+    /// The statement opens straight into a parenthesis, so there is no
+    /// single type token.
+    Complex,
+    /// Any other simple type. The raw token is kept in
+    /// [`StepEntity::type_raw`] for error messages.
+    Unknown,
+}
+
+impl EntityKind {
+    /// Canonical uppercase spelling for diagnostics and error construction.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AdvancedBrepShapeRepresentation => "ADVANCED_BREP_SHAPE_REPRESENTATION",
+            Self::AdvancedFace => "ADVANCED_FACE",
+            Self::AreaUnit => "AREA_UNIT",
+            Self::Axis1Placement => "AXIS1_PLACEMENT",
+            Self::Axis2Placement2d => "AXIS2_PLACEMENT_2D",
+            Self::Axis2Placement3d => "AXIS2_PLACEMENT_3D",
+            Self::BoundedSurface => "BOUNDED_SURFACE",
+            Self::BrepWithVoids => "BREP_WITH_VOIDS",
+            Self::BSplineCurve => "B_SPLINE_CURVE",
+            Self::BSplineCurveWithKnots => "B_SPLINE_CURVE_WITH_KNOTS",
+            Self::BSplineSurface => "B_SPLINE_SURFACE",
+            Self::BSplineSurfaceWithKnots => "B_SPLINE_SURFACE_WITH_KNOTS",
+            Self::CartesianPoint => "CARTESIAN_POINT",
+            Self::Circle => "CIRCLE",
+            Self::ClosedShell => "CLOSED_SHELL",
+            Self::ConicalSurface => "CONICAL_SURFACE",
+            Self::ConversionBasedUnit => "CONVERSION_BASED_UNIT",
+            Self::CylindricalSurface => "CYLINDRICAL_SURFACE",
+            Self::DefinitionalRepresentation => "DEFINITIONAL_REPRESENTATION",
+            Self::DegenerateToroidalSurface => "DEGENERATE_TOROIDAL_SURFACE",
+            Self::DerivedUnitElement => "DERIVED_UNIT_ELEMENT",
+            Self::Direction => "DIRECTION",
+            Self::EdgeCurve => "EDGE_CURVE",
+            Self::EdgeLoop => "EDGE_LOOP",
+            Self::Ellipse => "ELLIPSE",
+            Self::FaceBound => "FACE_BOUND",
+            Self::FaceOuterBound => "FACE_OUTER_BOUND",
+            Self::GeometricRepresentationContext => "GEOMETRIC_REPRESENTATION_CONTEXT",
+            Self::GlobalUncertaintyAssignedContext => "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT",
+            Self::GlobalUnitAssignedContext => "GLOBAL_UNIT_ASSIGNED_CONTEXT",
+            Self::Hyperbola => "HYPERBOLA",
+            Self::IntersectionCurve => "INTERSECTION_CURVE",
+            Self::ItemDefinedTransformation => "ITEM_DEFINED_TRANSFORMATION",
+            Self::LengthMeasureWithUnit => "LENGTH_MEASURE_WITH_UNIT",
+            Self::LengthUnit => "LENGTH_UNIT",
+            Self::Line => "LINE",
+            Self::ManifoldSolidBrep => "MANIFOLD_SOLID_BREP",
+            Self::MeasureRepresentationItem => "MEASURE_REPRESENTATION_ITEM",
+            Self::MeasureWithUnit => "MEASURE_WITH_UNIT",
+            Self::OpenShell => "OPEN_SHELL",
+            Self::OrientedClosedShell => "ORIENTED_CLOSED_SHELL",
+            Self::OrientedEdge => "ORIENTED_EDGE",
+            Self::Parabola => "PARABOLA",
+            Self::Pcurve => "PCURVE",
+            Self::Plane => "PLANE",
+            Self::PlaneAngleUnit => "PLANE_ANGLE_UNIT",
+            Self::Polyline => "POLYLINE",
+            Self::PropertyDefinition => "PROPERTY_DEFINITION",
+            Self::PropertyDefinitionRepresentation => "PROPERTY_DEFINITION_REPRESENTATION",
+            Self::RationalBSplineCurve => "RATIONAL_B_SPLINE_CURVE",
+            Self::RationalBSplineSurface => "RATIONAL_B_SPLINE_SURFACE",
+            Self::Representation => "REPRESENTATION",
+            Self::RepresentationItem => "REPRESENTATION_ITEM",
+            Self::RepresentationRelationship => "REPRESENTATION_RELATIONSHIP",
+            Self::RepresentationRelationshipWithTransformation => {
+                "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"
+            }
+            Self::SeamCurve => "SEAM_CURVE",
+            Self::ShapeAspect => "SHAPE_ASPECT",
+            Self::ShapeDefinitionRepresentation => "SHAPE_DEFINITION_REPRESENTATION",
+            Self::ShapeRepresentation => "SHAPE_REPRESENTATION",
+            Self::ShapeRepresentationRelationship => "SHAPE_REPRESENTATION_RELATIONSHIP",
+            Self::ShellBasedSurfaceModel => "SHELL_BASED_SURFACE_MODEL",
+            Self::SiUnit => "SI_UNIT",
+            Self::SphericalSurface => "SPHERICAL_SURFACE",
+            Self::SurfaceCurve => "SURFACE_CURVE",
+            Self::SurfaceOfLinearExtrusion => "SURFACE_OF_LINEAR_EXTRUSION",
+            Self::SurfaceOfRevolution => "SURFACE_OF_REVOLUTION",
+            Self::ToroidalSurface => "TOROIDAL_SURFACE",
+            Self::TrimmedCurve => "TRIMMED_CURVE",
+            Self::UncertaintyMeasureWithUnit => "UNCERTAINTY_MEASURE_WITH_UNIT",
+            Self::Vector => "VECTOR",
+            Self::VertexPoint => "VERTEX_POINT",
+            Self::VolumeUnit => "VOLUME_UNIT",
+            Self::VolumeMeasure => "VOLUME_MEASURE",
+            Self::AreaMeasure => "AREA_MEASURE",
+            Self::Complex => "",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+/// Classify a trimmed STEP type token without heap allocation.
+///
+/// The fast path matches the canonical uppercase spelling directly, which is
+/// what real writers emit. Mixed-case tokens fall back to a stack-buffer
+/// ASCII-uppercase comparison, so `plane` still imports as a plane. Anything
+/// else (including an overlong token) is [`EntityKind::Unknown`]; an empty
+/// token marks a complex instance.
+fn classify_entity_type(raw: &str) -> EntityKind {
+    if raw.is_empty() {
+        return EntityKind::Complex;
+    }
+    // Fast path: canonical uppercase, no conversion.
+    let fast = match raw {
+        "ADVANCED_BREP_SHAPE_REPRESENTATION" => Some(EntityKind::AdvancedBrepShapeRepresentation),
+        "ADVANCED_FACE" => Some(EntityKind::AdvancedFace),
+        "AREA_UNIT" => Some(EntityKind::AreaUnit),
+        "AXIS1_PLACEMENT" => Some(EntityKind::Axis1Placement),
+        "AXIS2_PLACEMENT_2D" => Some(EntityKind::Axis2Placement2d),
+        "AXIS2_PLACEMENT_3D" => Some(EntityKind::Axis2Placement3d),
+        "BOUNDED_SURFACE" => Some(EntityKind::BoundedSurface),
+        "BREP_WITH_VOIDS" => Some(EntityKind::BrepWithVoids),
+        "B_SPLINE_CURVE" => Some(EntityKind::BSplineCurve),
+        "B_SPLINE_CURVE_WITH_KNOTS" => Some(EntityKind::BSplineCurveWithKnots),
+        "B_SPLINE_SURFACE" => Some(EntityKind::BSplineSurface),
+        "B_SPLINE_SURFACE_WITH_KNOTS" => Some(EntityKind::BSplineSurfaceWithKnots),
+        "CARTESIAN_POINT" => Some(EntityKind::CartesianPoint),
+        "CIRCLE" => Some(EntityKind::Circle),
+        "CLOSED_SHELL" => Some(EntityKind::ClosedShell),
+        "CONICAL_SURFACE" => Some(EntityKind::ConicalSurface),
+        "CONVERSION_BASED_UNIT" => Some(EntityKind::ConversionBasedUnit),
+        "CYLINDRICAL_SURFACE" => Some(EntityKind::CylindricalSurface),
+        "DEFINITIONAL_REPRESENTATION" => Some(EntityKind::DefinitionalRepresentation),
+        "DEGENERATE_TOROIDAL_SURFACE" => Some(EntityKind::DegenerateToroidalSurface),
+        "DERIVED_UNIT_ELEMENT" => Some(EntityKind::DerivedUnitElement),
+        "DIRECTION" => Some(EntityKind::Direction),
+        "EDGE_CURVE" => Some(EntityKind::EdgeCurve),
+        "EDGE_LOOP" => Some(EntityKind::EdgeLoop),
+        "ELLIPSE" => Some(EntityKind::Ellipse),
+        "FACE_BOUND" => Some(EntityKind::FaceBound),
+        "FACE_OUTER_BOUND" => Some(EntityKind::FaceOuterBound),
+        "GEOMETRIC_REPRESENTATION_CONTEXT" => Some(EntityKind::GeometricRepresentationContext),
+        "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT" => Some(EntityKind::GlobalUncertaintyAssignedContext),
+        "GLOBAL_UNIT_ASSIGNED_CONTEXT" => Some(EntityKind::GlobalUnitAssignedContext),
+        "HYPERBOLA" => Some(EntityKind::Hyperbola),
+        "INTERSECTION_CURVE" => Some(EntityKind::IntersectionCurve),
+        "ITEM_DEFINED_TRANSFORMATION" => Some(EntityKind::ItemDefinedTransformation),
+        "LENGTH_MEASURE_WITH_UNIT" => Some(EntityKind::LengthMeasureWithUnit),
+        "LENGTH_UNIT" => Some(EntityKind::LengthUnit),
+        "LINE" => Some(EntityKind::Line),
+        "MANIFOLD_SOLID_BREP" => Some(EntityKind::ManifoldSolidBrep),
+        "MEASURE_REPRESENTATION_ITEM" => Some(EntityKind::MeasureRepresentationItem),
+        "MEASURE_WITH_UNIT" => Some(EntityKind::MeasureWithUnit),
+        "OPEN_SHELL" => Some(EntityKind::OpenShell),
+        "ORIENTED_CLOSED_SHELL" => Some(EntityKind::OrientedClosedShell),
+        "ORIENTED_EDGE" => Some(EntityKind::OrientedEdge),
+        "PARABOLA" => Some(EntityKind::Parabola),
+        "PCURVE" => Some(EntityKind::Pcurve),
+        "PLANE" => Some(EntityKind::Plane),
+        "PLANE_ANGLE_UNIT" => Some(EntityKind::PlaneAngleUnit),
+        "POLYLINE" => Some(EntityKind::Polyline),
+        "PROPERTY_DEFINITION" => Some(EntityKind::PropertyDefinition),
+        "PROPERTY_DEFINITION_REPRESENTATION" => Some(EntityKind::PropertyDefinitionRepresentation),
+        "RATIONAL_B_SPLINE_CURVE" => Some(EntityKind::RationalBSplineCurve),
+        "RATIONAL_B_SPLINE_SURFACE" => Some(EntityKind::RationalBSplineSurface),
+        "REPRESENTATION" => Some(EntityKind::Representation),
+        "REPRESENTATION_ITEM" => Some(EntityKind::RepresentationItem),
+        "REPRESENTATION_RELATIONSHIP" => Some(EntityKind::RepresentationRelationship),
+        "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" => {
+            Some(EntityKind::RepresentationRelationshipWithTransformation)
+        }
+        "SEAM_CURVE" => Some(EntityKind::SeamCurve),
+        "SHAPE_ASPECT" => Some(EntityKind::ShapeAspect),
+        "SHAPE_DEFINITION_REPRESENTATION" => Some(EntityKind::ShapeDefinitionRepresentation),
+        "SHAPE_REPRESENTATION" => Some(EntityKind::ShapeRepresentation),
+        "SHAPE_REPRESENTATION_RELATIONSHIP" => Some(EntityKind::ShapeRepresentationRelationship),
+        "SHELL_BASED_SURFACE_MODEL" => Some(EntityKind::ShellBasedSurfaceModel),
+        "SI_UNIT" => Some(EntityKind::SiUnit),
+        "SPHERICAL_SURFACE" => Some(EntityKind::SphericalSurface),
+        "SURFACE_CURVE" => Some(EntityKind::SurfaceCurve),
+        "SURFACE_OF_LINEAR_EXTRUSION" => Some(EntityKind::SurfaceOfLinearExtrusion),
+        "SURFACE_OF_REVOLUTION" => Some(EntityKind::SurfaceOfRevolution),
+        "TOROIDAL_SURFACE" => Some(EntityKind::ToroidalSurface),
+        "TRIMMED_CURVE" => Some(EntityKind::TrimmedCurve),
+        "UNCERTAINTY_MEASURE_WITH_UNIT" => Some(EntityKind::UncertaintyMeasureWithUnit),
+        "VECTOR" => Some(EntityKind::Vector),
+        "VERTEX_POINT" => Some(EntityKind::VertexPoint),
+        "VOLUME_UNIT" => Some(EntityKind::VolumeUnit),
+        "VOLUME_MEASURE" => Some(EntityKind::VolumeMeasure),
+        "AREA_MEASURE" => Some(EntityKind::AreaMeasure),
+        _ => None,
+    };
+    if let Some(kind) = fast {
+        return kind;
+    }
+    // Slow path: ASCII case-insensitive via a stack buffer. Tokens longer
+    // than the buffer cannot be known STEP types.
+    if raw.len() > 64 {
+        return EntityKind::Unknown;
+    }
+    let mut buf = [0u8; 64];
+    for (i, b) in raw.bytes().enumerate() {
+        buf[i] = if b.is_ascii_lowercase() {
+            b.to_ascii_uppercase()
+        } else {
+            b
+        };
+    }
+    match &buf[..raw.len()] {
+        b"ADVANCED_BREP_SHAPE_REPRESENTATION" => EntityKind::AdvancedBrepShapeRepresentation,
+        b"ADVANCED_FACE" => EntityKind::AdvancedFace,
+        b"AREA_UNIT" => EntityKind::AreaUnit,
+        b"AXIS1_PLACEMENT" => EntityKind::Axis1Placement,
+        b"AXIS2_PLACEMENT_2D" => EntityKind::Axis2Placement2d,
+        b"AXIS2_PLACEMENT_3D" => EntityKind::Axis2Placement3d,
+        b"BOUNDED_SURFACE" => EntityKind::BoundedSurface,
+        b"BREP_WITH_VOIDS" => EntityKind::BrepWithVoids,
+        b"B_SPLINE_CURVE" => EntityKind::BSplineCurve,
+        b"B_SPLINE_CURVE_WITH_KNOTS" => EntityKind::BSplineCurveWithKnots,
+        b"B_SPLINE_SURFACE" => EntityKind::BSplineSurface,
+        b"B_SPLINE_SURFACE_WITH_KNOTS" => EntityKind::BSplineSurfaceWithKnots,
+        b"CARTESIAN_POINT" => EntityKind::CartesianPoint,
+        b"CIRCLE" => EntityKind::Circle,
+        b"CLOSED_SHELL" => EntityKind::ClosedShell,
+        b"CONICAL_SURFACE" => EntityKind::ConicalSurface,
+        b"CONVERSION_BASED_UNIT" => EntityKind::ConversionBasedUnit,
+        b"CYLINDRICAL_SURFACE" => EntityKind::CylindricalSurface,
+        b"DEFINITIONAL_REPRESENTATION" => EntityKind::DefinitionalRepresentation,
+        b"DEGENERATE_TOROIDAL_SURFACE" => EntityKind::DegenerateToroidalSurface,
+        b"DERIVED_UNIT_ELEMENT" => EntityKind::DerivedUnitElement,
+        b"DIRECTION" => EntityKind::Direction,
+        b"EDGE_CURVE" => EntityKind::EdgeCurve,
+        b"EDGE_LOOP" => EntityKind::EdgeLoop,
+        b"ELLIPSE" => EntityKind::Ellipse,
+        b"FACE_BOUND" => EntityKind::FaceBound,
+        b"FACE_OUTER_BOUND" => EntityKind::FaceOuterBound,
+        b"GEOMETRIC_REPRESENTATION_CONTEXT" => EntityKind::GeometricRepresentationContext,
+        b"GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT" => EntityKind::GlobalUncertaintyAssignedContext,
+        b"GLOBAL_UNIT_ASSIGNED_CONTEXT" => EntityKind::GlobalUnitAssignedContext,
+        b"HYPERBOLA" => EntityKind::Hyperbola,
+        b"INTERSECTION_CURVE" => EntityKind::IntersectionCurve,
+        b"ITEM_DEFINED_TRANSFORMATION" => EntityKind::ItemDefinedTransformation,
+        b"LENGTH_MEASURE_WITH_UNIT" => EntityKind::LengthMeasureWithUnit,
+        b"LENGTH_UNIT" => EntityKind::LengthUnit,
+        b"LINE" => EntityKind::Line,
+        b"MANIFOLD_SOLID_BREP" => EntityKind::ManifoldSolidBrep,
+        b"MEASURE_REPRESENTATION_ITEM" => EntityKind::MeasureRepresentationItem,
+        b"MEASURE_WITH_UNIT" => EntityKind::MeasureWithUnit,
+        b"OPEN_SHELL" => EntityKind::OpenShell,
+        b"ORIENTED_CLOSED_SHELL" => EntityKind::OrientedClosedShell,
+        b"ORIENTED_EDGE" => EntityKind::OrientedEdge,
+        b"PARABOLA" => EntityKind::Parabola,
+        b"PCURVE" => EntityKind::Pcurve,
+        b"PLANE" => EntityKind::Plane,
+        b"PLANE_ANGLE_UNIT" => EntityKind::PlaneAngleUnit,
+        b"POLYLINE" => EntityKind::Polyline,
+        b"PROPERTY_DEFINITION" => EntityKind::PropertyDefinition,
+        b"PROPERTY_DEFINITION_REPRESENTATION" => EntityKind::PropertyDefinitionRepresentation,
+        b"RATIONAL_B_SPLINE_CURVE" => EntityKind::RationalBSplineCurve,
+        b"RATIONAL_B_SPLINE_SURFACE" => EntityKind::RationalBSplineSurface,
+        b"REPRESENTATION" => EntityKind::Representation,
+        b"REPRESENTATION_ITEM" => EntityKind::RepresentationItem,
+        b"REPRESENTATION_RELATIONSHIP" => EntityKind::RepresentationRelationship,
+        b"REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" => {
+            EntityKind::RepresentationRelationshipWithTransformation
+        }
+        b"SEAM_CURVE" => EntityKind::SeamCurve,
+        b"SHAPE_ASPECT" => EntityKind::ShapeAspect,
+        b"SHAPE_DEFINITION_REPRESENTATION" => EntityKind::ShapeDefinitionRepresentation,
+        b"SHAPE_REPRESENTATION" => EntityKind::ShapeRepresentation,
+        b"SHAPE_REPRESENTATION_RELATIONSHIP" => EntityKind::ShapeRepresentationRelationship,
+        b"SHELL_BASED_SURFACE_MODEL" => EntityKind::ShellBasedSurfaceModel,
+        b"SI_UNIT" => EntityKind::SiUnit,
+        b"SPHERICAL_SURFACE" => EntityKind::SphericalSurface,
+        b"SURFACE_CURVE" => EntityKind::SurfaceCurve,
+        b"SURFACE_OF_LINEAR_EXTRUSION" => EntityKind::SurfaceOfLinearExtrusion,
+        b"SURFACE_OF_REVOLUTION" => EntityKind::SurfaceOfRevolution,
+        b"TOROIDAL_SURFACE" => EntityKind::ToroidalSurface,
+        b"TRIMMED_CURVE" => EntityKind::TrimmedCurve,
+        b"UNCERTAINTY_MEASURE_WITH_UNIT" => EntityKind::UncertaintyMeasureWithUnit,
+        b"VECTOR" => EntityKind::Vector,
+        b"VERTEX_POINT" => EntityKind::VertexPoint,
+        b"VOLUME_UNIT" => EntityKind::VolumeUnit,
+        b"VOLUME_MEASURE" => EntityKind::VolumeMeasure,
+        b"AREA_MEASURE" => EntityKind::AreaMeasure,
+        _ => EntityKind::Unknown,
+    }
+}
+
 /// A parsed STEP entity: `#id = TYPE(attrs)`.
-#[derive(Debug)]
-struct StepEntity {
-    entity_type: String,
-    attrs: String,
+///
+/// The common path borrows the original file text: no per-entity heap
+/// allocation. `type_raw` is the trimmed type token as written (empty for
+/// complex instances); `attrs` is everything after the entity's opening
+/// parenthesis, trimmed, retaining the statement's closing parenthesis (so
+/// `TYPE('', (1.0, 2.0))` yields `attrs = "'', (1.0, 2.0))"`, exactly as
+/// before). A statement containing a block comment is normalized once and
+/// stored owned (`Cow::Owned`); all others are `Cow::Borrowed` spans into
+/// `input`. `pos` is the byte offset of the statement start in the source,
+/// kept so diagnostics can still point at the offending statement.
+#[derive(Debug, Clone)]
+struct StepEntity<'a> {
+    kind: EntityKind,
+    type_raw: std::borrow::Cow<'a, str>,
+    attrs: std::borrow::Cow<'a, str>,
+    pos: usize,
+}
+
+impl StepEntity<'_> {
+    /// True for a complex (composite) instance, which opens straight into a
+    /// parenthesis and therefore has no single type token.
+    const fn is_complex(&self) -> bool {
+        matches!(self.kind, EntityKind::Complex)
+    }
+
+    /// Attribute text as a plain string slice, whether borrowed or owned.
+    fn attrs_str(&self) -> &str {
+        self.attrs.as_ref()
+    }
+
+    /// Raw type token as a plain string slice.
+    fn type_str(&self) -> &str {
+        self.type_raw.as_ref()
+    }
+}
+
+/// Uppercase label for an unknown entity type, allocating only on the error
+/// path (once per refused import, not once per entity).
+fn unknown_entity_label(raw: &str) -> String {
+    if raw.is_empty() {
+        return "complex".to_string();
+    }
+    // ASCII-only uppercasing preserves UTF-8; type tokens are ASCII by spec.
+    raw.to_ascii_uppercase()
 }
 
 /// Parse all entity instances from the DATA section.
+///
+/// The returned map borrows the input in the common path: entity type tokens
+/// and attribute text are spans into `input`, so indexing performs no
+/// per-entity heap allocation beyond the map itself. A statement containing a
+/// block comment is normalized once and stored owned; all others are borrowed
+/// verbatim. Statement boundaries are found by a byte scan that respects STEP
+/// string escapes (`''`), quoted semicolons and block comments.
 fn parse_step_entities(
     input: &str,
     limits: ImportLimits,
-) -> Result<HashMap<u64, StepEntity>, IoError> {
+) -> Result<HashMap<u64, StepEntity<'_>>, IoError> {
     let mut entities = HashMap::new();
     let mut in_data = false;
     let mut found_data = false;
 
     let mut found_endsec = false;
-    visit_step_statements(input, |statement| {
-        let stmt = statement.trim();
-        if !in_data {
-            if stmt.eq_ignore_ascii_case("DATA") {
-                in_data = true;
-                found_data = true;
-            }
-            return Ok(true);
-        }
-        if stmt.eq_ignore_ascii_case("ENDSEC") {
-            found_endsec = true;
-            return Ok(false);
-        }
-        if stmt.is_empty() {
-            return Ok(true);
-        }
-
-        if let Some(eq_pos) = stmt.find('=') {
-            let id_part = stmt[..eq_pos].trim();
-            let rest = stmt[eq_pos + 1..].trim();
-
-            if let Some(id) = parse_entity_id(id_part)
-                && let Some(paren_pos) = rest.find('(')
-            {
-                let entity_type = rest[..paren_pos].trim().to_uppercase();
-                // Attrs = everything after the entity opening paren.
-                // E.g., for `TYPE('', (1.0, 2.0))`, attrs = `'', (1.0, 2.0))`
-                let attrs = rest[paren_pos + 1..].trim();
-
-                let previous = entities.insert(
-                    id,
-                    StepEntity {
-                        entity_type,
-                        attrs: attrs.to_string(),
-                    },
-                );
-                if previous.is_some() {
-                    return Err(IoError::ParseError {
-                        reason: format!("duplicate STEP entity id #{id}"),
-                    });
+    visit_step_statements(
+        input,
+        limits,
+        |statement: std::borrow::Cow<'_, str>, stmt_pos| {
+            match statement {
+                std::borrow::Cow::Borrowed(s) => {
+                    let stmt = s.trim();
+                    if !in_data {
+                        if stmt.eq_ignore_ascii_case("DATA") {
+                            in_data = true;
+                            found_data = true;
+                        }
+                        return Ok(true);
+                    }
+                    if stmt.eq_ignore_ascii_case("ENDSEC") {
+                        found_endsec = true;
+                        return Ok(false);
+                    }
+                    if stmt.is_empty() {
+                        return Ok(true);
+                    }
+                    if let Some(eq_pos) = stmt.find('=') {
+                        let id_part = stmt[..eq_pos].trim();
+                        let rest = stmt[eq_pos + 1..].trim();
+                        if let Some(id) = parse_entity_id(id_part)
+                            && let Some(paren_pos) = rest.find('(')
+                        {
+                            let type_slice = rest[..paren_pos].trim();
+                            // Attrs = everything after the entity opening paren.
+                            // E.g., for `TYPE('', (1.0, 2.0))`, attrs = `'', (1.0, 2.0))`
+                            let attrs_slice = rest[paren_pos + 1..].trim();
+                            let kind = classify_entity_type(type_slice);
+                            let previous = entities.insert(
+                                id,
+                                StepEntity {
+                                    kind,
+                                    type_raw: std::borrow::Cow::Borrowed(type_slice),
+                                    attrs: std::borrow::Cow::Borrowed(attrs_slice),
+                                    pos: stmt_pos,
+                                },
+                            );
+                            if previous.is_some() {
+                                return Err(IoError::ParseError {
+                                    reason: format!(
+                                        "duplicate STEP entity id #{id} at byte {stmt_pos}"
+                                    ),
+                                });
+                            }
+                            ensure_limit(
+                                "STEP entities",
+                                entities.len(),
+                                limits.max_model_entities,
+                            )?;
+                        }
+                    }
+                    Ok(true)
                 }
-                ensure_limit("STEP entities", entities.len(), limits.max_model_entities)?;
+                std::borrow::Cow::Owned(s) => {
+                    let stmt = s.trim();
+                    if !in_data {
+                        if stmt.eq_ignore_ascii_case("DATA") {
+                            in_data = true;
+                            found_data = true;
+                        }
+                        return Ok(true);
+                    }
+                    if stmt.eq_ignore_ascii_case("ENDSEC") {
+                        found_endsec = true;
+                        return Ok(false);
+                    }
+                    if stmt.is_empty() {
+                        return Ok(true);
+                    }
+                    if let Some(eq_pos) = stmt.find('=') {
+                        let id_part = stmt[..eq_pos].trim();
+                        let rest = stmt[eq_pos + 1..].trim();
+                        if let Some(id) = parse_entity_id(id_part)
+                            && let Some(paren_pos) = rest.find('(')
+                        {
+                            let type_slice = rest[..paren_pos].trim();
+                            let attrs_slice = rest[paren_pos + 1..].trim();
+                            let kind = classify_entity_type(type_slice);
+                            // Normalized temporary: copy out owned spans.
+                            let previous = entities.insert(
+                                id,
+                                StepEntity {
+                                    kind,
+                                    type_raw: std::borrow::Cow::Owned(type_slice.to_string()),
+                                    attrs: std::borrow::Cow::Owned(attrs_slice.to_string()),
+                                    pos: stmt_pos,
+                                },
+                            );
+                            if previous.is_some() {
+                                return Err(IoError::ParseError {
+                                    reason: format!(
+                                        "duplicate STEP entity id #{id} at byte {stmt_pos}"
+                                    ),
+                                });
+                            }
+                            ensure_limit(
+                                "STEP entities",
+                                entities.len(),
+                                limits.max_model_entities,
+                            )?;
+                        }
+                    }
+                    Ok(true)
+                }
             }
-        }
-        Ok(true)
-    })?;
+        },
+    )?;
 
     if found_endsec {
         Ok(entities)
@@ -439,57 +920,88 @@ fn parse_step_entities(
 /// count. Returning `false` stops scanning, allowing the DATA parser to avoid
 /// processing arbitrary content after its `ENDSEC`.
 ///
+/// The scan is byte-based over the original text. Statements without a block
+/// comment are borrowed verbatim as `Cow::Borrowed` (no allocation, newlines
+/// preserved); a statement containing a block comment is normalized once into
+/// an owned `Cow::Owned` (each comment replaced by a single space, exactly as
+/// before). `stmt_pos` is the byte offset of the statement start in `input`.
+///
+/// `limits.max_input_bytes` bounds every delivered statement before the
+/// caller materializes anything from it.
+///
 /// STEP escapes a quote inside a string as two consecutive single quotes.
-fn visit_step_statements(
-    input: &str,
-    mut visit: impl FnMut(&str) -> Result<bool, IoError>,
+#[allow(clippy::too_many_lines)]
+fn visit_step_statements<'a>(
+    input: &'a str,
+    limits: ImportLimits,
+    mut visit: impl FnMut(std::borrow::Cow<'a, str>, usize) -> Result<bool, IoError>,
 ) -> Result<(), IoError> {
-    let mut current = String::new();
-    let mut chars = input.chars().peekable();
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0usize;
+    let mut stmt_start = 0usize;
+    let mut stmt_has_comment = false;
     let mut in_string = false;
     let mut in_comment = false;
 
-    while let Some(ch) = chars.next() {
+    // Scan for statement terminators first; normalization (if needed) happens
+    // per statement below so the common comment-free path never allocates.
+    while i < len {
         if in_comment {
-            if ch == '*' && chars.peek() == Some(&'/') {
-                let _ = chars.next();
+            if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
                 in_comment = false;
-                current.push(' ');
+                i += 2;
+            } else {
+                i += 1;
             }
             continue;
         }
-
         if in_string {
-            current.push(ch);
-            if ch == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    current.push('\'');
-                    let _ = chars.next();
-                } else {
-                    in_string = false;
+            if bytes[i] == b'\'' {
+                if i + 1 < len && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
                 }
+                in_string = false;
             }
+            i += 1;
             continue;
         }
-
-        match ch {
-            '/' if chars.peek() == Some(&'*') => {
-                let _ = chars.next();
+        match bytes[i] {
+            b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
                 in_comment = true;
+                stmt_has_comment = true;
+                i += 2;
             }
-            '\'' => {
-                current.push(ch);
+            b'\'' => {
                 in_string = true;
+                i += 1;
             }
-            ';' => {
-                let statement = current.trim();
-                if !statement.is_empty() && !visit(statement)? {
-                    return Ok(());
+            b';' => {
+                let raw = &input[stmt_start..i];
+                ensure_limit("STEP statement bytes", raw.len(), limits.max_input_bytes)?;
+                if stmt_has_comment {
+                    let normalized = normalize_statement_comments(raw)?;
+                    if !normalized.trim().is_empty()
+                        && !visit(std::borrow::Cow::Owned(normalized), stmt_start)?
+                    {
+                        return Ok(());
+                    }
+                } else {
+                    let trimmed = raw.trim();
+                    if !trimmed.is_empty()
+                        && !visit(std::borrow::Cow::Borrowed(trimmed), stmt_start)?
+                    {
+                        return Ok(());
+                    }
                 }
-                current.clear();
+                stmt_start = i + 1;
+                stmt_has_comment = false;
+                i += 1;
             }
-            '\n' | '\r' => current.push(' '),
-            _ => current.push(ch),
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -503,12 +1015,89 @@ fn visit_step_statements(
             reason: "unterminated STEP block comment".to_string(),
         });
     }
-    if !current.trim().is_empty() {
+    if !input[stmt_start..].trim().is_empty() {
         return Err(IoError::ParseError {
             reason: "unterminated STEP statement".to_string(),
         });
     }
     Ok(())
+}
+
+/// Replace every block comment in a single statement with one space,
+/// preserving string literals (where `/*` is text, not syntax) and the STEP
+/// `''` escape. Newlines are preserved as-is; callers trim. Only used for the
+/// rare comment-bearing statement so the common path stays borrow-only.
+///
+/// UTF-8 safe: ASCII delimiters (`'`, `/`, `*`) are single bytes, while
+/// non-ASCII bytes are copied as whole characters, never split.
+fn normalize_statement_comments(raw: &str) -> Result<String, IoError> {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0usize;
+    let mut in_string = false;
+    while i < bytes.len() {
+        if in_string {
+            if bytes[i] == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    out.push('\'');
+                    out.push('\'');
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            // Copy one full UTF-8 character (ASCII fast path included).
+            let ch = raw[i..].chars().next().ok_or_else(|| IoError::ParseError {
+                reason: "unterminated STEP string literal".to_string(),
+            })?;
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            in_string = true;
+            out.push('\'');
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            // Skip to the closing `*/`; unterminated is a file error.
+            let mut j = i + 2;
+            let mut closed = false;
+            while j < bytes.len() {
+                if bytes[j] == b'*' && j + 1 < bytes.len() && bytes[j + 1] == b'/' {
+                    closed = true;
+                    j += 2;
+                    break;
+                }
+                j += 1;
+            }
+            if !closed {
+                return Err(IoError::ParseError {
+                    reason: "unterminated STEP block comment".to_string(),
+                });
+            }
+            out.push(' ');
+            i = j;
+            continue;
+        }
+        if bytes[i] < 128 {
+            out.push(bytes[i] as char);
+            i += 1;
+        } else {
+            let ch = raw[i..].chars().next().ok_or_else(|| IoError::ParseError {
+                reason: "invalid UTF-8 in STEP statement".to_string(),
+            })?;
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    if in_string {
+        return Err(IoError::ParseError {
+            reason: "unterminated STEP string literal".to_string(),
+        });
+    }
+    Ok(out)
 }
 
 /// Parse `#123` into `123`.
@@ -561,13 +1150,25 @@ enum UnitKind {
 /// Render an entity as `TYPE(attrs` so a marker search behaves the same for
 /// simple instances (`#5 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))`) and for
 /// complex/composite ones (`#5 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3)
-/// GLOBAL_UNIT_ASSIGNED_CONTEXT((#1)) … )`, whose parsed `entity_type` is
-/// empty because the statement opens straight into a parenthesis).
-fn entity_text(entity: &StepEntity) -> String {
-    if entity.entity_type.is_empty() {
-        entity.attrs.clone()
+/// GLOBAL_UNIT_ASSIGNED_CONTEXT((#1)) … )`, whose parsed kind is
+/// [`EntityKind::Complex`] because the statement opens straight into a
+/// parenthesis).
+///
+/// Known simple types render with their canonical uppercase spelling, so
+/// mixed-case input still matches uppercase markers. Unknown types render
+/// uppercased as well (allocating only here, on a cold path). Complex
+/// instances borrow their attribute text verbatim.
+fn entity_text(entity: &StepEntity<'_>) -> String {
+    if entity.is_complex() {
+        entity.attrs_str().to_string()
+    } else if entity.kind == EntityKind::Unknown {
+        format!(
+            "{}({}",
+            unknown_entity_label(entity.type_str()),
+            entity.attrs_str()
+        )
     } else {
-        format!("{}({}", entity.entity_type, entity.attrs)
+        format!("{}({}", entity.kind.as_str(), entity.attrs_str())
     }
 }
 
@@ -668,7 +1269,7 @@ fn si_prefix_factor(token: &str) -> Option<f64> {
 /// `AREA_UNIT((#element))` / `VOLUME_UNIT((#element))`, where the
 /// `DERIVED_UNIT_ELEMENT` raises a length unit to exponent 2 or 3.
 fn unit_si_factor(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     unit_ref: u64,
     depth: u32,
 ) -> Result<(f64, String), IoError> {
@@ -710,7 +1311,7 @@ fn unit_si_factor(
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("derived unit element #{element_ref} not found"),
             })?;
-        if element.entity_type != "DERIVED_UNIT_ELEMENT" {
+        if element.kind.as_str() != "DERIVED_UNIT_ELEMENT" {
             return Err(IoError::ParseError {
                 reason: format!(
                     "{marker} #{unit_ref} references #{element_ref}, which is not a DERIVED_UNIT_ELEMENT"
@@ -827,14 +1428,14 @@ fn unit_si_factor(
 /// rather than defaulted — a 25.4x or 1000x error in a part looks entirely
 /// plausible right up until it is machined.
 fn resolve_unit_scale(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     require_length: bool,
 ) -> Result<Option<UnitScale>, IoError> {
     const MARKER: &str = "GLOBAL_UNIT_ASSIGNED_CONTEXT";
 
     let mut context_ids: Vec<u64> = entities
         .iter()
-        .filter(|(_, e)| e.entity_type == MARKER || e.attrs.contains(MARKER))
+        .filter(|(_, e)| e.kind.as_str() == MARKER || e.attrs.contains(MARKER))
         .map(|(&id, _)| id)
         .collect();
     context_ids.sort_unstable();
@@ -944,7 +1545,7 @@ fn invalid_validation(code: &'static str, reason: impl Into<String>) -> IoError 
 /// future assembly import; a solid must have its own geometry assignment to
 /// count as declared for this per-solid checker.
 fn parse_validation_properties(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     units: UnitScale,
 ) -> Result<HashMap<u64, StepValidationProperties>, IoError> {
     // Resolve the two validation-link entity types once. Looking them up by
@@ -953,15 +1554,11 @@ fn parse_validation_properties(
     let links = ValidationLinkIndex::build(entities);
     let mut assignment_ids: Vec<u64> = entities
         .iter()
-        .filter(|(_, entity)| entity.entity_type == "PROPERTY_DEFINITION")
+        .filter(|(_, entity)| entity.kind.as_str() == "PROPERTY_DEFINITION")
         .filter_map(|(&id, entity)| {
             let slots = split_attr_slots(&entity.attrs);
-            matches!(
-                slots.get(1),
-                Some(AttrSlot::Text(description))
-                    if description == "Shape for Validation Properties"
-            )
-            .then_some(id)
+            matches!(slots.get(1), Some(slot) if slot.text_equals("Shape for Validation Properties"))
+                .then_some(id)
         })
         .collect();
     assignment_ids.sort_unstable();
@@ -983,7 +1580,7 @@ fn parse_validation_properties(
         )?;
         if entities
             .get(&shape_aspect)
-            .is_none_or(|entity| entity.entity_type != "SHAPE_ASPECT")
+            .is_none_or(|entity| entity.kind.as_str() != "SHAPE_ASPECT")
         {
             return Err(invalid_validation(
                 "step_validation_broken_assignment",
@@ -1003,7 +1600,7 @@ fn parse_validation_properties(
                 format!("validation SHAPE_REPRESENTATION #{representation} not found"),
             )
         })?;
-        if representation_entity.entity_type != "SHAPE_REPRESENTATION" {
+        if representation_entity.kind.as_str() != "SHAPE_REPRESENTATION" {
             return Err(invalid_validation(
                 "step_validation_broken_assignment",
                 format!(
@@ -1041,7 +1638,7 @@ fn parse_validation_properties(
 
     let mut property_ids: Vec<u64> = entities
         .iter()
-        .filter(|(_, entity)| entity.entity_type == "PROPERTY_DEFINITION")
+        .filter(|(_, entity)| entity.kind.as_str() == "PROPERTY_DEFINITION")
         .filter_map(|(&id, entity)| {
             let slots = split_attr_slots(&entity.attrs);
             matches!(
@@ -1172,10 +1769,10 @@ struct ValidationLinkIndex {
 }
 
 impl ValidationLinkIndex {
-    fn build(entities: &HashMap<u64, StepEntity>) -> Self {
+    fn build(entities: &HashMap<u64, StepEntity<'_>>) -> Self {
         let mut index = Self::default();
         for entity in entities.values() {
-            let links = match entity.entity_type.as_str() {
+            let links = match entity.kind.as_str() {
                 "SHAPE_DEFINITION_REPRESENTATION" => &mut index.shape_definitions,
                 "PROPERTY_DEFINITION_REPRESENTATION" => &mut index.property_definitions,
                 _ => continue,
@@ -1228,7 +1825,7 @@ impl ValidationLinkIndex {
 }
 
 fn parse_validation_representation(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     representation: u64,
     units: UnitScale,
 ) -> Result<PartialValidationProperties, IoError> {
@@ -1238,7 +1835,7 @@ fn parse_validation_representation(
             format!("validation REPRESENTATION #{representation} not found"),
         )
     })?;
-    if entity.entity_type != "REPRESENTATION" {
+    if entity.kind.as_str() != "REPRESENTATION" {
         return Err(invalid_validation(
             "step_validation_broken_property_chain",
             format!("validation value #{representation} is not a REPRESENTATION"),
@@ -1258,10 +1855,10 @@ fn parse_validation_representation(
             )
         })?;
         let item_slots = split_attr_slots(&item.attrs);
-        match item.entity_type.as_str() {
+        match item.kind.as_str() {
             "MEASURE_REPRESENTATION_ITEM" => {
                 let name = match item_slots.first() {
-                    Some(AttrSlot::Text(name)) => name.as_str(),
+                    Some(AttrSlot::Text(name)) => *name,
                     other => {
                         return Err(invalid_validation(
                             "step_validation_invalid_measure",
@@ -1310,7 +1907,7 @@ fn parse_validation_representation(
                 }
             }
             "CARTESIAN_POINT" => {
-                if !matches!(item_slots.first(), Some(AttrSlot::Text(name)) if name == "centre point" || name == "center point")
+                if !matches!(item_slots.first(), Some(slot) if slot.text_equals("centre point") || slot.text_equals("center point"))
                 {
                     continue;
                 }
@@ -1431,7 +2028,7 @@ fn ensure_validation_measure_type(
 }
 
 fn validation_unit_scale(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     unit_ref: u64,
     expected: UnitKind,
 ) -> Result<f64, IoError> {
@@ -1674,7 +2271,7 @@ impl PeriodicUvDomain {
 /// Reconstructs topology from parsed STEP entities.
 struct StepBuilder<'a> {
     topo: &'a mut Topology,
-    entities: &'a HashMap<u64, StepEntity>,
+    entities: &'a HashMap<u64, StepEntity<'a>>,
     /// Conversion from the file's declared units into millimetres/radians,
     /// applied to every length- and angle-valued quantity as it is read.
     units: UnitScale,
@@ -1696,7 +2293,7 @@ struct StepBuilder<'a> {
 impl<'a> StepBuilder<'a> {
     fn new(
         topo: &'a mut Topology,
-        entities: &'a HashMap<u64, StepEntity>,
+        entities: &'a HashMap<u64, StepEntity<'_>>,
         units: UnitScale,
         limits: ImportLimits,
     ) -> Result<Self, IoError> {
@@ -1705,7 +2302,7 @@ impl<'a> StepBuilder<'a> {
 
     fn new_for_body_import(
         topo: &'a mut Topology,
-        entities: &'a HashMap<u64, StepEntity>,
+        entities: &'a HashMap<u64, StepEntity<'_>>,
         units: UnitScale,
         limits: ImportLimits,
     ) -> Result<Self, IoError> {
@@ -1714,7 +2311,7 @@ impl<'a> StepBuilder<'a> {
 
     fn new_with_roots(
         topo: &'a mut Topology,
-        entities: &'a HashMap<u64, StepEntity>,
+        entities: &'a HashMap<u64, StepEntity<'_>>,
         units: UnitScale,
         limits: ImportLimits,
         include_sheets: bool,
@@ -1821,7 +2418,7 @@ impl<'a> StepBuilder<'a> {
             }
 
             for shell_ref in shell_refs {
-                let shell_type = self.get_entity(shell_ref)?.entity_type.as_str();
+                let shell_type = self.get_entity(shell_ref)?.kind.as_str();
                 if !matches!(shell_type, "OPEN_SHELL" | "CLOSED_SHELL") {
                     return Err(IoError::UnsupportedEntity {
                         entity: format!(
@@ -1847,22 +2444,23 @@ impl<'a> StepBuilder<'a> {
     fn build_solid(&mut self, brep_id: u64) -> Result<SolidId, IoError> {
         let entity = self.get_entity(brep_id)?;
         let attrs = entity.attrs.clone();
-        let is_complex = entity.entity_type.is_empty();
+        let is_complex = entity.is_complex();
         let complex_manifold = is_complex
             .then(|| find_exact_composite_component(&attrs, "MANIFOLD_SOLID_BREP"))
             .flatten();
         let complex_voids = is_complex
             .then(|| find_exact_composite_component(&attrs, "BREP_WITH_VOIDS"))
             .flatten();
-        let with_voids = entity.entity_type == "BREP_WITH_VOIDS" || complex_voids.is_some();
+        let with_voids = entity.kind.as_str() == "BREP_WITH_VOIDS" || complex_voids.is_some();
+        let entity_pos = entity.pos;
         let manifold_attrs = if is_complex {
             complex_manifold.ok_or_else(|| IoError::ParseError {
                 reason: format!(
-                    "complex solid B-Rep #{brep_id} has no MANIFOLD_SOLID_BREP component"
+                    "complex solid B-Rep #{brep_id} at byte {entity_pos} has no MANIFOLD_SOLID_BREP component"
                 ),
             })?
         } else {
-            attrs.as_str()
+            attrs.as_ref()
         };
         let manifold_slots = split_attr_slots(manifold_attrs);
         // A decomposed complex leaf carries only the attribute introduced by
@@ -1881,7 +2479,7 @@ impl<'a> StepBuilder<'a> {
 
         let mut inner_shells = Vec::new();
         if with_voids {
-            let void_attrs = complex_voids.unwrap_or(attrs.as_str());
+            let void_attrs: &str = complex_voids.unwrap_or_else(|| attrs.as_ref());
             let void_slots = split_attr_slots(void_attrs);
             // The decomposed subtype leaf carries only `voids`; a flattened
             // leaf repeats the inherited name and outer-shell attributes.
@@ -1951,7 +2549,7 @@ impl<'a> StepBuilder<'a> {
         let mut oriented_shells = HashSet::new();
         let entity = loop {
             let entity = self.get_entity(shell_ref)?;
-            if entity.entity_type != "ORIENTED_CLOSED_SHELL" {
+            if entity.kind.as_str() != "ORIENTED_CLOSED_SHELL" {
                 break entity;
             }
             if !oriented_shells.insert(shell_ref) {
@@ -2111,11 +2709,11 @@ impl<'a> StepBuilder<'a> {
 
         for (source_position, &bound_ref) in list_refs.iter().enumerate() {
             let bound_entity = self.get_entity(bound_ref)?;
-            let is_outer = bound_entity.entity_type == "FACE_OUTER_BOUND";
+            let is_outer = bound_entity.kind.as_str() == "FACE_OUTER_BOUND";
             let bound_attrs = bound_entity.attrs.clone();
             let bound_slots = split_attr_slots(&bound_attrs);
             let loop_ref = required_reference_attribute(
-                &bound_entity.entity_type,
+                bound_entity.kind.as_str(),
                 bound_ref,
                 &bound_slots,
                 1,
@@ -2138,7 +2736,7 @@ impl<'a> StepBuilder<'a> {
             // must not participate here: that wrapper reverses the whole
             // face after its own bounds have been interpreted.
             let bound_reversed = !required_logical_attribute(
-                &bound_entity.entity_type,
+                bound_entity.kind.as_str(),
                 bound_ref,
                 &bound_slots,
                 2,
@@ -2161,7 +2759,7 @@ impl<'a> StepBuilder<'a> {
 
         self.validate_pcurve_consumption(face_ref, surface_ref, &pcurve_cursors)?;
 
-        if self.get_entity(surface_ref)?.entity_type == "DEGENERATE_TOROIDAL_SURFACE" {
+        if self.get_entity(surface_ref)?.kind.as_str() == "DEGENERATE_TOROIDAL_SURFACE" {
             if pending_by_wire
                 .values()
                 .flatten()
@@ -3350,7 +3948,7 @@ impl<'a> StepBuilder<'a> {
 
     fn build_surface(&self, surface_ref: u64) -> Result<FaceSurface, IoError> {
         let entity = self.get_entity(surface_ref)?;
-        let entity_type = entity.entity_type.clone();
+        let entity_type = entity.kind;
         let attrs = entity.attrs.clone();
 
         match entity_type.as_str() {
@@ -3546,7 +4144,9 @@ impl<'a> StepBuilder<'a> {
                     find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_SURFACE").is_some();
                 self.build_bspline_surface(surface_ref, &attrs, is_rational)
             }
-            _ if entity_type.is_empty() || attrs.contains("B_SPLINE_SURFACE_WITH_KNOTS") => {
+            _ if entity_type == EntityKind::Complex
+                || attrs.contains("B_SPLINE_SURFACE_WITH_KNOTS") =>
+            {
                 let is_rational =
                     find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_SURFACE").is_some();
                 let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_SURFACE")
@@ -3559,7 +4159,7 @@ impl<'a> StepBuilder<'a> {
                 self.build_bspline_surface(surface_ref, &bspline_attrs, is_rational)
             }
             _ => Err(IoError::UnsupportedEntity {
-                entity: entity_type,
+                entity: entity_type.as_str().to_string(),
             }),
         }
     }
@@ -3588,14 +4188,14 @@ impl<'a> StepBuilder<'a> {
             });
         }
         let entity = self.get_entity(curve_ref)?;
-        let entity_type = entity.entity_type.clone();
+        let entity_type = entity.kind;
         let attrs = entity.attrs.clone();
 
         match entity_type.as_str() {
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" | "TRIMMED_CURVE" => {
                 let slots = split_attr_slots(&attrs);
                 let basis = required_reference_attribute(
-                    &entity_type,
+                    entity_type.as_str(),
                     curve_ref,
                     &slots,
                     1,
@@ -3677,7 +4277,7 @@ impl<'a> StepBuilder<'a> {
     fn build_axis1_placement(&self, axis_ref: u64) -> Result<(Point3, Vec3), IoError> {
         let entity = self.get_entity(axis_ref)?;
         let attrs = entity.attrs.clone();
-        let is_complex = entity.entity_type.is_empty();
+        let is_complex = entity.is_complex();
 
         let slots = placement_slots(&attrs, is_complex, "AXIS1_PLACEMENT");
         match self.axis1_placement_from_slots(axis_ref, &slots) {
@@ -3994,7 +4594,7 @@ impl<'a> StepBuilder<'a> {
         let mut candidates = Vec::new();
         for associated_ref in self.associated_pcurve_refs(curve_ref, 0, &mut HashSet::new())? {
             let entity = self.get_entity(associated_ref)?;
-            if entity.entity_type != "PCURVE" {
+            if entity.kind.as_str() != "PCURVE" {
                 continue;
             }
             let slots = split_attr_slots(&entity.attrs);
@@ -4047,7 +4647,7 @@ impl<'a> StepBuilder<'a> {
             });
         }
         let entity = self.get_entity(curve_ref)?;
-        let result = match entity.entity_type.as_str() {
+        let result = match entity.kind.as_str() {
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
                 let slots = split_attr_slots(&entity.attrs);
                 match slots.get(2) {
@@ -4055,7 +4655,7 @@ impl<'a> StepBuilder<'a> {
                         exact_reference_list(list).map_err(|reason| IoError::ParseError {
                             reason: format!(
                                 "{} #{curve_ref} has an invalid associated geometry list: {reason}",
-                                entity.entity_type
+                                entity.kind.as_str()
                             ),
                         })?
                     }
@@ -4063,7 +4663,7 @@ impl<'a> StepBuilder<'a> {
                         return Err(IoError::ParseError {
                             reason: format!(
                                 "{} #{curve_ref} needs an associated geometry list, got {}",
-                                entity.entity_type,
+                                entity.kind.as_str(),
                                 describe_slot(other)
                             ),
                         });
@@ -4184,11 +4784,11 @@ impl<'a> StepBuilder<'a> {
         let representation =
             required_reference_attribute("PCURVE", pcurve_ref, &slots, 2, "representation")?;
         let representation_entity = self.get_entity(representation)?;
-        if representation_entity.entity_type != "DEFINITIONAL_REPRESENTATION" {
+        if representation_entity.kind.as_str() != "DEFINITIONAL_REPRESENTATION" {
             return Err(IoError::UnsupportedEntity {
                 entity: format!(
                     "{} (PCURVE #{pcurve_ref} representation #{representation})",
-                    representation_entity.entity_type
+                    representation_entity.kind.as_str()
                 ),
             });
         }
@@ -4380,11 +4980,11 @@ impl<'a> StepBuilder<'a> {
             });
         }
         let entity = self.get_entity(curve_ref)?;
-        if entity.entity_type == "TRIMMED_CURVE" {
+        if entity.kind.as_str() == "TRIMMED_CURVE" {
             let slots = split_attr_slots(&entity.attrs);
             let basis_ref =
                 required_reference_attribute("TRIMMED_CURVE", curve_ref, &slots, 1, "basis curve")?;
-            if self.get_entity(basis_ref)?.entity_type == "TRIMMED_CURVE" {
+            if self.get_entity(basis_ref)?.kind.as_str() == "TRIMMED_CURVE" {
                 return Err(IoError::ParseError {
                     reason: format!("2D TRIMMED_CURVE #{curve_ref} nests another trim"),
                 });
@@ -4443,7 +5043,7 @@ impl<'a> StepBuilder<'a> {
     fn build_curve2d_basis(&self, curve_ref: u64) -> Result<(Curve2D, f64, f64), IoError> {
         let entity = self.get_entity(curve_ref)?;
         let attrs = entity.attrs.clone();
-        match entity.entity_type.as_str() {
+        match entity.kind.as_str() {
             "LINE" => {
                 let slots = split_attr_slots(&attrs);
                 let origin_ref =
@@ -4510,7 +5110,7 @@ impl<'a> StepBuilder<'a> {
                 Ok((Curve2D::Ellipse(ellipse), 1.0, 0.0))
             }
             "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve2d(curve_ref, &attrs, false),
-            _ if entity.entity_type.is_empty() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {
+            _ if entity.is_complex() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {
                 let rational =
                     find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_CURVE").is_some();
                 let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE")
@@ -4523,7 +5123,7 @@ impl<'a> StepBuilder<'a> {
                 self.build_bspline_curve2d(curve_ref, &bspline_attrs, rational)
             }
             _ => Err(IoError::UnsupportedEntity {
-                entity: format!("{} (2D curve #{curve_ref})", entity.entity_type),
+                entity: format!("{} (2D curve #{curve_ref})", entity.kind.as_str()),
             }),
         }
     }
@@ -5437,11 +6037,11 @@ impl<'a> StepBuilder<'a> {
             });
         }
         let entity = self.get_entity(curve_ref)?;
-        match entity.entity_type.as_str() {
+        match entity.kind.as_str() {
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
                 let slots = split_attr_slots(&entity.attrs);
                 let basis = required_reference_attribute(
-                    &entity.entity_type,
+                    entity.kind.as_str(),
                     curve_ref,
                     &slots,
                     1,
@@ -5567,7 +6167,7 @@ impl<'a> StepBuilder<'a> {
             .point_ref
             .map(|point_ref| {
                 let entity = self.get_entity(point_ref)?;
-                if entity.entity_type != "CARTESIAN_POINT" {
+                if entity.kind.as_str() != "CARTESIAN_POINT" {
                     return Err(IoError::ParseError {
                         reason: format!(
                             "TRIMMED_CURVE #{curve_ref} {label} references non-point entity #{point_ref}"
@@ -5632,7 +6232,7 @@ impl<'a> StepBuilder<'a> {
             });
         }
         let entity = self.get_entity(curve_ref)?;
-        let entity_type = entity.entity_type.clone();
+        let entity_type = entity.kind;
         let attrs = entity.attrs.clone();
 
         match entity_type.as_str() {
@@ -5643,8 +6243,13 @@ impl<'a> StepBuilder<'a> {
             // to their exact coedge positions.
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
                 let slots = split_attr_slots(&attrs);
-                let basis =
-                    required_reference_attribute(&entity_type, curve_ref, &slots, 1, "3-D curve")?;
+                let basis = required_reference_attribute(
+                    entity_type.as_str(),
+                    curve_ref,
+                    &slots,
+                    1,
+                    "3-D curve",
+                )?;
                 self.build_curve_geometry_at(basis, depth + 1)
             }
             "TRIMMED_CURVE" => self.build_trimmed_curve(curve_ref, &attrs, depth),
@@ -5777,7 +6382,9 @@ impl<'a> StepBuilder<'a> {
                 Ok(EdgeCurve::Parabola(par))
             }
             "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve(curve_ref, &attrs, false),
-            _ if entity_type.is_empty() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {
+            _ if entity_type == EntityKind::Complex
+                || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") =>
+            {
                 let is_rational =
                     find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_CURVE").is_some();
                 let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE")
@@ -5790,7 +6397,7 @@ impl<'a> StepBuilder<'a> {
                 self.build_bspline_curve(curve_ref, &bspline_attrs, is_rational)
             }
             _ => Err(IoError::UnsupportedEntity {
-                entity: format!("{entity_type} (curve #{curve_ref})"),
+                entity: format!("{} (curve #{curve_ref})", entity_type.as_str()),
             }),
         }
     }
@@ -6171,7 +6778,7 @@ impl<'a> StepBuilder<'a> {
     fn build_axis2_placement(&self, axis_ref: u64) -> Result<(Point3, Vec3, Vec3), IoError> {
         let entity = self.get_entity(axis_ref)?;
         let attrs = entity.attrs.clone();
-        let is_complex = entity.entity_type.is_empty();
+        let is_complex = entity.is_complex();
 
         let slots = placement_slots(&attrs, is_complex, "AXIS2_PLACEMENT_3D");
         match self.axis2_placement_from_slots(axis_ref, &slots) {
@@ -6351,7 +6958,7 @@ impl<'a> StepBuilder<'a> {
         }
     }
 
-    fn get_entity(&self, id: u64) -> Result<&StepEntity, IoError> {
+    fn get_entity(&self, id: u64) -> Result<&'a StepEntity<'a>, IoError> {
         self.entities.get(&id).ok_or_else(|| IoError::ParseError {
             reason: format!("entity #{id} not found"),
         })
@@ -7927,15 +8534,15 @@ fn extrude_nurbs(
 /// out and parses with an empty entity type.
 fn is_solid_brep(entity: &StepEntity) -> bool {
     matches!(
-        entity.entity_type.as_str(),
+        entity.kind.as_str(),
         "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS"
-    ) || (entity.entity_type.is_empty()
+    ) || (entity.is_complex()
         && find_exact_composite_component(&entity.attrs, "MANIFOLD_SOLID_BREP").is_some())
 }
 
 /// True when an entity is a standalone surface-model root.
 fn is_sheet_model(entity: &StepEntity) -> bool {
-    entity.entity_type == "SHELL_BASED_SURFACE_MODEL"
+    entity.kind.as_str() == "SHELL_BASED_SURFACE_MODEL"
 }
 
 /// Re-express a curve read from a `same_sense = .F.` `EDGE_CURVE` in
@@ -8070,7 +8677,7 @@ fn trimmed_curve_sense_is_reversed(curve_ref: u64, attrs: &str) -> Result<bool, 
 /// An uncertainty context elsewhere in the file is unrelated authority and
 /// must not broaden the accepted residuals of this representation.
 fn representation_model_tolerances(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     include_sheets: bool,
 ) -> Result<HashMap<u64, f64>, IoError> {
     let body_refs: HashSet<u64> = entities
@@ -8088,11 +8695,11 @@ fn representation_model_tolerances(
     let mut representation_items: HashMap<u64, HashSet<u64>> = HashMap::new();
     for (&representation_ref, entity) in entities {
         let attrs = if matches!(
-            entity.entity_type.as_str(),
+            entity.kind.as_str(),
             "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION"
         ) {
-            Some(entity.attrs.as_str())
-        } else if entity.entity_type.is_empty()
+            Some(entity.attrs_str())
+        } else if entity.is_complex()
             && (find_exact_composite_component(&entity.attrs, "SHAPE_REPRESENTATION").is_some()
                 || find_exact_composite_component(
                     &entity.attrs,
@@ -8155,9 +8762,9 @@ fn representation_model_tolerances(
     // reuse that context while participating in an unrelated occurrence.
     let mut related_representations: HashMap<u64, Vec<u64>> = HashMap::new();
     for entity in entities.values() {
-        let relationship_attrs = if entity.entity_type == "SHAPE_REPRESENTATION_RELATIONSHIP" {
-            Some(entity.attrs.as_str())
-        } else if entity.entity_type.is_empty()
+        let relationship_attrs = if entity.kind.as_str() == "SHAPE_REPRESENTATION_RELATIONSHIP" {
+            Some(entity.attrs_str())
+        } else if entity.is_complex()
             && find_exact_composite_component(
                 &entity.attrs,
                 "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
@@ -8200,10 +8807,7 @@ fn representation_model_tolerances(
         }
     }
     let mut occurrence_parent: HashMap<u64, Vec<u64>> = HashMap::new();
-    for entity in entities
-        .values()
-        .filter(|entity| entity.entity_type.is_empty())
-    {
+    for entity in entities.values().filter(|entity| entity.is_complex()) {
         let Some(transform_attrs) = find_exact_composite_component(
             &entity.attrs,
             "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
@@ -8261,7 +8865,7 @@ fn representation_model_tolerances(
                 ),
             }
         })?;
-        if transformation.entity_type != "ITEM_DEFINED_TRANSFORMATION" {
+        if transformation.kind.as_str() != "ITEM_DEFINED_TRANSFORMATION" {
             return Err(IoError::ParseError {
                 reason: format!(
                     "transformed representation relationship references unsupported transformation #{transformation_ref}"
@@ -8294,8 +8898,8 @@ fn representation_model_tolerances(
                     "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} references missing placement #{placement_ref}"
                 ),
             })?;
-            if placement.entity_type != "AXIS2_PLACEMENT_3D"
-                && !(placement.entity_type.is_empty()
+            if placement.kind.as_str() != "AXIS2_PLACEMENT_3D"
+                && !(placement.is_complex()
                     && find_exact_composite_component(&placement.attrs, "AXIS2_PLACEMENT_3D")
                         .is_some())
             {
@@ -8386,7 +8990,7 @@ fn representation_model_tolerances(
 }
 
 fn context_model_tolerance(
-    entities: &HashMap<u64, StepEntity>,
+    entities: &HashMap<u64, StepEntity<'_>>,
     context_ref: u64,
 ) -> Result<f64, IoError> {
     const MARKER: &str = "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT";
@@ -8395,9 +8999,9 @@ fn context_model_tolerance(
         .ok_or_else(|| IoError::ParseError {
             reason: format!("representation context #{context_ref} not found"),
         })?;
-    let group = if context.entity_type == MARKER {
-        Some(context.attrs.as_str())
-    } else if context.entity_type.is_empty() {
+    let group = if context.kind.as_str() == MARKER {
+        Some(context.attrs_str())
+    } else if context.is_complex() {
         find_exact_composite_component(&context.attrs, MARKER)
     } else {
         None
@@ -8437,7 +9041,7 @@ fn context_model_tolerance(
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("uncertainty entity #{uncertainty_ref} not found"),
             })?;
-        if uncertainty.entity_type != "UNCERTAINTY_MEASURE_WITH_UNIT" {
+        if uncertainty.kind.as_str() != "UNCERTAINTY_MEASURE_WITH_UNIT" {
             return Err(IoError::ParseError {
                 reason: format!(
                     "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT in representation context #{context_ref} references \
@@ -8549,7 +9153,7 @@ fn parse_refs(attrs: &str) -> Vec<u64> {
 /// position and reference order diverge, which is why an attribute that
 /// matters positionally has to be read from a slot rather than from
 /// [`parse_refs`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum AttrSlot<'a> {
     /// An entity reference, `#NNN`.
     Ref(u64),
@@ -8557,9 +9161,13 @@ enum AttrSlot<'a> {
     Omitted,
     /// A derived attribute redeclared by a subtype, `*`.
     Derived,
-    /// A string literal, with its delimiting quotes removed and the STEP
-    /// `''` escape collapsed to one apostrophe.
-    Text(String),
+    /// A string literal, borrowed without decoding: delimiting quotes removed,
+    /// but the STEP `''` escape preserved as two apostrophes. Decoding to a
+    /// single `'` happens only where the value is actually used (names,
+    /// diagnostics), so scanning thousands of entity names never allocates.
+    /// Use [`AttrSlot::text_equals`] for allocation-free comparison and
+    /// [`attr_text_value`] for the owned decoded value.
+    Text(&'a str),
     /// A list or aggregate, verbatim including its own parentheses.
     List(&'a str),
     /// An enumeration or logical literal such as `.T.` or `.UNSPECIFIED.`.
@@ -8579,6 +9187,24 @@ impl AttrSlot<'_> {
         }
     }
 
+    /// True when this text slot decodes to `expected`, treating the STEP
+    /// `''` escape as one apostrophe, without allocating.
+    fn text_equals(&self, expected: &str) -> bool {
+        match *self {
+            Self::Text(raw) => step_text_equals(raw, expected),
+            _ => false,
+        }
+    }
+
+    /// Owned decoded value of a text slot (`''` collapsed to `'`), allocating
+    /// only here on the cold path.
+    fn text_value(&self) -> Option<String> {
+        match *self {
+            Self::Text(raw) => Some(attr_text_value(raw)),
+            _ => None,
+        }
+    }
+
     /// Name this slot's form for an error message that has to say why an
     /// attribute could not be used.
     ///
@@ -8592,12 +9218,78 @@ impl AttrSlot<'_> {
             Self::Ref(id) => format!("#{id}"),
             Self::Omitted => "an omitted `$`".to_string(),
             Self::Derived => "a derived `*`".to_string(),
-            Self::Text(ref text) => format!("the string {}", escaped_slot_excerpt(text)),
+            Self::Text(_) => {
+                // Decode only for the message (cold path); the hot scan keeps
+                // the raw borrowed span.
+                let decoded = self.text_value().unwrap_or_default();
+                format!("the string {}", escaped_slot_excerpt(&decoded))
+            }
             Self::List(raw) | Self::Enum(raw) | Self::Other(raw) => {
                 format!("`{}`", slot_excerpt(raw))
             }
         }
     }
+}
+
+/// Compare a raw STEP string inner (outer quotes removed, `''` preserved)
+/// against an expected decoded value without allocating.
+fn step_text_equals(raw: &str, expected: &str) -> bool {
+    let raw_bytes = raw.as_bytes();
+    let exp_bytes = expected.as_bytes();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < raw_bytes.len() && j < exp_bytes.len() {
+        if raw_bytes[i] == b'\'' && i + 1 < raw_bytes.len() && raw_bytes[i + 1] == b'\'' {
+            // `''` decodes to one `'`.
+            if exp_bytes[j] != b'\'' {
+                return false;
+            }
+            i += 2;
+            j += 1;
+        } else {
+            if raw_bytes[i] != exp_bytes[j] {
+                return false;
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    i == raw_bytes.len() && j == exp_bytes.len()
+}
+
+/// Owned decoded value of a raw STEP string inner (`''` collapsed to `'`).
+fn attr_text_value(raw: &str) -> String {
+    // `str::replace` is UTF-8 safe; the fast path avoids allocation when
+    // there is no escape to collapse.
+    if raw.contains("''") {
+        raw.replace("''", "'")
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Borrowed inner of a STEP string literal: outer quotes removed, `''`
+/// escapes preserved. Unterminated literals yield the remainder after the
+/// opening quote, matching the historical `unescape_step_string` tolerance.
+fn step_string_inner(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed.strip_prefix('\'') else {
+        return trimmed;
+    };
+    // Find the closing quote respecting `''` escapes.
+    let bytes = rest.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                i += 2;
+                continue;
+            }
+            return &rest[..i];
+        }
+        i += 1;
+    }
+    rest
 }
 
 /// How much of an attribute slot an error message may quote back, counted on
@@ -8733,7 +9425,7 @@ fn classify_attr_slot(raw: &str) -> AttrSlot<'_> {
         Some(b'#') => parse_ref_token(text).map_or(AttrSlot::Other(text), AttrSlot::Ref),
         Some(b'$') if text.len() == 1 => AttrSlot::Omitted,
         Some(b'*') if text.len() == 1 => AttrSlot::Derived,
-        Some(b'\'') => AttrSlot::Text(unescape_step_string(text)),
+        Some(b'\'') => AttrSlot::Text(step_string_inner(text)),
         Some(b'(') => AttrSlot::List(text),
         // A real always has a digit before its point, so a token that both
         // opens and closes with one is an enumeration or logical.
@@ -9748,16 +10440,23 @@ mod tests {
             entities.insert(
                 definition + 20_000,
                 StepEntity {
-                    entity_type: "SHAPE_DEFINITION_REPRESENTATION".to_string(),
-                    attrs: format!("#{definition},#{}", definition + 10_000),
+                    kind: EntityKind::ShapeDefinitionRepresentation,
+                    type_raw: std::borrow::Cow::Borrowed("SHAPE_DEFINITION_REPRESENTATION"),
+                    attrs: std::borrow::Cow::Owned(format!(
+                        "#{definition},#{}",
+                        definition + 10_000
+                    )),
+                    pos: 0,
                 },
             );
         }
         entities.insert(
             40_001,
             StepEntity {
-                entity_type: "SHAPE_DEFINITION_REPRESENTATION".to_string(),
-                attrs: "#1,#50000".to_string(),
+                kind: EntityKind::ShapeDefinitionRepresentation,
+                type_raw: std::borrow::Cow::Borrowed("SHAPE_DEFINITION_REPRESENTATION"),
+                attrs: std::borrow::Cow::Borrowed("#1,#50000"),
+                pos: 0,
             },
         );
 
@@ -9877,6 +10576,113 @@ mod tests {
         let step = "ISO-10303-21;DATA;#1=POINT();#1=POINT();ENDSEC;END-ISO-10303-21;";
         let error = parse_step_entities(step, ImportLimits::default()).unwrap_err();
         assert!(error.to_string().contains("duplicate STEP entity id #1"));
+    }
+
+    #[test]
+    fn entities_borrow_source_spans_without_comment_normalization() {
+        use std::borrow::Cow;
+        let step = "ISO-10303-21;DATA;#7=CARTESIAN_POINT('',(1.,2.,3.));ENDSEC;END-ISO-10303-21;";
+        let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
+        let entity = entities.get(&7).unwrap();
+        assert_eq!(entity.kind, EntityKind::CartesianPoint);
+        assert!(matches!(entity.type_raw, Cow::Borrowed(_)));
+        assert!(matches!(entity.attrs, Cow::Borrowed(_)));
+        // Borrowed spans point into the original input text.
+        let input_start = step.as_ptr() as usize;
+        let input_end = input_start + step.len();
+        let attrs_ptr = entity.attrs.as_ref().as_ptr() as usize;
+        assert!(attrs_ptr >= input_start && attrs_ptr < input_end);
+    }
+
+    #[test]
+    fn comment_bearing_statements_normalize_to_owned_spans() {
+        use std::borrow::Cow;
+        let step =
+            "ISO-10303-21;DATA;#8=CARTESIAN_POINT('',(1.,/* gap */2.,3.));ENDSEC;END-ISO-10303-21;";
+        let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
+        let entity = entities.get(&8).unwrap();
+        assert_eq!(entity.kind, EntityKind::CartesianPoint);
+        assert!(matches!(entity.attrs, Cow::Owned(_)));
+        assert!(entity.attrs.contains("1., 2.,3."));
+        assert!(!entity.attrs.contains("gap"));
+    }
+
+    #[test]
+    fn entity_kinds_classify_case_insensitively_and_track_complex() {
+        assert_eq!(classify_entity_type("PLANE"), EntityKind::Plane);
+        assert_eq!(classify_entity_type("plane"), EntityKind::Plane);
+        assert_eq!(classify_entity_type("PlAnE"), EntityKind::Plane);
+        assert_eq!(
+            classify_entity_type("cartesian_point"),
+            EntityKind::CartesianPoint
+        );
+        assert_eq!(classify_entity_type(""), EntityKind::Complex);
+        assert_eq!(
+            classify_entity_type("NOT_A_REAL_ENTITY"),
+            EntityKind::Unknown
+        );
+        assert_eq!(unknown_entity_label("plane"), "PLANE");
+        let step = "ISO-10303-21;DATA;#9=(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#1)));ENDSEC;END-ISO-10303-21;";
+        let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
+        assert!(entities.get(&9).unwrap().is_complex());
+    }
+
+    #[test]
+    fn duplicate_ids_report_source_byte_offset() {
+        let step = "ISO-10303-21;DATA;#1=POINT();#1=POINT();ENDSEC;END-ISO-10303-21;";
+        let error = parse_step_entities(step, ImportLimits::default()).unwrap_err();
+        assert!(error.to_string().contains("at byte"));
+    }
+
+    #[test]
+    fn entity_positions_point_at_statement_starts() {
+        let step = "ISO-10303-21;DATA;#11=CARTESIAN_POINT('',(0.,0.,0.));#12=DIRECTION('',(1.,0.,0.));ENDSEC;END-ISO-10303-21;";
+        let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
+        let pos11 = entities.get(&11).unwrap().pos;
+        let pos12 = entities.get(&12).unwrap().pos;
+        assert!(pos12 > pos11);
+        assert!(step[pos11..].starts_with("#11="));
+        assert!(step[pos12..].starts_with("#12="));
+    }
+
+    #[test]
+    fn oversized_statements_are_refused_before_materialization() {
+        let mut step = String::from("ISO-10303-21;DATA;#1=CARTESIAN_POINT('',(");
+        step.push_str(&"1.,".repeat(10_000));
+        step.push_str("));ENDSEC;END-ISO-10303-21;");
+        let limits = ImportLimits {
+            max_input_bytes: 1024,
+            ..ImportLimits::default()
+        };
+        let err = parse_step_entities(&step, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            IoError::LimitExceeded {
+                resource: "STEP statement bytes",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn failed_import_preserves_pre_existing_document_state() {
+        use remus_operations::measure::solid_volume;
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+        let before = solid_volume(&topo, solid, 0.1).unwrap();
+        let solids_before = topo.num_solids();
+        // A file that parses but fails during body construction (here the
+        // empty EDGE_LOOP is rejected after shell/face allocation began)
+        // must not expose partial geometry: the snapshot restore in
+        // `read_step_impl` rolls the document back to its pre-import state.
+        let step = "ISO-10303-21;HEADER;FILE_DESCRIPTION(('R'),'1');FILE_NAME('R','',(),(), '', '', '');FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));ENDSEC;DATA;#1=GLOBAL_UNIT_ASSIGNED_CONTEXT((#2,#3));#2=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));#3=(PLANE_ANGLE_UNIT()NAMED_UNIT(*)SI_UNIT($,.RADIAN.));#10=MANIFOLD_SOLID_BREP('',#11);#11=CLOSED_SHELL((#12));#12=ADVANCED_FACE('',(#13),#14,.T.);#13=FACE_OUTER_BOUND('',#15,.T.);#15=EDGE_LOOP('',());#14=OFFSET_SURFACE('',#16,#17,1.0);#16=LINE('',#18,#19);#17=AXIS1_PLACEMENT('',#18,#19);#18=CARTESIAN_POINT('',(0.,0.,0.));#19=DIRECTION('',(0.,0.,1.));ENDSEC;END-ISO-10303-21;";
+        let err = read_step(step, &mut topo).unwrap_err();
+        assert!(matches!(
+            err,
+            IoError::ParseError { .. } | IoError::UnsupportedEntity { .. }
+        ));
+        assert_eq!(topo.num_solids(), solids_before);
+        assert!((solid_volume(&topo, solid, 0.1).unwrap() - before).abs() < 1e-9);
     }
 
     #[test]
@@ -10116,7 +10922,8 @@ mod tests {
                     #7=DIRECTION('',(1.,0.,0.));\n\
                     #10=EDGE_CURVE('',#3,#4,#5,.T.);\n\
                     #11=ORIENTED_EDGE('hostile .T. #99',*,*,#10,.F.);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_1 = step_file(body);
+        let entities = parse_step_entities(&step_data_1, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let oriented = {
@@ -10440,7 +11247,8 @@ mod tests {
             shifted_end.x(),
             shifted_end.y(),
         );
-        let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+        let step_data_2 = step_file(&body);
+        let entities = parse_step_entities(&step_data_2, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = {
@@ -10551,8 +11359,9 @@ mod tests {
                     shifted_end.y(),
                     open_conic_entity(kind),
                 );
+                let step_data_single = step_file(&body);
                 let entities =
-                    parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+                    parse_step_entities(&step_data_single, ImportLimits::default()).unwrap();
                 let units = required_unit_scale(&entities).unwrap();
                 let mut topo = Topology::new();
                 let error = {
@@ -10720,7 +11529,8 @@ mod tests {
             seam.x(),
             seam.y(),
         );
-        let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+        let step_data_3 = step_file(&body);
+        let entities = parse_step_entities(&step_data_3, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         assert!((units.angle - std::f64::consts::PI / 180.0).abs() < 1e-15);
         let mut topo = Topology::new();
@@ -11074,7 +11884,8 @@ mod tests {
             end.x(),
             end.y(),
         );
-        let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+        let step_data_4 = step_file(&body);
+        let entities = parse_step_entities(&step_data_4, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let (forward, reverse_use) = {
@@ -11134,7 +11945,8 @@ mod tests {
                     #47=(DESCRIPTIVE_REPRESENTATION_ITEM(\
                     'REPRESENTATION_RELATIONSHIP(#42,#43)')DUMMY());\n\
                     #60=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.METRE.));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_5 = step_file(body);
+        let entities = parse_step_entities(&step_data_5, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 0.0),
@@ -11185,7 +11997,8 @@ mod tests {
                     #44=(REPRESENTATION_RELATIONSHIP('','',#43,#54)\
                     REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
                     SHAPE_REPRESENTATION_RELATIONSHIP());";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_6 = step_file(body);
+        let entities = parse_step_entities(&step_data_6, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let builder =
@@ -11218,7 +12031,8 @@ mod tests {
                     #44=(REPRESENTATION_RELATIONSHIP('','',#43,#54)\
                     REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
                     SHAPE_REPRESENTATION_RELATIONSHIP());";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_7 = step_file(body);
+        let entities = parse_step_entities(&step_data_7, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let builder =
@@ -11247,7 +12061,8 @@ mod tests {
                     #44=(REPRESENTATION_RELATIONSHIP('','',#42,#54)\
                     REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
                     SHAPE_REPRESENTATION_RELATIONSHIP());";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_8 = step_file(body);
+        let entities = parse_step_entities(&step_data_8, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
@@ -11267,7 +12082,8 @@ mod tests {
                  #40=MANIFOLD_SOLID_BREP('',#999);\n\
                  #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',{items},#51);"
             );
-            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let step_data_9 = step_file(&body);
+            let entities = parse_step_entities(&step_data_9, ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
             let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
@@ -11288,7 +12104,8 @@ mod tests {
                     'GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))','hostile'));\n\
                     #40=MANIFOLD_SOLID_BREP('',#999);\n\
                     #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_10 = step_file(body);
+        let entities = parse_step_entities(&step_data_10, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let builder =
@@ -11308,7 +12125,8 @@ mod tests {
                     REPRESENTATION_CONTEXT('','hostile'));\n\
                     #40=MANIFOLD_SOLID_BREP('',#999);\n\
                     #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_11 = step_file(body);
+        let entities = parse_step_entities(&step_data_11, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
@@ -11328,7 +12146,8 @@ mod tests {
                     REPRESENTATION_CONTEXT('','part'));\n\
                     #40=MANIFOLD_SOLID_BREP('',#999);\n\
                     #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_12 = step_file(body);
+        let entities = parse_step_entities(&step_data_12, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
@@ -11352,7 +12171,8 @@ mod tests {
                     REPRESENTATION_CONTEXT('','part'));\n\
                     #40=MANIFOLD_SOLID_BREP('',#999);\n\
                     #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_13 = step_file(body);
+        let entities = parse_step_entities(&step_data_13, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
@@ -11381,7 +12201,8 @@ mod tests {
                     #44=(REPRESENTATION_RELATIONSHIP('','',#42,#43)\
                     REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
                     SHAPE_REPRESENTATION_RELATIONSHIP());";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_14 = step_file(body);
+        let entities = parse_step_entities(&step_data_14, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
@@ -11404,7 +12225,8 @@ mod tests {
                  #40=MANIFOLD_SOLID_BREP('',#999);\n\
                  #41=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);"
             );
-            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let step_data_15 = step_file(&body);
+            let entities = parse_step_entities(&step_data_15, ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
             assert!(
@@ -11425,7 +12247,8 @@ mod tests {
                     REPRESENTATION_CONTEXT('','conflicting'));\n\
                     #40=MANIFOLD_SOLID_BREP('',#999);\n\
                     #41=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_16 = step_file(body);
+        let entities = parse_step_entities(&step_data_16, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = match StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()) {
@@ -11448,7 +12271,8 @@ mod tests {
             1.0,
         )
         .unwrap();
-        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let step_data_17 = step_file("");
+        let entities = parse_step_entities(&step_data_17, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let start_id = topo.add_vertex(Vertex::new(
@@ -11477,7 +12301,8 @@ mod tests {
                     REPRESENTATION_CONTEXT('','measured'));\n\
                     #40=MANIFOLD_SOLID_BREP('',#999);\n\
                     #41=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_18 = step_file(body);
+        let entities = parse_step_entities(&step_data_18, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 0.0),
@@ -11552,7 +12377,8 @@ mod tests {
             (b25_circle, b25_exact, b25_off),
             (s5_circle, s5_exact, s5_off),
         ] {
-            let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+            let step_data_19 = step_file("");
+            let entities = parse_step_entities(&step_data_19, ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
             let start_id = topo.add_vertex(Vertex::new(exact, Tolerance::new().linear));
@@ -11626,7 +12452,8 @@ mod tests {
         .unwrap();
         let exact = ellipse.evaluate(0.3);
         let off = ellipse.evaluate(0.9) + Vec3::new(0.0, 0.0, 2.0e-6);
-        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let step_data_20 = step_file("");
+        let entities = parse_step_entities(&step_data_20, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let start_id = topo.add_vertex(Vertex::new(exact, Tolerance::new().linear));
@@ -11688,7 +12515,8 @@ mod tests {
         .unwrap();
         let start = circle.evaluate(0.0) + Vec3::new(0.0, 0.0, 1e-2);
         let end = circle.evaluate(1.0);
-        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let step_data_21 = step_file("");
+        let entities = parse_step_entities(&step_data_21, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let start_id = topo.add_vertex(Vertex::new(start, Tolerance::new().linear));
@@ -11714,7 +12542,8 @@ mod tests {
             1.0,
         )
         .unwrap();
-        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let step_data_22 = step_file("");
+        let entities = parse_step_entities(&step_data_22, ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
@@ -11737,18 +12566,25 @@ mod tests {
     // ── Positional attribute slots ─────────────────────────────────
 
     /// A quoted name is opaque: commas, parens, `$` and `#` inside it are
-    /// characters, not syntax, and `''` is one apostrophe.
+    /// characters, not syntax, and `''` stays borrowed as two apostrophes
+    /// (decoded only via [`AttrSlot::text_value`] where actually needed).
     #[test]
     fn split_attr_slots_treats_string_literals_as_opaque() {
         let slots = split_attr_slots("'Rib, (left) #7 $ 30° — O''Brien',#10,$)");
         assert_eq!(
             slots,
             vec![
-                AttrSlot::Text("Rib, (left) #7 $ 30° — O'Brien".to_string()),
+                AttrSlot::Text("Rib, (left) #7 $ 30° — O''Brien"),
                 AttrSlot::Ref(10),
                 AttrSlot::Omitted,
             ]
         );
+        // Decoding collapses the escape only on demand.
+        assert_eq!(
+            slots[0].text_value().as_deref(),
+            Some("Rib, (left) #7 $ 30° — O'Brien")
+        );
+        assert!(slots[0].text_equals("Rib, (left) #7 $ 30° — O'Brien"));
     }
 
     #[test]
@@ -11757,7 +12593,7 @@ mod tests {
         assert_eq!(
             slots,
             vec![
-                AttrSlot::Text(String::new()),
+                AttrSlot::Text(""),
                 AttrSlot::List("((1.,2.),(3.,4.))"),
                 AttrSlot::List("(#1,#2)"),
                 AttrSlot::Enum(".T."),
@@ -11788,7 +12624,7 @@ mod tests {
     #[test]
     fn split_attr_slots_tolerates_wrapping_and_the_retained_paren() {
         let expected = vec![
-            AttrSlot::Text("Circle Axis2P3D".to_string()),
+            AttrSlot::Text("Circle Axis2P3D"),
             AttrSlot::Ref(65),
             AttrSlot::Ref(66),
             AttrSlot::Omitted,
@@ -12528,7 +13364,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 
     /// Resolve units the way an import that is about to read geometry does:
     /// the length unit is mandatory, so a scale always comes back.
-    fn required_unit_scale(entities: &HashMap<u64, StepEntity>) -> Result<UnitScale, IoError> {
+    fn required_unit_scale(entities: &HashMap<u64, StepEntity<'_>>) -> Result<UnitScale, IoError> {
         Ok(resolve_unit_scale(entities, true)?
             .expect("a required length unit always resolves to a scale"))
     }
@@ -12539,7 +13375,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         end: Point3,
         closed: bool,
     ) -> Result<(Topology, remus_topology::edge::EdgeId), IoError> {
-        let entities = parse_step_entities(&step_file(""), ImportLimits::default())?;
+        let step_data_23 = step_file("");
+        let entities = parse_step_entities(&step_data_23, ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let start_id = topo.add_vertex(Vertex::new(start, Tolerance::new().linear));
@@ -12559,7 +13396,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 
     /// Resolve one curve entity through the real parse + dispatch path.
     fn curve_geometry(body: &str, curve_id: u64) -> Result<EdgeCurve, IoError> {
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let step_data_24 = step_file(body);
+        let entities = parse_step_entities(&step_data_24, ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
@@ -12570,7 +13408,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         body: &str,
         edge_id: u64,
     ) -> Result<(Topology, remus_topology::edge::EdgeId), IoError> {
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let step_data_25 = step_file(body);
+        let entities = parse_step_entities(&step_data_25, ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let built = {
@@ -12774,7 +13613,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 
     /// Resolve one surface entity through the real parse + dispatch path.
     fn surface_geometry(body: &str, surface_id: u64) -> Result<FaceSurface, IoError> {
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let step_data_26 = step_file(body);
+        let entities = parse_step_entities(&step_data_26, ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
@@ -12784,7 +13624,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     /// Resolve one `AXIS2_PLACEMENT_3D` through the real parse + build path,
     /// as `(location, axis, ref_direction)`.
     fn axis2_placement(body: &str, placement_id: u64) -> Result<(Point3, Vec3, Vec3), IoError> {
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let step_data_27 = step_file(body);
+        let entities = parse_step_entities(&step_data_27, ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
@@ -12793,7 +13634,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 
     /// Resolve one `AXIS1_PLACEMENT` through the real parse + build path.
     fn axis1_placement(body: &str, placement_id: u64) -> Result<(Point3, Vec3), IoError> {
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let step_data_28 = step_file(body);
+        let entities = parse_step_entities(&step_data_28, ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
@@ -15209,7 +16051,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 #5 = PLANE_ANGLE_MEASURE_WITH_UNIT(PLANE_ANGLE_MEASURE(1.745329251994330E-02),#4);\n\
 #6 = ( CONVERSION_BASED_UNIT('DEGREE',#5) NAMED_UNIT(#4) PLANE_ANGLE_UNIT() );\n\
 #7 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#3,#6));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_29 = step_file(body);
+        let entities = parse_step_entities(&step_data_29, ImportLimits::default()).unwrap();
         let scale = required_unit_scale(&entities).unwrap();
         assert!((scale.length - 25.4).abs() < 1e-12, "{scale:?}");
         assert!(
@@ -15225,7 +16068,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 #2 = length_measure_with_unit(length_measure(25.4),#1);\n\
 #3 = ( CONVERSION_BASED_UNIT('INCH',#2) LENGTH_UNIT() NAMED_UNIT(#1) );\n\
 #4 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#3));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_30 = step_file(body);
+        let entities = parse_step_entities(&step_data_30, ImportLimits::default()).unwrap();
         let scale = required_unit_scale(&entities).unwrap();
         assert!((scale.length - 25.4).abs() < 1e-12, "{scale:?}");
     }
@@ -15236,7 +16080,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
                     #2=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(nope),#1,'123');\n\
                     #3=(CONVERSION_BASED_UNIT('INCH',#2) LENGTH_UNIT() NAMED_UNIT(#1));\n\
                     #4=GLOBAL_UNIT_ASSIGNED_CONTEXT((#3));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_31 = step_file(body);
+        let entities = parse_step_entities(&step_data_31, ImportLimits::default()).unwrap();
         let error = required_unit_scale(&entities).unwrap_err();
         assert!(error.to_string().contains("non-numeric value_component"));
     }
@@ -15254,7 +16099,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
                 "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT({prefix},.METRE.) );\n\
                  #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));"
             );
-            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let step_data_32 = step_file(&body);
+            let entities = parse_step_entities(&step_data_32, ImportLimits::default()).unwrap();
             let scale = required_unit_scale(&entities).unwrap();
             assert!(
                 (scale.length - expected_mm).abs() <= 1e-9 * expected_mm,
@@ -15272,7 +16118,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     fn file_without_a_length_unit_is_refused() {
         let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
                     #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT(());";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_33 = step_file(body);
+        let entities = parse_step_entities(&step_data_33, ImportLimits::default()).unwrap();
         let err = required_unit_scale(&entities).unwrap_err();
         assert!(
             err.to_string().contains("declares no LENGTH_UNIT"),
@@ -15351,7 +16198,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     fn broken_unit_declaration_is_refused_even_without_geometry() {
         let body = "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.FURLONG.,.METRE.) );\n\
                     #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_34 = step_file(body);
+        let entities = parse_step_entities(&step_data_34, ImportLimits::default()).unwrap();
         let err = resolve_unit_scale(&entities, false).unwrap_err();
         assert!(
             err.to_string().contains("unrecognised prefix"),
@@ -15366,7 +16214,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 #2 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.CENTI.,.METRE.) );\n\
 #3 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));\n\
 #4 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#2));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_35 = step_file(body);
+        let entities = parse_step_entities(&step_data_35, ImportLimits::default()).unwrap();
         let err = required_unit_scale(&entities).unwrap_err();
         assert!(
             err.to_string().contains("conflicting length units"),
@@ -15378,7 +16227,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     fn unrecognised_si_prefix_is_refused_not_defaulted() {
         let body = "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.FURLONG.,.METRE.) );\n\
                     #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_36 = step_file(body);
+        let entities = parse_step_entities(&step_data_36, ImportLimits::default()).unwrap();
         let err = required_unit_scale(&entities).unwrap_err();
         assert!(
             err.to_string().contains("unrecognised prefix"),
@@ -15390,7 +16240,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     fn length_unit_on_a_non_metre_base_is_refused() {
         let body = "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.GRAM.) );\n\
                     #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_37 = step_file(body);
+        let entities = parse_step_entities(&step_data_37, ImportLimits::default()).unwrap();
         let err = required_unit_scale(&entities).unwrap_err();
         assert!(
             err.to_string().contains("expected `.METRE.`"),
@@ -15404,7 +16255,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 #1 = ( CONVERSION_BASED_UNIT('A',#2) LENGTH_UNIT() NAMED_UNIT(*) );\n\
 #2 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(2.),#1);\n\
 #3 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
-        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let step_data_38 = step_file(body);
+        let entities = parse_step_entities(&step_data_38, ImportLimits::default()).unwrap();
         let err = required_unit_scale(&entities).unwrap_err();
         assert!(
             err.to_string().contains("cyclic unit reference"),
