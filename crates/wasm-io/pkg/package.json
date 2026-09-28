@@ -37,5 +37,5 @@
   ],
   "type": "module",
   "types": "remus_wasm_io.d.ts",
-  "version": "2026.1.4"
+  "version": "2026.1.5"
 }
