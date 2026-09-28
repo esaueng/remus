@@ -344,6 +344,24 @@ fn clones_start_with_independent_empty_logs() {
 }
 
 #[test]
+fn clone_chain_restore_keeps_outer_undo_records() {
+    let mut topo = Topology::new();
+    let mut staged = None;
+    let result = run_transacted(&mut topo, |topo| {
+        let vertex = topo.add_vertex(crate::vertex::Vertex::new(Point3::new(1.0, 2.0, 3.0), 1e-7));
+        staged = Some(vertex);
+        let intermediate = topo.clone();
+        let snapshot = intermediate.clone();
+        topo.restore_for_rollback(&snapshot);
+        assert_eq!(intermediate.num_vertices(), 1);
+        Err::<(), _>(TopologyError::WireNotClosed)
+    });
+    assert!(matches!(result, Err(TopologyError::WireNotClosed)));
+    assert_eq!(topo.num_vertices(), 0);
+    assert!(topo.vertex(staged.unwrap()).is_err());
+}
+
+#[test]
 fn nested_success_commits_and_dropped_scopes_release_storage() {
     fn send_sync<T: Send + Sync>() {}
     let mut t = Topology::new();

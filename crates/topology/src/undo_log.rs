@@ -215,6 +215,8 @@ pub struct UndoBase {
     pub(crate) generation: u64,
     /// Source log length at clone time.
     pub(crate) log_len: usize,
+    /// Mutation count of the copied state, used to detect changed intermediates.
+    pub(crate) ticks: u64,
 }
 
 /// Mutation-local rollback storage plus append-only guards.
@@ -247,6 +249,7 @@ impl Default for UndoLog {
             base: UndoBase {
                 generation: 0,
                 log_len: 0,
+                ticks: 0,
             },
         }
     }
@@ -255,12 +258,9 @@ impl Default for UndoLog {
 impl UndoLog {
     /// Fresh log for a clone: no active scopes or guards, but carrying the
     /// source's lineage so same-lineage foreign restores stay exact.
-    pub(crate) fn fresh_for_clone(source_generation: u64, source_log_len: usize) -> Self {
+    pub(crate) fn fresh_for_clone(base: UndoBase) -> Self {
         Self {
-            base: UndoBase {
-                generation: source_generation,
-                log_len: source_log_len,
-            },
+            base,
             ..Self::default()
         }
     }

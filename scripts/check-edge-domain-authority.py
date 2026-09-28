@@ -36,6 +36,9 @@ DOMAIN_FALLBACK_MANIFEST = """91a4d2a1068bb6fb""".split()
 DOMAIN_TEST_MANIFEST = """8277dadb9701777b 51c0813fea3b625a d47f8b4a5f77d05a 17591aa844a92559 30620a876040ddd5 b6bfb3c711b90ed9 c787b58a2c165c78 7417af0c8434d4f9 9e634c6a7a082a19 7a6d526ca6e2278d 7e8707feb2e86f57 3e08d1b88fade05b 40bfa30a8427db2e 97158146fbc808eb 4e7a2871ee80b050 c22a68cba58c7f28 b1bada2d5ab15cd0 7ebef0b284320e42 e87d61a1febfd731 c2b387d808cd08da 204452963e1c5e98 c55dfa9acf88f647 2ed119c302805b91 322638dd3568ec26 866c614a7cf0964e c7b5c49d9ac8d510 4d8e95c884625c0a 91bd9b2026b89d61 c621892ff80d4cfe 949192ec442ed3f7 fe5418a1017bb67d 78048126c2ad089f 415e2279a9fb15a8 5ad7fce5400be29d 66b895c9c1d143c4 03886d93aee7c581 ef428583ee34fe78 ff7e4038b36930cc 96af5c33467c485b ef1b1e9e97594176 039783744908cc8e 2fb14d9aeb438913 a548a1756cc73d50""".split()
 BOUNDARY_PRODUCTION_MANIFEST = """fb55de050adbb88c 1d3d3b084411fd14 c23d815cf0a862cd 3cb826f4d02579b5 f003ef01c6bb6b5c 4d8b6fc07e8c3a9d 9e53b906967cfd5e d01b54e628597143 91e219e53e6d8d3e 4446f3cec3e34692 0875bdbd1dff21b7 56e6d89d2bea1373 c109e6e08cc65763 5736f9fd5fbf1c76 bc4653b22d2d6cd0 45aa5e7848f4c888 ff6f52ee9ee26c6a 7bd5ba190dcf648f 75fe315ba99522ed 29abde1caf2c1a69 604d510e5b233e40 a3f1a4d3efa9e063 323be0bc1cd3bf59 a4b432acb8a1243d 7af1bcf9abc3f7d1 47d5c5ce79b171a7 b1da5ab122bcc9e3 5821968b9ea57cc4 8f42785da0314cf8 fb8b14d8cb0fe464""".split()
 BOUNDARY_EXCLUDED_MANIFEST = """8fe14bd9c408d729 0562c28e114de4de c0f2a1f22c2e8a8c 7cc937c159b16539 b01c467494ff98a6 68f26eecb04615d0 31b2abde73d32ea3 1c6bd024fe00c4b8 55c17c389fbc6426 47b8301684e04c8b 6b2da41588b0d5d7 ad568991ded2d336""".split()
+# PERF-T02/T03 test-only guard/oracle exercises. Keep these exact identities
+# separate from the immutable baseline; production mutations remain forbidden.
+BOUNDARY_REVIEWED_TEST_ADDITIONS = """123048a9050f536c 5424c88caa0ce882""".split()
 BASELINE_PRESERVATION_MANIFEST = """409e26059e7657d1 4fcd3d400dabcb8c 7eb3fdf95ecd461e 2ef78a8d560c9b51 f8dac04156521ab6 c0079d093e520988 d6672a48aeae38c1 f36ef17e09585a9d 3c435d48ac3cd69f b77ddaa8423159bb 793fa734cab8252d fe75393c672bf17d""".split()
 # Reviewed one-for-one migrations keep the immutable baseline obligations while
 # allowing their implementation identity to move. Keys and values stay exact;
@@ -260,6 +263,9 @@ def validate_static_configuration() -> bool:
     )
     valid &= validate_manifest(BOUNDARY_EXCLUDED_MANIFEST, 12, "boundary-excluded")
     valid &= validate_manifest(
+        BOUNDARY_REVIEWED_TEST_ADDITIONS, 2, "boundary-reviewed-test-additions"
+    )
+    valid &= validate_manifest(
         BASELINE_PRESERVATION_MANIFEST,
         BASELINE_PRESERVATION_WRITES,
         "baseline-trim-preservation",
@@ -275,7 +281,11 @@ def validate_static_configuration() -> bool:
     if len(domain_hashes) != len(set(domain_hashes)):
         fail("domain identity manifests overlap")
         valid = False
-    boundary_hashes = BOUNDARY_PRODUCTION_MANIFEST + BOUNDARY_EXCLUDED_MANIFEST
+    boundary_hashes = (
+        BOUNDARY_PRODUCTION_MANIFEST
+        + BOUNDARY_EXCLUDED_MANIFEST
+        + BOUNDARY_REVIEWED_TEST_ADDITIONS
+    )
     if len(boundary_hashes) != len(set(boundary_hashes)):
         fail("boundary identity manifests overlap")
         valid = False
@@ -376,6 +386,7 @@ def main() -> int:
     boundary_manifest = {
         **{value: "production" for value in BOUNDARY_PRODUCTION_MANIFEST},
         **{value: "excluded_baseline" for value in BOUNDARY_EXCLUDED_MANIFEST},
+        **{value: "reviewed_test_addition" for value in BOUNDARY_REVIEWED_TEST_ADDITIONS},
     }
     boundary, unknown_boundary = classified_sites(
         matching_sites(sources, BOUNDARY_PATTERN), sources, boundary_manifest
@@ -462,6 +473,7 @@ def main() -> int:
     fallbacks = domain.get("internal_fallback", [])
     test_readers = domain.get("test_example", [])
     boundary_excluded = boundary.get("excluded_baseline", [])
+    boundary_reviewed_tests = boundary.get("reviewed_test_addition", [])
     preservation_present = sum(
         hashed in current_preservation for hashed in required_preservation
     )
@@ -492,6 +504,7 @@ def main() -> int:
         f"production={len(boundary_production)}/{BASELINE_BOUNDARY_MUTATIONS} "
         "required=0 "
         f"excluded_baseline={len(boundary_excluded)} "
+        f"reviewed_test_additions={len(boundary_reviewed_tests)} "
         f"unknown={len(unknown_boundary)}"
     )
 
@@ -516,6 +529,10 @@ def main() -> int:
             (
                 "current production boundary-mutation identities",
                 boundary_production,
+            ),
+            (
+                "reviewed test-only boundary-mutation identities",
+                boundary_reviewed_tests,
             ),
         )
         for heading, records in sections:
