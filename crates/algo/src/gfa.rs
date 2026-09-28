@@ -110,7 +110,6 @@ fn boolean_with_context_impl(
     context: &OperationContext,
 ) -> Result<SolidId, AlgoError> {
     context.check_cancelled()?;
-    let tol = context.tolerance;
     // Refuse unsupported curve types up front, by name. The pave filler,
     // face splitter and classifier all lack hyperbola/parabola support;
     // letting such an input through would make them fall back to a chord
@@ -138,12 +137,12 @@ fn boolean_with_context_impl(
 
     // Stage 2: Builder — face splitting + classification
     context.check_cancelled()?;
-    let mut builder = Builder::with_tolerance(
+    let mut builder = Builder::with_context(
         std::mem::take(&mut store.topo),
         arena,
         store.solid_a,
         store.solid_b,
-        tol,
+        context,
     );
     builder.perform()?;
 
@@ -536,6 +535,7 @@ fn fuse_n_with_context_impl(
                 &store.sources,
                 &store.face_source,
                 tol,
+                context,
             )?;
             store.topo = store_topo;
 

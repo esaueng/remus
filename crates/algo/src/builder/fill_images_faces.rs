@@ -39,6 +39,7 @@ type CbEdgeKey = ((i64, i64, i64), (i64, i64, i64));
 /// remain separate.
 const VERTEX_DEDUP_SCALE: f64 = 1e10;
 
+use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
@@ -72,6 +73,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
     face_ranks: &HashMap<FaceId, Rank, S2>,
     tol: Tolerance,
+    context: &OperationContext,
     lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<Vec<SubFace>, AlgoError> {
     let mut sub_faces = Vec::new();
@@ -476,6 +478,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             None, // PlaneFrame built internally by face_splitter
             info.as_ref(),
             edge_images,
+            context,
             Some(&mut section_split_registry),
         )?;
 
