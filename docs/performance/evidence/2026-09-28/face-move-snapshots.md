@@ -43,6 +43,21 @@ tests. The new shared-snapshot checkpoint-policy oracle passed. The five tests
 in `cargo test --release -p remus-operations --test qualify_move_faces_generalized`
 passed, including journal refusal, persistent-reference binding, blend moves,
 scale/translation, and bore replacement. `cargo fmt --all --check`, the crate
-boundary script, and `git diff --check` passed. This is native-only evidence;
-paired generated WASM packages and an installed OpenZCAD consumer must be
-rebuilt and checked from the final source before claiming browser performance.
+boundary script, and `git diff --check` passed. These timings are native-only evidence; they do not establish browser latency.
+
+## Generated package qualification
+
+`CARGO_BUILD_JOBS=2 cargo xtask wasm-build` passed from clean source commit
+`553c3c4b4096ddbeeda37a897849f8e24c7fa57c`. It built both optimized wasm32/SIMD
+packages at version `2026.1.3`, passed package validation and the version tests,
+and ran the complete WASM smoke and installed-tarball consumer regressions.
+The JavaScript entrypoints and type declarations are unchanged.
+
+| Module | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Kernel | 9,221,904 | `a3e7c9b7d77362fb9d95e172957069c64e41575082c185aa0f43520e0b270dfc` |
+| Translators | 2,732,028 | `35a3ec4a6e8f26f0fe7ed339eaf008e025735b2bcf04cb9ddc2b5985c9279434` |
+
+Both binaries remain below their existing package size gates. This verifies
+the generated runtime and installed package contract; application-level
+latency and browser verification are separate consumer evidence.
