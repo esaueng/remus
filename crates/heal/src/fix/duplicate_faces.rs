@@ -132,6 +132,8 @@ enum BoundarySeg {
         radius: f64,
         /// Canonical sweep in `(0, TAU]`.
         sweep: f64,
+        /// Traversal direction in the face-normal chart.
+        positive: bool,
         /// Full-circle rim (seam phase is meaningless).
         closed: bool,
     },
@@ -539,17 +541,6 @@ fn describe_arc(
         return None;
     }
 
-    let closed = edge.is_closed();
-    if closed {
-        return Some(BoundarySeg::Arc {
-            start,
-            end,
-            center,
-            radius,
-            sweep: TAU,
-            closed: true,
-        });
-    }
     let (t0, t1) = domain;
     if !t0.is_finite() || !t1.is_finite() {
         return None;
@@ -558,6 +549,26 @@ fn describe_arc(
     if delta.abs() <= 1e-12 || delta.abs() > TAU + 1e-9 {
         return None;
     }
+    let signed = if axis.dot(face_normal) > 0.0 {
+        delta
+    } else {
+        -delta
+    };
+    let closed = edge.is_closed();
+    if closed {
+        if (delta.abs() - TAU).abs() > angle_tolerance(tolerance, radius) {
+            return None;
+        }
+        return Some(BoundarySeg::Arc {
+            start,
+            end,
+            center,
+            radius,
+            sweep: TAU,
+            positive: signed > 0.0,
+            closed: true,
+        });
+    }
     if (circle.evaluate(t0) - start).length() >= tolerance
         || (circle.evaluate(t1) - end).length() >= tolerance
     {
@@ -565,11 +576,6 @@ fn describe_arc(
     }
     // The face-normal chart has one canonical positive direction. A reverse
     // authored span traces the same short arc as a reversed circle frame.
-    let signed = if axis.dot(face_normal) > 0.0 {
-        delta
-    } else {
-        -delta
-    };
     let sweep = signed.rem_euclid(TAU);
     if sweep <= 1e-12 {
         return None;
@@ -580,6 +586,7 @@ fn describe_arc(
         center,
         radius,
         sweep,
+        positive: signed > 0.0,
         closed: false,
     })
 }
@@ -656,6 +663,7 @@ fn mergeable_joint(segs: &[BoundarySeg], i: usize, tolerance: f64) -> bool {
                 center: c1,
                 radius: r1,
                 sweep: s1,
+                positive: p1,
                 ..
             },
             BoundarySeg::Arc {
@@ -663,6 +671,7 @@ fn mergeable_joint(segs: &[BoundarySeg], i: usize, tolerance: f64) -> bool {
                 center: c2,
                 radius: r2,
                 sweep: s2,
+                positive: p2,
                 ..
             },
         ) => {
@@ -678,6 +687,7 @@ fn mergeable_joint(segs: &[BoundarySeg], i: usize, tolerance: f64) -> bool {
             (*start - prev_end).length() < tolerance
                 && (*c1 - *c2).length() < tolerance
                 && (*r1 - *r2).abs() < tolerance
+                && p1 == p2
                 && *s1 + *s2 <= TAU + angle_tolerance(tolerance, r1.max(*r2))
         }
     }
@@ -698,6 +708,7 @@ fn merge_joint(segs: &[BoundarySeg], i: usize, j: usize, tolerance: f64) -> Boun
                 center,
                 radius,
                 sweep: s1,
+                positive,
                 ..
             },
             BoundarySeg::Arc { end, sweep: s2, .. },
@@ -711,6 +722,7 @@ fn merge_joint(segs: &[BoundarySeg], i: usize, j: usize, tolerance: f64) -> Boun
                 center: *center,
                 radius: *radius,
                 sweep: if full { std::f64::consts::TAU } else { sweep },
+                positive: *positive,
                 closed: full,
             }
         }
@@ -1002,6 +1014,7 @@ fn segs_compatible(a: &BoundarySeg, b: &BoundarySeg, tolerance: f64) -> bool {
                 center: c1,
                 radius: r1,
                 sweep: w1,
+                positive: p1,
                 closed: k1,
             },
             BoundarySeg::Arc {
@@ -1010,12 +1023,14 @@ fn segs_compatible(a: &BoundarySeg, b: &BoundarySeg, tolerance: f64) -> bool {
                 center: c2,
                 radius: r2,
                 sweep: w2,
+                positive: p2,
                 closed: k2,
             },
         ) => {
             (*c1 - *c2).length() < tolerance
                 && (*r1 - *r2).abs() < tolerance
                 && (*w1 - *w2).abs() < angle_tolerance(tolerance, r1.max(*r2))
+                && p1 == p2
                 && (*k1 && *k2
                     || (*s1 - *s2).length() < tolerance && (*e1 - *e2).length() < tolerance)
         }
@@ -1256,6 +1271,7 @@ mod tests {
                     center: c1,
                     radius: r1,
                     sweep: w1,
+                    positive: p1,
                     closed: k1,
                 },
                 BoundarySeg::Arc {
@@ -1264,12 +1280,14 @@ mod tests {
                     center: c2,
                     radius: r2,
                     sweep: w2,
+                    positive: p2,
                     closed: k2,
                 },
             ) => {
                 (*c1 - *c2).length() < tol
                     && (*r1 - *r2).abs() < tol
                     && (*w1 - *w2).abs() < tol / r1.max(*r2).max(tol)
+                    && p1 == p2
                     && (*k1 && *k2 || (*s1 - *s2).length() < tol && (*e1 - *e2).length() < tol)
             }
             _ => false,
@@ -2476,6 +2494,30 @@ mod tests {
     }
 
     #[test]
+    fn disc_rims_with_opposite_coedge_direction_are_kept() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let a = add_disc(&mut topo, center, 1.0, 0.0);
+        let forward_wire = topo.face(a).unwrap().outer_wire();
+        let edge = topo.wire(forward_wire).unwrap().edges()[0].edge();
+        let backward_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, false)], true).unwrap());
+        let b = topo.add_face(Face::new(
+            backward_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        assert!(
+            assert_shell_removals(&topo, shell, 1e-7).pairs.is_empty(),
+            "opposite full-rim winding must be preserved"
+        );
+    }
+
+    #[test]
     fn split_full_rim_matches_single_rim_across_seams() {
         let mut topo = Topology::new();
         let center = Point3::new(0.0, 0.0, 0.0);
@@ -2756,8 +2798,8 @@ mod tests {
 
     #[test]
     fn disc_rims_match_across_flipped_circle_frame() {
-        // Same rim on a circle whose stored frame is flipped (opposite
-        // normal): closed rims canonicalize to a full sweep either way.
+        // A flipped stored frame and reversed coedge still traverse the rim
+        // in the same face-normal direction.
         let mut topo = Topology::new();
         let center = Point3::new(1.0, 2.0, 0.0);
         let a = add_disc(&mut topo, center, 1.5, 0.0);
@@ -2766,7 +2808,7 @@ mod tests {
         let seam = flipped.evaluate(1.0);
         let v = topo.add_vertex(Vertex::new(seam, 1e-7));
         let edge = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(flipped)));
-        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, false)], true).unwrap());
         let b = topo.add_face(Face::new(
             wire,
             vec![],
