@@ -2427,11 +2427,15 @@ impl<'a> StepBuilder<'a> {
             }
 
             for shell_ref in shell_refs {
-                let shell_type = self.get_entity(shell_ref)?.kind.as_str();
-                if !matches!(shell_type, "OPEN_SHELL" | "CLOSED_SHELL") {
+                let shell_entity = self.get_entity(shell_ref)?;
+                if !matches!(
+                    shell_entity.kind,
+                    EntityKind::OpenShell | EntityKind::ClosedShell
+                ) {
                     return Err(IoError::UnsupportedEntity {
                         entity: format!(
-                            "{shell_type} as SHELL_BASED_SURFACE_MODEL #{model_id} constituent"
+                            "{} as SHELL_BASED_SURFACE_MODEL #{model_id} constituent",
+                            diagnostic_entity_type(shell_entity)
                         ),
                     });
                 }
