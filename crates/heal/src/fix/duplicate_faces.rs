@@ -391,7 +391,15 @@ fn describe_face(
         }
     }
 
-    let starts: Vec<Point3> = outer.iter().map(bucket_anchor).collect();
+    let mut starts: Vec<Point3> = outer.iter().map(bucket_anchor).collect();
+    // Summation order must not depend on the wire's cyclic start: large
+    // coordinates can otherwise round equal loops into different cells.
+    starts.sort_by(|a, b| {
+        a.x()
+            .total_cmp(&b.x())
+            .then(a.y().total_cmp(&b.y()))
+            .then(a.z().total_cmp(&b.z()))
+    });
     let centroid = mean_point(&starts);
     Ok(Some(FaceDescriptor {
         face: face_id,
@@ -1757,6 +1765,23 @@ mod tests {
         let descriptors = describe_shell(&topo, shell, tol);
         let plan = assert_plan_equals_reference(&descriptors, tol);
         assert_eq!(plan.pairs, vec![(a, b)]);
+    }
+
+    #[test]
+    fn large_coordinate_cyclic_wire_starts_share_a_bucket() {
+        let base = 760_000_000.0_f64;
+        let ulp = base.next_up() - base;
+        let points = [
+            Point3::new(base + 326.0 * ulp, 0.0, 0.0),
+            Point3::new(base - 234.0 * ulp, 0.0, 0.0),
+            Point3::new(base + 319.0 * ulp, 1.0, 0.0),
+        ];
+        let mut topo = Topology::new();
+        let first = add_triangle(&mut topo, points[0], points[1], points[2]);
+        let second = add_triangle(&mut topo, points[1], points[2], points[0]);
+        let shell = topo.add_shell(Shell::new(vec![first, second]).unwrap());
+        let plan = assert_shell_removals(&topo, shell, 1e-7);
+        assert_eq!(plan.pairs, vec![(first, second)]);
     }
 
     #[test]
