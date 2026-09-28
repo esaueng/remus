@@ -26,6 +26,20 @@ const BORED_PLATE: &str = include_str!("data/openzcad_a_export_bored_plate.step"
 const FILLETED_PLATE: &str = include_str!("data/openzcad_e_analytic_fillet_plate.step");
 const NURBS_PLATE: &str = include_str!("data/openzcad_e_nurbs_fillet_plate.step");
 
+#[test]
+fn unsupported_pcurve_representation_reports_its_source_type() {
+    let malformed = FILLETED_PLATE.replacen(
+        "DEFINITIONAL_REPRESENTATION",
+        "VENDOR_DEFINITIONAL_REPRESENTATION",
+        1,
+    );
+    let mut topo = Topology::new();
+    let error = read_step(&malformed, &mut topo).unwrap_err();
+    assert!(
+        matches!(error, remus_io::IoError::UnsupportedEntity { entity } if entity.contains("VENDOR_DEFINITIONAL_REPRESENTATION"))
+    );
+}
+
 fn import_one(step: &str) -> (Topology, SolidId) {
     let mut topo = Topology::new();
     let solids = read_step(step, &mut topo).expect("import STEP fixture");
