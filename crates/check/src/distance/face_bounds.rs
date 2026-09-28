@@ -16,12 +16,13 @@
 //! local Newton projection does not become globally exact through BVH use).
 //!
 //! The narrow phase returns, per face, either a carrier projection accepted
-//! by the trim predicate [`super::is_point_in_face_boundary`] (the same
-//! function reused here) or a closest point on a wire segment (a straight
-//! chord between stored vertices). The face bound therefore covers:
+//! by the narrow-phase trim predicate (the same function the narrow phase
+//! calls, reused here for predicate-consistency) or a closest point on a
+//! wire segment (a straight chord between stored vertices). The face bound
+//! therefore covers:
 //!
 //! - every wire curve, via the geometry-layer span bounds over the edge's
-//!   authoritative trim ([`Edge::strict_domain`]), unioned with the stored
+//!   authoritative trim (`Edge::strict_domain`), unioned with the stored
 //!   vertex positions (vertices can sit off-curve within sewing tolerance
 //!   and the narrow phase walks vertex chords, which the convex box then
 //!   contains);
@@ -53,7 +54,7 @@
 //!
 //! # Trim authority
 //!
-//! Edges without a stored trim ([`EdgeDomainError::Missing`]) fall back to
+//! Edges without a stored trim (missing trim authority) fall back to
 //! the whole-domain bound where the carrier is bounded (full circle/ellipse
 //! extent, whole NURBS hull); unbounded carriers (hyperbola, parabola) with
 //! no trim are unknown. An invalid stored trim is always unknown.
