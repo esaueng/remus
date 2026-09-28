@@ -11,6 +11,7 @@ use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use remus_topology::transaction::run_transacted;
 use remus_topology::vertex::VertexId;
 use remus_topology::wire::WireId;
 
@@ -65,6 +66,690 @@ const ANALYTIC_ROUNDOFF_REL: f64 = 16.0 * f64::EPSILON;
 fn equal_within_analytic_roundoff(a: f64, b: f64) -> bool {
     let scale = a.abs().max(b.abs());
     scale.is_finite() && scale > 0.0 && (a - b).abs() <= scale * ANALYTIC_ROUNDOFF_REL
+}
+
+// ── B74 quality-aware contract ─────────────────────────────────────────────
+// Entry-point inventory (native):
+//   - `transform_solid` — in-place solid transform (legacy, fitting default).
+//   - `transform_solid_detailed` — additive twin: same engine, typed report,
+//     caller-chosen [`TransformPolicy`], transacted.
+//   - `transform_wire`, `transform_face` — in-place wire/face subsets.
+//   - `copy::copy_and_transform_solid` — copy + transform in one pass.
+//   - `copy::copy_and_transform_solid_detailed` — additive twin with report.
+//   - `mirror::mirror` — copy + reflection (a similarity, always exact).
+//   - `pattern::*` — rigid placements only, unaffected by anisotropy.
+// WASM/batch routes live in `remus-wasm`: `transformSolid`, `transformWire`,
+// `transformFace`, `copyAndTransformSolid` (direct + `executeBatch`/`V2`),
+// plus the additive `transformDetailed` / `copyAndTransformSolidDetailed`
+// twins. `composeTransforms` is pure matrix math with no topology.
+//
+// Supported domain: finite affine matrices whose linear part has a
+// dimensionless Hadamard ratio above [`DEGENERATE_SHAPE_RATIO`] (accepts a
+// uniform scale of any magnitude in either direction; refuses near-collapsed
+// matrices) and that [`Mat4::inverse`] still inverts. Similarity maps
+// (conformal linear part within [`ANALYTIC_ROUNDOFF_REL`]) preserve every
+// analytic carrier; anisotropic maps convert carriers as the report records.
+// Volume scales by `|det(linear)|`; orientation is witnessed separately
+// (classification + normal adherence), never inferred from the volume sign.
+//
+// Legacy compatibility limits (unchanged by this contract): the legacy
+// entry points keep their signatures, their fitting default for sphere
+// patches outside the exact class, and their void/copy returns. They gain
+// transacted atomicity and share the engine fixes below, but they do not
+// disclose quality — use the detailed twins for that. A detailed `Exact`
+// report never covers fitted output; fitted output requires
+// [`TransformPolicy::AllowApproximate`] and carries sampled evidence that
+// is explicitly not a certified bound.
+
+/// Caller-chosen fallback policy for the quality-aware transform entry
+/// points.
+///
+/// This is the transform-local form of the operation contract's fallback
+/// policy. There is no error budget: the sampled sphere fit this policy
+/// unlocks has no computable bound, so the report carries measured sampled
+/// evidence instead (see [`FittedFaceEvidence`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformPolicy {
+    /// Refuse with [`crate::OperationsError::ExactOnlyUnattainable`] before
+    /// touching topology when a face would need sampled fitting. Never
+    /// publishes fitted output.
+    ExactOnly,
+    /// Perform the sampled sphere fit where the exact class does not reach,
+    /// and disclose it per face with sampled evidence.
+    AllowApproximate,
+}
+
+/// Quality of a committed transform result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformQuality {
+    /// Every face is the exact affine image of its source: analytic
+    /// carriers preserved under similarity, exact rational NURBS
+    /// conversions otherwise. No representation was degraded.
+    Exact,
+    /// At least one face is a sampled interpolation (see
+    /// [`TransformReport::fitted_faces`]). Permitted only under
+    /// [`TransformPolicy::AllowApproximate`].
+    Approximate,
+}
+
+/// How one face's surface survived the transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceMethod {
+    /// The carrier is unchanged (planes under any affine map, NURBS control
+    /// nets under any affine map, every analytic carrier under similarity).
+    AnalyticPreserved,
+    /// The carrier changed family through an exact rational construction:
+    /// cylinder/cone/torus to NURBS, or an exact-class sphere patch (full
+    /// sphere, hemisphere) to NURBS. The affine image of a rational NURBS is exact as a point set; 3D edge trims remap exactly
+    /// with it. The surface parameterization is NOT preserved — converters
+    /// use their own knot frames (fractional-circle u for cylinders/cones,
+    /// rational-vs-trigonometric circle maps for spheres) — so surface-UV
+    /// traces (stored pcurves) do not survive conversion. Downstream
+    /// consumers that trim from 3D wires are unaffected; UV-trace consumers
+    /// must re-derive. Meshing and classification fall back to projection
+    /// through a tolerance gate wherever a stale trace misses.
+    ExactRational,
+    /// The carrier changed family through sampled interpolation (sphere
+    /// patches outside the exact class: 33 × 17 grid, cubic, non-rational).
+    /// Approximate: see [`FittedFaceEvidence`].
+    SampledFit,
+}
+
+impl SurfaceMethod {
+    /// Stable wire string for reports and WASM details.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AnalyticPreserved => "analyticPreserved",
+            Self::ExactRational => "exactRational",
+            Self::SampledFit => "sampledFit",
+        }
+    }
+}
+
+/// One face whose surface carrier changed family.
+#[derive(Debug, Clone, Copy)]
+pub struct FaceCarrierChange {
+    /// Face as found after the transform (in-place entry points keep the id).
+    pub face: FaceId,
+    /// Source carrier (`FaceSurface::type_tag`, e.g. `"cylinder"`).
+    pub from: &'static str,
+    /// Result carrier (e.g. `"nurbs"`).
+    pub to: &'static str,
+    /// How the conversion was built.
+    pub method: SurfaceMethod,
+    /// Control points of the result surface when it is NURBS, else `0`.
+    /// Deterministic output-size measure for conversion cost tracking.
+    pub control_points: usize,
+}
+
+/// One edge whose curve carrier changed family (e.g. circle to ellipse).
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeCarrierChange {
+    /// Edge as found after the transform.
+    pub edge: EdgeId,
+    /// Source carrier (`EdgeCurve::type_tag`, e.g. `"circle"`).
+    pub from: &'static str,
+    /// Result carrier (e.g. `"ellipse"`).
+    pub to: &'static str,
+}
+
+/// Sampled evidence for one fitted face.
+///
+/// Measured as a symmetric sampled Hausdorff estimate between uniform
+/// samples of the fitted NURBS domain and a fine analytic grid of the true
+/// affine image: every sample cloud's farthest point from the other cloud.
+/// This is actual measured evidence, not a certified bound — the true
+/// maximum deviation between the sample clouds is unobserved.
+#[derive(Debug, Clone, Copy)]
+pub struct FittedFaceEvidence {
+    /// Face as found after the transform.
+    pub face: FaceId,
+    /// Source carrier (always `"sphere"` on the current engine).
+    pub from: &'static str,
+    /// Construction method; currently always `"interpolate33x17"`.
+    pub method: &'static str,
+    /// Fit grid resolution `(u, v)` the interpolation ran at.
+    pub grid: (usize, usize),
+    /// Measured sampled deviation in model units.
+    pub max_residual: f64,
+    /// Total check points compared (`nurbs_samples + analytic_samples`).
+    pub check_points: usize,
+}
+
+/// Typed quality-aware result of a committed transform.
+#[derive(Debug, Clone)]
+pub struct TransformReport {
+    /// Exact when no face was fitted; approximate otherwise.
+    pub quality: TransformQuality,
+    /// Signed determinant of the linear part. Volume scales by its absolute
+    /// value; its sign records orientation reversal.
+    pub determinant: f64,
+    /// True when the linear part reverses orientation (`determinant < 0`).
+    /// NURBS carriers (converted or pre-existing) are re-parameterized
+    /// (u-reversed) to compensate with flags and coedges untouched;
+    /// analytic and plane carriers are rebuilt or re-derived and need no
+    /// compensation. Informational: committed results are outward-oriented
+    /// either way.
+    pub orientation_reversed: bool,
+    /// True when the linear part is conformal (similarity): every analytic
+    /// carrier is then preserved and no conversion runs.
+    pub similarity: bool,
+    /// Faces whose carrier changed family, in face-id order.
+    pub face_changes: Vec<FaceCarrierChange>,
+    /// Edges whose carrier changed family, in edge-id order.
+    pub edge_changes: Vec<EdgeCarrierChange>,
+    /// Sampled-fit evidence, in face-id order. Non-empty implies
+    /// `quality == Approximate`.
+    pub fitted_faces: Vec<FittedFaceEvidence>,
+    /// Total NURBS control points minted by conversions and fits.
+    pub control_points_total: usize,
+}
+
+impl TransformReport {
+    /// True when no representation was degraded.
+    #[must_use]
+    pub const fn is_exact(&self) -> bool {
+        matches!(self.quality, TransformQuality::Exact)
+    }
+}
+
+/// Determinant of the linear (upper-left 3 × 3) part of an affine matrix.
+///
+/// Positive-volume solids scale by its absolute value; its sign decides the
+/// NURBS orientation-flag carry. Computed directly rather than through
+/// [`Mat4::determinant`] so the contract names the linear part explicitly.
+#[must_use]
+pub fn linear_determinant(matrix: &Mat4) -> f64 {
+    let m = &matrix.0;
+    let cofactor_00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+    let cofactor_01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+    let cofactor_02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+    m[0][0] * cofactor_00 + m[0][1] * cofactor_01 + m[0][2] * cofactor_02
+}
+
+/// Angular gate (radians) for constant-latitude recognition of a sphere
+/// patch boundary. `project_point` returns angles, so this is independent
+/// of model scale; primitive latitude rims evaluate within float noise
+/// while boolean trims wander orders of magnitude wider.
+const SPHERE_LATITUDE_GATE: f64 = 1e-9;
+
+/// Fit grid (u × v) for sampled sphere patches. Values are the historical
+/// ones; changing them would change legacy geometry.
+const SPHERE_FIT_GRID_U: usize = 33;
+const SPHERE_FIT_GRID_V: usize = 17;
+
+/// Evidence grids for [`fitted_patch_evidence`]: uniform samples of the
+/// fitted NURBS domain versus a fine analytic grid of the true image.
+const FIT_EVIDENCE_NURBS_U: usize = 25;
+const FIT_EVIDENCE_NURBS_V: usize = 13;
+const FIT_EVIDENCE_ANALYTIC_U: usize = 97;
+const FIT_EVIDENCE_ANALYTIC_V: usize = 49;
+
+/// Exact-class membership of one sphere face under an anisotropic map.
+///
+/// Decided read-only from boundary latitudes (vertices plus interior
+/// samples of every non-chord edge, mapped back through `inverse`).
+/// Faces outside the exact class keep the historical sampled fit (or
+/// refuse under [`TransformPolicy::ExactOnly`]).
+///
+/// Two historical misroutings are closed here, not extended: latitude
+/// bands used to pass the mean-latitude test and convert as hemispheres
+/// (wrong pole-reaching patch); they now fail the spread gate and land in
+/// `General`. Off-equator single-latitude loops (polar caps) are
+/// deliberately NOT converted exactly even though the split is
+/// surface-perfect (4e-16 on-sphere): the inserted-knot piece will not
+/// mesh its trim — raw split pieces without any transform come out open
+/// while natural-knot hemisphere splits mesh watertight — so caps keep
+/// the fit / exact-only refusal until tessellation handles clamped
+/// interior knots. See the B74 trail for the isolation probes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpherePatch {
+    /// No boundary edges: the whole sphere converts exactly.
+    Full,
+    /// Equatorial loop bounding the northern hemisphere.
+    NorthHemisphere,
+    /// Equatorial loop bounding the southern hemisphere.
+    SouthHemisphere,
+    /// Anything else (latitude bands, polar caps, general trims,
+    /// ambiguous loops): sampled fit, never relabeled exact.
+    General,
+}
+
+/// Per-face transform plan, computed read-only by preflight.
+///
+/// The WASM twin reads these to name refused faces on the exact-only path.
+#[derive(Debug, Clone, Copy)]
+pub struct FacePlan {
+    /// Face being planned.
+    pub face: FaceId,
+    /// Source carrier tag.
+    pub from: &'static str,
+    /// How the face will be built.
+    pub method: SurfaceMethod,
+    /// Sphere patch class when `from == "sphere"` and the map is
+    /// anisotropic; `None` otherwise.
+    pub patch: Option<SpherePatch>,
+}
+
+/// Accumulates carrier changes, fit evidence, and output sizes.
+///
+/// Threaded through the shared engine so the legacy entry points, the
+/// detailed twins, and the copy path record identically.
+#[derive(Debug, Default)]
+pub struct TransformRecorder {
+    /// Whether the linear part reverses orientation: NURBS results are
+    /// u-reversed to compensate (see [`orient_nurbs_for_map`]).
+    orientation_reversing: bool,
+    /// Whether the sampled sphere fit may run. `false` turns a `General`
+    /// sphere patch into an exact-only refusal instead of a fit.
+    allow_fit: bool,
+    /// Faces whose carrier changed family.
+    face_changes: Vec<FaceCarrierChange>,
+    /// Edges whose carrier changed family.
+    edge_changes: Vec<EdgeCarrierChange>,
+    /// Sampled-fit evidence.
+    fitted: Vec<FittedFaceEvidence>,
+    /// Total NURBS control points minted.
+    control_points_total: usize,
+}
+
+impl TransformRecorder {
+    /// Recorder that discards nothing but reports to nobody: the legacy
+    /// path's engine runs through it so fixes stay shared.
+    pub(crate) fn new(orientation_reversing: bool, allow_fit: bool) -> Self {
+        Self {
+            orientation_reversing,
+            allow_fit,
+            face_changes: Vec::new(),
+            edge_changes: Vec::new(),
+            fitted: Vec::new(),
+            control_points_total: 0,
+        }
+    }
+
+    pub(crate) fn record_face(
+        &mut self,
+        face: FaceId,
+        from: &'static str,
+        to: &'static str,
+        method: SurfaceMethod,
+        control_points: usize,
+    ) {
+        if from != to {
+            self.face_changes.push(FaceCarrierChange {
+                face,
+                from,
+                to,
+                method,
+                control_points,
+            });
+        }
+        self.control_points_total += control_points;
+    }
+
+    pub(crate) fn record_edge(&mut self, edge: EdgeId, from: &'static str, to: &'static str) {
+        if from != to {
+            self.edge_changes.push(EdgeCarrierChange { edge, from, to });
+        }
+    }
+
+    pub(crate) fn record_fit(&mut self, evidence: FittedFaceEvidence) {
+        self.fitted.push(evidence);
+    }
+
+    /// Assemble the report, sorting change lists by entity index so repeated
+    /// runs agree regardless of arena iteration order.
+    pub(crate) fn into_report(mut self, determinant: f64, similarity: bool) -> TransformReport {
+        self.face_changes.sort_by_key(|change| change.face.index());
+        self.edge_changes.sort_by_key(|change| change.edge.index());
+        self.fitted.sort_by_key(|fit| fit.face.index());
+        let quality = if self.fitted.is_empty() {
+            TransformQuality::Exact
+        } else {
+            TransformQuality::Approximate
+        };
+        TransformReport {
+            quality,
+            determinant,
+            orientation_reversed: self.orientation_reversing,
+            similarity,
+            face_changes: self.face_changes,
+            edge_changes: self.edge_changes,
+            fitted_faces: self.fitted,
+            control_points_total: self.control_points_total,
+        }
+    }
+}
+
+/// Latitude of one boundary sample on the still-untransformed sphere.
+fn sample_latitude(
+    sph: &remus_math::surfaces::SphericalSurface,
+    inverse: &Mat4,
+    point: remus_math::vec::Point3,
+) -> f64 {
+    sph.project_point(inverse.mul_point(point)).1
+}
+
+/// Interior latitude samples of one boundary edge.
+///
+/// Returns an empty vector for chord (`Line`) edges — a chord midpoint lies
+/// inside the sphere and its projection carries chord sag, not trim
+/// evidence — and whenever the edge has no usable domain. Up to three
+/// interior stations plus both endpoints for smooth trims.
+fn edge_latitude_samples(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    sph: &remus_math::surfaces::SphericalSurface,
+    inverse: &Mat4,
+) -> Vec<f64> {
+    if matches!(edge.curve(), EdgeCurve::Line) {
+        return Vec::new();
+    }
+    let Ok((a, b)) = edge.strict_domain() else {
+        return Vec::new();
+    };
+    if a >= b || !a.is_finite() || !b.is_finite() {
+        return Vec::new();
+    }
+    let (Ok(start), Ok(end)) = (
+        topo.vertex(edge.start())
+            .map(remus_topology::vertex::Vertex::point),
+        topo.vertex(edge.end())
+            .map(remus_topology::vertex::Vertex::point),
+    ) else {
+        return Vec::new();
+    };
+    let mut latitudes = Vec::with_capacity(3);
+    for t in [
+        f64::midpoint(a, b),
+        f64::midpoint(a, f64::midpoint(a, b)),
+        f64::midpoint(f64::midpoint(a, b), b),
+    ] {
+        let point = edge.curve().evaluate_with_endpoints(t, start, end);
+        if point.x().is_finite() && point.y().is_finite() && point.z().is_finite() {
+            latitudes.push(sample_latitude(sph, inverse, point));
+        }
+    }
+    latitudes
+}
+
+/// Classify one sphere face's patch from its boundary.
+///
+/// See [`SpherePatch`]. The hemisphere branch keeps the historical
+/// pole-vertex / equatorial-winding disambiguation; every other branch is
+/// new. Latitude bands, which the historical code mistook for hemispheres
+/// whenever their mean latitude sat near a pole reach, now land in
+/// `General`: their boundary latitudes fail the spread gate.
+fn classify_sphere_patch(
+    topo: &Topology,
+    face_id: FaceId,
+    sph: &remus_math::surfaces::SphericalSurface,
+    // The vertex phase may already have moved boundary points; this maps
+    // them back into the still-untransformed sphere's frame. Pass identity
+    // when vertices are untouched (preflight).
+    inverse: &Mat4,
+) -> Result<SpherePatch, crate::OperationsError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
+    if wire.edges().is_empty() {
+        return Ok(SpherePatch::Full);
+    }
+    let mut latitudes = Vec::new();
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let point = topo.vertex(edge.start())?.point();
+        latitudes.push(sample_latitude(sph, inverse, point));
+        latitudes.extend(edge_latitude_samples(topo, edge, sph, inverse));
+    }
+    if latitudes.is_empty() {
+        return Ok(SpherePatch::Full);
+    }
+
+    let (mut lat_min, mut lat_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for latitude in &latitudes {
+        lat_min = lat_min.min(*latitude);
+        lat_max = lat_max.max(*latitude);
+    }
+    if lat_max - lat_min > SPHERE_LATITUDE_GATE {
+        return Ok(SpherePatch::General);
+    }
+    let mean = f64::midpoint(lat_min, lat_max);
+    if mean.abs() <= SPHERE_LATITUDE_GATE {
+        return classify_equatorial_sphere_patch(topo, face_id, sph, inverse, mean);
+    }
+
+    // Off-equator loops — polar caps, bands, general trims — are all
+    // `General`. (Caps have a surface-perfect exact split; it does not
+    // ship because the inserted-knot piece will not mesh. See the enum
+    // docs.)
+    Ok(SpherePatch::General)
+}
+
+/// Degenerate pole point-edges on a face's outer wire.
+///
+/// Reports `(north, south)`: whether a closed edge (`start == end`) sits at
+/// the actual north / south pole. A full equatorial rim is also closed;
+/// its vertex must not decide the patch side.
+/// the flag decides the patch side wherever the historical equatorial
+/// rule already trusts it.
+fn pole_point_edges(
+    topo: &Topology,
+    face_id: FaceId,
+    sph: &remus_math::surfaces::SphericalSurface,
+    inverse: &Mat4,
+) -> Result<(bool, bool), crate::OperationsError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
+    let north_pole = sph.center() + sph.z_axis() * sph.radius();
+    let south_pole = sph.center() - sph.z_axis() * sph.radius();
+    let pole_tol = remus_math::tolerance::Tolerance::new()
+        .linear
+        .min(sph.radius() * 0.5);
+    let (mut north, mut south) = (false, false);
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        if edge.start() == edge.end() {
+            let point = inverse.mul_point(topo.vertex(edge.start())?.point());
+            if (point - north_pole).length() < pole_tol {
+                north = true;
+            } else if (point - south_pole).length() < pole_tol {
+                south = true;
+            }
+        }
+    }
+    Ok((north, south))
+}
+
+/// Sign of the outer wire's directed area in the sphere's (x, y) frame.
+///
+/// `Some(true)` runs counter-clockwise (north-side region), `Some(false)`
+/// clockwise (south-side region), `None` when the loop is degenerate
+/// (signed area within float-noise tolerance of zero). The hemisphere
+/// branch decides on this sign; tiny polar circles whose area cannot
+/// clear the tolerance refuse rather than guess.
+fn equatorial_winding_sign(
+    topo: &Topology,
+    face_id: FaceId,
+    sph: &remus_math::surfaces::SphericalSurface,
+    inverse: &Mat4,
+) -> Result<Option<bool>, crate::OperationsError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
+    let center = sph.center();
+    let mut signed_area_twice = 0.0;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let edge_start = topo.vertex(edge.start())?.point();
+        let edge_end = topo.vertex(edge.end())?.point();
+        let (t0, t1) = edge.domain_with_endpoints(edge_start, edge_end);
+        let (t0, t1) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
+        let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+            1
+        } else {
+            16
+        };
+        let mut prev = inverse.mul_point(
+            edge.curve()
+                .evaluate_with_endpoints(t0, edge_start, edge_end),
+        );
+        for k in 1..=samples {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * k as f64 / samples as f64;
+            let next = inverse.mul_point(
+                edge.curve()
+                    .evaluate_with_endpoints(t, edge_start, edge_end),
+            );
+            let a = prev - center;
+            let b = next - center;
+            signed_area_twice += sph.x_axis().dot(a) * sph.y_axis().dot(b)
+                - sph.x_axis().dot(b) * sph.y_axis().dot(a);
+            prev = next;
+        }
+    }
+    let winding_tol = remus_math::tolerance::Tolerance::new().linear * sph.radius().powi(2);
+    if signed_area_twice > winding_tol {
+        Ok(Some(true))
+    } else if signed_area_twice < -winding_tol {
+        Ok(Some(false))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Disambiguate an equatorial sphere loop into hemispheres.
+///
+/// Historical pole-vertex / signed-area rule, unchanged: at an equatorial
+/// trim, position alone cannot distinguish the north and south patches, so
+/// a degenerate pole point-edge decides when present and the outer wire's
+/// directed area in the sphere's own (x, y) frame decides otherwise (north
+/// runs CCW, south runs CW). A single equatorial loop bounds exactly one
+/// of the two hemispheres, so this branch is sound without a spread
+/// escape.
+fn classify_equatorial_sphere_patch(
+    topo: &Topology,
+    face_id: FaceId,
+    sph: &remus_math::surfaces::SphericalSurface,
+    inverse: &Mat4,
+    boundary_v: f64,
+) -> Result<SpherePatch, crate::OperationsError> {
+    use std::f64::consts::FRAC_PI_2;
+
+    let (has_pole_north, has_pole_south) = pole_point_edges(topo, face_id, sph, inverse)?;
+    if has_pole_north {
+        return Ok(SpherePatch::NorthHemisphere);
+    }
+    if has_pole_south {
+        return Ok(SpherePatch::SouthHemisphere);
+    }
+
+    match equatorial_winding_sign(topo, face_id, sph, inverse)? {
+        Some(true) => Ok(SpherePatch::NorthHemisphere),
+        Some(false) => Ok(SpherePatch::SouthHemisphere),
+        None => {
+            let _ = (boundary_v, FRAC_PI_2);
+            Err(crate::OperationsError::InvalidInput {
+                reason: "cannot determine sphere patch across a degenerate equatorial boundary"
+                    .to_string(),
+            })
+        }
+    }
+}
+
+/// Read-only preflight plan for one face: how the engine will build it.
+pub(crate) fn plan_face_surface(
+    topo: &Topology,
+    fid: FaceId,
+    similarity: bool,
+    inverse: &Mat4,
+) -> Result<FacePlan, crate::OperationsError> {
+    let face = topo.face(fid)?;
+    let from = face.surface().type_tag();
+    let (method, patch) = match face.surface() {
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+            (SurfaceMethod::AnalyticPreserved, None)
+        }
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Sphere(_) => {
+            if similarity {
+                (SurfaceMethod::AnalyticPreserved, None)
+            } else if let FaceSurface::Sphere(sph) = face.surface() {
+                let sph_clone = sph.clone();
+                match classify_sphere_patch(topo, fid, &sph_clone, inverse)? {
+                    SpherePatch::General => (SurfaceMethod::SampledFit, Some(SpherePatch::General)),
+                    patch => (SurfaceMethod::ExactRational, Some(patch)),
+                }
+            } else {
+                (SurfaceMethod::ExactRational, None)
+            }
+        }
+    };
+    Ok(FacePlan {
+        face: fid,
+        from,
+        method,
+        patch,
+    })
+}
+
+/// Refuse an exact-only request whose preflight needs sampled fitting.
+///
+/// Runs before any mutation, so the refusal is atomic by construction: no
+/// topology changes, no handle churn. The error is the stable
+/// [`crate::OperationsError::ExactOnlyUnattainable`] variant (WASM category
+/// `quality_refused`, code `exact_only_unattainable`); the WASM twin
+/// additionally names the fitted faces from the plans it already holds.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError::ExactOnlyUnattainable`] when any plan
+/// needs sampled fitting.
+pub fn refuse_unless_exact(plans: &[FacePlan]) -> Result<(), crate::OperationsError> {
+    if plans
+        .iter()
+        .any(|plan| matches!(plan.method, SurfaceMethod::SampledFit))
+    {
+        return Err(crate::OperationsError::ExactOnlyUnattainable);
+    }
+    Ok(())
+}
+
+/// Read-only preflight for one solid: face plans plus the pure edge check.
+///
+/// Re-runs the pure edge-curve transform on cloned curves, so structural
+/// refusals (skewed circle/ellipse images, non-similarity open conics)
+/// surface before any mutation. Faces are planned by
+/// [`plan_face_surface`]; pass identity as `inverse` — vertices are
+/// untouched at preflight time.
+///
+/// The WASM twin calls this directly to name refused faces.
+///
+/// # Errors
+///
+/// Returns an error when a referenced entity is missing or an edge image
+/// is structurally unrepresentable (the same refusal the mutating path
+/// would raise, before any mutation).
+pub fn preflight_solid_transform(
+    topo: &Topology,
+    solid: SolidId,
+    matrix: &Mat4,
+) -> Result<Vec<FacePlan>, crate::OperationsError> {
+    let (_, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
+    for eid in &edge_ids {
+        let edge = topo.edge(*eid)?;
+        // Pure: clone, transform, discard. Propagates the refusal unchanged.
+        let _ = transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
+    }
+    let similarity = is_uniform_scale(matrix);
+    let identity = Mat4::identity();
+    let mut plans: Vec<FacePlan> = face_ids
+        .iter()
+        .map(|fid| plan_face_surface(topo, *fid, similarity, &identity))
+        .collect::<Result<_, _>>()?;
+    plans.sort_by_key(|plan| plan.face.index());
+    Ok(plans)
 }
 
 /// Reject a transform that collapses the model; accept every one that does not.
@@ -131,10 +816,19 @@ pub(crate) fn reject_degenerate_transform(matrix: &Mat4) -> Result<(), crate::Op
 /// NURBS edge curves and face surfaces have their control points updated,
 /// and all planar face normals are updated using the inverse transpose.
 ///
+/// Runs transacted: a mid-transform refusal (skewed circle image,
+/// unsupported open conic, failed NURBS split) rolls the topology back to
+/// its pre-call state instead of stranding a half-moved solid. Successful
+/// geometry is identical to the untransacted engine.
+///
+/// This is the legacy entry point: anisotropic maps convert carriers
+/// (cylinders, cones, tori and exact-class sphere patches to rational
+/// NURBS; other sphere patches to a sampled fit) without disclosure. Use
+/// [`transform_solid_detailed`] for the typed quality report.
+///
 /// # Errors
 ///
 /// Returns an error if the matrix is degenerate or a referenced entity is missing.
-#[allow(clippy::too_many_lines)]
 pub fn transform_solid(
     topo: &mut Topology,
     solid: SolidId,
@@ -142,8 +836,62 @@ pub fn transform_solid(
 ) -> Result<(), crate::OperationsError> {
     reject_degenerate_transform(matrix)?;
     // Validate every part of the matrix before changing live topology.
-    let normal_matrix = matrix.inverse()?.transpose();
+    let _ = matrix.inverse()?.transpose();
+    let reversing = linear_determinant(matrix) < 0.0;
+    let mut recorder = TransformRecorder::new(reversing, true);
+    run_transacted(topo, |live| {
+        execute_solid_transform(live, solid, matrix, &mut recorder)
+    })
+}
 
+/// Quality-aware additive twin of [`transform_solid`].
+///
+/// Runs the same engine and commits the same geometry, additionally
+/// returning a [`TransformReport`] that names every carrier-family change
+/// and discloses sampled-fit output with its measured evidence. Under
+/// [`TransformPolicy::ExactOnly`] a face outside the exact sphere class
+/// refuses with [`crate::OperationsError::ExactOnlyUnattainable`] before
+/// any mutation — an exact report never covers fitted output.
+///
+/// Like the legacy entry point this runs transacted: every failure rolls
+/// back without exposing partial topology.
+///
+/// # Errors
+///
+/// Returns an error if the matrix is degenerate, a referenced entity is
+/// missing, an edge or surface image is unrepresentable, or the exact-only
+/// policy declines a sampled fit.
+pub fn transform_solid_detailed(
+    topo: &mut Topology,
+    solid: SolidId,
+    matrix: &Mat4,
+    policy: TransformPolicy,
+) -> Result<TransformReport, crate::OperationsError> {
+    reject_degenerate_transform(matrix)?;
+    // Validate every part of the matrix before changing live topology.
+    let _ = matrix.inverse()?.transpose();
+    if matches!(policy, TransformPolicy::ExactOnly) {
+        let plans = preflight_solid_transform(topo, solid, matrix)?;
+        refuse_unless_exact(&plans)?;
+    }
+    let determinant = linear_determinant(matrix);
+    let reversing = determinant < 0.0;
+    let similarity = is_uniform_scale(matrix);
+    let mut recorder = TransformRecorder::new(reversing, true);
+    run_transacted(topo, |live| {
+        execute_solid_transform(live, solid, matrix, &mut recorder)
+    })?;
+    Ok(recorder.into_report(determinant, similarity))
+}
+
+/// Mutation phase shared by [`transform_solid`] and
+/// [`transform_solid_detailed`]: vertices, then edges, then face surfaces.
+fn execute_solid_transform(
+    topo: &mut Topology,
+    solid: SolidId,
+    matrix: &Mat4,
+    recorder: &mut TransformRecorder,
+) -> Result<(), crate::OperationsError> {
     // Collect all unique vertex IDs, edge IDs, and face IDs in a read phase.
     let (vertex_ids, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
     let translation_certificates = translation_edge_certificates(topo, &edge_ids, matrix)?;
@@ -156,183 +904,14 @@ pub fn transform_solid(
     }
 
     // Mutate phase 2: transform edge curves (NURBS, Circle, Ellipse).
-    transform_edges(topo, &edge_ids, matrix)?;
+    transform_edges_recorded(topo, &edge_ids, matrix, recorder)?;
     restore_translation_certificates(topo, translation_certificates)?;
 
     // Mutate phase 3: transform face surface geometry.
     // For plane normals, use the inverse transpose: n' = (M⁻¹)ᵀ · n
+    let normal_matrix = matrix.inverse()?.transpose();
     for fid in face_ids {
-        let face = topo.face(fid)?;
-        match face.surface() {
-            FaceSurface::Plane { normal, .. } => {
-                let n = *normal;
-                // Transform the normal via the inverse transpose (treating it as
-                // a direction, so we use mul_point on a point at (nx, ny, nz)
-                // and subtract the translation component).
-                let transformed =
-                    normal_matrix.mul_point(remus_math::vec::Point3::new(n.x(), n.y(), n.z()));
-                // Extract direction only (ignore any translation component from
-                // the inverse transpose by subtracting the origin transform).
-                let origin = normal_matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
-                let raw = Vec3::new(
-                    transformed.x() - origin.x(),
-                    transformed.y() - origin.y(),
-                    transformed.z() - origin.z(),
-                );
-                let new_normal = raw.normalize()?;
-
-                // Recompute d from a transformed vertex on this face. We use
-                // the first vertex of the outer wire.
-                let wire = topo.wire(face.outer_wire())?;
-                let first_oe = &wire.edges()[0];
-                let edge = topo.edge(first_oe.edge())?;
-                let ref_vid = if first_oe.is_forward() {
-                    edge.start()
-                } else {
-                    edge.end()
-                };
-                let ref_point = topo.vertex(ref_vid)?.point();
-                let new_d = new_normal.dot(Vec3::new(ref_point.x(), ref_point.y(), ref_point.z()));
-
-                let face_mut = topo.face_mut(fid)?;
-                face_mut.set_surface(FaceSurface::Plane {
-                    normal: new_normal,
-                    d: new_d,
-                });
-            }
-            FaceSurface::Nurbs(s) => {
-                let new_control_points: Vec<Vec<_>> = s
-                    .control_points()
-                    .iter()
-                    .map(|row| row.iter().map(|pt| matrix.mul_point(*pt)).collect())
-                    .collect();
-                let new_surface = NurbsSurface::new(
-                    s.degree_u(),
-                    s.degree_v(),
-                    s.knots_u().to_vec(),
-                    s.knots_v().to_vec(),
-                    new_control_points,
-                    s.weights().to_vec(),
-                );
-                topo.face_mut(fid)?
-                    .set_surface(FaceSurface::Nurbs(new_surface?));
-            }
-            FaceSurface::Cylinder(cyl) => {
-                if is_uniform_scale(matrix) {
-                    let new_origin = matrix.mul_point(cyl.origin());
-                    let new_axis = transform_direction(matrix, cyl.axis())?;
-                    let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
-                    let new_cyl = remus_math::surfaces::CylindricalSurface::new(
-                        new_origin, new_axis, new_radius,
-                    )?;
-                    topo.face_mut(fid)?
-                        .set_surface(FaceSurface::Cylinder(new_cyl));
-                } else {
-                    // Anisotropic scale turns a circular cylinder into an
-                    // elliptic one, which `FaceSurface` cannot carry; keeping
-                    // it circular with a radius sampled along one arbitrary
-                    // perpendicular was silently wrong geometry. Convert to
-                    // NURBS exactly (rational) like cone/sphere/torus do.
-                    // Boundary vertices were already moved in the vertex
-                    // phase, so map them back before projecting onto the
-                    // still-untransformed surface.
-                    let inverse = matrix.inverse()?;
-                    let v_range = analytic_face_v_range(topo, fid, |pt| {
-                        cyl.project_point(inverse.mul_point(pt)).1
-                    })?;
-                    let nurbs =
-                        remus_heal::construct::convert_surface::cylinder_to_nurbs(cyl, v_range)
-                            .map_err(|e| crate::OperationsError::InvalidInput {
-                                reason: format!("cylinder_to_nurbs failed: {e}"),
-                            })?;
-                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
-                    topo.face_mut(fid)?
-                        .set_surface(FaceSurface::Nurbs(transformed));
-                }
-            }
-            FaceSurface::Cone(cone) => {
-                if is_uniform_scale(matrix) {
-                    let new_apex = matrix.mul_point(cone.apex());
-                    let new_axis = transform_direction(matrix, cone.axis())?;
-                    let new_cone = remus_math::surfaces::ConicalSurface::new(
-                        new_apex,
-                        new_axis,
-                        cone.half_angle(),
-                    )?;
-                    topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
-                } else {
-                    // Vertex phase already moved the boundary; project its
-                    // inverse image onto the untransformed cone.
-                    let inverse = matrix.inverse()?;
-                    let v_range = analytic_face_v_range(topo, fid, |pt| {
-                        cone.project_point(inverse.mul_point(pt)).1
-                    })?;
-                    let nurbs =
-                        remus_heal::construct::convert_surface::cone_to_nurbs(cone, v_range)
-                            .map_err(|e| crate::OperationsError::InvalidInput {
-                                reason: format!("cone_to_nurbs failed: {e}"),
-                            })?;
-                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
-                    topo.face_mut(fid)?
-                        .set_surface(FaceSurface::Nurbs(transformed));
-                }
-            }
-            FaceSurface::Sphere(sph) => {
-                if is_uniform_scale(matrix) {
-                    let new_center = matrix.mul_point(sph.center());
-                    // Extract uniform scale factor from column magnitudes
-                    let m = &matrix.0;
-                    let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    // Carry the frame: a hemisphere's rim is the v = 0
-                    // circle of ITS frame, and a rebuilt world-axis frame
-                    // turns a rotated hemisphere into a tilted trimmed patch
-                    // that the mesher double-covers at the rim (B41).
-                    let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
-                        new_center,
-                        sph.radius() * sx,
-                        transform_direction(matrix, sph.z_axis())?,
-                        transform_direction(matrix, sph.x_axis())?,
-                    )?;
-                    topo.face_mut(fid)?
-                        .set_surface(FaceSurface::Sphere(new_sph));
-                } else {
-                    // Non-uniform scale: sample the face's v-range of the
-                    // sphere and refit as NURBS. Boundary vertices were
-                    // already moved; probe with their inverse image.
-                    let inverse = matrix.inverse()?;
-                    let (v_min, v_max) = sphere_face_v_range(topo, fid, sph, &inverse)?;
-                    let sph_clone = sph.clone();
-                    let nurbs = sphere_to_transformed_nurbs(&sph_clone, matrix, v_min, v_max)?;
-                    topo.face_mut(fid)?.set_surface(FaceSurface::Nurbs(nurbs));
-                }
-            }
-            FaceSurface::Torus(tor) => {
-                if is_uniform_scale(matrix) {
-                    let new_center = matrix.mul_point(tor.center());
-                    let m = &matrix.0;
-                    let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
-                        new_center,
-                        tor.major_radius() * sx,
-                        tor.minor_radius() * sx,
-                        transform_direction(matrix, tor.z_axis())?,
-                        transform_direction(matrix, tor.x_axis())?,
-                    )?;
-                    topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
-                } else {
-                    // Heal's exact rational 9x9 torus converter is
-                    // param-matched to the analytic torus and keeps the
-                    // surface rational through STEP round-trips.
-                    let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(tor)
-                        .map_err(|e| crate::OperationsError::InvalidInput {
-                            reason: format!("torus_to_nurbs failed: {e}"),
-                        })?;
-                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
-                    topo.face_mut(fid)?
-                        .set_surface(FaceSurface::Nurbs(transformed));
-                }
-            }
-        }
+        transform_face_surface_recorded(topo, fid, matrix, &normal_matrix, recorder)?;
     }
 
     Ok(())
@@ -492,60 +1071,14 @@ fn sphere_face_v_range(
     // Determine hemisphere by checking whether face is above or below boundary.
     let boundary_v = v_vals.iter().copied().sum::<f64>() / v_vals.len() as f64;
 
-    let center = sph.center();
-
     if boundary_v.abs() < 0.1 {
-        let mut has_pole_north = false;
-        let mut has_pole_south = false;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            if edge.start() == edge.end() {
-                let pt = inverse.mul_point(topo.vertex(edge.start())?.point());
-                let dz = pt.z() - center.z();
-                if dz > 0.0 {
-                    has_pole_north = true;
-                } else {
-                    has_pole_south = true;
-                }
-            }
-        }
-        if has_pole_north {
-            return Ok((boundary_v, FRAC_PI_2));
-        }
-        if has_pole_south {
-            return Ok((-FRAC_PI_2, boundary_v));
-        }
-
-        // At an equatorial trim, position alone cannot distinguish the north
-        // and south patches. Use the outer wire's directed area in the
-        // sphere's own (x, y) frame: the north hemisphere runs CCW and the
-        // south hemisphere runs CW. The old position-based fallback selected
-        // north for both faces of `make_sphere`, duplicating half an ellipsoid
-        // after anisotropic scaling.
-        let mut signed_area_twice = 0.0;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let start = inverse.mul_point(topo.vertex(oe.oriented_start(edge))?.point());
-            let end = inverse.mul_point(topo.vertex(oe.oriented_end(edge))?.point());
-            let start_r = start - center;
-            let end_r = end - center;
-            let start_x = sph.x_axis().dot(start_r);
-            let start_y = sph.y_axis().dot(start_r);
-            let end_x = sph.x_axis().dot(end_r);
-            let end_y = sph.y_axis().dot(end_r);
-            signed_area_twice += start_x * end_y - end_x * start_y;
-        }
-        let winding_tol = remus_math::tolerance::Tolerance::new().linear * sph.radius().powi(2);
-        if signed_area_twice > winding_tol {
-            return Ok((boundary_v, FRAC_PI_2));
-        }
-        if signed_area_twice < -winding_tol {
-            return Ok((-FRAC_PI_2, boundary_v));
-        }
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "cannot determine sphere patch across a degenerate equatorial boundary"
-                .to_string(),
-        });
+        return match classify_equatorial_sphere_patch(topo, face_id, sph, inverse, boundary_v)? {
+            SpherePatch::NorthHemisphere => Ok((boundary_v, FRAC_PI_2)),
+            SpherePatch::SouthHemisphere => Ok((-FRAC_PI_2, boundary_v)),
+            SpherePatch::Full | SpherePatch::General => Err(crate::OperationsError::InvalidInput {
+                reason: "cannot determine sphere patch across an equatorial boundary".into(),
+            }),
+        };
     }
 
     if boundary_v > 0.0 {
@@ -611,13 +1144,29 @@ fn scaled_radius(matrix: &Mat4, axis: Vec3, radius: f64) -> f64 {
 /// Transform a single face's surface geometry.
 ///
 /// The `normal_matrix` should be `matrix.inverse()?.transpose()`.
-#[allow(clippy::too_many_lines)]
+///
+/// Legacy void wrapper: records into a throwaway recorder so the engine
+/// stays shared with the quality-aware path.
 pub(crate) fn transform_face_surface(
     topo: &mut Topology,
     fid: FaceId,
     matrix: &Mat4,
     normal_matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
+    let mut recorder = TransformRecorder::new(linear_determinant(matrix) < 0.0, true);
+    transform_face_surface_recorded(topo, fid, matrix, normal_matrix, &mut recorder)
+}
+
+/// Recorded face-surface transform shared by the legacy entry points, the
+/// detailed twins, and the copy path.
+pub(crate) fn transform_face_surface_recorded(
+    topo: &mut Topology,
+    fid: FaceId,
+    matrix: &Mat4,
+    normal_matrix: &Mat4,
+    recorder: &mut TransformRecorder,
+) -> Result<(), crate::OperationsError> {
+    let from = topo.face(fid)?.surface().type_tag();
     let face = topo.face(fid)?;
     match face.surface() {
         FaceSurface::Plane { normal, .. } => {
@@ -650,29 +1199,34 @@ pub(crate) fn transform_face_surface(
                 normal: new_normal,
                 d: new_d,
             });
+            // Planes stay planes under every affine map (normals re-derived
+            // as covectors): nothing to record, no flag to carry.
         }
         FaceSurface::Nurbs(s) => {
-            let new_control_points: Vec<Vec<_>> = s
+            let s_clone = s.clone();
+            let new_control_points: Vec<Vec<_>> = s_clone
                 .control_points()
                 .iter()
                 .map(|row| row.iter().map(|pt| matrix.mul_point(*pt)).collect())
                 .collect();
             let new_surface = NurbsSurface::new(
-                s.degree_u(),
-                s.degree_v(),
-                s.knots_u().to_vec(),
-                s.knots_v().to_vec(),
+                s_clone.degree_u(),
+                s_clone.degree_v(),
+                s_clone.knots_u().to_vec(),
+                s_clone.knots_v().to_vec(),
                 new_control_points,
-                s.weights().to_vec(),
+                s_clone.weights().to_vec(),
             );
+            let oriented = orient_nurbs_for_map(&new_surface?, recorder.orientation_reversing)?;
             topo.face_mut(fid)?
-                .set_surface(FaceSurface::Nurbs(new_surface?));
+                .set_surface(FaceSurface::Nurbs(oriented));
         }
         FaceSurface::Cylinder(cyl) => {
             if is_uniform_scale(matrix) {
-                let new_origin = matrix.mul_point(cyl.origin());
-                let new_axis = transform_direction(matrix, cyl.axis())?;
-                let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
+                let cyl_clone = cyl.clone();
+                let new_origin = matrix.mul_point(cyl_clone.origin());
+                let new_axis = transform_direction(matrix, cyl_clone.axis())?;
+                let new_radius = scaled_radius(matrix, cyl_clone.axis(), cyl_clone.radius());
                 let new_cyl = remus_math::surfaces::CylindricalSurface::new(
                     new_origin, new_axis, new_radius,
                 )?;
@@ -687,23 +1241,30 @@ pub(crate) fn transform_face_surface(
                 let v_range = analytic_face_v_range(topo, fid, |pt| {
                     cyl.project_point(inverse.mul_point(pt)).1
                 })?;
-                let nurbs = remus_heal::construct::convert_surface::cylinder_to_nurbs(cyl, v_range)
-                    .map_err(|e| crate::OperationsError::InvalidInput {
-                        reason: format!("cylinder_to_nurbs failed: {e}"),
-                    })?;
+                // End the surface borrow before the fallible conversion.
+                let cyl_clone = cyl.clone();
+                let nurbs =
+                    remus_heal::construct::convert_surface::cylinder_to_nurbs(&cyl_clone, v_range)
+                        .map_err(|e| crate::OperationsError::InvalidInput {
+                            reason: format!("cylinder_to_nurbs failed: {e}"),
+                        })?;
                 let transformed = transform_nurbs_surface(&nurbs, matrix)?;
+                let oriented = orient_nurbs_for_map(&transformed, recorder.orientation_reversing)?;
+                let count = nurbs_control_point_count(&oriented);
                 topo.face_mut(fid)?
-                    .set_surface(FaceSurface::Nurbs(transformed));
+                    .set_surface(FaceSurface::Nurbs(oriented));
+                recorder.record_face(fid, from, "nurbs", SurfaceMethod::ExactRational, count);
             }
         }
         FaceSurface::Cone(cone) => {
             if is_uniform_scale(matrix) {
-                let new_apex = matrix.mul_point(cone.apex());
-                let new_axis = transform_direction(matrix, cone.axis())?;
+                let cone_clone = cone.clone();
+                let new_apex = matrix.mul_point(cone_clone.apex());
+                let new_axis = transform_direction(matrix, cone_clone.axis())?;
                 let new_cone = remus_math::surfaces::ConicalSurface::new(
                     new_apex,
                     new_axis,
-                    cone.half_angle(),
+                    cone_clone.half_angle(),
                 )?;
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
             } else {
@@ -711,47 +1272,99 @@ pub(crate) fn transform_face_surface(
                 let v_range = analytic_face_v_range(topo, fid, |pt| {
                     cone.project_point(inverse.mul_point(pt)).1
                 })?;
-                let nurbs = remus_heal::construct::convert_surface::cone_to_nurbs(cone, v_range)
-                    .map_err(|e| crate::OperationsError::InvalidInput {
-                        reason: format!("cone_to_nurbs failed: {e}"),
-                    })?;
+                let cone_clone = cone.clone();
+                let nurbs =
+                    remus_heal::construct::convert_surface::cone_to_nurbs(&cone_clone, v_range)
+                        .map_err(|e| crate::OperationsError::InvalidInput {
+                            reason: format!("cone_to_nurbs failed: {e}"),
+                        })?;
                 let transformed = transform_nurbs_surface(&nurbs, matrix)?;
+                let oriented = orient_nurbs_for_map(&transformed, recorder.orientation_reversing)?;
+                let count = nurbs_control_point_count(&oriented);
                 topo.face_mut(fid)?
-                    .set_surface(FaceSurface::Nurbs(transformed));
+                    .set_surface(FaceSurface::Nurbs(oriented));
+                recorder.record_face(fid, from, "nurbs", SurfaceMethod::ExactRational, count);
             }
         }
         FaceSurface::Sphere(sph) => {
             if is_uniform_scale(matrix) {
-                let new_center = matrix.mul_point(sph.center());
+                let sph_clone = sph.clone();
+                let new_center = matrix.mul_point(sph_clone.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
                 let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
                     new_center,
-                    sph.radius() * sx,
-                    transform_direction(matrix, sph.z_axis())?,
-                    transform_direction(matrix, sph.x_axis())?,
+                    sph_clone.radius() * sx,
+                    transform_direction(matrix, sph_clone.z_axis())?,
+                    transform_direction(matrix, sph_clone.x_axis())?,
                 )?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
             } else {
                 let inverse = matrix.inverse()?;
-                let (v_min, v_max) = sphere_face_v_range(topo, fid, sph, &inverse)?;
                 let sph_clone = sph.clone();
-                let nurbs = sphere_to_transformed_nurbs(&sph_clone, matrix, v_min, v_max)?;
-                topo.face_mut(fid)?.set_surface(FaceSurface::Nurbs(nurbs));
+                match classify_sphere_patch(topo, fid, &sph_clone, &inverse)? {
+                    SpherePatch::General => {
+                        if !recorder.allow_fit {
+                            return Err(crate::OperationsError::ExactOnlyUnattainable);
+                        }
+                        // Historical fit range, unchanged: the face's
+                        // v-extent of the sphere refit as NURBS. Boundary
+                        // vertices were already moved; probe with their
+                        // inverse image.
+                        let (v_min, v_max) = sphere_face_v_range(topo, fid, &sph_clone, &inverse)?;
+                        let nurbs = sphere_to_transformed_nurbs(&sph_clone, matrix, v_min, v_max)?;
+                        let count = nurbs_control_point_count(&nurbs);
+                        let (max_residual, check_points) = fitted_patch_evidence(
+                            &nurbs,
+                            &|u, v| matrix.mul_point(sph_clone.evaluate(u, v)),
+                            v_min,
+                            v_max,
+                        );
+                        let oriented =
+                            orient_nurbs_for_map(&nurbs, recorder.orientation_reversing)?;
+                        topo.face_mut(fid)?
+                            .set_surface(FaceSurface::Nurbs(oriented));
+                        recorder.record_face(fid, from, "nurbs", SurfaceMethod::SampledFit, count);
+                        recorder.record_fit(FittedFaceEvidence {
+                            face: fid,
+                            from,
+                            method: "interpolate33x17",
+                            grid: (SPHERE_FIT_GRID_U, SPHERE_FIT_GRID_V),
+                            max_residual,
+                            check_points,
+                        });
+                    }
+                    patch => {
+                        let transformed = sphere_patch_to_nurbs(&sph_clone, patch, matrix)?;
+                        let oriented =
+                            orient_nurbs_for_map(&transformed, recorder.orientation_reversing)?;
+                        let count = nurbs_control_point_count(&oriented);
+                        topo.face_mut(fid)?
+                            .set_surface(FaceSurface::Nurbs(oriented));
+                        recorder.record_face(
+                            fid,
+                            from,
+                            "nurbs",
+                            SurfaceMethod::ExactRational,
+                            count,
+                        );
+                    }
+                }
             }
         }
         FaceSurface::Torus(tor) => {
             if is_uniform_scale(matrix) {
-                let new_center = matrix.mul_point(tor.center());
+                let tor_clone = tor.clone();
+                let new_center = matrix.mul_point(tor_clone.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
                 let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     new_center,
-                    tor.major_radius() * sx,
-                    tor.minor_radius() * sx,
-                    transform_direction(matrix, tor.z_axis())?,
-                    transform_direction(matrix, tor.x_axis())?,
+                    tor_clone.major_radius() * sx,
+                    tor_clone.minor_radius() * sx,
+                    transform_direction(matrix, tor_clone.z_axis())?,
+                    transform_direction(matrix, tor_clone.x_axis())?,
                 )?;
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
             } else {
@@ -761,12 +1374,171 @@ pub(crate) fn transform_face_surface(
                         reason: format!("torus_to_nurbs failed: {e}"),
                     })?;
                 let transformed = transform_nurbs_surface(&nurbs, matrix)?;
+                let oriented = orient_nurbs_for_map(&transformed, recorder.orientation_reversing)?;
+                let count = nurbs_control_point_count(&oriented);
                 topo.face_mut(fid)?
-                    .set_surface(FaceSurface::Nurbs(transformed));
+                    .set_surface(FaceSurface::Nurbs(oriented));
+                recorder.record_face(fid, from, "nurbs", SurfaceMethod::ExactRational, count);
             }
         }
     }
+    // Converted and reflected NURBS faces have a different UV chart. Keep
+    // their exact 3D edges, but remove pcurves that use the old coordinates.
+    let chart_replaced = matches!(topo.face(fid)?.surface(), FaceSurface::Nurbs(_))
+        && (from != "nurbs" || recorder.orientation_reversing);
+    if chart_replaced {
+        let uses: Vec<_> = topo
+            .pcurves_for_face(fid)
+            .into_iter()
+            .map(|(edge, forward, _)| (edge, forward))
+            .collect();
+        for (edge, forward) in uses {
+            topo.remove_pcurve_oriented(edge, fid, forward)?;
+        }
+    }
     Ok(())
+}
+
+/// Carry orientation across an orientation-reversing map for NURBS carriers.
+///
+/// An affine map with a negative linear determinant flips the handedness of
+/// a NURBS parameterization (`Su × Sv` points inward). The face's
+/// `reversed` flag must NOT carry this instead: the shell validator reads
+/// `forward != reversed` per shared edge, so toggling flags on converted
+/// faces alone breaks mixed shells (B74: mirrored cylinder wall vs. caps).
+/// Reversing the surface in u flips the handedness back with flags,
+/// coedges, and trims untouched — the same point set, opposite travel.
+///
+/// Only NURBS faces need this. Analytic carriers are rebuilt right-handed
+/// and plane normals are re-derived as covectors, both already correct.
+fn orient_nurbs_for_map(
+    surface: &NurbsSurface,
+    reversing: bool,
+) -> Result<NurbsSurface, crate::OperationsError> {
+    if !reversing {
+        return Ok(surface.clone());
+    }
+    // Mirror of `NurbsCurve::reversed` in u: control rows and the u-knot
+    // vector mirror inside their own span, so the domain endpoints are
+    // unchanged and `reversed.evaluate(u0 + u1 − u, v)` equals
+    // `evaluate(u, v)`. Degree, multiplicities, and rationality survive.
+    let (du0, du1) = surface.domain_u();
+    let span = du0 + du1;
+    let mut knots_u: Vec<f64> = surface.knots_u().iter().rev().map(|k| span - k).collect();
+    if let (Some(first), Some(&original)) = (knots_u.first_mut(), surface.knots_u().first()) {
+        *first = original;
+    }
+    if let (Some(last), Some(&original)) = (knots_u.last_mut(), surface.knots_u().last()) {
+        *last = original;
+    }
+    let control_points: Vec<Vec<remus_math::vec::Point3>> =
+        surface.control_points().iter().rev().cloned().collect();
+    let weights: Vec<Vec<f64>> = surface.weights().iter().rev().cloned().collect();
+    Ok(NurbsSurface::new(
+        surface.degree_u(),
+        surface.degree_v(),
+        knots_u,
+        surface.knots_v().to_vec(),
+        control_points,
+        weights,
+    )?)
+}
+
+/// Control-point footprint of a NURBS surface: deterministic output-size
+/// measure for conversion cost tracking.
+fn nurbs_control_point_count(surface: &NurbsSurface) -> usize {
+    surface.control_points().iter().map(Vec::len).sum()
+}
+
+/// Exact rational NURBS for one classified sphere patch, mapped by `matrix`.
+///
+/// The full-sphere converter is set-exact on the analytic sphere, and
+/// knot-insertion splits keep the sub-domains, so 3D trims land on the
+/// right set. The `(u, v)`-to-3D map is the converter's own rational
+/// parameterization (documented on `sphere_to_nurbs`), not the analytic
+/// trigonometric one: UV traces do not carry across, only point sets.
+fn sphere_patch_to_nurbs(
+    sph: &remus_math::surfaces::SphericalSurface,
+    patch: SpherePatch,
+    matrix: &Mat4,
+) -> Result<NurbsSurface, crate::OperationsError> {
+    let full = remus_heal::construct::convert_surface::sphere_to_nurbs(sph).map_err(|e| {
+        crate::OperationsError::InvalidInput {
+            reason: format!("sphere_to_nurbs failed: {e}"),
+        }
+    })?;
+    let split_at = |v: f64| {
+        remus_heal::upgrade::split_surface::split_surface_at_v(&full, v).map_err(|e| {
+            crate::OperationsError::InvalidInput {
+                reason: format!("splitting sphere NURBS failed: {e}"),
+            }
+        })
+    };
+    match patch {
+        SpherePatch::Full => transform_nurbs_surface(&full, matrix),
+        SpherePatch::NorthHemisphere => {
+            let (_, north) = split_at(0.0)?;
+            transform_nurbs_surface(&north, matrix)
+        }
+        SpherePatch::SouthHemisphere => {
+            let (south, _) = split_at(0.0)?;
+            transform_nurbs_surface(&south, matrix)
+        }
+        SpherePatch::General => Err(crate::OperationsError::ExactOnlyUnattainable),
+    }
+}
+
+/// Sampled evidence for a fitted patch: symmetric sampled Hausdorff
+/// estimate between uniform samples of the fitted NURBS domain and a fine
+/// analytic grid of the true affine image.
+///
+/// Returns `(max_residual, check_points)`. The grids are finite, so this
+/// is measured evidence, never a certified bound.
+fn fitted_patch_evidence(
+    nurbs: &NurbsSurface,
+    analytic_point: &dyn Fn(f64, f64) -> remus_math::vec::Point3,
+    v_min: f64,
+    v_max: f64,
+) -> (f64, usize) {
+    use std::f64::consts::TAU;
+
+    let (du0, du1) = nurbs.domain_u();
+    let (dv0, dv1) = nurbs.domain_v();
+    let mut nurbs_points = Vec::with_capacity(FIT_EVIDENCE_NURBS_U * FIT_EVIDENCE_NURBS_V);
+    for iu in 0..FIT_EVIDENCE_NURBS_U {
+        let s = du0 + (du1 - du0) * (iu as f64) / ((FIT_EVIDENCE_NURBS_U - 1) as f64);
+        for iv in 0..FIT_EVIDENCE_NURBS_V {
+            let t = dv0 + (dv1 - dv0) * (iv as f64) / ((FIT_EVIDENCE_NURBS_V - 1) as f64);
+            nurbs_points.push(nurbs.evaluate(s, t));
+        }
+    }
+    let mut analytic_points = Vec::with_capacity(FIT_EVIDENCE_ANALYTIC_U * FIT_EVIDENCE_ANALYTIC_V);
+    for iu in 0..FIT_EVIDENCE_ANALYTIC_U {
+        let u = TAU * (iu as f64) / ((FIT_EVIDENCE_ANALYTIC_U - 1) as f64);
+        for iv in 0..FIT_EVIDENCE_ANALYTIC_V {
+            let v = v_min + (v_max - v_min) * (iv as f64) / ((FIT_EVIDENCE_ANALYTIC_V - 1) as f64);
+            analytic_points.push(analytic_point(u, v));
+        }
+    }
+    let mut max_residual: f64 = 0.0;
+    for point in &nurbs_points {
+        let mut nearest = f64::INFINITY;
+        for other in &analytic_points {
+            nearest = nearest.min((*point - *other).length());
+        }
+        max_residual = max_residual.max(nearest);
+    }
+    for point in &analytic_points {
+        let mut nearest = f64::INFINITY;
+        for other in &nurbs_points {
+            nearest = nearest.min((*point - *other).length());
+        }
+        max_residual = max_residual.max(nearest);
+    }
+    if !max_residual.is_finite() {
+        max_residual = f64::INFINITY;
+    }
+    (max_residual, nurbs_points.len() + analytic_points.len())
 }
 
 /// Compute the v-parameter range for an analytic surface face.
@@ -825,6 +1597,18 @@ fn transform_nurbs_surface(
 /// Separated from [`is_uniform_scale`] (which answers whether analytic
 /// surfaces survive exactly) so each gate states its own contract.
 fn is_rigid_or_uniform_scale(matrix: &Mat4) -> bool {
+    is_uniform_scale(matrix)
+}
+
+/// Whether a matrix preserves every analytic carrier (similarity).
+///
+/// True when the linear part is conformal (`MᵀM = s²I` within
+/// [`ANALYTIC_ROUNDOFF_REL`]): rotations, reflections, translations, and
+/// uniform scales of any magnitude. Every other affine map converts at
+/// least some carriers to NURBS. The engine routes on this predicate, and
+/// the report echoes it, so carrier routing and disclosure cannot disagree.
+#[must_use]
+pub fn is_similarity(matrix: &Mat4) -> bool {
     is_uniform_scale(matrix)
 }
 
@@ -912,8 +1696,8 @@ fn sampled_transformed_nurbs(
 ) -> Result<NurbsSurface, crate::OperationsError> {
     use std::f64::consts::TAU;
 
-    let n_u = 33; // Angular samples (0 to 2π; endpoints coincide at the seam)
-    let n_v = 17;
+    let n_u = SPHERE_FIT_GRID_U; // Angular samples (0 to 2π; endpoints coincide at the seam)
+    let n_v = SPHERE_FIT_GRID_V;
 
     let mut rows: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(n_v);
     for iv in 0..n_v {
@@ -1103,16 +1887,30 @@ pub(crate) fn transform_edge_curve_with_trim(
 /// Transform a set of edge curves in place.
 ///
 /// Line edges need no update — their geometry is defined by vertices.
-#[allow(clippy::too_many_lines)]
+/// Legacy void wrapper over [`transform_edges_recorded`].
 pub(crate) fn transform_edges(
     topo: &mut Topology,
     edge_ids: &HashSet<EdgeId>,
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
+    let mut recorder = TransformRecorder::new(false, true);
+    transform_edges_recorded(topo, edge_ids, matrix, &mut recorder)
+}
+
+/// Recorded edge-curve transform shared by the legacy entry points, the
+/// detailed twins, and the copy path.
+pub(crate) fn transform_edges_recorded(
+    topo: &mut Topology,
+    edge_ids: &HashSet<EdgeId>,
+    matrix: &Mat4,
+    recorder: &mut TransformRecorder,
+) -> Result<(), crate::OperationsError> {
     for &eid in edge_ids {
         let edge = topo.edge(eid)?;
+        let from = edge.curve().type_tag();
         let (new_curve, new_trim) =
             transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
+        let to = new_curve.as_ref().map_or(from, |curve| curve.type_tag());
         if let Some(curve) = new_curve {
             let edge = topo.edge_mut(eid)?;
             edge.set_curve(curve);
@@ -1120,12 +1918,16 @@ pub(crate) fn transform_edges(
         } else if topo.edge(eid)?.trim().is_some() {
             topo.edge_mut(eid)?.set_trim(None);
         }
+        recorder.record_edge(eid, from, to);
     }
     Ok(())
 }
 
 /// Apply an affine transform to a wire, modifying vertex positions and
 /// edge curve geometry in place.
+///
+/// Runs transacted like [`transform_solid`]: a refused edge image rolls
+/// back instead of stranding moved vertices.
 ///
 /// # Errors
 ///
@@ -1136,20 +1938,22 @@ pub fn transform_wire(
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
     reject_degenerate_transform(matrix)?;
+    let _ = matrix.inverse()?.transpose();
+    run_transacted(topo, |live| {
+        let (vertex_ids, edge_ids) = collect_wire_entities(live, wire_id)?;
 
-    let (vertex_ids, edge_ids) = collect_wire_entities(topo, wire_id)?;
+        // Transform vertices.
+        for vid in vertex_ids {
+            let vertex = live.vertex_mut(vid)?;
+            let new_point = matrix.mul_point(vertex.point());
+            vertex.set_point(new_point);
+        }
 
-    // Transform vertices.
-    for vid in vertex_ids {
-        let vertex = topo.vertex_mut(vid)?;
-        let new_point = matrix.mul_point(vertex.point());
-        vertex.set_point(new_point);
-    }
+        // Transform edge curves.
+        transform_edges(live, &edge_ids, matrix)?;
 
-    // Transform edge curves.
-    transform_edges(topo, &edge_ids, matrix)?;
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Apply an affine transform to a face, modifying vertex positions, edge
@@ -1157,6 +1961,8 @@ pub fn transform_wire(
 ///
 /// Transforms all vertices/edges in the face's outer and inner wires, then
 /// updates the face surface geometry (plane normal, NURBS CPs, etc.).
+///
+/// Runs transacted like [`transform_solid`].
 ///
 /// # Errors
 ///
@@ -1170,24 +1976,25 @@ pub fn transform_face(
     reject_degenerate_transform(matrix)?;
     // Validate every part of the matrix before changing live topology.
     let normal_matrix = matrix.inverse()?.transpose();
+    run_transacted(topo, |live| {
+        // Collect all vertices and edges from the face's wires.
+        let (vertex_ids, edge_ids) = collect_face_entities(live, face_id)?;
 
-    // Collect all vertices and edges from the face's wires.
-    let (vertex_ids, edge_ids) = collect_face_entities(topo, face_id)?;
+        // Transform vertices.
+        for vid in vertex_ids {
+            let vertex = live.vertex_mut(vid)?;
+            let new_point = matrix.mul_point(vertex.point());
+            vertex.set_point(new_point);
+        }
 
-    // Transform vertices.
-    for vid in vertex_ids {
-        let vertex = topo.vertex_mut(vid)?;
-        let new_point = matrix.mul_point(vertex.point());
-        vertex.set_point(new_point);
-    }
+        // Transform edge curves.
+        transform_edges(live, &edge_ids, matrix)?;
 
-    // Transform edge curves.
-    transform_edges(topo, &edge_ids, matrix)?;
+        // Transform face surface.
+        transform_face_surface(live, face_id, matrix, &normal_matrix)?;
 
-    // Transform face surface.
-    transform_face_surface(topo, face_id, matrix, &normal_matrix)?;
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Traverses face → wires → edges → vertices and returns deduplicated sets.
