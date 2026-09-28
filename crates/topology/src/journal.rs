@@ -647,9 +647,9 @@ impl Journal {
         }
         events.sort_by_key(|(subject, _)| *subject);
         if let Some(window) = events.windows(2).find(|window| window[0].0 == window[1].0) {
-            return Err(TopologyError::JournalDuplicateEvent {
-                ordinal: window[0].0.value(),
-            });
+            let ordinal = window[0].0.value();
+            self.rollback_scope(self.entries.len(), &created);
+            return Err(TopologyError::JournalDuplicateEvent { ordinal });
         }
         scope.sort_unstable();
         scope.dedup();
@@ -1552,6 +1552,11 @@ mod tests {
             topo.journal().is_empty(),
             "a refused entry must not be partially recorded"
         );
+        assert!(topo.journal().ordinal_of(EntityKey::face(2)).is_none());
+        let snapshot = topo.journal().snapshot();
+        assert!(snapshot.index.is_empty());
+        assert!(snapshot.entries.is_empty());
+        assert!(snapshot.next_ordinal > 0, "issued ordinals stay retired");
     }
 
     #[test]
