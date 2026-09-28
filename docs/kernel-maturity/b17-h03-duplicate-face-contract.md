@@ -190,3 +190,42 @@ scale-relative — pinned across 1e-3/1/1e3 by the B17 matrix convention).
 Nontransitive nearness is resolved by index-order greed (§6), never by
 transitive closure, so no chain of near-matches can drag a distant face into
 a group.
+
+## 10. Scaling (M5, measured 2026-09-28)
+
+Method: release-mode criterion bench (`crates/heal/benches/duplicate_faces.rs`,
+public `fix_shape_with_history` path, duplicate-only config, 20 samples) for
+wall time, plus the ignored `scaling_measurement_report` unit test for exact
+candidate/exact/reference counts. Machine: this sandbox (absolute times are
+indicative; ratios and counts are the evidence). Memory: peak harness RSS
+64 MB for the whole sequential run (`/usr/bin/time -v`); steady state is
+linear — one descriptor plus one bucket entry per eligible face with a
+transient per-face candidate prefix.
+
+| Case | n | Buckets | Candidates | Exact | All-pairs exact | Plan ms | Full-path ms |
+|---|---|---|---|---|---|---|---|
+| sparse | 200 | 200 | 0 | 0 | 19,900 | 6.1 | 5.9 |
+| sparse | 800 | 800 | 0 | 0 | 319,600 | 23.6 | 24.3 |
+| sparse | 2000 | 2000 | 0 | 0 | 1,999,000 | 53.7 | 54.1 |
+| clustered | 200 | 200 | 305 | 305 | 19,900 | 5.3 | 5.6 |
+| clustered | 800 | 800 | 1,184 | 1,184 | 319,600 | 22.4 | 23.5 |
+| coincident | 200 | 1 | 199 | 199 | 199 | 4.8 | 5.2 |
+| coincident | 800 | 1 | 799 | 799 | 799 | 19.5 | — |
+| dense-distinct | 60 | 1 | 1,770 | 1,770 | 1,770 | 1.5 | — |
+| dense-distinct | 200 | 1 | 19,900 | 19,900 | 19,900 | 5.5 | — |
+
+Readings:
+
+- Sparse models pay zero exact comparisons at any size (was: 2M predicate
+  calls at n=2000). Total time is linear in n, dominated by the per-face
+  729-cell halo scan over mostly-empty buckets — the constant to attack next,
+  not the complexity.
+- Clustered models pay ~1.5 exact calls per face (neighborhood only).
+- Coincident models match the survivor on the first candidate each (linear).
+- Dense-distinct (one bucket, all pairs genuinely distinct) is the honest
+  quadratic worst case: every pair reaches the predicate, exactly like the
+  legacy loop. Reported, not hidden.
+
+Remaining limits (not chased here): the 729-lookup halo constant, hole-count
+scaling inside one face (bipartite match is per-pair work), and curved
+carriers/boundaries outside the supported contract.

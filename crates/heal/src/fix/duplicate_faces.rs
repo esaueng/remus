@@ -1017,7 +1017,7 @@ fn mean_point(points: &[Point3]) -> Point3 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 mod tests {
     use super::*;
     use remus_math::curves::Circle3D;
@@ -1899,6 +1899,105 @@ mod tests {
             let shell = topo.add_shell(Shell::new(faces).unwrap());
             let descriptors = describe_shell(&topo, shell, tol);
             assert_plan_equals_reference(&descriptors, tol);
+        }
+    }
+
+    /// Scaling evidence (M5): prints candidate/exact counts, bucket spread
+    /// and wall time per fixture. Manual measurement only (`--ignored`):
+    /// asserts correctness against the reference, never timing.
+    #[ignore = "measurement: prints the PERF-H03 scaling table; run release with --nocapture"]
+    #[test]
+    fn scaling_measurement_report() {
+        use std::collections::BTreeSet;
+        use std::time::Instant;
+
+        // Each entry: one quad's (x, y) origin; quads are unit squares.
+        fn sparse_origins(n: usize) -> Vec<[f64; 2]> {
+            (0..n).map(|i| [i as f64 * 10.0, 0.0]).collect()
+        }
+        fn clustered_origins(n: usize) -> Vec<[f64; 2]> {
+            let side = n.isqrt().max(1);
+            (0..n)
+                .map(|i| [(i % side) as f64 * 1.5e-7, (i / side) as f64 * 1.5e-7])
+                .collect()
+        }
+        fn coincident_origins(n: usize) -> Vec<[f64; 2]> {
+            vec![[0.0, 0.0]; n]
+        }
+        let cases: Vec<(&str, Vec<usize>)> = vec![
+            ("sparse", vec![200, 800, 2000]),
+            ("clustered", vec![200, 800]),
+            ("coincident", vec![200, 800]),
+            ("dense-distinct", vec![60, 200]),
+        ];
+        eprintln!(
+            "{:>14} {:>6} {:>8} {:>10} {:>10} {:>10} {:>10}",
+            "case", "n", "buckets", "candidates", "exact", "ref-exact", "ms"
+        );
+        for (name, sizes) in cases {
+            for size in sizes {
+                let mut topo = Topology::new();
+                let mut faces = Vec::new();
+                if name == "dense-distinct" {
+                    // Centroid-preserving 2*tol drifts: one bucket, all
+                    // pairwise distinct (honest quadratic worst case).
+                    for k in 0..size {
+                        let d = k as f64 * 2.0 * 1e-7;
+                        faces.push(add_quad(
+                            &mut topo,
+                            [
+                                Point3::new(d, 0.0, 0.0),
+                                Point3::new(1.0, 0.0, 0.0),
+                                Point3::new(1.0 - d, 1.0, 0.0),
+                                Point3::new(0.0, 1.0, 0.0),
+                            ],
+                        ));
+                    }
+                } else {
+                    let origins = match name {
+                        "sparse" => sparse_origins(size),
+                        "clustered" => clustered_origins(size),
+                        _ => coincident_origins(size),
+                    };
+                    for [x, y] in origins {
+                        faces.push(add_quad(
+                            &mut topo,
+                            [
+                                Point3::new(x, y, 0.0),
+                                Point3::new(x + 1.0, y, 0.0),
+                                Point3::new(x + 1.0, y + 1.0, 0.0),
+                                Point3::new(x, y + 1.0, 0.0),
+                            ],
+                        ));
+                    }
+                }
+                let shell = topo.add_shell(Shell::new(faces).unwrap());
+                let descriptors = describe_shell(&topo, shell, 1e-7);
+                let buckets: BTreeSet<Bucket> = descriptors
+                    .iter()
+                    .map(|d| bucket_key(d, 1e-7).unwrap())
+                    .collect();
+                let start = Instant::now();
+                let plan = plan_duplicate_removals(&descriptors, 1e-7);
+                let elapsed = start.elapsed();
+                let reference = reference_all_pairs(&descriptors, 1e-7);
+                let mut planned = plan.pairs.clone();
+                let mut expected = reference.clone();
+                planned.sort_by_key(|p| (p.0.index(), p.1.index()));
+                expected.sort_by_key(|p| (p.0.index(), p.1.index()));
+                assert_eq!(planned, expected, "plan must equal reference");
+                let dense = all_pairs_plan(&descriptors, 1e-7, false);
+                eprintln!(
+                    "{:>14} {:>6} {:>8} {:>10} {:>10} {:>10} {:>10.2}",
+                    name,
+                    size,
+                    buckets.len(),
+                    plan.candidate_exams,
+                    plan.exact_comparisons,
+                    dense.exact_comparisons,
+                    elapsed.as_secs_f64() * 1000.0,
+                );
+            }
         }
     }
 
