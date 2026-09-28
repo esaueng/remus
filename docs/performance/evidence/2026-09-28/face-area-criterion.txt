@@ -1,0 +1,31 @@
+   Compiling remus-topology v2026.1.0 (/tmp/remus-cad-performance/crates/topology)
+   Compiling remus-blend v2026.1.0 (/tmp/remus-cad-performance/crates/blend)
+   Compiling remus-offset v2026.1.0 (/tmp/remus-cad-performance/crates/offset)
+   Compiling remus-heal v2026.1.0 (/tmp/remus-cad-performance/crates/heal)
+   Compiling remus-check v2026.1.0 (/tmp/remus-cad-performance/crates/check)
+   Compiling remus-algo v2026.1.0 (/tmp/remus-cad-performance/crates/algo)
+   Compiling remus-operations v2026.1.0 (/tmp/remus-cad-performance/crates/operations)
+   Compiling remus-io v2026.1.0 (/tmp/remus-cad-performance/crates/io)
+    Finished `bench` profile [optimized] target(s) in 2m 04s
+     Running benches/cad_operations.rs (target/release/deps/cad_operations-007a75f5a1f41e9b)
+Gnuplot not found, using plotters backend
+Benchmarking fillet curved face area/full moments
+Benchmarking fillet curved face area/full moments: Warming up for 500.00 ms
+Benchmarking fillet curved face area/full moments: Collecting 20 samples in estimated 2.0783 s (1050 iterations)
+Benchmarking fillet curved face area/full moments: Analyzing
+fillet curved face area/full moments
+                        time:   [1.9369 ms 1.9670 ms 2.0002 ms]
+                        change: [−12.426% −10.747% −8.8778%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking fillet curved face area/area only
+Benchmarking fillet curved face area/area only: Warming up for 500.00 ms
+Benchmarking fillet curved face area/area only: Collecting 20 samples in estimated 2.0245 s (2520 iterations)
+Benchmarking fillet curved face area/area only: Analyzing
+fillet curved face area/area only
+                        time:   [782.92 µs 792.25 µs 800.16 µs]
+                        change: [−8.0513% −6.2671% −4.6647%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) low mild
+  2 (10.00%) high mild
+  1 (5.00%) high severe
