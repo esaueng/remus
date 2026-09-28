@@ -126,8 +126,9 @@ a same-value/different-region counterexample pinned in tests:
 | Domain | Status |
 |---|---|
 | Unperforated planar faces, all-`Line` outer boundary | Supported since B11 (winding-aware compare) |
-| Perforated planar faces, all-`Line` boundaries (§3.3) | Supported by this campaign (M3) |
-| Planar faces with `Line`+`Circle` boundaries (open arcs, closed rims) | Supported under the circle contract (M3): same supporting plane; elementwise curve-type agreement (a `Line` never matches a `Circle`); circle centers within `tol`, radii within `tol`, arc spans covering the same angular interval within an angle tolerance derived from `tol`/radius; closed rims compared phase-invariantly |
+| Perforated planar faces, all-`Line` boundaries (§3.3) | Supported by this campaign (M3): outer coincidence plus bijective hole correspondence (augmenting-path search, storage-order independent); reversed hole windings stay kept, never normalized |
+| Planar faces with `Line`+`Circle` boundaries (open arcs, closed rims) | Supported under the circle contract (M3): same supporting plane with the circle in-plane (center) and transverse axis refused otherwise; elementwise curve-type agreement (a `Line` never matches a `Circle`); circle centers/radii within `tol`, canonical face-side sweeps within `tol`/radius; closed rims compared phase-invariantly (center/radius/sweep only); open arcs additionally pin endpoints, so a real gap never matches a rim |
+| Collinear/`same-circle` subdivision differences | Normalized without moving any vertex (M3): degenerate segments dropped, strictly-interior collinear/same-circle joints merged; steps, spikes, and thin regions survive and keep the pair |
 | Ellipse/hyperbola/parabola/NURBS boundaries, non-planar carriers | Refused (left in place) |
 
 ## 6. Removal semantics
