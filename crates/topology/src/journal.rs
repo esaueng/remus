@@ -548,14 +548,31 @@ impl Journal {
     }
 
     /// Interns an arena key, assigning a fresh ordinal on first sight.
-    fn intern(&mut self, key: EntityKey) -> JournalOrdinal {
+    ///
+    /// Returns the ordinal and whether this call created it. Creation
+    /// reports feed the transaction undo log so a rolled-back scope removes
+    /// exactly the pairs it introduced; hits need no record.
+    fn intern(&mut self, key: EntityKey) -> (JournalOrdinal, bool) {
         if let Some(&ordinal) = self.ordinal_by_key.get(&key) {
-            return ordinal;
+            return (ordinal, false);
         }
         let ordinal = JournalOrdinal(self.next_ordinal);
         self.next_ordinal = self.next_ordinal.saturating_add(1);
         self.ordinal_by_key.insert(key, ordinal);
         self.key_by_ordinal.insert(ordinal.0, key);
+        (ordinal, true)
+    }
+
+    /// Interns `key`, pushing `(key, ordinal)` into `created` on first sight.
+    fn intern_tracked(
+        &mut self,
+        key: EntityKey,
+        created: &mut Vec<(EntityKey, JournalOrdinal)>,
+    ) -> JournalOrdinal {
+        let (ordinal, fresh) = self.intern(key);
+        if fresh {
+            created.push((key, ordinal));
+        }
         ordinal
     }
 
@@ -568,38 +585,52 @@ impl Journal {
     /// Records an evolution entry. Duplicate subjects are refused: one
     /// entry making two claims about one entity is a recording bug, and a
     /// resolver must never have to pick between them.
+    ///
+    /// Also returns every ordinal this call created, so a rolled-back
+    /// transaction scope can remove exactly its own index pairs while
+    /// `next_op` / `next_ordinal` high-water marks are preserved (never
+    /// reissued, the journal analogue of arena slot preservation).
     pub(crate) fn record_evolution(
         &mut self,
         kind: String,
         pre_scope: Vec<EntityKey>,
         draft: EvolutionDraft,
         ticks_after: u64,
-    ) -> Result<OpId, TopologyError> {
-        let mut scope: Vec<JournalOrdinal> = pre_scope
-            .into_iter()
-            .chain(draft.scope)
-            .map(|key| self.intern(key))
-            .collect();
+    ) -> Result<(OpId, Vec<(EntityKey, JournalOrdinal)>), TopologyError> {
+        let mut created = Vec::new();
+        let mut scope: Vec<JournalOrdinal> = Vec::new();
+        for key in pre_scope.into_iter().chain(draft.scope) {
+            scope.push(self.intern_tracked(key, &mut created));
+        }
         let mut events: Vec<(JournalOrdinal, EntityEvent)> = Vec::with_capacity(draft.events.len());
         for (subject, event) in draft.events {
-            let subject = self.intern(subject);
+            let subject = self.intern_tracked(subject, &mut created);
             scope.push(subject);
             let event = match event {
                 EventDraft::Preserved { from } => EntityEvent::Preserved {
-                    from: self.intern(from),
+                    from: self.intern_tracked(from, &mut created),
                 },
                 EventDraft::Modified { from } => EntityEvent::Modified {
-                    from: self.intern(from),
+                    from: self.intern_tracked(from, &mut created),
                 },
                 EventDraft::Generated { sources } => EntityEvent::Generated {
-                    sources: sources.into_iter().map(|key| self.intern(key)).collect(),
+                    sources: sources
+                        .into_iter()
+                        .map(|key| self.intern_tracked(key, &mut created))
+                        .collect(),
                 },
                 EventDraft::Merged { from } => EntityEvent::Merged {
-                    from: from.into_iter().map(|key| self.intern(key)).collect(),
+                    from: from
+                        .into_iter()
+                        .map(|key| self.intern_tracked(key, &mut created))
+                        .collect(),
                 },
                 EventDraft::Deleted => EntityEvent::Deleted,
                 EventDraft::Unresolved { candidates } => EntityEvent::Unresolved {
-                    candidates: candidates.into_iter().map(|key| self.intern(key)).collect(),
+                    candidates: candidates
+                        .into_iter()
+                        .map(|key| self.intern_tracked(key, &mut created))
+                        .collect(),
                 },
             };
             // The scope is a superset of everything the events mention.
@@ -633,33 +664,37 @@ impl Journal {
             },
             ticks_after,
         });
-        Ok(op)
+        Ok((op, created))
     }
 
     /// Records an explicit barrier over `affected` plus the pre-operation
-    /// scope captured on the pending token.
+    /// scope captured on the pending token. Returns the created ordinals
+    /// alongside the new entry's [`OpId`], as in
+    /// [`Self::record_evolution`].
     pub(crate) fn record_barrier(
         &mut self,
         kind: String,
         pre_scope: Vec<EntityKey>,
         affected: Vec<EntityKey>,
         ticks_after: u64,
-    ) -> OpId {
-        let mut affected: Vec<JournalOrdinal> = pre_scope
-            .into_iter()
-            .chain(affected)
-            .map(|key| self.intern(key))
-            .collect();
-        affected.sort_unstable();
-        affected.dedup();
+    ) -> (OpId, Vec<(EntityKey, JournalOrdinal)>) {
+        let mut created = Vec::new();
+        let mut affected_ordinals: Vec<JournalOrdinal> = Vec::new();
+        for key in pre_scope.into_iter().chain(affected) {
+            affected_ordinals.push(self.intern_tracked(key, &mut created));
+        }
+        affected_ordinals.sort_unstable();
+        affected_ordinals.dedup();
         let op = self.issue_op();
         self.entries.push(JournalEntry {
             op,
             kind,
-            payload: EntryPayload::Barrier { affected },
+            payload: EntryPayload::Barrier {
+                affected: affected_ordinals,
+            },
             ticks_after,
         });
-        op
+        (op, created)
     }
 
     /// Records the synthetic global barrier for unaccounted mutations.
@@ -684,6 +719,29 @@ impl Journal {
         self.ordinal_by_key.clone_from(&snapshot.ordinal_by_key);
         self.next_op = self.next_op.max(snapshot.next_op);
         self.next_ordinal = self.next_ordinal.max(snapshot.next_ordinal);
+    }
+
+    /// Rolls one transaction scope back: drops entries recorded after
+    /// `entries_len` and removes exactly the ordinal pairs in `created`.
+    ///
+    /// `created` must be the union of the creation reports from the record
+    /// calls inside the scope (see [`Self::record_evolution`]); pairs are
+    /// removed in reverse so nested rewinds compose. `next_op` and
+    /// `next_ordinal` are deliberately not rewound: identifiers issued by
+    /// rolled-back operations are never reissued, matching
+    /// [`Self::restore_preserving_ids`].
+    pub(crate) fn rollback_scope(
+        &mut self,
+        entries_len: usize,
+        created: &[(EntityKey, JournalOrdinal)],
+    ) {
+        self.entries.truncate(entries_len);
+        for (key, ordinal) in created.iter().rev() {
+            if self.key_by_ordinal.get(&ordinal.0) == Some(key) {
+                self.key_by_ordinal.remove(&ordinal.0);
+                self.ordinal_by_key.remove(key);
+            }
+        }
     }
 }
 

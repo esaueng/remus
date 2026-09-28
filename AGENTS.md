@@ -194,6 +194,8 @@ Quick reference — find the right file for any task:
 | Coedge — one directed use of an edge by a face boundary | `coedge.rs` |
 | Loop — ordered cycle of coedges bounding a face | `face_loop.rs` |
 | Transactional mutation (`run_transacted`, `run_validated`) | `transaction.rs` |
+| Mutation-local undo log, scope marks, append-only guard (`run_append_only`) | `undo_log.rs` |
+| Chunk/page COW comparison prototype (test-only, never shipped) | `cow_prototype.rs` |
 | Nested savepoint state, failure injection, and stale-handle contract tests | `transaction/savepoint_tests.rs` |
 | Attribute store (names, colors, app ids) | `attributes.rs` |
 | Append-only evolution journal | `journal.rs` |
