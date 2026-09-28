@@ -15,7 +15,8 @@
 //! edges. The offset engine now samples perpendicular cap circles directly
 //! from the offset carriers (axis/plane intersection for the center, carrier
 //! radius at that station), which carries only scale-relative roundoff;
-//! every other section keeps the legacy path.
+//! near-perpendicular oblique sections use carrier-direct samples when the circle
+//! exceeds the configured tolerance; other sections keep the legacy path.
 //!
 //! Every figure is a closed form: a cylinder of radius `r` and height `h`
 //! offset by `d` with mitred joints is a cylinder of radius `r + d` and

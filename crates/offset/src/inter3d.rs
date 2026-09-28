@@ -3,6 +3,7 @@
 use remus_math::analytic_intersection::{
     AnalyticSurface, intersect_analytic_analytic, intersect_plane_analytic,
 };
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::{FaceId, FaceSurface};
@@ -108,14 +109,9 @@ pub fn intersect_faces_3d(
 /// Grid resolution for analytic-analytic intersection marching.
 const ANALYTIC_GRID_RES: usize = 32;
 
-/// Cosine slack for recognizing a cap plane as perpendicular to a wall axis.
-///
-/// Dimensionless and generous: a rigid placement preserves perpendicularity
-/// to floating-point roundoff (~1e-16), far inside this band, while a plane
-/// this close to perpendicular has a circle-vs-ellipse deviation (~r·θ²)
-/// far below every downstream tolerance, so either reading builds the same
-/// edge.
-const CAP_PERPENDICULAR_SLACK: f64 = 1e-9;
+/// Roundoff band for a cap normal parallel to a wall axis. The separate
+/// carrier-distance bound below also accounts for model scale.
+const CAP_PERPENDICULAR_SLACK: f64 = 8.0 * f64::EPSILON;
 
 /// Samples on a cap circle section, including the duplicate seam point that
 /// closes the chain (`n + 1` points over one turn).
@@ -147,10 +143,10 @@ fn intersect_surface_pair(
     }
 
     // Plane-Analytic or Analytic-Plane.
-    if let Some(pts) = try_plane_analytic(face_a, face_b, surf_a, surf_b)? {
+    if let Some(pts) = try_plane_analytic(face_a, face_b, surf_a, surf_b, tol)? {
         return Ok(pts);
     }
-    if let Some(pts) = try_plane_analytic(face_b, face_a, surf_b, surf_a)? {
+    if let Some(pts) = try_plane_analytic(face_b, face_a, surf_b, surf_a, tol)? {
         return Ok(pts);
     }
 
@@ -181,6 +177,7 @@ fn try_plane_analytic(
     face_b: FaceId,
     surf_a: &FaceSurface,
     surf_b: &FaceSurface,
+    tol: Tolerance,
 ) -> Result<Option<Vec<Point3>>, OffsetError> {
     let FaceSurface::Plane { normal, d } = surf_a else {
         return Ok(None);
@@ -188,7 +185,10 @@ fn try_plane_analytic(
     let Some(analytic) = to_analytic(surf_b) else {
         return Ok(None);
     };
-    if let Some(points) = try_perpendicular_cap_circle(*normal, *d, analytic) {
+    if let Some(points) = try_perpendicular_cap_circle(*normal, *d, analytic, tol) {
+        return Ok(Some(points));
+    }
+    if let Some(points) = try_transverse_cap_section(*normal, *d, analytic) {
         return Ok(Some(points));
     }
     let curves = intersect_plane_analytic(analytic, *normal, *d).map_err(|e| {
@@ -216,12 +216,13 @@ fn try_plane_analytic(
 ///
 /// Returns `None` when the pair is not a perpendicular cap section (oblique
 /// or axis-parallel planes, the cone's degenerate or unreached nappe, or a
-/// non-finite construction) so the caller keeps the legacy sampled path
-/// bit-for-bit there.
+/// non-finite construction). The caller then tries a direct transverse
+/// section before the legacy sampled path.
 fn try_perpendicular_cap_circle(
     normal: Vec3,
     d: f64,
     analytic: AnalyticSurface<'_>,
+    tol: Tolerance,
 ) -> Option<Vec<Point3>> {
     // Work with a unit plane equation so the sampling frame is orthonormal.
     // Unit normals pass through bit-identical (`x / 1.0 == x`); anything
@@ -235,7 +236,7 @@ fn try_perpendicular_cap_circle(
     let (center, radius) = match analytic {
         AnalyticSurface::Cylinder(cyl) => {
             let axis = cyl.axis();
-            if normal.dot(axis).abs() <= 1.0 - CAP_PERPENDICULAR_SLACK {
+            if !cap_circle_is_exact_enough(normal, axis, cyl.radius(), 0.0, tol) {
                 return None;
             }
             let station = (d - dot_point_normal(normal, cyl.origin())) / normal.dot(axis);
@@ -251,9 +252,6 @@ fn try_perpendicular_cap_circle(
         }
         AnalyticSurface::Cone(cone) => {
             let axis = cone.axis();
-            if normal.dot(axis).abs() <= 1.0 - CAP_PERPENDICULAR_SLACK {
-                return None;
-            }
             // Signed axial distance from the apex to the plane. The wall is
             // a single nappe: a non-positive station is the degenerate apex
             // section or a plane wholly outside it.
@@ -263,7 +261,10 @@ fn try_perpendicular_cap_circle(
             }
             let (sin_a, cos_a) = cone.half_angle().sin_cos();
             let radius = station * cos_a / sin_a;
-            if !radius.is_finite() || radius <= 0.0 {
+            if !radius.is_finite()
+                || radius <= 0.0
+                || !cap_circle_is_exact_enough(normal, axis, radius, cos_a / sin_a, tol)
+            {
                 return None;
             }
             let center = Point3::new(
@@ -277,6 +278,102 @@ fn try_perpendicular_cap_circle(
         AnalyticSurface::Plane { .. } => return None,
     };
     Some(sample_cap_circle(normal, center, radius))
+}
+
+/// A tilted plane cuts a cylinder in an ellipse, and a cone in a
+/// non-circular section. Bound the carrier mismatch in model units before
+/// using the circle shortcut; a cosine-only gate loses the angular error.
+fn cap_circle_is_exact_enough(
+    normal: Vec3,
+    axis: Vec3,
+    radius: f64,
+    radial_slope: f64,
+    tol: Tolerance,
+) -> bool {
+    let dot = normal.dot(axis).abs();
+    let angular_error = normal.cross(axis).length();
+    dot.is_finite()
+        && angular_error.is_finite()
+        && radius.is_finite()
+        && radial_slope.is_finite()
+        && dot >= 1.0 - CAP_PERPENDICULAR_SLACK
+        && radius * angular_error * (1.0 + radial_slope.abs()) <= tol.linear * 0.25
+}
+
+/// Sample a near-perpendicular wall section directly from its carrier.
+///
+/// The legacy sampler clips wall parameters to 100 model units. Once a
+/// tilted cap exceeds that window, solve the plane equation at each wall
+/// angle instead of returning an empty section. The cone gate ensures every
+/// sampled angle lies on its positive nappe and forms a closed section.
+fn try_transverse_cap_section(
+    normal: Vec3,
+    d: f64,
+    analytic: AnalyticSurface<'_>,
+) -> Option<Vec<Point3>> {
+    let len = normal.length();
+    if !len.is_finite() || len <= 0.0 {
+        return None;
+    }
+    let normal = normal * (1.0 / len);
+    let d = d / len;
+    let mut points = Vec::with_capacity(N_CAP_CIRCLE_SAMPLES + 1);
+    match analytic {
+        AnalyticSurface::Cylinder(cyl) => {
+            let axial = normal.dot(cyl.axis());
+            if axial.abs() < 1.0 - 1e-9 {
+                return None;
+            }
+            let station = d - dot_point_normal(normal, cyl.origin());
+            for i in 0..=N_CAP_CIRCLE_SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+                let (sin_t, cos_t) = theta.sin_cos();
+                let radial = cyl.x_axis() * cos_t + cyl.y_axis() * sin_t;
+                let v = (station - cyl.radius() * normal.dot(radial)) / axial;
+                if !v.is_finite() {
+                    return None;
+                }
+                points.push(cyl.evaluate(theta, v));
+            }
+        }
+        AnalyticSurface::Cone(cone) => {
+            let axial = normal.dot(cone.axis());
+            if axial.abs() < 1.0 - 1e-9 {
+                return None;
+            }
+            let (sin_a, cos_a) = cone.half_angle().sin_cos();
+            let nx = normal.dot(cone.x_axis());
+            let ny = normal.dot(cone.y_axis());
+            let radial_bound = nx.hypot(ny) * cos_a;
+            if axial.abs() * sin_a <= radial_bound {
+                return None;
+            }
+            let numerator = d - dot_point_normal(normal, cone.apex());
+            if !numerator.is_finite() || numerator * axial <= 0.0 {
+                return None;
+            }
+            for i in 0..=N_CAP_CIRCLE_SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+                let (sin_t, cos_t) = theta.sin_cos();
+                let radial = cone.x_axis() * cos_t + cone.y_axis() * sin_t;
+                let denominator = sin_a * axial + cos_a * normal.dot(radial);
+                let v = numerator / denominator;
+                if !v.is_finite() || v <= 0.0 {
+                    return None;
+                }
+                points.push(cone.evaluate(theta, v));
+            }
+        }
+        AnalyticSurface::Plane { .. } | AnalyticSurface::Sphere(_) | AnalyticSurface::Torus(_) => {
+            return None;
+        }
+    }
+    points
+        .iter()
+        .all(|p| p.x().is_finite() && p.y().is_finite() && p.z().is_finite())
+        .then_some(points)
 }
 
 /// Sample one full turn of a cap circle in a plane frame built from its
@@ -574,6 +671,100 @@ mod tests {
         crate::offset::build_offset_faces(topo, solid, &mut data).unwrap();
         intersect_faces_3d(topo, solid, &mut data).unwrap();
         data
+    }
+
+    #[test]
+    fn near_perpendicular_large_cap_uses_direct_section() {
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let tilted = Vec3::new(3.0e-5, 0.0, 1.0).normalize().unwrap();
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            axis,
+            1_000.0,
+        )
+        .unwrap();
+        let cone = remus_math::surfaces::ConicalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            axis,
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        assert!(
+            try_perpendicular_cap_circle(
+                tilted,
+                1_000.0,
+                AnalyticSurface::Cylinder(&cylinder),
+                Tolerance::new()
+            )
+            .is_none()
+        );
+        assert!(
+            try_perpendicular_cap_circle(
+                tilted,
+                1_000.0,
+                AnalyticSurface::Cone(&cone),
+                Tolerance::new()
+            )
+            .is_none()
+        );
+        assert!(
+            try_perpendicular_cap_circle(
+                axis,
+                1_000.0,
+                AnalyticSurface::Cylinder(&cylinder),
+                Tolerance::new()
+            )
+            .is_some()
+        );
+        assert!(
+            try_perpendicular_cap_circle(
+                axis,
+                1_000.0,
+                AnalyticSurface::Cone(&cone),
+                Tolerance::new()
+            )
+            .is_some()
+        );
+        let cylinder_section =
+            try_transverse_cap_section(tilted, 1_000.0, AnalyticSurface::Cylinder(&cylinder))
+                .unwrap();
+        let cone_section =
+            try_transverse_cap_section(tilted, 1_000.0, AnalyticSurface::Cone(&cone)).unwrap();
+        assert_eq!(cylinder_section.len(), N_CAP_CIRCLE_SAMPLES + 1);
+        assert_eq!(cone_section.len(), N_CAP_CIRCLE_SAMPLES + 1);
+        for point in &cylinder_section {
+            let radius = point.x().hypot(point.y());
+            assert!((radius - 1_000.0).abs() < 1e-7);
+            assert!(
+                (tilted.dot(Vec3::new(point.x(), point.y(), point.z())) - 1_000.0).abs() < 1e-7
+            );
+        }
+        for point in &cone_section {
+            let radius = point.x().hypot(point.y());
+            assert!((radius - point.z()).abs() < 1e-7);
+            assert!(
+                (tilted.dot(Vec3::new(point.x(), point.y(), point.z())) - 1_000.0).abs() < 1e-7
+            );
+        }
+        let tiny_tilt = Vec3::new(1e-12, 0.0, 1.0).normalize().unwrap();
+        assert!(
+            try_perpendicular_cap_circle(
+                tiny_tilt,
+                1_000.0,
+                AnalyticSurface::Cylinder(&cylinder),
+                Tolerance::new()
+            )
+            .is_some()
+        );
+        assert!(
+            try_perpendicular_cap_circle(
+                tiny_tilt,
+                1_000.0,
+                AnalyticSurface::Cylinder(&cylinder),
+                Tolerance::tight()
+            )
+            .is_none()
+        );
     }
 
     #[test]
