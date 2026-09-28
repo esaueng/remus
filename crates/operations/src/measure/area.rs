@@ -52,11 +52,9 @@ pub fn face_area(
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => Ok(remus_check::properties::face_integrator::integrate_face(
-            topo, face_id, 8,
-        )?
-        .area
-        .abs()),
+        | FaceSurface::Torus(_) => Ok(
+            remus_check::properties::face_integrator::integrate_face_area(topo, face_id, 8)?.abs(),
+        ),
         FaceSurface::Nurbs(_) => {
             let mesh = tessellate::tessellate(topo, face_id, deflection)?;
             Ok(triangle_mesh_area(&mesh))
