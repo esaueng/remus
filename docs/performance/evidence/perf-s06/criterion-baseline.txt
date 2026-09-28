@@ -1,0 +1,188 @@
+    Finished `bench` profile [optimized] target(s) in 0.13s
+     Running benches/gcs_perf.rs (target/release/deps/gcs_perf-f1287d378f372302)
+Gnuplot not found, using plotters backend
+Benchmarking sketch/independent_under/solve/100
+Benchmarking sketch/independent_under/solve/100: Warming up for 500.00 ms
+Benchmarking sketch/independent_under/solve/100: Collecting 20 samples in estimated 2.0015 s (1470 iterations)
+Benchmarking sketch/independent_under/solve/100: Analyzing
+sketch/independent_under/solve/100
+                        time:   [1.3616 ms 1.3639 ms 1.3671 ms]
+                        change: [+0.3450% +0.5998% +0.8510%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) low mild
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking sketch/independent_under/detailed/100
+Benchmarking sketch/independent_under/detailed/100: Warming up for 500.00 ms
+Benchmarking sketch/independent_under/detailed/100: Collecting 20 samples in estimated 2.2030 s (1470 iterations)
+Benchmarking sketch/independent_under/detailed/100: Analyzing
+sketch/independent_under/detailed/100
+                        time:   [1.4763 ms 1.4769 ms 1.4776 ms]
+                        change: [−0.3906% −0.2732% −0.1852%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking sketch/independent_under/solve/1000
+Benchmarking sketch/independent_under/solve/1000: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 28.4s, or reduce sample count to 10.
+Benchmarking sketch/independent_under/solve/1000: Collecting 20 samples in estimated 28.402 s (20 iterations)
+Benchmarking sketch/independent_under/solve/1000: Analyzing
+sketch/independent_under/solve/1000
+                        time:   [1.3887 s 1.3896 s 1.3905 s]
+                        change: [+0.4117% +0.5966% +0.7605%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Benchmarking sketch/independent_under/detailed/1000
+Benchmarking sketch/independent_under/detailed/1000: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 31.2s, or reduce sample count to 10.
+Benchmarking sketch/independent_under/detailed/1000: Collecting 20 samples in estimated 31.233 s (20 iterations)
+Benchmarking sketch/independent_under/detailed/1000: Analyzing
+sketch/independent_under/detailed/1000
+                        time:   [1.5550 s 1.5573 s 1.5593 s]
+                        change: [−0.7853% −0.6256% −0.4800%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking sketch/independent_solved/solve/100
+Benchmarking sketch/independent_solved/solve/100: Warming up for 500.00 ms
+Benchmarking sketch/independent_solved/solve/100: Collecting 20 samples in estimated 2.3633 s (630 iterations)
+Benchmarking sketch/independent_solved/solve/100: Analyzing
+sketch/independent_solved/solve/100
+                        time:   [3.6997 ms 3.7022 ms 3.7061 ms]
+                        change: [−0.7604% −0.5821% −0.4525%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking sketch/independent_solved/detailed/100
+Benchmarking sketch/independent_solved/detailed/100: Warming up for 500.00 ms
+Benchmarking sketch/independent_solved/detailed/100: Collecting 20 samples in estimated 2.6337 s (630 iterations)
+Benchmarking sketch/independent_solved/detailed/100: Analyzing
+sketch/independent_solved/detailed/100
+                        time:   [4.0858 ms 4.0870 ms 4.0884 ms]
+                        change: [+0.6552% +0.7165% +0.7753%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking sketch/independent_solved/solve/1000
+Benchmarking sketch/independent_solved/solve/1000: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 96.6s, or reduce sample count to 10.
+Benchmarking sketch/independent_solved/solve/1000: Collecting 20 samples in estimated 96.610 s (20 iterations)
+Benchmarking sketch/independent_solved/solve/1000: Analyzing
+sketch/independent_solved/solve/1000
+                        time:   [4.7595 s 4.7676 s 4.7756 s]
+                        change: [−0.3376% −0.1244% +0.0695%] (p = 0.24 > 0.05)
+                        No change in performance detected.
+Benchmarking sketch/independent_solved/detailed/1000
+Benchmarking sketch/independent_solved/detailed/1000: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 106.9s, or reduce sample count to 10.
+Benchmarking sketch/independent_solved/detailed/1000: Collecting 20 samples in estimated 106.89 s (20 iterations)
+Benchmarking sketch/independent_solved/detailed/1000: Analyzing
+sketch/independent_solved/detailed/1000
+                        time:   [5.3294 s 5.3368 s 5.3449 s]
+                        change: [−0.1490% +0.0311% +0.2064%] (p = 0.74 > 0.05)
+                        No change in performance detected.
+
+Benchmarking sketch/coupled_chain/solve/100
+Benchmarking sketch/coupled_chain/solve/100: Warming up for 500.00 ms
+Benchmarking sketch/coupled_chain/solve/100: Collecting 20 samples in estimated 2.4585 s (1050 iterations)
+Benchmarking sketch/coupled_chain/solve/100: Analyzing
+sketch/coupled_chain/solve/100
+                        time:   [2.2996 ms 2.3003 ms 2.3012 ms]
+                        change: [−0.0935% −0.0152% +0.0500%] (p = 0.70 > 0.05)
+                        No change in performance detected.
+Benchmarking sketch/coupled_chain/detailed/100
+Benchmarking sketch/coupled_chain/detailed/100: Warming up for 500.00 ms
+Benchmarking sketch/coupled_chain/detailed/100: Collecting 20 samples in estimated 2.3122 s (840 iterations)
+Benchmarking sketch/coupled_chain/detailed/100: Analyzing
+sketch/coupled_chain/detailed/100
+                        time:   [2.7334 ms 2.7472 ms 2.7583 ms]
+                        change: [+1.2114% +1.6741% +2.1497%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking sketch/coupled_chain/solve/1000
+Benchmarking sketch/coupled_chain/solve/1000: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 60.2s, or reduce sample count to 10.
+Benchmarking sketch/coupled_chain/solve/1000: Collecting 20 samples in estimated 60.233 s (20 iterations)
+Benchmarking sketch/coupled_chain/solve/1000: Analyzing
+sketch/coupled_chain/solve/1000
+                        time:   [2.9983 s 3.0006 s 3.0030 s]
+                        change: [+0.3992% +0.5670% +0.7320%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) low mild
+  1 (5.00%) high severe
+Benchmarking sketch/coupled_chain/detailed/1000
+Benchmarking sketch/coupled_chain/detailed/1000: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 71.6s, or reduce sample count to 10.
+Benchmarking sketch/coupled_chain/detailed/1000: Collecting 20 samples in estimated 71.594 s (20 iterations)
+Benchmarking sketch/coupled_chain/detailed/1000: Analyzing
+sketch/coupled_chain/detailed/1000
+                        time:   [3.5630 s 3.5654 s 3.5679 s]
+                        change: [−0.5425% −0.3447% −0.1524%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking sketch/redundant_100/solve
+Benchmarking sketch/redundant_100/solve: Warming up for 500.00 ms
+Benchmarking sketch/redundant_100/solve: Collecting 20 samples in estimated 2.7045 s (420 iterations)
+Benchmarking sketch/redundant_100/solve: Analyzing
+sketch/redundant_100/solve
+                        time:   [6.3900 ms 6.3947 ms 6.3991 ms]
+                        change: [−0.2195% −0.1255% −0.0363%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Benchmarking sketch/redundant_100/detailed
+Benchmarking sketch/redundant_100/detailed: Warming up for 500.00 ms
+Benchmarking sketch/redundant_100/detailed: Collecting 20 samples in estimated 3.0058 s (420 iterations)
+Benchmarking sketch/redundant_100/detailed: Analyzing
+sketch/redundant_100/detailed
+                        time:   [7.0455 ms 7.0473 ms 7.0495 ms]
+                        change: [−0.3464% −0.1784% +0.0188%] (p = 0.07 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+
+Benchmarking sketch/inconsistent_100/solve
+Benchmarking sketch/inconsistent_100/solve: Warming up for 500.00 ms
+Benchmarking sketch/inconsistent_100/solve: Collecting 20 samples in estimated 3.6358 s (420 iterations)
+Benchmarking sketch/inconsistent_100/solve: Analyzing
+sketch/inconsistent_100/solve
+                        time:   [8.4934 ms 8.5484 ms 8.6168 ms]
+                        change: [−0.8581% −0.4926% −0.0290%] (p = 0.04 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking sketch/inconsistent_100/detailed
+Benchmarking sketch/inconsistent_100/detailed: Warming up for 500.00 ms
+Benchmarking sketch/inconsistent_100/detailed: Collecting 20 samples in estimated 3.6840 s (420 iterations)
+Benchmarking sketch/inconsistent_100/detailed: Analyzing
+sketch/inconsistent_100/detailed
+                        time:   [8.6632 ms 8.6708 ms 8.6756 ms]
+                        change: [−0.1195% +0.1114% +0.3021%] (p = 0.34 > 0.05)
+                        No change in performance detected.
+
+Benchmarking sketch/drag_100/solve_step
+Benchmarking sketch/drag_100/solve_step: Warming up for 500.00 ms
+Benchmarking sketch/drag_100/solve_step: Collecting 20 samples in estimated 2.9727 s (630 iterations)
+Benchmarking sketch/drag_100/solve_step: Analyzing
+sketch/drag_100/solve_step
+                        time:   [2.3277 ms 2.3296 ms 2.3312 ms]
+                        change: [−0.9205% −0.3684% +0.1689%] (p = 0.21 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking sketch/drag_100/detailed_step
+Benchmarking sketch/drag_100/detailed_step: Warming up for 500.00 ms
+Benchmarking sketch/drag_100/detailed_step: Collecting 20 samples in estimated 2.1618 s (420 iterations)
+Benchmarking sketch/drag_100/detailed_step: Analyzing
+sketch/drag_100/detailed_step
+                        time:   [2.7346 ms 2.7354 ms 2.7366 ms]
+                        change: [+0.0026% +0.1380% +0.2679%] (p = 0.06 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+

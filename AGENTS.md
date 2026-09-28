@@ -370,6 +370,7 @@ Quick reference — find the right file for any task:
 | QR factorization (rank detection) | `gcs/qr.rs` |
 | DOF analysis | `gcs/dof.rs` |
 | Solve diagnostics + classification | `gcs/diagnostics.rs` |
+| Solve-local final-iterate evaluation sharing | `gcs/final_eval.rs` |
 | Error types | `lib.rs` (`SketchError`) |
 
 Adding a `Constraint` variant requires an arm in `residual_count`,

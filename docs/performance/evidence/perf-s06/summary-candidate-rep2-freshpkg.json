@@ -1,0 +1,353 @@
+{
+  "schema": "remus-sketch-perf-summary-v1",
+  "cases": [
+    {
+      "case_id": "independent_solved_100",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 3.644613,
+      "median": 3.88605,
+      "max": 4.539125,
+      "process_medians": [
+        3.961842,
+        3.770581,
+        3.831957
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "independent_solved_100",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 4.122958,
+      "median": 4.195745,
+      "max": 4.329658,
+      "process_medians": [
+        4.286397,
+        4.193641,
+        4.141452
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "independent_solved_1000",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 4792.909478,
+      "median": 4829.223937,
+      "max": 4855.502786,
+      "process_medians": [
+        4840.257203,
+        4793.759335,
+        4829.223937
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "independent_solved_1000",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 5371.949112,
+      "median": 5387.829496,
+      "max": 5425.232272,
+      "process_medians": [
+        5375.361074,
+        5387.829496,
+        5401.435748
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "coupled_chain_100",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 2.315729,
+      "median": 2.34798,
+      "max": 3.424346,
+      "process_medians": [
+        2.325508,
+        2.431258,
+        2.332421
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "coupled_chain_100",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 2.738018,
+      "median": 2.820274,
+      "max": 3.427923,
+      "process_medians": [
+        2.800917,
+        2.851372,
+        2.820274
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "coupled_chain_1000",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 3003.766436,
+      "median": 3006.964475,
+      "max": 3030.191071,
+      "process_medians": [
+        3022.293816,
+        3006.964475,
+        3005.779905
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "coupled_chain_1000",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 3590.200354,
+      "median": 3609.339731,
+      "max": 3636.049897,
+      "process_medians": [
+        3625.469126,
+        3611.167078,
+        3597.797362
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "redundant_100",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 6.429189,
+      "median": 6.528006,
+      "max": 7.218191,
+      "process_medians": [
+        6.489593,
+        6.607456,
+        6.485876
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "redundant_100",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 7.059781,
+      "median": 7.315566,
+      "max": 8.234273,
+      "process_medians": [
+        7.300878,
+        7.820821,
+        7.168487
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "inconsistent_100",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 8.334943,
+      "median": 8.769715,
+      "max": 9.65526,
+      "process_medians": [
+        8.847733,
+        8.548527,
+        8.708119
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "inconsistent_100",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 8.668504,
+      "median": 8.917966,
+      "max": 9.571943,
+      "process_medians": [
+        8.977358,
+        9.04161,
+        8.768483
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "drag_100",
+      "mode": "solve",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 47.063067,
+      "median": 47.169468,
+      "max": 48.969873,
+      "process_medians": [
+        47.09655,
+        47.253957,
+        47.131105
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "drag_100",
+      "mode": "detailed",
+      "runtime": "native",
+      "samples": 15,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 55.68358,
+      "median": 56.017432,
+      "max": 57.003276,
+      "process_medians": [
+        55.763882,
+        56.017432,
+        56.304034
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "independent_solved_100",
+      "mode": "solve",
+      "runtime": "wasm",
+      "samples": 5,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 4.587645999999992,
+      "median": 4.614918000000003,
+      "max": 4.7844380000000015,
+      "process_medians": [
+        4.614918000000003
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "independent_solved_100",
+      "mode": "detailed",
+      "runtime": "wasm",
+      "samples": 5,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 5.048808000000008,
+      "median": 5.065118999999996,
+      "max": 5.290125000000003,
+      "process_medians": [
+        5.065118999999996
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "coupled_chain_100",
+      "mode": "solve",
+      "runtime": "wasm",
+      "samples": 5,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 2.928537999999989,
+      "median": 2.952473999999995,
+      "max": 10.014399000000004,
+      "process_medians": [
+        2.952473999999995
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "coupled_chain_100",
+      "mode": "detailed",
+      "runtime": "wasm",
+      "samples": 5,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 3.4557360000000017,
+      "median": 3.5156089999999978,
+      "max": 3.6434209999999965,
+      "process_medians": [
+        3.5156089999999978
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "drag_100",
+      "mode": "solve",
+      "runtime": "wasm",
+      "samples": 5,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 55.63865599999997,
+      "median": 55.73405500000001,
+      "max": 57.108885000000015,
+      "process_medians": [
+        55.73405500000001
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    },
+    {
+      "case_id": "drag_100",
+      "mode": "detailed",
+      "runtime": "wasm",
+      "samples": 5,
+      "refused": 0,
+      "unit": "ms per named operation",
+      "min": 65.99670500000002,
+      "median": 66.13918400000003,
+      "max": 70.81976600000002,
+      "process_medians": [
+        66.13918400000003
+      ],
+      "tail_percentiles": null,
+      "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count."
+    }
+  ]
+}
