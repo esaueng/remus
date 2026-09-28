@@ -9,6 +9,7 @@
 //! - **extrema** — distance and extrema computation between geometry primitives
 //! - **convert** — geometry type conversion (e.g. analytic ↔ NURBS)
 
+pub mod bounds;
 pub mod convert;
 pub mod error;
 pub mod extrema;
