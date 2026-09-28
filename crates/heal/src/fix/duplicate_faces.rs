@@ -267,13 +267,43 @@ fn fix_shell_duplicate_faces(
 
     let plan = plan_duplicate_removals(&descriptors, tol);
 
-    if plan.pairs.is_empty() {
+    // Attribute compatibility (contract §8): face attributes are application
+    // vocabulary the kernel never synthesizes or merges, so a removed face
+    // carrying attributes the survivor lacks — or conflicting values —
+    // vetoes that pair and both faces stay. Dropping vetoed pairs is always
+    // safe: a removed face never anchors another pair, so keeping more can
+    // never strand a dangling reference.
+    let mut pairs: Vec<(FaceId, FaceId)> = Vec::with_capacity(plan.pairs.len());
+    let mut vetoed: Vec<String> = Vec::new();
+    for (survivor, removed) in &plan.pairs {
+        let survivor_attrs = topo.attributes().face(*survivor);
+        let removed_attrs = topo.attributes().face(*removed);
+        let compatible = match (survivor_attrs, removed_attrs) {
+            (_, None) => true,
+            (Some(kept), Some(dropped)) => kept == dropped,
+            (None, Some(_)) => false,
+        };
+        if compatible {
+            pairs.push((*survivor, *removed));
+        } else {
+            vetoed.push(format!("F{}<-F{}", survivor.index(), removed.index()));
+        }
+    }
+    vetoed.sort();
+    if !vetoed.is_empty() {
+        ctx.info(format!(
+            "kept {} duplicate pair(s) with incompatible attributes [{}]",
+            vetoed.len(),
+            vetoed.join(", ")
+        ));
+    }
+
+    if pairs.is_empty() {
         return Ok(FixResult::ok());
     }
 
     // ReShape removals are global to this solid; a shared use cannot be dropped locally.
-    if plan
-        .pairs
+    if pairs
         .iter()
         .any(|(_, removed)| face_shell_uses.get(removed).is_some_and(|&uses| uses > 1))
     {
@@ -284,12 +314,11 @@ fn fix_shell_duplicate_faces(
 
     // The lowest-index member of each group is never recorded as removed, so
     // at least one face always survives — the shell can't be emptied.
-    for (_, removed) in &plan.pairs {
+    for (_, removed) in &pairs {
         ctx.reshape.remove_face(*removed);
     }
-    let removed = plan.pairs.len();
-    let mut provenance: Vec<String> = plan
-        .pairs
+    let removed = pairs.len();
+    let mut provenance: Vec<String> = pairs
         .iter()
         .map(|(survivor, removed)| format!("F{}<-F{}", survivor.index(), removed.index()))
         .collect();
@@ -2670,6 +2699,347 @@ mod tests {
         let mut ctx = HealContext::new();
         let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
         assert_eq!(result.actions_taken, 0, "degenerate arcs are refused");
+        assert!(ctx.reshape.is_empty());
+    }
+
+    // ── M4: removal qualification ──
+
+    use crate::fix::config::{FixConfig, FixMode};
+
+    /// Config with every fixer off except duplicate-face removal.
+    fn duplicate_only_config() -> FixConfig {
+        FixConfig {
+            fix_reorder: FixMode::Off,
+            fix_connectivity: FixMode::Off,
+            fix_closure: FixMode::Off,
+            fix_small_edges: FixMode::Off,
+            fix_self_intersection: FixMode::Off,
+            fix_degenerate_edges: FixMode::Off,
+            fix_gaps_2d: FixMode::Off,
+            fix_gaps_3d: FixMode::Off,
+            fix_lacking: FixMode::Off,
+            fix_notched: FixMode::Off,
+            fix_tail: FixMode::Off,
+            fix_intersecting_edges: FixMode::Off,
+            fix_wire_orientation: FixMode::Off,
+            fix_add_natural_bound: FixMode::Off,
+            fix_missing_seam: FixMode::Off,
+            fix_small_area: FixMode::Off,
+            fix_duplicate_faces: FixMode::Auto,
+            fix_intersecting_wires: FixMode::Off,
+            fix_orientation: FixMode::Off,
+            fix_same_parameter: FixMode::Off,
+            fix_vertex_tolerance: FixMode::Off,
+            fix_pcurve: FixMode::Off,
+            fix_coincident_vertices: FixMode::Off,
+            fix_wireframe: FixMode::Off,
+            fix_split_common_vertex: FixMode::Off,
+            fix_small_faces: FixMode::Off,
+        }
+    }
+
+    fn named(name: &str) -> remus_topology::attributes::EntityAttributes {
+        remus_topology::attributes::EntityAttributes {
+            name: Some(name.to_string()),
+            color: None,
+        }
+    }
+
+    #[test]
+    fn conflicting_attributes_veto_removal() {
+        // (survivor attrs, removed attrs, expect removal).
+        let cases: [(&str, Option<&str>, Option<&str>, bool); 4] = [
+            ("both_bare", None, None, true),
+            ("same_name", Some("wall"), Some("wall"), true),
+            ("removed_named", None, Some("wall"), false),
+            ("conflict", Some("wall"), Some("floor"), false),
+        ];
+        for (label, survivor_name, removed_name, expect_removal) in cases {
+            let mut topo = Topology::new();
+            let a = add_triangle(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            );
+            let b = add_triangle(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            );
+            if let Some(name) = survivor_name {
+                topo.set_face_attributes(a, named(name)).unwrap();
+            }
+            if let Some(name) = removed_name {
+                topo.set_face_attributes(b, named(name)).unwrap();
+            }
+            let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+            let solid = topo.add_solid(Solid::new(shell, vec![]));
+            let mut ctx = HealContext::new();
+            let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+            assert_eq!(
+                result.actions_taken,
+                usize::from(expect_removal),
+                "{label}: removal expectation"
+            );
+            assert_eq!(
+                ctx.reshape.is_face_removed(b),
+                expect_removal,
+                "{label}: reshape expectation"
+            );
+            if !expect_removal {
+                assert!(
+                    ctx.messages
+                        .iter()
+                        .any(|m| m.description.contains("incompatible attributes")),
+                    "{label}: veto must be disclosed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn survivor_named_removed_bare_still_removes() {
+        // Survivor metadata is never the veto: only the dropped face's
+        // attributes gate removal.
+        let mut topo = Topology::new();
+        let a = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let b = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        topo.set_face_attributes(a, named("wall")).unwrap();
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 1);
+        assert!(ctx.reshape.is_face_removed(b));
+        assert_eq!(
+            topo.attributes().face(a),
+            Some(&named("wall")),
+            "survivor keeps its own attributes"
+        );
+    }
+
+    #[test]
+    fn removal_preserves_pcurves_and_history() {
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::vec::{Point2, Vec2};
+        use remus_topology::journal::EntityKey;
+        use remus_topology::pcurve::PCurve;
+
+        let mut topo = Topology::new();
+        let survivor = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let removed = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        // One pcurve per survivor edge (each edge used exactly once).
+        let wire_id = topo.face(survivor).unwrap().outer_wire();
+        let edge_ids: Vec<_> = topo
+            .wire(wire_id)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(remus_topology::wire::OrientedEdge::edge)
+            .collect();
+        assert_eq!(edge_ids.len(), 3);
+        for (k, edge_id) in edge_ids.iter().enumerate() {
+            let line =
+                Line2D::new(Point2::new(f64::from(k as u32), 0.0), Vec2::new(1.0, 0.0)).unwrap();
+            topo.set_pcurve(
+                *edge_id,
+                survivor,
+                PCurve::new(Curve2D::Line(line), 0.0, 1.0),
+            )
+            .unwrap();
+        }
+        let pcurves_before = topo.num_pcurves();
+        assert_eq!(pcurves_before, 3);
+
+        let shell = topo.add_shell(Shell::new(vec![survivor, removed]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let config = duplicate_only_config();
+        let (repaired, result, history) =
+            crate::fix::fix_shape_with_history(&mut topo, solid, &config, None).unwrap();
+        assert_eq!(result.actions_taken, 1);
+
+        // Surviving topology: shell holds exactly the survivor.
+        let faces = topo
+            .shell(topo.solid(repaired).unwrap().outer_shell())
+            .unwrap()
+            .faces()
+            .to_vec();
+        assert_eq!(faces, vec![survivor]);
+        // Survivor pcurves are byte-identical; the pass neither adds nor
+        // deletes pcurve entries (removed-face entries become unreferenced
+        // arena garbage, like the removed face's own wires and edges).
+        assert_eq!(topo.pcurves_for_face(survivor).len(), 3);
+        assert_eq!(topo.num_pcurves(), pcurves_before);
+        // History records the deletion with no survivor claim (deletion, not
+        // substitution); the survivor carries no claim.
+        let claims = history.entity_history().unwrap();
+        assert_eq!(
+            claims.get(&EntityKey::face(removed.index())),
+            Some(&Vec::new())
+        );
+        assert!(!claims.contains_key(&EntityKey::face(survivor.index())));
+    }
+
+    #[test]
+    fn repair_is_idempotent() {
+        let mut topo = Topology::new();
+        let a = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let b = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let config = duplicate_only_config();
+        let (repaired, first, _) =
+            crate::fix::fix_shape_with_history(&mut topo, solid, &config, None).unwrap();
+        assert_eq!(first.actions_taken, 1);
+        let (_, second, reshape) =
+            crate::fix::fix_shape_with_history(&mut topo, repaired, &config, None).unwrap();
+        assert_eq!(second.actions_taken, 0, "second run must be a no-op");
+        assert!(!second.status.is_fail());
+        assert!(reshape.is_empty());
+        let _ = (a, b);
+    }
+
+    #[test]
+    fn refusal_rolls_back_fully() {
+        // Shared-face identity across shells aborts the pass before any
+        // removal is recorded: with duplicate-only config nothing else can
+        // mutate either, so the topology is bit-identical afterwards.
+        let mut topo = Topology::new();
+        let mut faces = Vec::new();
+        for _ in 0..2 {
+            faces.push(add_triangle(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ));
+        }
+        let outer = topo.add_shell(Shell::new(vec![faces[1]]).unwrap());
+        let inner = topo.add_shell(Shell::new(faces).unwrap());
+        let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        let before_outer: Vec<usize> = topo
+            .shell(outer)
+            .unwrap()
+            .faces()
+            .iter()
+            .map(|f| f.index())
+            .collect();
+        let before_inner: Vec<usize> = topo
+            .shell(inner)
+            .unwrap()
+            .faces()
+            .iter()
+            .map(|f| f.index())
+            .collect();
+        let config = duplicate_only_config();
+        let error =
+            crate::fix::fix_shape_with_history(&mut topo, solid, &config, None).unwrap_err();
+        assert!(error.to_string().contains("shared by multiple shells"));
+        let after_outer: Vec<usize> = topo
+            .shell(outer)
+            .unwrap()
+            .faces()
+            .iter()
+            .map(|f| f.index())
+            .collect();
+        let after_inner: Vec<usize> = topo
+            .shell(inner)
+            .unwrap()
+            .faces()
+            .iter()
+            .map(|f| f.index())
+            .collect();
+        assert_eq!(before_outer, after_outer, "outer shell unchanged");
+        assert_eq!(before_inner, after_inner, "inner shell unchanged");
+    }
+
+    #[test]
+    fn nested_hole_inside_hole_region_is_kept() {
+        // B's hole sits strictly inside A's hole: B carries more material,
+        // so the pair is kept.
+        let inner_a: HoleCorners = [
+            [1.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [1.0, 2.0, 0.0],
+        ];
+        let inner_b: HoleCorners = [
+            [1.2, 1.2, 0.0],
+            [1.8, 1.2, 0.0],
+            [1.8, 1.8, 0.0],
+            [1.2, 1.8, 0.0],
+        ];
+        let mut topo = Topology::new();
+        let a = add_holed_quad(&mut topo, UNIT_OUTER, &[inner_a]);
+        let b = add_holed_quad(&mut topo, UNIT_OUTER, &[inner_b]);
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 0, "nested holes must be kept");
+        assert!(ctx.reshape.is_empty());
+    }
+
+    #[test]
+    fn adjacent_coplanar_tiles_are_kept() {
+        // Distinct coincident sheets: same plane, adjacent regions sharing
+        // one edge — kept, with no removal recorded.
+        let mut topo = Topology::new();
+        let left = add_quad(
+            &mut topo,
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+        );
+        let right = add_quad(
+            &mut topo,
+            [
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(2.0, 1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+            ],
+        );
+        let shell = topo.add_shell(Shell::new(vec![left, right]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(result.actions_taken, 0, "adjacent tiles must be kept");
         assert!(ctx.reshape.is_empty());
     }
 }
