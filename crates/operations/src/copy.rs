@@ -16,6 +16,8 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
+use crate::transform::{TransformPolicy, TransformRecorder, TransformReport};
+
 struct VertexSnap {
     old_index: usize,
     point: Point3,
@@ -594,6 +596,15 @@ pub(crate) fn copy_solid_with_entity_map(
 /// in a single traversal — applying the matrix during the write phase instead
 /// of allocating untransformed entities and then mutating them.
 ///
+/// Runs transacted: a refused edge or surface image rolls back every
+/// allocated copy entity instead of leaking a partial copy into the arena.
+///
+/// This is the legacy entry point: see [`transform_solid_detailed`] for the
+/// quality contract. Anisotropic maps convert carriers without disclosure
+/// here; use [`copy_and_transform_solid_detailed`] for the typed report.
+///
+/// [`transform_solid_detailed`]: crate::transform::transform_solid_detailed
+///
 /// # Errors
 ///
 /// Returns an error if any topology lookup fails or the matrix is degenerate.
@@ -604,6 +615,58 @@ pub fn copy_and_transform_solid(
     matrix: &remus_math::mat::Mat4,
 ) -> Result<SolidId, crate::OperationsError> {
     crate::transform::reject_degenerate_transform(matrix)?;
+    let _ = matrix.inverse()?.transpose();
+    let mut recorder =
+        TransformRecorder::new(crate::transform::linear_determinant(matrix) < 0.0, true);
+    remus_topology::transaction::run_transacted(topo, |live| {
+        copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
+    })
+}
+
+/// Quality-aware additive twin of [`copy_and_transform_solid`].
+///
+/// Commits the same copy and returns a [`TransformReport`] naming every
+/// carrier-family change and disclosing fitted output. Under
+/// [`TransformPolicy::ExactOnly`] a face outside the exact sphere class
+/// refuses with `ExactOnlyUnattainable` before allocating anything.
+///
+/// Runs transacted like the legacy entry point.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup fails, the matrix is degenerate,
+/// an edge or surface image is unrepresentable, or the exact-only policy
+/// declines a sampled fit.
+#[allow(clippy::too_many_lines)]
+pub fn copy_and_transform_solid_detailed(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    matrix: &remus_math::mat::Mat4,
+    policy: TransformPolicy,
+) -> Result<(SolidId, TransformReport), crate::OperationsError> {
+    crate::transform::reject_degenerate_transform(matrix)?;
+    let _ = matrix.inverse()?.transpose();
+    if matches!(policy, TransformPolicy::ExactOnly) {
+        let plans = crate::transform::preflight_solid_transform(topo, solid_id, matrix)?;
+        crate::transform::refuse_unless_exact(&plans)?;
+    }
+    let determinant = crate::transform::linear_determinant(matrix);
+    let reversing = determinant < 0.0;
+    let similarity = crate::transform::is_similarity(matrix);
+    let mut recorder = TransformRecorder::new(reversing, true);
+    let copied = remus_topology::transaction::run_transacted(topo, |live| {
+        copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
+    })?;
+    Ok((copied, recorder.into_report(determinant, similarity)))
+}
+
+#[allow(clippy::too_many_lines)]
+fn copy_and_transform_solid_impl(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    matrix: &remus_math::mat::Mat4,
+    recorder: &mut TransformRecorder,
+) -> Result<SolidId, crate::OperationsError> {
     let normal_matrix = matrix.inverse()?.transpose();
     let certificates = crate::transform::translation_edge_certificates(
         topo,
@@ -738,8 +801,10 @@ pub fn copy_and_transform_solid(
         // policy: retain where the map provably preserves the
         // parameterization, remap the handled Circle→Ellipse axis swap,
         // drop otherwise (RFC 0002).
+        let from = esnap.curve.type_tag();
         let (new_curve, new_trim) =
             crate::transform::transform_edge_curve_with_trim(&esnap.curve, esnap.trim, matrix)?;
+        let to = new_curve.as_ref().map_or(from, |curve| curve.type_tag());
         let mut copied_edge = Edge::with_tolerance(
             new_start,
             new_end,
@@ -748,6 +813,7 @@ pub fn copy_and_transform_solid(
         );
         copied_edge.set_trim(new_trim);
         let copied = topo.add_edge(copied_edge);
+        recorder.record_edge(copied, from, to);
         edge_map.insert(esnap.old_index, copied);
     }
 
@@ -802,7 +868,13 @@ pub fn copy_and_transform_solid(
             // positions above, which is exactly the state
             // `transform_face_surface` expects (its non-uniform branches map
             // boundary probes back through the inverse).
-            crate::transform::transform_face_surface(topo, new_fid, matrix, &normal_matrix)?;
+            crate::transform::transform_face_surface_recorded(
+                topo,
+                new_fid,
+                matrix,
+                &normal_matrix,
+                recorder,
+            )?;
             if let Some(attributes) = fsnap.attributes.clone() {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
