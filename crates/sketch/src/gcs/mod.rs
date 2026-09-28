@@ -4,6 +4,7 @@ mod constraint;
 mod diagnostics;
 mod dof;
 mod entity;
+mod final_eval;
 mod qr;
 mod solver;
 mod system;
