@@ -7,6 +7,9 @@
 // Isolated qualification core; production dispatch migrates in O2.3c/d.
 #[allow(dead_code)]
 mod arrangement;
+// Production adapter onto the core (O2.3c): qualified planar faces with
+// provenance-preserving uses, dispatched from `split_face_2d_impl`.
+mod arrangement_prod;
 #[cfg(test)]
 mod closed_form_split_tests;
 mod containment;
@@ -18,6 +21,7 @@ pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 
 pub use conversion::collect_wire_points;
 
+use remus_math::context::OperationContext;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -124,7 +128,7 @@ fn split_sections_at_t_junctions(
     frame: Option<&PlaneFrame>,
     wire_pts: &[Point3],
     tol: f64,
-    mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<(), AlgoError> {
     // Every distinct section endpoint (3D) is a candidate split point. Dedup
     // with a fine grid (cell = tol), then index the unique points in a COARSE
@@ -3048,7 +3052,7 @@ fn split_plane_face_by_arrangement(
     face_id: FaceId,
     frame: &PlaneFrame,
     tol: f64,
-    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     // Collect input edges (boundary + sections) with their true geometry. Each
     // arc keeps its source curve; the arrangement subdivision uses the chord.
@@ -3205,7 +3209,7 @@ fn arrangement_regions_from_inputs(
     // When present, section-input interior break points are recorded per pave
     // block (exact UV → 3D via the frame) so curved faces sharing the same
     // section curve pre-split at identical points.
-    mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::vec::Vec2;
@@ -5446,7 +5450,8 @@ pub fn split_face_2d(
         Vec<remus_topology::edge::EdgeId>,
         impl std::hash::BuildHasher,
     >,
-    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    context: &OperationContext,
+    split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let run_impl = move |secs: &[SectionEdge]| {
         split_face_2d_impl(
@@ -5458,6 +5463,7 @@ pub fn split_face_2d(
             frame,
             info,
             edge_images,
+            context,
             split_registry,
         )
     };
@@ -5694,7 +5700,8 @@ fn split_face_2d_impl(
         Vec<remus_topology::edge::EdgeId>,
         impl std::hash::BuildHasher,
     >,
-    mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    context: &OperationContext,
+    mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let face = match topo.face(face_id) {
         Ok(f) => f,
@@ -7700,7 +7707,7 @@ fn split_face_2d_impl(
             face_id,
             frame,
             tol.linear,
-            split_registry,
+            split_registry.as_deref_mut(),
         )?;
         // Sections can trace bounded regions outside the source face. With an
         // exact polygon boundary, retain only regions whose interior belongs
@@ -7730,6 +7737,56 @@ fn split_face_2d_impl(
                 || wire_loops_have_degenerate_area(&loops, tol.linear))
         {
             return Ok(result);
+        }
+    }
+
+    // Provenance-preserving planar arrangement (O2.3c/d), last resort.
+    // Qualified line/circle faces route through the exact-event core only
+    // after every established plane path (crossing, disk, general
+    // arrangement) declines them: those paths produce mesh-coordinated
+    // outputs the downstream tessellator is calibrated on, while the
+    // exact arrangement is reserved for faces no established splitter
+    // can partition. Single-section faces stay on the established paths
+    // (the greedy walk owns plain dividers; the internal-loops path owns
+    // contractible rings). Out-of-domain inputs (`None`) keep the greedy
+    // loops; geometric refusals (tangent/overlap contacts, unrefinable
+    // grazing crossings) likewise decline, while any other refusal on
+    // qualified input (`Err`) is an internal error
+    // and propagates — it never degrades into an unsplit face or a
+    // fallback. Adoption mirrors the adjacent gates: strictly more
+    // regions than the wire builder, or a demonstrably broken greedy
+    // trace.
+    if sections.len() >= 2 && is_plane && !holes_integrated && original_inner_wires.is_empty() {
+        let greedy_broken_here = wire_loops_self_cross(&loops, tol.linear)
+            || greedy_outer_loops_nested(&loops, cw_loops)
+            || wire_loops_have_degenerate_area(&loops, tol.linear);
+        // Section breaks stage locally: the registry promises faces split
+        // at the recorded points, so breaks commit only when this
+        // arrangement is adopted. Recording a discarded arrangement would
+        // hand curved neighbors splits the plane side never took.
+        let mut staged_breaks = remus_math::det_hash::DetHashMap::default();
+        match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
+            topo,
+            face_id,
+            sections,
+            rank,
+            frame,
+            tol,
+            context,
+            Some(&mut staged_breaks),
+        )? {
+            Some(result) if result.len() > loops.len() || greedy_broken_here => {
+                log::debug!(
+                    "split_face_2d: face {face_id:?} routed to provenance arrangement ({} regions vs {})",
+                    result.len(),
+                    loops.len()
+                );
+                if let Some(reg) = split_registry.as_mut() {
+                    reg.extend(staged_breaks);
+                }
+                return Ok(result);
+            }
+            Some(_) | None => {}
         }
     }
 
@@ -9174,6 +9231,7 @@ mod tests {
                     None,
                     None,
                     &std::collections::HashMap::new(),
+                    &OperationContext::new(),
                     None,
                 )
                 .unwrap();
@@ -9861,6 +9919,7 @@ mod tests {
             None,
             None,
             &images,
+            &OperationContext::new(),
             None,
         )
         .unwrap();
@@ -9971,6 +10030,7 @@ mod tests {
                 v_periodic: false,
             }),
             &std::collections::HashMap::new(),
+            &OperationContext::new(),
             None,
         )
         .unwrap()
