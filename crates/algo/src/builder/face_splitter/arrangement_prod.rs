@@ -129,6 +129,8 @@ struct Crossing {
 pub(super) struct PlanarInputs {
     /// Certified uses in deterministic (boundary-then-section) order.
     pub uses: Vec<CurveUse>,
+    /// Pair scans already charged to the caller's marching-step budget.
+    pub collection_steps: usize,
     /// Per-input-position parent data for emission.
     pub parents: Vec<ParentInfo>,
     /// Certificates minted for canonical branch cuts (angle zero).
@@ -233,7 +235,10 @@ pub(super) fn collect_planar_uses(
     if !collector.section_ends_resolved() {
         return Ok(None);
     }
-    Ok(collector.finish())
+    Ok(collector.finish().map(|mut inputs| {
+        inputs.collection_steps = pair_steps;
+        inputs
+    }))
 }
 
 /// Run the isolated core on collected uses.
@@ -245,10 +250,17 @@ pub(super) fn run_planar_arrangement(
     inputs: &PlanarInputs,
     context: &OperationContext,
 ) -> Result<Arrangement, ArrangementError> {
+    if inputs.collection_steps >= context.budgets.march_steps {
+        return Err(ArrangementError::WorkBudgetExceeded);
+    }
+    let remaining = context
+        .budgets
+        .with_march_steps(context.budgets.march_steps - inputs.collection_steps);
+    let core_context = context.clone().with_budgets(remaining);
     build_arrangement(&ArrangementInput {
         uses: &inputs.uses,
         domain: ParamDomain::Plane,
-        context,
+        context: &core_context,
     })
 }
 
@@ -1924,6 +1936,7 @@ impl<'a> Collector<'a> {
         }
         Some(PlanarInputs {
             uses: self.uses,
+            collection_steps: 0,
             parents: self.parents,
             branch_certs: self.branch_certs,
         })
@@ -2707,6 +2720,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+    }
+
+    #[test]
+    fn collector_and_core_share_one_step_cap() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [line_section(
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+        )];
+        let inputs = collect(&topo, face, &sections).expect("qualified");
+        assert!(inputs.collection_steps > 0);
+
+        let mut core_only = inputs.clone();
+        core_only.collection_steps = 0;
+        let mut lower = 0;
+        let mut upper = test_context().budgets.march_steps;
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2;
+            let context =
+                test_context().with_budgets(test_context().budgets.with_march_steps(middle));
+            if run_planar_arrangement(&core_only, &context).is_ok() {
+                upper = middle;
+            } else {
+                lower = middle + 1;
+            }
+        }
+        assert!(lower > 0);
+        let combined_cap = inputs.collection_steps + lower - 1;
+        let context =
+            test_context().with_budgets(test_context().budgets.with_march_steps(combined_cap));
+        assert!(run_planar_arrangement(&core_only, &context).is_ok());
+        assert!(matches!(
+            run_planar_arrangement(&inputs, &context),
+            Err(ArrangementError::WorkBudgetExceeded)
+        ));
     }
 
     #[test]
