@@ -835,6 +835,22 @@ mod tests {
                 .abs()
                 < 1e-12
         );
+        data.offset_faces.insert(
+            faces[0],
+            crate::data::OffsetFace {
+                original: faces[0],
+                surface: plane.clone(),
+                distance: 0.0,
+                status: crate::data::OffsetStatus::Done,
+            },
+        );
+        crate::loops::build_wire_loops(&mut topo, &mut data).unwrap();
+        let cap_wires = &data.face_wires[&faces[0]];
+        assert_eq!(cap_wires.len(), 1);
+        assert_eq!(
+            topo.wire(cap_wires[0]).unwrap().edges()[0].edge(),
+            data.intersections[0].new_edges[0]
+        );
         let side_plane = FaceSurface::Plane {
             normal: Vec3::new(1.0, 0.0, 0.0),
             d: 2_000.0,
