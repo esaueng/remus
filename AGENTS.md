@@ -458,7 +458,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 |------|---------|
 | Public API, `RenderOpts`, `RenderOutput` | `lib.rs` |
 | Camera and view/projection matrices | `camera.rs` |
-| Solid → GPU vertex/index/edge buffers | `mesh.rs` |
+| Solid → GPU vertex/index/edge buffers (per-face indexed) | `mesh.rs` |
 | wgpu device setup, render passes, readback | `pipeline.rs` |
 | Reusable offscreen rendering session (sync + async submit/poll/wait) | `session.rs` |
 | Asynchronous selective readback (tickets, selection, bounded pool) | `async_frame.rs` |
