@@ -212,6 +212,20 @@ impl<'a> PreparedDistanceSolid<'a> {
     ) -> Result<Self, CheckError> {
         options.validate()?;
         let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+        // An unknown edge bound can stop before a later stale reference.
+        // Validate the complete face topology before retaining this context.
+        for &fid in &faces {
+            let face = topo.face(fid)?;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let wire = topo.wire(wid)?;
+                for oe in wire.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    let _ = topo.vertex(edge.start())?;
+                    let _ = topo.vertex(edge.end())?;
+                }
+            }
+        }
         let bounds: Vec<FaceBound> = faces
             .iter()
             .map(|&fid| super::face_bounds::face_bound(topo, fid))
