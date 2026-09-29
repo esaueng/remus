@@ -3558,7 +3558,15 @@ struct Tally {
 
 impl Tally {
     fn record(&mut self, report: &SeqReport) {
-        match report.kind {
+        self.record_verdict(report.kind, report.exact_ok_bools, report.bool_ops);
+    }
+
+    fn record_checkpoint(&mut self, prior: &CheckpointRecord) {
+        self.record_verdict(prior.kind, prior.exact_ok_bools, prior.bool_ops);
+    }
+
+    fn record_verdict(&mut self, kind: SeqKind, exact_ok_bools: usize, bool_ops: usize) {
+        match kind {
             SeqKind::ExactOk => self.exact_ok += 1,
             SeqKind::Approximate => self.approximate += 1,
             SeqKind::Empty => self.empty += 1,
@@ -3568,8 +3576,8 @@ impl Tally {
             SeqKind::Timeout => self.timeout += 1,
             SeqKind::InvalidHandle => self.invalid_handle += 1,
         }
-        self.exact_ok_bools += report.exact_ok_bools;
-        self.bool_ops += report.bool_ops;
+        self.exact_ok_bools += exact_ok_bools;
+        self.bool_ops += bool_ops;
     }
 
     fn bad(&self) -> usize {
@@ -3616,7 +3624,7 @@ struct Coverage {
     bool_fuse: usize,
     bool_cut: usize,
     bool_intersect: usize,
-    oracle_tags: std::collections::BTreeMap<&'static str, usize>,
+    oracle_tags: std::collections::BTreeMap<String, usize>,
 }
 
 impl Coverage {
@@ -3650,7 +3658,13 @@ impl Coverage {
 
     fn record_report(&mut self, report: &SeqReport) {
         for n in &report.notes {
-            *self.oracle_tags.entry(n.oracle).or_default() += 1;
+            *self.oracle_tags.entry(n.oracle.to_owned()).or_default() += 1;
+        }
+    }
+
+    fn record_checkpoint(&mut self, prior: &CheckpointRecord) {
+        for tag in &prior.oracle_tags {
+            *self.oracle_tags.entry(tag.clone()).or_default() += 1;
         }
     }
 }
@@ -3673,8 +3687,7 @@ impl std::fmt::Display for Coverage {
             self.bool_cut,
             self.bool_intersect,
         )?;
-        let mut tags: Vec<_> = self.oracle_tags.iter().collect();
-        tags.sort_by_key(|(k, _)| **k);
+        let tags: Vec<_> = self.oracle_tags.iter().collect();
         for (i, (tag, count)) in tags.iter().enumerate() {
             if i > 0 {
                 write!(f, ",")?;
@@ -3755,37 +3768,189 @@ fn case_timeout_ms() -> u64 {
 }
 
 /// Resumable checkpoint path (`OPSEQ81_CHECKPOINT`): a JSON-lines file the
-/// campaign appends `{seed, kind, oracle}` to after every case and reloads
-/// on start, skipping seeds already recorded. Absent when unset.
+/// campaign appends after every case and reloads on start. Bad prior
+/// verdicts refuse a resume; clean rows retain the whole tally and coverage.
 fn checkpoint_path() -> Option<std::path::PathBuf> {
     std::env::var("OPSEQ81_CHECKPOINT")
         .ok()
         .map(std::path::PathBuf::from)
 }
 
-fn load_checkpoint(path: &std::path::Path) -> std::collections::BTreeMap<u64, String> {
+#[derive(Debug)]
+struct CheckpointRecord {
+    kind: SeqKind,
+    exact_ok_bools: usize,
+    bool_ops: usize,
+    oracle_tags: Vec<String>,
+}
+
+fn parse_checkpoint(
+    text: &str,
+) -> Result<std::collections::BTreeMap<u64, CheckpointRecord>, String> {
     let mut done = std::collections::BTreeMap::new();
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return done;
-    };
-    for line in text.lines() {
-        let Ok(row) = serde_json::from_str::<Value>(line) else {
-            continue;
+    for (line_index, line) in text.lines().enumerate() {
+        let row: Value = serde_json::from_str(line)
+            .map_err(|error| format!("checkpoint line {}: {error}", line_index + 1))?;
+        let seed = row
+            .get("seed")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("checkpoint line {} has no seed", line_index + 1))?;
+        let verdict = row
+            .get("verdict")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("checkpoint seed {seed} has no verdict"))?;
+        let (label, _) = verdict
+            .split_once(" / ")
+            .ok_or_else(|| format!("checkpoint seed {seed} has an invalid verdict"))?;
+        let kind = match label {
+            "exact_ok" => SeqKind::ExactOk,
+            "approximate" => SeqKind::Approximate,
+            "supported_empty" => SeqKind::Empty,
+            "refused" => SeqKind::Refused,
+            "incorrect_success" => SeqKind::Incorrect,
+            "crash" => SeqKind::Crash,
+            "timeout" => SeqKind::Timeout,
+            "invalid_handle" => SeqKind::InvalidHandle,
+            _ => {
+                return Err(format!(
+                    "checkpoint seed {seed} has unknown verdict {label}"
+                ));
+            }
         };
-        if let (Some(seed), Some(verdict)) = (
-            row.get("seed").and_then(Value::as_u64),
-            row.get("verdict").and_then(Value::as_str),
-        ) {
-            done.insert(seed, verdict.to_owned());
+        if kind.severity() >= SeqKind::InvalidHandle.severity() {
+            return Err(format!(
+                "checkpoint seed {seed} already recorded {verdict}; inspect its persisted finding before resuming"
+            ));
+        }
+        let exact_ok_bools = row
+            .get("exact_ok_bools")
+            .and_then(Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| {
+                format!(
+                    "checkpoint seed {seed} lacks exact boolean count; start a fresh checkpoint"
+                )
+            })?;
+        let bool_ops = row
+            .get("bool_ops")
+            .and_then(Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| {
+                format!("checkpoint seed {seed} lacks boolean count; start a fresh checkpoint")
+            })?;
+        let oracle_tags = row
+            .get("oracle_tags")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                format!("checkpoint seed {seed} lacks oracle tags; start a fresh checkpoint")
+            })?
+            .iter()
+            .map(|tag| {
+                tag.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("checkpoint seed {seed} has a non-string oracle tag"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let prior = CheckpointRecord {
+            kind,
+            exact_ok_bools,
+            bool_ops,
+            oracle_tags,
+        };
+        if done.insert(seed, prior).is_some() {
+            return Err(format!("checkpoint repeats seed {seed}"));
         }
     }
-    done
+    Ok(done)
+}
+
+#[test]
+fn checkpoint_resume_refuses_prior_findings() {
+    let clean = json!({
+        "seed": 7,
+        "verdict": "exact_ok / ok",
+        "exact_ok_bools": 1,
+        "bool_ops": 1,
+        "oracle_tags": ["ok"],
+    });
+    for verdict in [
+        "incorrect_success / topology",
+        "crash / worker_crash",
+        "timeout / worker_timeout",
+        "invalid_handle / handle",
+    ] {
+        let bad = json!({
+            "seed": 8,
+            "verdict": verdict,
+            "exact_ok_bools": 0,
+            "bool_ops": 1,
+            "oracle_tags": ["topology"],
+        });
+        let text = format!("{clean}\n{bad}\n");
+        let error = parse_checkpoint(&text).unwrap_err();
+        assert!(error.contains("seed 8 already recorded"), "{error}");
+    }
+}
+
+#[test]
+fn checkpoint_resume_restores_clean_tally_and_coverage() {
+    let text = format!(
+        "{}\n{}\n",
+        json!({
+            "seed": 7,
+            "verdict": "exact_ok / ok",
+            "exact_ok_bools": 2,
+            "bool_ops": 2,
+            "oracle_tags": ["volume", "topology"],
+        }),
+        json!({
+            "seed": 8,
+            "verdict": "refused / unsupported",
+            "exact_ok_bools": 0,
+            "bool_ops": 1,
+            "oracle_tags": ["unsupported"],
+        })
+    );
+    let done = parse_checkpoint(&text).unwrap();
+    let mut tally = Tally::default();
+    let mut coverage = Coverage::default();
+    for prior in done.values() {
+        tally.record_checkpoint(prior);
+        coverage.record_checkpoint(prior);
+    }
+    assert_eq!(tally.exact_ok, 1);
+    assert_eq!(tally.refused, 1);
+    assert_eq!(tally.exact_ok_bools, 2);
+    assert_eq!(tally.bool_ops, 3);
+    assert_eq!(tally.bad(), 0);
+    assert_eq!(coverage.oracle_tags.get("topology"), Some(&1));
+    assert_eq!(coverage.oracle_tags.get("unsupported"), Some(&1));
+    assert!(
+        parse_checkpoint("{\"seed\":7,\"verdict\":\"exact_ok / ok\"}\n")
+            .unwrap_err()
+            .contains("start a fresh checkpoint")
+    );
+}
+
+fn load_checkpoint(
+    path: &std::path::Path,
+) -> Result<std::collections::BTreeMap<u64, CheckpointRecord>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse_checkpoint(&text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(std::collections::BTreeMap::new())
+        }
+        Err(error) => Err(format!("reading checkpoint {}: {error}", path.display())),
+    }
 }
 
 fn append_checkpoint(path: &std::path::Path, seed: u64, report: &SeqReport) {
     let row = json!({
         "seed": seed,
         "verdict": format!("{} / {}", report.kind.label(), report.oracle),
+        "exact_ok_bools": report.exact_ok_bools,
+        "bool_ops": report.bool_ops,
+        "oracle_tags": report.notes.iter().map(|note| note.oracle).collect::<Vec<_>>(),
     });
     use std::io::Write as _;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -5109,6 +5274,8 @@ fn bounded_campaign() {
     let done = checkpoint
         .as_deref()
         .map(load_checkpoint)
+        .transpose()
+        .expect("checkpoint must be complete and contain no prior finding")
         .unwrap_or_default();
     let isolated = std::env::var("OPSEQ81_ISOLATE").as_deref() == Ok("1");
     let deadline = case_timeout_ms();
@@ -5129,12 +5296,14 @@ fn bounded_campaign() {
         let case_seed = seed
             .wrapping_add(i as u64)
             .wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        if done.contains_key(&case_seed) {
-            continue;
-        }
         let len = 3 + (i % (MAX_SEQ_OPS - 2));
         let ops = generate_sequence(case_seed, len);
         coverage.record_sequence(&ops);
+        if let Some(prior) = done.get(&case_seed) {
+            tally.record_checkpoint(prior);
+            coverage.record_checkpoint(prior);
+            continue;
+        }
         let name = format!("opseq81-seed-{case_seed}");
         let input_path = persist_inputs(&name, case_seed, &ops, &limits);
         let report = if isolated {
