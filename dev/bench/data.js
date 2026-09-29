@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790668288498,
+  "lastUpdate": 1790670871315,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -77659,6 +77659,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 103348,
             "range": "± 1389",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47d5fa65a79e2cd2466a650e1320b4c482dd3322",
+          "message": "perf(sketch): integrate reviewed PERF-S02 components with paired packages (#867)\n\n* perf(sketch): split constraint graph into independent components (PERF-S02)\n\nStructural decomposition of the GCS into connected components over free\nparameters, with coordinate-precise, exhaustive references for all 26\nconstraint variants. Single-component systems keep the dense loop\nbit-for-bit; multi-component systems solve per block with the global\nconvergence norm, whole-call rollback and the global 1e-10 rank policy.\nDiagnostics aggregate per-block Jacobians (no giant dense matrix) and\nslice the assembled final-iterate capture. Adds graph-correctness,\ndense-agreement and rank-policy tests; S06 count gates go per-block.\n\n* perf(sketch): qualify PERF-S02 scaling and record evidence\n\nMixed block-size and 10k-parameter criterion benches, deterministic\n1000-parameter block-dimension pins, same-host sequential baseline-vs-\ncandidate runner evidence (469-1407x on independent 1000-param cells,\ncoupled controls unchanged), packaged-WASM fingerprint, allocation\naccounting, and the PERF-S02 roadmap row with remaining limits.\n\n* chore(wasm): refresh packages to v2026.1.8 for PERF-S02 component solver\n\nRebuilt from the rebased PERF-S02 head via cargo xtask wasm-build\n(validated: dual-target merge + wasm-opt, smoke plus installed-tarball\nconsumer checks pass). v2026.1.7 was skipped: main's own #841 refresh\nclaims that version from pre-S02 bytes. The kernel package carries the\ncomponent-split sketch solver; packaged GCS cells match native outcomes,\ndimensions and iterations (solved_100 fingerprint: 9 iterations, was 8\npre-S02).\n\n* fix(sketch): fold agreement tests into system/tests.rs, register map row\n\nRepository Policy requires every non-test-stem module in the AGENTS.md\nModule Map: register gcs/components.rs (plus direct_refs in the variant\nchecklist) and move the 12 dense-agreement tests into the conventional\nsystem/tests.rs companion instead of a standalone agreement_tests.rs.\nNo functional change; lib behavior and all measurements unaffected.\n\n* fix(sketch): align component partition with cached parameter map\n\n* docs(roadmap): clear resolved B77 from B74 residuals\n\n* docs(perf): distinguish measured and integrated S02 packages\n\n* chore(wasm): refresh paired PERF-S02 packages to v2026.1.11\n\n* fix(sketch): preserve empty-system detailed tolerance semantics\n\n* docs(perf): record verified v2026.1.12 sketch package\n\n* chore(wasm): refresh paired PERF-S02 packages to v2026.1.12\n\n* fix(sketch): keep unrelated circle centers out of radius blocks\n\n* chore(wasm): rebuild paired PERF-S02 packages with B29",
+          "timestamp": "2026-09-29T01:25:55-07:00",
+          "tree_id": "69bf1d440d7867ebc0fcae2eeab34ecae4b7b92c",
+          "url": "https://github.com/esaueng/remus/commit/47d5fa65a79e2cd2466a650e1320b4c482dd3322"
+        },
+        "date": 1790670869834,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1344390,
+            "range": "± 9033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1450132,
+            "range": "± 10098",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 32746,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11103018,
+            "range": "± 48874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11091471,
+            "range": "± 37104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 10731376,
+            "range": "± 44149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1106015,
+            "range": "± 7706",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17258353,
+            "range": "± 152973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 36056652,
+            "range": "± 208833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 42,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 197,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 150,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 653,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 138,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 334,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 225,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 462,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 894,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2471,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 34,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 66,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 545935,
+            "range": "± 3106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 7703457,
+            "range": "± 40975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 166584,
+            "range": "± 843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 476674,
+            "range": "± 13271",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64045,
+            "range": "± 438",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 972298,
+            "range": "± 4594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10938430,
+            "range": "± 58105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 786476,
+            "range": "± 6271",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1275522,
+            "range": "± 80750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 81747,
+            "range": "± 868",
             "unit": "ns/iter"
           }
         ]
