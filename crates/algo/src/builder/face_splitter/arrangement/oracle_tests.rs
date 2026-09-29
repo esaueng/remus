@@ -417,6 +417,15 @@ fn line_endpoint_on_the_other_support_is_reported_at_the_exact_parameters() {
     let a = horizontal(1, -1.0, 1.0, 0.0);
     let b = line(2, p(0.0, 0.0), p(0.0, -2.0), [20, 21], None);
     assert_hits(&hits(&a, &b).unwrap(), &[(1.0, 0.0)]);
+    // b ENDS on a's support (as_ = 0) coming up from below (ar < 0): the hit
+    // is a's parameter of s = 1 and b's own end, 2.
+    let b = line(2, p(0.0, -2.0), p(0.0, 0.0), [20, 21], None);
+    assert_hits(&hits(&a, &b).unwrap(), &[(1.0, 2.0)]);
+    // The same two cases from above the support (as_ > 0 / ar > 0).
+    let b = line(2, p(0.0, 0.0), p(0.0, 2.0), [20, 21], None);
+    assert_hits(&hits(&a, &b).unwrap(), &[(1.0, 0.0)]);
+    let b = line(2, p(0.0, 2.0), p(0.0, 0.0), [20, 21], None);
+    assert_hits(&hits(&a, &b).unwrap(), &[(1.0, 2.0)]);
     // a starts on b's support (bp = 0) with q on b's positive side (bq = 6).
     let a = line(1, p(0.0, 0.0), p(-3.0, 0.0), [10, 11], None);
     let b = vertical(2, 0.0, -1.0, 1.0);
@@ -1441,11 +1450,13 @@ fn seam_vertex_3d_gap_is_accepted_up_to_exactly_the_tolerance() {
     );
 }
 
-/// The rim winding check tolerates `|Δu − 2π| ≤ 64·ε·(1 + |Δu|)`, about
-/// 1.04e-13 here, while the seam spacing check (whose bound also counts the
-/// right origin's `|y| = 3`) tolerates about 1.46e-13. A strip 135·2⁻⁵⁰
-/// (1.2e-13) too wide passes the spacing check and fails the winding
-/// check; one 56·2⁻⁵⁰ (5e-14) too wide passes both.
+/// The rim winding check tolerates `|Δu − 2π| ≤ 64·ε·(1 + |Δu|)`, i.e.
+/// `2⁻⁴⁶ · 7.28 ≈ 1.035e-13` here, while the seam spacing check (whose bound
+/// also counts the right origin's `|y| = 3`) tolerates about 1.46e-13. A
+/// strip 135·2⁻⁵⁰ (1.2e-13) too wide passes the spacing check and fails the
+/// winding check; one 106·2⁻⁵⁰ (9.4e-14) too wide passes both, and would
+/// fail a bound without the `1 +` term (`2⁻⁴⁶ · 6.28 ≈ 8.9e-14`); one
+/// 56·2⁻⁵⁰ (5e-14) too wide passes both comfortably.
 #[test]
 fn rim_winding_must_be_a_whole_turn_within_its_own_roundoff_bound() {
     let ulp = 2.0_f64.powi(-50);
@@ -1454,10 +1465,35 @@ fn rim_winding_must_be_a_whole_turn_within_its_own_roundoff_bound() {
         build_cylinder(&wide, &context()).err(),
         Some(ArrangementError::UnsupportedDomain)
     );
-    let slightly = strip(TAU + 56.0 * ulp, true, &[], &[]);
-    let a = build_cylinder(&slightly, &context()).unwrap();
+    for k in [106.0, 56.0] {
+        let slightly = strip(TAU + k * ulp, true, &[], &[]);
+        let a = build_cylinder(&slightly, &context()).unwrap();
+        assert_eq!(a.periodic_regions.len(), 1, "{k} ulp");
+        assert_eq!(a.periodic_regions[0].boundaries.len(), 2);
+        near(a.periodic_regions[0].area, 12.0 * PI, 1e-9);
+    }
+}
+
+/// The seam spacing is the DIFFERENCE of the two seam origins: a strip
+/// lifted to `u ∈ [1, 1 + 2π]` is as good a cylinder as one at `[0, 2π]`.
+#[test]
+fn strip_with_a_shifted_left_seam_is_an_annulus_too() {
+    let (x0, x1) = (1.0, 1.0 + TAU);
+    let mut uses = vec![
+        line(0, p(x0, 0.0), p(x1, 0.0), [0, 1], Some(0)),
+        line(1, p(x1, 0.0), p(x1, 3.0), [1, 2], Some(0)),
+        line(2, p(x1, 3.0), p(x0, 3.0), [2, 3], Some(0)),
+        line(3, p(x0, 3.0), p(x0, 0.0), [3, 0], Some(0)),
+    ];
+    lift_to_cylinder(&mut uses);
+    let a = build_cylinder(&uses, &context()).unwrap();
     assert_eq!(a.periodic_regions.len(), 1);
-    assert_eq!(a.periodic_regions[0].boundaries.len(), 2);
+    let r = &a.periodic_regions[0];
+    assert_eq!(r.euler_characteristic, 0);
+    assert_eq!(r.boundaries.len(), 2);
+    near(r.area, 12.0 * PI, 1e-9);
+    assert_eq!(winding_of(&a, r, 0), 1);
+    assert_eq!(winding_of(&a, r, 2), -1);
 }
 
 /// A boundary walk that detours through a half-edge outside the region's
