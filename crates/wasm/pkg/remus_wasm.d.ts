@@ -1147,6 +1147,18 @@ export class BrepKernel {
      */
     copyAndTransformSolid(solid: number, matrix: Float64Array): number;
     /**
+     * Copy a solid through an affine transform and return the exact,
+     * disclosed-approximate, or refused result as typed data.
+     *
+     * Additive twin of
+     * [`copyAndTransformSolid`](Self::copy_and_transform_solid): the same
+     * single-pass copy engine and matrix contract, with the legacy
+     * method's return and errors unchanged. On success `value` is the new
+     * solid handle; quality and `exactOnly` follow
+     * [`transformDetailed`](Self::transform_detailed).
+     */
+    copyAndTransformSolidDetailed(solid: number, matrix: Float64Array, exact_only?: boolean | null): SolidOperationDetailedResult;
+    /**
      * Deep copy a face, returning a new independent face handle.
      *
      * The copy shares no sub-entities with the original, so translating it
@@ -3837,6 +3849,21 @@ export class BrepKernel {
      * remus-specific format that preserves all analytic geometry types.
      */
     toBrepJson(solid: number): any;
+    /**
+     * Transform a solid and return the exact, disclosed-approximate, or
+     * refused result as typed data.
+     *
+     * Additive twin of [`transformSolid`](Self::transform_solid_binding):
+     * the same engine, matrix contract (16 row-major values), and
+     * validation order, with the legacy method's void return and thrown
+     * errors unchanged. On success `value` is the (same) solid handle and
+     * `details` carries `quality`, `determinant`, `orientationReversed`,
+     * `similarity`, `carrierChanges`, `edgeChanges`, `fittedFaces`, and
+     * `controlPoints`. With `exactOnly: true` a fitted-sphere need is
+     * rolled back and refused (`quality_refused` /
+     * `exact_only_unattainable`), naming the refused faces.
+     */
+    transformDetailed(solid: number, matrix: Float64Array, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
      * Apply a 4×4 affine transform to a face (in place).
      *
