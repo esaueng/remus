@@ -9,6 +9,7 @@ use proptest::prelude::*;
 use remus_math::context::{CancellationToken, WorkBudgets};
 use remus_math::curves::Circle3D;
 use remus_math::curves2d::{Circle2D, Line2D};
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
 use std::f64::consts::{PI, TAU};
 
@@ -228,6 +229,29 @@ fn recomputed_crossing_near_certified_endpoint_adopts_it() {
     assert_eq!(material_count(&a), 3);
     near(area(&a), 16.0);
     invariants(&a, &uses);
+}
+
+#[test]
+fn shared_endpoint_does_not_absorb_a_second_nearby_circle_crossing() {
+    let theta: f64 = 5.0e-5;
+    let endpoint = p(1.0, 0.0);
+    let second = p(theta.cos(), theta.sin());
+    let beyond = endpoint + (second - endpoint) * 2.0;
+    let chord = line(10, endpoint, beyond, [42, 99], None);
+    let mut ring = circle(20, p(0.0, 0.0), 1.0, None);
+    ring.endpoints = [42, 42];
+    let ctx = context().with_tolerance(Tolerance {
+        linear: 1.0e-4,
+        ..Tolerance::new()
+    });
+
+    let hits = geometry::intersections(&chord, &ring, &mut Work::new(&ctx)).unwrap();
+    assert_eq!(hits.len(), 2, "the second crossing is a distinct cut");
+    assert!(hits[0].0.abs() < 1.0e-12);
+    assert!(
+        (hits[1].0 - (second - endpoint).length()).abs() < 1.0e-8,
+        "{hits:?}"
+    );
 }
 
 #[test]
