@@ -147,6 +147,8 @@ pub(super) struct ParentInfo {
     pub pcurve: Curve2D,
     /// Traversal start/end in 3D.
     pub endpoints_3d: [Point3; 2],
+    /// Endpoints before adapter subdivision, for cross-face split reporting.
+    pub original_endpoints_3d: [Point3; 2],
     /// Store-space topology edge index for boundary uses.
     pub source_topo_edge: Option<usize>,
     /// Pave block for section uses (cross-face sharing).
@@ -547,7 +549,6 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
             )))
         }
         Ok(arrangement) => {
-            record_section_breaks(&inputs, &arrangement, frame, split_registry);
             match emit_planar_subfaces(
                 &inputs,
                 &arrangement,
@@ -570,7 +571,10 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
                     );
                     Ok(None)
                 }
-                Ok(subfaces) => Ok(Some(subfaces)),
+                Ok(subfaces) => {
+                    record_section_breaks(&inputs, &arrangement, frame, tol.linear, split_registry);
+                    Ok(Some(subfaces))
+                }
                 Err(error) => Err(error),
             }
         }
@@ -587,11 +591,13 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
 /// branch cuts: single-use vertices with no event) are deliberately NOT
 /// recorded — neighbors share no event there, and recording them would
 /// hand curved faces splits the plane side itself merges away. Use ends
-/// are excluded (neighbors already share those events).
+/// at original section ends are excluded (neighbors already share those
+/// events). Adapter-created use ends can be interior to the original section.
 fn record_section_breaks(
     inputs: &PlanarInputs,
     arrangement: &Arrangement,
     frame: &PlaneFrame,
+    tol: f64,
     split_registry: Option<&mut DetHashMap<usize, Vec<Point3>>>,
 ) {
     let Some(registry) = split_registry else {
@@ -658,9 +664,7 @@ fn record_section_breaks(
         let Some(position) = half.source.source_edge_idx else {
             continue;
         };
-        let (Some(parent), Some(source)) =
-            (inputs.parents.get(position), by_id.get(&half.source.use_id))
-        else {
+        let Some(parent) = inputs.parents.get(position) else {
             continue;
         };
         if !parent.is_section {
@@ -669,15 +673,9 @@ fn record_section_breaks(
         let Some(pave_block) = half.source.pave_block_id.or(parent.pave_block_id) else {
             continue;
         };
-        // Interior vertices where distinct uses meet: ends are shared
-        // events already, and single-use vertices are canonical
-        // subdivisions with no event for neighbors to share.
-        for (vertex, param) in [(half.from, half.range[0]), (half.to, half.range[1])] {
-            if param.total_cmp(&source.range[0]).is_eq()
-                || param.total_cmp(&source.range[1]).is_eq()
-            {
-                continue;
-            }
+        // Distinct-use events interior to the original section must reach
+        // curved neighbors; canonical subdivisions carry no shared event.
+        for vertex in [half.from, half.to] {
             let Some(users) = vertex_uses.get(&vertex) else {
                 continue;
             };
@@ -686,6 +684,13 @@ fn record_section_breaks(
             }
             let uv = arrangement.vertices[vertex].uv;
             let point = frame.evaluate(uv.x(), uv.y());
+            if parent
+                .original_endpoints_3d
+                .iter()
+                .any(|end| (*end - point).length() <= tol)
+            {
+                continue;
+            }
             let entry = registry.entry(pave_block).or_default();
             if !entry.contains(&point) {
                 entry.push(point);
@@ -1541,6 +1546,7 @@ impl<'a> Collector<'a> {
                     ParentInfo {
                         pcurve,
                         endpoints_3d: [start_3d, end_3d],
+                        original_endpoints_3d: [start_3d, end_3d],
                         source_topo_edge,
                         pave_block_id,
                         is_section,
@@ -1576,6 +1582,7 @@ impl<'a> Collector<'a> {
                         ParentInfo {
                             pcurve: Curve2D::Circle(piece.pcurve),
                             endpoints_3d: piece.endpoints_3d,
+                            original_endpoints_3d: [start_3d, end_3d],
                             source_topo_edge,
                             pave_block_id,
                             is_section,
@@ -1909,6 +1916,7 @@ impl<'a> Collector<'a> {
             infos.push(ParentInfo {
                 pcurve: parent.pcurve.clone(),
                 endpoints_3d: [start_3d, end_3d],
+                original_endpoints_3d: parent_info.original_endpoints_3d,
                 source_topo_edge: parent_info.source_topo_edge,
                 pave_block_id: parent_info.pave_block_id,
                 is_section: parent_info.is_section,
@@ -3417,6 +3425,36 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn endpoint_prejoin_reports_original_section_interior_to_curved_neighbors() {
+        let (topo, face) = square_topology(2.0);
+        let mut across = line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0));
+        across.pave_block_id = Some(7);
+        let mut lower = line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0));
+        lower.pave_block_id = Some(8);
+        let mut upper = line_section(Point3::new(1.0, 1.0, 0.0), Point3::new(1.0, 2.0, 0.0));
+        upper.pave_block_id = Some(9);
+        let sections = [across, lower, upper];
+        let inputs = collect(&topo, face, &sections).expect("qualified endpoint join");
+        let arrangement = run(&inputs);
+        let mut registry = DetHashMap::default();
+        record_section_breaks(
+            &inputs,
+            &arrangement,
+            &plane_frame(),
+            TOL,
+            Some(&mut registry),
+        );
+        let crossing = Point3::new(1.0, 1.0, 0.0);
+        assert!(registry.get(&7).is_some_and(|points: &Vec<Point3>| {
+            points
+                .iter()
+                .any(|point| (*point - crossing).length() <= TOL)
+        }));
+        assert!(!registry.contains_key(&8));
+        assert!(!registry.contains_key(&9));
     }
 
     /// Every wire closes head-to-tail within the operation tolerance.
