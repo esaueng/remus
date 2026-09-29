@@ -255,6 +255,21 @@ fn shared_endpoint_does_not_absorb_a_second_nearby_circle_crossing() {
 }
 
 #[test]
+fn single_nearby_crossing_adopts_projected_shared_endpoint() {
+    let line_start = p(1.0 - 5.0e-5, 0.0);
+    let segment = line(10, line_start, p(2.0, 0.0), [42, 99], None);
+    let mut ring = circle(20, p(0.0, 0.0), 1.0, None);
+    ring.endpoints = [42, 42];
+    let ctx = context().with_tolerance(Tolerance {
+        linear: 1.0e-4,
+        ..Tolerance::new()
+    });
+
+    let hits = geometry::intersections(&segment, &ring, &mut Work::new(&ctx)).unwrap();
+    assert_eq!(hits, vec![(segment.range[0], ring.range[0])]);
+}
+
+#[test]
 fn x_t_and_star_have_independent_area_and_material() {
     for arms in [3, 4, 6, 8] {
         let mut uses = rectangle(0, -2.0, -2.0, 2.0, 2.0);
