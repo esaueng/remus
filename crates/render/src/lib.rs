@@ -44,6 +44,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod async_frame;
 mod camera;
 mod compute_mesh;
 mod error;
@@ -53,6 +54,10 @@ mod prepared;
 mod session;
 #[cfg(feature = "window")]
 mod viewer;
+
+pub use async_frame::{
+    AsyncFrameOutput, AsyncFrameTimings, FrameTicket, MAX_ASYNC_FRAMES, ReadbackSelection,
+};
 
 pub use camera::Camera;
 pub use compute_mesh::{
