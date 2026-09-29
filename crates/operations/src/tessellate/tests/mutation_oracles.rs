@@ -734,7 +734,6 @@ fn steep_torus_notch_meshes_closed_at_fine_deflection() {
 /// intersection with the shaft, ∫ 4·√(9 − y²)·√(b² − y²) dy over |y| ≤ b.
 /// Exit: this passes.
 #[test]
-#[ignore = "open: B71 — a cross-drilled bore wall is meshed without its trim densification"]
 fn cross_drilled_bore_wall_stays_within_the_chord_bound() {
     use std::f64::consts::PI;
     for b in [2.0_f64, 1.0] {
