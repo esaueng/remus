@@ -362,7 +362,7 @@ fn try_perpendicular_cap_circle(
     }
     let normal = normal * (1.0 / len);
     let d = d / len;
-    let (center, radius) = match analytic {
+    let (center, radius, radial_reference) = match analytic {
         AnalyticSurface::Cylinder(cyl) => {
             let axis = cyl.axis();
             if !cap_circle_is_exact_enough(normal, axis, cyl.radius(), 0.0, tol) {
@@ -377,7 +377,7 @@ fn try_perpendicular_cap_circle(
                 cyl.origin().y() + station * axis.y(),
                 cyl.origin().z() + station * axis.z(),
             );
-            (center, cyl.radius())
+            (center, cyl.radius(), cyl.x_axis())
         }
         AnalyticSurface::Cone(cone) => {
             let axis = cone.axis();
@@ -401,12 +401,12 @@ fn try_perpendicular_cap_circle(
                 cone.apex().y() + station * axis.y(),
                 cone.apex().z() + station * axis.z(),
             );
-            (center, radius)
+            (center, radius, cone.x_axis())
         }
         AnalyticSurface::Sphere(_) | AnalyticSurface::Torus(_) => return None,
         AnalyticSurface::Plane { .. } => return None,
     };
-    Some(sample_cap_circle(normal, center, radius))
+    sample_cap_circle(normal, center, radius, radial_reference)
 }
 
 /// A tilted plane cuts a cylinder in an ellipse, and a cone in a
@@ -435,28 +435,32 @@ fn cap_circle_is_exact_enough(
         && carrier_error <= tol.linear.max(radius * tol.relative) * 0.25
 }
 
-/// Sample one full turn of a cap circle in a plane frame built from its
-/// normal.
-fn sample_cap_circle(normal: Vec3, center: Point3, radius: f64) -> Vec<Point3> {
-    let helper = if normal.x().abs() < 0.9 {
-        Vec3::new(1.0, 0.0, 0.0)
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    let unit = normal.cross(helper).normalize().unwrap_or(helper);
+/// Anchor both cap seams to the carrier's radial reference, independent of
+/// opposing plane normals, while keeping every sample on its cap plane.
+fn sample_cap_circle(
+    normal: Vec3,
+    center: Point3,
+    radius: f64,
+    radial_reference: Vec3,
+) -> Option<Vec<Point3>> {
+    let unit = (radial_reference - normal * radial_reference.dot(normal))
+        .normalize()
+        .ok()?;
     let side = normal.cross(unit);
-    (0..=N_CAP_CIRCLE_SAMPLES)
-        .map(|i| {
-            #[allow(clippy::cast_precision_loss)]
-            let theta = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            Point3::new(
-                center.x() + radius * (cos_t * unit.x() + sin_t * side.x()),
-                center.y() + radius * (cos_t * unit.y() + sin_t * side.y()),
-                center.z() + radius * (cos_t * unit.z() + sin_t * side.z()),
-            )
-        })
-        .collect()
+    Some(
+        (0..=N_CAP_CIRCLE_SAMPLES)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+                let (sin_t, cos_t) = theta.sin_cos();
+                Point3::new(
+                    center.x() + radius * (cos_t * unit.x() + sin_t * side.x()),
+                    center.y() + radius * (cos_t * unit.y() + sin_t * side.y()),
+                    center.z() + radius * (cos_t * unit.z() + sin_t * side.z()),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Dot product of a plane normal with a position vector.
@@ -730,6 +734,46 @@ mod tests {
         crate::offset::build_offset_faces(topo, solid, &mut data).unwrap();
         intersect_faces_3d(topo, solid, &mut data).unwrap();
         data
+    }
+
+    #[test]
+    fn opposite_cap_normals_share_carrier_azimuth_for_lateral_seam() {
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let opposite = Vec3::new(0.0, 0.0, -1.0);
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(origin, axis, 2.0).unwrap();
+        let cone =
+            remus_math::surfaces::ConicalSurface::new(origin, axis, std::f64::consts::FRAC_PI_4)
+                .unwrap();
+
+        for (surface, lower_z, upper_z) in [
+            (AnalyticSurface::Cylinder(&cylinder), 0.0, 4.0),
+            (AnalyticSurface::Cone(&cone), 2.0, 4.0),
+        ] {
+            let lower = try_perpendicular_cap_circle(opposite, -lower_z, surface, Tolerance::new())
+                .unwrap();
+            let upper =
+                try_perpendicular_cap_circle(axis, upper_z, surface, Tolerance::new()).unwrap();
+            let start_lower = lower[0];
+            let start_upper = upper[0];
+            assert!((start_lower.z() - lower_z).abs() < 1e-12);
+            assert!((start_upper.z() - upper_z).abs() < 1e-12);
+
+            for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let x = start_lower.x() + fraction * (start_upper.x() - start_lower.x());
+                let y = start_lower.y() + fraction * (start_upper.y() - start_lower.y());
+                let z = lower_z + fraction * (upper_z - lower_z);
+                let expected_radius = if matches!(surface, AnalyticSurface::Cylinder(_)) {
+                    2.0
+                } else {
+                    z
+                };
+                assert!(
+                    ((x * x + y * y).sqrt() - expected_radius).abs() < 1e-12,
+                    "lateral seam at fraction {fraction} leaves its carrier"
+                );
+            }
+        }
     }
 
     #[test]
