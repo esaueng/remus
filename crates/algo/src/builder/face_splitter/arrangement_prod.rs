@@ -232,6 +232,12 @@ pub(super) fn collect_planar_uses(
     if !collector.prejoin_endpoints(context, &mut pair_steps)? {
         return Ok(None);
     }
+    if collector.uses.len() > MAX_ARRANGEMENT_USES {
+        return Ok(None);
+    }
+    if collector.uses.len() > context.budgets.queue_size {
+        return budget_decline(context).map(|_| None);
+    }
     if !collector.section_ends_resolved() {
         return Ok(None);
     }
@@ -2709,6 +2715,29 @@ mod tests {
         )];
         let context = OperationContext::new()
             .with_budgets(remus_math::context::WorkBudgets::new().with_march_steps(1));
+        let error = collect_planar_uses(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &context,
+        )
+        .unwrap_err();
+        assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+    }
+
+    #[test]
+    fn endpoint_prejoin_obeys_explicit_queue_cap() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [
+            line_section(Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 2.0, 0.0)),
+            line_section(Point3::new(1.5, 0.0, 0.0), Point3::new(1.5, 2.0, 0.0)),
+        ];
+        let uncapped = collect(&topo, face, &sections).expect("qualified parallel dividers");
+        assert_eq!(uncapped.uses.len(), 10);
+        let context = test_context().with_budgets(test_context().budgets.with_queue_size(6));
         let error = collect_planar_uses(
             &topo,
             face,
