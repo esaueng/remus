@@ -1,0 +1,14 @@
+# criterion sketch/independent_solved_large, run 2 (loaded host, load average ~48)
+# `cargo bench -p remus-sketch --bench gcs_perf -- sketch/independent_solved_large`
+# Candidate source 20491ecc + bench/test additions, rustc 1.96.0, AMD Ryzen 9 5900XT.
+# Rows in order: solve/2000, detailed/2000, solve/5000, detailed/5000,
+# solve/10000, detailed/10000. Run-1 estimates (quieter host): 7.3 / 8.1,
+# 19.7 / 21.2, 40.8 / 43.3 ms. The dense path refuses the 10000 rows under
+# the runner's 256 MiB Jacobian budget (800 MB); blocks stay 2x2 throughout.
+# See sketch-perf-s02.md section 4 for the honest ranges.
+                        time:   [13.601 ms 15.294 ms 16.176 ms]
+                        time:   [9.7843 ms 9.8561 ms 9.9526 ms]
+                        time:   [33.395 ms 39.288 ms 41.928 ms]
+                        time:   [48.266 ms 48.837 ms 49.270 ms]
+                        time:   [91.250 ms 92.286 ms 93.241 ms]
+                        time:   [99.573 ms 100.82 ms 101.82 ms]

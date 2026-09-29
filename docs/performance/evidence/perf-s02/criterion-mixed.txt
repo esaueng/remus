@@ -1,0 +1,33 @@
+# criterion sketch/mixed_sizes, run 2 (loaded host, load average ~48)
+# `cargo bench -p remus-sketch --bench gcs_perf -- sketch/mixed_sizes`
+# Candidate source 20491ecc + bench/test additions, rustc 1.96.0, AMD Ryzen 9 5900XT.
+# NOTE: criterion's "change ... Performance has regressed" lines below compare
+# against this same machine's run-1 history (quieter host), not against the
+# dense baseline or any committed gate. There are no timing gates in tests.
+# Run-1 estimates (quieter): solve/100 ~0.60ms, detailed/100 ~0.67ms,
+# solve/1000 ~387ms. See sketch-perf-s02.md section 4 for the honest ranges.
+
+sketch/mixed_sizes/solve/100
+                        time:   [1.4192 ms 1.4319 ms 1.4450 ms]
+                        change: [+138.63% +141.07% +143.33%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+sketch/mixed_sizes/detailed/100
+                        time:   [957.50 us 1.1394 ms 1.2905 ms]
+                        change: [+61.026% +82.741% +105.61%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+sketch/mixed_sizes/solve/1000
+                        time:   [639.88 ms 644.54 ms 649.42 ms]
+                        change: [+69.850% +71.901% +73.940%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+sketch/mixed_sizes/detailed/1000
+                        time:   [763.49 ms 785.59 ms 802.78 ms]
+
+# Repeat of the same filter (confirms stability within the loaded host):
+sketch/mixed_sizes/solve/100
+                        time:   [1.3974 ms 1.4110 ms 1.4238 ms]
+sketch/mixed_sizes/detailed/100
+                        time:   [1.1879 ms 1.3792 ms 1.5037 ms]
+sketch/mixed_sizes/solve/1000
+                        time:   [622.79 ms 629.42 ms 636.37 ms]
+sketch/mixed_sizes/detailed/1000
+                        time:   [762.55 ms 784.11 ms 803.32 ms]

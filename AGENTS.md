@@ -377,13 +377,15 @@ Quick reference — find the right file for any task:
 | DOF analysis | `gcs/dof.rs` |
 | Solve diagnostics + classification | `gcs/diagnostics.rs` |
 | Solve-local final-iterate evaluation sharing | `gcs/final_eval.rs` |
+| Independent-component decomposition (PERF-S02) | `gcs/components.rs` |
 | Error types | `lib.rs` (`SketchError`) |
 
 Adding a `Constraint` variant requires an arm in `residual_count`,
 `eval_residuals`, and `eval_jacobian` (all `gcs/constraint.rs`), plus
 `validate_constraint` and the four `constraint_references_*` helpers in
-`gcs/system.rs`. All are exhaustive matches, so the compiler flags every
-site. Expose it to JS through `parse_gcs_constraint` in
+`gcs/system.rs`, plus `direct_refs` in `gcs/components.rs` (structural free
+parameters for the PERF-S02 decomposition). All are exhaustive matches, so the
+compiler flags every site. Expose it to JS through `parse_gcs_constraint` in
 `wasm/src/bindings/gcs_sketch.rs`. Every analytic Jacobian needs a
 finite-difference test; `gcs/constraint/tests.rs` carries helpers for both a
 fixed step (`check_jacobian_fd`) and a scale-relative one
