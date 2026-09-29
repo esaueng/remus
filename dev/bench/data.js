@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790638458414,
+  "lastUpdate": 1790644892411,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -76255,6 +76255,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 89435,
             "range": "± 495",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c807505156aa8e11ecc89291367e696fa2cf4716",
+          "message": "fix(heal): qualify B17/H03 duplicate faces and arc trims (#816)\n\n* docs(heal): write B17/PERF-H03 duplicate-face equivalence contract\n\nMilestone 1 of the duplicate-face healing campaign: distinguish equal\ncarriers, equal trimmed regions, equal orientation, shared identity and\ngenuinely removable duplicate uses. Specifies the deterministic\nlowest-FaceId survivor, attribute/provenance policy, cross-shell refusal\nwith full rollback, and why area/centroid/endpoint-set/sampled-distance\ncan never prove duplication.\n\n* perf(heal): bucket duplicate-face candidates with conservative descriptors\n\nExtract the duplicate-face pass into fix/duplicate_faces.rs and replace\nonly candidate discovery (PERF-H03): edge-count + halo-1 normal-cell +\nhalo-1 centroid-cell buckets with exhaustive fallback for\nundescribable faces. The exact predicate stays the final authority;\nsurvivor is now the lowest FaceId index regardless of shell order.\n\nProven by a test-only all-pairs reference over the same order plus\ntolerance-boundary, cell-straddler, nontransitive-nearness, fallback\nand determinism adversaries; sparse models pay zero exact comparisons\nwhile the honest dense worst case is reported via plan stats.\n\n* feat(heal): extend duplicate-face recognition to holes and circle arcs\n\nRecognize planar faces with inner polygon loops (bijective hole\ncorrespondence via augmenting-path search, storage-order independent)\nand Line+Circle boundaries (frame-invariant canonical sweeps,\nphase-invariant closed rims, same-circle/collinear subdivision\nnormalization without moving vertices).\n\nChords never match arcs, real gaps never match rims, steps/spikes/thin\nregions survive normalization, and ellipse/NURBS/off-circle/off-plane\ninputs are refused fail-closed. Proven by an independent all-pairs\noracle (separate loop/hole/arc code, permutation hole search) plus\ntargeted positive/negative fixtures and randomized holed coverage.\n\n* feat(heal): qualify duplicate-face removal end to end\n\nAttribute-compatibility veto (contract section 8): a dropped face\ncarrying attributes the survivor lacks vetoes the pair with a disclosed\ninfo message; equal or absent metadata removes normally.\n\nHeal-crate proofs: veto matrix, survivor-metadata preservation,\npcurve/history preservation, idempotence, full rollback on the\nshared-face refusal, nested holes, adjacent sheets.\n\nOperations-level proofs (b17_h03_duplicate_removal): verified box,\ncylinder-cap (arc-bounded) and boolean-frame (holed, split-edge)\nrepairs with dual validation, census, closed-form volume and ray-cast\nmaterial probes, plus idempotence, transactional rollback and the\nend-to-end attribute veto. Fixes the batch injector to rebuild edges in\ntraversal order (it had flipped backward-used windings).\n\n* perf(heal): establish duplicate-face scaling evidence\n\nCriterion bench (public fix_shape path, duplicate-only config) over\nsparse/clustered/coincident face sets plus an ignored\nscaling_measurement_report printing candidate/exact/reference counts,\nbucket spread and wall time (correctness asserted, timing never is).\n\nMeasured (release): sparse 2000 faces 0 exact calls (was 2.0M) in\n~54ms linear; clustered ~1.5 exact/face; coincident linear via\nfirst-survivor exit; dense single-bucket-distinct honestly quadratic.\nPeak harness RSS 64MB; steady state linear. Numbers recorded in the\ncontract note (section 10); B17/PERF-H03 roadmap rows updated for the\ndomains actually proven.\n\n* fix(heal): qualify duplicate faces on support and arc trims\n\n* fix(heal): retain arc authority and vetoed duplicate anchors\n\n* fix(heal): canonicalize duplicate bucket anchor summation\n\n* fix(heal): exclude pending removals from duplicate groups\n\n* fix(heal): preserve closed-rim traversal direction\n\n* fix(heal): normalize clockwise arc sweep magnitudes\n\n* fix(heal): index near-full arcs with closed rims\n\n* fix(heal): require authored arcs and satisfy repository policy (#832)",
+          "timestamp": "2026-09-28T18:13:32-07:00",
+          "tree_id": "a49c160a14cb4ab2d7cbce43f341512af6acba25",
+          "url": "https://github.com/esaueng/remus/commit/c807505156aa8e11ecc89291367e696fa2cf4716"
+        },
+        "date": 1790644890333,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1263402,
+            "range": "± 1422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1363671,
+            "range": "± 1802",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27310,
+            "range": "± 49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11901746,
+            "range": "± 38099",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11907250,
+            "range": "± 22691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11456171,
+            "range": "± 28248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1140512,
+            "range": "± 16052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17661983,
+            "range": "± 465350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32625857,
+            "range": "± 321206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 216,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 160,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 805,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 154,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 355,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 213,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 518,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 743,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3251,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 585481,
+            "range": "± 2424",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9078883,
+            "range": "± 17084",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 174386,
+            "range": "± 376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 560559,
+            "range": "± 2022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 63676,
+            "range": "± 1556",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 927704,
+            "range": "± 6916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10682812,
+            "range": "± 43083",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 838301,
+            "range": "± 4173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1191851,
+            "range": "± 4056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86025,
+            "range": "± 412",
             "unit": "ns/iter"
           }
         ]
