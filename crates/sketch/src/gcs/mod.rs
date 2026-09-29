@@ -1,5 +1,6 @@
 //! Geometric Constraint Solver (GCS) for 2D sketch parametric design.
 
+mod components;
 mod constraint;
 mod diagnostics;
 mod dof;
