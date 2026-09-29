@@ -131,7 +131,7 @@ jobs:
     if: needs.select.outputs.trusted == 'true'
     permissions:
       id-token: write
-    uses: esaueng/remus/.github/workflows/select-runner.yml@98905bd5ebe20d485ee372c7eab69d93838e00a1
+    uses: esaueng/remus/.github/workflows/select-runner.yml@a5c7a12918b5e36595bac27e7b3e3e14fdc35fb7
     with:
       enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
 
