@@ -735,7 +735,7 @@ pub fn refuse_unless_exact(plans: &[FacePlan]) -> Result<(), crate::OperationsEr
 /// Re-runs the pure edge-curve transform on cloned curves, so structural
 /// refusals (skewed circle/ellipse images, non-similarity open conics)
 /// surface before any mutation. Faces are planned by
-/// [`plan_face_surface`]; pass identity as `inverse` — vertices are
+/// `plan_face_surface`; pass identity as `inverse` — vertices are
 /// untouched at preflight time.
 ///
 /// The WASM twin calls this directly to name refused faces.
@@ -1640,7 +1640,7 @@ fn is_rigid_or_uniform_scale(matrix: &Mat4) -> bool {
 /// Whether a matrix preserves every analytic carrier (similarity).
 ///
 /// True when the linear part is conformal (`MᵀM = s²I` within
-/// [`ANALYTIC_ROUNDOFF_REL`]): rotations, reflections, translations, and
+/// `ANALYTIC_ROUNDOFF_REL`): rotations, reflections, translations, and
 /// uniform scales of any magnitude. Every other affine map converts at
 /// least some carriers to NURBS. The engine routes on this predicate, and
 /// the report echoes it, so carrier routing and disclosure cannot disagree.

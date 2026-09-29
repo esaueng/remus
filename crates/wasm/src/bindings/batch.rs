@@ -35,6 +35,7 @@ use crate::helpers::{
     get_u32_array_optional, panic_message, try_chamfer,
 };
 use crate::kernel::BrepKernel;
+use crate::types::SolidOperationDetailedResult;
 
 /// Maximum encoded JSON accepted by one `executeBatch` call (16 MiB).
 const MAX_BATCH_JSON_BYTES: usize = 16 * 1024 * 1024;
@@ -102,6 +103,21 @@ fn get_optional_bool(
             )
         }),
     }
+}
+
+/// Parse a transform twin's batch arguments before entering its shared body.
+/// Parsing failures still become the twin's typed result envelope.
+fn transform_detailed_batch_args(
+    args: &serde_json::Value,
+) -> Result<(u32, Vec<f64>, bool), StructuredWasmError> {
+    let solid = get_u32(args, "solid")?;
+    let matrix = args.get("matrix").ok_or_else(|| {
+        StructuredWasmError::invalid_argument("missing or invalid 'matrix'", Some("matrix"))
+    })?;
+    let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+    let mat = super::transform_detailed::parse_transform_matrix_json(matrix)?;
+    let elems = mat.0.iter().flatten().copied().collect();
+    Ok((solid, elems, exact_only))
 }
 
 /// Optional number argument: absent or `null` reads as `None`. Range checks
@@ -1578,24 +1594,26 @@ impl BrepKernel {
             // bodies, so a refusal is data here too (already rolled back
             // by that body).
             "transformDetailed" => {
-                let solid = get_u32(args, "solid")?;
-                let matrix = args.get("matrix").ok_or("missing or invalid 'matrix'")?;
-                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
-                let mat = super::transform_detailed::parse_transform_matrix_json(matrix)?;
-                let elems: Vec<f64> = mat.0.iter().flatten().copied().collect();
-                serde_json::to_value(self.transform_detailed_impl(solid, &elems, exact_only))
-                    .map_err(StructuredWasmError::from)
+                let result = match transform_detailed_batch_args(args) {
+                    Ok((solid, matrix, exact_only)) => {
+                        self.transform_detailed_impl(solid, &matrix, exact_only)
+                    }
+                    Err(error) => SolidOperationDetailedResult::error(
+                        error.with_direct_operation("transform"),
+                    ),
+                };
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
             }
             "copyAndTransformSolidDetailed" => {
-                let solid = get_u32(args, "solid")?;
-                let matrix = args.get("matrix").ok_or("missing or invalid 'matrix'")?;
-                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
-                let mat = super::transform_detailed::parse_transform_matrix_json(matrix)?;
-                let elems: Vec<f64> = mat.0.iter().flatten().copied().collect();
-                serde_json::to_value(
-                    self.copy_and_transform_solid_detailed_impl(solid, &elems, exact_only),
-                )
-                .map_err(StructuredWasmError::from)
+                let result = match transform_detailed_batch_args(args) {
+                    Ok((solid, matrix, exact_only)) => {
+                        self.copy_and_transform_solid_detailed_impl(solid, &matrix, exact_only)
+                    }
+                    Err(error) => SolidOperationDetailedResult::error(
+                        error.with_direct_operation("copyAndTransformSolid"),
+                    ),
+                };
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
             }
             // ── Batch 8: new batch-dispatched operations ──────────────
             "pushPullFace" => {

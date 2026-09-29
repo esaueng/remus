@@ -1446,23 +1446,51 @@ fn downstream_boolean_outcome_is_recorded_not_supported() {
 }
 
 #[test]
-#[ignore = "B77: default ray-cast misclassifies reversed split-hemisphere NURBS"]
 fn b77_ray_cast_on_reversed_split_hemispheres() {
-    // Ready-repro: mirror-scaled sphere (exact rational hemispheres,
-    // u-reversed for orientation). Winding and robust classifiers agree
-    // the center is Inside and the solid is otherwise fully qualified
-    // (valid, watertight mesh, closed-form volume); only the default
-    // ray-cast path reads Outside. Single-piece NURBS (cylinder, cone,
-    // torus) and analytic carriers classify correctly under the same map.
     let mut topo = Topology::new();
     let solid = primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
-    transform::transform_solid(&mut topo, solid, &mirror_anisotropic()).unwrap();
+    let report = transform::transform_solid_detailed(
+        &mut topo,
+        solid,
+        &mirror_anisotropic(),
+        TransformPolicy::ExactOnly,
+    )
+    .unwrap();
+    assert_eq!(report.quality, TransformQuality::Exact);
     assert_valid(&topo, solid);
-    assert_eq!(
-        classify_point(&topo, solid, Point3::new(0.0, 0.0, 0.0), 0.01, 1e-7).unwrap(),
-        PointClassification::Inside,
-        "B77: ray-cast must agree with winding/robust on reversed hemispheres"
-    );
+
+    // The reflected sphere is the exact ellipsoid (x/2)^2 + y^2 + z^2 = 1.
+    // The near-rim point lies outside the sampled 16-gon but inside the
+    // analytic equator; a polygon-only cap would miss this interior material.
+    let theta = std::f64::consts::PI / 16.0;
+    let near_rim = Point3::new(2.0 * 0.99 * theta.cos(), 0.99 * theta.sin(), 0.02);
+    let outside_rim = Point3::new(2.0 * 1.01 * theta.cos(), 1.01 * theta.sin(), 0.02);
+    let cases = [
+        (Point3::new(0.0, 0.0, 0.0), PointClassification::Inside),
+        (Point3::new(0.5, 0.25, 0.1), PointClassification::Inside),
+        (near_rim, PointClassification::Inside),
+        (
+            Point3::new(near_rim.x(), near_rim.y(), -0.02),
+            PointClassification::Inside,
+        ),
+        (outside_rim, PointClassification::Outside),
+        (Point3::new(2.1, 0.0, 0.0), PointClassification::Outside),
+        (Point3::new(0.0, 0.0, 1.1), PointClassification::Outside),
+    ];
+    for (point, expected) in cases {
+        let normalized = (point.x() / 2.0).powi(2) + point.y().powi(2) + point.z().powi(2);
+        assert_eq!(normalized < 1.0, expected == PointClassification::Inside);
+        assert_eq!(
+            classify_point(&topo, solid, point, 0.01, 1e-7).unwrap(),
+            expected,
+            "one-shot ray cast at {point:?}"
+        );
+    }
+    let points: Vec<_> = cases.iter().map(|(point, _)| *point).collect();
+    let prepared =
+        remus_operations::classify::classify_points(&topo, solid, &points, 0.01, 1e-7).unwrap();
+    let expected: Vec<_> = cases.iter().map(|(_, expected)| *expected).collect();
+    assert_eq!(prepared, expected, "prepared ray cast must match one-shot");
 }
 
 #[test]

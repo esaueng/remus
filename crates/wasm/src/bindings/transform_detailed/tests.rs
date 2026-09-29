@@ -242,6 +242,54 @@ fn transform_detailed_refusals_are_typed_data() {
 }
 
 #[test]
+fn malformed_batch_transform_twin_arguments_stay_in_typed_envelopes() {
+    for op in ["transformDetailed", "copyAndTransformSolidDetailed"] {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let before = live_counts(&kernel);
+        let direct_short = if op == "transformDetailed" {
+            envelope(kernel.transform_detailed_impl(solid, &[1.0], false))
+        } else {
+            envelope(kernel.copy_and_transform_solid_detailed_impl(solid, &[1.0], false))
+        };
+        let valid_matrix = diag_aniso();
+        let cases = json!([
+            {"op": op, "args": {"solid": solid, "matrix": [1.0]}},
+            {"op": op, "args": {"matrix": valid_matrix}},
+            {"op": op, "args": {"solid": "bad", "matrix": valid_matrix}},
+            {"op": op, "args": {"solid": solid}},
+            {"op": op, "args": {"solid": solid, "matrix": valid_matrix, "exactOnly": "yes"}},
+            {"op": op, "args": {"solid": 9999, "matrix": valid_matrix}},
+        ]);
+        for run in [
+            batch_v2 as fn(&mut BrepKernel, &Value) -> Value,
+            batch_legacy as fn(&mut BrepKernel, &Value) -> Value,
+        ] {
+            let results = run(&mut kernel, &cases);
+            assert_eq!(results[0]["ok"], direct_short, "{op} short matrix parity");
+            for (i, entry) in results.as_array().unwrap().iter().enumerate() {
+                assert!(
+                    entry.get("error").is_none(),
+                    "{op}: outer batch error: {entry}"
+                );
+                assert_eq!(entry["ok"]["status"], "error", "{op}: {entry}");
+                let expected = if i == 5 {
+                    "invalid_handle"
+                } else {
+                    "invalid_argument"
+                };
+                assert_eq!(entry["ok"]["code"], expected, "{op}: {entry}");
+            }
+        }
+        assert_eq!(
+            live_counts(&kernel),
+            before,
+            "{op} mutated topology on refusal"
+        );
+    }
+}
+
+#[test]
 fn transform_detailed_refusals_roll_back() {
     let mut kernel = BrepKernel::new();
     let solid = kernel.make_cylinder_solid(1.0, 2.0).unwrap();

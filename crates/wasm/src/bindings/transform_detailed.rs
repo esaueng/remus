@@ -67,7 +67,10 @@ pub fn parse_transform_matrix_json(value: &serde_json::Value) -> Result<Mat4, St
     let array = value.as_array().ok_or("missing or invalid 'matrix'")?;
     if array.len() != 16 {
         return Err(StructuredWasmError::invalid_argument(
-            format!("matrix must have 16 elements, got {}", array.len()),
+            format!(
+                "transform matrix must have 16 elements, got {}",
+                array.len()
+            ),
             Some("matrix"),
         ));
     }

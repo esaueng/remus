@@ -108,6 +108,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Bug Fixes
 
+* Fix reflected anisotropic sphere classification: a certified full NURBS
+  hemisphere cap now uses its exact rim half-space, so direct and prepared
+  ray casts agree with the ellipsoid material even near the sampled rim (B77).
+* Return typed detailed-result envelopes for malformed transform/copy batch
+  arguments, matching the direct refusal contract (B74).
 * Optimize the distributed browser binary and fail package validation above
   the 8 MiB consumer budget.
 * Keep exact-only refusals in the `quality_refused` category with stable
