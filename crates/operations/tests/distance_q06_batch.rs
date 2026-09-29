@@ -5,8 +5,10 @@
 use remus_math::vec::Point3;
 use remus_operations::distance::{point_to_solid_batch, point_to_solid_distance};
 use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::test_utils::make_unit_cube_manifold_at;
 use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 #[test]
 fn operations_batch_matches_one_shot_in_order() {
@@ -57,5 +59,42 @@ fn empty_batch_rejects_stale_face_vertex() {
     topo.edge_mut(edge).unwrap().set_end(missing_vertex);
 
     assert!(point_to_solid_distance(&topo, Point3::new(0.5, 0.5, 3.0), cube).is_err());
+    assert!(point_to_solid_batch(&topo, &[], cube).is_err());
+}
+
+#[test]
+fn empty_batch_rejects_stale_inner_wire_vertex() {
+    let mut topo = Topology::new();
+    let cube = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let shell = topo.solid(cube).unwrap().outer_shell();
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let v0 = topo.add_vertex(Vertex::new(Point3::new(0.25, 0.25, 0.0), 1e-7));
+    let v1 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.25, 0.0), 1e-7));
+    let v2 = topo.add_vertex(Vertex::new(Point3::new(0.25, 0.5, 0.0), 1e-7));
+    let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+    let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+    let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+    let hole = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e0, true),
+                OrientedEdge::new(e1, true),
+                OrientedEdge::new(e2, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let outer = topo.face(face).unwrap().outer_wire();
+    topo.set_face_boundary_wires(face, outer, vec![hole])
+        .unwrap();
+
+    let mut other_topo = Topology::new();
+    let missing_vertex = (0..30)
+        .map(|_| other_topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7)))
+        .last()
+        .unwrap();
+    topo.edge_mut(e1).unwrap().set_end(missing_vertex);
+
     assert!(point_to_solid_batch(&topo, &[], cube).is_err());
 }
