@@ -4,7 +4,12 @@
 //! Prints concise `PERF-Q06` lines with `--nocapture`; asserts correctness
 //! (prepared matches one-shot bit for bit, BVH alternative matches on distance)
 //! and pruning-effectiveness invariants — never wall-time thresholds.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stdout)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout
+)]
 #![allow(clippy::float_cmp)]
 
 use std::time::Instant;
@@ -99,7 +104,7 @@ fn compare_one_shot_vs_prepared(label: &str, topo: &Topology, solid: SolidId, pt
     let mut scratch = DistanceScratch::new();
 
     for &n in &[1usize, 10, 100, 1000] {
-        let subset: Vec<Point3> = pts.iter().cycle().take(n).cloned().collect();
+        let subset: Vec<Point3> = pts.iter().cycle().take(n).copied().collect();
         for p in &subset {
             let _ = point_to_solid_with_stats(topo, *p, solid).unwrap();
         }
@@ -120,8 +125,14 @@ fn compare_one_shot_vs_prepared(label: &str, topo: &Topology, solid: SolidId, pt
         let cap_after = scratch.capacity();
         for (i, p) in subset.iter().enumerate() {
             let single = point_to_solid_with_stats(topo, *p, solid).unwrap().0;
-            assert_eq!(single.distance, batched[i].distance, "{label} n={n} index {i}");
-            assert_eq!(single.point_b, batched[i].point_b, "{label} n={n} index {i}");
+            assert_eq!(
+                single.distance, batched[i].distance,
+                "{label} n={n} index {i}"
+            );
+            assert_eq!(
+                single.point_b, batched[i].point_b,
+                "{label} n={n} index {i}"
+            );
         }
         println!(
             "PERF-Q06 {label} n={n}: prep={prep_time:.6}s faces={} prunable={} mandatory={} \
@@ -218,7 +229,8 @@ fn q06_bvh_alternative_loses_amortized() {
             if *d2 > best * best {
                 continue;
             }
-            if let Some((dist, _)) = remus_check::distance::point_to_face(&topo, *p, *fid).unwrap() {
+            if let Some((dist, _)) = remus_check::distance::point_to_face(&topo, *p, *fid).unwrap()
+            {
                 bvh_eval += 1;
                 if dist < best {
                     best = dist;

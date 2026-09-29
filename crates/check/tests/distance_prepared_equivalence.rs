@@ -19,8 +19,8 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use remus_check::distance::{
-    DistanceOptions, DistanceScratch, PreparedDistanceSolid, point_to_solid,
-    point_to_solid_batch, point_to_solid_exhaustive, point_to_solid_with_stats,
+    DistanceOptions, DistanceScratch, PreparedDistanceSolid, point_to_solid, point_to_solid_batch,
+    point_to_solid_exhaustive, point_to_solid_with_stats,
 };
 
 const TOL: f64 = 1e-7;
@@ -243,10 +243,7 @@ fn unknown_bound_heavy_stays_mandatory_and_matches() {
     let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
     assert_eq!(prepared.mandatory_count(), 8);
     assert_eq!(prepared.prunable_count(), 0);
-    for q in [
-        Point3::new(0.0, 0.0, 3.0),
-        Point3::new(5.0, 0.0, 1.0),
-    ] {
+    for q in [Point3::new(0.0, 0.0, 3.0), Point3::new(5.0, 0.0, 1.0)] {
         assert_all_modes_agree(&topo, q, solid);
     }
     let pts = vec![
@@ -422,14 +419,17 @@ fn degenerate_points_match_one_shot() {
     for p in &pts {
         let one = point_to_solid(&topo, *p, solid).unwrap();
         let via = prepared.query(*p, &mut scratch).unwrap();
-        assert_eq!(one.distance.to_bits(), via.distance.to_bits(), "point {p:?}");
+        assert_eq!(
+            one.distance.to_bits(),
+            via.distance.to_bits(),
+            "point {p:?}"
+        );
         assert_eq!(one.point_b.x().to_bits(), via.point_b.x().to_bits());
     }
 }
 
 #[test]
 fn repeated_calls_after_narrow_phase_failure_agree() {
-    use remus_math::nurbs::surface::NurbsSurface;
     let mut topo = Topology::new();
     let (patch, _) = wavy_patch(&mut topo, 0.25, 3.0, 0.0);
     let query = Point3::new(0.5, 0.5, 2.0);
@@ -462,7 +462,9 @@ fn mutation_requires_dropping_and_rebuilding() {
     let before = {
         let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
         let mut scratch = DistanceScratch::new();
-        prepared.query(Point3::new(0.5, 0.5, 3.0), &mut scratch).unwrap()
+        prepared
+            .query(Point3::new(0.5, 0.5, 3.0), &mut scratch)
+            .unwrap()
     };
     assert!((before.distance - 2.0).abs() < 1e-9);
     let other = make_box(
@@ -588,7 +590,11 @@ fn wavy_patch(
     let mut edge_ids = Vec::new();
     for (k, curve) in curves.into_iter().enumerate() {
         let (d0, d1) = curve.domain();
-        let mut edge = Edge::new(corners[k], corners[(k + 1) % 4], EdgeCurve::NurbsCurve(curve));
+        let mut edge = Edge::new(
+            corners[k],
+            corners[(k + 1) % 4],
+            EdgeCurve::NurbsCurve(curve),
+        );
         edge.set_trim(Some((d0, d1)));
         edge_ids.push(topo.add_edge(edge));
     }
