@@ -3214,23 +3214,43 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
         }
 
-        let v_extrema_tol = 1e-9 * dv.abs().max(1e-12);
-        let rim_sample_count = boundary_uv
-            .iter()
-            .filter(|&&(_, v)| v <= v_min + v_extrema_tol || v >= v_max - v_extrema_tol)
-            .count();
-        // Require sampled rails on the v extrema. Sparse contact loops (such
-        // as a four-point cross-drilled bore graze) are not trim bands, and
-        // densifying them can change the mesh oracle's material side.
-        let has_nurbs_revolved_wire = rim_sample_count >= 8
-            && matches!(
-                face_data.surface(),
-                FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-            )
-            && wire.edges().iter().any(|oriented| {
-                topo.edge(oriented.edge())
-                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
-            });
+        // A NURBS trim that bends across the rulings needs the v-band
+        // densification below even when it merely grazes the wall's v
+        // extremes: a cross-drilled saddle touches them at only four points
+        // yet traverses the full v range in between, and the two-row ruling
+        // grid bridges its valley with chords through the solid (B71). Level
+        // rims and straight seams also arrive as NURBS but span a single
+        // parameter direction, and densifying those only perturbs the CDT
+        // (B49) — so the gate is the per-edge two-dimensional span, the same
+        // test the densifier applies per edge below, not a count of samples
+        // at the extremes. Blend acceptance no longer leans on this mesh
+        // (B71's analytic material oracle), so opening the gate cannot flip a
+        // wrong-side verdict.
+        let has_nurbs_revolved_wire = matches!(
+            face_data.surface(),
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+        ) && wire.edges().iter().any(|oriented| {
+            topo.edge(oriented.edge()).is_ok_and(|edge| {
+                if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+                    return false;
+                }
+                let mut span = (
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                );
+                for (&(u, v), sample) in boundary_uv.iter().zip(&boundary_3d) {
+                    if sample.2 == oriented.edge() {
+                        span.0 = span.0.min(u);
+                        span.1 = span.1.max(u);
+                        span.2 = span.2.min(v);
+                        span.3 = span.3.max(v);
+                    }
+                }
+                span.1 - span.0 > 1e-9 * du && span.3 - span.2 > 1e-9 * dv
+            })
+        });
         if has_ellipse_wire || has_nurbs_revolved_wire {
             // A curved trim can bend through both parameter directions even on
             // a cylinder/cone with straight rulings. Two axial grid rows leave
