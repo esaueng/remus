@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use remus_math::curves::Ellipse3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
@@ -78,6 +79,8 @@ pub struct FaceIntersection {
     pub face_b: FaceId,
     /// Sampled points along the intersection curve.
     pub curve_points: Vec<Point3>,
+    /// Exact carrier and authored full-turn trim for a recovered oblique section.
+    pub exact_ellipse: Option<(Ellipse3D, (f64, f64))>,
     /// New edges created from this intersection.
     pub new_edges: Vec<EdgeId>,
 }
