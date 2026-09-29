@@ -289,8 +289,18 @@ pub fn point_to_face(
 ///
 /// # Errors
 ///
-/// Returns an error if the face lookup fails.
+/// Returns an error if the face lookup fails or the options are invalid.
 pub fn point_to_face_with_options(
+    topo: &Topology,
+    point: Point3,
+    face_id: FaceId,
+    options: DistanceOptions,
+) -> Result<Option<(f64, Point3)>, CheckError> {
+    options.validate()?;
+    point_to_face_validated(topo, point, face_id, options)
+}
+
+fn point_to_face_validated(
     topo: &Topology,
     point: Point3,
     face_id: FaceId,
