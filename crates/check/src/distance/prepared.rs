@@ -88,7 +88,7 @@ impl Default for DistanceOptions {
 impl DistanceOptions {
     /// Validate the options, returning a typed error for non-finite or
     /// non-positive tolerances.
-    fn validate(self) -> Result<(), CheckError> {
+    pub(super) fn validate(self) -> Result<(), CheckError> {
         if !self.projection_tolerance.is_finite() || self.projection_tolerance <= 0.0 {
             return Err(CheckError::DistanceFailed(format!(
                 "invalid projection tolerance {}: must be finite and positive",
@@ -423,14 +423,13 @@ impl<'a> PreparedDistanceSolid<'a> {
         // the upper-bound witness for branch-and-bound.
         for &idx in &self.mandatory {
             let fid = self.faces[idx];
-            let result =
-                match super::point_to_face_with_options(self.topo, point, fid, self.options) {
-                    Ok(result) => result,
-                    Err(err) => {
-                        scratch.clear();
-                        return Err(err);
-                    }
-                };
+            let result = match super::point_to_face_validated(self.topo, point, fid, self.options) {
+                Ok(result) => result,
+                Err(err) => {
+                    scratch.clear();
+                    return Err(err);
+                }
+            };
             if let Some((dist, closest)) = result {
                 evaluated += 1;
                 if dist < best_dist {
@@ -450,7 +449,7 @@ impl<'a> PreparedDistanceSolid<'a> {
                 skipped += 1;
                 continue;
             }
-            let result = match super::point_to_face_with_options(
+            let result = match super::point_to_face_validated(
                 self.topo,
                 point,
                 candidate.face,
