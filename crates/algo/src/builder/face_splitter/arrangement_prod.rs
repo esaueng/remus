@@ -452,15 +452,26 @@ fn uses_pair_is_degenerate(a: &CurveUse, b: &CurveUse, tol: f64) -> bool {
 /// exactly like the syntactic out-of-domain gates. Only interior contacts
 /// decline: endpoint touches are certified wire joints (G1 chains,
 /// T-junction anchors), which the core owns.
-fn uses_have_degenerate_contact(uses: &[CurveUse], tol: f64) -> bool {
+fn scan_degenerate_contact(
+    uses: &[CurveUse],
+    tol: f64,
+    context: &OperationContext,
+    steps: &mut usize,
+) -> Result<Option<bool>, AlgoError> {
     for i in 0..uses.len() {
         for j in (i + 1)..uses.len() {
+            context
+                .check_cancelled()
+                .map_err(|_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into()))?;
+            if !charge_collection_step(context, steps)? {
+                return Ok(None);
+            }
             if uses_pair_is_degenerate(&uses[i], &uses[j], tol) {
-                return true;
+                return Ok(Some(true));
             }
         }
     }
-    false
+    Ok(Some(false))
 }
 
 /// Split a qualified planar face through the provenance-preserving
@@ -489,7 +500,7 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     };
     let surface = face.surface().clone();
     let reversed = face.is_reversed();
-    let Some(inputs) = collect_planar_uses(topo, face_id, sections, rank, frame, tol, context)?
+    let Some(mut inputs) = collect_planar_uses(topo, face_id, sections, rank, frame, tol, context)?
     else {
         return Ok(None);
     };
@@ -497,11 +508,20 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     if inputs.uses.len() > MAX_ARRANGEMENT_USES {
         return Ok(None);
     }
-    if uses_have_degenerate_contact(&inputs.uses, tol.linear) {
-        log::debug!(
-            "provenance arrangement declined face={face_id:?}: interior tangent/overlap contact"
-        );
-        return Ok(None);
+    match scan_degenerate_contact(
+        &inputs.uses,
+        tol.linear,
+        context,
+        &mut inputs.collection_steps,
+    )? {
+        Some(true) => {
+            log::debug!(
+                "provenance arrangement declined face={face_id:?}: interior tangent/overlap contact"
+            );
+            return Ok(None);
+        }
+        None => return Ok(None),
+        Some(false) => {}
     }
     match run_planar_arrangement(&inputs, context) {
         Err(ArrangementError::WorkBudgetExceeded)
@@ -3748,6 +3768,22 @@ mod tests {
         use_data
     }
 
+    fn has_degenerate(uses: &[CurveUse], tol: f64) -> bool {
+        let mut steps = 0;
+        scan_degenerate_contact(uses, tol, &test_context(), &mut steps).unwrap() == Some(true)
+    }
+
+    #[test]
+    fn degeneracy_scan_respects_remaining_collection_budget() {
+        let a = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [0.0, 10.0], 0);
+        let b = line_use(uv_line(0.0, 1.0, 1.0, 0.0), [0.0, 10.0], 1);
+        let context = test_context().with_budgets(test_context().budgets.with_march_steps(5));
+        let mut steps = 5;
+        let error = scan_degenerate_contact(&[a, b], TOL, &context, &mut steps).unwrap_err();
+        assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+        assert_eq!(steps, 6);
+    }
+
     fn uv_line(ox: f64, oy: f64, dx: f64, dy: f64) -> Line2D {
         Line2D::new(Point2::new(ox, oy), Vec2::new(dx, dy)).unwrap()
     }
@@ -3760,14 +3796,14 @@ mod tests {
     fn tangent_line_and_circle_decline() {
         let line = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [-10.0, 10.0], 0);
         let circle = circle_use(uv_circle(0.0, 5.0, 5.0), [0.0, TAU], 1);
-        assert!(uses_have_degenerate_contact(&[line, circle], TOL));
+        assert!(has_degenerate(&[line, circle], TOL));
     }
 
     #[test]
     fn secant_line_and_circle_proceed() {
         let line = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [-10.0, 10.0], 0);
         let circle = circle_use(uv_circle(0.0, 1.0, 5.0), [0.0, TAU], 1);
-        assert!(!uses_have_degenerate_contact(&[line, circle], TOL));
+        assert!(!has_degenerate(&[line, circle], TOL));
     }
 
     #[test]
@@ -3775,7 +3811,7 @@ mod tests {
         // Tangent contact at the line's endpoint is a certified joint.
         let line = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [0.0, 10.0], 0);
         let circle = circle_use(uv_circle(0.0, 5.0, 5.0), [0.0, TAU], 1);
-        assert!(!uses_have_degenerate_contact(&[line, circle], TOL));
+        assert!(!has_degenerate(&[line, circle], TOL));
     }
 
     #[test]
@@ -3784,34 +3820,34 @@ mod tests {
         // stays out and the core's refinement refusal declines instead.
         let line = line_use(uv_line(-40.0, 0.0, 1.0, 0.0), [0.0, 40.0], 0);
         let circle = circle_use(uv_circle(-20.0, -9.999, 10.0), [0.0, TAU], 1);
-        assert!(!uses_have_degenerate_contact(&[line, circle], TOL));
+        assert!(!has_degenerate(&[line, circle], TOL));
     }
 
     #[test]
     fn coincident_lines_decline_but_parallel_distinct_proceed() {
         let a = || line_use(uv_line(0.0, 0.0, 1.0, 0.0), [0.0, 10.0], 0);
         let b = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [5.0, 15.0], 1);
-        assert!(uses_have_degenerate_contact(&[a(), b], TOL));
+        assert!(has_degenerate(&[a(), b], TOL));
         let c = line_use(uv_line(0.0, 1.0, 1.0, 0.0), [0.0, 10.0], 2);
-        assert!(!uses_have_degenerate_contact(&[a(), c], TOL));
+        assert!(!has_degenerate(&[a(), c], TOL));
         // Collinear endpoint touch is a joint, not an overlap.
         let d = line_use(uv_line(0.0, 0.0, 1.0, 0.0), [10.0, 20.0], 3);
-        assert!(!uses_have_degenerate_contact(&[a(), d], TOL));
+        assert!(!has_degenerate(&[a(), d], TOL));
     }
 
     #[test]
     fn tangent_circles_decline_but_secant_proceed() {
         let a = || circle_use(uv_circle(0.0, 0.0, 5.0), [0.0, TAU], 0);
         let external = circle_use(uv_circle(10.0, 0.0, 5.0), [0.0, TAU], 1);
-        assert!(uses_have_degenerate_contact(&[a(), external], TOL));
+        assert!(has_degenerate(&[a(), external], TOL));
         let secant = circle_use(uv_circle(8.0, 0.0, 5.0), [0.0, TAU], 2);
-        assert!(!uses_have_degenerate_contact(&[a(), secant], TOL));
+        assert!(!has_degenerate(&[a(), secant], TOL));
         // Internal tangency: r=10 about origin, r=5 about (5, 0).
         let big = circle_use(uv_circle(0.0, 0.0, 10.0), [0.0, TAU], 3);
         let small = circle_use(uv_circle(5.0, 0.0, 5.0), [0.0, TAU], 4);
-        assert!(uses_have_degenerate_contact(&[big, small], TOL));
+        assert!(has_degenerate(&[big, small], TOL));
         // Concentric distinct radii never touch.
         let concentric = circle_use(uv_circle(0.0, 0.0, 3.0), [0.0, TAU], 5);
-        assert!(!uses_have_degenerate_contact(&[a(), concentric], TOL));
+        assert!(!has_degenerate(&[a(), concentric], TOL));
     }
 }
