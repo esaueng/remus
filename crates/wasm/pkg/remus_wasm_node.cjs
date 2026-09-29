@@ -1052,6 +1052,30 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Copy a solid through an affine transform and return the exact,
+     * disclosed-approximate, or refused result as typed data.
+     *
+     * Additive twin of
+     * [`copyAndTransformSolid`](Self::copy_and_transform_solid): the same
+     * single-pass copy engine and matrix contract, with the legacy
+     * method's return and errors unchanged. On success `value` is the new
+     * solid handle; quality and `exactOnly` follow
+     * [`transformDetailed`](Self::transform_detailed).
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    copyAndTransformSolidDetailed(solid, matrix, exact_only) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_copyAndTransformSolidDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Deep copy a face, returning a new independent face handle.
      *
      * The copy shares no sub-entities with the original, so translating it
@@ -7083,6 +7107,33 @@ class BrepKernel {
      */
     toBrepJson(solid) {
         const ret = wasm.brepkernel_toBrepJson(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Transform a solid and return the exact, disclosed-approximate, or
+     * refused result as typed data.
+     *
+     * Additive twin of [`transformSolid`](Self::transform_solid_binding):
+     * the same engine, matrix contract (16 row-major values), and
+     * validation order, with the legacy method's void return and thrown
+     * errors unchanged. On success `value` is the (same) solid handle and
+     * `details` carries `quality`, `determinant`, `orientationReversed`,
+     * `similarity`, `carrierChanges`, `edgeChanges`, `fittedFaces`, and
+     * `controlPoints`. With `exactOnly: true` a fitted-sphere need is
+     * rolled back and refused (`quality_refused` /
+     * `exact_only_unattainable`), naming the refused faces.
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    transformDetailed(solid, matrix, exact_only) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_transformDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
