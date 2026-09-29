@@ -11,12 +11,21 @@ semantics or JS result-shape changes.
   between `6c277fc7` and the candidate branch base `c8075051` (verified empty
   `git diff` on `crates/sketch`), so the baseline native cells are
   sketch-source-pinned to the branch base.
-- Candidate source: `20491ecc27497617e6c76b2dce827bb2122e3eb9` (this PR's code
-  commit; bench/test/docs/package commits stack on top).
+- Candidate code commit: `20491ecc27497617e6c76b2dce827bb2122e3eb9`
+  (bench/test/docs/package commits stack on top). All native measurements ran
+  on this commit (plus bench/test-only additions that do not enter the worker
+  binary — see §4). After measurement the branch rebased onto origin/main
+  `bda524a9` (offset #849 + package #841, neither touching `crates/sketch`;
+  verified empty `git diff` on `crates/sketch` between the measured and the
+  rebased code commits), so the numbers apply to the rebased head unchanged.
 - Baseline package: committed `remus-wasm` `2026.1.6` (pre-S02 solver).
-- Candidate package: `remus-wasm` `2026.1.7`, fresh `cargo xtask wasm-build`
-  from the candidate source (validated: dual-target merge + wasm-opt, smoke
-  plus installed-tarball consumer checks pass).
+- Candidate package: `remus-wasm` `2026.1.8`, fresh `cargo xtask wasm-build`
+  from the rebased head (validated: dual-target merge + wasm-opt, smoke
+  plus installed-tarball consumer checks pass). The first build (pre-rebase)
+  produced `2026.1.7`, which collided with main's own #841 refresh of the
+  same version from different bytes; the rebuild from the rebased head
+  advances to `2026.1.8` per the shared-version policy, and the packaged
+  fingerprint below is re-verified on `2026.1.8`.
 - Toolchain (both builds): rustc/cargo 1.96.0 (`ac68faa20 2026-05-25`), node
   v24.14.0, Python 3.12.3, Linux x86_64, AMD Ryzen 9 5900XT (32 logical).
   Native worker: profiling release (`opt-level 3`, debuginfo, no LTO).
@@ -173,9 +182,9 @@ design — the pairs beside it cost microseconds.
 The 10000-parameter rows the S01 runner refuses (800 MB dense Jacobian) solve
 in ~41 ms with linear block scaling (2.5x params → ~2.7x time).
 
-Packaged WASM, candidate package `2026.1.7` built from the candidate source,
+Packaged WASM, candidate package `2026.1.8` built from the rebased head,
 existing `gcs*` bindings (no binding changes in this PR), `wasm.cjs` cells
-(all validation-passed, 5 retained samples each):
+(all validation-passed):
 
 | Case / mode | Fresh pkg time | Fresh pkg iters | Native cand iters |
 | --- | ---: | ---: | ---: |
@@ -244,5 +253,5 @@ capture (`(n + m) * 8` bytes plus row layout — same shape as S06's).
   `20491ecc` + bench/test-only additions, native binary `20f2bb30…`,
   committed package `2026.1.6` for the old-solver WASM cells).
 - The S06 evidence files are untouched historical record.
-- Fresh package `2026.1.7` cell outputs: `wasm.cjs` JSON samples quoted in §4
+- Fresh package `2026.1.8` cell outputs: `wasm.cjs` JSON samples quoted in §4
   (validation `passed`, iterations fingerprint 9/5/100).
