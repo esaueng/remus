@@ -118,6 +118,12 @@ class DirectFleetTests(unittest.TestCase):
                 with self.subTest(event=github, expression=expression):
                     self.assertIsInstance(evaluate(expression, github, self.variables), str)
 
+    def test_hosted_fallback_names_the_pinned_image(self):
+        # Mirrors test-ubuntu-ci-routing.py: never the moving ubuntu-latest label.
+        for expression in EXPRESSIONS:
+            for variables in ({}, {"CI_FLEET_ENABLED": "false"}):
+                self.assertEqual(evaluate(expression, self.github, variables), "ubuntu-24.04")
+
     def test_protected_main_and_opt_in_fail_closed(self):
         self.variables["CI_FLEET_LIGHT_POOL_ENABLED"] = "true"
         for event in ("push", "workflow_dispatch"):

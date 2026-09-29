@@ -47,7 +47,7 @@ jobs:
   # main's Rust source appears current.
   build-committed-package:
     name: Build committed WASM package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Package-only PR merges are excluded by the path filter above.
     # A manual run is restricted to main; both jobs check out its exact event SHA.
     if: >-
@@ -110,7 +110,7 @@ jobs:
   sync-committed-package:
     name: Propose refreshed WASM package
     needs: [build-committed-package]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
