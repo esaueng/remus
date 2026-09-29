@@ -9,6 +9,7 @@ use proptest::prelude::*;
 use remus_math::context::{CancellationToken, WorkBudgets};
 use remus_math::curves::Circle3D;
 use remus_math::curves2d::{Circle2D, Line2D};
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
 use std::f64::consts::{PI, TAU};
 
@@ -209,6 +210,87 @@ fn check_probes(a: &Arrangement, uses: &[CurveUse], oracle: impl Fn(Point2) -> b
             assert_eq!(count == 1, oracle(point), "material at {point:?}");
         }
     }
+}
+
+#[test]
+fn recomputed_crossing_near_certified_endpoint_adopts_it() {
+    // A section ending one ulp past a crossing: the pair solve lands
+    // within float roundoff of (but not bitwise on) the certified end
+    // parameter. The endpoint certificate outranks recomputation, so the
+    // two cuts merge instead of refusing as an unresolvable near-miss.
+    // Twins without an endpoint certificate still refuse.
+    let mut uses = rectangle(0, 0.0, 0.0, 4.0, 4.0);
+    // The vertical spans the square edge to edge; the horizontal ends one
+    // ulp past it, so its end parameter needs certificate adoption.
+    uses.push(line(10, p(2.0, 0.0), p(2.0, 4.0), [10, 11], None));
+    let past = 2.0 + 4.5e-16;
+    uses.push(line(20, p(0.0, 2.0), p(past, 2.0), [20, 21], None));
+    let a = build(&uses);
+    assert_eq!(material_count(&a), 3);
+    near(area(&a), 16.0);
+    invariants(&a, &uses);
+}
+
+#[test]
+fn shared_endpoint_does_not_absorb_a_second_nearby_circle_crossing() {
+    let theta: f64 = 5.0e-5;
+    let endpoint = p(1.0, 0.0);
+    let second = p(theta.cos(), theta.sin());
+    let beyond = endpoint + (second - endpoint) * 2.0;
+    let chord = line(10, endpoint, beyond, [42, 99], None);
+    let mut ring = circle(20, p(0.0, 0.0), 1.0, None);
+    ring.endpoints = [42, 42];
+    let ctx = context().with_tolerance(Tolerance {
+        linear: 1.0e-4,
+        ..Tolerance::new()
+    });
+
+    let hits = geometry::intersections(&chord, &ring, &mut Work::new(&ctx)).unwrap();
+    assert_eq!(hits.len(), 2, "the second crossing is a distinct cut");
+    assert!(hits[0].0.abs() < 1.0e-12);
+    assert!(
+        (hits[1].0 - (second - endpoint).length()).abs() < 1.0e-8,
+        "{hits:?}"
+    );
+}
+
+#[test]
+fn single_nearby_crossing_adopts_projected_shared_endpoint() {
+    let line_start = p(1.0 - 5.0e-5, 0.0);
+    let segment = line(10, line_start, p(2.0, 0.0), [42, 99], None);
+    let mut ring = circle(20, p(0.0, 0.0), 1.0, None);
+    ring.endpoints = [42, 42];
+    let ctx = context().with_tolerance(Tolerance {
+        linear: 1.0e-4,
+        ..Tolerance::new()
+    });
+
+    let hits = geometry::intersections(&segment, &ring, &mut Work::new(&ctx)).unwrap();
+    assert_eq!(hits, vec![(segment.range[0], ring.range[0])]);
+}
+
+#[test]
+fn out_of_range_certified_endpoint_does_not_hide_second_crossing() {
+    let start_angle: f64 = 8.0e-4;
+    let second_angle = start_angle + 5.0e-5;
+    let mut ring = circle(20, p(0.0, 0.0), 1.0, None);
+    ring.range = [start_angle, 0.1];
+    ring.source_range = ring.range;
+    ring.endpoints_3d = [xyz(ring.point(start_angle)), xyz(ring.point(0.1))];
+    ring.endpoints = [42, 99];
+    let endpoint = ring.point(start_angle);
+    let second = ring.point(second_angle);
+    let beyond = endpoint + (second - endpoint) * 2.0;
+    let chord = line(10, endpoint, beyond, [42, 100], None);
+    let ctx = context().with_tolerance(Tolerance {
+        linear: 1.0e-4,
+        ..Tolerance::new()
+    });
+
+    let hits = geometry::intersections(&chord, &ring, &mut Work::new(&ctx)).unwrap();
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(hits[0].0.abs() < 1.0e-10);
+    assert!((hits[1].0 - (second - endpoint).length()).abs() < 1.0e-8);
 }
 
 #[test]
