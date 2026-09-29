@@ -1304,6 +1304,9 @@ impl<'a> Collector<'a> {
                 });
             }
         }
+        if !crossings.is_empty() && *pair_steps >= context.budgets.march_steps {
+            return budget_decline(context);
+        }
         // Deterministic greedy clustering within tolerance.
         crossings.sort_by(|a, b| {
             a.point
@@ -1314,8 +1317,15 @@ impl<'a> Collector<'a> {
         let mut clusters: Vec<(Point2, Vec<(usize, f64)>)> = Vec::new();
         for crossing in &crossings {
             context.check_cancelled().map_err(cancelled)?;
+            if !charge_collection_step(context, pair_steps)? {
+                return Ok(false);
+            }
             let mut placed = false;
             for (center, members) in &mut clusters {
+                context.check_cancelled().map_err(cancelled)?;
+                if !charge_collection_step(context, pair_steps)? {
+                    return Ok(false);
+                }
                 if (*center - crossing.point).length() <= self.tol {
                     members.push((crossing.first, crossing.first_param));
                     members.push((crossing.second, crossing.second_param));
@@ -1338,6 +1348,9 @@ impl<'a> Collector<'a> {
         let mut cuts: BTreeMap<usize, Vec<(f64, u64)>> = BTreeMap::new();
         for (center, members) in &clusters {
             context.check_cancelled().map_err(cancelled)?;
+            if !charge_collection_step(context, pair_steps)? {
+                return Ok(false);
+            }
             let mut distinct: Vec<usize> = members.iter().map(|(u, _)| *u).collect();
             distinct.sort_unstable();
             distinct.dedup();
@@ -1348,6 +1361,10 @@ impl<'a> Collector<'a> {
             // when one exists; otherwise mint a fresh one.
             let mut cluster_cert = None;
             for (position, cert) in &self.cert_positions {
+                context.check_cancelled().map_err(cancelled)?;
+                if !charge_collection_step(context, pair_steps)? {
+                    return Ok(false);
+                }
                 if (self.frame.project(*position) - *center).length() <= self.tol {
                     cluster_cert = Some(*cert);
                     break;
@@ -1357,6 +1374,10 @@ impl<'a> Collector<'a> {
             // Degenerate near-coincidence (an end at the cluster without
             // its certificate) defers rather than misbuilds.
             for use_data in &self.uses {
+                context.check_cancelled().map_err(cancelled)?;
+                if !charge_collection_step(context, pair_steps)? {
+                    return Ok(false);
+                }
                 for end in 0..2 {
                     if use_data.endpoints[end] != cluster_cert
                         && (eval_pcurve(use_data, use_data.range[end]) - *center).length()
@@ -3844,6 +3865,24 @@ mod tests {
         let context = test_context().with_budgets(test_context().budgets.with_march_steps(5));
         let mut steps = 5;
         let error = scan_degenerate_contact(&[a, b], TOL, &context, &mut steps).unwrap_err();
+        assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+        assert_eq!(steps, 6);
+    }
+
+    #[test]
+    fn line_concurrency_cluster_scan_respects_remaining_budget() {
+        let frame = plane_frame();
+        let mut collector = Collector::new(&frame, TOL);
+        collector.uses = vec![
+            line_use(uv_line(0.0, 0.0, 1.0, 0.0), [0.0, 3.0], 0),
+            line_use(uv_line(1.0, -1.0, 0.0, 1.0), [0.0, 3.0], 1),
+            line_use(uv_line(0.0, 1.0, 1.0, -0.5), [0.0, 3.0], 2),
+        ];
+        let context = test_context().with_budgets(test_context().budgets.with_march_steps(5));
+        let mut steps = 0;
+        let error = collector
+            .resolve_line_concurrency(&context, &mut steps)
+            .unwrap_err();
         assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
         assert_eq!(steps, 6);
     }
