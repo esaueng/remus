@@ -40,6 +40,7 @@ pub mod boolean;
 pub mod mesh_boolean;
 
 pub(crate) mod affine_blend_caps;
+pub(crate) mod blend_material;
 pub mod blend_ops;
 pub mod chamfer;
 pub mod face_face_blend;
