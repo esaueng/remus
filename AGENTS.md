@@ -483,6 +483,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
+| Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
 | Tessellation & wireframe | `bindings/tessellate.rs` |

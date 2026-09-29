@@ -912,13 +912,24 @@ fn exact_only_refuses_projection_drift_during_execution() {
         * Mat4::scale(2.0, 0.5, 1.5);
     let mut topo = Topology::new();
     let solid = make_capped_sphere(&mut topo, 1.0, 0.0);
+    let source_face = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Sphere(_)))
+        .unwrap();
     let before: Vec<_> = topo
         .vertices()
         .iter()
         .map(|(_, vertex)| vertex.point())
         .collect();
-    let result =
-        transform::transform_solid_detailed(&mut topo, solid, &matrix, TransformPolicy::ExactOnly);
+    let mut refused_face = None;
+    let result = transform::transform_solid_detailed_with_refusal(
+        &mut topo,
+        solid,
+        &matrix,
+        TransformPolicy::ExactOnly,
+        &mut refused_face,
+    );
     assert!(
         matches!(
             result,
@@ -926,6 +937,7 @@ fn exact_only_refuses_projection_drift_during_execution() {
         ),
         "execution must refuse a post-preflight fit, got {result:?}"
     );
+    assert_eq!(refused_face, Some(source_face));
     let after: Vec<_> = topo
         .vertices()
         .iter()
@@ -935,18 +947,31 @@ fn exact_only_refuses_projection_drift_during_execution() {
 
     let mut copy_topo = Topology::new();
     let source = make_capped_sphere(&mut copy_topo, 1.0, 0.0);
+    let copy_source_face = remus_topology::explorer::solid_faces(&copy_topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&fid| {
+            matches!(
+                copy_topo.face(fid).unwrap().surface(),
+                FaceSurface::Sphere(_)
+            )
+        })
+        .unwrap();
     let before: Vec<_> = copy_topo
         .vertices()
         .iter()
         .map(|(_, vertex)| vertex.point())
         .collect();
     let face_count = copy_topo.num_faces();
-    let copy_result = remus_operations::copy::copy_and_transform_solid_detailed(
+    let mut copy_refused_face = None;
+    let copy_result = remus_operations::copy::copy_and_transform_solid_detailed_with_refusal(
         &mut copy_topo,
         source,
         &matrix,
         TransformPolicy::ExactOnly,
+        &mut copy_refused_face,
     );
+    assert_eq!(copy_refused_face, Some(copy_source_face));
     assert!(
         matches!(
             copy_result,

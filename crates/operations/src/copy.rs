@@ -644,6 +644,23 @@ pub fn copy_and_transform_solid_detailed(
     matrix: &remus_math::mat::Mat4,
     policy: TransformPolicy,
 ) -> Result<(SolidId, TransformReport), crate::OperationsError> {
+    copy_and_transform_solid_detailed_with_refusal(topo, solid_id, matrix, policy, &mut None)
+}
+
+/// Like [`copy_and_transform_solid_detailed`], retaining the source face on
+/// an execution-time exact-only refusal after the copied topology rolls back.
+///
+/// # Errors
+///
+/// Returns the same errors as [`copy_and_transform_solid_detailed`].
+pub fn copy_and_transform_solid_detailed_with_refusal(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    matrix: &remus_math::mat::Mat4,
+    policy: TransformPolicy,
+    refused_face: &mut Option<FaceId>,
+) -> Result<(SolidId, TransformReport), crate::OperationsError> {
+    *refused_face = None;
     crate::transform::reject_degenerate_transform(matrix)?;
     let _ = matrix.inverse()?.transpose();
     if matches!(policy, TransformPolicy::ExactOnly) {
@@ -657,9 +674,11 @@ pub fn copy_and_transform_solid_detailed(
         reversing,
         matches!(policy, TransformPolicy::AllowApproximate),
     );
-    let copied = remus_topology::transaction::run_transacted(topo, |live| {
+    let result = remus_topology::transaction::run_transacted(topo, |live| {
         copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
-    })?;
+    });
+    *refused_face = recorder.refused_face();
+    let copied = result?;
     Ok((copied, recorder.into_report(determinant, similarity)))
 }
 
@@ -873,6 +892,7 @@ fn copy_and_transform_solid_impl(
             // positions above, which is exactly the state
             // `transform_face_surface` expects (its non-uniform branches map
             // boundary probes back through the inverse).
+            recorder.set_refusal_origin(topo.face_id_from_index(fsnap.old_index));
             crate::transform::transform_face_surface_recorded(
                 topo,
                 new_fid,
@@ -880,6 +900,7 @@ fn copy_and_transform_solid_impl(
                 &normal_matrix,
                 recorder,
             )?;
+            recorder.set_refusal_origin(None);
             if matches!(topo.face(new_fid)?.surface(), FaceSurface::Nurbs(_))
                 && (!matches!(&fsnap.surface, FaceSurface::Nurbs(_)) || chart_reversing)
             {

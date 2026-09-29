@@ -350,6 +350,10 @@ pub struct TransformRecorder {
     edge_changes: Vec<EdgeCarrierChange>,
     /// Sampled-fit evidence.
     fitted: Vec<FittedFaceEvidence>,
+    /// Source face that caused an execution-time exact-only refusal.
+    refused_face: Option<FaceId>,
+    /// Source face corresponding to the currently transformed copied face.
+    refusal_origin: Option<FaceId>,
     /// Total NURBS control points minted.
     control_points_total: usize,
 }
@@ -364,6 +368,8 @@ impl TransformRecorder {
             face_changes: Vec::new(),
             edge_changes: Vec::new(),
             fitted: Vec::new(),
+            refused_face: None,
+            refusal_origin: None,
             control_points_total: 0,
         }
     }
@@ -396,6 +402,14 @@ impl TransformRecorder {
 
     pub(crate) fn record_fit(&mut self, evidence: FittedFaceEvidence) {
         self.fitted.push(evidence);
+    }
+
+    pub(crate) fn set_refusal_origin(&mut self, origin: Option<FaceId>) {
+        self.refusal_origin = origin;
+    }
+
+    pub(crate) fn refused_face(&self) -> Option<FaceId> {
+        self.refused_face
     }
 
     /// Assemble the report, sorting change lists by entity index so repeated
@@ -867,6 +881,23 @@ pub fn transform_solid_detailed(
     matrix: &Mat4,
     policy: TransformPolicy,
 ) -> Result<TransformReport, crate::OperationsError> {
+    transform_solid_detailed_with_refusal(topo, solid, matrix, policy, &mut None)
+}
+
+/// Like [`transform_solid_detailed`], retaining the source face when execution
+/// discovers an exact-only refusal after preflight. The output survives rollback.
+///
+/// # Errors
+///
+/// Returns the same errors as [`transform_solid_detailed`].
+pub fn transform_solid_detailed_with_refusal(
+    topo: &mut Topology,
+    solid: SolidId,
+    matrix: &Mat4,
+    policy: TransformPolicy,
+    refused_face: &mut Option<FaceId>,
+) -> Result<TransformReport, crate::OperationsError> {
+    *refused_face = None;
     reject_degenerate_transform(matrix)?;
     // Validate every part of the matrix before changing live topology.
     let _ = matrix.inverse()?.transpose();
@@ -881,9 +912,11 @@ pub fn transform_solid_detailed(
         reversing,
         matches!(policy, TransformPolicy::AllowApproximate),
     );
-    run_transacted(topo, |live| {
+    let result = run_transacted(topo, |live| {
         execute_solid_transform(live, solid, matrix, &mut recorder)
-    })?;
+    });
+    *refused_face = recorder.refused_face();
+    result?;
     Ok(recorder.into_report(determinant, similarity))
 }
 
@@ -1309,6 +1342,7 @@ pub(crate) fn transform_face_surface_recorded(
                 match classify_sphere_patch(topo, fid, &sph_clone, &inverse)? {
                     SpherePatch::General => {
                         if !recorder.allow_fit {
+                            recorder.refused_face = Some(recorder.refusal_origin.unwrap_or(fid));
                             return Err(crate::OperationsError::ExactOnlyUnattainable);
                         }
                         // Historical fit range, unchanged: the face's

@@ -215,6 +215,7 @@ impl BrepKernel {
         } else {
             TransformPolicy::AllowApproximate
         };
+        let mut execution_refusal = None;
         let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
             let mat = parse_transform_matrix(matrix)?;
             let solid_id = self
@@ -222,11 +223,12 @@ impl BrepKernel {
                 .map_err(StructuredWasmError::from)?;
             // The native twin owns rollback (transacted); no additional
             // full-session snapshot is taken here.
-            let report = remus_operations::transform::transform_solid_detailed(
+            let report = remus_operations::transform::transform_solid_detailed_with_refusal(
                 self.topo_mut(),
                 solid_id,
                 &mat,
                 policy,
+                &mut execution_refusal,
             )
             .map_err(StructuredWasmError::from)?;
             Ok((solid_id_to_u32(solid_id), report_details(&report)))
@@ -241,6 +243,7 @@ impl BrepKernel {
                 error.with_direct_operation("transform"),
                 matrix,
                 solid,
+                execution_refusal,
             )),
         }
     }
@@ -256,18 +259,21 @@ impl BrepKernel {
         } else {
             TransformPolicy::AllowApproximate
         };
+        let mut execution_refusal = None;
         let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
             let mat = parse_transform_matrix(matrix)?;
             let solid_id = self
                 .resolve_solid(solid)
                 .map_err(StructuredWasmError::from)?;
-            let (copied, report) = remus_operations::copy::copy_and_transform_solid_detailed(
-                self.topo_mut(),
-                solid_id,
-                &mat,
-                policy,
-            )
-            .map_err(StructuredWasmError::from)?;
+            let (copied, report) =
+                remus_operations::copy::copy_and_transform_solid_detailed_with_refusal(
+                    self.topo_mut(),
+                    solid_id,
+                    &mat,
+                    policy,
+                    &mut execution_refusal,
+                )
+                .map_err(StructuredWasmError::from)?;
             Ok((solid_id_to_u32(copied), report_details(&report)))
         })();
 
@@ -280,6 +286,7 @@ impl BrepKernel {
                 error.with_direct_operation("copyAndTransformSolid"),
                 matrix,
                 solid,
+                execution_refusal,
             )),
         }
     }
@@ -287,17 +294,25 @@ impl BrepKernel {
 
 /// Name the refused faces on an exact-only refusal.
 ///
-/// The native error carries no face list, so re-run the read-only
-/// preflight to name the fitted faces for the envelope. Anything the
-/// preflight itself refuses keeps the original error unchanged.
+/// Execution records the source face before rollback. A preflight refusal
+/// reruns the read-only plan to name the faces without mutating topology.
 fn enrich_exact_only_refusal(
     kernel: &BrepKernel,
     error: StructuredWasmError,
     matrix: &[f64],
     solid: u32,
+    execution_refusal: Option<remus_topology::face::FaceId>,
 ) -> StructuredWasmError {
     if error.kernel_code() != Some("exact_only_unattainable") {
         return error;
+    }
+    if let Some(face) = execution_refusal {
+        return error.with_detail(
+            "fittedFaces",
+            Value::Array(vec![
+                serde_json::json!({"face": face_id_to_u32(face), "from": "sphere"}),
+            ]),
+        );
     }
     let Ok(mat) = parse_transform_matrix(matrix) else {
         return error;
