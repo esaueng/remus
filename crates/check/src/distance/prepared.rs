@@ -409,9 +409,15 @@ impl<'a> PreparedDistanceSolid<'a> {
         // the upper-bound witness for branch-and-bound.
         for &idx in &self.mandatory {
             let fid = self.faces[idx];
-            if let Some((dist, closest)) =
-                super::point_to_face_with_options(self.topo, point, fid, self.options)?
-            {
+            let result =
+                match super::point_to_face_with_options(self.topo, point, fid, self.options) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        scratch.clear();
+                        return Err(err);
+                    }
+                };
+            if let Some((dist, closest)) = result {
                 evaluated += 1;
                 if dist < best_dist {
                     best_dist = dist;
@@ -424,14 +430,25 @@ impl<'a> PreparedDistanceSolid<'a> {
         }
 
         let mut skipped = 0usize;
-        for candidate in &scratch.order {
+        for idx in 0..scratch.order.len() {
+            let candidate = scratch.order[idx];
             if prune && candidate.lower_sq > best_dist * best_dist {
                 skipped += 1;
                 continue;
             }
-            if let Some((dist, closest)) =
-                super::point_to_face_with_options(self.topo, point, candidate.face, self.options)?
-            {
+            let result = match super::point_to_face_with_options(
+                self.topo,
+                point,
+                candidate.face,
+                self.options,
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    scratch.clear();
+                    return Err(err);
+                }
+            };
+            if let Some((dist, closest)) = result {
                 evaluated += 1;
                 if dist < best_dist {
                     best_dist = dist;
@@ -445,9 +462,6 @@ impl<'a> PreparedDistanceSolid<'a> {
 
         // Leave the scratch holding the ordered candidates for inspection if
         // desired; the next query clears it first, so reuse is always clean.
-        // On error paths above (`?`), the scratch retains whatever prefix was
-        // built — the next query's leading `clear()` resets it, satisfying the
-        // clean-after-error requirement without additional work here.
 
         Ok((
             super::DistanceResult {

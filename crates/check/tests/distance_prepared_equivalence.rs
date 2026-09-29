@@ -612,3 +612,68 @@ fn wavy_patch(
     let shell = topo.add_shell(Shell::new(vec![fid]).unwrap());
     (topo.add_solid(Solid::new(shell, vec![])), surface)
 }
+
+#[test]
+fn query_error_clears_populated_scratch() {
+    let mut topo = Topology::new();
+    let box_solid = make_box(
+        &mut topo,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 1.0),
+    );
+    let box_shell = topo.solid(box_solid).unwrap().outer_shell();
+    let mut faces = topo.shell(box_shell).unwrap().faces().to_vec();
+
+    let seam = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), TOL));
+    let corner_b = topo.add_vertex(Vertex::new(Point3::new(3.0, 0.0, 0.0), TOL));
+    let corner_c = topo.add_vertex(Vertex::new(Point3::new(2.0, 1.0, 0.0), TOL));
+    let rim = Circle3D::new(Point3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let mut unknown = Edge::new(seam, corner_b, EdgeCurve::Circle(rim));
+    unknown.set_trim(Some((0.0, std::f64::consts::TAU + 0.5)));
+    let unknown_id = topo.add_edge(unknown);
+
+    let mut other_topo = Topology::new();
+    let missing_vertex = (0..20)
+        .map(|_| other_topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), TOL)))
+        .last()
+        .unwrap();
+    let broken_id = topo.add_edge(Edge::new(corner_b, missing_vertex, EdgeCurve::Line));
+    let closing_id = topo.add_edge(Edge::new(corner_c, seam, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(unknown_id, true),
+                OrientedEdge::new(broken_id, true),
+                OrientedEdge::new(closing_id, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    faces.push(topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    )));
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+    assert!(prepared.prunable_count() > 0);
+    assert_eq!(prepared.mandatory_count(), 1);
+
+    let mut scratch = DistanceScratch::new();
+    let point = Point3::new(20.0, 20.0, 3.0);
+    assert!(prepared.query(point, &mut scratch).is_err());
+    assert!(scratch.is_empty());
+    assert!(
+        prepared
+            .query_exhaustive_with_stats(point, &mut scratch)
+            .is_err()
+    );
+    assert!(scratch.is_empty());
+    assert!(prepared.batch(&[point], &mut scratch).is_err());
+    assert!(scratch.is_empty());
+}
