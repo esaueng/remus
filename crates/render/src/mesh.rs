@@ -109,51 +109,63 @@ impl RenderMesh {
             )));
         }
 
+        // Per-face indexed vertices (PERF-R03): vertices are shared within a
+        // face when position and normal match exactly, but never across faces.
         // A vertex shared between two faces would need two different face ids,
-        // so we cannot reuse the welded index buffer directly. Expand to
-        // non-indexed-per-face: one fresh vertex per triangle corner, tagged
-        // with that triangle's owning face. (Edges still come from topology.)
-        let mut vertices: Vec<Vertex> = Vec::with_capacity(tri_count * 3);
+        // so cross-face welding is forbidden; within a face the id is uniform,
+        // so sharing is safe. Welding only on exact f32 position + normal bits
+        // preserves sharp normals (different normals never weld) and seam
+        // identity (seams are face boundaries, never welded). Edges still come
+        // from topology.
+        let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::with_capacity(tri_count * 3);
 
-        // Walk faces in lockstep with the index buffer rather than searching
-        // per triangle.
-        let mut tri_face_ids = vec![0_u32; tri_count];
         for (i, face) in faces.iter().enumerate() {
-            let start = face_offsets[i] as usize / 3;
-            let end = face_offsets[i + 1] as usize / 3;
+            let start = (face_offsets[i] as usize / 3).min(tri_count);
+            let end = (face_offsets[i + 1] as usize / 3).min(tri_count);
             #[allow(clippy::cast_possible_truncation)]
-            let id = face.index() as u32 + 1;
-            for slot in tri_face_ids
-                .iter_mut()
-                .take(end.min(tri_count))
-                .skip(start.min(tri_count))
-            {
-                *slot = id;
-            }
-        }
-
-        for t in 0..tri_count {
-            let face_id = tri_face_ids[t];
-            for k in 0..3 {
-                let vi = mesh.indices[t * 3 + k] as usize;
-                // Out-of-range indices mean a corrupt tessellation; fail rather
-                // than substituting placeholder geometry / picking ids.
-                let (Some(&position), Some(&normal)) = (positions_rtc.get(vi), normals.get(vi))
-                else {
-                    return Err(RenderError::MeshData(format!(
-                        "triangle index {vi} is out of range ({} vertices)",
-                        positions_rtc.len()
-                    )));
-                };
-                #[allow(clippy::cast_possible_truncation)]
-                let idx = vertices.len() as u32;
-                vertices.push(Vertex {
-                    position,
-                    normal,
-                    face_id,
-                });
-                indices.push(idx);
+            let face_id = face.index() as u32 + 1;
+            // Local dedup map for this face only: exact RTC position + normal.
+            let mut local: std::collections::HashMap<([u32; 3], [u32; 3]), u32> =
+                std::collections::HashMap::new();
+            for t in start..end {
+                for k in 0..3 {
+                    let vi = mesh.indices[t * 3 + k] as usize;
+                    // Out-of-range indices mean a corrupt tessellation; fail
+                    // rather than substituting placeholder geometry / ids.
+                    let (Some(&position), Some(&normal)) = (positions_rtc.get(vi), normals.get(vi))
+                    else {
+                        return Err(RenderError::MeshData(format!(
+                            "triangle index {vi} is out of range ({} vertices)",
+                            positions_rtc.len()
+                        )));
+                    };
+                    let key = (
+                        [
+                            position[0].to_bits(),
+                            position[1].to_bits(),
+                            position[2].to_bits(),
+                        ],
+                        [
+                            normal[0].to_bits(),
+                            normal[1].to_bits(),
+                            normal[2].to_bits(),
+                        ],
+                    );
+                    if let Some(&idx) = local.get(&key) {
+                        indices.push(idx);
+                    } else {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let idx = vertices.len() as u32;
+                        vertices.push(Vertex {
+                            position,
+                            normal,
+                            face_id,
+                        });
+                        local.insert(key, idx);
+                        indices.push(idx);
+                    }
+                }
             }
         }
 

@@ -344,6 +344,7 @@ Quick reference — find the right file for any task:
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
 | Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
+| Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
 | Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
 | Deterministic work counters for the point-classification hot path (`perf-counters` feature) | `perf.rs` |
@@ -464,9 +465,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 |------|---------|
 | Public API, `RenderOpts`, `RenderOutput` | `lib.rs` |
 | Camera and view/projection matrices | `camera.rs` |
-| Solid → GPU vertex/index/edge buffers | `mesh.rs` |
+| Solid → GPU vertex/index/edge buffers (per-face indexed) | `mesh.rs` |
 | wgpu device setup, render passes, readback | `pipeline.rs` |
-| Reusable offscreen rendering session | `session.rs` |
+| Reusable offscreen rendering session (sync + async submit/poll/wait) | `session.rs` |
+| Asynchronous selective readback (tickets, selection, bounded pool) | `async_frame.rs` |
 | Explicit prepared-render assets for camera-only frames | `prepared.rs` |
 | GPU compute mesher for analytic quadrics | `compute_mesh.rs` |
 | Interactive viewer (feature = `window`) | `viewer.rs` |
