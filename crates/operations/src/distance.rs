@@ -96,6 +96,64 @@ pub fn point_to_solid_distance(
     })
 }
 
+/// Compute the minimum distance from many points to a solid, amortizing the
+/// one face-bound/BVH build over the whole batch.
+///
+/// Builds face bounds and the BVH once, then reuses caller-owned candidate
+/// buffers across points (no per-point candidate allocation after warmup).
+/// Output order is deterministic input order. This is the operations-layer
+/// repeated-query consumer for the Q06 scratch-reuse pattern; the single-query
+/// [`point_to_solid_distance`] path is unchanged.
+///
+/// # Errors
+///
+/// Returns an error if the solid, face bounds, or boundary references are
+/// invalid. Empty input validates all face boundary references before returning.
+/// All-or-nothing on per-point failures, matching
+/// a loop over [`point_to_solid_distance`].
+pub fn point_to_solid_batch(
+    topo: &Topology,
+    points: &[Point3],
+    solid: SolidId,
+) -> Result<Vec<DistanceResult>, crate::OperationsError> {
+    let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
+    let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
+    if points.is_empty() {
+        // Bounds only inspect outer wires; holes are boundary too.
+        let _ = collect_solid_points(topo, solid)?;
+        return Ok(Vec::new());
+    }
+    let bvh = Bvh::build(&face_aabbs);
+    let tol = Tolerance::new();
+    let mut candidates: Vec<usize> = Vec::new();
+    let mut scored: Vec<(usize, f64)> = Vec::new();
+    let mut out = Vec::with_capacity(points.len());
+    for &point in points {
+        bvh_distance_candidates_into(&bvh, &face_aabbs, point, &mut candidates, &mut scored);
+        let mut best_dist = f64::INFINITY;
+        let mut best_point = point;
+        for &idx in &candidates {
+            let fid = face_ids[idx];
+            let aabb_dist_sq = face_aabbs[idx].1.distance_squared_to_point(point);
+            if prunable[idx] && aabb_dist_sq > best_dist * best_dist {
+                continue;
+            }
+            if let Some((dist, closest)) = point_to_face_distance(topo, point, fid, tol)?
+                && dist < best_dist
+            {
+                best_dist = dist;
+                best_point = closest;
+            }
+        }
+        out.push(DistanceResult {
+            distance: best_dist,
+            point_a: point,
+            point_b: best_point,
+        });
+    }
+    Ok(out)
+}
+
 /// Compute the minimum distance between two solids.
 ///
 /// Checks vertices of each solid against faces of the other, with
@@ -139,9 +197,14 @@ pub fn solid_to_solid_distance(
     let (aabbs_b, prunable_b) = build_face_aabbs(topo, &faces_b)?;
     let bvh_b = Bvh::build(&aabbs_b);
 
+    // Reused across vertices: one candidate/score buffer per side (Q06 scratch
+    // reuse — same order and pruning as the allocating path, no per-vertex
+    // candidate allocation after warmup).
+    let mut candidates: Vec<usize> = Vec::new();
+    let mut scored: Vec<(usize, f64)> = Vec::new();
     for &pa in &verts_a {
-        let candidates = bvh_distance_candidates(&bvh_b, &aabbs_b, pa);
-        for idx in candidates {
+        bvh_distance_candidates_into(&bvh_b, &aabbs_b, pa, &mut candidates, &mut scored);
+        for &idx in &candidates {
             let aabb_dist_sq = aabbs_b[idx].1.distance_squared_to_point(pa);
             if prunable_b[idx] && aabb_dist_sq > best_dist * best_dist {
                 continue;
@@ -165,9 +228,11 @@ pub fn solid_to_solid_distance(
     let (aabbs_a, prunable_a) = build_face_aabbs(topo, &faces_a)?;
     let bvh_a = Bvh::build(&aabbs_a);
 
+    candidates.clear();
+    scored.clear();
     for &pb in &verts_b {
-        let candidates = bvh_distance_candidates(&bvh_a, &aabbs_a, pb);
-        for idx in candidates {
+        bvh_distance_candidates_into(&bvh_a, &aabbs_a, pb, &mut candidates, &mut scored);
+        for &idx in &candidates {
             let aabb_dist_sq = aabbs_a[idx].1.distance_squared_to_point(pb);
             if prunable_a[idx] && aabb_dist_sq > best_dist * best_dist {
                 continue;
@@ -565,20 +630,43 @@ fn build_face_aabbs(
 
 /// Get candidate face indices sorted by AABB distance to a point.
 fn bvh_distance_candidates(bvh: &Bvh, aabbs: &[(usize, Aabb3)], point: Point3) -> Vec<usize> {
-    // For simplicity, query all faces and sort by AABB distance.
-    let mut candidates: Vec<(usize, f64)> = aabbs
-        .iter()
-        .map(|(i, aabb)| (*i, aabb.distance_squared_to_point(point)))
-        .collect();
-    candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out = Vec::new();
+    let mut scored = Vec::new();
+    bvh_distance_candidates_into(bvh, aabbs, point, &mut out, &mut scored);
+    out
+}
+
+/// Get candidate face indices, reusing caller-owned buffers.
+///
+/// `out` is cleared and refilled in the same order [`bvh_distance_candidates`]
+/// returns (ascending AABB distance, closest-BVH hint first); `scored` holds
+/// the transient `(index, distance)` pairs. Both grow to the high-water mark
+/// once and are then reused without further allocation. Empty input, early
+/// exit and errors leave both cleared on the next call via the leading
+/// `clear()`.
+fn bvh_distance_candidates_into(
+    bvh: &Bvh,
+    aabbs: &[(usize, Aabb3)],
+    point: Point3,
+    out: &mut Vec<usize>,
+    scored: &mut Vec<(usize, f64)>,
+) {
+    out.clear();
+    scored.clear();
+    scored.extend(
+        aabbs
+            .iter()
+            .map(|(i, aabb)| (*i, aabb.distance_squared_to_point(point))),
+    );
+    scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
     if let Some(closest_idx) = bvh.query_closest(point)
-        && let Some(pos) = candidates.iter().position(|(i, _)| *i == closest_idx)
+        && let Some(pos) = scored.iter().position(|(i, _)| *i == closest_idx)
     {
-        candidates.swap(0, pos);
+        scored.swap(0, pos);
     }
 
-    candidates.into_iter().map(|(i, _)| i).collect()
+    out.extend(scored.iter().map(|(i, _)| *i));
 }
 
 // -- Segment-to-segment distance ----------------------------------------------
