@@ -17,7 +17,7 @@ env:
 jobs:
   changes:
     name: Classify Changes
-    runs-on: &fleet-light-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_LIGHT_POOL_ENABLED == 'true' && (vars.CI_FLEET_TARGET == 'ci-server-jane' || vars.CI_FLEET_TARGET == 'ci-server-john') && '{"group":"ci-trusted-main","labels":["self-hosted","Linux","X64","ci-remus-light"]}' || vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    runs-on: &fleet-light-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_LIGHT_POOL_ENABLED == 'true' && (vars.CI_FLEET_TARGET == 'ci-server-jane' || vars.CI_FLEET_TARGET == 'ci-server-john') && '{"group":"ci-trusted-main","labels":["self-hosted","Linux","X64","ci-remus-light"]}' || vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-24.04"') }}
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
       docs: ${{ steps.classify.outputs.docs }}
@@ -268,7 +268,7 @@ jobs:
     name: Test
     needs: [changes, repo-policy, secrets-scan]
     if: needs.changes.outputs.heavy == 'true'
-    runs-on: &fleet-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    runs-on: &fleet-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-24.04"') }}
     timeout-minutes: 30
     steps:
       - *fleet-source
@@ -359,22 +359,37 @@ jobs:
     needs: [changes, repo-policy, secrets-scan]
     if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
+    # rust-toolchain.toml pins the development toolchain and wins over the
+    # rustup default, so installing 1.88.0 alone is not enough. RUSTUP_TOOLCHAIN
+    # outranks the file for every rustup-proxied command in this job, including
+    # the rustc version rust-cache keys on.
+    env:
+      RUSTUP_TOOLCHAIN: "1.88.0"
     steps:
       - *fleet-source
       - *fleet-isolation
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Override rust-toolchain.toml to test the declared minimum version.
-      # Action SHA stays pinned; the Rust version is set explicitly below.
-      - uses: dtolnay/rust-toolchain@c93f4f9c67595668add93d3d6895795ce52d8c2d # 1.88.0
+      # The master-line commit, which takes a `toolchain` input. The action's
+      # per-version branches hard-code their release and ignore `toolchain:`
+      # with only a warning.
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: msrv
-      - run: cargo check --workspace --all-features
+      - name: Check the workspace on the declared MSRV
+        run: |
+          set -euo pipefail
+          rustc --version
+          if ! rustc --version | grep -q '^rustc 1\.88\.0 '; then
+            echo "::error::MSRV job resolved $(rustc --version), not Rust 1.88.0"
+            exit 1
+          fi
+          cargo +1.88.0 check --workspace --all-features
   wasm-no-io:
     name: WASM without optional I/O
     needs: [changes, repo-policy, secrets-scan]
