@@ -676,4 +676,5 @@ fn query_error_clears_populated_scratch() {
     assert!(scratch.is_empty());
     assert!(prepared.batch(&[point], &mut scratch).is_err());
     assert!(scratch.is_empty());
+    assert!(point_to_solid_batch(&topo, &[], solid).is_err());
 }
