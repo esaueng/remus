@@ -614,7 +614,7 @@ fn wavy_patch(
 }
 
 #[test]
-fn query_error_clears_populated_scratch() {
+fn prepare_rejects_stale_vertex_after_unknown_bound() {
     let mut topo = Topology::new();
     let box_solid = make_box(
         &mut topo,
@@ -660,21 +660,7 @@ fn query_error_clears_populated_scratch() {
     )));
     let shell = topo.add_shell(Shell::new(faces).unwrap());
     let solid = topo.add_solid(Solid::new(shell, vec![]));
-    let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
-    assert!(prepared.prunable_count() > 0);
-    assert_eq!(prepared.mandatory_count(), 1);
-
-    let mut scratch = DistanceScratch::new();
-    let point = Point3::new(20.0, 20.0, 3.0);
-    assert!(prepared.query(point, &mut scratch).is_err());
-    assert!(scratch.is_empty());
-    assert!(
-        prepared
-            .query_exhaustive_with_stats(point, &mut scratch)
-            .is_err()
-    );
-    assert!(scratch.is_empty());
-    assert!(prepared.batch(&[point], &mut scratch).is_err());
-    assert!(scratch.is_empty());
+    assert!(PreparedDistanceSolid::prepare(&topo, solid).is_err());
     assert!(point_to_solid_batch(&topo, &[], solid).is_err());
+    assert!(point_to_solid_batch(&topo, &[Point3::new(20.0, 20.0, 3.0)], solid).is_err());
 }
