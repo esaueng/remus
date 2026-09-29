@@ -596,7 +596,7 @@ fn equatorial_winding_sign(
         let edge = topo.edge(oe.edge())?;
         let edge_start = topo.vertex(edge.start())?.point();
         let edge_end = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.domain_with_endpoints(edge_start, edge_end);
+        let (t0, t1) = crate::authoritative_edge_domain(edge, "equatorial sphere boundary")?;
         let (t0, t1) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
         let samples = if matches!(edge.curve(), EdgeCurve::Line) {
             1

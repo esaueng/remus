@@ -906,6 +906,46 @@ fn closed_equatorial_circle_selects_north_hemisphere() {
 }
 
 #[test]
+fn equatorial_circle_without_authoritative_trim_refuses_without_mutation() {
+    let mut topo = Topology::new();
+    let solid = make_capped_sphere(&mut topo, 1.0, 0.0);
+    let sphere_face = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Sphere(_)))
+        .unwrap();
+    let rim = topo
+        .wire(topo.face(sphere_face).unwrap().outer_wire())
+        .unwrap()
+        .edges()[0]
+        .edge();
+    topo.edge_mut(rim).unwrap().set_trim(None);
+    let before: Vec<Point3> = topo.vertices().iter().map(|(_, v)| v.point()).collect();
+    let result = transform::transform_solid_detailed(
+        &mut topo,
+        solid,
+        &anisotropic(),
+        TransformPolicy::ExactOnly,
+    );
+    assert!(
+        matches!(result, Err(remus_operations::OperationsError::InvalidInput { ref reason }) if reason.contains("authoritative edge domain")),
+        "missing trim must refuse, got {result:?}"
+    );
+    assert_eq!(
+        before,
+        topo.vertices()
+            .iter()
+            .map(|(_, v)| v.point())
+            .collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        topo.face(sphere_face).unwrap().surface(),
+        FaceSurface::Sphere(_)
+    ));
+    assert_eq!(topo.edge(rim).unwrap().trim(), None);
+}
+
+#[test]
 fn exact_only_refuses_projection_drift_during_execution() {
     let matrix = Mat4::translation(1.0e9, -1.0e9, 1.0e9)
         * Mat4::rotation_x(0.37)
