@@ -3,6 +3,7 @@
 use remus_math::analytic_intersection::{
     AnalyticSurface, intersect_analytic_analytic, intersect_plane_analytic,
 };
+use remus_math::curves::Ellipse3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -11,6 +12,9 @@ use remus_topology::solid::SolidId;
 
 use crate::data::{FaceIntersection, OffsetData};
 use crate::error::OffsetError;
+
+type ExactEllipse = (Ellipse3D, (f64, f64));
+type SurfaceSection = (Vec<Point3>, Option<ExactEllipse>);
 
 /// Intersect pairs of adjacent offset faces in 3D to find new edge curves.
 ///
@@ -83,7 +87,7 @@ pub fn intersect_faces_3d(
         let surf_a = &off_a.surface;
         let surf_b = &off_b.surface;
 
-        let curve_points = intersect_surface_pair(
+        let (curve_points, exact_ellipse) = intersect_surface_pair(
             topo,
             edge_id,
             face_a,
@@ -99,6 +103,7 @@ pub fn intersect_faces_3d(
             face_a,
             face_b,
             curve_points,
+            exact_ellipse,
             new_edges: Vec::new(),
         });
     }
@@ -130,18 +135,19 @@ fn intersect_surface_pair(
     surf_b: &FaceSurface,
     tol: remus_math::tolerance::Tolerance,
     offset_distance: f64,
-) -> Result<Vec<Point3>, OffsetError> {
+) -> Result<SurfaceSection, OffsetError> {
     // Same-domain surfaces (e.g., sphere hemispheres with same center/radius):
     // project the specific edge's endpoints onto the offset surface.
     if surfaces_same_domain(surf_a, surf_b, tol) {
-        return project_edge_onto_surface(topo, edge_id, surf_a);
+        return project_edge_onto_surface(topo, edge_id, surf_a).map(|points| (points, None));
     }
 
     // Plane-Plane: exact line intersection.
     if let (FaceSurface::Plane { normal: n1, d: d1 }, FaceSurface::Plane { normal: n2, d: d2 }) =
         (surf_a, surf_b)
     {
-        return intersect_plane_plane(topo, face_a, face_b, *n1, *d1, *n2, *d2, offset_distance);
+        return intersect_plane_plane(topo, face_a, face_b, *n1, *d1, *n2, *d2, offset_distance)
+            .map(|points| (points, None));
     }
 
     // Plane-Analytic or Analytic-Plane.
@@ -161,7 +167,7 @@ fn intersect_surface_pair(
                 reason: format!("analytic-analytic intersection: {e}"),
             }
         })?;
-        return Ok(extract_points(&curves));
+        return Ok((extract_points(&curves), None));
     }
 
     // NURBS fallback not yet implemented.
@@ -180,7 +186,7 @@ fn try_plane_analytic(
     surf_a: &FaceSurface,
     surf_b: &FaceSurface,
     tol: Tolerance,
-) -> Result<Option<Vec<Point3>>, OffsetError> {
+) -> Result<Option<SurfaceSection>, OffsetError> {
     let FaceSurface::Plane { normal, d } = surf_a else {
         return Ok(None);
     };
@@ -188,7 +194,7 @@ fn try_plane_analytic(
         return Ok(None);
     };
     if let Some(points) = try_perpendicular_cap_circle(*normal, *d, analytic, tol) {
-        return Ok(Some(points));
+        return Ok(Some((points, None)));
     }
     let curves = intersect_plane_analytic(analytic, *normal, *d).map_err(|e| {
         OffsetError::IntersectionFailed {
@@ -201,9 +207,9 @@ fn try_plane_analytic(
     if points.is_empty()
         && section_beyond_sampling_window(analytic, *normal, *d)
         && let AnalyticSurface::Cylinder(cyl) = analytic
-        && let Some(section) = sample_oblique_cylinder_section(cyl, *normal, *d)
+        && let Some(section) = sample_oblique_cylinder_section(cyl, *normal, *d, tol)
     {
-        return Ok(Some(section));
+        return Ok(Some((section.0, Some(section.1))));
     }
     if points.is_empty() && section_beyond_sampling_window(analytic, *normal, *d) {
         return Err(OffsetError::IntersectionFailed {
@@ -213,7 +219,7 @@ fn try_plane_analytic(
                 .to_string(),
         });
     }
-    Ok(Some(points))
+    Ok(Some((points, None)))
 }
 
 /// Sample a complete oblique cylinder section when the legacy sampler's
@@ -226,7 +232,8 @@ fn sample_oblique_cylinder_section(
     cyl: &remus_math::surfaces::CylindricalSurface,
     normal: Vec3,
     d: f64,
-) -> Option<Vec<Point3>> {
+    tol: Tolerance,
+) -> Option<(Vec<Point3>, ExactEllipse)> {
     let axial_dot = normal.dot(cyl.axis());
     if !axial_dot.is_finite() || axial_dot.abs() < 1e-6 {
         return None;
@@ -245,7 +252,38 @@ fn sample_oblique_cylinder_section(
         }
         points.push(point);
     }
-    Some(points)
+    let n = normal.normalize().ok()?;
+    let d_unit = d / normal.length();
+    let axial_unit = n.dot(cyl.axis());
+    let center =
+        cyl.origin() + cyl.axis() * ((d_unit - dot_point_normal(n, cyl.origin())) / axial_unit);
+    let major_dir = (cyl.axis() - n * axial_unit).normalize().ok()?;
+    let ellipse = Ellipse3D::new_with_ref(
+        center,
+        n,
+        cyl.radius() / axial_unit.abs(),
+        cyl.radius(),
+        major_dir,
+    )
+    .ok()?;
+    let start = ellipse.project(points[0]);
+    let next = ellipse.project(points[1]);
+    let forward = (next - start).rem_euclid(std::f64::consts::TAU) < std::f64::consts::PI;
+    let span = if forward {
+        std::f64::consts::TAU
+    } else {
+        -std::f64::consts::TAU
+    };
+    let limit = tol.linear.max(tol.relative * cyl.radius());
+    if !start.is_finite()
+        || points.iter().enumerate().any(|(i, point)| {
+            let parameter = span.mul_add(i as f64 / N_CAP_CIRCLE_SAMPLES as f64, start);
+            (ellipse.evaluate(parameter) - *point).length() > limit
+        })
+    {
+        return None;
+    }
+    Some((points, (ellipse, (start, start + span))))
 }
 
 /// Distinguish a missed large section from an empty side-plane contact.
@@ -758,19 +796,45 @@ mod tests {
         let section = try_plane_analytic(faces[0], faces[1], &plane, &wall, Tolerance::new())
             .unwrap()
             .unwrap();
-        assert_eq!(section.len(), N_CAP_CIRCLE_SAMPLES + 1);
+        assert_eq!(section.0.len(), N_CAP_CIRCLE_SAMPLES + 1);
+        assert!(section.1.is_some());
         let (min_z, max_z) = section
+            .0
             .iter()
             .fold((f64::INFINITY, f64::NEG_INFINITY), |range, p| {
                 (range.0.min(p.z()), range.1.max(p.z()))
             });
         assert!(max_z - min_z > 0.04);
-        for point in &section {
+        for point in &section.0 {
             assert!((dot_point_normal(tilted, *point) - 1_000.0).abs() < 1e-8);
             assert!(
                 ((point.x() * point.x() + point.y() * point.y()).sqrt() - 1_000.0).abs() < 1e-8
             );
         }
+        let mut data = OffsetData::new(0.0, OffsetOptions::default(), vec![]);
+        let source_edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+        data.intersections.push(FaceIntersection {
+            original_edge: source_edge,
+            face_a: faces[0],
+            face_b: faces[1],
+            curve_points: section.0.clone(),
+            exact_ellipse: section.1,
+            new_edges: Vec::new(),
+        });
+        crate::inter2d::intersect_pcurves_2d(&mut topo, solid, &mut data).unwrap();
+        assert_eq!(data.intersections[0].new_edges.len(), 1);
+        let edge = topo.edge(data.intersections[0].new_edges[0]).unwrap();
+        assert!(matches!(
+            edge.curve(),
+            remus_topology::edge::EdgeCurve::Ellipse(_)
+        ));
+        assert!(edge.is_closed());
+        assert!(
+            ((edge.strict_domain().unwrap().1 - edge.strict_domain().unwrap().0).abs()
+                - std::f64::consts::TAU)
+                .abs()
+                < 1e-12
+        );
         let side_plane = FaceSurface::Plane {
             normal: Vec3::new(1.0, 0.0, 0.0),
             d: 2_000.0,
@@ -779,6 +843,7 @@ mod tests {
             try_plane_analytic(faces[0], faces[1], &side_plane, &wall, Tolerance::new())
                 .unwrap()
                 .unwrap()
+                .0
                 .is_empty()
         );
 
