@@ -1,10 +1,16 @@
-//! Criterion sketch benchmarks (PERF-S01 baseline coverage).
+//! Criterion sketch benchmarks (PERF-S01 baseline coverage + PERF-S02 scaling).
 //!
 //! Mirrors the pinned `scripts/performance/sketch/workloads.json` fixtures at
 //! 10/100/1000 parameters. No wall-time gates: criterion reports
 //! distributions; fixture/outcome identity is gated by
 //! `crates/sketch/tests/gcs_perf_identity.rs` and the runner's per-sample
 //! validation. Run with `cargo bench -p remus-sketch --bench gcs_perf`.
+//!
+//! PERF-S02 additions: `mixed_sizes` (one coupled chain beside independent
+//! pairs — a mixed block-size distribution) and `independent_solved_large`
+//! (2000/5000/10000 parameters, which the dense path refuses under the
+//! runner's 256 MiB Jacobian budget and the component path solves
+//! block-wise).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
@@ -118,6 +124,62 @@ fn build_inconsistent(n_params: usize) -> GcsSystem {
     sys
 }
 
+/// One coupled chain over half the parameter budget plus independent solved
+/// pairs over the rest: a mixed block-size distribution (one large banded
+/// block beside many tiny blocks).
+fn build_mixed_sizes(n_params: usize) -> GcsSystem {
+    assert!(n_params.is_multiple_of(4) && n_params >= 100);
+    let chain_params = n_params / 2;
+    let mut sys = GcsSystem::new();
+    let n_pts = chain_params / 2 + 1;
+    let mut pts = Vec::with_capacity(n_pts);
+    pts.push(
+        sys.add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap(),
+    );
+    for i in 1..n_pts {
+        pts.push(
+            sys.add_point(PointData {
+                x: i as f64,
+                y: 0.5 * f64::from((i % 2) as u8),
+                fixed: false,
+            })
+            .unwrap(),
+        );
+    }
+    for w in pts.windows(2) {
+        let line = sys.add_line(w[0], w[1]).unwrap();
+        sys.add_constraint(Constraint::Distance(w[0], w[1], 1.0))
+            .unwrap();
+        sys.add_constraint(Constraint::Horizontal(line)).unwrap();
+    }
+    for i in 0..n_params / 4 {
+        let ax = 1000.0 + 10.0 * i as f64;
+        let anchor = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let free = sys
+            .add_point(PointData {
+                x: ax + 1.0,
+                y: 1.0,
+                fixed: false,
+            })
+            .unwrap();
+        sys.add_constraint(Constraint::Distance(anchor, free, 5.0))
+            .unwrap();
+        sys.add_constraint(Constraint::FixY(free, 4.0)).unwrap();
+    }
+    sys
+}
+
 fn bench_scaling(c: &mut Criterion, name: &str, build: fn(usize) -> GcsSystem) {
     let mut group = c.benchmark_group(format!("sketch/{name}"));
     group.sample_size(20);
@@ -224,6 +286,59 @@ fn sketch_perf(c: &mut Criterion) {
         INCONSISTENT_MAX_ITER,
     );
     bench_drag(c);
+    bench_mixed_sizes(c);
+    bench_large_independent(c);
+}
+
+/// Mixed block-size distribution at 100/1000 parameters.
+fn bench_mixed_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sketch/mixed_sizes");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(2));
+    for size in [100_usize, 1000] {
+        group.bench_with_input(BenchmarkId::new("solve", size), &size, |b, &size| {
+            b.iter_batched(
+                || build_mixed_sizes(size),
+                |mut sys| black_box(sys.solve(MAX_ITER, TOL)).unwrap(),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        group.bench_with_input(BenchmarkId::new("detailed", size), &size, |b, &size| {
+            b.iter_batched(
+                || build_mixed_sizes(size),
+                |mut sys| black_box(sys.solve_detailed(MAX_ITER, TOL)).unwrap(),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+/// Independent-pair scaling past the dense path's 256 MiB Jacobian budget
+/// (10000 params = 800 MB dense; component blocks stay 2x2).
+fn bench_large_independent(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sketch/independent_solved_large");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(2));
+    for size in [2000_usize, 5000, 10_000] {
+        group.bench_with_input(BenchmarkId::new("solve", size), &size, |b, &size| {
+            b.iter_batched(
+                || build_independent_solved(size),
+                |mut sys| black_box(sys.solve(MAX_ITER, TOL)).unwrap(),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        group.bench_with_input(BenchmarkId::new("detailed", size), &size, |b, &size| {
+            b.iter_batched(
+                || build_independent_solved(size),
+                |mut sys| black_box(sys.solve_detailed(MAX_ITER, TOL)).unwrap(),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
 }
 
 criterion_group!(benches, sketch_perf);

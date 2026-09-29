@@ -422,3 +422,99 @@ fn every_variant_declares_its_free_parameters() {
         &[X(p1), Y(p1), X(p2), Y(p2), X(pc), Y(pc)],
     );
 }
+
+/// Block dimensions and deterministic byte sizes at 1000 parameters.
+///
+/// No solve runs here (debug CI stays fast): the partition alone pins what
+/// every later factorization allocates. Dense bytes are `m*n*8`; block bytes
+/// are the sum over blocks. The 10000-parameter rows the S01 runner refuses
+/// (800 MB dense) decompose into the same 2x2 blocks, which is why the
+/// component path solves them.
+#[test]
+fn large_fixtures_pin_block_dimensions_and_byte_sizes() {
+    // independent_solved_1000: 500 disjoint 2-param pairs.
+    let mut sys = GcsSystem::new();
+    for i in 0..500 {
+        let ax = 10.0 * i as f64;
+        let anchor = fixed_pt(&mut sys, ax, 0.0);
+        let free = free_pt(&mut sys, ax + 1.0, 1.0);
+        sys.add_constraint(Constraint::Distance(anchor, free, 5.0))
+            .unwrap();
+        sys.add_constraint(Constraint::FixY(free, 4.0)).unwrap();
+    }
+    let d = decompose(&mut sys);
+    assert_eq!((d.num_params, d.num_equations), (1000, 1000));
+    assert_eq!(d.components.len(), 500);
+    let mut block_bytes = 0_usize;
+    let mut max_elems = 0_usize;
+    for comp in &d.components {
+        assert_eq!(comp.params.len(), 2);
+        assert_eq!(comp.num_equations(), 2);
+        block_bytes += comp.params.len() * comp.num_equations() * 8;
+        max_elems = max_elems.max(comp.params.len() * comp.num_equations());
+    }
+    assert_eq!(block_bytes, 500 * 2 * 2 * 8);
+    assert_eq!(max_elems, 4);
+    // Dense equivalent for the record: 8,000,000 bytes per Jacobian.
+    assert_eq!(d.num_params * d.num_equations * 8, 8_000_000);
+
+    // coupled_chain_1000: one connected 1000x1000 block (dense path kept).
+    let mut sys = GcsSystem::new();
+    let mut pts = Vec::with_capacity(501);
+    pts.push(fixed_pt(&mut sys, 0.0, 0.0));
+    for i in 1..501 {
+        pts.push(free_pt(&mut sys, i as f64, 0.5 * f64::from((i % 2) as u8)));
+    }
+    for w in pts.windows(2) {
+        let line = sys.add_line(w[0], w[1]).unwrap();
+        sys.add_constraint(Constraint::Distance(w[0], w[1], 1.0))
+            .unwrap();
+        sys.add_constraint(Constraint::Horizontal(line)).unwrap();
+    }
+    let d = decompose(&mut sys);
+    assert!(d.is_single_connected());
+    assert_eq!((d.num_params, d.num_equations), (1000, 1000));
+
+    // mixed_1000: one 500-param chain block beside 250 tiny pair blocks.
+    let mut sys = GcsSystem::new();
+    let mut pts = Vec::with_capacity(251);
+    pts.push(fixed_pt(&mut sys, 0.0, 0.0));
+    for i in 1..251 {
+        pts.push(free_pt(&mut sys, i as f64, 0.5 * f64::from((i % 2) as u8)));
+    }
+    for w in pts.windows(2) {
+        let line = sys.add_line(w[0], w[1]).unwrap();
+        sys.add_constraint(Constraint::Distance(w[0], w[1], 1.0))
+            .unwrap();
+        sys.add_constraint(Constraint::Horizontal(line)).unwrap();
+    }
+    for i in 0..250 {
+        let ax = 1000.0 + 10.0 * i as f64;
+        let anchor = fixed_pt(&mut sys, ax, 0.0);
+        let free = free_pt(&mut sys, ax + 1.0, 1.0);
+        sys.add_constraint(Constraint::Distance(anchor, free, 5.0))
+            .unwrap();
+        sys.add_constraint(Constraint::FixY(free, 4.0)).unwrap();
+    }
+    let d = decompose(&mut sys);
+    assert_eq!((d.num_params, d.num_equations), (1000, 1000));
+    assert_eq!(d.components.len(), 251);
+    let mut chain_blocks = 0;
+    let mut pair_blocks = 0;
+    let mut other_blocks = 0;
+    let mut block_bytes = 0_usize;
+    for comp in &d.components {
+        block_bytes += comp.params.len() * comp.num_equations() * 8;
+        if comp.params.len() == 500 {
+            chain_blocks += 1;
+            assert_eq!(comp.num_equations(), 500);
+        } else if comp.params.len() == 2 {
+            pair_blocks += 1;
+        } else {
+            other_blocks += 1;
+        }
+    }
+    assert_eq!(other_blocks, 0, "every block is chain- or pair-sized");
+    assert_eq!((chain_blocks, pair_blocks), (1, 250));
+    assert_eq!(block_bytes, 500 * 500 * 8 + 250 * 2 * 2 * 8);
+}
