@@ -9,6 +9,9 @@
 pub(crate) mod analytic;
 pub(crate) mod edge;
 pub mod face_bounds;
+pub mod prepared;
+
+pub use prepared::{DistanceOptions, DistanceScratch, PreparedDistanceSolid};
 
 use std::collections::HashSet;
 
@@ -240,7 +243,33 @@ fn point_to_solid_impl(
     ))
 }
 
+/// Compute the minimum distance from many points to a solid, amortizing the
+/// one preparation over the whole batch.
+///
+/// Builds a [`PreparedDistanceSolid`] once and reuses one [`DistanceScratch`]
+/// across all points. Output order is deterministic input order.
+///
+/// # Errors
+///
+/// Returns an error if the solid is invalid or any referenced entity is
+/// missing, or if any single query fails (all-or-nothing, matching a loop over
+/// [`point_to_solid`] collected with `collect::<Result<Vec<_>, _>>()`).
+pub fn point_to_solid_batch(
+    topo: &Topology,
+    points: &[Point3],
+    solid: SolidId,
+) -> Result<Vec<DistanceResult>, CheckError> {
+    let prepared = PreparedDistanceSolid::prepare(topo, solid)?;
+    if points.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut scratch = DistanceScratch::new();
+    prepared.batch(points, &mut scratch)
+}
+
 /// Compute distance from a point to a single face, dispatching by surface type.
+///
+/// Uses default numerical options ([`DistanceOptions::default`]).
 ///
 /// # Errors
 ///
@@ -249,6 +278,33 @@ pub fn point_to_face(
     topo: &Topology,
     point: Point3,
     face_id: FaceId,
+) -> Result<Option<(f64, Point3)>, CheckError> {
+    point_to_face_with_options(topo, point, face_id, DistanceOptions::default())
+}
+
+/// Compute distance from a point to a single face with explicit options.
+///
+/// The prepared path threads its frozen [`DistanceOptions`] here so repeated
+/// queries share one configuration; the one-shot path passes the default.
+///
+/// # Errors
+///
+/// Returns an error if the face lookup fails or the options are invalid.
+pub fn point_to_face_with_options(
+    topo: &Topology,
+    point: Point3,
+    face_id: FaceId,
+    options: DistanceOptions,
+) -> Result<Option<(f64, Point3)>, CheckError> {
+    options.validate()?;
+    point_to_face_validated(topo, point, face_id, options)
+}
+
+fn point_to_face_validated(
+    topo: &Topology,
+    point: Point3,
+    face_id: FaceId,
+    options: DistanceOptions,
 ) -> Result<Option<(f64, Point3)>, CheckError> {
     let face = topo.face(face_id)?;
     match face.surface() {
@@ -289,7 +345,11 @@ pub fn point_to_face(
             }
         }
         FaceSurface::Nurbs(nurbs) => {
-            match remus_math::nurbs::projection::project_point_to_surface(nurbs, point, 1e-7) {
+            match remus_math::nurbs::projection::project_point_to_surface(
+                nurbs,
+                point,
+                options.projection_tolerance,
+            ) {
                 Ok(proj) => {
                     if is_point_in_face_boundary(topo, face_id, proj.point)? {
                         Ok(Some((proj.distance, proj.point)))

@@ -219,7 +219,11 @@ fn prepared_matches_session_and_convenience_bit_exact() {
     assert!(asset.has_edges());
     let stats = asset.stats();
     assert!(stats.triangles > 0 && stats.vertices > 0);
-    assert_eq!(stats.triangles * 3, stats.vertices);
+    // PERF-R03 per-face indexed: vertices are shared within a face (box: 12
+    // tris, 24 verts = 6 faces x 4), never expanded to 3 per triangle.
+    assert_eq!(stats.triangles, 12);
+    assert_eq!(stats.vertices, 24);
+    assert!(stats.vertices < stats.triangles * 3);
     assert!(stats.vertex_bytes > 0 && stats.index_bytes > 0);
     println!(
         "prepared box: {} triangles, {} vertices, {} edge segments, {} + {} + {} upload bytes",
