@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -133,7 +134,12 @@ fn build_loops_for_face(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    if let Some(wires) = try_closed_conic_seam_wire(topo, &face_edges)? {
+    if let Some(wires) = try_closed_conic_seam_wire(
+        topo,
+        &face_edges,
+        data.offset_faces.get(&face_id).map(|face| &face.surface),
+        data.options.tolerance,
+    )? {
         return Ok((wires, Vec::new()));
     }
 
@@ -172,6 +178,8 @@ fn build_loops_for_face(
 fn try_closed_conic_seam_wire(
     topo: &mut Topology,
     edges: &[EdgeId],
+    surface: Option<&FaceSurface>,
+    tol: Tolerance,
 ) -> Result<Option<Vec<WireId>>, OffsetError> {
     let mut rims: Vec<EdgeId> = Vec::new();
     let mut others: Vec<EdgeId> = Vec::new();
@@ -198,6 +206,17 @@ fn try_closed_conic_seam_wire(
 
     // Two full-turn rims: cylinder/cone lateral face.
     if rims.len() == 2 && others.is_empty() {
+        if rims.iter().any(|&eid| {
+            topo.edge(eid)
+                .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
+        }) {
+            let Some(FaceSurface::Cylinder(cylinder)) = surface else {
+                return Err(OffsetError::AssemblyFailed {
+                    reason: "mixed ellipse rims require a cylindrical lateral carrier".into(),
+                });
+            };
+            align_second_rim_to_cylinder(topo, rims[0], rims[1], cylinder, tol)?;
+        }
         let va = topo.edge(rims[0])?.start();
         let vb = topo.edge(rims[1])?.start();
 
@@ -223,6 +242,98 @@ fn try_closed_conic_seam_wire(
 
     // Mixed rims and other edges require a different trimming strategy.
     Ok(None)
+}
+
+/// Reanchor both full-turn rims at one cylinder azimuth. Their trims retain
+/// traversal sense, and the cap wires reference the same reanchored edges.
+fn align_second_rim_to_cylinder(
+    topo: &mut Topology,
+    first: EdgeId,
+    second: EdgeId,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    tol: Tolerance,
+) -> Result<(), OffsetError> {
+    let first_point = topo.vertex(topo.edge(first)?.start())?.point();
+    let from_origin = first_point - cylinder.origin();
+    let radial = from_origin - cylinder.axis() * from_origin.dot(cylinder.axis());
+    let limit = tol.linear.max(tol.relative * cylinder.radius());
+    if !radial.length().is_finite() || (radial.length() - cylinder.radius()).abs() > limit {
+        return Err(OffsetError::AssemblyFailed {
+            reason: "first rim seam is off its cylindrical carrier".into(),
+        });
+    }
+    let azimuth = radial
+        .dot(cylinder.y_axis())
+        .atan2(radial.dot(cylinder.x_axis()));
+    let base = cylinder.evaluate(azimuth, 0.0);
+    let mut updates = Vec::with_capacity(2);
+    for edge_id in [first, second] {
+        let edge = topo.edge(edge_id)?;
+        let (normal, center) = match edge.curve() {
+            EdgeCurve::Circle(circle) => (circle.normal(), circle.center()),
+            EdgeCurve::Ellipse(ellipse) => (ellipse.normal(), ellipse.center()),
+            _ => {
+                return Err(OffsetError::AssemblyFailed {
+                    reason: "rim is not a closed conic".into(),
+                });
+            }
+        };
+        let denominator = normal.dot(cylinder.axis());
+        if !denominator.is_finite() || denominator.abs() < 1e-6 {
+            return Err(OffsetError::AssemblyFailed {
+                reason: "rim plane is parallel to the cylinder generator".into(),
+            });
+        }
+        let station = normal.dot(center - base) / denominator;
+        let target = cylinder.evaluate(azimuth, station);
+        let parameter = match edge.curve() {
+            EdgeCurve::Circle(circle) => circle.project(target),
+            EdgeCurve::Ellipse(ellipse) => ellipse.project(target),
+            _ => {
+                return Err(OffsetError::AssemblyFailed {
+                    reason: "rim changed before seam alignment".into(),
+                });
+            }
+        };
+        let evaluated = edge
+            .curve()
+            .evaluate_with_endpoints(parameter, target, target);
+        let range = edge
+            .strict_domain()
+            .map_err(|error| OffsetError::AssemblyFailed {
+                reason: format!("rim lacks full-turn authority: {error}"),
+            })?;
+        if !station.is_finite()
+            || !parameter.is_finite()
+            || !target.0.iter().all(|value| value.is_finite())
+            || (evaluated - target).length() > limit
+        {
+            return Err(OffsetError::AssemblyFailed {
+                reason: "rim cannot be reanchored on its cylindrical carrier".into(),
+            });
+        }
+        let trim = (parameter, parameter + range.1 - range.0);
+        let mut candidate = edge.clone();
+        candidate.set_trim(Some(trim));
+        candidate
+            .strict_domain()
+            .map_err(|error| OffsetError::AssemblyFailed {
+                reason: format!("reanchored rim has invalid trim: {error}"),
+            })?;
+        updates.push((edge_id, target, trim));
+    }
+    for (edge_id, target, trim) in updates {
+        let vertex = topo.add_vertex(Vertex::new(target, tol.linear));
+        let edge = topo.edge_mut(edge_id)?;
+        edge.set_start(vertex);
+        edge.set_end(vertex);
+        edge.set_trim(Some(trim));
+        edge.strict_domain()
+            .map_err(|error| OffsetError::AssemblyFailed {
+                reason: format!("reanchored rim has invalid trim: {error}"),
+            })?;
+    }
+    Ok(())
 }
 
 /// Build the fundamental-polygon wire for a torus face: 1 seam vertex, two
@@ -784,9 +895,23 @@ mod tests {
         use remus_math::curves::{Circle3D, Ellipse3D};
 
         let mut topo = Topology::new();
-        let normal = Vec3::new(0.0, 0.0, 1.0);
-        let ellipse = Ellipse3D::new(Point3::new(0.0, 0.0, 0.0), normal, 3.0, 2.0).unwrap();
-        let circle = Circle3D::new(Point3::new(0.0, 0.0, 5.0), normal, 2.0).unwrap();
+        let normal = Vec3::new(0.6, 0.0, 0.8);
+        let ellipse = Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            normal,
+            2.5,
+            2.0,
+            Vec3::new(-0.8, 0.0, 0.6),
+        )
+        .unwrap();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .unwrap();
         let ve = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
         let vc = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
         let mut ellipse_edge =
@@ -797,15 +922,36 @@ mod tests {
         circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
         let circle_edge = topo.add_edge(circle_edge);
 
-        let cap = try_closed_conic_seam_wire(&mut topo, &[ellipse_edge])
+        let cap = try_closed_conic_seam_wire(&mut topo, &[ellipse_edge], None, Tolerance::new())
             .unwrap()
             .unwrap();
         assert_eq!(topo.wire(cap[0]).unwrap().edges().len(), 1);
-        let lateral = try_closed_conic_seam_wire(&mut topo, &[ellipse_edge, circle_edge])
-            .unwrap()
-            .unwrap();
+        let lateral = try_closed_conic_seam_wire(
+            &mut topo,
+            &[ellipse_edge, circle_edge],
+            Some(&FaceSurface::Cylinder(cylinder.clone())),
+            Tolerance::new(),
+        )
+        .unwrap()
+        .unwrap();
         let walk = topo.wire(lateral[0]).unwrap().edges();
         assert_eq!(walk.len(), 4);
+        let a = topo
+            .vertex(topo.edge(ellipse_edge).unwrap().start())
+            .unwrap()
+            .point();
+        let b = topo
+            .vertex(topo.edge(circle_edge).unwrap().start())
+            .unwrap()
+            .point();
+        assert!((a - b).length() > 1.0);
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let point = a + (b - a) * fraction;
+            let radial = point
+                - cylinder.origin()
+                - cylinder.axis() * (point - cylinder.origin()).dot(cylinder.axis());
+            assert!((radial.length() - cylinder.radius()).abs() < 1e-7);
+        }
         for pair in walk
             .iter()
             .zip(walk.iter().cycle().skip(1))
@@ -814,6 +960,40 @@ mod tests {
             let current = topo.edge(pair.0.edge()).unwrap();
             let next = topo.edge(pair.1.edge()).unwrap();
             assert_eq!(pair.0.oriented_end(current), pair.1.oriented_start(next));
+        }
+
+        topo.edge_mut(ellipse_edge).unwrap().set_start(ve);
+        topo.edge_mut(ellipse_edge).unwrap().set_end(ve);
+        topo.edge_mut(ellipse_edge)
+            .unwrap()
+            .set_trim(Some((0.0, std::f64::consts::TAU)));
+        topo.edge_mut(circle_edge).unwrap().set_start(vc);
+        topo.edge_mut(circle_edge).unwrap().set_end(vc);
+        topo.edge_mut(circle_edge)
+            .unwrap()
+            .set_trim(Some((0.0, std::f64::consts::TAU)));
+        try_closed_conic_seam_wire(
+            &mut topo,
+            &[circle_edge, ellipse_edge],
+            Some(&FaceSurface::Cylinder(cylinder.clone())),
+            Tolerance::new(),
+        )
+        .unwrap()
+        .unwrap();
+        let a = topo
+            .vertex(topo.edge(ellipse_edge).unwrap().start())
+            .unwrap()
+            .point();
+        let b = topo
+            .vertex(topo.edge(circle_edge).unwrap().start())
+            .unwrap()
+            .point();
+        for fraction in [0.0, 0.5, 1.0] {
+            let point = a + (b - a) * fraction;
+            let radial = point
+                - cylinder.origin()
+                - cylinder.axis() * (point - cylinder.origin()).dot(cylinder.axis());
+            assert!((radial.length() - cylinder.radius()).abs() < 1e-7);
         }
     }
 
