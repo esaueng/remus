@@ -243,15 +243,11 @@ pub(super) fn intersections(
                 }
             }
         }
-        // One-sided shared-end adoption: a computed hit landing within
-        // tolerance of a use end whose certificate the other use shares
-        // IS that event (typically an adapter-joined cut the other side
-        // re-derives through different arithmetic). The certificate, not
-        // proximity, authorizes the adoption — without it the hit stays
-        // separate (or refuses per the dust-twin rule in the caller).
+        // A shared endpoint certificate permits adoption only within
+        // arithmetic roundoff. A second real crossing inside the modeling
+        // tolerance must retain its own event and the intervening cut.
         // Runs after mutual-end snapping so exact event partners keep
         // priority; skips params already bitwise on an end.
-        let tol = work.context.tolerance.linear;
         for (host, guest, param) in [(&a, &b, &mut x), (&b, &a, &mut y)] {
             if same(*param, host.range[0]) || same(*param, host.range[1]) {
                 continue;
@@ -261,8 +257,9 @@ pub(super) fn intersections(
                 if !guest.endpoints.contains(&host.endpoints[end]) {
                     continue;
                 }
-                let dist = (host.point(*param) - host.point(host.range[end])).length();
-                if dist <= tol && best.is_none_or(|(d, _)| dist < d) {
+                let point = host.point(*param);
+                let dist = (point - host.point(host.range[end])).length();
+                if dist <= roundoff(point) && best.is_none_or(|(d, _)| dist < d) {
                     best = Some((dist, host.range[end]));
                 }
             }
