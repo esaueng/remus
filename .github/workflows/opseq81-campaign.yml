@@ -6,7 +6,7 @@ name: OpSeq 8.1 Campaign
 # failure taxonomy in the job log (B81TALLY/B81CASE/B81COVERAGE lines).
 #
 # REVIEW FLAG: this is a NEW scheduled workflow (not a change to an existing
-# gate). It runs inline on ubuntu-latest rather than delegating to a
+# gate). It runs inline on ubuntu-24.04 rather than delegating to a
 # fleet-* workflow, deliberately, so no trusted-workflow routing changes.
 # The PR gate itself needs no workflow: `ci_regression_matrix` and
 # `campaign_coverage` run inside the existing workspace test suite.
@@ -41,7 +41,7 @@ env:
 
 jobs:
   campaign:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
