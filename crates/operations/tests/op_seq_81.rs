@@ -1384,6 +1384,84 @@ fn check_rollback(
     Ok(())
 }
 
+/// Expected center probes after confirming each center belongs to its own
+/// operand. A torus's bounding-box center lies in its hole and cannot prove
+/// material was removed by a cut.
+#[allow(clippy::too_many_arguments)]
+fn material_probe_expectations(
+    kind_name: &str,
+    probe_a: Option<remus_math::vec::Point3>,
+    probe_b: Option<remus_math::vec::Point3>,
+    in_a_in_b: Option<bool>,
+    in_b_in_a: Option<bool>,
+    self_a: Option<bool>,
+    self_b: Option<bool>,
+) -> Vec<(remus_math::vec::Point3, bool, &'static str)> {
+    let mut want = Vec::new();
+    let mut push = |point: Option<remus_math::vec::Point3>,
+                    self_in: Option<bool>,
+                    inside: bool,
+                    tag: &'static str| {
+        if self_in == Some(true)
+            && let Some(point) = point
+        {
+            want.push((point, inside, tag));
+        }
+    };
+    match kind_name {
+        "fuse" => {
+            push(probe_a, self_a, true, "A-center");
+            push(probe_b, self_b, true, "B-center");
+        }
+        "cut" => {
+            push(probe_b, self_b, false, "B-center");
+            if let Some(inside) = in_a_in_b {
+                push(probe_a, self_a, !inside, "A-center");
+            }
+        }
+        _ => {
+            if let Some(inside) = in_a_in_b {
+                push(probe_a, self_a, inside, "A-center");
+            }
+            if let Some(inside) = in_b_in_a {
+                push(probe_b, self_b, inside, "B-center");
+            }
+        }
+    }
+    want
+}
+
+#[test]
+fn cut_tool_center_in_torus_hole_is_not_a_material_probe() {
+    let a_center = remus_math::vec::Point3::new(1.0, 0.0, 0.0);
+    let torus_hole = remus_math::vec::Point3::new(0.0, 0.0, 0.0);
+    let want = material_probe_expectations(
+        "cut",
+        Some(a_center),
+        Some(torus_hole),
+        Some(false),
+        Some(true),
+        Some(true),
+        Some(false),
+    );
+    assert_eq!(want.len(), 1);
+    assert_eq!(want[0].2, "A-center");
+    assert!(want[0].1, "the target-only center remains inside after cut");
+
+    let actual_tool = material_probe_expectations(
+        "cut",
+        Some(a_center),
+        Some(torus_hole),
+        Some(false),
+        Some(true),
+        Some(true),
+        Some(true),
+    );
+    assert_eq!(actual_tool.len(), 2);
+    assert_eq!(actual_tool[0].2, "B-center");
+    assert!(!actual_tool[0].1, "the tool's own material is removed");
+}
+
 /// Independent oracle battery for one successful exact boolean result.
 /// Returns the failing oracle tag, or `None` when every oracle passes.
 /// `vf` is the main result's measured volume; `in_a_in_b` / `in_b_in_a`
@@ -1502,41 +1580,13 @@ fn battery_main(
     // each center's membership in the other operand decides its
     // cut/intersect expectation. Unknown memberships (classifier refusal
     // or OnBoundary) skip their probe — a skip, never a pass.
-    let mut want: Vec<(Option<remus_math::vec::Point3>, bool, &str)> = Vec::new();
-    let selfed = |point: Option<remus_math::vec::Point3>, self_in: Option<bool>| {
-        if self_in == Some(true) { point } else { None }
-    };
-    match kind_name {
-        "fuse" => {
-            want.push((selfed(probe_a, self_a), true, "A-center"));
-            want.push((selfed(probe_b, self_b), true, "B-center"));
-        }
-        "cut" => {
-            want.push((probe_b, false, "B-center"));
-            match (self_a, in_a_in_b) {
-                (Some(true), Some(true)) => want.push((probe_a, false, "A-center")),
-                (Some(true), Some(false)) => want.push((probe_a, true, "A-center")),
-                _ => {}
-            }
-        }
-        _ => {
-            match (self_a, in_a_in_b) {
-                (Some(true), Some(true)) => want.push((probe_a, true, "A-center")),
-                (Some(true), Some(false)) => want.push((probe_a, false, "A-center")),
-                _ => {}
-            }
-            match (self_b, in_b_in_a) {
-                (Some(true), Some(true)) => want.push((probe_b, true, "B-center")),
-                (Some(true), Some(false)) => want.push((probe_b, false, "B-center")),
-                _ => {}
-            }
-        }
-    }
+    let want = material_probe_expectations(
+        kind_name, probe_a, probe_b, in_a_in_b, in_b_in_a, self_a, self_b,
+    );
     if !want.is_empty() {
         let opts = remus_check::classify::ClassifyOptions::default();
         for (point, inside, tag) in want {
-            let Some(p) = point else { continue };
-            match remus_check::classify::classify_point(&st.topo, result, p, &opts) {
+            match remus_check::classify::classify_point(&st.topo, result, point, &opts) {
                 Ok(remus_check::classify::PointClassification::Inside) if inside => {}
                 Ok(remus_check::classify::PointClassification::Outside) if !inside => {}
                 Ok(remus_check::classify::PointClassification::OnBoundary) => {}
@@ -3776,6 +3826,46 @@ fn checkpoint_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// Bind a resume to the exact test executable and all campaign settings.
+fn checkpoint_identity(
+    limits: &SeqLimits,
+    cases: usize,
+    seed: u64,
+    partition: (usize, usize),
+    isolated: bool,
+    deadline_ms: u64,
+) -> Value {
+    use std::io::Read as _;
+    let executable = std::env::current_exe().expect("campaign executable path");
+    let mut file = std::fs::File::open(executable).expect("campaign executable is readable");
+    let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
+    let mut bytes = [0_u8; 8192];
+    loop {
+        let n = file
+            .read(&mut bytes)
+            .expect("campaign executable is readable");
+        if n == 0 {
+            break;
+        }
+        for &byte in &bytes[..n] {
+            fingerprint ^= u64::from(byte);
+            fingerprint = fingerprint.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    json!({
+        "revision": std::env::var("OPSEQ81_REVISION").unwrap_or_else(|_| "unknown".to_owned()),
+        "executable": format!("{fingerprint:016x}"),
+        "source": limits.source,
+        "sequence_timeout_ms": limits.timeout_ms,
+        "face_budget": limits.face_budget,
+        "cases": cases,
+        "seed": seed,
+        "partition": [partition.0, partition.1],
+        "isolated": isolated,
+        "case_deadline_ms": deadline_ms,
+    })
+}
+
 #[derive(Debug)]
 struct CheckpointRecord {
     kind: SeqKind,
@@ -3786,6 +3876,7 @@ struct CheckpointRecord {
 
 fn parse_checkpoint(
     text: &str,
+    identity: &Value,
 ) -> Result<std::collections::BTreeMap<u64, CheckpointRecord>, String> {
     let mut done = std::collections::BTreeMap::new();
     for (line_index, line) in text.lines().enumerate() {
@@ -3795,6 +3886,11 @@ fn parse_checkpoint(
             .get("seed")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("checkpoint line {} has no seed", line_index + 1))?;
+        if row.get("identity") != Some(identity) {
+            return Err(format!(
+                "checkpoint seed {seed} belongs to another source or campaign config; start a fresh checkpoint"
+            ));
+        }
         let verdict = row
             .get("verdict")
             .and_then(Value::as_str)
@@ -3866,7 +3962,9 @@ fn parse_checkpoint(
 
 #[test]
 fn checkpoint_resume_refuses_prior_findings() {
+    let identity = json!({"revision": "current", "executable": "abc", "cases": 2});
     let clean = json!({
+        "identity": identity,
         "seed": 7,
         "verdict": "exact_ok / ok",
         "exact_ok_bools": 1,
@@ -3880,6 +3978,7 @@ fn checkpoint_resume_refuses_prior_findings() {
         "invalid_handle / handle",
     ] {
         let bad = json!({
+            "identity": identity,
             "seed": 8,
             "verdict": verdict,
             "exact_ok_bools": 0,
@@ -3887,16 +3986,18 @@ fn checkpoint_resume_refuses_prior_findings() {
             "oracle_tags": ["topology"],
         });
         let text = format!("{clean}\n{bad}\n");
-        let error = parse_checkpoint(&text).unwrap_err();
+        let error = parse_checkpoint(&text, &identity).unwrap_err();
         assert!(error.contains("seed 8 already recorded"), "{error}");
     }
 }
 
 #[test]
 fn checkpoint_resume_restores_clean_tally_and_coverage() {
+    let identity = json!({"revision": "current", "executable": "abc", "cases": 2});
     let text = format!(
         "{}\n{}\n",
         json!({
+            "identity": identity,
             "seed": 7,
             "verdict": "exact_ok / ok",
             "exact_ok_bools": 2,
@@ -3904,6 +4005,7 @@ fn checkpoint_resume_restores_clean_tally_and_coverage() {
             "oracle_tags": ["volume", "topology"],
         }),
         json!({
+            "identity": identity,
             "seed": 8,
             "verdict": "refused / unsupported",
             "exact_ok_bools": 0,
@@ -3911,7 +4013,7 @@ fn checkpoint_resume_restores_clean_tally_and_coverage() {
             "oracle_tags": ["unsupported"],
         })
     );
-    let done = parse_checkpoint(&text).unwrap();
+    let done = parse_checkpoint(&text, &identity).unwrap();
     let mut tally = Tally::default();
     let mut coverage = Coverage::default();
     for prior in done.values() {
@@ -3925,18 +4027,54 @@ fn checkpoint_resume_restores_clean_tally_and_coverage() {
     assert_eq!(tally.bad(), 0);
     assert_eq!(coverage.oracle_tags.get("topology"), Some(&1));
     assert_eq!(coverage.oracle_tags.get("unsupported"), Some(&1));
+    let legacy = json!({
+        "identity": identity,
+        "seed": 7,
+        "verdict": "exact_ok / ok",
+    });
     assert!(
-        parse_checkpoint("{\"seed\":7,\"verdict\":\"exact_ok / ok\"}\n")
+        parse_checkpoint(&format!("{legacy}\n"), &identity)
             .unwrap_err()
             .contains("start a fresh checkpoint")
     );
 }
 
+#[test]
+fn checkpoint_resume_rejects_source_or_config_drift() {
+    let current = json!({
+        "revision": "new",
+        "executable": "new-binary",
+        "cases": 64,
+        "face_budget": 100,
+    });
+    for old in [
+        json!({"revision": "old", "executable": "new-binary", "cases": 64, "face_budget": 100}),
+        json!({"revision": "new", "executable": "old-binary", "cases": 64, "face_budget": 100}),
+        json!({"revision": "new", "executable": "new-binary", "cases": 256, "face_budget": 100}),
+        json!({"revision": "new", "executable": "new-binary", "cases": 64, "face_budget": 50}),
+    ] {
+        let row = json!({
+            "identity": old,
+            "seed": 7,
+            "verdict": "exact_ok / ok",
+            "exact_ok_bools": 1,
+            "bool_ops": 1,
+            "oracle_tags": ["ok"],
+        });
+        let error = parse_checkpoint(&format!("{row}\n"), &current).unwrap_err();
+        assert!(
+            error.contains("another source or campaign config"),
+            "{error}"
+        );
+    }
+}
+
 fn load_checkpoint(
     path: &std::path::Path,
+    identity: &Value,
 ) -> Result<std::collections::BTreeMap<u64, CheckpointRecord>, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse_checkpoint(&text),
+        Ok(text) => parse_checkpoint(&text, identity),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(std::collections::BTreeMap::new())
         }
@@ -3944,8 +4082,9 @@ fn load_checkpoint(
     }
 }
 
-fn append_checkpoint(path: &std::path::Path, seed: u64, report: &SeqReport) {
+fn append_checkpoint(path: &std::path::Path, identity: &Value, seed: u64, report: &SeqReport) {
     let row = json!({
+        "identity": identity,
         "seed": seed,
         "verdict": format!("{} / {}", report.kind.label(), report.oracle),
         "exact_ok_bools": report.exact_ok_bools,
@@ -5271,14 +5410,18 @@ fn bounded_campaign() {
     let (n, seed) = campaign_size();
     let (part, parts) = campaign_partition();
     let checkpoint = checkpoint_path();
-    let done = checkpoint
-        .as_deref()
-        .map(load_checkpoint)
-        .transpose()
-        .expect("checkpoint must be complete and contain no prior finding")
-        .unwrap_or_default();
     let isolated = std::env::var("OPSEQ81_ISOLATE").as_deref() == Ok("1");
     let deadline = case_timeout_ms();
+    let identity = checkpoint
+        .as_ref()
+        .map(|_| checkpoint_identity(&limits, n, seed, (part, parts), isolated, deadline));
+    let done = checkpoint
+        .as_deref()
+        .zip(identity.as_ref())
+        .map(|(path, identity)| load_checkpoint(path, identity))
+        .transpose()
+        .expect("checkpoint must match this campaign and contain no prior finding")
+        .unwrap_or_default();
     let mut tally = Tally::default();
     let mut coverage = Coverage::default();
     let mut finding_paths: Vec<String> = Vec::new();
@@ -5313,7 +5456,12 @@ fn bounded_campaign() {
         };
         coverage.record_report(&report);
         if let Some(path) = checkpoint.as_deref() {
-            append_checkpoint(path, case_seed, &report);
+            append_checkpoint(
+                path,
+                identity.as_ref().expect("checkpoint identity"),
+                case_seed,
+                &report,
+            );
         }
         ran += 1;
         if ran % 16 == 0 {
