@@ -57,6 +57,7 @@
 //! rims) — ordinary box/planar and analytic-shoulder fillets never reach the
 //! sampling loop.
 
+use remus_math::det_hash::DetHashSet;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -428,10 +429,9 @@ pub fn result_has_nurbs_band(
     live: &Topology,
     result: SolidId,
 ) -> Result<bool, OperationsError> {
-    let input_faces: std::collections::HashSet<_> =
-        remus_topology::explorer::solid_faces(pristine, input)?
-            .into_iter()
-            .collect();
+    let input_faces: DetHashSet<_> = remus_topology::explorer::solid_faces(pristine, input)?
+        .into_iter()
+        .collect();
     for face_id in remus_topology::explorer::solid_faces(live, result)? {
         if !matches!(
             live.face(face_id)?.surface(),
