@@ -225,7 +225,7 @@ pub(super) fn intersections(
         _ => return Err(ArrangementError::UnsupportedCurve),
     }
     let mut result = Vec::new();
-    for (mut x, mut y) in hits {
+    for (hit_index, (mut x, mut y)) in hits.iter().copied().enumerate() {
         work.step()?;
         if !x.is_finite() || !y.is_finite() {
             return Err(ArrangementError::NonFiniteInput);
@@ -243,12 +243,12 @@ pub(super) fn intersections(
                 }
             }
         }
-        // A shared endpoint certificate permits adoption only within
-        // arithmetic roundoff. A second real crossing inside the modeling
-        // tolerance must retain its own event and the intervening cut.
+        // A shared endpoint certificate permits tolerance-based adoption
+        // only for the nearest valid pair hit. This retains adapter-projected
+        // joins without absorbing a distinct second crossing nearby.
         // Runs after mutual-end snapping so exact event partners keep
         // priority; skips params already bitwise on an end.
-        for (host, guest, param) in [(&a, &b, &mut x), (&b, &a, &mut y)] {
+        for (host, guest, param, host_is_a) in [(&a, &b, &mut x, true), (&b, &a, &mut y, false)] {
             if same(*param, host.range[0]) || same(*param, host.range[1]) {
                 continue;
             }
@@ -259,7 +259,24 @@ pub(super) fn intersections(
                 }
                 let point = host.point(*param);
                 let dist = (point - host.point(host.range[end])).length();
-                if dist <= roundoff(point) && best.is_none_or(|(d, _)| dist < d) {
+                if dist > work.context.tolerance.linear {
+                    continue;
+                }
+                let endpoint = host.point(host.range[end]);
+                let mut has_closer_hit = false;
+                for (other_index, &(other_x, other_y)) in hits.iter().enumerate() {
+                    work.step()?;
+                    if other_index == hit_index || !in_range(a, other_x) || !in_range(b, other_y) {
+                        continue;
+                    }
+                    let other_param = if host_is_a { other_x } else { other_y };
+                    let other_dist = (host.point(other_param) - endpoint).length();
+                    if other_dist + roundoff(point) < dist {
+                        has_closer_hit = true;
+                        break;
+                    }
+                }
+                if !has_closer_hit && best.is_none_or(|(d, _)| dist < d) {
                     best = Some((dist, host.range[end]));
                 }
             }
