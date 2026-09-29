@@ -107,8 +107,8 @@ pub fn point_to_solid_distance(
 ///
 /// # Errors
 ///
-/// Returns an error if the solid or its face bounds are invalid. Empty input
-/// validates the same face bounds and returns an empty vector.
+/// Returns an error if the solid, face bounds, or boundary references are
+/// invalid. Empty input validates all face boundary references before returning.
 /// All-or-nothing on per-point failures, matching
 /// a loop over [`point_to_solid_distance`].
 pub fn point_to_solid_batch(
@@ -119,6 +119,8 @@ pub fn point_to_solid_batch(
     let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
     let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
     if points.is_empty() {
+        // Bounds only inspect outer wires; holes are boundary too.
+        let _ = collect_solid_points(topo, solid)?;
         return Ok(Vec::new());
     }
     let bvh = Bvh::build(&face_aabbs);
