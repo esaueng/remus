@@ -240,6 +240,11 @@ impl StructuredWasmError {
         structured
     }
 
+    /// The native registry code attached to this error, if any.
+    pub(crate) fn kernel_code(&self) -> Option<&str> {
+        self.details.get("kernelCode")?.as_str()
+    }
+
     /// Attach one structured detail field.
     pub(crate) fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.details.insert(key.to_string(), value.into());
@@ -394,6 +399,9 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
                 ("face", Some(face.index()))
             }
             remus_topology::TopologyError::NonManifold { .. } => ("topology", None),
+            // Internal control flow for the append-only fast path: rewound
+            // and retried internally, never surfaced to callers.
+            remus_topology::TopologyError::AppendOnlyGuardTrip { .. } => ("topology", None),
         };
         let mut structured = Self::new(WasmErrorCode::TopologyError, message);
         structured

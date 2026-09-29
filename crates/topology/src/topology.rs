@@ -22,6 +22,15 @@ use crate::vertex::{Vertex, VertexId};
 use crate::wire::{OrientedEdge, Wire, WireId};
 use crate::{DeleteSolidError, TopologyError};
 
+/// Mutation-local rollback storage and the append-only guard.
+///
+/// A child module so its `Topology` methods may touch the private arenas;
+/// cross-module drivers use its `pub(crate)` API only.
+#[path = "undo_log.rs"]
+pub(crate) mod undo_log;
+
+use undo_log::{ArenaTag, UndoBase, UndoLog};
+
 /// Dimensional class of a topological body.
 ///
 /// `General` reserves the future mixed-dimensional body model. No current
@@ -69,10 +78,17 @@ pub enum BodyId {
 /// Arena fields are private to enforce invariants through the public API.
 /// Use the typed accessor methods for lookups and the `add_*` methods
 /// for allocation.
-#[derive(Debug, Default, Clone)]
+///
+/// [`Topology`] is the single owner of every arena. All operations that
+/// create or query topological entities take a reference to this struct.
+///
+/// `Clone` copies every arena and map but starts independent transaction
+/// coordination: the clone keeps the source's lineage (so a snapshot taken
+/// from it restores exactly) and an empty undo log.
+#[derive(Debug, Default)]
 pub struct Topology {
-    /// Only unchanged entry states may share an active savepoint.
-    pub(crate) savepoint: crate::transaction::Coordinator,
+    /// Mutation-local rollback storage and append-only guards.
+    pub(crate) undo: UndoLog,
     /// All vertices in the model.
     vertices: Arena<Vertex>,
     /// All edges in the model.
@@ -108,6 +124,46 @@ pub struct Topology {
     /// false gap fails closed while a missed mutation would fake
     /// continuity.
     mutation_ticks: u64,
+}
+
+impl Clone for Topology {
+    /// Copies all topology state with independent transaction coordination.
+    ///
+    /// Keep in sync with the struct definition: every arena, map, and
+    /// counter below must be cloned. The undo log itself is never shared —
+    /// the clone records the source's lineage and starts empty.
+    fn clone(&self) -> Self {
+        // An intermediate clone retains its source lineage even after a
+        // private mutation. Foreign restores of that changed state must be
+        // recorded as a full inverse by the destination's live scopes.
+        let base = if self.undo.inherited_lineage {
+            self.undo.base
+        } else {
+            UndoBase {
+                lineage_id: self.undo.lineage_id,
+                generation: self.undo.generation,
+                log_len: self.undo.records.len(),
+                ticks: self.mutation_ticks,
+            }
+        };
+        Self {
+            undo: UndoLog::fresh_for_clone(base),
+            vertices: self.vertices.clone(),
+            edges: self.edges.clone(),
+            wires: self.wires.clone(),
+            faces: self.faces.clone(),
+            shells: self.shells.clone(),
+            solids: self.solids.clone(),
+            compounds: self.compounds.clone(),
+            compsolids: self.compsolids.clone(),
+            pcurves: self.pcurves.clone(),
+            loops: self.loops.clone(),
+            coedges: self.coedges.clone(),
+            attributes: self.attributes.clone(),
+            journal: self.journal.clone(),
+            mutation_ticks: self.mutation_ticks,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -149,9 +205,22 @@ macro_rules! arena_get {
 
 /// Generates a mutable arena accessor method on [`Topology`].
 ///
-/// Usage: `arena_get_mut!(method_name, arena_field, EntityType, IdType, ErrorVariant)`
+/// Usage: `arena_get_mut!(method_name, arena_field, EntityType, IdType, ErrorVariant, record_method)`
+///
+/// The record method clones the live value into the undo log (when scopes
+/// are active) and refuses pre-existing slots under an armed append-only
+/// guard — always before the exclusive reference escapes, so no write
+/// through the returned reference can bypass rollback tracking.
+///
+/// Counts as a model mutation for journal gap detection (see
+/// [`Topology::journal_begin`]), even if nothing is written.
+///
+/// # Errors
+///
+/// Returns a not-found error if the ID is invalid, or a guard-trip error
+/// when an append-only scope refuses a pre-existing slot.
 macro_rules! arena_get_mut {
-    ($method:ident, $field:ident, $T:ty, $Id:ty, $err:ident) => {
+    ($method:ident, $field:ident, $T:ty, $Id:ty, $err:ident, $record:ident) => {
         /// Returns an exclusive reference to the entity with the given ID.
         ///
         /// Counts as a model mutation for journal gap detection (see
@@ -161,7 +230,7 @@ macro_rules! arena_get_mut {
         ///
         /// Returns a not-found error if the ID is invalid.
         pub fn $method(&mut self, id: $Id) -> Result<&mut $T, TopologyError> {
-            self.savepoint.invalidate();
+            self.$record(id)?;
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
             self.$field.get_mut(id).ok_or(TopologyError::$err(id))
         }
@@ -170,6 +239,10 @@ macro_rules! arena_get_mut {
 
 /// Generates allocation, read-only arena access, count, and index
 /// reconstruction methods for a single entity type.
+///
+/// The allocation records `(arena, index)` in the undo log when scopes are
+/// active; allocations always append above the high-water mark, so they
+/// never trip the append-only guard.
 macro_rules! arena_api {
     (
         add = $add:ident,
@@ -178,13 +251,15 @@ macro_rules! arena_api {
         count = $count:ident,
         id_from_index = $id_from_index:ident,
         T = $T:ty,
-        Id = $Id:ty
+        Id = $Id:ty,
+        tag = $tag:expr
     ) => {
         /// Allocates a new entity in the arena and returns its typed handle.
         pub fn $add(&mut self, value: $T) -> $Id {
-            self.savepoint.invalidate();
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-            self.$arena.alloc(value)
+            let id = self.$arena.alloc(value);
+            self.record_alloc($tag, id.index());
+            id
         }
 
         /// Returns a shared reference to the arena for iteration and queries.
@@ -242,7 +317,6 @@ impl Topology {
         shell: ShellId,
         body_class: BodyClass,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         if !matches!(body_class, BodyClass::Solid | BodyClass::Sheet) {
             return Err(TopologyError::InvalidBodyClass {
                 entity: "shell",
@@ -264,13 +338,13 @@ impl Topology {
         wire: WireId,
         body_class: BodyClass,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         if body_class != BodyClass::Wire {
             return Err(TopologyError::InvalidBodyClass {
                 entity: "wire",
                 body_class: body_class.as_str(),
             });
         }
+        self.record_wire_overwrite(wire)?;
         let stored = self
             .wires
             .get_mut(wire)
@@ -322,7 +396,7 @@ impl Topology {
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
-        self.savepoint.invalidate();
+        self.undo_truncate_for_foreign_restore(snapshot);
         let mut snapshot_face_authority: HashMap<
             FaceId,
             HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
@@ -441,7 +515,11 @@ impl Topology {
     /// barrier instead: there a retirement may already have been reported
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
-        self.savepoint.invalidate();
+        self.undo_truncate_for_foreign_restore(snapshot);
+        self.restore_rollback_fields(snapshot);
+    }
+
+    pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {
         self.vertices.restore_for_rollback(&snapshot.vertices);
         self.edges.restore_for_rollback(&snapshot.edges);
         self.wires.restore_for_rollback(&snapshot.wires);
@@ -476,7 +554,6 @@ impl Topology {
         shells: usize,
         solids: usize,
     ) {
-        self.savepoint.invalidate();
         self.vertices.reserve(vertices);
         self.edges.reserve(edges);
         self.wires.reserve(wires);
@@ -486,22 +563,64 @@ impl Topology {
     }
 
     arena_get!(vertex, vertices, Vertex, VertexId, VertexNotFound);
-    arena_get_mut!(vertex_mut, vertices, Vertex, VertexId, VertexNotFound);
+    arena_get_mut!(
+        vertex_mut,
+        vertices,
+        Vertex,
+        VertexId,
+        VertexNotFound,
+        record_vertex_overwrite
+    );
 
     arena_get!(edge, edges, Edge, EdgeId, EdgeNotFound);
-    arena_get_mut!(edge_mut, edges, Edge, EdgeId, EdgeNotFound);
+    arena_get_mut!(
+        edge_mut,
+        edges,
+        Edge,
+        EdgeId,
+        EdgeNotFound,
+        record_edge_overwrite
+    );
 
     arena_get!(wire, wires, Wire, WireId, WireNotFound);
-    arena_get_mut!(wire_mut, wires, Wire, WireId, WireNotFound);
+    arena_get_mut!(
+        wire_mut,
+        wires,
+        Wire,
+        WireId,
+        WireNotFound,
+        record_wire_overwrite
+    );
 
     arena_get!(face, faces, Face, FaceId, FaceNotFound);
-    arena_get_mut!(face_mut, faces, Face, FaceId, FaceNotFound);
+    arena_get_mut!(
+        face_mut,
+        faces,
+        Face,
+        FaceId,
+        FaceNotFound,
+        record_face_overwrite
+    );
 
     arena_get!(shell, shells, Shell, ShellId, ShellNotFound);
-    arena_get_mut!(shell_mut, shells, Shell, ShellId, ShellNotFound);
+    arena_get_mut!(
+        shell_mut,
+        shells,
+        Shell,
+        ShellId,
+        ShellNotFound,
+        record_shell_overwrite
+    );
 
     arena_get!(solid, solids, Solid, SolidId, SolidNotFound);
-    arena_get_mut!(solid_mut, solids, Solid, SolidId, SolidNotFound);
+    arena_get_mut!(
+        solid_mut,
+        solids,
+        Solid,
+        SolidId,
+        SolidNotFound,
+        record_solid_overwrite
+    );
 
     arena_get!(compound, compounds, Compound, CompoundId, CompoundNotFound);
     arena_get_mut!(
@@ -509,7 +628,8 @@ impl Topology {
         compounds,
         Compound,
         CompoundId,
-        CompoundNotFound
+        CompoundNotFound,
+        record_compound_overwrite
     );
 
     arena_get!(
@@ -544,8 +664,8 @@ impl Topology {
         solid: SolidId,
         attributes: crate::attributes::EntityAttributes,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         let _ = self.solid(solid)?;
+        self.record_solid_attribute(solid)?;
         self.attributes.set_solid(solid, attributes);
         Ok(())
     }
@@ -566,8 +686,8 @@ impl Topology {
         face: FaceId,
         attributes: crate::attributes::EntityAttributes,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         let _ = self.face(face)?;
+        self.record_face_attribute(face)?;
         self.attributes.set_face(face, attributes);
         Ok(())
     }
@@ -596,7 +716,6 @@ impl Topology {
     /// safe — the operation's mutations surface as a gap at the next
     /// `journal_begin`.
     pub fn journal_begin(&mut self, kind: impl Into<String>) -> PendingOp {
-        self.savepoint.invalidate();
         if let Some(last) = self.journal.last_ticks()
             && last != self.mutation_ticks
         {
@@ -624,9 +743,16 @@ impl Topology {
         pending: PendingOp,
         draft: EvolutionDraft,
     ) -> Result<OpId, TopologyError> {
-        self.savepoint.invalidate();
-        self.journal
-            .record_evolution(pending.kind, pending.scope, draft, self.mutation_ticks)
+        // A refused draft interns nothing observable: keep today's behavior
+        // of leaving any interned pairs in place on error.
+        let (op, created) = self.journal.record_evolution(
+            pending.kind,
+            pending.scope,
+            draft,
+            self.mutation_ticks,
+        )?;
+        self.record_journal_created(created);
+        Ok(op)
     }
 
     /// Copies face attributes forward across one journaled operation,
@@ -668,8 +794,6 @@ impl Topology {
         allow_inferred: bool,
     ) -> Result<crate::journal::JournalAttributePropagation, TopologyError> {
         use crate::journal::{EntityEvent, EntityKind, EntryPayload, JournalAttributePropagation};
-
-        self.savepoint.invalidate();
 
         let mut report = JournalAttributePropagation::default();
         let Some(entry) = self.journal.entries().iter().find(|entry| entry.op() == op) else {
@@ -752,7 +876,8 @@ impl Topology {
     /// not describe this topology's history would fake continuity, and
     /// the caller (the document reader) owns that consistency.
     pub fn load_journal(&mut self, journal: Journal) {
-        self.savepoint.invalidate();
+        self.record_journal_replace();
+        self.trip_append_if_armed();
         if let Some(ticks) = journal.last_ticks() {
             self.mutation_ticks = ticks;
         }
@@ -764,16 +889,19 @@ impl Topology {
     /// entities) is unresolved across it, and a resolver chasing a
     /// reference through this entry fails closed naming the operation.
     pub fn journal_record_barrier(&mut self, pending: PendingOp, affected: Vec<EntityKey>) -> OpId {
-        self.savepoint.invalidate();
-        self.journal
-            .record_barrier(pending.kind, pending.scope, affected, self.mutation_ticks)
+        let (op, created) =
+            self.journal
+                .record_barrier(pending.kind, pending.scope, affected, self.mutation_ticks);
+        self.record_journal_created(created);
+        op
     }
     arena_get_mut!(
         compsolid_mut,
         compsolids,
         CompSolid,
         CompSolidId,
-        CompSolidNotFound
+        CompSolidNotFound,
+        record_compsolid_overwrite
     );
 
     arena_api!(
@@ -783,7 +911,8 @@ impl Topology {
         count = num_vertices,
         id_from_index = vertex_id_from_index,
         T = Vertex,
-        Id = VertexId
+        Id = VertexId,
+        tag = ArenaTag::Vertex
     );
 
     arena_api!(
@@ -793,7 +922,8 @@ impl Topology {
         count = num_edges,
         id_from_index = edge_id_from_index,
         T = Edge,
-        Id = EdgeId
+        Id = EdgeId,
+        tag = ArenaTag::Edge
     );
 
     arena_api!(
@@ -803,7 +933,8 @@ impl Topology {
         count = num_wires,
         id_from_index = wire_id_from_index,
         T = Wire,
-        Id = WireId
+        Id = WireId,
+        tag = ArenaTag::Wire
     );
 
     /// Allocates a face and immediately promotes its valid wire boundary to
@@ -816,7 +947,6 @@ impl Topology {
     /// are installed and strict consumers return the corresponding not-found
     /// error when they inspect the boundary.
     pub fn add_face(&mut self, mut value: Face) -> FaceId {
-        self.savepoint.invalidate();
         let mut wire_ids = vec![value.outer_wire()];
         wire_ids.extend(value.inner_wires().iter().copied());
         let specs = self.boundary_loop_specs(&wire_ids, None);
@@ -825,7 +955,12 @@ impl Topology {
         value.replace_boundary_loops(Vec::new());
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         let face_id = self.faces.alloc(value);
+        self.record_alloc(ArenaTag::Face, face_id.index());
         if let Ok(specs) = specs {
+            // Infallible on this path: every touched loop, coedge, face,
+            // and index key is freshly allocated above, and no authority is
+            // replaced, so neither the undo log nor the append-only guard
+            // has anything to refuse.
             let _ = self.install_face_loop_specs_carrying(face_id, specs, HashMap::new(), false);
         }
         face_id
@@ -856,7 +991,8 @@ impl Topology {
         count = num_shells,
         id_from_index = shell_id_from_index,
         T = Shell,
-        Id = ShellId
+        Id = ShellId,
+        tag = ArenaTag::Shell
     );
 
     arena_api!(
@@ -866,7 +1002,8 @@ impl Topology {
         count = num_solids,
         id_from_index = solid_id_from_index,
         T = Solid,
-        Id = SolidId
+        Id = SolidId,
+        tag = ArenaTag::Solid
     );
 
     arena_api!(
@@ -876,7 +1013,8 @@ impl Topology {
         count = num_compounds,
         id_from_index = compound_id_from_index,
         T = Compound,
-        Id = CompoundId
+        Id = CompoundId,
+        tag = ArenaTag::Compound
     );
 
     arena_api!(
@@ -886,7 +1024,8 @@ impl Topology {
         count = num_compsolids,
         id_from_index = compsolid_id_from_index,
         T = CompSolid,
-        Id = CompSolidId
+        Id = CompSolidId,
+        tag = ArenaTag::CompSolid
     );
 
     fn boundary_loop_specs(
@@ -917,8 +1056,7 @@ impl Topology {
         &mut self,
         face_id: FaceId,
         specs: Vec<BoundaryLoopSpec>,
-    ) -> Vec<LoopId> {
-        self.savepoint.invalidate();
+    ) -> Result<Vec<LoopId>, TopologyError> {
         let carried_authority = self.carried_face_authority(face_id);
         self.install_face_loop_specs_carrying(face_id, specs, carried_authority, true)
     }
@@ -957,9 +1095,14 @@ impl Topology {
         specs: Vec<BoundaryLoopSpec>,
         mut carried_authority: HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
         replace_existing: bool,
-    ) -> Vec<LoopId> {
-        self.savepoint.invalidate();
+    ) -> Result<Vec<LoopId>, TopologyError> {
         if replace_existing {
+            // Record every removed index entry before destroying it; entries
+            // of a pre-existing face trip an armed append-only guard here,
+            // before any retirement or write lands.
+            for (edge, forward, _) in self.pcurves.uses_for_face(face_id) {
+                self.record_pcurve_write(edge, face_id, forward)?;
+            }
             self.pcurves.remove_face(face_id);
             let old_loops = self
                 .faces
@@ -967,12 +1110,15 @@ impl Topology {
                 .map(|face| face.boundary_loops().to_vec())
                 .unwrap_or_default();
             for loop_id in old_loops {
-                if let Some(old_loop) = self.loops.get(loop_id) {
-                    for coedge_id in old_loop.coedges().to_vec() {
-                        self.coedges.retire(coedge_id);
-                    }
+                let retired_coedges = self
+                    .loops
+                    .get(loop_id)
+                    .map(|old_loop| old_loop.coedges().to_vec())
+                    .unwrap_or_default();
+                for coedge_id in retired_coedges {
+                    self.record_coedge_retire(coedge_id)?;
                 }
-                self.loops.retire(loop_id);
+                self.record_loop_retire(loop_id)?;
             }
         }
 
@@ -981,45 +1127,42 @@ impl Topology {
             let loop_id = self
                 .loops
                 .alloc(Loop::new(face_id, Vec::new(), spec.closed));
-            let coedge_ids: Vec<CoedgeId> = spec
-                .oriented_edges
-                .iter()
-                .map(|oriented| {
-                    let carried = carried_authority
-                        .remove(&(oriented.edge(), oriented.is_forward()))
-                        .unwrap_or(CarriedCoedgeAuthority {
-                            pcurve: None,
-                            periodic_winding: PeriodicWinding::ZERO,
-                        });
-                    let coedge_id = self.coedges.alloc(Coedge::with_pcurve(
-                        oriented.edge(),
-                        oriented.is_forward(),
-                        loop_id,
-                        carried.pcurve,
-                    ));
-                    if carried.periodic_winding != PeriodicWinding::ZERO
-                        && let Some(coedge) = self.coedges.get_mut(coedge_id)
-                    {
+            self.record_alloc(ArenaTag::Loop, loop_id.index());
+            let mut coedge_ids = Vec::with_capacity(spec.oriented_edges.len());
+            for oriented in &spec.oriented_edges {
+                let carried = carried_authority
+                    .remove(&(oriented.edge(), oriented.is_forward()))
+                    .unwrap_or(CarriedCoedgeAuthority {
+                        pcurve: None,
+                        periodic_winding: PeriodicWinding::ZERO,
+                    });
+                let coedge_id = self.coedges.alloc(Coedge::with_pcurve(
+                    oriented.edge(),
+                    oriented.is_forward(),
+                    loop_id,
+                    carried.pcurve,
+                ));
+                self.record_alloc(ArenaTag::Coedge, coedge_id.index());
+                if carried.periodic_winding != PeriodicWinding::ZERO {
+                    self.record_coedge_overwrite(coedge_id)?;
+                    if let Some(coedge) = self.coedges.get_mut(coedge_id) {
                         coedge.replace_periodic_winding(carried.periodic_winding);
                     }
-                    self.pcurves.index_use(
-                        oriented.edge(),
-                        face_id,
-                        oriented.is_forward(),
-                        coedge_id,
-                    );
-                    coedge_id
-                })
-                .collect();
+                }
+                self.index_pcurve_use(oriented.edge(), face_id, oriented.is_forward(), coedge_id)?;
+                coedge_ids.push(coedge_id);
+            }
+            self.record_loop_overwrite(loop_id)?;
             if let Some(loop_entity) = self.loops.get_mut(loop_id) {
                 *loop_entity = Loop::new(face_id, coedge_ids, spec.closed);
             }
             new_loops.push(loop_id);
         }
+        self.record_face_overwrite(face_id)?;
         if let Some(face) = self.faces.get_mut(face_id) {
             face.replace_boundary_loops(new_loops.clone());
         }
-        new_loops
+        Ok(new_loops)
     }
 
     /// Atomically replaces a stored wire used by one or more face boundaries.
@@ -1045,7 +1188,6 @@ impl Topology {
         wire_id: WireId,
         replacement: Wire,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         self.wire(wire_id)?;
 
         let mut affected = Vec::new();
@@ -1062,6 +1204,7 @@ impl Topology {
             self.boundary_loop_specs(&[wire_id], Some((wire_id, &replacement)))?;
         }
 
+        self.record_wire_overwrite(wire_id)?;
         let stored = self
             .wires
             .get_mut(wire_id)
@@ -1070,7 +1213,7 @@ impl Topology {
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
 
         for (face_id, specs) in affected {
-            let _ = self.install_face_loop_specs(face_id, specs);
+            self.install_face_loop_specs(face_id, specs)?;
         }
         Ok(())
     }
@@ -1092,18 +1235,18 @@ impl Topology {
         outer_wire: WireId,
         inner_wires: Vec<WireId>,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         self.face(face_id)?;
         let mut wire_ids = vec![outer_wire];
         wire_ids.extend(inner_wires.iter().copied());
         let specs = self.boundary_loop_specs(&wire_ids, None)?;
+        self.record_face_overwrite(face_id)?;
         let face = self
             .faces
             .get_mut(face_id)
             .ok_or(TopologyError::FaceNotFound(face_id))?;
         face.replace_boundary_wires(outer_wire, inner_wires);
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        let _ = self.install_face_loop_specs(face_id, specs);
+        self.install_face_loop_specs(face_id, specs)?;
         Ok(())
     }
 
@@ -1120,7 +1263,6 @@ impl Topology {
     /// referenced edge is invalid. Nothing is retired or allocated on
     /// error.
     pub fn build_face_loops(&mut self, face_id: FaceId) -> Result<Vec<LoopId>, TopologyError> {
-        self.savepoint.invalidate();
         if let Some(loops) = self
             .faces
             .get(face_id)
@@ -1133,7 +1275,7 @@ impl Topology {
         let mut wire_ids = vec![face.outer_wire()];
         wire_ids.extend(face.inner_wires().iter().copied());
         let specs = self.boundary_loop_specs(&wire_ids, None)?;
-        Ok(self.install_face_loop_specs(face_id, specs))
+        self.install_face_loop_specs(face_id, specs)
     }
 
     /// The authoritative loops for a face, in outer-then-inner order, or
@@ -1228,7 +1370,6 @@ impl Topology {
     /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
-        self.savepoint.invalidate();
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         let mut retiring = self.collect_solid_entities(solid)?;
         if let Some((compound_id, _)) = self
@@ -1276,33 +1417,56 @@ impl Topology {
                 .map(|face| face.boundary_loops().to_vec())
                 .unwrap_or_default();
             for loop_id in loop_ids {
-                if let Some(retired_loop) = self.loops.get(loop_id) {
-                    for coedge_id in retired_loop.coedges().to_vec() {
-                        self.coedges.retire(coedge_id);
-                    }
+                let retired_coedges = self
+                    .loops
+                    .get(loop_id)
+                    .map(|retired_loop| retired_loop.coedges().to_vec())
+                    .unwrap_or_default();
+                for coedge_id in retired_coedges {
+                    self.record_coedge_retire(coedge_id)?;
                 }
-                self.loops.retire(loop_id);
+                self.record_loop_retire(loop_id)?;
             }
         }
+        // Record every destroyed index and attribute entry before removing
+        // it; entries of pre-existing entities trip an armed append-only
+        // guard here, before any retirement lands.
+        for &face_id in &retiring.faces {
+            for (edge, forward, _) in self.pcurves.uses_for_face(face_id) {
+                self.record_pcurve_write(edge, face_id, forward)?;
+            }
+        }
+        for &edge_id in &retiring.edges {
+            for (face, forward, _) in self.pcurves.uses_for_edge(edge_id) {
+                // Keys already covered by the face pass above record once.
+                if !retiring.faces.contains(&face) {
+                    self.record_pcurve_write(edge_id, face, forward)?;
+                }
+            }
+        }
+        for &face_id in &retiring.faces {
+            self.record_face_attribute(face_id)?;
+        }
+        self.record_solid_attribute(solid)?;
         self.pcurves
             .remove_for_retired_entities(&retiring.edges, &retiring.faces);
         self.attributes
             .remove_for_retired_entities(&std::iter::once(solid).collect(), &retiring.faces);
-        self.solids.retire(solid);
+        self.record_solid_retire(solid)?;
         for id in retiring.shells {
-            self.shells.retire(id);
+            self.record_shell_retire(id)?;
         }
         for id in retiring.faces {
-            self.faces.retire(id);
+            self.record_face_retire(id)?;
         }
         for id in retiring.wires {
-            self.wires.retire(id);
+            self.record_wire_retire(id)?;
         }
         for id in retiring.edges {
-            self.edges.retire(id);
+            self.record_edge_retire(id)?;
         }
         for id in retiring.vertices {
-            self.vertices.retire(id);
+            self.record_vertex_retire(id)?;
         }
 
         Ok(())
@@ -1366,7 +1530,6 @@ impl Topology {
     /// distinct from a malformed-input error. A shell cannot otherwise
     /// hold zero faces, so this is the only path that produces one.
     pub fn add_empty_solid(&mut self) -> SolidId {
-        self.savepoint.invalidate();
         let shell = self.add_shell(Shell::empty());
         self.add_solid(Solid::new(shell, Vec::new()))
     }
@@ -1410,7 +1573,6 @@ impl Topology {
         forward: bool,
         pcurve: PCurve,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         self.edge(edge)?;
         self.face(face)?;
         if self.loops_of_face(face).is_none() {
@@ -1439,7 +1601,6 @@ impl Topology {
         face: FaceId,
         forward: bool,
     ) -> Result<Option<PCurve>, TopologyError> {
-        self.savepoint.invalidate();
         self.edge(edge)?;
         self.face(face)?;
         let Some(coedge_id) = self.pcurves.get_use(edge, face, forward) else {
@@ -1500,7 +1661,6 @@ impl Topology {
         face: FaceId,
         pcurve: PCurve,
     ) -> Result<(), TopologyError> {
-        self.savepoint.invalidate();
         let uses = self.face_edge_uses(edge, face)?;
         let forward = match uses.as_slice() {
             [forward] => *forward,
@@ -1526,7 +1686,6 @@ impl Topology {
         edge: EdgeId,
         face: FaceId,
     ) -> Result<Option<PCurve>, TopologyError> {
-        self.savepoint.invalidate();
         let stored: Vec<bool> = self.face_edge_uses(edge, face)?;
         match stored.as_slice() {
             [] => Ok(None),
@@ -1602,8 +1761,8 @@ impl Topology {
         coedge_id: CoedgeId,
         pcurve: PCurve,
     ) -> Result<Option<PCurve>, TopologyError> {
-        self.savepoint.invalidate();
         self.validate_coedge_authority(coedge_id)?;
+        self.record_coedge_overwrite(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         Ok(self
             .coedges
@@ -1621,8 +1780,8 @@ impl Topology {
         &mut self,
         coedge_id: CoedgeId,
     ) -> Result<Option<PCurve>, TopologyError> {
-        self.savepoint.invalidate();
         self.validate_coedge_authority(coedge_id)?;
+        self.record_coedge_overwrite(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         Ok(self
             .coedges
@@ -1642,8 +1801,8 @@ impl Topology {
         coedge_id: CoedgeId,
         winding: PeriodicWinding,
     ) -> Result<PeriodicWinding, TopologyError> {
-        self.savepoint.invalidate();
         self.validate_coedge_authority(coedge_id)?;
+        self.record_coedge_overwrite(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         Ok(self
             .coedges
