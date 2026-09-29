@@ -19,8 +19,8 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use remus_check::distance::{
-    DistanceOptions, DistanceScratch, PreparedDistanceSolid, point_to_solid, point_to_solid_batch,
-    point_to_solid_exhaustive, point_to_solid_with_stats,
+    DistanceOptions, DistanceScratch, PreparedDistanceSolid, point_to_face_with_options,
+    point_to_solid, point_to_solid_batch, point_to_solid_exhaustive, point_to_solid_with_stats,
 };
 
 const TOL: f64 = 1e-7;
@@ -496,7 +496,20 @@ fn invalid_options_and_solid_report_typed_errors() {
         Point3::new(0.0, 0.0, 0.0),
         Point3::new(1.0, 1.0, 1.0),
     );
+    let shell = topo.solid(solid).unwrap().outer_shell();
+    let face = topo.shell(shell).unwrap().faces()[0];
     for bad in [f64::NAN, f64::INFINITY, 0.0, -1e-7] {
+        assert!(
+            point_to_face_with_options(
+                &topo,
+                Point3::new(0.5, 0.5, 3.0),
+                face,
+                DistanceOptions {
+                    projection_tolerance: bad
+                },
+            )
+            .is_err()
+        );
         let err = PreparedDistanceSolid::prepare_with_options(
             &topo,
             solid,
