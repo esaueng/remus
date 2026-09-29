@@ -75,9 +75,9 @@ use remus_topology::Topology;
 use remus_topology::solid::SolidId;
 
 use crate::async_frame::{
-    AsyncFrameOutput, AsyncFrameTimings, FrameTicket, MAX_ASYNC_FRAMES, PendingFrame,
-    PendingMapping, ReadbackSelection, is_done, mark_done, read_map_slot, shared_map_slot,
-    write_map_slot,
+    AsyncFrameOutput, AsyncFrameTimings, FrameTicket, MAX_ASYNC_FRAMES, MAX_ASYNC_IN_FLIGHT_BYTES,
+    PendingFrame, PendingMapping, ReadbackSelection, is_done, mark_done, read_map_slot,
+    shared_map_slot, write_map_slot,
 };
 use crate::camera::Camera;
 use crate::error::RenderError;
@@ -623,6 +623,8 @@ impl OffscreenSession {
     /// - [`RenderError::DeviceLost`] if the session is poisoned.
     /// - [`RenderError::QueueFull`] when [`MAX_ASYNC_FRAMES`] frames are
     ///   already pending (session stays usable; collect or cancel one first).
+    /// - [`RenderError::AsyncBudgetExceeded`] when retained bytes would exceed
+    ///   [`MAX_ASYNC_IN_FLIGHT_BYTES`] (session stays usable).
     /// - [`RenderError::InvalidSize`] / [`RenderError::PixelBudgetExceeded`] /
     ///   [`RenderError::SizeTooLarge`] on bad dimensions (session stays usable).
     /// - [`RenderError::Operations`] / [`RenderError::Topology`] /
@@ -640,13 +642,21 @@ impl OffscreenSession {
         }
         validate_session_size(opts.width, opts.height, self.max_texture_dimension_2d)?;
         self.check_queue_capacity()?;
+        ensure_async_budget(self.in_flight_bytes, opts.width, opts.height, selection, 0)?;
         // Tessellation runs before any GPU work so a tessellation failure
         // never touches GPU state and never consumes a queue slot.
         let mesh = RenderMesh::build(topo, solid, opts.deflection)?;
-        let geometry = GeometryBuffers::new(&self.ctx.device, &mesh);
         let geometry_bytes = mesh.vertices.len() * std::mem::size_of::<Vertex>()
             + mesh.indices.len() * std::mem::size_of::<u32>()
             + mesh.edge_vertices.len() * std::mem::size_of::<EdgeVertex>();
+        ensure_async_budget(
+            self.in_flight_bytes,
+            opts.width,
+            opts.height,
+            selection,
+            geometry_bytes,
+        )?;
+        let geometry = GeometryBuffers::new(&self.ctx.device, &mesh);
         Ok(self.submit_frame_inner(
             mesh.center,
             &geometry,
@@ -677,6 +687,8 @@ impl OffscreenSession {
     ///   session (session stays usable).
     /// - [`RenderError::QueueFull`] when [`MAX_ASYNC_FRAMES`] frames are
     ///   already pending (session stays usable).
+    /// - [`RenderError::AsyncBudgetExceeded`] when retained bytes would exceed
+    ///   [`MAX_ASYNC_IN_FLIGHT_BYTES`] (session stays usable).
     /// - [`RenderError::InvalidSize`] / [`RenderError::PixelBudgetExceeded`] /
     ///   [`RenderError::SizeTooLarge`] on bad dimensions (session stays usable).
     pub fn submit_prepared(
@@ -699,6 +711,13 @@ impl OffscreenSession {
         self.check_queue_capacity()?;
         let stats = asset.stats();
         let geometry_bytes = stats.vertex_bytes + stats.index_bytes + stats.edge_bytes;
+        ensure_async_budget(
+            self.in_flight_bytes,
+            opts.width,
+            opts.height,
+            selection,
+            geometry_bytes,
+        )?;
         Ok(self.submit_frame_inner(
             asset.center,
             &asset.geometry,
@@ -1041,15 +1060,7 @@ impl OffscreenSession {
         self.next_frame_id += 1;
         let ticket = FrameTicket::new(self.session_id, frame_id, width, height, selection);
 
-        // Retained-memory accounting: targets + staging + geometry.
-        let pixels = u64::from(width) * u64::from(height);
-        // color + id + depth textures, 4 bytes per pixel each.
-        let texture_bytes = pixels * 12;
-        let staging_bytes = u64::from(color_buf.as_ref().map_or(0, |_| color_padded_bpr))
-            * u64::from(height)
-            + u64::from(id_buf.as_ref().map_or(0, |_| id_padded_bpr)) * u64::from(height);
-        let retained_bytes =
-            texture_bytes + staging_bytes + u64::try_from(geometry_bytes).unwrap_or(u64::MAX);
+        let retained_bytes = frame_retained_bytes(width, height, selection, geometry_bytes);
 
         // For `None`, completion is GPU execution only: register a done
         // callback now (submission never waits for it).
@@ -1409,6 +1420,39 @@ impl OffscreenSession {
     }
 }
 
+fn frame_retained_bytes(
+    width: u32,
+    height: u32,
+    selection: ReadbackSelection,
+    geometry_bytes: usize,
+) -> u64 {
+    let pixels = u64::from(width) * u64::from(height);
+    let staging_per_output = u64::from(padded_bytes_per_row(width, 4)) * u64::from(height);
+    let outputs = u64::from(selection.wants_color()) + u64::from(selection.wants_ids());
+    pixels
+        .saturating_mul(12)
+        .saturating_add(staging_per_output.saturating_mul(outputs))
+        .saturating_add(u64::try_from(geometry_bytes).unwrap_or(u64::MAX))
+}
+
+fn ensure_async_budget(
+    in_flight: u64,
+    width: u32,
+    height: u32,
+    selection: ReadbackSelection,
+    geometry_bytes: usize,
+) -> Result<(), RenderError> {
+    let requested = frame_retained_bytes(width, height, selection, geometry_bytes);
+    if requested > MAX_ASYNC_IN_FLIGHT_BYTES || in_flight > MAX_ASYNC_IN_FLIGHT_BYTES - requested {
+        return Err(RenderError::AsyncBudgetExceeded {
+            in_flight,
+            requested,
+            max: MAX_ASYNC_IN_FLIGHT_BYTES,
+        });
+    }
+    Ok(())
+}
+
 fn validate_session_size(
     width: u32,
     height: u32,
@@ -1432,4 +1476,39 @@ fn validate_session_size(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod async_budget_tests {
+    use super::*;
+
+    #[test]
+    fn cumulative_budget_rejects_before_a_second_large_frame() {
+        let first = frame_retained_bytes(4096, 4096, ReadbackSelection::Both, 0);
+        assert_eq!(first, 320 * 1024 * 1024);
+        assert!(ensure_async_budget(0, 4096, 4096, ReadbackSelection::Both, 0).is_ok());
+        assert!(matches!(
+            ensure_async_budget(first, 4096, 4096, ReadbackSelection::Both, 0),
+            Err(RenderError::AsyncBudgetExceeded {
+                in_flight,
+                requested,
+                max,
+            }) if in_flight == first && requested == first && max == MAX_ASYNC_IN_FLIGHT_BYTES
+        ));
+        assert!(ensure_async_budget(0, 4096, 4096, ReadbackSelection::Both, 0).is_ok());
+    }
+
+    #[test]
+    fn selection_and_geometry_are_counted_without_overflow() {
+        let none = frame_retained_bytes(4096, 4096, ReadbackSelection::None, 0);
+        assert_eq!(none, 192 * 1024 * 1024);
+        assert!(matches!(
+            ensure_async_budget(none * 2, 4096, 4096, ReadbackSelection::None, 0),
+            Err(RenderError::AsyncBudgetExceeded { .. })
+        ));
+        assert!(matches!(
+            ensure_async_budget(0, 1, 1, ReadbackSelection::None, usize::MAX),
+            Err(RenderError::AsyncBudgetExceeded { .. })
+        ));
+    }
 }
