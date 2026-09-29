@@ -6,6 +6,7 @@ use remus_math::vec::Point3;
 use remus_operations::distance::{point_to_solid_batch, point_to_solid_distance};
 use remus_topology::Topology;
 use remus_topology::test_utils::make_unit_cube_manifold_at;
+use remus_topology::vertex::Vertex;
 
 #[test]
 fn operations_batch_matches_one_shot_in_order() {
@@ -37,4 +38,24 @@ fn operations_empty_batch_validates_and_returns_empty() {
     assert!(out.is_empty());
     let empty = Topology::new();
     assert!(point_to_solid_batch(&empty, &[], cube).is_err());
+}
+
+#[test]
+fn empty_batch_rejects_stale_face_vertex() {
+    let mut topo = Topology::new();
+    let cube = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let shell = topo.solid(cube).unwrap().outer_shell();
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let wire = topo.face(face).unwrap().outer_wire();
+    let edge = topo.wire(wire).unwrap().edges()[0].edge();
+
+    let mut other_topo = Topology::new();
+    let missing_vertex = (0..20)
+        .map(|_| other_topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7)))
+        .last()
+        .unwrap();
+    topo.edge_mut(edge).unwrap().set_end(missing_vertex);
+
+    assert!(point_to_solid_distance(&topo, Point3::new(0.5, 0.5, 3.0), cube).is_err());
+    assert!(point_to_solid_batch(&topo, &[], cube).is_err());
 }

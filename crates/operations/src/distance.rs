@@ -107,8 +107,9 @@ pub fn point_to_solid_distance(
 ///
 /// # Errors
 ///
-/// Returns an error if the solid is invalid. Empty input validates the solid
-/// and returns an empty vector. All-or-nothing on per-point failures, matching
+/// Returns an error if the solid or its face bounds are invalid. Empty input
+/// validates the same face bounds and returns an empty vector.
+/// All-or-nothing on per-point failures, matching
 /// a loop over [`point_to_solid_distance`].
 pub fn point_to_solid_batch(
     topo: &Topology,
@@ -116,10 +117,10 @@ pub fn point_to_solid_batch(
     solid: SolidId,
 ) -> Result<Vec<DistanceResult>, crate::OperationsError> {
     let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
+    let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
     if points.is_empty() {
         return Ok(Vec::new());
     }
-    let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
     let bvh = Bvh::build(&face_aabbs);
     let tol = Tolerance::new();
     let mut candidates: Vec<usize> = Vec::new();
