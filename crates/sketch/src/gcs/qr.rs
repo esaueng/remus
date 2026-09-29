@@ -367,6 +367,46 @@ impl QrResult {
         rank
     }
 
+    /// Leading magnitude `|R[0,0]|` the relative [`Self::rank`] threshold
+    /// scales from (PERF-S02).
+    ///
+    /// Column pivoting promotes the largest remaining column norm first, so
+    /// this equals the largest column norm of the factorized matrix — and the
+    /// max over independent blocks equals the leading magnitude a global
+    /// factorization of the block-diagonal assembly would produce, since
+    /// Householder reflections never couple zero-separated blocks. Returns 0
+    /// for an empty factorization.
+    #[must_use]
+    pub fn leading_magnitude(&self) -> f64 {
+        let k = self.m.min(self.n);
+        if k == 0 {
+            return 0.0;
+        }
+        self.data[0].abs()
+    }
+
+    /// Numerical rank against an absolute threshold (PERF-S02).
+    ///
+    /// Counts diagonal elements of R with `|R[i,i]| > threshold`, stopping at
+    /// the first one that fails (pivoting keeps the diagonal non-increasing in
+    /// magnitude). This is [`Self::rank`] with the caller supplying
+    /// `tol * global_scale` instead of the block's own scale, so independent
+    /// blocks aggregate under one global rank policy without silently
+    /// re-ranking mixed-scale systems per block.
+    #[must_use]
+    pub fn rank_absolute(&self, threshold: f64) -> usize {
+        let k = self.m.min(self.n);
+        let mut rank = 0;
+        for i in 0..k {
+            if self.data[i * self.n + i].abs() > threshold {
+                rank += 1;
+            } else {
+                break;
+            }
+        }
+        rank
+    }
+
     /// Compute Q^T * b.
     ///
     /// Retained for the QR unit tests and `dof` callers; the solver loop
@@ -486,5 +526,35 @@ mod tests {
         assert_eq!(qr.rank(1e-10), 1);
         let x = qr.solve_least_squares(&[10.0]);
         assert!((x[0] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn leading_magnitude_tracks_max_column_norm() {
+        // First pivot takes the largest column: |R00| = 3 here.
+        let mut data = vec![1.0, 0.0, 0.0, 3.0];
+        let qr = QrResult::factorize(&mut data, 2, 2);
+        assert!((qr.leading_magnitude() - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn leading_magnitude_empty_is_zero() {
+        let mut data = vec![];
+        let qr = QrResult::factorize(&mut data, 0, 0);
+        assert_eq!(qr.leading_magnitude().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rank_absolute_matches_relative_rank() {
+        // Rank-deficient rows: row 1 = row 0, so rank 1 either way.
+        let mut data = vec![1.0, 2.0, 2.0, 4.0];
+        let qr = QrResult::factorize(&mut data, 2, 2);
+        let r00 = qr.leading_magnitude();
+        assert_eq!(qr.rank(1e-10), 1);
+        assert_eq!(qr.rank_absolute(1e-10 * r00), 1);
+        // Full-rank identity counts everything above any tiny threshold.
+        let mut id = vec![1.0, 0.0, 0.0, 1.0];
+        let qr_id = QrResult::factorize(&mut id, 2, 2);
+        assert_eq!(qr_id.rank_absolute(1e-10), 2);
+        assert_eq!(qr_id.rank_absolute(2.0), 0);
     }
 }
