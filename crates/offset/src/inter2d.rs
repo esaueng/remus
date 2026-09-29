@@ -37,14 +37,57 @@ pub fn intersect_pcurves_2d(
             continue;
         }
 
-        if let Some(edge_id) =
+        let new_edge = if let Some((ellipse, range)) = &intersection.exact_ellipse {
+            Some(create_exact_ellipse_edge(
+                topo,
+                &mut vertex_cache,
+                &intersection.curve_points,
+                ellipse,
+                *range,
+                tol,
+            )?)
+        } else {
             create_edge_from_curve_points(topo, &mut vertex_cache, &intersection.curve_points, tol)?
-        {
+        };
+        if let Some(edge_id) = new_edge {
             intersection.new_edges.push(edge_id);
         }
     }
 
     Ok(())
+}
+
+fn create_exact_ellipse_edge(
+    topo: &mut Topology,
+    vertex_cache: &mut VertexCache,
+    points: &[Point3],
+    ellipse: &remus_math::curves::Ellipse3D,
+    range: (f64, f64),
+    tol: f64,
+) -> Result<EdgeId, OffsetError> {
+    if !tol.is_finite() || tol < 0.0 || points.len() < 2 {
+        return Err(OffsetError::InvalidInput {
+            reason: "invalid exact ellipse intersection samples or tolerance".into(),
+        });
+    }
+    let start_point = ellipse.evaluate(range.0);
+    let end_point = ellipse.evaluate(range.1);
+    if (start_point - points[0]).length() > tol
+        || (end_point - points[points.len() - 1]).length() > tol
+    {
+        return Err(OffsetError::AssemblyFailed {
+            reason: "exact ellipse trim does not meet intersection samples".into(),
+        });
+    }
+    let start = find_or_create_vertex(topo, vertex_cache, start_point, tol);
+    let mut edge =
+        Edge::with_tolerance(start, start, EdgeCurve::Ellipse(ellipse.clone()), Some(tol));
+    edge.set_trim(Some(range));
+    edge.strict_domain()
+        .map_err(|error| OffsetError::AssemblyFailed {
+            reason: format!("exact ellipse has invalid parameter authority: {error}"),
+        })?;
+    Ok(topo.add_edge(edge))
 }
 
 /// Create a topological edge from sampled intersection curve points.
