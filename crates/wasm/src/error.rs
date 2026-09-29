@@ -399,6 +399,9 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
                 ("face", Some(face.index()))
             }
             remus_topology::TopologyError::NonManifold { .. } => ("topology", None),
+            // Internal control flow for the append-only fast path: rewound
+            // and retried internally, never surfaced to callers.
+            remus_topology::TopologyError::AppendOnlyGuardTrip { .. } => ("topology", None),
         };
         let mut structured = Self::new(WasmErrorCode::TopologyError, message);
         structured

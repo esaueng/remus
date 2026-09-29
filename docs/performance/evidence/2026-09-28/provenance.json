@@ -1,0 +1,7 @@
+{
+ "source_sha": "bf46fdc0af611d480bf0830ff1da6c475d8b96c9",
+ "rustc": "1.96.0",
+ "harness": "crates/topology/examples/txn_baseline.rs",
+ "reps": 11,
+ "note": "identical harness sources both sides; TXN_IMPL labels impl; in-process medians; per-op scopes=1; VmHWM includes setup"
+}
