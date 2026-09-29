@@ -16,6 +16,10 @@ SPEC.loader.exec_module(DIRECT)
 FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if p.name != "fleet-ci.yml")
 GUARD_PATH = ".github/actions/fleet-guard/action.yml"
 GUARD = (ROOT / GUARD_PATH).read_text()
+# Hosted jobs name an exact image: `ubuntu-latest` moves to a new Ubuntu
+# release on GitHub's schedule and would silently change the toolchain,
+# cargo-mutants and cargo-fuzz installs and the timings in .cargo/mutants.toml.
+HOSTED = "ubuntu-24.04"
 
 
 def jobs(text):
@@ -70,14 +74,14 @@ class UbuntuRoutingTests(unittest.TestCase):
         for filename, expression in self.expressions():
             for github in cases:
                 with self.subTest(file=filename, event=github["event_name"]):
-                    self.assertEqual(DIRECT.evaluate(expression, github, self.variables), "ubuntu-latest")
+                    self.assertEqual(DIRECT.evaluate(expression, github, self.variables), HOSTED)
 
     def test_missing_configuration_keeps_hosted_fallback(self):
         for filename, expression in self.expressions():
             for variables in ({}, {"CI_FLEET_ENABLED": "false"},
                               {"CI_FLEET_ENABLED": "true", "CI_FLEET_TARGET": "unknown"}):
                 with self.subTest(file=filename, variables=variables):
-                    self.assertEqual(DIRECT.evaluate(expression, self.github, variables), "ubuntu-latest")
+                    self.assertEqual(DIRECT.evaluate(expression, self.github, variables), HOSTED)
 
     def test_validation_ref_authorizes_only_one_trusted_pr(self):
         variables = {"CI_FLEET_ENABLED": "false", "CI_FLEET_TARGET": "ci-server-jane",
@@ -86,11 +90,22 @@ class UbuntuRoutingTests(unittest.TestCase):
             with self.subTest(file=filename):
                 self.assertIsInstance(DIRECT.evaluate(expression, self.github, variables), dict)
                 wrong_actor = dict(self.github, actor="outsider")
-                self.assertEqual(DIRECT.evaluate(expression, wrong_actor, variables), "ubuntu-latest")
+                self.assertEqual(DIRECT.evaluate(expression, wrong_actor, variables), HOSTED)
                 other_pr = copy.deepcopy(self.github)
                 other_pr["ref"] = "refs/pull/8/merge"
                 other_pr["event"]["pull_request"]["number"] = 8
-                self.assertEqual(DIRECT.evaluate(expression, other_pr, variables), "ubuntu-latest")
+                self.assertEqual(DIRECT.evaluate(expression, other_pr, variables), HOSTED)
+
+    def test_hosted_jobs_pin_the_ubuntu_image(self):
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text()
+            with self.subTest(file=path.name):
+                self.assertNotIn("ubuntu-latest", text)
+                for label in re.findall(r"\bubuntu-(?:latest|[0-9][\w.]*)", text):
+                    self.assertEqual(label, HOSTED)
+        for filename, expression in self.expressions():
+            with self.subTest(file=filename):
+                self.assertTrue(expression.endswith(f"|| '\"{HOSTED}\"') }}}}"), expression[-60:])
 
     def test_every_job_uses_the_immutable_guard_before_checkout(self):
         for path in FILES:
