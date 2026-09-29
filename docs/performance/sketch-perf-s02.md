@@ -106,7 +106,7 @@ through one decomposition.
   sets for all 26 variants, and 1000-parameter block-dimension/byte pins
   (500× 2×2 blocks = 16,000 Jacobian bytes vs 8,000,000 dense; chain stays one
   1000×1000 block; mixed is one 500×500 plus 250× 2×2).
-- `gcs/system/agreement_tests.rs` (12 tests): dense loop (private
+- `gcs/system/tests.rs` closing section (12 dense-agreement tests): dense loop (private
   `solve_dense` + dense DOF/residuals assembled by a `dense_detailed` oracle)
   vs public entry points. Single-component chains assert bitwise equality
   (iterations, residuals, published geometry). Multi-component systems assert
