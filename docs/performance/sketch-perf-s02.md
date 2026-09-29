@@ -24,7 +24,7 @@ semantics or JS result-shape changes.
   which collided with main's own #841 refresh of the same version from
   different bytes; the rebased build advanced to `2026.1.8` under the
   shared-version policy. The §4 timing table records that historical package.
-- Integrated package: paired `remus-wasm` and `remus-wasm-io` `2026.1.11`,
+- Integrated package: paired `remus-wasm` and `remus-wasm-io` `2026.1.12`,
   freshly rebuilt from the combined PERF-S02 and B74 (#864) source on main's
   `2026.1.10` baseline. `cargo xtask wasm-build` validated the dual-target
   bundles, full smoke suite, and installed-tarball consumers. The §4 solver
@@ -127,7 +127,7 @@ through one decomposition.
 - Original S02 head: `cargo test -p remus-sketch` 170 lib + 9 identity + 5
   workspace-reuse + 1 doc-test green; `cargo test -p remus-operations --lib`
   1224 green; `cargo test -p remus-wasm --lib` 615 green. Integrated head:
-  `cargo test -p remus-sketch` 172 lib + 9 identity + 5 workspace-reuse +
+  `cargo test -p remus-sketch` 173 lib + 9 identity + 5 workspace-reuse +
   1 doc-test green; `cargo clippy -p remus-sketch --all-targets -- -D warnings`,
   `cargo fmt --all -- --check`, and `check-boundaries` pass. Every sketch-runner
   sample below passed its identity/dimension/outcome gates natively and
@@ -199,7 +199,7 @@ existing `gcs*` bindings (no binding changes in this PR), `wasm.cjs` cells
 
 The pre-S02 committed package reports 8 iterations on solved_100 (dense) in
 ~4.8 ms; the original candidate package reports 9 (component path), matching
-native exactly. The integrated `2026.1.11` package also passed all six
+native exactly. The integrated `2026.1.12` package also passed all six
 `wasm.cjs` cells (100 parameters; solve and detailed; five retained samples
 and one warmup each): solved 9/9 iterations, coupled chain 5/5, and 20-step
 drag 100/100, with validation `passed` in every sample. The iteration
@@ -264,6 +264,6 @@ capture (`(n + m) * 8` bytes plus row layout — same shape as S06's).
 - The S06 evidence files are untouched historical record.
 - Original candidate package `2026.1.8` cell outputs: `wasm.cjs` JSON
   samples quoted in §4 (validation `passed`, iterations fingerprint 9/5/100).
-- Integrated paired package `2026.1.11`: fresh dual-target build, smoke and
+- Integrated paired package `2026.1.12`: fresh dual-target build, smoke and
   installed-tarball validation; six `wasm.cjs` cells with five retained
   samples each passed the same 9/5/100 iteration fingerprint.
