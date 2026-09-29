@@ -133,16 +133,14 @@ impl Clone for Topology {
     /// counter below must be cloned. The undo log itself is never shared —
     /// the clone records the source's lineage and starts empty.
     fn clone(&self) -> Self {
-        // An unchanged intermediate clone still represents the original
-        // source log position. Its empty private log must not erase that
-        // position when another snapshot is cloned from it.
-        let base = if self.undo.records.is_empty()
-            && self.undo.generation == 0
-            && self.mutation_ticks == self.undo.base.ticks
-        {
+        // An intermediate clone retains its source lineage even after a
+        // private mutation. Foreign restores of that changed state must be
+        // recorded as a full inverse by the destination's live scopes.
+        let base = if self.undo.inherited_lineage {
             self.undo.base
         } else {
             UndoBase {
+                lineage_id: self.undo.lineage_id,
                 generation: self.undo.generation,
                 log_len: self.undo.records.len(),
                 ticks: self.mutation_ticks,
@@ -518,6 +516,10 @@ impl Topology {
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
         self.undo_truncate_for_foreign_restore(snapshot);
+        self.restore_rollback_fields(snapshot);
+    }
+
+    pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {
         self.vertices.restore_for_rollback(&snapshot.vertices);
         self.edges.restore_for_rollback(&snapshot.edges);
         self.wires.restore_for_rollback(&snapshot.wires);

@@ -362,6 +362,51 @@ fn clone_chain_restore_keeps_outer_undo_records() {
 }
 
 #[test]
+fn mutated_clone_chain_restore_preserves_complete_outer_rollback() {
+    let mut topo = Topology::new();
+    let baseline = topo.add_vertex(crate::vertex::Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+    let mut staged = None;
+    let mut overwritten = None;
+    let result = run_transacted(&mut topo, |topo| {
+        staged =
+            Some(topo.add_vertex(crate::vertex::Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7)));
+        let mut intermediate = topo.clone();
+        intermediate.add_vertex(crate::vertex::Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let snapshot = intermediate.clone();
+        overwritten =
+            Some(topo.add_vertex(crate::vertex::Vertex::new(Point3::new(3.0, 0.0, 0.0), 1e-7)));
+        topo.restore_for_rollback(&snapshot);
+        assert_eq!(topo.num_vertices(), 3);
+        Err::<(), _>(TopologyError::WireNotClosed)
+    });
+    assert!(matches!(result, Err(TopologyError::WireNotClosed)));
+    assert_eq!(topo.num_vertices(), 1);
+    assert!(topo.vertex(baseline).is_ok());
+    assert!(topo.vertex(staged.unwrap()).is_err());
+    assert!(topo.vertex(overwritten.unwrap()).is_err());
+}
+
+#[test]
+fn unrelated_restore_with_matching_counters_preserves_outer_rollback() {
+    let mut topo = Topology::new();
+    let mut other = Topology::new();
+    for x in [4.0, 5.0] {
+        other.add_vertex(crate::vertex::Vertex::new(Point3::new(x, 0.0, 0.0), 1e-7));
+    }
+    let snapshot = other.clone();
+    let result = run_transacted(&mut topo, |topo| {
+        for x in [1.0, 2.0] {
+            topo.add_vertex(crate::vertex::Vertex::new(Point3::new(x, 0.0, 0.0), 1e-7));
+        }
+        topo.restore_for_rollback(&snapshot);
+        assert_eq!(topo.num_vertices(), 2);
+        Err::<(), _>(TopologyError::WireNotClosed)
+    });
+    assert!(matches!(result, Err(TopologyError::WireNotClosed)));
+    assert_eq!(topo.num_vertices(), 0);
+}
+
+#[test]
 fn nested_success_commits_and_dropped_scopes_release_storage() {
     fn send_sync<T: Send + Sync>() {}
     let mut t = Topology::new();

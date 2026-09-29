@@ -165,12 +165,12 @@ mutation lands:
 - **Restore behavior:** `RollbackSnapshot::capture` / `restore` and
   `run_transacted` / `run_validated` keep their signatures. `restore`
   rewinds to its mark. Foreign full restores (`restore_for_rollback`,
-  `restore_preserving_handle_slots`) with a same-lineage snapshot truncate
-  the log to the snapshot's clone-time length and then apply today's full
-  semantics, so ad-hoc clone/restore pairs nested inside a scope stay
-  correct without touching their call sites. A foreign-lineage restore while
-  scopes are active is a contract violation (no such call exists; it is
-  debug-asserted), as is a foreign restore racing object identity.
+  `restore_preserving_handle_slots`) truncate to the clone-time log prefix
+  only when lineage identity and unchanged state certify that prefix.
+  Changed clone chains and unrelated values take one full pre-restore inverse
+  while a scope is live; that document-sized cost preserves complete outer
+  rollback, including edits made before the restore. Restoring a scope mark
+  into a different `Topology` value remains outside the snapshot contract.
 - **Handles allocated in failed scopes remain permanently stale:** rollback
   retires their slots; later allocations append above the preserved
   high-water mark; typed lookups and `id_from_index` fail for them forever,
