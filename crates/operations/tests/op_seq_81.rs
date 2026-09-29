@@ -3558,7 +3558,13 @@ struct Tally {
 
 impl Tally {
     fn record(&mut self, report: &SeqReport) {
-        match report.kind {
+        self.record_kind(report.kind);
+        self.exact_ok_bools += report.exact_ok_bools;
+        self.bool_ops += report.bool_ops;
+    }
+
+    fn record_kind(&mut self, kind: SeqKind) {
+        match kind {
             SeqKind::ExactOk => self.exact_ok += 1,
             SeqKind::Approximate => self.approximate += 1,
             SeqKind::Empty => self.empty += 1,
@@ -3568,8 +3574,6 @@ impl Tally {
             SeqKind::Timeout => self.timeout += 1,
             SeqKind::InvalidHandle => self.invalid_handle += 1,
         }
-        self.exact_ok_bools += report.exact_ok_bools;
-        self.bool_ops += report.bool_ops;
     }
 
     fn bad(&self) -> usize {
@@ -3764,6 +3768,9 @@ fn checkpoint_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_checkpoint(path: &std::path::Path) -> std::collections::BTreeMap<u64, String> {
+    // Returns seed → verdict for rows stamped with THIS harness source.
+    // Rows from other sources are stale by construction (a newer generator
+    // or battery re-verdicts everything) and are reported, never tallied.
     let mut done = std::collections::BTreeMap::new();
     let Ok(text) = std::fs::read_to_string(path) else {
         return done;
@@ -3772,20 +3779,26 @@ fn load_checkpoint(path: &std::path::Path) -> std::collections::BTreeMap<u64, St
         let Ok(row) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let (Some(seed), Some(verdict)) = (
+        if let (Some(seed), Some(verdict), Some(source)) = (
             row.get("seed").and_then(Value::as_u64),
             row.get("verdict").and_then(Value::as_str),
+            row.get("source").and_then(Value::as_str),
         ) {
-            done.insert(seed, verdict.to_owned());
+            if source == HARNESS_SOURCE {
+                done.insert(seed, verdict.to_owned());
+            } else {
+                println!("B81CHECKPOINT stale row: seed={seed} source={source}");
+            }
         }
     }
     done
 }
 
-fn append_checkpoint(path: &std::path::Path, seed: u64, report: &SeqReport) {
+fn append_checkpoint(path: &std::path::Path, seed: u64, report: &SeqReport, limits: &SeqLimits) {
     let row = json!({
         "seed": seed,
         "verdict": format!("{} / {}", report.kind.label(), report.oracle),
+        "source": limits.source,
     });
     use std::io::Write as _;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -3795,6 +3808,30 @@ fn append_checkpoint(path: &std::path::Path, seed: u64, report: &SeqReport) {
     {
         let _ = writeln!(f, "{}", serde_json::to_string(&row).unwrap_or_default());
     }
+}
+
+/// Fold resumed checkpoint verdicts into the gate: returns the pre-seeded
+/// tally, the resumed bad-verdict list (seed + verdict stamp), and the
+/// resumed clean-sequence count (exact/approximate verdicts, for the
+/// non-vacuity gate when everything resumes). Pure function of the loaded
+/// map (which `load_checkpoint` already filtered to this harness source),
+/// unit-tested below without touching the kernel or the filesystem.
+fn account_resumed(
+    done: &std::collections::BTreeMap<u64, String>,
+) -> (Tally, Vec<(u64, String)>, usize) {
+    let mut tally = Tally::default();
+    let mut bad = Vec::new();
+    let mut ok = 0;
+    for (seed, prior) in done {
+        let kind = parse_seq_kind(prior.split(" / ").next().unwrap_or(""));
+        tally.record_kind(kind);
+        match kind {
+            SeqKind::ExactOk | SeqKind::Approximate => ok += 1,
+            SeqKind::Empty | SeqKind::Refused => {}
+            _ => bad.push((*seed, prior.clone())),
+        }
+    }
+    (tally, bad, ok)
 }
 
 // ── Process isolation (M5) ───────────────────────────────────────────
@@ -5089,6 +5126,58 @@ fn campaign_coverage() {
     assert_eq!(max_len, MAX_SEQ_OPS, "matrix must reach the longest chain");
 }
 
+/// Resume accounting without running anything: a synthetic checkpoint map
+/// tallies exactly (buckets, bad list, clean count), and `load_checkpoint`
+/// admits only rows stamped with this harness source (stale rows print and
+/// drop; garbage lines skip).
+#[test]
+fn checkpoint_resume_accounting() {
+    let mut done = std::collections::BTreeMap::new();
+    done.insert(1, "exact_ok / ok".to_owned());
+    done.insert(2, "refused / refused".to_owned());
+    done.insert(3, "incorrect_success / mesh".to_owned());
+    done.insert(4, "timeout / timeout".to_owned());
+    done.insert(5, "approximate / ok".to_owned());
+    let (tally, bad, ok) = account_resumed(&done);
+    assert_eq!(
+        (
+            tally.exact_ok,
+            tally.refused,
+            tally.incorrect,
+            tally.timeout
+        ),
+        (1, 1, 1, 1)
+    );
+    assert_eq!(tally.bad(), 2);
+    assert_eq!(ok, 2);
+    assert_eq!(bad.len(), 2);
+    assert!(bad.iter().any(|(s, _)| *s == 3));
+    assert!(bad.iter().any(|(s, _)| *s == 4));
+
+    // Stale sources and garbage never tally.
+    let dir = std::env::temp_dir().join("opseq81-checkpoint-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("checkpoint.jsonl");
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"seed\": 11, \"verdict\": \"incorrect_success / mesh\", \"source\": \"{HARNESS_SOURCE}\"}}\n\
+             {{\"seed\": 12, \"verdict\": \"incorrect_success / mesh\", \"source\": \"op_seq_81/v0\"}}\n\
+             not json at all\n\
+             {{\"seed\": 13}}\n"
+        ),
+    )
+    .expect("temp checkpoint must write");
+    let loaded = load_checkpoint(&path);
+    assert_eq!(loaded.len(), 1, "only the current-source row loads");
+    assert!(loaded.contains_key(&11));
+    let (tally, bad, ok) = account_resumed(&loaded);
+    assert_eq!(tally.bad(), 1);
+    assert_eq!(ok, 0);
+    assert_eq!(bad, vec![(11, "incorrect_success / mesh".to_owned())]);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn bounded_campaign() {
     // Bounded real campaign: `OPSEQ81_CASES` sequences from `OPSEQ81_SEED`
@@ -5112,7 +5201,6 @@ fn bounded_campaign() {
         .unwrap_or_default();
     let isolated = std::env::var("OPSEQ81_ISOLATE").as_deref() == Ok("1");
     let deadline = case_timeout_ms();
-    let mut tally = Tally::default();
     let mut coverage = Coverage::default();
     let mut finding_paths: Vec<String> = Vec::new();
     // Failure-mechanism groups for the close-out report: findings sharing a
@@ -5122,6 +5210,13 @@ fn bounded_campaign() {
     // defects), and every bundle stays on disk.
     let mut finding_keys: Vec<(u64, SeqKind, &'static str, String)> = Vec::new();
     let mut ran = 0;
+    // Resumed verdicts re-enter the gate below: a rerun that skips past
+    // previously persisted findings must still fail on them (the review
+    // caught a version that tallied only fresh cases and could exit green
+    // over an old incorrect). Resumed exact/approximate verdicts likewise
+    // count toward non-vacuity. Pure function, unit-tested below.
+    // (The tally starts from the resumed rows; fresh cases record on top.)
+    let (mut tally, resumed_bad, resumed_ok) = account_resumed(&done);
     for i in 0..n {
         if i % parts != part {
             continue;
@@ -5129,12 +5224,14 @@ fn bounded_campaign() {
         let case_seed = seed
             .wrapping_add(i as u64)
             .wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        if done.contains_key(&case_seed) {
-            continue;
-        }
         let len = 3 + (i % (MAX_SEQ_OPS - 2));
         let ops = generate_sequence(case_seed, len);
         coverage.record_sequence(&ops);
+        if done.contains_key(&case_seed) {
+            // Already verdict-recorded (tallied by `account_resumed`
+            // above); the finding bundle from that run stays on disk.
+            continue;
+        }
         let name = format!("opseq81-seed-{case_seed}");
         let input_path = persist_inputs(&name, case_seed, &ops, &limits);
         let report = if isolated {
@@ -5144,7 +5241,7 @@ fn bounded_campaign() {
         };
         coverage.record_report(&report);
         if let Some(path) = checkpoint.as_deref() {
-            append_checkpoint(path, case_seed, &report);
+            append_checkpoint(path, case_seed, &report, &limits);
         }
         ran += 1;
         if ran % 16 == 0 {
@@ -5244,6 +5341,16 @@ fn bounded_campaign() {
         tally.bool_ops,
     );
     println!("B81COVERAGE {coverage}");
+    if !resumed_bad.is_empty() || resumed_ok > 0 {
+        let bad: Vec<String> = resumed_bad
+            .iter()
+            .map(|(s, v)| format!("{s}={v}"))
+            .collect();
+        println!(
+            "B81RESUMED bad=[{}] exact_ok_hits={resumed_ok}",
+            bad.join(",")
+        );
+    }
     if !finding_keys.is_empty() {
         let mut groups: std::collections::BTreeMap<(SeqKind, &'static str), Vec<(u64, String)>> =
             std::collections::BTreeMap::new();
@@ -5271,14 +5378,19 @@ fn bounded_campaign() {
         }
     }
     assert_eq!(
-        tally.bad(),
+        tally.bad() + resumed_bad.len(),
         0,
-        "campaign holds {} finding(s): {}",
+        "campaign holds {} finding(s): {} resumed from checkpoint: {}",
         finding_paths.len(),
-        finding_paths.join(", ")
+        finding_paths.join(", "),
+        resumed_bad
+            .iter()
+            .map(|(s, v)| format!("{s}={v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
     );
     assert!(
-        tally.exact_ok_bools >= MIN_EXACT_OK,
+        tally.exact_ok_bools >= MIN_EXACT_OK || resumed_ok > 0,
         "campaign is vacuous: no exact boolean success in {n} sequences"
     );
 }
