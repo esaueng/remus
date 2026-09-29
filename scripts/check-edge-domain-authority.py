@@ -27,6 +27,7 @@ BASELINE_PRODUCTION_READERS = 132
 BASELINE_DEFINITIONS = 2
 BASELINE_INTERNAL_FALLBACKS = 1
 BASELINE_TEST_READERS = 43
+REVIEWED_TEST_READERS = 1
 BASELINE_BOUNDARY_MUTATIONS = 30
 BASELINE_PRESERVATION_WRITES = 12
 
@@ -34,6 +35,7 @@ DOMAIN_PRODUCTION_MANIFEST = """c4c575621dc65a20 05aba1a7403f1df4 0292d028b7b6af
 DOMAIN_DEFINITION_MANIFEST = """260946081c9daac8 9ea51146ea85424f""".split()
 DOMAIN_FALLBACK_MANIFEST = """91a4d2a1068bb6fb""".split()
 DOMAIN_TEST_MANIFEST = """8277dadb9701777b 51c0813fea3b625a d47f8b4a5f77d05a 17591aa844a92559 30620a876040ddd5 b6bfb3c711b90ed9 c787b58a2c165c78 7417af0c8434d4f9 9e634c6a7a082a19 7a6d526ca6e2278d 7e8707feb2e86f57 3e08d1b88fade05b 40bfa30a8427db2e 97158146fbc808eb 4e7a2871ee80b050 c22a68cba58c7f28 b1bada2d5ab15cd0 7ebef0b284320e42 e87d61a1febfd731 c2b387d808cd08da 204452963e1c5e98 c55dfa9acf88f647 2ed119c302805b91 322638dd3568ec26 866c614a7cf0964e c7b5c49d9ac8d510 4d8e95c884625c0a 91bd9b2026b89d61 c621892ff80d4cfe 949192ec442ed3f7 fe5418a1017bb67d 78048126c2ad089f 415e2279a9fb15a8 5ad7fce5400be29d 66b895c9c1d143c4 03886d93aee7c581 ef428583ee34fe78 ff7e4038b36930cc 96af5c33467c485b ef1b1e9e97594176 039783744908cc8e 2fb14d9aeb438913 a548a1756cc73d50""".split()
+DOMAIN_REVIEWED_TEST_ADDITIONS = ["40ca689cd2df7ffe"]
 BOUNDARY_PRODUCTION_MANIFEST = """fb55de050adbb88c 1d3d3b084411fd14 c23d815cf0a862cd 3cb826f4d02579b5 f003ef01c6bb6b5c 4d8b6fc07e8c3a9d 9e53b906967cfd5e d01b54e628597143 91e219e53e6d8d3e 4446f3cec3e34692 0875bdbd1dff21b7 56e6d89d2bea1373 c109e6e08cc65763 5736f9fd5fbf1c76 bc4653b22d2d6cd0 45aa5e7848f4c888 ff6f52ee9ee26c6a 7bd5ba190dcf648f 75fe315ba99522ed 29abde1caf2c1a69 604d510e5b233e40 a3f1a4d3efa9e063 323be0bc1cd3bf59 a4b432acb8a1243d 7af1bcf9abc3f7d1 47d5c5ce79b171a7 b1da5ab122bcc9e3 5821968b9ea57cc4 8f42785da0314cf8 fb8b14d8cb0fe464""".split()
 BOUNDARY_EXCLUDED_MANIFEST = """8fe14bd9c408d729 0562c28e114de4de c0f2a1f22c2e8a8c 7cc937c159b16539 b01c467494ff98a6 68f26eecb04615d0 31b2abde73d32ea3 1c6bd024fe00c4b8 55c17c389fbc6426 47b8301684e04c8b 6b2da41588b0d5d7 ad568991ded2d336""".split()
 BASELINE_PRESERVATION_MANIFEST = """409e26059e7657d1 4fcd3d400dabcb8c 7eb3fdf95ecd461e 2ef78a8d560c9b51 f8dac04156521ab6 c0079d093e520988 d6672a48aeae38c1 f36ef17e09585a9d 3c435d48ac3cd69f b77ddaa8423159bb 793fa734cab8252d fe75393c672bf17d""".split()
@@ -254,6 +256,9 @@ def validate_static_configuration() -> bool:
         DOMAIN_TEST_MANIFEST, BASELINE_TEST_READERS, "domain-test"
     )
     valid &= validate_manifest(
+        DOMAIN_REVIEWED_TEST_ADDITIONS, REVIEWED_TEST_READERS, "reviewed-domain-test"
+    )
+    valid &= validate_manifest(
         BOUNDARY_PRODUCTION_MANIFEST,
         BASELINE_BOUNDARY_MUTATIONS,
         "boundary-production",
@@ -270,6 +275,7 @@ def validate_static_configuration() -> bool:
         DOMAIN_DEFINITION_MANIFEST,
         DOMAIN_FALLBACK_MANIFEST,
         DOMAIN_TEST_MANIFEST,
+        DOMAIN_REVIEWED_TEST_ADDITIONS,
     )
     domain_hashes = [value for manifest in domain_manifests for value in manifest]
     if len(domain_hashes) != len(set(domain_hashes)):
@@ -363,6 +369,7 @@ def main() -> int:
         **{value: "definition" for value in DOMAIN_DEFINITION_MANIFEST},
         **{value: "internal_fallback" for value in DOMAIN_FALLBACK_MANIFEST},
         **{value: "test_example" for value in DOMAIN_TEST_MANIFEST},
+        **{value: "test_example" for value in DOMAIN_REVIEWED_TEST_ADDITIONS},
     }
     domain, unknown_domain = classified_sites(
         matching_sites(sources, DOMAIN_PATTERN), sources, domain_manifest
@@ -472,7 +479,7 @@ def main() -> int:
         f"production={len(production)}/{BASELINE_PRODUCTION_READERS} "
         f"definitions={len(definitions)}/{BASELINE_DEFINITIONS} "
         f"internal_fallback={len(fallbacks)}/{BASELINE_INTERNAL_FALLBACKS} "
-        f"tests_examples={len(test_readers)}/{BASELINE_TEST_READERS} "
+        f"tests_examples={len(test_readers)}/{BASELINE_TEST_READERS + REVIEWED_TEST_READERS} "
         f"unknown={len(unknown_domain)}"
     )
     print(
