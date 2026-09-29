@@ -262,7 +262,12 @@ fn assert_shared_matches_fresh(
     (diag, counts, ocounts)
 }
 
-fn assert_shared_counts(counts: &DetailedCounts, rolled_back: bool, degenerate: bool) {
+fn assert_shared_counts(
+    counts: &DetailedCounts,
+    rolled_back: bool,
+    degenerate: bool,
+    expected_analysis_blocks: usize,
+) {
     if degenerate {
         assert!(
             !counts.shared_residuals_used,
@@ -277,8 +282,16 @@ fn assert_shared_counts(counts: &DetailedCounts, rolled_back: bool, degenerate: 
             "non-degenerate systems share the final vector"
         );
         assert_eq!(counts.fallback_residual_passes, 0);
-        assert_eq!(counts.analysis_jacobian_evals, 1);
-        assert_eq!(counts.analysis_qr_factorizations, 1);
+        // PERF-S02: one analysis Jacobian plus one QR per factorizable block,
+        // never one giant dense pair. Single-component systems still report 1.
+        assert_eq!(
+            counts.analysis_jacobian_evals, expected_analysis_blocks,
+            "one analysis Jacobian per independent block"
+        );
+        assert_eq!(
+            counts.analysis_qr_factorizations, expected_analysis_blocks,
+            "one analysis QR per independent block"
+        );
     }
     assert_eq!(
         counts.restored_state_passes,
@@ -308,7 +321,7 @@ fn shared_converged_solved() {
         assert!(diag.converged);
         assert_eq!(diag.classification, SolveClassification::Solved);
         assert!(!diag.rolled_back);
-        assert_shared_counts(&counts, false, false);
+        assert_shared_counts(&counts, false, false, n / 2);
         // Oracle performs the same solver loop plus one extra final-state
         // residual pass the shared path eliminates.
         assert_eq!(ocounts.final_state_residual_passes, 1);
@@ -324,7 +337,7 @@ fn shared_underconstrained() {
     assert_eq!(diag.classification, SolveClassification::UnderConstrained);
     assert_eq!(diag.dof, 10);
     assert!(!diag.rolled_back);
-    assert_shared_counts(&counts, false, false);
+    assert_shared_counts(&counts, false, false, 10);
 }
 
 #[test]
@@ -332,7 +345,7 @@ fn shared_coupled_chain() {
     let (diag, counts, _) = assert_shared_matches_fresh(|| build_coupled_chain(20), MAX_ITER, TOL);
     assert!(diag.converged);
     assert_eq!(diag.classification, SolveClassification::Solved);
-    assert_shared_counts(&counts, false, false);
+    assert_shared_counts(&counts, false, false, 1);
 }
 
 #[test]
@@ -341,7 +354,7 @@ fn shared_redundant() {
     assert!(diag.converged);
     assert_eq!(diag.classification, SolveClassification::Redundant);
     assert!(diag.redundant);
-    assert_shared_counts(&counts, false, false);
+    assert_shared_counts(&counts, false, false, 10);
 }
 
 #[test]
@@ -350,7 +363,7 @@ fn shared_inconsistent_rolls_back() {
     assert!(!diag.converged);
     assert_eq!(diag.classification, SolveClassification::Unsatisfied);
     assert!(diag.rolled_back);
-    assert_shared_counts(&counts, true, false);
+    assert_shared_counts(&counts, true, false, 10);
     assert_eq!(ocounts.final_state_residual_passes, 1);
     assert_eq!(ocounts.restored_state_passes, 1);
 }
@@ -383,7 +396,7 @@ fn shared_empty_system_no_params() {
     assert!(diag.converged);
     assert_eq!(diag.iterations, 0);
     assert_eq!(diag.num_params, 0);
-    assert_shared_counts(&counts, false, true);
+    assert_shared_counts(&counts, false, true, 0);
 }
 
 #[test]
@@ -403,7 +416,7 @@ fn shared_empty_system_no_constraints() {
     assert_eq!(diag.num_equations, 0);
     assert!(diag.residuals.is_empty());
     assert_eq!(diag.dof, 2);
-    assert_shared_counts(&counts, false, true);
+    assert_shared_counts(&counts, false, true, 0);
 }
 
 #[test]
@@ -419,8 +432,9 @@ fn shared_zero_iterations() {
         diag.published_max_residual,
         "nothing moved",
     );
-    assert_shared_counts(&counts, true, false);
-    assert_eq!(counts.solver.residual_evals, 1);
+    assert_shared_counts(&counts, true, false, 5);
+    // Zero iterations still evaluate once per component at the starting state.
+    assert_eq!(counts.solver.residual_evals, 5);
     assert_eq!(counts.solver.jacobian_evals, 0);
     assert_eq!(counts.solver.qr_factorizations, 0);
 }
@@ -433,7 +447,7 @@ fn shared_iteration_limited() {
     assert!(!diag.converged);
     assert_eq!(diag.iterations, 1);
     assert!(diag.rolled_back);
-    assert_shared_counts(&counts, true, false);
+    assert_shared_counts(&counts, true, false, 1);
 }
 
 // ── Internal arc constraints ─────────────────────────────────────────────
@@ -473,7 +487,7 @@ fn shared_arc_internal_attribution() {
     assert!(diag.converged);
     assert!(diag.residuals.iter().any(|r| r.internal));
     assert!(diag.residuals.iter().any(|r| !r.internal));
-    assert_shared_counts(&counts, false, false);
+    assert_shared_counts(&counts, false, false, 1);
 }
 
 // ── Edits between solves: no cross-solve retention ───────────────────────
@@ -487,7 +501,7 @@ fn shared_edits_between_solves() {
         let (diag, counts) = prod.solve_detailed_counted(MAX_ITER, TOL).unwrap();
         let (expect, _) = solve_detailed_fresh(&mut oracle, MAX_ITER, TOL);
         assert_diagnostics_eq(&diag, &expect);
-        assert_shared_counts(&counts, false, false);
+        assert_shared_counts(&counts, false, false, 5);
 
         // Perturb geometry between solves: the next capture must describe
         // the new state, never the previous one.
@@ -514,13 +528,13 @@ fn shared_edits_between_solves() {
     let (expect, _) = solve_detailed_fresh(&mut oracle, 50, TOL);
     assert_diagnostics_eq(&diag, &expect);
     assert!(!diag.converged && diag.rolled_back);
-    assert_shared_counts(&counts, true, false);
+    assert_shared_counts(&counts, true, false, 5);
 
     // Remove the contradiction: solved and shared again.
     prod.remove_constraint(extra_prod).unwrap();
     let (diag2, counts2) = prod.solve_detailed_counted(MAX_ITER, TOL).unwrap();
     assert!(diag2.converged);
-    assert_shared_counts(&counts2, false, false);
+    assert_shared_counts(&counts2, false, false, 5);
 }
 
 #[test]
@@ -551,7 +565,7 @@ fn shared_constraint_removal_between_solves() {
     let (expect2, _) = solve_detailed_fresh(&mut oracle, MAX_ITER, TOL);
     assert_diagnostics_eq(&diag2, &expect2);
     assert_eq!(diag2.classification, SolveClassification::Solved);
-    assert_shared_counts(&counts2, diag2.rolled_back, false);
+    assert_shared_counts(&counts2, diag2.rolled_back, false, 5);
 }
 
 // ── Extreme coordinate scales ────────────────────────────────────────────
@@ -584,7 +598,7 @@ fn shared_extreme_scales() {
             };
             let (diag, counts, _) = assert_shared_matches_fresh(build, MAX_ITER, TOL);
             assert!(diag.converged, "scale {scale} offset {offset}");
-            assert_shared_counts(&counts, false, false);
+            assert_shared_counts(&counts, false, false, 1);
             // Independent geometric oracle, not residuals alone.
             let mut sys = build();
             sys.solve(MAX_ITER, TOL).unwrap();
