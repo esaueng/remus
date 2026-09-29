@@ -118,6 +118,12 @@ class DirectFleetTests(unittest.TestCase):
                 with self.subTest(event=github, expression=expression):
                     self.assertIsInstance(evaluate(expression, github, self.variables), str)
 
+    def test_hosted_fallback_names_the_pinned_image(self):
+        # Mirrors test-ubuntu-ci-routing.py: never the moving ubuntu-latest label.
+        for expression in EXPRESSIONS:
+            for variables in ({}, {"CI_FLEET_ENABLED": "false"}):
+                self.assertEqual(evaluate(expression, self.github, variables), "ubuntu-24.04")
+
     def test_protected_main_and_opt_in_fail_closed(self):
         self.variables["CI_FLEET_LIGHT_POOL_ENABLED"] = "true"
         for event in ("push", "workflow_dispatch"):
@@ -206,6 +212,33 @@ class DirectFleetTests(unittest.TestCase):
         self.assertIn("targets: wasm32-unknown-unknown", setup)
         self.assertIn('toolchain: "1.88.0"', jobs["msrv"])
         self.assertLess(jobs["wasm"].index("actions/setup-node@"), jobs["wasm"].index("npm pack"))
+
+    def test_msrv_job_really_runs_the_declared_minimum(self):
+        # Run 36506880243: a 1.85.0-branch action commit ignored `toolchain:`,
+        # and rust-toolchain.toml then ran the check on the development toolchain.
+        jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", TEXT, re.M | re.S))
+        block = jobs["msrv"]
+        declared = re.search(r'^rust-version = "([0-9.]+)"$',
+                             (ROOT / "Cargo.toml").read_text(), re.M)[1]
+        exact = f"{declared}.0" if declared.count(".") == 1 else declared
+        self.assertIn(f"name: MSRV ({declared})", block)
+        self.assertIn(f'RUSTUP_TOOLCHAIN: "{exact}"', block)
+        self.assertIn(f"cargo +{exact} check --workspace --all-features", block)
+        self.assertIn(f"grep -q '^rustc {re.escape(exact)} '", block)
+        self.assertLess(block.index("RUSTUP_TOOLCHAIN"), block.index("steps:"))
+
+    def test_toolchain_inputs_reach_an_action_that_accepts_them(self):
+        # dtolnay/rust-toolchain's per-version branches (1.85.0, 1.88.0, nightly,
+        # ...) hard-code the release and ignore `toolchain:` with only a warning.
+        # Only the master line reads the input; d1031067 is a master commit.
+        accepts_toolchain_input = {"d1031067263f94b142dd6c0ce24c5eb9d02d52a0"}
+        steps = re.findall(r"uses: dtolnay/rust-toolchain@([0-9a-f]{40})[^\n]*\n"
+                           r"((?:        (?!- )[^\n]*\n)*)", TEXT)
+        self.assertTrue(steps)
+        for sha, body in steps:
+            if "toolchain:" in body:
+                with self.subTest(sha=sha):
+                    self.assertIn(sha, accepts_toolchain_input)
 
     def test_embedded_shell_syntax(self):
         for block in re.findall(r"        run: \|\n((?:          [^\n]*\n|\n)+)", TEXT):

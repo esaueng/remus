@@ -20,7 +20,7 @@ permissions:
 jobs:
   select:
     name: Authorize owner PR
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       trusted: ${{ steps.policy.outputs.trusted }}
@@ -131,7 +131,7 @@ jobs:
     if: needs.select.outputs.trusted == 'true'
     permissions:
       id-token: write
-    uses: esaueng/remus/.github/workflows/select-runner.yml@08e26ba25473b43054c46b141646ae4f275b7b8e
+    uses: esaueng/remus/.github/workflows/select-runner.yml@f4e705a3ad3fa98eeb4f9cf490c108573618ec2b
     with:
       enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
 
