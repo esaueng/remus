@@ -358,14 +358,38 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
     }
     for (i, list) in cuts.iter_mut().enumerate() {
         list.sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
-        for pair in list.windows(2) {
+        for pair in 0..list.len().saturating_sub(1) {
             work.step()?;
-            if same(pair[0].parameter, pair[1].parameter) {
-                events.join(pair[0].event, pair[1].event, &mut work)?;
-            } else if (uses[i].point(pair[0].parameter) - uses[i].point(pair[1].parameter)).length()
-                <= geometry::roundoff(uses[i].point(pair[0].parameter))
+            let (left, right) = (list[pair], list[pair + 1]);
+            if same(left.parameter, right.parameter) {
+                events.join(left.event, right.event, &mut work)?;
+            } else if (uses[i].point(left.parameter) - uses[i].point(right.parameter)).length()
+                <= geometry::roundoff(uses[i].point(left.parameter))
             {
-                return Err(ArrangementError::IntersectionRefinementFailed);
+                // A recomputed pair event landing within float roundoff of
+                // a certified use endpoint adopts that endpoint: the
+                // certificate (authoritative topology event or an exact
+                // adapter-joined cut) outranks recomputation, and the two
+                // cannot be distinct geometric events at this scale. Twins
+                // without an endpoint certificate stay a refusal —
+                // proximity alone never merges.
+                let endpoint = if same(left.parameter, uses[i].range[0])
+                    || same(left.parameter, uses[i].range[1])
+                {
+                    Some(left.parameter)
+                } else if same(right.parameter, uses[i].range[0])
+                    || same(right.parameter, uses[i].range[1])
+                {
+                    Some(right.parameter)
+                } else {
+                    None
+                };
+                let Some(parameter) = endpoint else {
+                    return Err(ArrangementError::IntersectionRefinementFailed);
+                };
+                events.join(left.event, right.event, &mut work)?;
+                list[pair].parameter = parameter;
+                list[pair + 1].parameter = parameter;
             }
         }
         list.dedup_by(|a, b| same(a.parameter, b.parameter));
@@ -436,6 +460,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         if all_endpoints {
             continue;
         }
+
         for incidence in &vertex.incidences {
             work.step()?;
             let u = &uses[uses
