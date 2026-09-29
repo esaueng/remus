@@ -217,6 +217,7 @@ Quick reference — find the right file for any task:
 | Builder (face splitting + assembly) | `builder/mod.rs`, `builder/assemble.rs` |
 | Face splitting (UV-space) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
+| Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
