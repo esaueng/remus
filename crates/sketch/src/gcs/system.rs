@@ -475,6 +475,11 @@ impl GcsSystem {
         tolerance: f64,
         capture_final: bool,
     ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        if self.param_map.is_empty() {
+            // Keep the no-free-parameter residual check (including empty systems)
+            // identical for plain and detailed solves at every tolerance.
+            return self.solve_impl(max_iterations, tolerance, capture_final);
+        }
         if decomp.is_single_connected() {
             return self.solve_dense(max_iterations, tolerance, capture_final);
         }

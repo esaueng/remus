@@ -2082,6 +2082,33 @@ fn near_singular_degenerate_row_agrees() {
 }
 
 #[test]
+fn empty_system_tolerance_agrees_between_solve_apis() {
+    for tolerance in [-1.0, 0.0, TOL] {
+        let plain = GcsSystem::new().solve(0, tolerance).unwrap();
+        let (detailed, counts) = GcsSystem::new()
+            .solve_detailed_counted(0, tolerance)
+            .unwrap();
+        assert_eq!(plain.converged, tolerance > 0.0);
+        assert_eq!(detailed.converged, plain.converged);
+        assert_eq!(detailed.iterations, plain.iterations);
+        assert_eq!(
+            detailed.max_residual.to_bits(),
+            plain.max_residual.to_bits()
+        );
+        assert_eq!(detailed.rolled_back, !plain.converged);
+        assert_eq!(counts.solver.residual_evals, 1);
+        assert_eq!(
+            detailed.classification,
+            if plain.converged {
+                SolveClassification::Solved
+            } else {
+                SolveClassification::Unsatisfied
+            }
+        );
+    }
+}
+
+#[test]
 fn zero_iteration_calls_agree() {
     let mut via_dense = build_independent_solved(10);
     let expect = dense_detailed(&mut via_dense, 0, TOL);
