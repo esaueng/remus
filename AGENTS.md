@@ -341,6 +341,7 @@ Quick reference — find the right file for any task:
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
 | Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
+| Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
 | Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
 | Deterministic work counters for the point-classification hot path (`perf-counters` feature) | `perf.rs` |
