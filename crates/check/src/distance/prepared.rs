@@ -429,12 +429,9 @@ impl<'a> PreparedDistanceSolid<'a> {
                 skipped += 1;
                 continue;
             }
-            if let Some((dist, closest)) = super::point_to_face_with_options(
-                self.topo,
-                point,
-                candidate.face,
-                self.options,
-            )? {
+            if let Some((dist, closest)) =
+                super::point_to_face_with_options(self.topo, point, candidate.face, self.options)?
+            {
                 evaluated += 1;
                 if dist < best_dist {
                     best_dist = dist;
