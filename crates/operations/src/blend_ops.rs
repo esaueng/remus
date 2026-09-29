@@ -3,9 +3,10 @@
 use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
 pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
+use remus_math::det_hash::DetHashSet;
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
-use remus_topology::face::FaceSurface;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
@@ -919,8 +920,9 @@ fn independent_blend_groups(
 
 /// Pristine-input material guard for all-convex fillet selections (B71).
 ///
-/// Captured before any engine mutates the arena: a clone of the input
-/// topology plus the G1-expanded edge chains the engines actually blend.
+/// Captured from the restored pristine input only when a trial result
+/// introduces a NURBS face: a clone of the input topology plus the
+/// G1-expanded edge chains the engines actually blend.
 /// [`check`](Self::check) runs after a successful build and refuses
 /// NURBS-band results that added material outside the input — the wrong-side
 /// trim signature — via the mesh-independent oracle in
@@ -999,6 +1001,64 @@ impl ConvexMaterialGuard {
     }
 }
 
+/// Run the common analytic result once, without cloning the input or ray
+/// classifying every selected edge. A newly NURBS result is rolled back and
+/// rebuilt with the pristine-input guard before it can be committed.
+fn attempt_with_lazy_material_guard(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+    build: impl Fn(&mut Topology) -> Result<BlendResult, OperationsError>,
+) -> Result<BlendResult, OperationsError> {
+    enum ProbeError {
+        Build(OperationsError),
+        NeedsGuard,
+    }
+
+    let mut original_nurbs: DetHashSet<FaceId> = DetHashSet::default();
+    for face in remus_topology::explorer::solid_faces(topo, solid)? {
+        if matches!(topo.face(face)?.surface(), FaceSurface::Nurbs(_)) {
+            original_nurbs.insert(face);
+        }
+    }
+
+    let first = remus_topology::transaction::run_transacted(topo, |t| {
+        let result = build(t).map_err(ProbeError::Build)?;
+        for face in remus_topology::explorer::solid_faces(t, result.solid)
+            .map_err(OperationsError::from)
+            .map_err(ProbeError::Build)?
+        {
+            if !original_nurbs.contains(&face)
+                && matches!(
+                    t.face(face)
+                        .map_err(OperationsError::from)
+                        .map_err(ProbeError::Build)?
+                        .surface(),
+                    FaceSurface::Nurbs(_)
+                )
+            {
+                return Err(ProbeError::NeedsGuard);
+            }
+        }
+        Ok(result)
+    });
+    match first {
+        Ok(result) => Ok(result),
+        Err(ProbeError::Build(error)) => Err(error),
+        Err(ProbeError::NeedsGuard) => {
+            let guard = ConvexMaterialGuard::capture(topo, solid, edges, radius)?;
+            transactional(topo, |t| {
+                let result = build(t)?;
+                if let Some(guard) = guard.as_ref() {
+                    guard.check(t, "fillet", result.solid)?;
+                }
+                Ok(result)
+            })
+        }
+    }
+}
+
 /// Fillet one group of edges, choosing the engine that fits its shape.
 ///
 /// The planar rebuild is tried first when every edge is a straight line
@@ -1011,7 +1071,6 @@ fn fillet_group(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let material_guard = ConvexMaterialGuard::capture(topo, solid, edges, radius)?;
     if is_planar_line_blend(topo, solid, edges)? {
         // The rolling-ball rebuild handles the validated planar classes
         // (simple prisms), closes multi-edge corner patches, and carries the
@@ -1020,12 +1079,8 @@ fn fillet_group(
         // through to the walking builder, whose stitched planar assembly
         // handles those shapes. Each attempt is transactional, so the
         // fall-through starts from a clean arena.
-        match transactional(topo, |t| {
-            let result = planar_fillet_result(t, solid, edges, radius)?;
-            if let Some(guard) = material_guard.as_ref() {
-                guard.check(t, "fillet", result.solid)?;
-            }
-            Ok(result)
+        match attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
+            planar_fillet_result(t, solid, edges, radius)
         }) {
             Ok(result) => return Ok(result),
             Err(
@@ -1043,7 +1098,7 @@ fn fillet_group(
     // Preserve the fork's constant-radius compatibility route as the next
     // choice. Run it transactionally as well so a failed legacy attempt can
     // never contaminate the repaired concave fallback below.
-    let legacy_refusal = match transactional(topo, |t| {
+    let legacy_refusal = match attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
         let mut builder = FilletBuilder::new(t, solid);
         builder.add_edges(edges, radius);
         let result = builder.build()?;
@@ -1056,9 +1111,6 @@ fn fillet_group(
             edges,
             BlendSize::Fillet { radius },
         )?;
-        if let Some(guard) = material_guard.as_ref() {
-            guard.check(t, "fillet", result.solid)?;
-        }
         Ok(result)
     }) {
         Ok(result) => return Ok(result),
@@ -1081,7 +1133,7 @@ fn fillet_group(
         return Err(legacy_refusal);
     }
 
-    transactional(topo, |t| {
+    attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
         let mut builder = FilletBuilder::new(t, solid);
         builder.add_edges_with_law(edges, remus_blend::radius_law::RadiusLaw::Constant(radius));
         let result = builder.build()?;
@@ -1094,9 +1146,6 @@ fn fillet_group(
             edges,
             BlendSize::Fillet { radius },
         )?;
-        if let Some(guard) = material_guard.as_ref() {
-            guard.check(t, "fillet", result.solid)?;
-        }
         Ok(result)
     })
 }
@@ -1661,6 +1710,69 @@ mod tests {
     use remus_topology::vertex::Vertex;
 
     use super::*;
+
+    #[test]
+    fn analytic_result_uses_one_material_guard_attempt() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let builds = std::cell::Cell::new(0);
+        let result = attempt_with_lazy_material_guard(&mut topo, solid, &[], 0.2, |_| {
+            builds.set(builds.get() + 1);
+            Ok(BlendResult {
+                solid,
+                succeeded: Vec::new(),
+                failed: Vec::new(),
+                is_partial: false,
+                face_origins: None,
+                engine: BlendEngine::RollingBall,
+            })
+        })
+        .unwrap();
+        assert_eq!(result.solid, solid);
+        assert_eq!(builds.get(), 1);
+    }
+
+    #[test]
+    fn new_nurbs_result_rebuilds_from_pristine_input() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let patch = crate::cap::bilinear_cap_patch(&[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+        ])
+        .unwrap();
+        let builds = std::cell::Cell::new(0);
+        let result = attempt_with_lazy_material_guard(&mut topo, solid, &[], 0.2, |t| {
+            builds.set(builds.get() + 1);
+            if builds.get() == 2 {
+                assert!(matches!(
+                    t.face(face).unwrap().surface(),
+                    FaceSurface::Plane { .. }
+                ));
+            }
+            t.face_mut(face)
+                .unwrap()
+                .set_surface(FaceSurface::Nurbs(patch.clone()));
+            Ok(BlendResult {
+                solid,
+                succeeded: Vec::new(),
+                failed: Vec::new(),
+                is_partial: false,
+                face_origins: None,
+                engine: BlendEngine::RollingBall,
+            })
+        })
+        .unwrap();
+        assert_eq!(result.solid, solid);
+        assert_eq!(builds.get(), 2);
+        assert!(matches!(
+            topo.face(face).unwrap().surface(),
+            FaceSurface::Nurbs(_)
+        ));
+    }
 
     #[test]
     fn fillet_v2_rejects_all_failed_partial_result() {

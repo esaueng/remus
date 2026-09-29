@@ -51,7 +51,8 @@
 //! The work is bounded: `N` fixed samples, two batched prepared
 //! classifications. Analytic inputs classify in bulk in well under a second;
 //! a result carrying a NURBS band costs ray-vs-NURBS intersections per sample
-//! (B71: ~1 ms/sample, ~7 s total in release). The check runs only for the
+//! (the earlier B71 sampler measured ~1 ms/sample, ~7 s total in release;
+//! the revised sampler and protected rebuild remain unmeasured). The check runs only for the
 //! all-convex class that produces a NURBS band, which has no valid in-repo
 //! precedent (the walking engine never converges tangent on curved convex
 //! rims) — ordinary box/planar and analytic-shoulder fillets never reach the
