@@ -316,9 +316,30 @@
       "file": "bindings/transforms.rs",
       "gate": "shipped",
       "class": "geometry_mutation",
-      "coverage": "uncovered",
+      "coverage": "covered",
       "owner": "O4.7",
-      "reason": "transform/pattern family; O4.7 solid twin pending"
+      "reason": "typed by copyAndTransformSolidDetailed; direct/batch code parity with copyAndTransformSolidDetailed",
+      "twin": "copyAndTransformSolidDetailed",
+      "batch_ops": [
+        "copyAndTransformSolidDetailed"
+      ],
+      "witnesses": [
+        "copy_transform_twin_matches_direct_and_batch",
+        "copy_transform_exact_only_refuses_fitted_result",
+        "copy_transform_refusals_preserve_topology",
+        "copy_transform_legacy_geometry_agrees"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "copyAndTransformSolidDetailed",
+      "rust": "copy_and_transform_solid_detailed",
+      "file": "bindings/transform_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
     },
     {
       "js": "copyFace",
@@ -2253,6 +2274,16 @@
       "reason": "face thickening; O4.7 solid twin pending"
     },
     {
+      "js": "transformDetailed",
+      "rust": "transform_detailed",
+      "file": "bindings/transform_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
       "js": "transformFace",
       "rust": "transform_face",
       "file": "bindings/transforms.rs",
@@ -2270,7 +2301,7 @@
       "class": "geometry_mutation",
       "coverage": "uncovered",
       "owner": "O4.7",
-      "reason": "in-place mutation returning void; typed status pending, never a forced solid envelope"
+      "reason": "in-place mutation returning void; status disclosed via transformDetailed (special-case O4.7 surface, never a forced solid envelope)"
     },
     {
       "js": "transformWire",

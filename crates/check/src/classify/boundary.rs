@@ -1081,6 +1081,78 @@ fn ray_crossings_nurbs_with_trim(
     count_nurbs_hits_with_trim(topo, face_id, Some(trim_data), surface, &points)
 }
 
+/// Certify a complete NURBS cap bounded by one planar periodic rim.
+///
+/// The rim is a full `u` turn on one `v` domain edge; positive rational
+/// weights and a one-sided control net prove that the whole support patch
+/// lies on the returned side of its rim plane. Its parameter domain is the
+/// cap, so a ray hit needs the half-space test without an inscribed polygon.
+fn full_nurbs_cap_inward_normal(
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    trim: &FaceTrimData,
+    uv_boundary: &[(f64, f64)],
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> Option<Vec3> {
+    if !trim.holes.is_empty() || u_period.is_none() || v_period.is_some() {
+        return None;
+    }
+    if !uv_loop_wraps(uv_boundary, u_period, v_period) {
+        return None;
+    }
+    let (v0, v1) = surface.domain_v();
+    let v_tol = (v1 - v0).abs() * 1e-9;
+    if ![v0, v1]
+        .iter()
+        .any(|&edge| uv_boundary.iter().all(|&(_, v)| (v - edge).abs() <= v_tol))
+    {
+        return None;
+    }
+    if !surface
+        .weights()
+        .iter()
+        .flatten()
+        .all(|w| w.is_finite() && *w > 0.0)
+    {
+        return None;
+    }
+    let (ref_pt, rest) = trim.outer.split_first()?;
+    let extent = rest
+        .iter()
+        .map(|point| (*point - *ref_pt).length())
+        .fold(0.0_f64, f64::max);
+    let tol = extent.max(1e-12) * 1e-9;
+    let area = trim
+        .outer
+        .iter()
+        .zip(trim.outer.iter().cycle().skip(1))
+        .map(|(a, b)| (*a - *ref_pt).cross(*b - *ref_pt))
+        .fold(Vec3::new(0.0, 0.0, 0.0), |sum, cross| sum + cross);
+    if area.length() <= tol * extent {
+        return None;
+    }
+    let normal = area.normalize().ok()?;
+    if trim
+        .outer
+        .iter()
+        .any(|point| ((*point - *ref_pt).dot(normal)).abs() > tol)
+    {
+        return None;
+    }
+    let mut positive = false;
+    let mut negative = false;
+    for point in surface.control_points().iter().flatten() {
+        let side = (*point - *ref_pt).dot(normal);
+        positive |= side > tol;
+        negative |= side < -tol;
+    }
+    match (positive, negative) {
+        (true, false) => Some(normal),
+        (false, true) => Some(-normal),
+        _ => None,
+    }
+}
+
 /// UV-trimmed NURBS hit counting with caller-supplied trim data (`None`
 /// builds it on demand, exactly as the one-shot path always has).
 fn count_nurbs_hits_with_trim(
@@ -1140,9 +1212,20 @@ fn count_nurbs_hits_with_trim(
     // what the analytic sphere path already assumes. A non-planar zero-area
     // boundary would not be handled correctly here, though it is no worse off
     // than under the UV test, which credits it with no crossings at all.
+    // A certified full NURBS cap uses its exact half-space before this fallback.
     if let Some(boundary) = &uv_boundary
         && uv_boundary_is_degenerate(boundary)
     {
+        if let Some(inward) =
+            full_nurbs_cap_inward_normal(surface, trim_data, boundary, u_period, v_period)
+        {
+            let ref_pt = trim_data.outer[0];
+            let crossings = hits
+                .iter()
+                .filter(|(point, _, _)| (*point - ref_pt).dot(inward) >= -HALF_SPACE_EPS)
+                .count();
+            return Ok(u32::try_from(crossings).unwrap_or(u32::MAX));
+        }
         let points: Vec<_> = hits.iter().map(|(point, _, _)| *point).collect();
         return count_3d_polygon_crossings_with_trim(topo, face_id, Some(trim_data), &points);
     }
