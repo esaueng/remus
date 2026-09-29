@@ -175,6 +175,9 @@ pub(super) fn collect_planar_uses(
         if !collector.push_loop(topo, face_id, loop_id, loop_position as u64) {
             return Ok(None);
         }
+        if collector.uses.len() > MAX_ARRANGEMENT_USES {
+            return Ok(None);
+        }
     }
     if !Collector::loops_match_wires(topo, face_id) {
         return Ok(None);
@@ -182,6 +185,9 @@ pub(super) fn collect_planar_uses(
     for section in sections {
         context.check_cancelled().map_err(cancelled)?;
         if !collector.push_section(section) {
+            return Ok(None);
+        }
+        if collector.uses.len() > MAX_ARRANGEMENT_USES {
             return Ok(None);
         }
     }
@@ -405,28 +411,6 @@ fn uses_have_degenerate_contact(uses: &[CurveUse], tol: f64) -> bool {
     false
 }
 
-/// Input-proportional budget policy for one arrangement run. The core
-/// charges every pair scan, refinement, seed search, graph walk, and
-/// quotient step against `march_steps`, caps inputs/events at
-/// `queue_size`, and caps emitted edges at `segments`.
-fn arrangement_context(parent: &OperationContext, uses: usize) -> OperationContext {
-    let n = uses.saturating_add(8);
-    let floor = remus_math::context::WorkBudgets::new()
-        .with_march_steps(64_usize.saturating_mul(n).saturating_mul(n))
-        .with_queue_size(8_usize.saturating_mul(n).saturating_mul(n))
-        .with_segments(4_usize.saturating_mul(n).saturating_mul(n));
-    let current = parent.budgets;
-    parent.clone().with_budgets(
-        remus_math::context::WorkBudgets::new()
-            .with_march_steps(current.march_steps.max(floor.march_steps))
-            .with_queue_size(current.queue_size.max(floor.queue_size))
-            .with_segments(current.segments.max(floor.segments))
-            .with_branches_per_direction(current.branches_per_direction)
-            .with_newton_iterations(current.newton_iterations)
-            .with_subdivision_depth(current.subdivision_depth),
-    )
-}
-
 /// Split a qualified planar face through the provenance-preserving
 /// arrangement.
 ///
@@ -467,15 +451,14 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
         );
         return Ok(None);
     }
-    // The pipeline's budgets are SSI-calibrated (a handful of steps);
-    // the arrangement is a different cost model with quadratic pair
-    // scans. The adapter translates with an input-proportional policy
-    // floor, keeping the caller's cancellation token and every larger
-    // allowance: budgets stay finite and exhaustion stays typed, while
-    // default contexts can actually run the core. Measured: 10 uses
-    // consume ~700 march steps; the floor carries 8x headroom.
-    let child = arrangement_context(context, inputs.uses.len());
-    match run_planar_arrangement(&inputs, &child) {
+    match run_planar_arrangement(&inputs, context) {
+        Err(ArrangementError::WorkBudgetExceeded)
+            if context.budgets == remus_math::context::WorkBudgets::new() =>
+        {
+            // Preserve the legacy default operation while requiring callers
+            // to opt into enough work for the quadratic arrangement.
+            Ok(None)
+        }
         Err(
             ArrangementError::AmbiguousContact
             | ArrangementError::AmbiguousOverlap
@@ -2602,6 +2585,51 @@ mod tests {
             format!("{error:?}").contains("WorkBudgetExceeded"),
             "unexpected {error:?}"
         );
+    }
+
+    #[test]
+    fn production_adapter_preserves_caller_work_caps() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [line_section(
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+        )];
+        let starved = OperationContext::new().with_budgets(
+            remus_math::context::WorkBudgets::new()
+                .with_march_steps(0)
+                .with_queue_size(0)
+                .with_segments(0),
+        );
+        let error = try_split_plane_face_by_provenance_arrangement(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &starved,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+    }
+
+    #[test]
+    fn collection_declines_excess_uses_before_pair_scan() {
+        let (topo, face) = square_topology(2.0);
+        let section = line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0));
+        let sections = vec![section; MAX_ARRANGEMENT_USES + 1];
+        let collected = collect_planar_uses(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &test_context(),
+        )
+        .unwrap();
+        assert!(collected.is_none());
     }
 
     #[test]
