@@ -116,6 +116,8 @@ const CAP_PERPENDICULAR_SLACK: f64 = 8.0 * f64::EPSILON;
 /// Samples on a cap circle section, including the duplicate seam point that
 /// closes the chain (`n + 1` points over one turn).
 const N_CAP_CIRCLE_SAMPLES: usize = 64;
+/// Absolute axial parameter window in the legacy plane/conic sampler.
+const LEGACY_AXIAL_WINDOW: f64 = 100.0;
 
 /// Dispatch intersection based on surface types.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -197,11 +199,13 @@ fn try_plane_analytic(
     })?;
     let points = extract_points(&curves);
     if points.is_empty()
-        && matches!(
-            analytic,
-            AnalyticSurface::Cylinder(_) | AnalyticSurface::Cone(_)
-        )
+        && section_beyond_sampling_window(analytic, *normal, *d)
+        && let AnalyticSurface::Cylinder(cyl) = analytic
+        && let Some(section) = sample_oblique_cylinder_section(cyl, *normal, *d)
     {
+        return Ok(Some(section));
+    }
+    if points.is_empty() && section_beyond_sampling_window(analytic, *normal, *d) {
         return Err(OffsetError::IntersectionFailed {
             face_a,
             face_b,
@@ -210,6 +214,81 @@ fn try_plane_analytic(
         });
     }
     Ok(Some(points))
+}
+
+/// Sample a complete oblique cylinder section when the legacy sampler's
+/// absolute axial window dropped every point. Each point lies on the exact
+/// cylinder carrier and satisfies the plane equation; only the polyline
+/// discretization is approximate. Near-axis-parallel planes stay with the
+/// legacy empty/refusal path because their axial parameter is ill-conditioned.
+#[allow(clippy::cast_precision_loss)]
+fn sample_oblique_cylinder_section(
+    cyl: &remus_math::surfaces::CylindricalSurface,
+    normal: Vec3,
+    d: f64,
+) -> Option<Vec<Point3>> {
+    let axial_dot = normal.dot(cyl.axis());
+    if !axial_dot.is_finite() || axial_dot.abs() < 1e-6 {
+        return None;
+    }
+    let mut points = Vec::with_capacity(N_CAP_CIRCLE_SAMPLES + 1);
+    for i in 0..=N_CAP_CIRCLE_SAMPLES {
+        let u = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+        let base = cyl.evaluate(u, 0.0);
+        let v = (d - dot_point_normal(normal, base)) / axial_dot;
+        if !v.is_finite() {
+            return None;
+        }
+        let point = cyl.evaluate(u, v);
+        if !point.x().is_finite() || !point.y().is_finite() || !point.z().is_finite() {
+            return None;
+        }
+        points.push(point);
+    }
+    Some(points)
+}
+
+/// Distinguish a missed large section from an empty side-plane contact.
+/// The legacy sampler permits empty intersections with axis-parallel planes;
+/// only a section whose every sampled axial parameter exceeds its fixed
+/// window can be refused as out of range here.
+#[allow(clippy::cast_precision_loss)]
+fn section_beyond_sampling_window(analytic: AnalyticSurface<'_>, normal: Vec3, d: f64) -> bool {
+    match analytic {
+        AnalyticSurface::Cylinder(cyl) => {
+            let axial_dot = normal.dot(cyl.axis());
+            if axial_dot.abs() < 1e-12 {
+                return false;
+            }
+            (0..=N_CAP_CIRCLE_SAMPLES).all(|i| {
+                let u = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+                let base = cyl.evaluate(u, 0.0);
+                let v = (d - dot_point_normal(normal, base)) / axial_dot;
+                v.is_finite() && v.abs() > LEGACY_AXIAL_WINDOW
+            })
+        }
+        AnalyticSurface::Cone(cone) => {
+            let apex = cone.apex();
+            let numerator = d - dot_point_normal(normal, apex);
+            let mut sampled = 0;
+            for i in 0..N_CAP_CIRCLE_SAMPLES {
+                let u = std::f64::consts::TAU * (i as f64) / (N_CAP_CIRCLE_SAMPLES as f64);
+                let axial_dot = normal.dot(cone.evaluate(u, 1.0) - apex);
+                if axial_dot.abs() < 1e-12 {
+                    continue;
+                }
+                let v = numerator / axial_dot;
+                if !v.is_finite() || v.abs() <= LEGACY_AXIAL_WINDOW {
+                    return false;
+                }
+                sampled += 1;
+            }
+            sampled >= 2
+        }
+        AnalyticSurface::Sphere(_) | AnalyticSurface::Torus(_) | AnalyticSurface::Plane { .. } => {
+            false
+        }
+    }
 }
 
 /// Sample the circle section of a cap plane perpendicular to a cylinder or
@@ -616,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn near_perpendicular_large_cap_refuses_unrepresentable_section() {
+    fn near_perpendicular_large_cap_preserves_oblique_cylinder_section() {
         let axis = Vec3::new(0.0, 0.0, 1.0);
         let tilted = Vec3::new(3.0e-5, 0.0, 1.0).normalize().unwrap();
         let cylinder = remus_math::surfaces::CylindricalSurface::new(
@@ -676,13 +755,31 @@ mod tests {
             d: 1_000.0,
         };
         let wall = FaceSurface::Cylinder(cylinder.clone());
-        let error =
-            try_plane_analytic(faces[0], faces[1], &plane, &wall, Tolerance::new()).unwrap_err();
-        assert!(matches!(error, OffsetError::IntersectionFailed { .. }));
+        let section = try_plane_analytic(faces[0], faces[1], &plane, &wall, Tolerance::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(section.len(), N_CAP_CIRCLE_SAMPLES + 1);
+        let (min_z, max_z) = section
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |range, p| {
+                (range.0.min(p.z()), range.1.max(p.z()))
+            });
+        assert!(max_z - min_z > 0.04);
+        for point in &section {
+            assert!((dot_point_normal(tilted, *point) - 1_000.0).abs() < 1e-8);
+            assert!(
+                ((point.x() * point.x() + point.y() * point.y()).sqrt() - 1_000.0).abs() < 1e-8
+            );
+        }
+        let side_plane = FaceSurface::Plane {
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            d: 2_000.0,
+        };
         assert!(
-            error
-                .to_string()
-                .contains("outside the supported sampling window")
+            try_plane_analytic(faces[0], faces[1], &side_plane, &wall, Tolerance::new())
+                .unwrap()
+                .unwrap()
+                .is_empty()
         );
 
         let cone_wall = FaceSurface::Cone(cone.clone());
