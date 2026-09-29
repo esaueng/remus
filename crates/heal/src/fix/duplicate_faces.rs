@@ -66,8 +66,6 @@
 //! prefix (dense coincident inputs still cost O(n²) time, reported honestly
 //! via the plan stats).
 
-use std::collections::HashMap;
-
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -230,7 +228,7 @@ pub(super) fn fix_duplicate_faces(
     let shells: Vec<_> = std::iter::once(solid.outer_shell())
         .chain(solid.inner_shells().iter().copied())
         .collect();
-    let mut face_shell_uses = HashMap::new();
+    let mut face_shell_uses = DetHashMap::default();
     for &shell in &shells {
         for &face in topo.shell(shell)?.faces() {
             *face_shell_uses.entry(face).or_insert(0usize) += 1;
@@ -251,7 +249,7 @@ pub(super) fn fix_duplicate_faces(
 fn fix_shell_duplicate_faces(
     topo: &Topology,
     shell_id: remus_topology::shell::ShellId,
-    face_shell_uses: &HashMap<FaceId, usize>,
+    face_shell_uses: &DetHashMap<FaceId, usize>,
     ctx: &mut HealContext,
 ) -> Result<FixResult, HealError> {
     let tol = ctx.tolerance.linear;
@@ -458,9 +456,10 @@ fn describe_wire(
         match edge.curve() {
             EdgeCurve::Line => segs.push(BoundarySeg::Line { start }),
             EdgeCurve::Circle(circle) => {
-                let edge_start = topo.vertex(edge.start())?.point();
-                let edge_end = topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.domain_with_endpoints(edge_start, edge_end);
+                let (t0, t1) = match edge.strict_domain() {
+                    Ok(domain) => domain,
+                    Err(_) => return Ok(None),
+                };
                 let domain = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
                 match describe_arc(circle, edge, start, end, domain, support, tolerance) {
                     Some(seg) => segs.push(seg),
@@ -476,7 +475,7 @@ fn describe_wire(
     // The loop must close: the last segment must return to the first start.
     match (first_start, prev_end) {
         (Some(first), Some(last)) if (last - first).length() < tolerance => {}
-        _ => return Ok(None),
+        (Some(_), Some(_)) | (None, _) | (_, None) => return Ok(None),
     }
     let normalized = normalize_subdivision(segs, tolerance);
     if normalized.is_empty() {
@@ -1147,6 +1146,19 @@ mod tests {
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
 
+    fn add_authored_circle_edge(
+        topo: &mut Topology,
+        start: remus_topology::vertex::VertexId,
+        end: remus_topology::vertex::VertexId,
+        circle: Circle3D,
+    ) -> remus_topology::edge::EdgeId {
+        let start_point = topo.vertex(start).unwrap().point();
+        let end_point = topo.vertex(end).unwrap().point();
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge.set_trim(Some(edge.domain_with_endpoints(start_point, end_point)));
+        topo.add_edge(edge)
+    }
+
     /// Add a planar (+Z) triangle face with the given corner points.
     fn add_triangle(topo: &mut Topology, a: Point3, b: Point3, c: Point3) -> FaceId {
         let va = topo.add_vertex(Vertex::new(a, 1e-7));
@@ -1331,7 +1343,8 @@ mod tests {
                     && p1 == p2
                     && (*k1 && *k2 || (*s1 - *s2).length() < tol && (*e1 - *e2).length() < tol)
             }
-            _ => false,
+            (BoundarySeg::Line { .. }, BoundarySeg::Arc { .. })
+            | (BoundarySeg::Arc { .. }, BoundarySeg::Line { .. }) => false,
         }
     }
 
@@ -2108,10 +2121,12 @@ mod tests {
                         ));
                     }
                 } else {
-                    let origins = match name {
-                        "sparse" => sparse_origins(size),
-                        "clustered" => clustered_origins(size),
-                        _ => coincident_origins(size),
+                    let origins = if name == "sparse" {
+                        sparse_origins(size)
+                    } else if name == "clustered" {
+                        clustered_origins(size)
+                    } else {
+                        coincident_origins(size)
                     };
                     for [x, y] in origins {
                         faces.push(add_quad(
@@ -2485,7 +2500,7 @@ mod tests {
             center.z(),
         );
         let v = topo.add_vertex(Vertex::new(seam, 1e-7));
-        let edge = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let edge = add_authored_circle_edge(topo, v, v, circle);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
         topo.add_face(Face::new(
             wire,
@@ -2532,6 +2547,20 @@ mod tests {
         let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
         let plan = assert_shell_removals(&topo, shell, 1e-7);
         assert_eq!(plan.pairs.len(), 1, "seam position must not matter");
+    }
+
+    #[test]
+    fn disc_without_authoritative_trim_is_not_removed_as_duplicate() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let a = add_disc(&mut topo, center, 1.0, 0.0);
+        let b = add_disc(&mut topo, center, 1.0, 0.0);
+        let wire = topo.face(b).unwrap().outer_wire();
+        let edge = topo.wire(wire).unwrap().edges()[0].edge();
+        topo.edge_mut(edge).unwrap().set_trim(None);
+        assert!(describe_face(&topo, b, 1e-7).unwrap().is_none());
+        let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
+        assert!(assert_shell_removals(&topo, shell, 1e-7).pairs.is_empty());
     }
 
     #[test]
@@ -2628,8 +2657,8 @@ mod tests {
             circle.evaluate(3.0 * std::f64::consts::FRAC_PI_2),
             1e-7,
         ));
-        let ab = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
-        let ba = topo.add_edge(Edge::new(b, a, EdgeCurve::Circle(circle)));
+        let ab = add_authored_circle_edge(&mut topo, a, b, circle.clone());
+        let ba = add_authored_circle_edge(&mut topo, b, a, circle);
         let wire = topo.add_wire(
             Wire::new(
                 vec![OrientedEdge::new(ab, true), OrientedEdge::new(ba, true)],
@@ -2791,12 +2820,12 @@ mod tests {
                 ),
                 1e-7,
             ));
-            let ea = topo.add_edge(Edge::new(p215, pmid, EdgeCurve::Circle(circle.clone())));
-            let eb = topo.add_edge(Edge::new(pmid, p152, EdgeCurve::Circle(circle)));
+            let ea = add_authored_circle_edge(topo, p215, pmid, circle.clone());
+            let eb = add_authored_circle_edge(topo, pmid, p152, circle);
             oes.push(OrientedEdge::new(ea, true));
             oes.push(OrientedEdge::new(eb, true));
         } else {
-            let ea = topo.add_edge(Edge::new(p215, p152, EdgeCurve::Circle(circle)));
+            let ea = add_authored_circle_edge(topo, p215, p152, circle);
             oes.push(OrientedEdge::new(ea, true));
         }
         let e3 = topo.add_edge(Edge::new(p152, p02, EdgeCurve::Line));
@@ -2843,10 +2872,10 @@ mod tests {
             .map(OrientedEdge::edge)
             .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
             .unwrap();
-        let old_circle = match topo.edge(arc_id).unwrap().curve() {
-            EdgeCurve::Circle(circle) => circle.clone(),
-            _ => unreachable!(),
+        let EdgeCurve::Circle(old_circle) = topo.edge(arc_id).unwrap().curve() else {
+            unreachable!()
         };
+        let old_circle = old_circle.clone();
         let reversed = old_circle.reversed();
         let edge = topo.edge(arc_id).unwrap();
         let start = topo.vertex(edge.start()).unwrap().point();
@@ -2916,7 +2945,7 @@ mod tests {
         let pb = Point3::new(a1.cos(), a1.sin(), 0.0);
         let va = topo.add_vertex(Vertex::new(pa, 1e-7));
         let vb = topo.add_vertex(Vertex::new(pb, 1e-7));
-        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle)));
+        let arc = add_authored_circle_edge(&mut topo, va, vb, circle);
         let chord = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
         let wire = topo.add_wire(
             Wire::new(
@@ -2949,7 +2978,7 @@ mod tests {
         let flipped = circle.reversed();
         let seam = flipped.evaluate(1.0);
         let v = topo.add_vertex(Vertex::new(seam, 1e-7));
-        let edge = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(flipped)));
+        let edge = add_authored_circle_edge(&mut topo, v, v, flipped);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, false)], true).unwrap());
         let b = topo.add_face(Face::new(
             wire,
@@ -2983,7 +3012,7 @@ mod tests {
         let va = topo.add_vertex(Vertex::new(pa, 1e-7));
         let vb = topo.add_vertex(Vertex::new(pb, 1e-7));
         let vc = topo.add_vertex(Vertex::new(pc, 1e-7));
-        let arc_a = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle)));
+        let arc_a = add_authored_circle_edge(&mut topo, va, vb, circle);
         let lab_a = topo.add_edge(Edge::new(vb, vc, EdgeCurve::Line));
         let lac_a = topo.add_edge(Edge::new(vc, va, EdgeCurve::Line));
         let wire_a = topo.add_wire(
@@ -3010,7 +3039,7 @@ mod tests {
         let wa = topo.add_vertex(Vertex::new(pa, 1e-7));
         let wb = topo.add_vertex(Vertex::new(pb, 1e-7));
         let wc = topo.add_vertex(Vertex::new(pc, 1e-7));
-        let arc_b = topo.add_edge(Edge::new(wb, wa, EdgeCurve::Circle(flipped)));
+        let arc_b = add_authored_circle_edge(&mut topo, wb, wa, flipped);
         let lab_b = topo.add_edge(Edge::new(wb, wc, EdgeCurve::Line));
         let lac_b = topo.add_edge(Edge::new(wc, wa, EdgeCurve::Line));
         let wire_b = topo.add_wire(
