@@ -19,13 +19,16 @@ semantics or JS result-shape changes.
   verified empty `git diff` on `crates/sketch` between the measured and the
   rebased code commits), so the numbers apply to the rebased head unchanged.
 - Baseline package: committed `remus-wasm` `2026.1.6` (pre-S02 solver).
-- Candidate package: `remus-wasm` `2026.1.8`, fresh `cargo xtask wasm-build`
-  from the rebased head (validated: dual-target merge + wasm-opt, smoke
-  plus installed-tarball consumer checks pass). The first build (pre-rebase)
-  produced `2026.1.7`, which collided with main's own #841 refresh of the
-  same version from different bytes; the rebuild from the rebased head
-  advances to `2026.1.8` per the shared-version policy, and the packaged
-  fingerprint below is re-verified on `2026.1.8`.
+- Original candidate package: `remus-wasm` `2026.1.8`, built from the
+  pre-integration branch. The first build (pre-rebase) produced `2026.1.7`,
+  which collided with main's own #841 refresh of the same version from
+  different bytes; the rebased build advanced to `2026.1.8` under the
+  shared-version policy. The §4 timing table records that historical package.
+- Integrated package: paired `remus-wasm` and `remus-wasm-io` `2026.1.11`,
+  freshly rebuilt from the combined PERF-S02 and B74 (#864) source on main's
+  `2026.1.10` baseline. `cargo xtask wasm-build` validated the dual-target
+  bundles, full smoke suite, and installed-tarball consumers. The §4 solver
+  fingerprint was rechecked on this exact package.
 - Toolchain (both builds): rustc/cargo 1.96.0 (`ac68faa20 2026-05-25`), node
   v24.14.0, Python 3.12.3, Linux x86_64, AMD Ryzen 9 5900XT (32 logical).
   Native worker: profiling release (`opt-level 3`, debuginfo, no LTO).
@@ -121,13 +124,15 @@ through one decomposition.
   diagnostic and the published params; count gates assert one analysis
   Jacobian+QR per factorizable block (2/10/5/1 by workload, 0 when
   degenerate).
-- Full position: `cargo test -p remus-sketch` 170 lib + 9 identity + 5
+- Original S02 head: `cargo test -p remus-sketch` 170 lib + 9 identity + 5
   workspace-reuse + 1 doc-test green; `cargo test -p remus-operations --lib`
-  1224 green; `cargo test -p remus-wasm --lib` 615 green;
-  `cargo clippy -p remus-sketch --all-targets -- -D warnings` clean;
-  `cargo fmt` applied; `check-boundaries`, `check-det-hash`, `check-doc-paths`
-  pass; every sketch-runner sample below passed its
-  identity/dimension/outcome gates natively and through packaged WASM.
+  1224 green; `cargo test -p remus-wasm --lib` 615 green. Integrated head:
+  `cargo test -p remus-sketch` 172 lib + 9 identity + 5 workspace-reuse +
+  1 doc-test green; `cargo clippy -p remus-sketch --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, and `check-boundaries` pass. Every sketch-runner
+  sample below passed its identity/dimension/outcome gates natively and
+  through the historical packaged WASM; the integrated package fingerprint
+  was rechecked separately.
 
 ## 4. Measurements: same-host sequential baseline vs candidate
 
@@ -182,7 +187,7 @@ design — the pairs beside it cost microseconds.
 The 10000-parameter rows the S01 runner refuses (800 MB dense Jacobian) solve
 in ~41 ms with linear block scaling (2.5x params → ~2.7x time).
 
-Packaged WASM, candidate package `2026.1.8` built from the rebased head,
+Packaged WASM, historical candidate package `2026.1.8` built from the earlier rebased head,
 existing `gcs*` bindings (no binding changes in this PR), `wasm.cjs` cells
 (all validation-passed):
 
@@ -193,10 +198,14 @@ existing `gcs*` bindings (no binding changes in this PR), `wasm.cjs` cells
 | drag_100 solve (20 steps) / detailed | ~112–115 / ~130–135 ms | 100 / 100 | 100 / 100 |
 
 The pre-S02 committed package reports 8 iterations on solved_100 (dense) in
-~4.8 ms; the fresh package reports 9 (component path), matching native
-exactly — the iteration fingerprint proves the shipped artifact carries the
-new solver. Different builds, same solver: no cross-runtime speedup is
-claimed, matching the S01 discipline.
+~4.8 ms; the original candidate package reports 9 (component path), matching
+native exactly. The integrated `2026.1.11` package also passed all six
+`wasm.cjs` cells (100 parameters; solve and detailed; five retained samples
+and one warmup each): solved 9/9 iterations, coupled chain 5/5, and 20-step
+drag 100/100, with validation `passed` in every sample. The iteration
+fingerprint proves the shipped artifact carries the new solver. These
+package timings are not compared across builds or runtimes, matching the S01
+discipline.
 
 ## 5. Allocations: structural accounting (no instrumented allocator)
 
@@ -253,5 +262,8 @@ capture (`(n + m) * 8` bytes plus row layout — same shape as S06's).
   `20491ecc` + bench/test-only additions, native binary `20f2bb30…`,
   committed package `2026.1.6` for the old-solver WASM cells).
 - The S06 evidence files are untouched historical record.
-- Fresh package `2026.1.8` cell outputs: `wasm.cjs` JSON samples quoted in §4
-  (validation `passed`, iterations fingerprint 9/5/100).
+- Original candidate package `2026.1.8` cell outputs: `wasm.cjs` JSON
+  samples quoted in §4 (validation `passed`, iterations fingerprint 9/5/100).
+- Integrated paired package `2026.1.11`: fresh dual-target build, smoke and
+  installed-tarball validation; six `wasm.cjs` cells with five retained
+  samples each passed the same 9/5/100 iteration fingerprint.
