@@ -272,7 +272,10 @@ fn align_second_rim_to_cylinder(
         let (normal, center) = match edge.curve() {
             EdgeCurve::Circle(circle) => (circle.normal(), circle.center()),
             EdgeCurve::Ellipse(ellipse) => (ellipse.normal(), ellipse.center()),
-            _ => {
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => {
                 return Err(OffsetError::AssemblyFailed {
                     reason: "rim is not a closed conic".into(),
                 });
@@ -289,7 +292,10 @@ fn align_second_rim_to_cylinder(
         let parameter = match edge.curve() {
             EdgeCurve::Circle(circle) => circle.project(target),
             EdgeCurve::Ellipse(ellipse) => ellipse.project(target),
-            _ => {
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => {
                 return Err(OffsetError::AssemblyFailed {
                     reason: "rim changed before seam alignment".into(),
                 });
