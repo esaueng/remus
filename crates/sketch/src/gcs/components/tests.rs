@@ -208,6 +208,67 @@ fn shared_center_couples_two_circles() {
 }
 
 #[test]
+fn equal_radius_arc_circle_keeps_independent_centers_separate() {
+    let mut sys = GcsSystem::new();
+    let arc_center = free_pt(&mut sys, 0.0, 0.0);
+    let arc_start = free_pt(&mut sys, 2.0, 0.0);
+    let arc_end = free_pt(&mut sys, 0.0, 2.0);
+    let arc = sys.add_arc(arc_center, arc_start, arc_end).unwrap();
+    let mut center_fixes = Vec::new();
+    let mut radius_constraints = Vec::new();
+    for i in 0..4 {
+        let center = free_pt(&mut sys, 10.0 * (i + 1) as f64, 0.0);
+        let circle = sys.add_circle(center, 1.0).unwrap();
+        center_fixes.push(
+            sys.add_constraint(Constraint::FixX(center, 10.0 * (i + 1) as f64))
+                .unwrap(),
+        );
+        radius_constraints.push(
+            sys.add_constraint(Constraint::EqualRadiusArcCircle(arc, circle))
+                .unwrap(),
+        );
+    }
+    let index = param_index_of(&mut sys);
+    let d = decompose(&mut sys);
+    let radius_block = d
+        .components
+        .iter()
+        .find(|c| c.constraint_ids.contains(&radius_constraints[0]))
+        .unwrap();
+    assert_eq!(radius_block.params.len(), 10); // arc triple and four radii
+    assert!(
+        radius_constraints
+            .iter()
+            .all(|id| radius_block.constraint_ids.contains(id))
+    );
+    for id in center_fixes {
+        let center_block = d
+            .components
+            .iter()
+            .find(|c| c.constraint_ids.contains(&id))
+            .unwrap();
+        assert_eq!(center_block.params.len(), 1);
+        assert!(
+            !center_block
+                .constraint_ids
+                .iter()
+                .any(|id| radius_constraints.contains(id))
+        );
+    }
+    assert_eq!(d.components.iter().filter(|c| !c.is_free()).count(), 5);
+    assert_eq!(
+        d.components
+            .iter()
+            .find(|c| c.is_free())
+            .unwrap()
+            .params
+            .len(),
+        4
+    );
+    assert_eq!(index.len(), 18);
+}
+
+#[test]
 fn arc_internal_tie_couples_the_arc() {
     let mut sys = GcsSystem::new();
     let center = free_pt(&mut sys, 0.0, 0.0);
@@ -443,8 +504,8 @@ fn every_variant_declares_its_free_parameters() {
         ],
     );
     check(
-        Constraint::EqualRadiusArcCircle(a1, c1),
-        &[X(pc), Y(pc), X(p1), Y(p1), X(p2), Y(p2), R(c1)],
+        Constraint::EqualRadiusArcCircle(a1, c2),
+        &[X(pc), Y(pc), X(p1), Y(p1), X(p2), Y(p2), R(c2)],
     );
     check(
         Constraint::ArcLength(a1, 1.0),

@@ -254,7 +254,6 @@ fn direct_refs(c: &Constraint) -> StructuralRefs {
         }
         Constraint::EqualRadiusArcCircle(arc, circ) => {
             refs.arcs.push(*arc);
-            refs.circle_centers.push((*circ, true, true));
             refs.circle_radii.push(*circ);
         }
         Constraint::ConcentricArcCircle(arc, circ) => {
