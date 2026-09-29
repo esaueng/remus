@@ -46,12 +46,11 @@
 //! At most [`MAX_ASYNC_FRAMES`] frames may be pending per session. Submitting
 //! beyond the bound fails with [`RenderError::QueueFull`](crate::RenderError::QueueFull)
 //! without allocating and without poisoning the session. Retained memory is
-//! therefore bounded by `MAX_ASYNC_FRAMES` times the per-frame allocation
-//! (targets + staging + retained geometry), even when the caller stops
-//! consuming results.
+//! also capped by [`MAX_ASYNC_IN_FLIGHT_BYTES`] across pending frames
+//! (targets + staging + conservatively counted retained geometry).
 //!
-//! - Full queue: `submit_*` returns `QueueFull`; collect or cancel a pending
-//!   frame and retry.
+//! - Full queue or byte budget: `submit_*` returns `QueueFull` or
+//!   `AsyncBudgetExceeded`; collect or cancel a pending frame and retry.
 //! - Cancellation: [`OffscreenSession::cancel_frame`](crate::OffscreenSession::cancel_frame)
 //!   releases a pending frame's resources without mapping or decoding. It is
 //!   idempotent (`Ok(false)` when the ticket is already gone) and works even
@@ -72,7 +71,8 @@
 //! # Failure behavior
 //!
 //! Validation failures (`InvalidSize`, `PixelBudgetExceeded`, `SizeTooLarge`,
-//! `MeshData`, `Operations`, `Topology`, `WrongSession` on submit, `QueueFull`)
+//! `MeshData`, `Operations`, `Topology`, `WrongSession` on submit, `QueueFull`,
+//! `AsyncBudgetExceeded`)
 //! never poison the session. GPU failures (`BufferMap`, `Poll`) poison it: the
 //! failing completion returns the error as-is and records the reason; every
 //! later `submit_*`, `poll_frame`, and `wait_frame` returns
@@ -90,6 +90,13 @@ use std::time::Duration;
 /// Bounds retained memory: at most this many frames' targets, staging buffers,
 /// and retained geometry exist at once, even when the caller stops consuming.
 pub const MAX_ASYNC_FRAMES: usize = 8;
+
+/// Maximum logical retained bytes across pending async frames in one session.
+///
+/// Counts color, depth and ID targets, requested staging buffers, and retained
+/// geometry handles conservatively. This limits admission before GPU allocation;
+/// physical driver overhead may be higher.
+pub const MAX_ASYNC_IN_FLIGHT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Which outputs an async frame reads back to the CPU.
 ///
