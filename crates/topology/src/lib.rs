@@ -32,6 +32,9 @@ pub mod test_utils;
 pub mod topology;
 pub mod transaction;
 pub mod validation;
+
+#[cfg(test)]
+mod cow_prototype;
 pub mod vertex;
 pub mod wire;
 
@@ -327,6 +330,22 @@ pub enum TopologyError {
         /// The limit that was exceeded.
         tolerance: f64,
     },
+
+    /// An append-only transaction scope refused a write to pre-existing
+    /// state (PERF-T03).
+    ///
+    /// This is internal control flow, not a user-facing refusal:
+    /// [`transaction::run_append_only`]
+    /// rewinds the scope and re-executes the operation under the full
+    /// transaction path, so this error never escapes a correctly driven
+    /// append-only scope. It is typed (rather than an opaque abort) so
+    /// guard-violation tests can distinguish a trip from a genuine
+    /// operation failure.
+    #[error("append-only scope refused a write to pre-existing {entity}")]
+    AppendOnlyGuardTrip {
+        /// Which state component refused the write.
+        entity: &'static str,
+    },
 }
 
 /// Errors from retiring a solid and its unshared topology.
@@ -542,6 +561,10 @@ impl remus_math::diagnostic::ToDiagnostic for TopologyError {
             .with_detail("face", face.index())
             .with_detail("maxDeviation", *max_deviation)
             .with_detail("tolerance", *tolerance),
+            Self::AppendOnlyGuardTrip { entity } => {
+                Diagnostic::new(FailureCategory::Internal, "append_only_guard_trip", message)
+                    .with_detail("entity", *entity)
+            }
         }
     }
 }

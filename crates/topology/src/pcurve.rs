@@ -174,6 +174,11 @@ impl PCurveRegistry {
         self.uses.retain(|key, _| key.face != face);
     }
 
+    /// Removes one indexed use. Absent keys are a silent no-op.
+    pub(crate) fn remove_key(&mut self, key: PCurveKey) {
+        self.uses.remove(&key);
+    }
+
     /// Returns the number of indexed coedge uses, including uses without a
     /// stored pcurve.
     #[must_use]

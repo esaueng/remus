@@ -113,7 +113,7 @@ pub fn move_faces_with_entity_map(
     let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let result = move_faces_impl(topo, solid, faces, distance);
     if result.is_err() {
-        snapshot.restore_preserving_handle_slots(topo);
+        snapshot.restore(topo);
     }
     result
 }

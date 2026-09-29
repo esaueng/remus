@@ -223,7 +223,7 @@ pub(crate) fn move_faces_with_entity_evolution(
     })();
 
     if outcome.is_err() {
-        snapshot.restore_preserving_handle_slots(topo);
+        snapshot.restore(topo);
     }
     outcome
 }
