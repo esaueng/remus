@@ -47,6 +47,7 @@ use std::f64::consts::TAU;
 
 use remus_math::context::OperationContext;
 use remus_math::curves2d::{Circle2D, Curve2D, Line2D};
+use remus_math::det_hash::DetHashMap;
 use remus_math::predicates::orient2d;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3};
@@ -74,6 +75,26 @@ const END_MARGIN: f64 = 1e-9;
 /// Maximum input uses for one exact arrangement. Pair scans scale
 /// quadratically; larger faces stay on the established chord path.
 const MAX_ARRANGEMENT_USES: usize = 256;
+
+fn budget_decline(context: &OperationContext) -> Result<bool, AlgoError> {
+    if context.budgets == remus_math::context::WorkBudgets::new() {
+        Ok(false)
+    } else {
+        Err(collect_failed(ArrangementError::WorkBudgetExceeded))
+    }
+}
+
+fn charge_collection_step(
+    context: &OperationContext,
+    steps: &mut usize,
+) -> Result<bool, AlgoError> {
+    *steps = steps.saturating_add(1);
+    if *steps > context.budgets.march_steps {
+        budget_decline(context)
+    } else {
+        Ok(true)
+    }
+}
 
 /// One coedge traversal in a loop, resolved to vertex identities.
 struct LoopUse {
@@ -169,11 +190,18 @@ pub(super) fn collect_planar_uses(
     let _ = rank;
 
     let mut collector = Collector::new(frame, tol.linear);
+    let mut pair_steps = 0;
     // Outer loop first, then holes: `loops_of_face` guarantees that order.
     for (loop_position, &loop_id) in loop_ids.iter().enumerate() {
         context.check_cancelled().map_err(cancelled)?;
         if !collector.push_loop(topo, face_id, loop_id, loop_position as u64) {
             return Ok(None);
+        }
+        if collector.uses.len() > MAX_ARRANGEMENT_USES {
+            return Ok(None);
+        }
+        if collector.uses.len() > context.budgets.queue_size {
+            return budget_decline(context).map(|_| None);
         }
     }
     if !Collector::loops_match_wires(topo, face_id) {
@@ -184,13 +212,22 @@ pub(super) fn collect_planar_uses(
         if !collector.push_section(section) {
             return Ok(None);
         }
+        if collector.uses.len() > MAX_ARRANGEMENT_USES {
+            return Ok(None);
+        }
+        if collector.uses.len() > context.budgets.queue_size {
+            return budget_decline(context).map(|_| None);
+        }
     }
     // Interior concurrency first: shared-cert splits become range
     // ends that the endpoint prejoin below then treats as joined.
-    if !collector.resolve_line_concurrency(context)? {
+    if !collector.resolve_line_concurrency(context, &mut pair_steps)? {
         return Ok(None);
     }
-    if !collector.prejoin_endpoints(context)? {
+    if collector.uses.len() > context.budgets.queue_size {
+        return budget_decline(context).map(|_| None);
+    }
+    if !collector.prejoin_endpoints(context, &mut pair_steps)? {
         return Ok(None);
     }
     if !collector.section_ends_resolved() {
@@ -379,7 +416,8 @@ fn uses_pair_is_degenerate(a: &CurveUse, b: &CurveUse, tol: f64) -> bool {
         (Curve2D::Circle(ca), Curve2D::Circle(cb)) => {
             circle_pair_is_degenerate(ca, a.range, cb, b.range, tol)
         }
-        _ => false,
+        (Curve2D::Ellipse(_) | Curve2D::Nurbs(_), _)
+        | (_, Curve2D::Ellipse(_) | Curve2D::Nurbs(_)) => false,
     }
 }
 
@@ -405,28 +443,6 @@ fn uses_have_degenerate_contact(uses: &[CurveUse], tol: f64) -> bool {
     false
 }
 
-/// Input-proportional budget policy for one arrangement run. The core
-/// charges every pair scan, refinement, seed search, graph walk, and
-/// quotient step against `march_steps`, caps inputs/events at
-/// `queue_size`, and caps emitted edges at `segments`.
-fn arrangement_context(parent: &OperationContext, uses: usize) -> OperationContext {
-    let n = uses.saturating_add(8);
-    let floor = remus_math::context::WorkBudgets::new()
-        .with_march_steps(64_usize.saturating_mul(n).saturating_mul(n))
-        .with_queue_size(8_usize.saturating_mul(n).saturating_mul(n))
-        .with_segments(4_usize.saturating_mul(n).saturating_mul(n));
-    let current = parent.budgets;
-    parent.clone().with_budgets(
-        remus_math::context::WorkBudgets::new()
-            .with_march_steps(current.march_steps.max(floor.march_steps))
-            .with_queue_size(current.queue_size.max(floor.queue_size))
-            .with_segments(current.segments.max(floor.segments))
-            .with_branches_per_direction(current.branches_per_direction)
-            .with_newton_iterations(current.newton_iterations)
-            .with_subdivision_depth(current.subdivision_depth),
-    )
-}
-
 /// Split a qualified planar face through the provenance-preserving
 /// arrangement.
 ///
@@ -445,7 +461,7 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     frame: &PlaneFrame,
     tol: &Tolerance,
     context: &OperationContext,
-    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    split_registry: Option<&mut DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     let face = match topo.face(face_id) {
         Ok(face) => face,
@@ -467,15 +483,14 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
         );
         return Ok(None);
     }
-    // The pipeline's budgets are SSI-calibrated (a handful of steps);
-    // the arrangement is a different cost model with quadratic pair
-    // scans. The adapter translates with an input-proportional policy
-    // floor, keeping the caller's cancellation token and every larger
-    // allowance: budgets stay finite and exhaustion stays typed, while
-    // default contexts can actually run the core. Measured: 10 uses
-    // consume ~700 march steps; the floor carries 8x headroom.
-    let child = arrangement_context(context, inputs.uses.len());
-    match run_planar_arrangement(&inputs, &child) {
+    match run_planar_arrangement(&inputs, context) {
+        Err(ArrangementError::WorkBudgetExceeded)
+            if context.budgets == remus_math::context::WorkBudgets::new() =>
+        {
+            // Preserve the legacy default operation while requiring callers
+            // to opt into enough work for the quadratic arrangement.
+            Ok(None)
+        }
         Err(
             ArrangementError::AmbiguousContact
             | ArrangementError::AmbiguousOverlap
@@ -559,7 +574,7 @@ fn record_section_breaks(
     inputs: &PlanarInputs,
     arrangement: &Arrangement,
     frame: &PlaneFrame,
-    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    split_registry: Option<&mut DetHashMap<usize, Vec<Point3>>>,
 ) {
     let Some(registry) = split_registry else {
         return;
@@ -926,7 +941,10 @@ fn emit_wire_run(
                 source_span[1] >= source_span[0],
             )
         }
-        _ => return Err(internal("non-line/circle carrier")),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Err(internal("non-line/circle carrier")),
     };
     // Pave-block sharing only for full-span sections: subspans drop it
     // exactly like the established splitter's split pieces, so vertex
@@ -1213,13 +1231,20 @@ impl<'a> Collector<'a> {
     /// clusters (an end near the cluster without its certificate);
     /// circle-involved interior multiways stay deferred to the
     /// established path.
-    fn resolve_line_concurrency(&mut self, context: &OperationContext) -> Result<bool, AlgoError> {
+    fn resolve_line_concurrency(
+        &mut self,
+        context: &OperationContext,
+        pair_steps: &mut usize,
+    ) -> Result<bool, AlgoError> {
         let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
         // Exact transverse crossings between line uses.
         let mut crossings: Vec<Crossing> = Vec::new();
         for i in 0..self.uses.len() {
             for j in i + 1..self.uses.len() {
                 context.check_cancelled().map_err(cancelled)?;
+                if !charge_collection_step(context, pair_steps)? {
+                    return Ok(false);
+                }
                 let (Some(ti), Some(tj), point) =
                     line_crossing(&self.uses[i], &self.uses[j], self.tol)
                 else {
@@ -1355,7 +1380,11 @@ impl<'a> Collector<'a> {
     /// join is therefore established here with a shared certificate and
     /// exact subspans; the core re-derives the same event and verifies the
     /// residual.
-    fn prejoin_endpoints(&mut self, context: &OperationContext) -> Result<bool, AlgoError> {
+    fn prejoin_endpoints(
+        &mut self,
+        context: &OperationContext,
+        pair_steps: &mut usize,
+    ) -> Result<bool, AlgoError> {
         let cancelled = |_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into());
         // Section endpoints in deterministic order.
         let mut endpoints: Vec<(usize, usize)> = Vec::new();
@@ -1378,6 +1407,9 @@ impl<'a> Collector<'a> {
             let cert = self.uses[idx].endpoints[side];
             let uv = eval_pcurve(&self.uses[idx], self.uses[idx].range[side]);
             for (other_idx, other) in self.uses.iter().enumerate() {
+                if !charge_collection_step(context, pair_steps)? {
+                    return Ok(false);
+                }
                 if other_idx == idx {
                     continue;
                 }
@@ -1534,7 +1566,10 @@ impl<'a> Collector<'a> {
                 }
                 true
             }
-            _ => false,
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => false,
         }
     }
 
@@ -2008,7 +2043,7 @@ fn interior_parameter(use_data: &CurveUse, point: Point2, tol: f64) -> Option<f6
                 None
             }
         }
-        _ => None,
+        Curve2D::Ellipse(_) | Curve2D::Nurbs(_) => None,
     }
 }
 
@@ -2042,7 +2077,10 @@ fn point_on_parent(parent: &CurveUse, info: &ParentInfo, parameter: f64) -> Poin
                 info.endpoints_3d[1],
             )
         }
-        _ => info.endpoints_3d[0],
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => info.endpoints_3d[0],
     }
 }
 
@@ -2605,6 +2643,73 @@ mod tests {
     }
 
     #[test]
+    fn production_adapter_preserves_caller_work_caps() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [line_section(
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+        )];
+        let starved = OperationContext::new().with_budgets(
+            remus_math::context::WorkBudgets::new()
+                .with_march_steps(0)
+                .with_queue_size(0)
+                .with_segments(0),
+        );
+        let error = try_split_plane_face_by_provenance_arrangement(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &starved,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+    }
+
+    #[test]
+    fn collection_declines_excess_uses_before_pair_scan() {
+        let (topo, face) = square_topology(2.0);
+        let section = line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0));
+        let sections = vec![section; MAX_ARRANGEMENT_USES + 1];
+        let collected = collect_planar_uses(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &test_context(),
+        )
+        .unwrap();
+        assert!(collected.is_none());
+    }
+
+    #[test]
+    fn collector_pair_scan_obeys_explicit_step_cap() {
+        let (topo, face) = square_topology(2.0);
+        let sections = [line_section(
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+        )];
+        let context = OperationContext::new()
+            .with_budgets(remus_math::context::WorkBudgets::new().with_march_steps(1));
+        let error = collect_planar_uses(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &plane_frame(),
+            &Tolerance::default(),
+            &context,
+        )
+        .unwrap_err();
+        assert!(format!("{error:?}").contains("WorkBudgetExceeded"));
+    }
+
+    #[test]
     fn cancelled_context_fails_atomically() {
         let (topo, face) = square_topology(2.0);
         let sections = [line_section(
@@ -2872,7 +2977,10 @@ mod tests {
                         points.push(frame.project(p3));
                     }
                 }
-                _ => {
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {
                     if points.is_empty() {
                         points.push(edge.start_uv);
                     }
