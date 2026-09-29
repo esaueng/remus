@@ -149,6 +149,10 @@ pub(super) struct ParentInfo {
     pub endpoints_3d: [Point3; 2],
     /// Endpoints before adapter subdivision, for cross-face split reporting.
     pub original_endpoints_3d: [Point3; 2],
+    /// One input edge before circle branch cuts and adapter subdivisions.
+    pub original_use_idx: usize,
+    /// Its complete native source interval, including any branch cut.
+    pub original_source_range: [f64; 2],
     /// Store-space topology edge index for boundary uses.
     pub source_topo_edge: Option<usize>,
     /// Pave block for section uses (cross-face sharing).
@@ -871,16 +875,16 @@ fn emit_cycle_wire(
                 .is_some_and(|c| inputs.branch_certs.contains(c))
     };
     let mut wire = Vec::with_capacity(cycle.len());
-    // Kept vertices break runs; mergeable pass-throughs do not. A use
-    // change always lands on a kept vertex (mixed incidence), so every
-    // run is single-use. Cyclic runs wrap past the cycle end.
+    // Kept vertices break runs; mergeable pass-throughs do not. Branch
+    // cuts can join two canonical uses from the same original circle.
+    // Cyclic runs wrap past the cycle end.
     let mut kept: Vec<bool> = Vec::with_capacity(cycle.len());
     for &half_idx in cycle {
         context.check_cancelled().map_err(cancelled)?;
         kept.push(!mergeable(arrangement.half_edges[half_idx].from));
     }
     let Some(first) = kept.iter().position(|k| *k) else {
-        // Whole cycle merges: one edge (single use by the merge rule).
+        // Whole cycle merges into one edge only when its origin agrees.
         if !cycle.is_empty() {
             wire.push(emit_wire_run(
                 inputs,
@@ -912,7 +916,7 @@ fn emit_cycle_wire(
     Ok(wire)
 }
 
-/// Build one production wire edge from a run of same-use halves.
+/// Build one production wire edge from a run of one original input edge.
 ///
 /// Geometry comes from the run's exact endpoints (3D) and chart vertices
 /// (UV); the carrier and lineage come from the originating input use.
@@ -934,9 +938,6 @@ fn emit_wire_run(
     let tolerance = context.tolerance.linear;
     let first = &arrangement.half_edges[*run.first().ok_or_else(|| internal("empty run"))?];
     let last = &arrangement.half_edges[*run.last().ok_or_else(|| internal("empty run"))?];
-    if first.source.use_id != last.source.use_id {
-        return Err(internal(MIXED_USE_RUN));
-    }
     let position = first
         .source
         .source_edge_idx
@@ -950,12 +951,18 @@ fn emit_wire_run(
         .ok_or_else(|| internal("stale use id"))?;
     let start_uv = arrangement.vertices[first.from].uv;
     let end_uv = arrangement.vertices[last.to].uv;
-    // Combined native subspan across the run, in traversal order. Runs
-    // are single-use by construction; every member is checked.
+    // Combined native subspan across the run, in traversal order. A
+    // branch-cut circle may span two use IDs, but every member must
+    // retain the same original input edge.
     let mut source_span = first.source_range;
     for &half_idx in &run[1..] {
         let half = &arrangement.half_edges[half_idx];
-        if half.source.use_id != first.source.use_id {
+        let member = half
+            .source
+            .source_edge_idx
+            .and_then(|idx| inputs.parents.get(idx))
+            .ok_or_else(|| internal("stale source index"))?;
+        if member.original_use_idx != parent.original_use_idx {
             return Err(internal(MIXED_USE_RUN));
         }
         source_span[1] = half.source_range[1];
@@ -996,14 +1003,9 @@ fn emit_wire_run(
     // is the correct untouched detector (not a tolerance comparison).
     // A fully re-merged run recovers its parent span (either traversal
     // orientation) and keeps the block.
-    let run_range = [first.range[0], last.range[1]];
-    let reversed = [run_range[1], run_range[0]];
-    let run_source = source_span;
     let reversed_source = [source_span[1], source_span[0]];
-    let full_span = (same_interval(carrier.range, run_range)
-        && same_interval(carrier.source_range, run_source))
-        || (same_interval(carrier.range, reversed)
-            && same_interval(carrier.source_range, reversed_source));
+    let full_span = same_interval(parent.original_source_range, source_span)
+        || same_interval(parent.original_source_range, reversed_source);
     let pave_block_id = if full_span {
         first.source.pave_block_id
     } else {
@@ -1532,6 +1534,7 @@ impl<'a> Collector<'a> {
             return false;
         }
         let closed = (start_3d - end_3d).length() <= self.tol;
+        let original_use_idx = self.parents.len();
         match curve_3d {
             EdgeCurve::Line => {
                 if (end_3d - start_3d).length() <= self.tol {
@@ -1567,6 +1570,8 @@ impl<'a> Collector<'a> {
                         pcurve,
                         endpoints_3d: [start_3d, end_3d],
                         original_endpoints_3d: [start_3d, end_3d],
+                        original_use_idx,
+                        original_source_range: [0.0, 1.0],
                         source_topo_edge,
                         pave_block_id,
                         is_section,
@@ -1588,6 +1593,11 @@ impl<'a> Collector<'a> {
                 ) else {
                     return false;
                 };
+                let (Some(first_piece), Some(last_piece)) = (pieces.first(), pieces.last()) else {
+                    return false;
+                };
+                let original_source_range =
+                    [first_piece.source_range[0], last_piece.source_range[1]];
                 for piece in pieces {
                     self.push_certified_use(
                         Curve2D::Circle(piece.pcurve.clone()),
@@ -1603,6 +1613,8 @@ impl<'a> Collector<'a> {
                             pcurve: Curve2D::Circle(piece.pcurve),
                             endpoints_3d: piece.endpoints_3d,
                             original_endpoints_3d: [start_3d, end_3d],
+                            original_use_idx,
+                            original_source_range,
                             source_topo_edge,
                             pave_block_id,
                             is_section,
@@ -1937,6 +1949,8 @@ impl<'a> Collector<'a> {
                 pcurve: parent.pcurve.clone(),
                 endpoints_3d: [start_3d, end_3d],
                 original_endpoints_3d: parent_info.original_endpoints_3d,
+                original_use_idx: parent_info.original_use_idx,
+                original_source_range: parent_info.original_source_range,
                 source_topo_edge: parent_info.source_topo_edge,
                 pave_block_id: parent_info.pave_block_id,
                 is_section: parent_info.is_section,
@@ -2434,6 +2448,56 @@ mod tests {
         assert_eq!(cut_count, 2, "one shared branch cut");
         let arrangement = run(&inputs);
         assert_eq!(material_count(&arrangement), 1);
+        let emitted = emit_planar_subfaces(
+            &inputs,
+            &arrangement,
+            topo.face(face).unwrap().surface().clone(),
+            false,
+            face,
+            Rank::A,
+            &plane_frame_at(center),
+            &test_context(),
+        )
+        .expect("branch-crossing arc emits");
+        assert_eq!(emitted.len(), 1);
+        let arcs: Vec<_> = emitted[0]
+            .outer_wire
+            .iter()
+            .filter(|edge| matches!(edge.curve_3d, EdgeCurve::Circle(_)))
+            .collect();
+        assert_eq!(arcs.len(), 1);
+        assert_eq!(arcs[0].trim, Some((3.0 * PI / 2.0, 5.0 * PI / 2.0)));
+        assert_eq!(arcs[0].source_topo_edge, Some(eid.index()));
+    }
+
+    #[test]
+    fn off_axis_full_circle_emits_one_native_edge() {
+        use std::f64::consts::PI;
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let start = circle.evaluate(PI / 4.0);
+        let vertex = topo.add_vertex(Vertex::new(start, TOL));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((PI / 4.0, PI / 4.0 + TAU)));
+        let edge_id = topo.add_edge(edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge_id, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let emitted = split_emit(&topo, face, &[]).expect("off-axis circle emits");
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].outer_wire.len(), 1);
+        let rim = &emitted[0].outer_wire[0];
+        assert_eq!(rim.trim, Some((PI / 4.0, PI / 4.0 + TAU)));
+        assert_eq!(rim.source_topo_edge, Some(edge_id.index()));
+        assert!((rim.start_3d - start).length() <= TOL);
+        assert!((rim.end_3d - start).length() <= TOL);
     }
 
     #[test]
