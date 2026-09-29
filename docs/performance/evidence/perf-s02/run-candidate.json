@@ -1,0 +1,243 @@
+{
+  "schema": "remus-sketch-perf-run-v1",
+  "started_utc": "20260929T024434.687984Z",
+  "status": "passed",
+  "source": {
+    "head": "20491ecc27497617e6c76b2dce827bb2122e3eb9",
+    "status": "M crates/sketch/benches/gcs_perf.rs\n M crates/sketch/src/gcs/components/tests.rs",
+    "working_tree_sha256": "4c72f024394a6bbba163d9d9a3e0e0baa8461c839a5c5946fccc7b66bb72f9a1"
+  },
+  "manifest_sha256": "714f71ad1c09e4ff381994172598d594e1a86b1dd91de33aca4704175963c81e",
+  "manifest": {
+    "schema": "remus-sketch-perf-workloads-v1",
+    "name": "sketch-baseline",
+    "seed_note": "No RNG: fixtures are closed-form grids (anchors at 10k, free starts at +1/+1, chain at (i, 0.5*(i%2))). Drag deltas are fixed (+0.5, +0.25) on chain point index 25. Deterministic across processes and machines.",
+    "solver": {
+      "max_iterations": 100,
+      "inconsistent_max_iterations": 50,
+      "tolerance": 1e-10,
+      "drag_steps": 20,
+      "drag_target_index": 25,
+      "drag_delta": [
+        0.5,
+        0.25
+      ]
+    },
+    "budgets": {
+      "jacobian_bytes": 268435456,
+      "note": "Dense Jacobian (m*n*8 bytes) above this budget is recorded as a resource refusal, never attempted. 10000-param coupled (10000x10000 = 800 MB) always refuses; 10000-param independent_under (5000x10000 = 400 MB) always refuses."
+    },
+    "cases": [
+      {
+        "id": "independent_under_10",
+        "workload": "independent_under",
+        "size": 10,
+        "num_params": 10,
+        "num_equations": 5,
+        "expected": "underConstrained"
+      },
+      {
+        "id": "independent_under_100",
+        "workload": "independent_under",
+        "size": 100,
+        "num_params": 100,
+        "num_equations": 50,
+        "expected": "underConstrained"
+      },
+      {
+        "id": "independent_under_1000",
+        "workload": "independent_under",
+        "size": 1000,
+        "num_params": 1000,
+        "num_equations": 500,
+        "expected": "underConstrained"
+      },
+      {
+        "id": "independent_under_10000",
+        "workload": "independent_under",
+        "size": 10000,
+        "num_params": 10000,
+        "num_equations": 5000,
+        "expected": "resource_refused"
+      },
+      {
+        "id": "independent_solved_10",
+        "workload": "independent_solved",
+        "size": 10,
+        "num_params": 10,
+        "num_equations": 10,
+        "expected": "solved"
+      },
+      {
+        "id": "independent_solved_100",
+        "workload": "independent_solved",
+        "size": 100,
+        "num_params": 100,
+        "num_equations": 100,
+        "expected": "solved"
+      },
+      {
+        "id": "independent_solved_1000",
+        "workload": "independent_solved",
+        "size": 1000,
+        "num_params": 1000,
+        "num_equations": 1000,
+        "expected": "solved"
+      },
+      {
+        "id": "independent_solved_10000",
+        "workload": "independent_solved",
+        "size": 10000,
+        "num_params": 10000,
+        "num_equations": 10000,
+        "expected": "resource_refused"
+      },
+      {
+        "id": "coupled_chain_10",
+        "workload": "coupled_chain",
+        "size": 10,
+        "num_params": 10,
+        "num_equations": 10,
+        "expected": "solved"
+      },
+      {
+        "id": "coupled_chain_100",
+        "workload": "coupled_chain",
+        "size": 100,
+        "num_params": 100,
+        "num_equations": 100,
+        "expected": "solved"
+      },
+      {
+        "id": "coupled_chain_1000",
+        "workload": "coupled_chain",
+        "size": 1000,
+        "num_params": 1000,
+        "num_equations": 1000,
+        "expected": "solved"
+      },
+      {
+        "id": "coupled_chain_10000",
+        "workload": "coupled_chain",
+        "size": 10000,
+        "num_params": 10000,
+        "num_equations": 10000,
+        "expected": "resource_refused"
+      },
+      {
+        "id": "redundant_100",
+        "workload": "redundant",
+        "size": 100,
+        "num_params": 100,
+        "num_equations": 150,
+        "expected": "redundant"
+      },
+      {
+        "id": "redundant_1000",
+        "workload": "redundant",
+        "size": 1000,
+        "num_params": 1000,
+        "num_equations": 1500,
+        "expected": "redundant"
+      },
+      {
+        "id": "inconsistent_100",
+        "workload": "inconsistent",
+        "size": 100,
+        "num_params": 100,
+        "num_equations": 51,
+        "expected": "unsatisfied"
+      },
+      {
+        "id": "inconsistent_1000",
+        "workload": "inconsistent",
+        "size": 1000,
+        "num_params": 1000,
+        "num_equations": 501,
+        "expected": "unsatisfied"
+      },
+      {
+        "id": "drag_100",
+        "workload": "drag",
+        "size": 100,
+        "num_params": 100,
+        "num_equations": 100,
+        "expected": "solved",
+        "drag_steps": 20
+      }
+    ]
+  },
+  "selected_cases": [
+    "independent_under_100",
+    "independent_under_1000",
+    "independent_solved_100",
+    "independent_solved_1000",
+    "coupled_chain_100",
+    "coupled_chain_1000",
+    "redundant_100",
+    "inconsistent_100",
+    "drag_100"
+  ],
+  "modes": [
+    "solve",
+    "detailed"
+  ],
+  "smoke": false,
+  "processes": 2,
+  "samples_per_process": 5,
+  "warmup_per_process": 1,
+  "threads": 1,
+  "platform": "Linux-7.1.5-76070105-generic-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+  "logical_cpus": 32,
+  "python": "3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+  "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+  "harness_sha256": {
+    "scripts/performance/sketch/run.py": "7a7ee92f34cb0d71adfc11271bc4b01e27e71bebf543b7ebb13d8868093a08a3",
+    "scripts/performance/sketch/workloads.json": "714f71ad1c09e4ff381994172598d594e1a86b1dd91de33aca4704175963c81e",
+    "scripts/performance/sketch/wasm.cjs": "baa068d019179034ae231aa3080cb85833342395a17a97753b84d496be949329",
+    "crates/wasm/examples/sketch_baseline.rs": "3b992144a895b1c266de9de40f853df23ab683af7bd06f33f6753949754b0208"
+  },
+  "build_command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "profiling",
+    "-p",
+    "remus-wasm",
+    "--example",
+    "sketch_baseline",
+    "--message-format=json",
+    "--offline"
+  ],
+  "native_profile": {
+    "opt_level": "3",
+    "debuginfo": 2,
+    "debug_assertions": false,
+    "overflow_checks": false,
+    "test": false
+  },
+  "native_binary_sha256": "20f2bb303c8b675bfa43c13c295e2fee6cc215283fcbcff69f6d02d45cf31cca",
+  "node": "v24.14.0",
+  "wasm_package": {
+    "version": "2026.1.6",
+    "declared_source": null,
+    "files_sha256": {
+      ".gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+      "LICENSE-APACHE": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+      "package.json": "a154aa2f25558007e2fd877451ece06bbb8e9f246d8121bb62955c80d036a35a",
+      "remus_wasm.d.ts": "643dd3f280943341c2495b2c7c1b8aa215e6cb1969a452d4903c70734516a4c5",
+      "remus_wasm.js": "cfda49baec77439c7544a7dca80a5534f07fd735bf65c75302a5fc2f2a30d6c5",
+      "remus_wasm_bg.js": "468f8b0ae59e5a20a4808a108ff56c9543dc6e2d37ae262330d7aec2a74c6b8a",
+      "remus_wasm_bg.wasm": "a374d5d69214087ebd6cb4e3a454a36d4715772efbee1de0670a84ae372d196b",
+      "remus_wasm_bg.wasm.d.ts": "a84820a401c4fdcf42692ca1e4d71f8cc5af0949d97b272e200faba63b2623c5",
+      "remus_wasm_node.cjs": "b244f17f09c41278c9dc58a40a8dd6ff4f6ac215d54920cb45a8cfdc45b2e238"
+    },
+    "last_package_commit": "329c8d20cdb95ea20944ea749d34a7a7731cad89\nchore(wasm): refresh packages to v2026.1.6 from 8ae5a1013d1e (#821)\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+    "source_equivalence": "Not established. Committed WASM may predate native source; do not infer cross-runtime speedup."
+  },
+  "finished_utc": "2026-09-29T02:48:07.619201+00:00"
+}
