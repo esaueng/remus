@@ -35,6 +35,17 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* Add `transformDetailed` and `copyAndTransformSolidDetailed` (direct and
+  batch), typed O4.7 twins of `transformSolid` and `copyAndTransformSolid`
+  (B74). Same engine, matrix contract (16 row-major values), and validation
+  order as the legacy methods, which are unchanged. Success discloses
+  `details.quality` (`exact` with `carrierChanges`/`edgeChanges` naming
+  every family change and its method, `approximate` with `fittedFaces`
+  carrying the sampled evidence), plus `determinant`,
+  `orientationReversed`, `similarity`, and `controlPoints`. With
+  `exactOnly: true` a fitted-sphere need refuses as `quality_refused` /
+  `exact_only_unattainable` before mutating, naming the refused faces.
+  The batch ops return the same envelope as their `ok` value.
 * Add `extrudeDetailed` and `revolveDetailed` (direct and batch), typed
   O4.7 twins of `extrude` and `revolve` with the same envelope and rollback
   as the boolean twins. The twins refuse profiles that the native engines
@@ -97,6 +108,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Bug Fixes
 
+* Fix reflected anisotropic sphere classification: a certified full NURBS
+  hemisphere cap now uses its exact rim half-space, so direct and prepared
+  ray casts agree with the ellipsoid material even near the sampled rim (B77).
+* Return typed detailed-result envelopes for malformed transform/copy batch
+  arguments, matching the direct refusal contract (B74).
 * Optimize the distributed browser binary and fail package validation above
   the 8 MiB consumer budget.
 * Keep exact-only refusals in the `quality_refused` category with stable
