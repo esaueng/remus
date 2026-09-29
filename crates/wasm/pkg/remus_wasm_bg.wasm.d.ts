@@ -55,6 +55,7 @@ export const brepkernel_convertToBspline: (a: number, b: number) => [number, num
 export const brepkernel_convertToElementary: (a: number, b: number) => [number, number, number];
 export const brepkernel_convexHull: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_copyAndTransformSolid: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_copyAndTransformSolidDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_copyFace: (a: number, b: number) => [number, number, number];
 export const brepkernel_copySolid: (a: number, b: number) => [number, number, number];
 export const brepkernel_copyWire: (a: number, b: number) => [number, number, number];
@@ -322,6 +323,7 @@ export const brepkernel_tessellateSolidUV: (a: number, b: number, c: number, d: 
 export const brepkernel_thicken: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_toBREP: (a: number, b: number) => [number, number, number];
 export const brepkernel_toBrepJson: (a: number, b: number) => [number, number, number];
+export const brepkernel_transformDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_transformFace: (a: number, b: number, c: number, d: number) => [number, number];
 export const brepkernel_transformSolid: (a: number, b: number, c: number, d: number) => [number, number];
 export const brepkernel_transformWire: (a: number, b: number, c: number, d: number) => [number, number];
