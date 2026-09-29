@@ -917,6 +917,87 @@ fn independent_blend_groups(
     Ok(groups)
 }
 
+/// Pristine-input material guard for all-convex fillet selections (B71).
+///
+/// Captured before any engine mutates the arena: a clone of the input
+/// topology plus the G1-expanded edge chains the engines actually blend.
+/// [`check`](Self::check) runs after a successful build and refuses
+/// NURBS-band results that added material outside the input — the wrong-side
+/// trim signature — via the mesh-independent oracle in
+/// [`crate::blend_material`]. Non-convex selections capture no guard (a
+/// concave blend adds material by design), and analytic-band results skip the
+/// sampling loop, so previously supported families never reach it.
+struct ConvexMaterialGuard {
+    pristine: Topology,
+    input: SolidId,
+    chains: Vec<Vec<EdgeId>>,
+    reach: f64,
+}
+
+impl ConvexMaterialGuard {
+    fn capture(
+        topo: &Topology,
+        solid: SolidId,
+        edges: &[EdgeId],
+        radius: f64,
+    ) -> Result<Option<Self>, OperationsError> {
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut chains = Vec::new();
+        for chain in remus_blend::g1_chain::g1_chains(topo, solid, edges, tol)? {
+            let mut unique = Vec::new();
+            for edge in chain {
+                if seen.insert(edge) {
+                    unique.push(edge);
+                }
+            }
+            if !unique.is_empty() {
+                chains.push(unique);
+            }
+        }
+        let flat: Vec<EdgeId> = chains.iter().flatten().copied().collect();
+        if !crate::blend_material::all_convex_analytic(topo, solid, &flat, radius * 0.25)? {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            pristine: topo.clone(),
+            input: solid,
+            chains,
+            reach: radius,
+        }))
+    }
+
+    fn check(
+        &self,
+        live: &Topology,
+        operation: &'static str,
+        result: SolidId,
+    ) -> Result<(), OperationsError> {
+        if !crate::blend_material::result_has_nurbs_band(live, result)? {
+            return Ok(());
+        }
+        let Some(tube) =
+            crate::blend_material::sample_reach_tube(&self.pristine, &self.chains, self.reach)?
+        else {
+            return Ok(());
+        };
+        let estimate = crate::blend_material::estimate_added_material(
+            &self.pristine,
+            self.input,
+            live,
+            result,
+            &tube,
+        )?;
+        let allowance = crate::blend_material::added_allowance(
+            &self.pristine,
+            &self.chains,
+            self.reach,
+            tube.volume(),
+        )?;
+        crate::blend_material::refuse_if_added_material(operation, &estimate, allowance)
+    }
+}
+
 /// Fillet one group of edges, choosing the engine that fits its shape.
 ///
 /// The planar rebuild is tried first when every edge is a straight line
@@ -929,6 +1010,7 @@ fn fillet_group(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
+    let material_guard = ConvexMaterialGuard::capture(topo, solid, edges, radius)?;
     if is_planar_line_blend(topo, solid, edges)? {
         // The rolling-ball rebuild handles the validated planar classes
         // (simple prisms), closes multi-edge corner patches, and carries the
@@ -937,7 +1019,13 @@ fn fillet_group(
         // through to the walking builder, whose stitched planar assembly
         // handles those shapes. Each attempt is transactional, so the
         // fall-through starts from a clean arena.
-        match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
+        match transactional(topo, |t| {
+            let result = planar_fillet_result(t, solid, edges, radius)?;
+            if let Some(guard) = material_guard.as_ref() {
+                guard.check(t, "fillet", result.solid)?;
+            }
+            Ok(result)
+        }) {
             Ok(result) => return Ok(result),
             Err(
                 error @ OperationsError::Blend(
@@ -967,6 +1055,9 @@ fn fillet_group(
             edges,
             BlendSize::Fillet { radius },
         )?;
+        if let Some(guard) = material_guard.as_ref() {
+            guard.check(t, "fillet", result.solid)?;
+        }
         Ok(result)
     }) {
         Ok(result) => return Ok(result),
@@ -1002,6 +1093,9 @@ fn fillet_group(
             edges,
             BlendSize::Fillet { radius },
         )?;
+        if let Some(guard) = material_guard.as_ref() {
+            guard.check(t, "fillet", result.solid)?;
+        }
         Ok(result)
     })
 }
