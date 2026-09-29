@@ -759,6 +759,17 @@ impl Topology {
             self.undo.records.clear();
             self.undo.scopes.clear();
             self.undo.generation = self.undo.generation.wrapping_add(1);
+            // The swapped state has no source prefix in this log. A later
+            // clone must not claim an inherited prefix of the old topology.
+            let lineage_id = UndoLog::default().lineage_id;
+            self.undo.lineage_id = lineage_id;
+            self.undo.base = UndoBase {
+                lineage_id,
+                generation: self.undo.generation,
+                log_len: 0,
+                ticks: snapshot.mutation_ticks,
+            };
+            self.undo.inherited_lineage = false;
         }
     }
 

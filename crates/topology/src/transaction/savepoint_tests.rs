@@ -407,6 +407,36 @@ fn unrelated_restore_with_matching_counters_preserves_outer_rollback() {
 }
 
 #[test]
+fn unrelated_restore_without_scope_rebases_inherited_clone_lineage() {
+    for preserving_slots in [false, true] {
+        let mut topo = Topology::new();
+        let original =
+            topo.add_vertex(crate::vertex::Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let before = state(&topo);
+        let mut intermediate = topo.clone();
+        let mut unrelated = Topology::new();
+        unrelated.add_vertex(crate::vertex::Vertex::new(Point3::new(9.0, 0.0, 0.0), 1e-7));
+        if preserving_slots {
+            intermediate.restore_preserving_handle_slots(&unrelated.clone());
+        } else {
+            intermediate.restore_for_rollback(&unrelated.clone());
+        }
+        let snapshot = intermediate.clone();
+        let result = run_transacted(&mut topo, |topo| {
+            topo.restore_for_rollback(&snapshot);
+            assert_eq!(topo.vertex(original)?.point(), Point3::new(9.0, 0.0, 0.0));
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        assert!(matches!(result, Err(TopologyError::WireNotClosed)));
+        assert_eq!(state(&topo), before, "preserving slots: {preserving_slots}");
+        assert_eq!(
+            topo.vertex(original).unwrap().point(),
+            Point3::new(1.0, 0.0, 0.0)
+        );
+    }
+}
+
+#[test]
 fn nested_success_commits_and_dropped_scopes_release_storage() {
     fn send_sync<T: Send + Sync>() {}
     let mut t = Topology::new();
