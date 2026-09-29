@@ -84,9 +84,8 @@ struct LineSeg {
 /// Build wire loops for a single face.
 ///
 /// Tries three strategies in order:
-/// 1. **Circle/seam pattern** — if the face has Circle edges (closed curves),
-///    build wires using circle + seam topology (cylinder/cone lateral faces,
-///    or single-circle cap faces).
+/// 1. **Closed conic/seam pattern** — build wires from full-turn circle or
+///    ellipse rims, with a seam for cylinder/cone lateral faces.
 /// 2. **Direct chain** — if intersection edges already share vertices and
 ///    form closed loops, chain them directly (sphere polygon faces).
 /// 3. **Line intersection** — find corners via pairwise line-line intersection,
@@ -134,7 +133,7 @@ fn build_loops_for_face(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    if let Some(wires) = try_circle_seam_wire(topo, &face_edges)? {
+    if let Some(wires) = try_closed_conic_seam_wire(topo, &face_edges)? {
         return Ok((wires, Vec::new()));
     }
 
@@ -165,42 +164,42 @@ fn build_loops_for_face(
     build_loops_via_line_intersection(topo, data, face_id, corner_cache, edge_cache)
 }
 
-/// Build wire from Circle edges and seam edges.
+/// Build a wire from closed circle/ellipse rims and a seam when needed.
 ///
 /// Handles two patterns:
-/// - **Single closed circle**: one Circle edge (start == end) → wire = `[circle]`.
-/// - **Two circles + seam** (cylinder lateral): two Circle edges at different
-///   positions → create a seam Line edge connecting their vertices, then
-///   build wire = [circle_a, seam_fwd, circle_b_rev, seam_rev].
-fn try_circle_seam_wire(
+/// - **Single rim**: one full-turn edge gives a cap wire.
+/// - **Two rims + seam**: a lateral face uses both rims and a shared seam.
+fn try_closed_conic_seam_wire(
     topo: &mut Topology,
     edges: &[EdgeId],
 ) -> Result<Option<Vec<WireId>>, OffsetError> {
-    let mut circles: Vec<EdgeId> = Vec::new();
+    let mut rims: Vec<EdgeId> = Vec::new();
     let mut others: Vec<EdgeId> = Vec::new();
     for &eid in edges {
         let edge = topo.edge(eid)?;
-        if edge.start() == edge.end() && matches!(edge.curve(), EdgeCurve::Circle(_)) {
-            circles.push(eid);
+        if edge.start() == edge.end()
+            && matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+        {
+            rims.push(eid);
         } else {
             others.push(eid);
         }
     }
 
-    if circles.is_empty() {
+    if rims.is_empty() {
         return Ok(None);
     }
 
-    // Single circle: cap face.
-    if circles.len() == 1 && others.is_empty() {
-        let wire = Wire::new(vec![OrientedEdge::new(circles[0], true)], true)?;
+    // Single full-turn rim: cap face.
+    if rims.len() == 1 && others.is_empty() {
+        let wire = Wire::new(vec![OrientedEdge::new(rims[0], true)], true)?;
         return Ok(Some(vec![topo.add_wire(wire)]));
     }
 
-    // Two circles: cylinder/cone lateral face.
-    if circles.len() == 2 && others.is_empty() {
-        let va = topo.edge(circles[0])?.start();
-        let vb = topo.edge(circles[1])?.start();
+    // Two full-turn rims: cylinder/cone lateral face.
+    if rims.len() == 2 && others.is_empty() {
+        let va = topo.edge(rims[0])?.start();
+        let vb = topo.edge(rims[1])?.start();
 
         if va == vb {
             // Degenerate: same vertex — shouldn't happen, but handle gracefully.
@@ -209,12 +208,12 @@ fn try_circle_seam_wire(
 
         let seam = topo.add_edge(Edge::new(va, vb, EdgeCurve::Line));
 
-        // Wire: circle_a(fwd) → seam(fwd) → circle_b(rev) → seam(rev)
+        // Wire: rim_a(fwd) → seam(fwd) → rim_b(rev) → seam(rev)
         let wire = Wire::new(
             vec![
-                OrientedEdge::new(circles[0], true),
+                OrientedEdge::new(rims[0], true),
                 OrientedEdge::new(seam, true),
-                OrientedEdge::new(circles[1], false),
+                OrientedEdge::new(rims[1], false),
                 OrientedEdge::new(seam, false),
             ],
             true,
@@ -222,7 +221,7 @@ fn try_circle_seam_wire(
         return Ok(Some(vec![topo.add_wire(wire)]));
     }
 
-    // Mixed circle + non-circle: not handled by this strategy.
+    // Mixed rims and other edges require a different trimming strategy.
     Ok(None)
 }
 
@@ -779,6 +778,44 @@ mod tests {
     use remus_topology::solid::SolidId;
 
     use crate::data::{OffsetData, OffsetOptions};
+
+    #[test]
+    fn exact_ellipse_rims_form_cap_and_mixed_lateral_wires() {
+        use remus_math::curves::{Circle3D, Ellipse3D};
+
+        let mut topo = Topology::new();
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ellipse = Ellipse3D::new(Point3::new(0.0, 0.0, 0.0), normal, 3.0, 2.0).unwrap();
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 5.0), normal, 2.0).unwrap();
+        let ve = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
+        let vc = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut ellipse_edge =
+            Edge::with_tolerance(ve, ve, EdgeCurve::Ellipse(ellipse), Some(1e-7));
+        ellipse_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let ellipse_edge = topo.add_edge(ellipse_edge);
+        let mut circle_edge = Edge::with_tolerance(vc, vc, EdgeCurve::Circle(circle), Some(1e-7));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let circle_edge = topo.add_edge(circle_edge);
+
+        let cap = try_closed_conic_seam_wire(&mut topo, &[ellipse_edge])
+            .unwrap()
+            .unwrap();
+        assert_eq!(topo.wire(cap[0]).unwrap().edges().len(), 1);
+        let lateral = try_closed_conic_seam_wire(&mut topo, &[ellipse_edge, circle_edge])
+            .unwrap()
+            .unwrap();
+        let walk = topo.wire(lateral[0]).unwrap().edges();
+        assert_eq!(walk.len(), 4);
+        for pair in walk
+            .iter()
+            .zip(walk.iter().cycle().skip(1))
+            .take(walk.len())
+        {
+            let current = topo.edge(pair.0.edge()).unwrap();
+            let next = topo.edge(pair.1.edge()).unwrap();
+            assert_eq!(pair.0.oriented_end(current), pair.1.oriented_start(next));
+        }
+    }
 
     fn run_phases_1_to_7(topo: &mut Topology, solid: SolidId, distance: f64) -> OffsetData {
         let mut data = OffsetData::new(distance, OffsetOptions::default(), vec![]);
