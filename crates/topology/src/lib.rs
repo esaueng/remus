@@ -335,7 +335,7 @@ pub enum TopologyError {
     /// state (PERF-T03).
     ///
     /// This is internal control flow, not a user-facing refusal:
-    /// [`transaction::run_append_only`](crate::transaction::run_append_only)
+    /// [`transaction::run_append_only`]
     /// rewinds the scope and re-executes the operation under the full
     /// transaction path, so this error never escapes a correctly driven
     /// append-only scope. It is typed (rather than an opaque abort) so
