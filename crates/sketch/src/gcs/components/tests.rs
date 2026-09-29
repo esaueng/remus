@@ -85,6 +85,73 @@ fn shared_fixed_point_joins_nothing() {
 }
 
 #[test]
+fn mutable_fixed_flag_keeps_partition_aligned_with_cached_parameter_map() {
+    let mut sys = GcsSystem::new();
+    let formerly_free = free_pt(&mut sys, 1.0, 0.0);
+    let formerly_fixed = fixed_pt(&mut sys, 2.0, 0.0);
+    let other_free = free_pt(&mut sys, 3.0, 0.0);
+    let first = sys
+        .add_constraint(Constraint::FixX(formerly_free, 1.0))
+        .unwrap();
+    let pinned = sys
+        .add_constraint(Constraint::FixX(formerly_fixed, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::FixX(other_free, 3.0))
+        .unwrap();
+    let cached = param_index_of(&mut sys);
+    sys.point_mut(formerly_free).unwrap().fixed = true;
+    sys.point_mut(formerly_fixed).unwrap().fixed = false;
+
+    let d = decompose(&mut sys);
+    let first_component = d
+        .components
+        .iter()
+        .find(|component| component.constraint_ids.contains(&first))
+        .unwrap();
+    assert!(first_component.params.contains(&cached[&X(formerly_free)]));
+    let pinned_component = d
+        .components
+        .iter()
+        .find(|component| component.constraint_ids.contains(&pinned))
+        .unwrap();
+    assert!(pinned_component.is_pinned());
+    assert!(!cached.contains_key(&X(formerly_fixed)));
+}
+
+#[test]
+fn point_mut_fixed_change_after_solve_preserves_multiblock_result() {
+    let mut dense = GcsSystem::new();
+    let dense_point = free_pt(&mut dense, 0.0, 0.0);
+    dense
+        .add_constraint(Constraint::FixX(dense_point, 1.0))
+        .unwrap();
+    assert!(dense.solve_detailed(50, 1e-9).unwrap().converged);
+    let point = dense.point_mut(dense_point).unwrap();
+    point.fixed = true;
+    point.x = 0.0;
+    let dense_result = dense.solve_detailed(50, 1e-9).unwrap();
+
+    let mut split = GcsSystem::new();
+    let changed = free_pt(&mut split, 0.0, 0.0);
+    let other = free_pt(&mut split, 0.0, 0.0);
+    split
+        .add_constraint(Constraint::FixX(changed, 1.0))
+        .unwrap();
+    split.add_constraint(Constraint::FixX(other, 2.0)).unwrap();
+    assert!(split.solve_detailed(50, 1e-9).unwrap().converged);
+    let point = split.point_mut(changed).unwrap();
+    point.fixed = true;
+    point.x = 0.0;
+    let split_result = split.solve_detailed(50, 1e-9).unwrap();
+
+    assert_eq!(split_result.converged, dense_result.converged);
+    assert_eq!(split_result.rolled_back, dense_result.rolled_back);
+    assert_eq!(split_result.classification, dense_result.classification);
+    assert!((split.point(changed).unwrap().x - dense.point(dense_point).unwrap().x).abs() < 1e-9);
+    assert!((split.point(other).unwrap().x - 2.0).abs() < 1e-9);
+}
+
+#[test]
 fn line_endpoints_couple_through_the_line() {
     let mut sys = GcsSystem::new();
     let p1 = free_pt(&mut sys, 0.0, 0.5);

@@ -301,9 +301,10 @@ fn direct_refs(c: &Constraint) -> StructuralRefs {
 /// Free-parameter indices a constraint structurally depends on, ascending.
 ///
 /// Expands [`direct_refs`] through the live system with its coordinate masks:
-/// a free point contributes its X and/or Y coordinates as named, every
-/// referenced circle contributes its radius parameter when named, and arcs
-/// expand to their full center/start/end triples. Fixed points contribute
+/// a point contributes its X and/or Y coordinates when those coordinates
+/// occur in the solver's parameter map, every referenced circle contributes
+/// its radius parameter when named, and arcs expand to their full
+/// center/start/end triples. A fixed point absent from the map contributes
 /// nothing, so constraints sharing only fixed geometry stay independent.
 /// Missing entities are skipped defensively — removal is refused while
 /// referenced, so this is unreachable in production, and the residual path
@@ -317,9 +318,6 @@ pub fn constraint_param_indices(
     let mut params: Vec<ParamRef> = Vec::new();
 
     let push_point = |id: PointId, use_x: bool, use_y: bool, params: &mut Vec<ParamRef>| {
-        if sys.point(id).is_none_or(|p| p.fixed) {
-            return;
-        }
         if use_x {
             params.push(ParamRef::PointX(id));
         }
