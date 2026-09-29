@@ -286,6 +286,7 @@ Quick reference — find the right file for any task:
 | Edge fixing (SameParameter, vertex tolerance) | `fix/edge.rs` |
 | Wire fixing (reorder, gaps, small, degenerate) | `fix/wire.rs` |
 | Face fixing (orientation, small area, seam insertion) | `fix/face.rs` |
+| Duplicate-face recognition and removal | `fix/duplicate_faces.rs` |
 | Shell fixing (orientation consistency) | `fix/shell.rs` |
 | Solid fixing (top-level orchestrator) | `fix/solid.rs` |
 | Small face removal | `fix/small_face.rs` |
