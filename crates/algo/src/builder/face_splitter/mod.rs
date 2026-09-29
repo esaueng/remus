@@ -128,7 +128,7 @@ fn split_sections_at_t_junctions(
     frame: Option<&PlaneFrame>,
     wire_pts: &[Point3],
     tol: f64,
-    mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<(), AlgoError> {
     // Every distinct section endpoint (3D) is a candidate split point. Dedup
     // with a fine grid (cell = tol), then index the unique points in a COARSE
@@ -3052,7 +3052,7 @@ fn split_plane_face_by_arrangement(
     face_id: FaceId,
     frame: &PlaneFrame,
     tol: f64,
-    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     // Collect input edges (boundary + sections) with their true geometry. Each
     // arc keeps its source curve; the arrangement subdivision uses the chord.
@@ -3209,7 +3209,7 @@ fn arrangement_regions_from_inputs(
     // When present, section-input interior break points are recorded per pave
     // block (exact UV → 3D via the frame) so curved faces sharing the same
     // section curve pre-split at identical points.
-    mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::vec::Vec2;
@@ -5451,7 +5451,7 @@ pub fn split_face_2d(
         impl std::hash::BuildHasher,
     >,
     context: &OperationContext,
-    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let run_impl = move |secs: &[SectionEdge]| {
         split_face_2d_impl(
@@ -5701,7 +5701,7 @@ fn split_face_2d_impl(
         impl std::hash::BuildHasher,
     >,
     context: &OperationContext,
-    mut split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+    mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
     let face = match topo.face(face_id) {
         Ok(f) => f,
@@ -7764,7 +7764,7 @@ fn split_face_2d_impl(
         // at the recorded points, so breaks commit only when this
         // arrangement is adopted. Recording a discarded arrangement would
         // hand curved neighbors splits the plane side never took.
-        let mut staged_breaks = std::collections::HashMap::new();
+        let mut staged_breaks = remus_math::det_hash::DetHashMap::default();
         match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
             topo,
             face_id,

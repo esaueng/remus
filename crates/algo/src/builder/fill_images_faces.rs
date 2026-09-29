@@ -305,8 +305,10 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             .unwrap_or(true);
         (curved, fid.index())
     });
-    let mut section_split_registry: std::collections::HashMap<usize, Vec<remus_math::vec::Point3>> =
-        std::collections::HashMap::new();
+    let mut section_split_registry: remus_math::det_hash::DetHashMap<
+        usize,
+        Vec<remus_math::vec::Point3>,
+    > = remus_math::det_hash::DetHashMap::default();
 
     for (face_id, rank) in sorted_faces {
         let fi = arena.face_info(face_id);
@@ -3791,7 +3793,7 @@ fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
     if junctions.is_empty() {
         return sections;
     }
-    let empty = std::collections::HashMap::new();
+    let empty = remus_math::det_hash::DetHashMap::default();
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
         if splittable(&s) {
@@ -4695,7 +4697,7 @@ fn canonicalize_carried_trim(curve: &EdgeCurve, trim: (f64, f64)) -> Result<(f64
 /// hints so consumers re-derive them.
 fn presplit_sections_at_registry(
     sections: &[crate::builder::split_types::SectionEdge],
-    registry: &std::collections::HashMap<usize, Vec<remus_math::vec::Point3>>,
+    registry: &remus_math::det_hash::DetHashMap<usize, Vec<remus_math::vec::Point3>>,
     boundary_vertices: &[remus_math::vec::Point3],
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
@@ -5515,10 +5517,12 @@ mod tests {
             target_face: None,
             pave_block_id: Some(7),
         };
-        let registry = std::collections::HashMap::from([
+        let registry: remus_math::det_hash::DetHashMap<_, _> = [
             (7, vec![Point3::new(0.5, 0.0, 0.0)]),
             (99, vec![Point3::new(0.25, 0.0, 0.0)]),
-        ]);
+        ]
+        .into_iter()
+        .collect();
 
         let pieces = presplit_sections_at_registry(&[section], &registry, &[], 1e-7);
 
@@ -5553,7 +5557,8 @@ mod tests {
             target_face: None,
             pave_block_id: None,
         };
-        let registry = std::collections::HashMap::from([(3, vec![ellipse.evaluate(cut)])]);
+        let registry: remus_math::det_hash::DetHashMap<_, _> =
+            std::iter::once((3, vec![ellipse.evaluate(cut)])).collect();
 
         let pieces = presplit_sections_at_registry(&[section], &registry, &[], 1e-7);
 
