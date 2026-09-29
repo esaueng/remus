@@ -104,6 +104,21 @@ pub enum RenderError {
         max: usize,
     },
 
+    /// The next async frame would exceed the session's logical retained-byte
+    /// budget. Collect or cancel pending frames before retrying. The session
+    /// stays usable and no new GPU resources are allocated.
+    #[error(
+        "async frame budget exceeded: {in_flight} bytes retained + {requested} requested exceeds {max} bytes"
+    )]
+    AsyncBudgetExceeded {
+        /// Bytes already retained by pending frames.
+        in_flight: u64,
+        /// Logical bytes required by the requested frame.
+        requested: u64,
+        /// Maximum logical retained bytes per session.
+        max: u64,
+    },
+
     /// A frame ticket is unknown to this session: it was already collected or
     /// cancelled, was never issued, or belongs to a dropped session. The
     /// session stays usable. `ticket` is the frame id (see
