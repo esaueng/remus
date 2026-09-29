@@ -12,7 +12,7 @@
 //!
 //! This module measures added material directly with analytic ray casting
 //! ([`crate::classify::classify_points`], exact for every supported surface
-//! type, no tessellation involved) over a uniform sample of the blend's reach
+//! type, no tessellation involved) over a weighted sample of the blend's reach
 //! tube. It only ever *adds* refusals on positive evidence; acceptance still
 //! requires the volume, validation, and closed-shell guards, so an uncertain
 //! Monte Carlo verdict never becomes a success on its own.
@@ -23,18 +23,20 @@
 //!   catches sit up to ~1.7e-1 deep (B71 liner) against rim-curve wobble of
 //!   `~2e-4`: two to three orders of margin. Points exactly on a boundary
 //!   classify `OnBoundary` and are abstained on (never counted either way).
-//! * The estimate is binomial: `se = V·sqrt(p·(1-p)/N)` with `N = 6000`
-//!   deterministic samples. Refusal needs `added - 3·se` above the allowance
+//! * The estimate uses inverse-overlap weighted sampling of local boxes:
+//!   `se` is the sample standard error with `N = 6000` deterministic draws.
+//!   Refusal needs `added - 3·se` above the allowance
 //!   *and* at least 5 added samples (quorum against single-ray flukes).
 //! * The allowance is `2e-3·reach·(chain_length·reach) + 1e-6·V`: rim-wobble
 //!   slivers (marched curves ride their carriers by ~1e-3 of the reach over
 //!   the band area) stay an order of magnitude below it, while B71's `0.037`
 //!   exceeds it ~100x. Both terms scale with the model, so the verdict is
 //!   scale-invariant; an absolute floor would dwarf small-scale signals.
-//! * Sampling is uniform in the G1-chain bbox grown by `4·reach`, so the
-//!   estimate is an unbiased added *volume* with a scale-invariant
-//!   signal-to-noise ratio (both signal and standard error scale with the
-//!   tube volume). The generator is a fixed-seed LCG over `u64` wrapping
+//! * Sampling uses the union of local edge-segment boxes grown by `4·reach`.
+//!   Boxes are chosen by volume, and each sample is weighted by the reciprocal
+//!   of its box-overlap count. This gives an unbiased added-volume estimate
+//!   over that union, without diluting a large circular rim into its enclosing
+//!   AABB. The generator is a fixed-seed LCG over `u64` wrapping
 //!   arithmetic: verdicts are bit-deterministic across runs and platforms
 //!   (no `HashMap` iteration, no floating-point reassociation).
 //! * Scope is deliberately narrow: only selections whose every blended edge
@@ -55,9 +57,9 @@
 //! rims) — ordinary box/planar and analytic-shoulder fillets never reach the
 //! sampling loop.
 
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
@@ -68,7 +70,7 @@ use crate::classify::{PointClassification, classify_points};
 /// still 4 counts above zero).
 pub const ADDED_SAMPLES: usize = 6000;
 
-/// Tube half-margin around the G1-chain bbox, in units of the blend reach.
+/// Half-margin around each edge segment, in units of the blend reach.
 /// B71's liner sits up to ~4.5 reaches from its rim samples.
 pub const TUBE_MARGIN_RADII: f64 = 4.0;
 
@@ -118,24 +120,26 @@ impl TubeRng {
     }
 }
 
-/// Uniform sample of a blend's reach tube, drawn from the pristine
-/// (pre-build) topology so consumed/rewritten edges cannot move the tube.
+/// Sample of the union of local boxes around a blend's selected edges.
+/// Drawn from pristine topology so consumed edges cannot move the sample.
 pub struct ReachTube {
     points: Vec<Point3>,
+    inverse_multiplicities: Vec<f64>,
+    proposal_volume: f64,
     volume: f64,
 }
 
 impl ReachTube {
-    /// The tube's volume (the scale the added fraction multiplies).
+    /// Estimated volume of the union of local reach boxes.
     pub const fn volume(&self) -> f64 {
         self.volume
     }
 }
 
-/// Added-material estimate with its binomial standard error.
+/// Added-material estimate with its weighted-sample standard error.
 #[derive(Debug)]
 pub struct AddedEstimate {
-    /// Added volume: tube volume times the strict outside-to-inside fraction.
+    /// Added volume from inverse-overlap weighted strict flips.
     pub added: f64,
     /// Binomial standard error of [`AddedEstimate::added`].
     pub se: f64,
@@ -143,10 +147,123 @@ pub struct AddedEstimate {
     pub added_counts: u64,
 }
 
-/// Sample the reach tube around `chains` ( pristine input geometry).
+/// Oriented local box along one edge chord. Its transverse width is tied
+/// to reach and sampled chord deviation, even on a large diagonal rim.
+struct ReachBox {
+    center: Point3,
+    axes: [Vec3; 3],
+    half: [f64; 3],
+    volume: f64,
+}
+
+impl ReachBox {
+    fn around(a: Point3, b: Point3, margin: f64, deviation: f64) -> Option<Self> {
+        let chord = b - a;
+        let length = chord.length();
+        let tangent = if length > 0.0 {
+            chord.normalize().ok()?
+        } else {
+            Vec3::new(1.0, 0.0, 0.0)
+        };
+        let reference = if tangent.x().abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
+        let normal = tangent.cross(reference).normalize().ok()?;
+        let axes = [tangent, normal, tangent.cross(normal)];
+        let half = [
+            length * 0.5 + margin,
+            margin + deviation,
+            margin + deviation,
+        ];
+        let volume = 8.0 * half[0] * half[1] * half[2];
+        (volume.is_finite() && volume > 0.0).then_some(Self {
+            center: a + chord * 0.5,
+            axes,
+            half,
+            volume,
+        })
+    }
+
+    fn contains(&self, p: Point3) -> bool {
+        let offset = p - self.center;
+        (0..3).all(|k| offset.dot(self.axes[k]).abs() <= self.half[k])
+    }
+
+    fn draw(&self, rng: &mut TubeRng) -> Point3 {
+        let mut p = self.center;
+        for k in 0..3 {
+            p = p + self.axes[k] * ((2.0 * rng.next_unit() - 1.0) * self.half[k]);
+        }
+        p
+    }
+}
+
+const MAX_REACH_BOXES: usize = 8192;
+const MAX_REACH_DEPTH: u8 = 12;
+
+/// Subdivide until the sampled midpoint is close to its chord. A limit is an
+/// explicit refusal: skipping a very curved reach could accept wrong-side
+/// material without ever sampling it.
+#[allow(clippy::too_many_arguments)]
+fn append_reach_boxes(
+    curve: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    t0: f64,
+    t1: f64,
+    p0: Point3,
+    p1: Point3,
+    reach: f64,
+    depth: u8,
+    boxes: &mut Vec<ReachBox>,
+) -> Result<(), OperationsError> {
+    let tm = f64::midpoint(t0, t1);
+    let pm = curve.evaluate_with_endpoints(tm, start, end);
+    let chord = p1 - p0;
+    let length_sq = chord.dot(chord);
+    let nearest = if length_sq > 0.0 {
+        p0 + chord * ((pm - p0).dot(chord) / length_sq).clamp(0.0, 1.0)
+    } else {
+        p0
+    };
+    let deviation = (pm - nearest).length();
+    if !deviation.is_finite() {
+        return Err(OperationsError::InvalidInput {
+            reason: "blend reach contains non-finite curve geometry".into(),
+        });
+    }
+    if deviation > reach {
+        if depth >= MAX_REACH_DEPTH || boxes.len() >= MAX_REACH_BOXES {
+            return Err(OperationsError::InvalidInput {
+                reason: "blend reach exceeds the local sampling budget".into(),
+            });
+        }
+        append_reach_boxes(curve, start, end, t0, tm, p0, pm, reach, depth + 1, boxes)?;
+        append_reach_boxes(curve, start, end, tm, t1, pm, p1, reach, depth + 1, boxes)?;
+    } else {
+        if boxes.len() >= MAX_REACH_BOXES {
+            return Err(OperationsError::InvalidInput {
+                reason: "blend reach exceeds the local sampling budget".into(),
+            });
+        }
+        boxes.push(
+            ReachBox::around(p0, p1, TUBE_MARGIN_RADII * reach, deviation).ok_or_else(|| {
+                OperationsError::InvalidInput {
+                    reason: "blend reach has non-finite local volume".into(),
+                }
+            })?,
+        );
+    }
+    Ok(())
+}
+
+/// Sample local boxes around `chains` using pristine input geometry.
 ///
-/// Returns `None` when the tube degenerates (zero-volume bbox): there is
-/// nothing to measure, so the caller skips the check rather than guessing.
+/// A box is selected with probability proportional to its volume. Overlap
+/// multiplicity corrects the duplicate coverage in both the volume estimate
+/// and the added-material estimate. No whole-chain AABB is sampled.
 pub fn sample_reach_tube(
     pristine: &Topology,
     chains: &[Vec<EdgeId>],
@@ -157,51 +274,83 @@ pub fn sample_reach_tube(
             reason: "blend reach must be positive and finite".into(),
         });
     }
-    let mut samples = Vec::new();
+    let mut boxes = Vec::new();
     for chain in chains {
         for &edge_id in chain {
             let edge = pristine.edge(edge_id)?;
             let start = pristine.vertex(edge.start())?.point();
             let end = pristine.vertex(edge.end())?.point();
             let (t0, t1) = crate::authoritative_edge_domain(edge, "blend reach-tube sampling")?;
-            for i in 0..=32 {
+            let intervals = if matches!(edge.curve(), EdgeCurve::Line) {
+                1
+            } else {
+                32
+            };
+            let mut previous_t = t0;
+            let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
+            for i in 1..=intervals {
                 #[allow(clippy::cast_precision_loss)]
-                let fraction = i as f64 / 32.0;
-                let t = (t1 - t0).mul_add(fraction, t0);
-                samples.push(edge.curve().evaluate_with_endpoints(t, start, end));
+                let t = (t1 - t0).mul_add(i as f64 / intervals as f64, t0);
+                let point = edge.curve().evaluate_with_endpoints(t, start, end);
+                append_reach_boxes(
+                    edge.curve(),
+                    start,
+                    end,
+                    previous_t,
+                    t,
+                    previous,
+                    point,
+                    reach,
+                    0,
+                    &mut boxes,
+                )?;
+                previous_t = t;
+                previous = point;
             }
         }
     }
-    if samples.is_empty() {
+    if boxes.is_empty() {
         return Ok(None);
     }
-    let mut lo = [f64::INFINITY; 3];
-    let mut hi = [f64::NEG_INFINITY; 3];
-    for p in &samples {
-        for (k, v) in [(0, p.x()), (1, p.y()), (2, p.z())] {
-            lo[k] = lo[k].min(v);
-            hi[k] = hi[k].max(v);
-        }
+    let mut cumulative = Vec::with_capacity(boxes.len());
+    let mut proposal_volume = 0.0;
+    for local in &boxes {
+        proposal_volume += local.volume;
+        cumulative.push(proposal_volume);
     }
-    let margin = TUBE_MARGIN_RADII * reach;
-    for k in 0..3 {
-        lo[k] -= margin;
-        hi[k] += margin;
-    }
-    let volume = (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
-    if !volume.is_finite() || volume <= 0.0 {
-        return Ok(None);
+    if !proposal_volume.is_finite() {
+        return Err(OperationsError::InvalidInput {
+            reason: "blend reach has non-finite total volume".into(),
+        });
     }
     let mut rng = TubeRng(0xB71u64);
     let mut points = Vec::with_capacity(ADDED_SAMPLES);
+    let mut inverse_multiplicities = Vec::with_capacity(ADDED_SAMPLES);
     for _ in 0..ADDED_SAMPLES {
-        points.push(Point3::new(
-            lo[0] + rng.next_unit() * (hi[0] - lo[0]),
-            lo[1] + rng.next_unit() * (hi[1] - lo[1]),
-            lo[2] + rng.next_unit() * (hi[2] - lo[2]),
-        ));
+        let draw = rng.next_unit() * proposal_volume;
+        let index = cumulative
+            .partition_point(|&limit| limit <= draw)
+            .min(boxes.len() - 1);
+        let local = &boxes[index];
+        let p = local.draw(&mut rng);
+        let multiplicity = boxes
+            .iter()
+            .filter(|local| local.contains(p))
+            .count()
+            .max(1);
+        #[allow(clippy::cast_precision_loss)]
+        inverse_multiplicities.push(1.0 / multiplicity as f64);
+        points.push(p);
     }
-    Ok(Some(ReachTube { points, volume }))
+    #[allow(clippy::cast_precision_loss)]
+    let volume =
+        proposal_volume * inverse_multiplicities.iter().sum::<f64>() / ADDED_SAMPLES as f64;
+    Ok(Some(ReachTube {
+        points,
+        inverse_multiplicities,
+        proposal_volume,
+        volume,
+    }))
 }
 
 /// Estimate added material: tube points `Outside` the pristine input but
@@ -226,13 +375,24 @@ pub fn estimate_added_material(
             added_counts += 1;
         }
     }
+    let mut sum = 0.0;
+    let mut sum_sq = 0.0;
+    for ((a, b), &weight) in before
+        .iter()
+        .zip(after.iter())
+        .zip(&tube.inverse_multiplicities)
+    {
+        if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside) {
+            sum += weight;
+            sum_sq += weight * weight;
+        }
+    }
     #[allow(clippy::cast_precision_loss)]
     let n = tube.points.len() as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let fraction = added_counts as f64 / n;
+    let variance = ((sum_sq - sum * sum / n) / (n * (n - 1.0))).max(0.0);
     Ok(AddedEstimate {
-        added: tube.volume * fraction,
-        se: tube.volume * (fraction * (1.0 - fraction) / n).sqrt(),
+        added: tube.proposal_volume * sum / n,
+        se: tube.proposal_volume * variance.sqrt(),
         added_counts,
     })
 }
@@ -247,9 +407,7 @@ pub fn refuse_if_added_material(
     estimate: &AddedEstimate,
     allowance: f64,
 ) -> Result<(), OperationsError> {
-    if estimate.added_counts >= ADDED_QUORUM
-        && estimate.added - 3.0 * estimate.se > allowance
-    {
+    if estimate.added_counts >= ADDED_QUORUM && estimate.added - 3.0 * estimate.se > allowance {
         return Err(OperationsError::InvalidInput {
             reason: format!(
                 "{operation} on convex edges added {:.3} of material outside the input; \
@@ -261,14 +419,32 @@ pub fn refuse_if_added_material(
     Ok(())
 }
 
-/// True when `solid` carries a NURBS band face (the walking engine's output
-/// family, and the only one this oracle second-guesses).
-pub fn result_has_nurbs_band(topo: &Topology, solid: SolidId) -> Result<bool, OperationsError> {
-    for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
-        if matches!(
-            topo.face(face_id)?.surface(),
+/// True when the result has a newly created or newly NURBS face.
+/// Pre-existing NURBS support faces do not make an analytic blend pay for the
+/// expensive material sampler.
+pub fn result_has_nurbs_band(
+    pristine: &Topology,
+    input: SolidId,
+    live: &Topology,
+    result: SolidId,
+) -> Result<bool, OperationsError> {
+    let input_faces: std::collections::HashSet<_> =
+        remus_topology::explorer::solid_faces(pristine, input)?
+            .into_iter()
+            .collect();
+    for face_id in remus_topology::explorer::solid_faces(live, result)? {
+        if !matches!(
+            live.face(face_id)?.surface(),
             remus_topology::face::FaceSurface::Nurbs(_)
         ) {
+            continue;
+        }
+        if !input_faces.contains(&face_id)
+            || !matches!(
+                pristine.face(face_id)?.surface(),
+                remus_topology::face::FaceSurface::Nurbs(_)
+            )
+        {
             return Ok(true);
         }
     }
@@ -395,6 +571,66 @@ mod tests {
         let chains: Vec<Vec<EdgeId>> = vec![vec![]];
         assert!(sample_reach_tube(&topo, &chains, 0.0).is_err());
         assert!(sample_reach_tube(&topo, &chains, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn large_circular_rim_samples_near_the_reach_not_its_enclosing_box() {
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, 100.0, 1.0).unwrap();
+        let rim = remus_topology::explorer::solid_edges(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
+            .unwrap();
+        let tube = sample_reach_tube(&topo, &[vec![rim]], 0.1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tube.points.len(), ADDED_SAMPLES);
+        assert!(tube.volume() < 3000.0, "volume {}", tube.volume());
+        let max_radial_error = tube
+            .points
+            .iter()
+            .map(|p| (p.x().hypot(p.y()) - 100.0).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_radial_error < 2.0, "radial error {max_radial_error}");
+    }
+
+    #[test]
+    fn duplicate_reach_boxes_do_not_double_estimated_volume() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+        let single = sample_reach_tube(&topo, &[vec![edge]], 0.2)
+            .unwrap()
+            .unwrap();
+        let doubled = sample_reach_tube(&topo, &[vec![edge, edge]], 0.2)
+            .unwrap()
+            .unwrap();
+        assert!((single.volume() - doubled.volume()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn preexisting_nurbs_face_does_not_trigger_new_band_guard() {
+        let mut topo = Topology::new();
+        let body = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, body).unwrap();
+        let patch = crate::cap::bilinear_cap_patch(&[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+        ])
+        .unwrap();
+        topo.face_mut(faces[0])
+            .unwrap()
+            .set_surface(remus_topology::face::FaceSurface::Nurbs(patch.clone()));
+        let pristine = topo.clone();
+        assert!(!result_has_nurbs_band(&pristine, body, &topo, body).unwrap());
+
+        topo.face_mut(faces[1])
+            .unwrap()
+            .set_surface(remus_topology::face::FaceSurface::Nurbs(patch));
+        assert!(result_has_nurbs_band(&pristine, body, &topo, body).unwrap());
     }
 
     /// Estimates are deterministic: same tube twice, identical counts.

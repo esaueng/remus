@@ -973,7 +973,8 @@ impl ConvexMaterialGuard {
         operation: &'static str,
         result: SolidId,
     ) -> Result<(), OperationsError> {
-        if !crate::blend_material::result_has_nurbs_band(live, result)? {
+        if !crate::blend_material::result_has_nurbs_band(&self.pristine, self.input, live, result)?
+        {
             return Ok(());
         }
         let Some(tube) =

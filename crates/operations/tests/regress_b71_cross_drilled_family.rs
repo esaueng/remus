@@ -41,8 +41,18 @@ fn drilled_shaft(
     let shaft = make_cylinder(&mut topo, stock_r, stock_h).unwrap();
     let len = stock_h + 4.0 * stock_r;
     let tool = make_cylinder(&mut topo, bore, len).unwrap();
-    transform_solid(&mut topo, tool, &Mat4::rotation_y(std::f64::consts::FRAC_PI_2)).unwrap();
-    transform_solid(&mut topo, tool, &Mat4::translation(-len / 2.0, 0.0, stock_h / 2.0)).unwrap();
+    transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::translation(-len / 2.0, 0.0, stock_h / 2.0),
+    )
+    .unwrap();
     transform_solid(&mut topo, tool, &Mat4::rotation_z(rot_z)).unwrap();
     let solid = boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap();
     (topo, solid)
@@ -63,7 +73,8 @@ fn exact_volume(stock_r: f64, stock_h: f64, bore: f64) -> f64 {
     let mut sum = 0.0;
     for i in 0..=n {
         let y = -bore + i as f64 * h;
-        let f = 4.0 * (stock_r * stock_r - y * y).max(0.0).sqrt()
+        let f = 4.0
+            * (stock_r * stock_r - y * y).max(0.0).sqrt()
             * (bore * bore - y * y).max(0.0).sqrt();
         sum += if i == 0 || i == n {
             f
@@ -341,14 +352,26 @@ fn b71_family_mesh_quality_and_probes() {
         (3.0, 30.0, 2.5, 0.0, "thin retained wall"),
         (3.0, 12.0, 1.0, 0.0, "pclass geometry"),
         (3.0, 12.0, 1.0, 0.37, "off-seam placement"),
-        (3.0, 12.0, 1.0, std::f64::consts::FRAC_PI_2, "quarter-turn placement"),
+        (
+            3.0,
+            12.0,
+            1.0,
+            std::f64::consts::FRAC_PI_2,
+            "quarter-turn placement",
+        ),
         (5.0, 20.0, 1.5, 0.0, "large stock"),
     ];
     for (stock_r, stock_h, bore, rot_z, name) in members {
         let (topo, solid) = drilled_shaft(stock_r, stock_h, bore, rot_z);
         let exact = exact_volume(stock_r, stock_h, bore);
         for deflection in [0.05, 0.01] {
-            check_member(&topo, solid, exact, deflection, &format!("{name} @{deflection}"));
+            check_member(
+                &topo,
+                solid,
+                exact,
+                deflection,
+                &format!("{name} @{deflection}"),
+            );
         }
         check_probes(&topo, solid, stock_r, stock_h, bore, rot_z, name);
     }
@@ -371,9 +394,23 @@ fn b71_family_scale_invariance() {
                 &format!("scale {scale} @{deflection}"),
             );
         }
-        check_probes(&topo, solid, 3.0 * scale, 12.0 * scale, 1.0 * scale, 0.0, "scaled");
+        check_probes(
+            &topo,
+            solid,
+            3.0 * scale,
+            12.0 * scale,
+            1.0 * scale,
+            0.0,
+            "scaled",
+        );
         let rim = first_cylinder_rim(&topo, solid);
-        check_refusal(&mut topo, solid, rim, 0.15 * scale, &format!("scale {scale} refusal"));
+        check_refusal(
+            &mut topo,
+            solid,
+            rim,
+            0.15 * scale,
+            &format!("scale {scale} refusal"),
+        );
     }
 }
 
@@ -394,8 +431,8 @@ fn b71_family_wrong_side_refusals() {
         // leaves 2 non-manifold edges there on the unmodified tree too —
         // A/B-verified, unrelated to the bore-wall gate.)
         for deflection in [0.05, 0.01] {
-            let mesh = remus_operations::tessellate::tessellate_solid(&topo, solid, deflection)
-                .unwrap();
+            let mesh =
+                remus_operations::tessellate::tessellate_solid(&topo, solid, deflection).unwrap();
             assert_eq!(
                 (
                     remus_operations::tessellate::boundary_edge_count(&mesh),

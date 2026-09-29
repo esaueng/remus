@@ -426,6 +426,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
+| Convex blend material-side acceptance | `blend_material.rs` |
 | Exact standalone face-face blend sheets | `face_face_blend.rs` |
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
