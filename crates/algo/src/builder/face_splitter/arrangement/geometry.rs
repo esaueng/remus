@@ -244,8 +244,9 @@ pub(super) fn intersections(
             }
         }
         // A shared endpoint certificate permits tolerance-based adoption
-        // only for the nearest valid pair hit. This retains adapter-projected
-        // joins without absorbing a distinct second crossing nearby.
+        // only for the nearest valid pair hit, including a raw hit just
+        // outside the range that itself can adopt the certified endpoint.
+        // This retains projected joins without absorbing a second crossing.
         // Runs after mutual-end snapping so exact event partners keep
         // priority; skips params already bitwise on an end.
         for (host, guest, param, host_is_a) in [(&a, &b, &mut x, true), (&b, &a, &mut y, false)] {
@@ -266,12 +267,23 @@ pub(super) fn intersections(
                 let mut has_closer_hit = false;
                 for (other_index, &(other_x, other_y)) in hits.iter().enumerate() {
                     work.step()?;
-                    if other_index == hit_index || !in_range(a, other_x) || !in_range(b, other_y) {
+                    if other_index == hit_index {
                         continue;
                     }
                     let other_param = if host_is_a { other_x } else { other_y };
                     let other_dist = (host.point(other_param) - endpoint).length();
-                    if other_dist + roundoff(point) < dist {
+                    let other_in_range = in_range(a, other_x) && in_range(b, other_y);
+                    let guest_param = if host_is_a { other_y } else { other_x };
+                    let guest_point = guest.point(guest_param);
+                    let other_is_certified_endpoint = other_dist <= work.context.tolerance.linear
+                        && guest.endpoints.iter().enumerate().any(|(j, certificate)| {
+                            *certificate == host.endpoints[end]
+                                && (guest_point - guest.point(guest.range[j])).length()
+                                    <= work.context.tolerance.linear
+                        });
+                    if (other_in_range || other_is_certified_endpoint)
+                        && other_dist + roundoff(point) < dist
+                    {
                         has_closer_hit = true;
                         break;
                     }

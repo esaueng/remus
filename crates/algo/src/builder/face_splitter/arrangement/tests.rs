@@ -270,6 +270,30 @@ fn single_nearby_crossing_adopts_projected_shared_endpoint() {
 }
 
 #[test]
+fn out_of_range_certified_endpoint_does_not_hide_second_crossing() {
+    let start_angle: f64 = 8.0e-4;
+    let second_angle = start_angle + 5.0e-5;
+    let mut ring = circle(20, p(0.0, 0.0), 1.0, None);
+    ring.range = [start_angle, 0.1];
+    ring.source_range = ring.range;
+    ring.endpoints_3d = [xyz(ring.point(start_angle)), xyz(ring.point(0.1))];
+    ring.endpoints = [42, 99];
+    let endpoint = ring.point(start_angle);
+    let second = ring.point(second_angle);
+    let beyond = endpoint + (second - endpoint) * 2.0;
+    let chord = line(10, endpoint, beyond, [42, 100], None);
+    let ctx = context().with_tolerance(Tolerance {
+        linear: 1.0e-4,
+        ..Tolerance::new()
+    });
+
+    let hits = geometry::intersections(&chord, &ring, &mut Work::new(&ctx)).unwrap();
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(hits[0].0.abs() < 1.0e-10);
+    assert!((hits[1].0 - (second - endpoint).length()).abs() < 1.0e-8);
+}
+
+#[test]
 fn x_t_and_star_have_independent_area_and_material() {
     for arms in [3, 4, 6, 8] {
         let mut uses = rectangle(0, -2.0, -2.0, 2.0, 2.0);
