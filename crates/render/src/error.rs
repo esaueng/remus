@@ -85,6 +85,37 @@ pub enum RenderError {
     #[error("malformed tessellation mesh: {0}")]
     MeshData(String),
 
+    /// The async readback queue is full: too many submitted frames are still
+    /// pending collection. Collect or cancel a pending frame (see
+    /// [`OffscreenSession::wait_frame`](crate::OffscreenSession::wait_frame),
+    /// [`OffscreenSession::poll_frame`](crate::OffscreenSession::poll_frame),
+    /// [`OffscreenSession::cancel_frame`](crate::OffscreenSession::cancel_frame))
+    /// before submitting again. `pending` is the current in-flight count;
+    /// `max` is the session's bound
+    /// ([`OffscreenSession::max_in_flight`](crate::OffscreenSession::max_in_flight)).
+    /// The session stays usable.
+    #[error(
+        "async readback queue full: {pending} frames pending (max {max}); collect or cancel one before submitting"
+    )]
+    QueueFull {
+        /// Current in-flight frame count.
+        pending: usize,
+        /// Maximum in-flight frames.
+        max: usize,
+    },
+
+    /// A frame ticket is unknown to this session: it was already collected or
+    /// cancelled, was never issued, or belongs to a dropped session. The
+    /// session stays usable. `ticket` is the frame id (see
+    /// [`crate::FrameTicket::frame_id`]).
+    #[error(
+        "unknown frame ticket {ticket}: already collected, cancelled, or never issued on this session"
+    )]
+    UnknownTicket {
+        /// The frame id that could not be resolved.
+        ticket: u64,
+    },
+
     /// The windowing event loop could not be created or run (viewer only).
     #[error("windowing event loop error: {0}")]
     EventLoop(String),
