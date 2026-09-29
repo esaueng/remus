@@ -56,7 +56,8 @@ mod session;
 mod viewer;
 
 pub use async_frame::{
-    AsyncFrameOutput, AsyncFrameTimings, FrameTicket, MAX_ASYNC_FRAMES, ReadbackSelection,
+    AsyncFrameOutput, AsyncFrameTimings, FrameTicket, MAX_ASYNC_FRAMES, MAX_ASYNC_IN_FLIGHT_BYTES,
+    ReadbackSelection,
 };
 
 pub use camera::Camera;
