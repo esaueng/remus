@@ -1,0 +1,8 @@
+{
+ "source_sha": "b72502004889880cfc9ddf8b79d27b5e3c636fff",
+ "rustc": "1.96.0",
+ "harness": "crates/topology/examples/txn_baseline.rs",
+ "impl": "full-snapshot",
+ "reps": 11,
+ "note": "in-process medians; per-op scopes=1 clones=1 by construction; VmHWM includes setup"
+}
