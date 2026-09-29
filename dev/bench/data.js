@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790689353768,
+  "lastUpdate": 1790695781572,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -78829,6 +78829,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 79626,
             "range": "± 2038",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "24554a6e4a758020c0f183c5c2e22718b437a993",
+          "message": "perf: integrate renderer and prepared-distance improvements (#877)\n\n* perf(render): asynchronous selective readback for repeated offscreen rendering (PERF-R04)\n\nSubmission (submit_render/submit_prepared) encodes and enqueues GPU work\nand returns a FrameTicket immediately without waiting for GPU execution\nor CPU readback. Completion is explicit via poll_frame (non-blocking)\nor wait_frame (blocking), with output selection via ReadbackSelection\n(Color, FaceIds, Both, None). Unrequested outputs skip copy, map and\ndecode entirely.\n\nEach pending frame owns exclusive targets, staging and retained geometry\nhandles (prepared-asset clones), so later submissions never overwrite\nearlier frames. At most MAX_ASYNC_FRAMES (8) frames pend; beyond that\nsubmit fails with QueueFull without poisoning. Cancel releases without\nmapping; abandoned tickets hold slots until cancelled or session drop;\nresize never invalidates pending frames; sync cached targets untouched.\n\nValidation failures never poison; BufferMap/Poll poison to DeviceLost\n(same contract as sync); WrongSession refuses foreign tickets/assets;\nUnknownTicket on double-collect. Sync APIs preserved verbatim.\n\nQualification (crates/render/tests/async_readback.rs, RTX 3090 Vulkan):\nbit-exact vs sync for Both; 6 frames with different cameras/sizes/\nbackgrounds/edges/assets submitted before any collect, reverse-collected\nwith no stale colors/ids; selective Both = Color + Ids bytes, None 0;\n8-fill QueueFull + cancel/retry + abandoned-holds-slot + drain; resize\nx5 + interleaved sync + RTC +1e6 + replacement-while-pending; wrong-\nsession/invalid-size recover, injected loss fails closed. Sustained 8x\n512 Both: submit 5ms total, drain 6.7ms/frame avg vs sync 7.1ms; decode\ndominates (6-8ms), wait microseconds after overlap. Discrete GPU only;\nsoftware backend unavailable. Renderer overhead only, not a kernel speedup.\n\n* perf(render): per-face indexed render vertices preserving face IDs and seams (PERF-R03)\n\nReplace per-triangle vertex expansion with per-face indexed vertices where\nnormals permit. Vertices share within a face on exact RTC position + normal\nbits, never across faces (face IDs would collide) and never across\nincompatible attributes (different normals stay split, preserving sharp\nnormals; seams are face boundaries, never welded). Edge overlay untouched.\n\nMeasured (RTX 3090, prepare stats): box 12 tris 36 -> 24 verts (33% vertex,\n29% mesh bytes); cylinder 176 tris 528 -> 180 verts (66% vertex, 58% mesh\nbytes at deflection 0.02), 112 tris 336 -> 116 verts at 0.05. Index count\nunchanged. Rasterization uses identical triangle attributes, only shared.\n\nQualification: image/picking parity via existing renderer suites —\nsession/prepared/async bit-exact (same mesh path), edge-toggle ids\nidentical, iso box 3 front faces, RTC +1e6 bit-identical, valid-id and\nbackground checks across session_reuse, prepared_render, offscreen_render\nand async_readback. Renderer overhead only, not a kernel speedup.\n\n* perf(check): add operation-local prepared distance context with reusable scratch\n\n* test(check): prove prepared distance matches one-shot/batched/exhaustive\n\n* test(check): measure amortized distance batches and BVH alternative\n\n* perf(operations): reuse candidate buffers in batch and solid-to-solid distance\n\n* docs: map prepared distance module and mark Q04/Q06 delivered scope\n\n* style: apply cargo fmt to prepared distance files\n\n* fix(check): clear distance scratch after query errors\n\n* fix(operations): validate face bounds for empty distance batches\n\n* fix(check): validate empty-batch face references\n\n* test(check): reject malformed empty distance batches\n\n* fix(check): validate complete topology during preparation\n\n* fix(check): use validated preparation for empty batches\n\n* test(check): reject stale references during preparation\n\n* fix(check): share validated options with direct queries\n\n* fix(check): reject invalid direct face-distance options\n\n* test(check): cover invalid direct face-distance options\n\n* docs(render): define cumulative async-frame byte budget\n\n* feat(render): report recoverable async byte-budget refusal\n\n* feat(render): export async-frame byte budget\n\n* fix(render): enforce cumulative async budget before GPU allocation\n\n* fix(operations): validate inner wires for empty distance batches\n\n* test(operations): reject stale inner-wire vertices in empty batches\n\n---------\n\nCo-authored-by: esaueng <esaueng@users.noreply.github.com>",
+          "timestamp": "2026-09-29T08:21:23-07:00",
+          "tree_id": "c71ceb852706cfda0ea0838e05f7fee591f4fab2",
+          "url": "https://github.com/esaueng/remus/commit/24554a6e4a758020c0f183c5c2e22718b437a993"
+        },
+        "date": 1790695780145,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1405911,
+            "range": "± 6066",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1505469,
+            "range": "± 3949",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 36130,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12033674,
+            "range": "± 66094",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 12032993,
+            "range": "± 141426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11575598,
+            "range": "± 116140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1167058,
+            "range": "± 1511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 18082593,
+            "range": "± 371012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39046006,
+            "range": "± 727252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 160,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 804,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 155,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 355,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 213,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 528,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 740,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3254,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 580924,
+            "range": "± 2447",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9011802,
+            "range": "± 22638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 173661,
+            "range": "± 479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 535036,
+            "range": "± 2519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 62745,
+            "range": "± 341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 934849,
+            "range": "± 1761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11820543,
+            "range": "± 598521",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 861495,
+            "range": "± 2341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1319399,
+            "range": "± 3599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 87380,
+            "range": "± 313",
             "unit": "ns/iter"
           }
         ]
