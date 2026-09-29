@@ -4,6 +4,10 @@ use std::collections::HashMap;
 
 use crate::SketchError;
 
+use super::components::{
+    Component, Decomposition, component_entities, decompose, refresh_subset_radii,
+    refresh_subset_snapshot, subset_snapshot,
+};
 use super::constraint::{
     Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, eval_jacobian,
     eval_residuals, residual_count,
@@ -452,6 +456,58 @@ impl GcsSystem {
             return Ok((result, eval, stats));
         }
 
+        let decomp = decompose(self);
+        self.solve_with_decomposition(&decomp, max_iterations, tolerance, capture_final)
+    }
+
+    /// Solve through a precomputed decomposition (PERF-S02).
+    ///
+    /// A single connected component runs the existing dense loop bit-for-bit
+    /// (the small-system path: every coupled workload keeps its exact
+    /// trajectory, trust region and iteration budget). Multiple components
+    /// solve independently and scatter back into one global parameter vector,
+    /// which is the only write to the system — mirroring the dense path's
+    /// single write-back.
+    fn solve_with_decomposition(
+        &mut self,
+        decomp: &Decomposition,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        if self.param_map.is_empty() {
+            // Keep the no-free-parameter residual check (including empty systems)
+            // identical for plain and detailed solves at every tolerance.
+            return self.solve_impl(max_iterations, tolerance, capture_final);
+        }
+        if decomp.is_single_connected() {
+            return self.solve_dense(max_iterations, tolerance, capture_final);
+        }
+        self.solve_components(decomp, max_iterations, tolerance, capture_final)
+    }
+
+    /// The pre-S02 dense solve: one DogLeg loop over the whole system.
+    ///
+    /// Unchanged numerics, storage reuse (PERF-S03) and capture (PERF-S06);
+    /// only factored out so the component dispatcher can select it for fully
+    /// connected systems.
+    ///
+    /// The `Result` wrapper is retained for future error paths, matching
+    /// [`solve`](Self::solve).
+    #[allow(clippy::too_many_lines, clippy::unnecessary_wraps)]
+    fn solve_dense(
+        &mut self,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        let n = self.param_map.len();
+        let m: usize = self
+            .constraints
+            .iter()
+            .map(|(_, e)| residual_count(&e.constraint))
+            .sum();
+
         let mut params = self.extract_params();
         let param_index = self.param_index.clone();
 
@@ -525,6 +581,253 @@ impl GcsSystem {
         Ok((result, eval, stats))
     }
 
+    /// Solve each independent component with its own DogLeg loop (PERF-S02).
+    ///
+    /// Every component receives the caller's `tolerance` and the full
+    /// `max_iterations` budget with a trust region derived from its own
+    /// parameter norm (see the module analysis in `components.rs` for why a
+    /// shared budget or radius would couple unrelated systems). Aggregation is
+    /// exact where the mathematics is exact: `converged` is the AND over
+    /// components, `max_residual` is the NaN-propagating max (identical to the
+    /// max over all equations), dimensions are sums, and `iterations` reports
+    /// the slowest component (the parallel critical path) while evaluation
+    /// counts sum total work. The capture assembles per-component final
+    /// vectors into one global [`FinalEvaluation`] in arena order, so the
+    /// diagnostics layer reuses it exactly as it reuses the dense capture.
+    fn solve_components(
+        &mut self,
+        decomp: &Decomposition,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        let global = self.extract_params();
+        let mut workspace = DoglegWorkspace::new();
+        let mut stats = SolveStats::default();
+        let mut outcomes = Vec::with_capacity(decomp.components.len());
+        for comp in &decomp.components {
+            outcomes.push(self.solve_component(
+                comp,
+                &global,
+                max_iterations,
+                tolerance,
+                &mut workspace,
+                &mut stats,
+            )?);
+        }
+
+        let mut params = global;
+        for (comp, outcome) in decomp.components.iter().zip(outcomes.iter()) {
+            for (local_i, &global_i) in comp.params.iter().enumerate() {
+                params[global_i] = outcome.final_params[local_i];
+            }
+        }
+        self.write_params(&params);
+
+        let converged = outcomes.iter().all(|o| o.converged);
+        let iterations = outcomes.iter().map(|o| o.iterations).max().unwrap_or(0);
+        let mut max_residual = 0.0_f64;
+        for o in &outcomes {
+            if o.max_residual.is_nan() {
+                max_residual = f64::NAN;
+                break;
+            }
+            if o.max_residual > max_residual {
+                max_residual = o.max_residual;
+            }
+        }
+
+        let eval = capture_final.then(|| self.assemble_capture(decomp, &outcomes, &params));
+        Ok((
+            SolveResult {
+                converged,
+                iterations,
+                max_residual,
+            },
+            eval,
+            stats,
+        ))
+    }
+
+    /// Run one component's solve against the pre-solve global parameters.
+    ///
+    /// Takes `&self` only: the component reads live entity bases plus its own
+    /// slice of `global_params`, and returns its finals for the caller to
+    /// scatter. Snapshots cover exactly the component's entity subset, so
+    /// per-evaluation work scales with block size. The pinned group performs
+    /// the same residual check as the `n == 0` fast path; the free group
+    /// mirrors the solver's empty-system exit.
+    ///
+    /// The `Result` wrapper is retained for future error paths, matching
+    /// [`solve`](Self::solve).
+    #[allow(clippy::unnecessary_wraps)]
+    fn solve_component(
+        &self,
+        comp: &Component,
+        global_params: &[f64],
+        max_iterations: usize,
+        tolerance: f64,
+        workspace: &mut DoglegWorkspace,
+        stats: &mut SolveStats,
+    ) -> Result<ComponentOutcome, SketchError> {
+        let n_c = comp.params.len();
+        let m_c = comp.num_equations();
+        if comp.is_pinned() {
+            let entities = component_entities(&comp.constraints, self);
+            let snap = subset_snapshot(&entities);
+            let mut residuals = Vec::with_capacity(m_c);
+            for c in &comp.constraints {
+                eval_residuals(c, &snap, &mut residuals);
+            }
+            let max_r = max_abs_residual(&residuals);
+            stats.residual_evals += 1;
+            return Ok(ComponentOutcome {
+                converged: max_r < tolerance,
+                iterations: 0,
+                max_residual: max_r,
+                final_params: Vec::new(),
+                final_residuals: residuals,
+            });
+        }
+        let local: Vec<f64> = comp.params.iter().map(|&gi| global_params[gi]).collect();
+        if comp.is_free() {
+            stats.residual_evals += 1;
+            return Ok(ComponentOutcome {
+                converged: 0.0 < tolerance,
+                iterations: 0,
+                max_residual: 0.0,
+                final_params: local,
+                final_residuals: Vec::new(),
+            });
+        }
+
+        let mut local_index = HashMap::with_capacity(n_c);
+        for (local_i, &global_i) in comp.params.iter().enumerate() {
+            local_index.insert(self.param_map[global_i], local_i);
+        }
+        let entities = component_entities(&comp.constraints, self);
+        let mut snap_r = subset_snapshot(&entities);
+        let mut snap_j = subset_snapshot(&entities);
+
+        let mut local = local;
+        let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
+            refresh_subset_snapshot(&mut snap_r, &entities.points, p, &local_index);
+            refresh_subset_radii(&mut snap_r, &entities.circles, p, &local_index);
+            out.clear();
+            for c in &comp.constraints {
+                eval_residuals(c, &snap_r, out);
+            }
+        };
+        let mut jacobian_fill = |p: &[f64], out: &mut [f64]| {
+            refresh_subset_snapshot(&mut snap_j, &entities.points, p, &local_index);
+            refresh_subset_radii(&mut snap_j, &entities.circles, p, &local_index);
+            out.fill(0.0);
+            let mut row = 0;
+            {
+                let mut jw = JacobianWriter {
+                    data: out,
+                    ncols: n_c,
+                    param_index: &local_index,
+                };
+                for c in &comp.constraints {
+                    eval_jacobian(c, &snap_j, &mut jw, row);
+                    row += residual_count(c);
+                }
+            }
+        };
+
+        let result = super::solver::solve_dogleg_fill(
+            &mut local,
+            &mut residual_fill,
+            &mut jacobian_fill,
+            m_c,
+            max_iterations,
+            tolerance,
+            workspace,
+            stats,
+        );
+        let final_residuals = workspace.final_residuals().to_vec();
+        Ok(ComponentOutcome {
+            converged: result.converged,
+            iterations: result.iterations,
+            max_residual: result.max_residual,
+            final_params: local,
+            final_residuals,
+        })
+    }
+
+    /// Assemble per-component final vectors into one global capture.
+    ///
+    /// Rows follow [`Self::constraint_rows`] (arena order) with residuals
+    /// copied from each constraint's home component, so the result is laid out
+    /// exactly as the dense capture would be and the diagnostics layer reuses
+    /// it through the same identity check and slicing.
+    fn assemble_capture(
+        &self,
+        decomp: &Decomposition,
+        outcomes: &[ComponentOutcome],
+        params: &[f64],
+    ) -> FinalEvaluation {
+        let mut lookup: HashMap<ConstraintId, (usize, usize)> = HashMap::new();
+        for (ci, comp) in decomp.components.iter().enumerate() {
+            let mut offset = 0_usize;
+            for (cid, count) in comp.constraint_ids.iter().zip(comp.row_counts.iter()) {
+                lookup.insert(*cid, (ci, offset));
+                offset += count;
+            }
+        }
+        let rows = self.constraint_rows();
+        let mut flat: Vec<f64> = Vec::with_capacity(decomp.num_equations);
+        for (cid, count) in &rows {
+            if let Some((ci, offset)) = lookup.get(cid)
+                && let Some(slice) = outcomes[*ci]
+                    .final_residuals
+                    .get(*offset..offset.saturating_add(*count))
+            {
+                flat.extend_from_slice(slice);
+            }
+        }
+        FinalEvaluation::capture(params, &flat, rows)
+    }
+
+    /// Per-component Jacobians at the live state, for rank analysis (PERF-S02).
+    ///
+    /// Normal components factorize independently downstream; degenerate groups
+    /// contribute empty markers that [`dof::analyze_blocks`] skips, matching
+    /// [`dof::analyze`]. No global `m × n` matrix is ever assembled.
+    fn component_jacobians(&self, decomp: &Decomposition) -> Vec<(Vec<f64>, usize, usize)> {
+        let mut out = Vec::with_capacity(decomp.components.len());
+        for comp in &decomp.components {
+            let m_c = comp.num_equations();
+            let n_c = comp.params.len();
+            if comp.is_free() || comp.is_pinned() {
+                out.push((Vec::new(), m_c, n_c));
+                continue;
+            }
+            let mut local_index = HashMap::with_capacity(n_c);
+            for (local_i, &global_i) in comp.params.iter().enumerate() {
+                local_index.insert(self.param_map[global_i], local_i);
+            }
+            let entities = component_entities(&comp.constraints, self);
+            let snap = subset_snapshot(&entities);
+            let mut jac = vec![0.0; m_c.saturating_mul(n_c)];
+            let mut row = 0_usize;
+            {
+                let mut jw = JacobianWriter {
+                    data: &mut jac,
+                    ncols: n_c,
+                    param_index: &local_index,
+                };
+                for c in &comp.constraints {
+                    eval_jacobian(c, &snap, &mut jw, row);
+                    row += residual_count(c);
+                }
+            }
+            out.push((jac, m_c, n_c));
+        }
+        out
+    }
+
     /// `(constraint id, residual row count)` in evaluation (arena) order.
     ///
     /// Part of the [`FinalEvaluation`] identity: any add/remove between
@@ -590,8 +893,10 @@ impl GcsSystem {
 
         // Snapshot for rollback before anything is mutated.
         let before = self.extract_params();
+        let decomp = decompose(self);
 
-        let (result, eval, stats) = self.solve_impl(max_iterations, tolerance, true)?;
+        let (result, eval, stats) =
+            self.solve_with_decomposition(&decomp, max_iterations, tolerance, true)?;
         let mut counts = DetailedCounts {
             solver: stats,
             ..DetailedCounts::default()
@@ -617,36 +922,10 @@ impl GcsSystem {
             let analysis = self.dof();
             let (residuals, internal_max) = self.constraint_residuals();
             (analysis, residuals, internal_max)
-        } else if let Some(eval) = eval.as_ref().filter(|eval| self.eval_matches(eval, m, n)) {
-            // Shared path: one snapshot backs the fresh Jacobian the rank
-            // needs; per-constraint residuals slice the verified final
-            // vector instead of re-evaluating every constraint.
-            let snap = self.build_snapshot();
-            let jac = self.jacobian_for_snapshot(&snap, m, n);
-            counts.analysis_jacobian_evals += 1;
-            let analysis = dof::analyze(&jac, m, n);
-            counts.analysis_qr_factorizations += 1;
-            if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
-                counts.shared_residuals_used = true;
-                (analysis, residuals, internal_max)
-            } else {
-                // Defensive length mismatch: same fresh fallback.
-                // Unreachable — the solver emits exactly one entry per
-                // equation — but a silent wrong slice is worse than a
-                // repeated evaluation.
-                counts.fallback_residual_passes += 1;
-                let (residuals, internal_max) = self.constraint_residuals();
-                (analysis, residuals, internal_max)
-            }
+        } else if decomp.is_single_connected() {
+            self.analyze_dense_shared(eval.as_ref(), m, n, &mut counts)
         } else {
-            // Identity mismatch means the capture is not this state: measure
-            // everything fresh (identical results, one extra residual pass).
-            // Unreachable in production — capture and measurement bracket no
-            // mutation — but proven by tests.
-            counts.fallback_residual_passes += 1;
-            let analysis = self.dof();
-            let (residuals, internal_max) = self.constraint_residuals();
-            (analysis, residuals, internal_max)
+            self.analyze_components_shared(&decomp, eval.as_ref(), &mut counts)
         };
 
         let rolled_back = !result.converged;
@@ -687,6 +966,91 @@ impl GcsSystem {
             },
             counts,
         ))
+    }
+
+    /// Shared diagnostics over the dense capture (single connected system).
+    ///
+    /// The pre-S02 measurement path, factored out unchanged: one snapshot
+    /// backs the fresh Jacobian the rank needs, and per-constraint residuals
+    /// slice the verified final vector instead of re-evaluating.
+    fn analyze_dense_shared(
+        &mut self,
+        eval: Option<&FinalEvaluation>,
+        m: usize,
+        n: usize,
+        counts: &mut DetailedCounts,
+    ) -> (DofAnalysis, Vec<ConstraintResidual>, f64) {
+        if let Some(eval) = eval.filter(|eval| self.eval_matches(eval, m, n)) {
+            // Shared path: one snapshot backs the fresh Jacobian the rank
+            // needs; per-constraint residuals slice the verified final
+            // vector instead of re-evaluating every constraint.
+            let snap = self.build_snapshot();
+            let jac = self.jacobian_for_snapshot(&snap, m, n);
+            counts.analysis_jacobian_evals += 1;
+            let analysis = dof::analyze(&jac, m, n);
+            counts.analysis_qr_factorizations += 1;
+            if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
+                counts.shared_residuals_used = true;
+                return (analysis, residuals, internal_max);
+            }
+            // Defensive length mismatch: same fresh fallback.
+            // Unreachable — the solver emits exactly one entry per
+            // equation — but a silent wrong slice is worse than a
+            // repeated evaluation.
+            counts.fallback_residual_passes += 1;
+            let (residuals, internal_max) = self.constraint_residuals();
+            (analysis, residuals, internal_max)
+        } else {
+            // Identity mismatch means the capture is not this state: measure
+            // everything fresh (identical results, one extra residual pass).
+            // Unreachable in production — capture and measurement bracket no
+            // mutation — but proven by tests.
+            counts.fallback_residual_passes += 1;
+            let analysis = self.dof();
+            let (residuals, internal_max) = self.constraint_residuals();
+            (analysis, residuals, internal_max)
+        }
+    }
+
+    /// Shared diagnostics over per-component solves (PERF-S02).
+    ///
+    /// Rank comes from fresh per-component Jacobians aggregated under the
+    /// single global threshold ([`dof::analyze_blocks`]) — no giant dense
+    /// Jacobian is ever assembled, which is what preserves the S02 scaling for
+    /// diagnostics. Residuals slice the assembled capture through the same
+    /// identity check and derivation as the dense path; any mismatch falls
+    /// back to fully fresh measurement with identical results.
+    fn analyze_components_shared(
+        &mut self,
+        decomp: &Decomposition,
+        eval: Option<&FinalEvaluation>,
+        counts: &mut DetailedCounts,
+    ) -> (DofAnalysis, Vec<ConstraintResidual>, f64) {
+        let blocks = self.component_jacobians(decomp);
+        let normal_blocks = blocks
+            .iter()
+            .filter(|(_, m_c, n_c)| *m_c > 0 && *n_c > 0)
+            .count();
+        counts.analysis_jacobian_evals += normal_blocks;
+        let analysis = dof::analyze_blocks(&blocks, decomp.num_params, decomp.num_equations);
+        counts.analysis_qr_factorizations += normal_blocks;
+        if let Some(eval) = eval
+            .as_ref()
+            .filter(|eval| self.eval_matches(eval, decomp.num_equations, decomp.num_params))
+        {
+            if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
+                counts.shared_residuals_used = true;
+                return (analysis, residuals, internal_max);
+            }
+            counts.fallback_residual_passes += 1;
+            let (residuals, internal_max) = self.constraint_residuals();
+            (analysis, residuals, internal_max)
+        } else {
+            counts.fallback_residual_passes += 1;
+            let analysis = self.dof();
+            let (residuals, internal_max) = self.constraint_residuals();
+            (analysis, residuals, internal_max)
+        }
     }
 
     /// Whether a solve-local capture still describes the live system.
@@ -804,9 +1168,15 @@ impl GcsSystem {
             };
         }
 
-        let snap = self.build_snapshot();
-        let jac = self.jacobian_for_snapshot(&snap, m, n);
-        dof::analyze(&jac, m, n)
+        let decomp = decompose(self);
+        if decomp.is_single_connected() {
+            let snap = self.build_snapshot();
+            let jac = self.jacobian_for_snapshot(&snap, m, n);
+            dof::analyze(&jac, m, n)
+        } else {
+            let blocks = self.component_jacobians(&decomp);
+            dof::analyze_blocks(&blocks, n, m)
+        }
     }
 
     /// Row-major Jacobian at the entities held by `snap`.
@@ -860,6 +1230,37 @@ impl GcsSystem {
     /// Iterate over all circles.
     pub fn circles(&self) -> impl Iterator<Item = (CircleId, &CircleData)> {
         self.circles.iter()
+    }
+
+    /// Parameter map in solver order (PERF-S02).
+    ///
+    /// Visible within the crate for the component decomposition, which must
+    /// index the same parameter layout the solver extracts and writes back.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn param_map_slice(&self) -> &[ParamRef] {
+        &self.param_map
+    }
+
+    /// Map from free parameter to its solver column (PERF-S02).
+    ///
+    /// Visible within the crate for the component decomposition, which maps
+    /// structural constraint references to global parameter indices.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn param_index_map(&self) -> &HashMap<ParamRef, usize> {
+        &self.param_index
+    }
+
+    /// Live constraints as `(id, constraint)` in arena order (PERF-S02).
+    ///
+    /// Arena order is the system's stable evaluation order; the decomposition
+    /// partitions and the diagnostics report both preserve it, so per-constraint
+    /// results reconstruct in the original public order.
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) fn ordered_constraints(&self) -> Vec<(ConstraintId, Constraint)> {
+        self.constraints
+            .iter()
+            .map(|(cid, e)| (cid, e.constraint.clone()))
+            .collect()
     }
 
     /// Rebuild parameter map if dirty.
@@ -1111,6 +1512,20 @@ impl GcsSystem {
             Err(SketchError::InvalidHandle)
         }
     }
+}
+
+/// Outcome of solving one independent component (PERF-S02).
+struct ComponentOutcome {
+    /// Whether this component reached tolerance.
+    converged: bool,
+    /// DogLeg iterations this component consumed.
+    iterations: usize,
+    /// Max residual over this component's equations at its final iterate.
+    max_residual: f64,
+    /// Final parameter values in the component's local order.
+    final_params: Vec<f64>,
+    /// Flat residual vector at the final iterate, in component order.
+    final_residuals: Vec<f64>,
 }
 
 /// Largest per-constraint residual in a report, propagating NaN.
