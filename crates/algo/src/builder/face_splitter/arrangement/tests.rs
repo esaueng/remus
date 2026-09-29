@@ -212,6 +212,25 @@ fn check_probes(a: &Arrangement, uses: &[CurveUse], oracle: impl Fn(Point2) -> b
 }
 
 #[test]
+fn recomputed_crossing_near_certified_endpoint_adopts_it() {
+    // A section ending one ulp past a crossing: the pair solve lands
+    // within float roundoff of (but not bitwise on) the certified end
+    // parameter. The endpoint certificate outranks recomputation, so the
+    // two cuts merge instead of refusing as an unresolvable near-miss.
+    // Twins without an endpoint certificate still refuse.
+    let mut uses = rectangle(0, 0.0, 0.0, 4.0, 4.0);
+    // The vertical spans the square edge to edge; the horizontal ends one
+    // ulp past it, so its end parameter needs certificate adoption.
+    uses.push(line(10, p(2.0, 0.0), p(2.0, 4.0), [10, 11], None));
+    let past = 2.0 + 4.5e-16;
+    uses.push(line(20, p(0.0, 2.0), p(past, 2.0), [20, 21], None));
+    let a = build(&uses);
+    assert_eq!(material_count(&a), 3);
+    near(area(&a), 16.0);
+    invariants(&a, &uses);
+}
+
+#[test]
 fn x_t_and_star_have_independent_area_and_material() {
     for arms in [3, 4, 6, 8] {
         let mut uses = rectangle(0, -2.0, -2.0, 2.0, 2.0);

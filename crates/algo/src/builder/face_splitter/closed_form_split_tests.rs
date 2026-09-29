@@ -155,6 +155,7 @@ fn split(topo: &Topology, face: FaceId, sections: &[SectionEdge]) -> Vec<SplitSu
         None,
         Some(&cylinder_info()),
         &remus_math::det_hash::DetHashMap::default(),
+        &remus_math::context::OperationContext::new(),
         None,
     )
     .unwrap()

@@ -32,6 +32,7 @@ pub use face_class::FaceClass;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 
 use remus_math::surfaces::CylindricalSurface;
@@ -326,6 +327,10 @@ pub struct Builder {
     solid_b: SolidId,
     /// Geometric tolerance.
     tol: Tolerance,
+    /// Operation context (tolerance, work budgets, cancellation) threaded
+    /// from the GFA entry point. The face splitter's provenance-preserving
+    /// arrangement path consumes its budgets and cancellation polls.
+    context: OperationContext,
     /// Sub-faces produced by splitting.
     sub_faces: Vec<SubFace>,
     /// Construction lineage recorded while materializing and assembling
@@ -350,12 +355,34 @@ impl Builder {
         solid_b: SolidId,
         tol: Tolerance,
     ) -> Self {
+        Self::with_context(
+            topo,
+            arena,
+            solid_a,
+            solid_b,
+            &OperationContext::new().with_tolerance(tol),
+        )
+    }
+
+    /// Create a Builder with the full operation context.
+    ///
+    /// The context's tolerance drives the build; its budgets and
+    /// cancellation token bound the face splitter's arrangement path.
+    #[must_use]
+    pub fn with_context(
+        topo: Topology,
+        arena: GfaArena,
+        solid_a: SolidId,
+        solid_b: SolidId,
+        context: &OperationContext,
+    ) -> Self {
         Self {
             topo,
             arena,
             solid_a,
             solid_b,
-            tol,
+            tol: context.tolerance,
+            context: context.clone(),
             sub_faces: Vec::new(),
             edge_lineage: split_types::EdgeLineageLog::default(),
             face_ranks: HashMap::new(),
@@ -946,6 +973,7 @@ impl Builder {
             &edge_images,
             &self.face_ranks,
             self.tol,
+            &self.context,
             &mut self.edge_lineage,
         )?;
         log::debug!("Builder: {} sub-faces created", self.sub_faces.len());
@@ -1244,6 +1272,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     sources: &[SolidId],
     face_source: &HashMap<FaceId, usize, S>,
     tol: Tolerance,
+    context: &OperationContext,
 ) -> Result<(Topology, SolidId), AlgoError> {
     // Split every source face. Sections are face-relative, so a constant rank
     // is correct for all of them (see the doc comment).
@@ -1256,6 +1285,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
         &edge_images,
         &all_a_ranks,
         tol,
+        context,
         &mut nway_lineage,
     )?;
 
