@@ -979,6 +979,16 @@ impl ConvexMaterialGuard {
         {
             return Ok(());
         }
+        if self.reach < crate::blend_material::MIN_RESOLVED_REACH {
+            return Err(OperationsError::Unsupported {
+                operation,
+                reason: format!(
+                    "convex NURBS blend reach {:.3e} is below the {:.3e} material-check minimum",
+                    self.reach,
+                    crate::blend_material::MIN_RESOLVED_REACH
+                ),
+            });
+        }
         let Some(tube) =
             crate::blend_material::sample_reach_tube(&self.pristine, &self.chains, self.reach)?
         else {
@@ -1772,6 +1782,39 @@ mod tests {
             topo.face(face).unwrap().surface(),
             FaceSurface::Nurbs(_)
         ));
+    }
+
+    #[test]
+    fn convex_nurbs_guard_refuses_reach_below_ray_resolution() {
+        let mut live = Topology::new();
+        let solid = crate::primitives::make_box(&mut live, 2.0, 2.0, 2.0).unwrap();
+        let pristine = live.clone();
+        let face = remus_topology::explorer::solid_faces(&live, solid).unwrap()[0];
+        let patch = crate::cap::bilinear_cap_patch(&[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+        ])
+        .unwrap();
+        live.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(patch));
+        let guard = ConvexMaterialGuard {
+            pristine,
+            input: solid,
+            chains: Vec::new(),
+            reach: crate::blend_material::MIN_RESOLVED_REACH * 0.5,
+        };
+        let error = guard.check(&live, "fillet", solid).unwrap_err();
+        assert!(matches!(
+            error,
+            OperationsError::Unsupported {
+                operation: "fillet",
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("material-check minimum"));
     }
 
     #[test]

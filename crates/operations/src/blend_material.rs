@@ -21,8 +21,10 @@
 //!
 //! * Ray tolerance is `1e-6` (the check-crate default). The defects this
 //!   catches sit up to ~1.7e-1 deep (B71 liner) against rim-curve wobble of
-//!   `~2e-4`: two to three orders of margin. Points exactly on a boundary
-//!   classify `OnBoundary` and are abstained on (never counted either way).
+//!   `~2e-4`: two to three orders of margin at the measured scale. A convex
+//!   NURBS result with reach below `1e-3` refuses because the fixed tolerance
+//!   is then more than 0.1% of reach and can erase a small-scale wrong-side
+//!   lobe. Points on a boundary classify `OnBoundary` and are abstained on.
 //! * The estimate uses inverse-overlap weighted sampling of local boxes:
 //!   `se` is the sample standard error with `N = 6000` deterministic draws.
 //!   Refusal needs `added - 3·se` above the allowance
@@ -78,6 +80,13 @@ pub const TUBE_MARGIN_RADII: f64 = 4.0;
 
 /// Minimum added samples for a refusal (quorum against single-ray flukes).
 pub const ADDED_QUORUM: u64 = 5;
+
+/// Fixed boundary tolerance used by the analytic classifier.
+pub const MATERIAL_RAY_TOLERANCE: f64 = 1e-6;
+
+/// A convex NURBS result below this reach cannot be qualified with the fixed
+/// boundary tolerance: require at least a 1000:1 reach-to-tolerance margin.
+pub const MIN_RESOLVED_REACH: f64 = 1000.0 * MATERIAL_RAY_TOLERANCE;
 
 /// Allowance for numerical dust: rim-wobble slivers plus one part per million
 /// of the tube volume.
@@ -368,9 +377,8 @@ pub fn estimate_added_material(
     result: SolidId,
     tube: &ReachTube,
 ) -> Result<AddedEstimate, OperationsError> {
-    const TOLERANCE: f64 = 1e-6;
-    let before = classify_points(pristine, input, &tube.points, 0.01, TOLERANCE)?;
-    let after = classify_points(live, result, &tube.points, 0.01, TOLERANCE)?;
+    let before = classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
+    let after = classify_points(live, result, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
     let mut added_counts = 0u64;
     for (a, b) in before.iter().zip(after.iter()) {
         if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside) {
