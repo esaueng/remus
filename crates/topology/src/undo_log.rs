@@ -11,9 +11,10 @@
 //! proportional to state the scope actually wrote: one cloned entity per
 //! overwritten slot, one `(arena, index)` pair per allocation, one old key
 //! value per registry/attribute write, and the created ordinal pairs per
-//! journal record. Nothing here scales with unrelated document size. Records
-//! live only while scopes are active: the last commit clears the log, and a
-//! rewind drops everything above its mark.
+//! journal record. A changed-clone or unrelated full restore inside a live
+//! scope takes one document-sized inverse; ordinary mutation-local scopes
+//! do not. Records live only while scopes are active: the last commit clears
+//! the log, and a rewind drops everything above its mark.
 //!
 //! # Soundness argument
 //!
@@ -23,11 +24,12 @@
 //! (empty log) and is preserved because every mutation route in
 //! [`Topology`](crate::Topology) records before writing (see the write-guard
 //! rule in `docs/design/perf-t02-t03-transactions.md`), rewinds apply exact
-//! inverses, and foreign full restores truncate the log to the snapshot's
-//! clone-time length before swapping (a snapshot cloned from live state at
-//! log length `k` is exactly base plus records `[0..k)`).
+//! inverses, and an unchanged same-lineage restore truncates to its source
+//! prefix. A changed clone or unrelated restore instead records the complete
+//! pre-restore state so older records remain valid after that inverse lands.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::attributes::EntityAttributes;
 use crate::coedge::{Coedge, CoedgeId};
@@ -145,6 +147,11 @@ pub enum UndoRecord {
     JournalReplace {
         old: Journal,
     },
+    /// State before a changed or unrelated full restore inside a live scope.
+    /// This rare path preserves the outer scope's complete rollback contract.
+    ForeignRestore {
+        old: Box<Topology>,
+    },
 }
 
 impl UndoRecord {
@@ -211,6 +218,8 @@ pub struct AppendGuard {
 /// Lineage of a clone: which log it was cloned from and how long that log was.
 #[derive(Debug, Clone, Copy)]
 pub struct UndoBase {
+    /// Process-local identity of the topology's original undo lineage.
+    pub(crate) lineage_id: u64,
     /// Generation of the source log at clone time.
     pub(crate) generation: u64,
     /// Source log length at clone time.
@@ -230,27 +239,37 @@ pub struct UndoLog {
     /// Bumped whenever a foreign-lineage restore swaps state underneath
     /// active scopes, invalidating their marks.
     pub(crate) generation: u64,
+    /// Distinguishes unrelated topology values with coincident counters.
+    pub(crate) lineage_id: u64,
     /// Next scope sequence number.
     pub(crate) next_seq: u64,
     /// Armed append-only guards, outermost first.
     pub(crate) append: Vec<AppendGuard>,
     /// Lineage of this topology value (set by `Clone`).
     pub(crate) base: UndoBase,
+    /// Whether `base` came from another topology value and must propagate
+    /// through further clones even after this clone is mutated.
+    pub(crate) inherited_lineage: bool,
 }
 
 impl Default for UndoLog {
     fn default() -> Self {
+        static NEXT_LINEAGE_ID: AtomicU64 = AtomicU64::new(1);
+        let lineage_id = NEXT_LINEAGE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             records: Vec::new(),
             scopes: Vec::new(),
             generation: 0,
+            lineage_id,
             next_seq: 0,
             append: Vec::new(),
             base: UndoBase {
+                lineage_id,
                 generation: 0,
                 log_len: 0,
                 ticks: 0,
             },
+            inherited_lineage: false,
         }
     }
 }
@@ -260,7 +279,9 @@ impl UndoLog {
     /// source's lineage so same-lineage foreign restores stay exact.
     pub(crate) fn fresh_for_clone(base: UndoBase) -> Self {
         Self {
+            lineage_id: base.lineage_id,
             base,
+            inherited_lineage: true,
             ..Self::default()
         }
     }
@@ -708,17 +729,21 @@ impl Topology {
         }
     }
 
-    /// Prepares for a foreign full restore from `snapshot`: same-lineage
-    /// snapshots truncate the log to the snapshot's clone-time length (the
-    /// snapshot is exactly base plus those records, so surviving marks stay
-    /// valid); anything else clears coordination and invalidates live marks.
+    /// Prepares for a full restore. Unchanged same-lineage snapshots can
+    /// truncate to their source prefix. A changed clone or foreign snapshot
+    /// needs one full inverse while scopes are live; otherwise its state
+    /// cannot be reconstructed from the destination's mutation log.
     /// An armed append-only guard always trips: its slot marks no longer
     /// describe the swapped state.
     pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self) {
         self.trip_append_if_armed();
         self.purge_dead_scopes();
         let base = snapshot.undo.base;
-        if base.generation == self.undo.generation && base.log_len <= self.undo.records.len() {
+        if base.lineage_id == self.undo.lineage_id
+            && base.generation == self.undo.generation
+            && base.log_len <= self.undo.records.len()
+            && base.ticks == snapshot.mutation_ticks
+        {
             self.undo.records.truncate(base.log_len);
             self.undo
                 .scopes
@@ -726,6 +751,10 @@ impl Topology {
             if self.undo.scopes.is_empty() {
                 self.undo.records.clear();
             }
+        } else if self.scopes_alive() {
+            self.undo.records.push(UndoRecord::ForeignRestore {
+                old: Box::new(self.clone()),
+            });
         } else {
             self.undo.records.clear();
             self.undo.scopes.clear();
@@ -770,6 +799,7 @@ impl Topology {
             UndoRecord::JournalCreated { .. } | UndoRecord::JournalReplace { .. } => {
                 // Handled by the rewind driver, never applied here.
             }
+            UndoRecord::ForeignRestore { old } => self.restore_rollback_fields(&old),
         }
     }
 }

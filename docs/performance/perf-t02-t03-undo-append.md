@@ -120,6 +120,8 @@ only undo; COW stays as the documented test-only comparison.
   `with_topology_transaction` helper. No browser-wide saving is claimed.
 - Changed-state work still copies touched payloads (e.g. a rewritten NURBS
   face clones its net into the log); only untouched state is now free.
+- A changed-clone or unrelated full restore inside a live scope stores one
+  document-sized inverse. The measured mutation-local cases do not use it.
 - Loop/coedge arena growth during bulk construction (PERF-T07), checkpoint
   retention and first-write cost (PERF-W04), immutable carrier sharing
   (PERF-T04), and compaction/ID reuse (P-Class 8.6) are untouched.
