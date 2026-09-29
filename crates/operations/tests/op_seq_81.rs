@@ -3817,17 +3817,25 @@ fn worker_env() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     }
 }
 
-/// Child entry point: read one persisted ops array, execute it, write the
-/// report JSON. Never fails the suite on its own — the PARENT classifies an
-/// abnormal exit as crash/timeout. A no-op without the worker env so normal
-/// runs (and `--list`) pass through untouched.
+/// Child entry point: read one persisted case file, execute its operations
+/// array, write the report JSON. The case file is a schema-1 bundle (the
+/// same document `persist_inputs` writes and the campaign archives), so
+/// the worker unwraps its `operations` array — never the whole document.
+/// Never fails the suite on its own — the PARENT classifies an abnormal
+/// exit as crash/timeout. A no-op without the worker env so normal runs
+/// (and `--list`) pass through untouched.
 #[test]
 fn opseq81_worker_entry() {
     let Some((case_path, out_path)) = worker_env() else {
         return;
     };
     let text = std::fs::read_to_string(&case_path).expect("worker case must be readable");
-    let ops: Vec<Value> = serde_json::from_str(&text).expect("worker case must parse");
+    let doc: Value = serde_json::from_str(&text).expect("worker case must parse");
+    let ops: Vec<Value> = doc
+        .get("operations")
+        .and_then(Value::as_array)
+        .expect("worker case must carry an operations array")
+        .clone();
     let limits = SeqLimits::default();
     let report = execute_sequence(&ops, &limits, Fault::None);
     let doc = json!({
@@ -3846,6 +3854,40 @@ fn opseq81_worker_entry() {
         serde_json::to_string_pretty(&doc).expect("report serializes"),
     )
     .expect("worker report must be writable");
+}
+
+/// Process isolation round-trips verdicts exactly: the same sequences run
+/// in-process and in a child worker must report identical failure keys.
+/// (Regression test for the worker-bundle decoding bug the first review
+/// caught: the worker parsed the whole bundle document as the operations
+/// array, panicked on every case, and everything tallied `worker_crash`.)
+/// Kept tiny (primitive-heavy, two cases) so the PR gate pays two process
+/// spawns, not a campaign.
+#[test]
+fn isolated_worker_roundtrip() {
+    let limits = SeqLimits::default();
+    let deadline = case_timeout_ms();
+    // Case 1: a short generated sequence (whatever it verdicts, both
+    // surfaces must agree exactly).
+    let ops = generate_sequence(0x81, 4);
+    let direct = execute_sequence(&ops, &limits, Fault::None);
+    let isolated = run_case_isolated(&ops, "isolated-test-generated", 0x81, &limits, deadline);
+    assert_eq!(
+        failure_key(&direct),
+        failure_key(&isolated),
+        "isolated verdict must match in-process verdict"
+    );
+    // Case 2: a dangling handle (no kernel work at all, exercises the
+    // report path on a non-success verdict).
+    let dangling = vec![op_make_box(2.0, 2.0, 2.0), op_bool("fuse", 0, 99)];
+    let direct = execute_sequence(&dangling, &limits, Fault::None);
+    assert_eq!(direct.kind, SeqKind::InvalidHandle);
+    let isolated = run_case_isolated(&dangling, "isolated-test-dangling", 99, &limits, deadline);
+    assert_eq!(
+        failure_key(&direct),
+        failure_key(&isolated),
+        "isolated invalid-handle must match in-process"
+    );
 }
 
 fn parse_seq_kind(label: &str) -> SeqKind {
@@ -3967,7 +4009,9 @@ fn run_case_isolated(
     let kind = parse_seq_kind(doc.get("kind").and_then(Value::as_str).unwrap_or(""));
     // Leak the owned oracle string: verdicts need `&'static str` and the
     // report outlives this frame only through the campaign tally print.
-    // Known oracle tags are re-interned to the canonical spellings.
+    // Known oracle tags are re-interned to the canonical spellings; anything
+    // unrecognized is leaked verbatim so a future oracle survives the
+    // round-trip instead of collapsing into an opaque bucket.
     fn intern(s: &str) -> &'static str {
         match s {
             "ok" => "ok",
@@ -4041,7 +4085,7 @@ fn run_case_isolated(
             "bool" => "bool",
             "sequence" => "sequence",
             "unknown" => "unknown",
-            _ => "unknown_oracle",
+            _ => Box::leak(s.to_owned().into_boxed_str()),
         }
     }
     let oracle = intern(doc.get("oracle").and_then(Value::as_str).unwrap_or(""));
