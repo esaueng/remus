@@ -261,20 +261,6 @@ pub fn point_to_solid_batch(
 ) -> Result<Vec<DistanceResult>, CheckError> {
     let prepared = PreparedDistanceSolid::prepare(topo, solid)?;
     if points.is_empty() {
-        // Unknown bounds can stop before later references in the same face.
-        // Empty batches still validate the topology a query would traverse.
-        for &fid in prepared.faces() {
-            let face = topo.face(fid)?;
-            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            {
-                let wire = topo.wire(wid)?;
-                for oe in wire.edges() {
-                    let edge = topo.edge(oe.edge())?;
-                    let _ = topo.vertex(edge.start())?;
-                    let _ = topo.vertex(edge.end())?;
-                }
-            }
-        }
         return Ok(Vec::new());
     }
     let mut scratch = DistanceScratch::new();
