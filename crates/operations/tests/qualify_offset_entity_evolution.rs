@@ -229,15 +229,14 @@ fn build_cone(topo: &mut Topology, s: f64) -> SolidId {
     make_cone(topo, 1.0 * s, 0.5 * s, 2.0 * s).unwrap()
 }
 
-/// Each primitive with the modelling units it is qualified at. Curved
-/// intersection-joint offsets refuse from 100 units up in the offset engine
-/// itself (B55, `crates/offset/tests/regress_curved_offset_scale.rs`), so
-/// their band stops at 10; `refused_offset_publishes_no_history` pins that
-/// refusal as atomic.
+/// Each primitive with the modelling units it is qualified at. The curved
+/// intersection-joint band runs to 1e3 since B55 closed the large-scale cap
+/// refusal (`crates/offset/tests/regress_curved_offset_scale.rs`); the
+/// collapse refusal below pins the remaining fail-closed path as atomic.
 const RESOLVED_FAMILY: [(&str, Build, [f64; 3]); 3] = [
     ("box", build_box, [1e-3, 1.0, 1e3]),
-    ("cylinder", build_cylinder, [1e-3, 1.0, 10.0]),
-    ("cone", build_cone, [1e-3, 1.0, 10.0]),
+    ("cylinder", build_cylinder, [1e-3, 1.0, 1e3]),
+    ("cone", build_cone, [1e-3, 1.0, 1e3]),
 ];
 
 // ─── Total history on the resolved primitives ───────────────────────────
@@ -363,20 +362,21 @@ fn history_path_leaves_offset_geometry_unchanged() {
     assert!((volume - 2.6 * 3.6 * 4.6).abs() < 1e-9, "{volume}");
 }
 
-/// Outside the engine's curved band the history path refuses exactly like
-/// the plain offset, and publishes nothing: topology counts, the journal,
-/// and an outstanding unjournaled gap are all unchanged until the next
-/// successful journaled operation.
+/// A collapsing offset refuses exactly like the plain offset, and publishes
+/// nothing: topology counts, the journal, and an outstanding unjournaled gap
+/// are all unchanged until the next successful journaled operation. The
+/// refused source handle stays usable: a valid offset on it still succeeds
+/// with the closed-form volume.
 #[test]
 fn refused_offset_publishes_no_history() {
     let mut plain_topo = Topology::new();
-    let plain_source = build_cylinder(&mut plain_topo, 1e3);
-    let plain_error = offset_solid_v2(&mut plain_topo, plain_source, 200.0)
+    let plain_source = build_cylinder(&mut plain_topo, 1.0);
+    let plain_error = offset_solid_v2(&mut plain_topo, plain_source, -1.5)
         .unwrap_err()
         .to_string();
 
     let mut topo = Topology::new();
-    let source = build_cylinder(&mut topo, 1e3);
+    let source = build_cylinder(&mut topo, 1.0);
     let pending = topo.journal_begin("source_fixture");
     remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, source).unwrap();
     // An unjournaled edit after the anchor: an outstanding gap.
@@ -396,11 +396,11 @@ fn refused_offset_publishes_no_history() {
     let before_counts = counts(&topo);
     let before = topo.journal().snapshot();
 
-    let error = offset_journaled_with_entities(&mut topo, source, 200.0)
+    let error = offset_journaled_with_entities(&mut topo, source, -1.5)
         .unwrap_err()
         .to_string();
     assert_eq!(error, plain_error, "same refusal as the plain offset");
-    assert!(error.contains("no reconstructed wire loops"), "{error}");
+    assert!(error.contains("collapses"), "{error}");
     let after = topo.journal().snapshot();
     assert_eq!(after.entries, before.entries, "refusal published history");
     assert_eq!(after.index, before.index);
@@ -417,6 +417,16 @@ fn refused_offset_publishes_no_history() {
         remus_topology::journal::UNJOURNALED_MUTATIONS
     );
     assert_eq!(entries.last().unwrap().op(), op);
+
+    // The refused source handle is undisturbed: a valid outward offset on
+    // the same solid succeeds with the closed-form cylinder volume.
+    let recovered = offset_solid_v2(&mut topo, source, 0.2).unwrap();
+    let volume = remus_operations::measure::solid_volume(&topo, recovered, 1e-3).unwrap();
+    let expected = std::f64::consts::PI * 1.2_f64.powi(2) * 2.4;
+    assert!(
+        (volume - expected).abs() <= 1e-6 * expected,
+        "volume {volume}, closed form {expected}"
+    );
 }
 
 // ─── Deliberately incomplete records ────────────────────────────────────
