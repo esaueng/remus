@@ -5,8 +5,7 @@
 //! its result fails validation — the pre-operation state is restored
 //! exactly. A failed operation never exposes partial topology.
 //!
-//! Guarantees, inherited from the undo log (see
-//! [`Topology::undo_rewind_scope`](crate::Topology::undo_rewind_scope)):
+//! Guarantees, inherited from the undo log's scope rewind:
 //!
 //! - **Atomicity**: on failure, every entity allocated by the operation is
 //!   retired, every retirement it staged is undone, and every other
