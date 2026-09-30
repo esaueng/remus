@@ -1,14 +1,22 @@
 # UV-arrangement splitter design
 
 Status: accepted implementation design for Open Kernel O2.3a. O2.3b has a
-bounded isolated runtime slice described below; the rest of O2.3b and the
-O2.3c-d production integration remain staged. Shared-file ownership was
-rechecked before the first runtime slice.
+bounded isolated runtime slice described below plus a cylinder-strip quotient
+fix (single-ruling shared-seam adjacency, roundoff-tolerant seam-`v` matching)
+and a bounded production cylinder slice (O2.3b/c/d) described in the appendix;
+planar production integration (O2.3c) is live as a last resort, cylinder
+production is early-path with budget-gated fallback (declines on default
+budgets, preserving legacy). No emitter deleted in the cylinder slice; the
+rest of O2.3b-d migration and the three-entry-point deletion floor remain
+staged. Shared-file ownership was rechecked before each runtime slice.
 
 - Measured baseline: `main` at `74dd0e9732e57f1b5f7f43b0177dac8668d207f9`.
 - Retirement target:
   `crates/algo/src/builder/face_splitter/special_cases.rs`.
-- This note changes no boolean behavior and introduces no public capability.
+- This note changes no boolean behavior with default budgets and introduces no
+  public capability (cylinder arrangement declines on default budgets to the
+  established band/sector paths; it fires with opt-in large budgets in tests
+  and future callers).
 
 ## Problem and boundary
 
@@ -380,6 +388,45 @@ is a design-only issue: it adds no runtime capability, so R8 does not require a
 new WASM method or batch operation. Later migrations change the existing
 boolean capability and therefore must prove the existing direct and batch WASM
 contracts remain exact-or-typed.
+
+## Appendix: bounded production cylinder slice (2026-09-30)
+
+Bounded class: finite `Cylinder` lateral, no holes, boundary two closed
+latitude rims + seam lines at one `u`, sections exact latitude circles
+(constant-`v`, seam-anchored, strictly between rims) and/or full-height axial
+rulings (constant-`u` lines, rim-to-rim, not seam-coincident). All strip uses
+are axis-aligned lines with exact 3D carriers (`Circle` for latitudes/rims,
+`Line` for rulings/seams); original carrier parameters, source/coedge
+identity, section/pave provenance and both seam uses are preserved. Oblique
+traces, Ellipse/NURBS contacts, coincident overlaps, tangent contacts, cone
+poles, sphere poles and double-periodic torus charts decline (`Ok(None)`) to
+the established paths; claimed-domain failures propagate (`Err`), never an
+unsplit face.
+
+Topology-to-chart adaptation (`arrangement_cyl::collect_cylinder_uses`) builds
+the pre-cut strip rectangle (bottom/right/top/left, seam uses `[3,1]`, radius)
+from authoritative loops/coedges, with distinct lifted certificates for
+left/right seam copies (seam equivalence declared, never inferred). Exact seam
+subdivision and quotient reconstruction reuse the isolated core
+(`arrangement::build_arrangement` with `CylinderStrip`); the quotient fix for
+single-ruling shared-seam adjacency (distinct sectors sharing seam *and*
+ruling stay separate; wrapping cells sharing only seam merge) plus
+roundoff-tolerant seam-`v` matching are in `arrangement/periodic.rs`. Region
+winding, metric area (`radius * UV area`), certified interior seeds and exact
+source subspans are carried into `SplitSubFace` (`emit_cylinder_subfaces`;
+non-wrapping via lifted cycles with seam, wrapping via quotient boundaries
+seam-free). Production dispatch (`split_face_2d_impl`) tries the cylinder
+arrangement early for `Cylinder` faces (before bands), declining on default
+budgets (preserving legacy) and out-of-domain inputs; established
+band/sector/rectilinear/DCEL paths remain as fallbacks. No emitter deleted in
+this slice (sectors/bands retained; differential agreement evidenced with
+opt-in budgets, closed-form `2πrΔz` bands and `rθh` sectors, permutation/
+reversed/shuffled/rigid/scale/thin qualifications, atomic budget/cancellation).
+
+Out of scope (remain explicitly outside unless independently qualified):
+oblique traces, unsupported contacts/overlaps, cone poles, sphere poles,
+double-periodic torus charts. Terminal equal-radius perpendicular-cylinder
+render work is not reopened (needs face-split-at-pinch primitive).
 
 ## Non-goals
 
