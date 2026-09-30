@@ -13,6 +13,7 @@ use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
 
 use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
@@ -773,26 +774,39 @@ pub fn fillet_rolling_ball_with_origins(
             if !qualified {
                 continue;
             }
-            let edge_faces = |edge_id: EdgeId| -> [usize; 2] {
-                let faces = &edge_to_faces[&edge_id.index()];
-                [faces[0].index(), faces[1].index()]
-            };
-            let face_pairs = [
-                edge_faces(edge_list[0]),
-                edge_faces(edge_list[1]),
-                edge_faces(edge_list[2]),
-            ];
-            let convex = [
-                planar_edge_sides[&edge_list[0].index()] < 0.0,
-                planar_edge_sides[&edge_list[1].index()] < 0.0,
-                planar_edge_sides[&edge_list[2].index()] < 0.0,
-            ];
+            // Per-edge support faces and material sides, resolved fail-closed:
+            // the pre-check above guarantees two faces and a known side, but
+            // the maps are keyed lookups, so re-validate instead of indexing.
+            let mut face_pairs = [[0usize; 2]; 3];
+            let mut convex = [false; 3];
+            for (i, edge_id) in edge_list.iter().enumerate() {
+                let (Some(faces), Some(side)) = (
+                    edge_to_faces.get(&edge_id.index()),
+                    planar_edge_sides.get(&edge_id.index()),
+                ) else {
+                    qualified = false;
+                    break;
+                };
+                let [Some(fa), Some(fb)] = [faces.first(), faces.get(1)] else {
+                    qualified = false;
+                    break;
+                };
+                face_pairs[i] = [fa.index(), fb.index()];
+                convex[i] = *side < 0.0;
+            }
+            if !qualified {
+                continue;
+            }
             // Outward support normals. The plane normals stored by
             // construction (extrude, primitives, exact booleans) face
             // outward; this is the same trust the corner-ball solver above
             // places in `effective_plane_normal`, and the Phase 6 validation
             // gates arbitrate the assembled result either way.
-            let mut outward = HashMap::with_capacity(3);
+            let mut outward: remus_math::det_hash::DetHashMap<usize, Vec3> =
+                remus_math::det_hash::DetHashMap::with_capacity_and_hasher(
+                    3,
+                    remus_math::det_hash::DetState,
+                );
             for pair in &face_pairs {
                 for face_index in pair {
                     if outward.contains_key(face_index) {
@@ -2882,15 +2896,44 @@ pub fn fillet_rolling_ball_with_origins(
             // trims already account for the R-setback stations; the assembly
             // shares each seam circle with the stripe or cap that mints it.
             if let Some((torus, dirs, concave_pos)) = torus_corners.get(&vi) {
+                // Fail-closed vertex resolution for the typed refusal below.
+                let torus_vertex_id: Option<VertexId> =
+                    vertex_fillet_edges.get(&vi).and_then(|incident| {
+                        incident.iter().find_map(|edge_id| {
+                            let edge = topo.edge(*edge_id).ok()?;
+                            [edge.start(), edge.end()]
+                                .into_iter()
+                                .find(|candidate| candidate.index() == vi)
+                        })
+                    });
+                let unsupported = |vertex: Option<VertexId>| {
+                    if let Some(vertex) = vertex {
+                        crate::OperationsError::Blend(
+                            remus_blend::BlendError::UnsupportedVertexBlend { vertex, stripes: 3 },
+                        )
+                    } else {
+                        crate::OperationsError::Unsupported {
+                            operation: "fillet",
+                            reason: "mixed-notch torus corner failed to emit".to_owned(),
+                        }
+                    }
+                };
+                // A torus-qualified vertex must never fall through to the
+                // legacy ball paths below: the wholly-planar refusal above
+                // was skipped for it, so any emission failure is a typed
+                // refusal, never a silent normal-sum ball.
                 let convex_pos: Vec<usize> = (0..3).filter(|i| *i != *concave_pos).collect();
-                let (dir_a, dir_b) = (dirs[convex_pos[0]], dirs[convex_pos[1]]);
-                if let Some(arcs) = crate::fillet::notch_torus::seam_arcs(
-                    torus,
-                    dir_a,
-                    dir_b,
-                    dirs[*concave_pos],
-                    tol,
-                ) {
+                let [Some(&pa), Some(&pb)] = [convex_pos.first(), convex_pos.get(1)] else {
+                    return Err(unsupported(torus_vertex_id));
+                };
+                let (Some(&dir_a), Some(&dir_b), Some(&dir_c)) =
+                    (dirs.get(pa), dirs.get(pb), dirs.get(*concave_pos))
+                else {
+                    return Err(unsupported(torus_vertex_id));
+                };
+                if let Some(arcs) =
+                    crate::fillet::notch_torus::seam_arcs(torus, dir_a, dir_b, dir_c, tol)
+                {
                     // Loop order M1 -> B1 -> B2 -> M2; orient CCW about the
                     // torus parametric normal at the patch centroid.
                     let (m1, b1, b2, m2) = (torus.m1, torus.b1, torus.b2, torus.m2);
@@ -2900,7 +2943,7 @@ pub fn fillet_rolling_ball_with_origins(
                         (m1.z() + b1.z() + b2.z() + m2.z()) * 0.25,
                     );
                     let Ok(loop_normal) = ((b1 - m1).cross(b2 - m1)).normalize() else {
-                        continue;
+                        return Err(unsupported(torus_vertex_id));
                     };
                     let (pu, pv) = torus.torus.project_point(centroid);
                     let parametric_normal = torus.torus.normal(pu, pv);
@@ -2948,13 +2991,18 @@ pub fn fillet_rolling_ball_with_origins(
                     if overrides_ok {
                         continue;
                     }
-                    // Override failure: retract the spec and fall through to
-                    // the legacy paths (which will refuse or approximate;
-                    // never silent gaps).
+                    // Override failure: retract the spec and refuse. Falling
+                    // through to the legacy paths would emit a silent
+                    // normal-sum ball here (the planar refusal was skipped
+                    // for torus vertices above) — never a silent gap.
                     analytic_boundary_curves.truncate(pushed);
                     all_specs.truncate(pushed_specs);
                     all_spec_origins.truncate(pushed_specs);
+                    return Err(unsupported(torus_vertex_id));
                 }
+                // Seam construction itself failed: same typed refusal, never
+                // the legacy ball.
+                return Err(unsupported(torus_vertex_id));
             }
 
             // The original (about to be rounded away) vertex position.
