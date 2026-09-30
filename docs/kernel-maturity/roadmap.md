@@ -18,6 +18,13 @@ re-run geometry suites or certify the current scheduled jobs.
 added scope notes to 7.1, 7.2, 7.4, 7.5, 4.3, 6.1 and 6.6, bridge rows B72–B75,
 and two decision rows. It changes no state and no evidence.
 
+**File-interoperability overlay 2026-09-29:** OpenZCAD
+[PR #486](https://github.com/esaueng/OpenZCAD/pull/486) adds I06–I20.
+The mapping below assigns translator-boundary design to O5.6 and IGES
+qualification/scope review to O5.7; existing O5.1–O5.5 retain STEP metadata,
+assemblies and external-reference ownership. No format is promoted by this
+planning update.
+
 ## Start here
 
 - [Current priorities](#current-priorities) and [in-flight work](#in-flight-work).
@@ -272,6 +279,28 @@ datum planes and axes, keep-originals on booleans and transforms, hotkeys,
 saved views, item groups, history step actions, expression units and typed
 variables, reference images, DXF/SVG/PDF writers and readers, auto-boolean
 inference, and every drawing-sheet construct.
+
+### File-interoperability consumer overlay (2026-09-29)
+
+OpenZCAD's [format specification](https://github.com/esaueng/OpenZCAD/blob/f18d69fc29134bc04002d7fa658d0214ca8c4111/docs/plans/file-format-interoperability.md)
+separates application readers/writers from kernel geometry work. The native
+and IGES qualification contract is [specified here](native-format-interoperability.md).
+Select bounded work under the owners below without displacing the correctness
+priority lanes or reopening completed geometry rows.
+
+| OpenZCAD scope | Needs from Remus | Owner here |
+| --- | --- | --- |
+| I02/I04 STEP fidelity and protocol choice | Assembly reader/writer and bound occurrence identity; names/colors; qualified AP242 writing. A UI protocol choice is not writer support. | [O5.1](#o-o5-1a), [O5.2](#o-o5-2), [O5.3a](#o-o5-3a), [O5.4](#o-o5-4) |
+| I10 translator evaluation; I11 Parasolid, I12 ACIS, I13 Rhino | Design a bounded exact B-rep/metadata bridge, decide independent reader versus optional external translator, and qualify native/packaged WASM imports/exports by version and surface family. No current XT/SAT/3DM reader is claimed. | [O5.6](#o-o5-6); [O4.6](#o-o4-6) for serialized compatibility, [2.0c](#p-2-0c)/[2.6](#p-2-6) for authoritative boundary/scale contracts |
+| I14 SolidWorks; I15 Inventor; I16 JT; I17 Creo; I18 NX; I19 CATIA; I20 Solid Edge | Reuse the translator boundary; native application parsing stays external unless independently justified. Preserve assembly identity and source-to-result geometry; JT mesh-only input stays mesh-only. | [O5.6](#o-o5-6), [O5.1](#o-o5-1a)/[O5.4](#o-o5-4), [O5.5](#o-o5-5) for responsibility boundaries |
+| I06 IGES import/export | Existing IO APIs are present but IGES remains declared lossy preview. Inventory supported entity/unit/trim/shell behavior, qualify independent fixtures, then record any narrowly justified scope change before a precise-geometry claim. | [O5.7](#o-o5-7); existing IGES decision below remains the default |
+| I08 PLY export | Existing writer/WASM API, with consumer export controls and independent-reader parity; demonstrated translator defects return as bounded kernel witnesses. | Consumer I08; [O1.5](#o-o1-5)/[O4.2a](#o-o4-2a) for source/package evidence |
+| D04 DXF, I07 SVG, D01 PDF, I09 USDZ | Application parsing/writing, sketch/sheet models and visualization packaging; ellipse/spline constraints and sheet/wire representation keep their existing kernel owners and qualification limits. | Consumer scope; [B75](#b75), [4.2](#p-4-2)/[4.7](#p-4-7) when a consumer needs those representations |
+
+External-part selection, upload consent, cloud retention, desktop execution,
+licence purchase and service deployment are consumer decisions. Kernel planning
+does not authorize proprietary SDK integration into the default Apache-2.0
+build or imply source feature-history reconstruction.
 
 ## Dependencies and horizons
 
@@ -626,7 +655,7 @@ Wave labels are interpreted by the scheduling constraints above.
 </details>
 
 <details>
-<summary>O5 — Interchange · 9 registered items</summary>
+<summary>O5 — Interchange · 11 registered items</summary>
 
 | Issue | Wave | State and remaining scope | Evidence |
 | --- | --- | --- | --- |
@@ -639,6 +668,8 @@ Wave labels are interpreted by the scheduling constraints above.
 | <a id="o-o5-3c"></a>O5.3c PMI write | C | Pending | — |
 | <a id="o-o5-4"></a>O5.4 Assembly occurrence identity and instancing | A/B (with O5.1) | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.3, IP-11.3) | — |
 | <a id="o-o5-5"></a>O5.5 External references and partial loading (design + decision) | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-11.6) | — |
+| <a id="o-o5-6"></a>O5.6 Native-format translation boundary and qualification | design first; consumer-driven | Pending — added 2026-09-29 for OpenZCAD I10–I20. Specify supported surface/trim/topology, units, metadata and representation quality; compare an independent reader, optional external SDK and STEP/arena bridge without adding proprietary dependencies to the default build. First direction/version qualification targets XT/XB, SAT/SAB and 3DM, then translated SolidWorks parts; other native families reuse the boundary on demonstrated demand. Assembly/attributes/serialization remain O5.1/O5.2/O5.4/O5.5/O4.6. Exit: documented execution/licensing decision and independent native/packaged-WASM fixture evidence for each advertised direction; no feature-history recovery promise. | [Scope and acceptance](native-format-interoperability.md); [OpenZCAD #486](https://github.com/esaueng/OpenZCAD/pull/486) |
+| <a id="o-o5-7"></a>O5.7 IGES qualification and precise-scope decision | evidence and decision first | Pending — added 2026-09-29 for OpenZCAD I06. Audit the existing reader/writer separately against independent fixtures, including units, analytic/NURBS carriers, trims/coedges, cavities and multiple roots; record lossy/unsupported cells and transactional refusals. A written decision must precede any precise-subset implementation or support claim. Existing declared-lossy preview and STEP fallback remain unchanged until that decision and its qualification pass. | [Scope and acceptance](native-format-interoperability.md#iges-boundary-o57); existing IGES decision |
 
 </details>
 
@@ -1092,7 +1123,8 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ca91b95
 | Playground hosting and second-consumer outreach | O6.2 / O6.3 retain explicit hosting/outreach decisions. |
 | Multi-body mesh reader API | B31 compatibility decision before changing return types. |
 | v1 fillet API retirement | Maintainer product decision, not required by B23's shared cascade or H5's geometry gate. |
-| IGES growth | Declined: STEP is the exchange path; IGES remains a declared lossy preview. Reopening requires evidence and a decision. |
+| IGES growth | Declined by default: STEP is the exchange path; IGES remains a declared lossy preview. [O5.7](#o-o5-7) now owns evidence gathering and a narrowly scoped decision for OpenZCAD I06; this planning entry does not reopen runtime implementation or promote IGES to exact exchange. |
+| Native CAD and kernel exchange formats | [O5.6](#o-o5-6) owns the design/qualification boundary for XT/XB, SAT/SAB, 3DM and externally translated native formats. Keep optional translator execution/licensing separate from the default Apache-2.0 kernel; no native application writer or source-history reconstruction claim. |
 | Shared-face non-manifold topology | Later RFC under RFC 0005; its ordering against O7 requires a decision. |
 | Hybrid mesh/B-Rep | O7 design only under the body-model gate. Existing mesh fallback does not grant hybrid-modeling capability. |
 | Application history and parametrics | Consumer scope; kernel work covers identity/evolution, not the feature tree or UI. |
@@ -1122,7 +1154,7 @@ No requirement is considered complete merely because its document was consolidat
 | STAB-B3 evolution | B5 completed bounded offset mapping; broader family attribution B18 and journaled direct edits 6.5. |
 | STAB-C1 curved blends | B3 closed-rim chamfers, B4 planar completion and M5 curved remainder. |
 | STAB-C2 blend resize | P-Class 6.2/6.5; preserve #346/#348 cylindrical resize/removal limits. |
-| STAB-C3 IGES / C4 rendering | Recorded IGES decision / B14 render promotion. |
+| STAB-C3 IGES / C4 rendering | Recorded IGES decision and O5.7 qualification/scope review / B14 render promotion. |
 | Partial-cylinder resizing plan | P-Class 6.2 geometry and 6.5 history; #308/#338 quarter-wall support is bounded. Fixture and acceptance retained in the case study. |
 | Hammer-holder opening checkpoint | B27 capability and B28 performance; historical chronological notes are evidence, not the latest support boundary. |
 | Evolution and scale-band audit next-slice lists | B18 / 6.5 and 2.6 respectively; audits supply witnesses, this page owns selection and status. |
