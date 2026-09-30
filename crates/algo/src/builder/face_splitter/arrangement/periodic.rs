@@ -7,6 +7,46 @@ use remus_math::curves2d::Curve2D;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
+/// Whether two lifted regions share a non-seam edge with the same 3D
+/// endpoints (within tolerance). Two sectors sharing both the seam and a
+/// ruling (the one-ruling case) are distinct adjacent faces, not one wrapping
+/// face. Wrapping cells share only the seam.
+fn shares_non_seam_edge(
+    a: &Arrangement,
+    seam_uses: [u64; 2],
+    fx: usize,
+    fy: usize,
+    tol: f64,
+) -> bool {
+    let mut edges_fx = Vec::new();
+    for cycle in std::iter::once(&a.regions[fx].outer).chain(&a.regions[fx].holes) {
+        for &h in &a.cycles[*cycle].edges {
+            let e = &a.half_edges[h];
+            if e.source.use_id == seam_uses[0] || e.source.use_id == seam_uses[1] {
+                continue;
+            }
+            edges_fx.push(e.endpoints_3d);
+        }
+    }
+    for cycle in std::iter::once(&a.regions[fy].outer).chain(&a.regions[fy].holes) {
+        for &h in &a.cycles[*cycle].edges {
+            let e = &a.half_edges[h];
+            if e.source.use_id == seam_uses[0] || e.source.use_id == seam_uses[1] {
+                continue;
+            }
+            for &[p0, p1] in &edges_fx {
+                let [q0, q1] = e.endpoints_3d;
+                if ((p0 - q0).length() <= tol && (p1 - q1).length() <= tol)
+                    || ((p0 - q1).length() <= tol && (p1 - q0).length() <= tol)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn quotient(
     a: &mut Arrangement,
@@ -94,9 +134,14 @@ pub(super) fn quotient(
         vy.sort_by(|&x, &y| a.vertices[x].uv.y().total_cmp(&a.vertices[y].uv.y()));
         for (x, y) in vx.into_iter().zip(vy) {
             work.step()?;
-            // Declared seam equivalence is the certificate; the v coordinate
-            // must agree exactly. Near unmatched breaks are refused, not welded.
-            if !geometry::same(a.vertices[x].uv.y(), a.vertices[y].uv.y())
+            // Declared seam equivalence is the certificate; the `v` coordinates
+            // must agree up to float roundoff (same logical break computed via
+            // different strip paths can differ by an ulp at scaled magnitudes).
+            // Genuinely distinct breaks differ by orders of magnitude more and
+            // are refused below via the 3D residual, not welded.
+            let y_tol =
+                geometry::roundoff(a.vertices[x].uv).max(geometry::roundoff(a.vertices[y].uv));
+            if (a.vertices[x].uv.y() - a.vertices[y].uv.y()).abs() > y_tol
                 || (a.vertices[x].point_3d - a.vertices[y].point_3d).length()
                     > work.context.tolerance.linear
             {
@@ -117,6 +162,15 @@ pub(super) fn quotient(
         };
         if a.regions[fx].material != a.regions[fy].material {
             return Err(ArrangementError::UnsupportedDomain);
+        }
+        // Distinct cells sharing another 3D edge besides the seam are adjacent
+        // faces sharing that seam as a common boundary (the one-ruling
+        // two-sector case), not one wrapping face. Keep them separate: the
+        // seam stays in both boundaries (shared via duplicate-edge merge
+        // downstream) instead of becoming interior. Vertex aliasing above
+        // already records the same-3D identification.
+        if fx != fy && shares_non_seam_edge(a, seam_uses, fx, fy, work.context.tolerance.linear) {
+            continue;
         }
         counterpart.insert(hx, hy);
         counterpart.insert(hy, hx);
