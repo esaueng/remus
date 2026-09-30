@@ -45,6 +45,23 @@ const VOLUME_DEFLECTION: f64 = 0.01;
 /// work prevents crafted, highly perforated faces from monopolising a worker.
 const MAX_RIM_CONTAINMENT_WORK: usize = 1_000_000;
 
+/// Largest permitted linear-miter deviation of an inner analytic-curved
+/// boundary from its offset carrier, as a fraction of the wall thickness.
+///
+/// The miter is the intersection of the offset *tangent planes* at a vertex,
+/// not of the offset surfaces themselves. On planes it is exact; on a curved
+/// carrier it misses radially by order `t²/r`. The mesh still closes while the
+/// miss is a small fraction of the wall (B76 thin 1.8–11.9%, the
+/// box-fuse-cylinder boss thin 8.6–29.3% at 0.05–0.16, all indexed+welded
+/// shut), then opens once the miss approaches the wall itself (33.3% at 0.18,
+/// 37–119% at 0.20–0.60, 10–13 boundary edges). Thirty percent keeps every
+/// currently-qualified thin hollow and every exact positive (box, cup, sphere:
+/// 0%) while refusing the open-mesh regime with margin. Scale-invariant by
+/// construction (both sides scale together); rigid-motion invariant. NURBS
+/// inner skins are exempt — they already disclose `Approximate` — and planes
+/// are exempt — the miter is their exact intersection.
+const MAX_MITER_CARRIER_FRACTION: f64 = 0.30;
+
 fn unsupported(reason: impl Into<String>) -> crate::OperationsError {
     crate::OperationsError::Unsupported {
         operation: OP,
@@ -362,6 +379,15 @@ fn shell_with_evolution_impl(
     // L-prism cell; a closed mixed hole-free lump with a folded planar
     // subset fails closed as unqualified rather than shipping an inverted
     // cavity.
+    // A box fused with an oblique cylinder boss (Fuzz Smoke 2026-09-29,
+    // `modifier_ops` crash-26090c90, 9 faces with one holed cylinder lateral)
+    // carries the same crossed planar walls at 0.6, but its fuse-seam inner
+    // wire keeps the lump holed, so this gate still excludes it; that witness
+    // is refused instead by the curved off-carrier gate below (its inner
+    // cylinder misses by 119% of the wall). Broadening this gate to holed
+    // lumps was tried and reverted: the remover reports the thin valid
+    // hollows (0.05–0.16, mesh shut) as outside its cell, so it would
+    // blanket-refuse the qualified domain it is meant to protect.
     let planar_fold_sources: HashSet<usize> = if open_faces.is_empty() {
         crate::boolean::assembly::face_components(topo, solid)
             .into_iter()
@@ -699,6 +725,14 @@ fn shell_with_evolution_impl(
                     // angular range survive. `Surface` would drop the seam's
                     // second traversal as a duplicate edge and leave the rims
                     // as free chords.
+                    let carrier = FaceSurface::Cylinder(new_cyl.clone());
+                    refuse_off_carrier_inner_face(
+                        &carrier,
+                        &inner_verts_fwd,
+                        &inner_holes,
+                        fid,
+                        thickness,
+                    )?;
                     result_specs.push(FaceSpec::CylindricalFace {
                         vertices: inner_verts_fwd,
                         cylinder: new_cyl,
@@ -727,6 +761,14 @@ fn shell_with_evolution_impl(
                     cone.half_angle(),
                 )
                 .map_err(crate::OperationsError::Math)?;
+                let carrier = FaceSurface::Cone(new_cone.clone());
+                refuse_off_carrier_inner_face(
+                    &carrier,
+                    &inner_verts_fwd,
+                    &inner_holes,
+                    fid,
+                    thickness,
+                )?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
                     surface: FaceSurface::Cone(new_cone),
@@ -755,6 +797,14 @@ fn shell_with_evolution_impl(
                     new_minor,
                 )
                 .map_err(crate::OperationsError::Math)?;
+                let carrier = FaceSurface::Torus(new_torus.clone());
+                refuse_off_carrier_inner_face(
+                    &carrier,
+                    &inner_verts_fwd,
+                    &inner_holes,
+                    fid,
+                    thickness,
+                )?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
                     surface: FaceSurface::Torus(new_torus),
@@ -825,6 +875,14 @@ fn shell_with_evolution_impl(
                     sphere.x_axis(),
                 )
                 .map_err(crate::OperationsError::Math)?;
+                let carrier = FaceSurface::Sphere(new_sph.clone());
+                refuse_off_carrier_inner_face(
+                    &carrier,
+                    &inner_verts_fwd,
+                    &inner_holes,
+                    fid,
+                    thickness,
+                )?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
                     surface: FaceSurface::Sphere(new_sph),
@@ -1086,6 +1144,57 @@ fn shell_with_evolution_impl(
     let quality = quality_of(&sampled, approximation);
     finish_shell(topo, solid, evolution, tol.linear, &planar_fold_sources)
         .map(|(solid, evolution)| (solid, evolution, quality))
+}
+
+/// Largest distance from `points` to `carrier`, via projection + evaluation.
+///
+/// Unprojectable points contribute nothing: they do not trigger this gate,
+/// and the ordinary closed/manifold/validation gates still apply to whatever
+/// the assembler makes of them.
+fn max_carrier_deviation(carrier: &FaceSurface, points: impl IntoIterator<Item = Point3>) -> f64 {
+    let mut worst: f64 = 0.0;
+    for p in points {
+        let (u, v) = carrier.project_point(p).unwrap_or((0.0, 0.0));
+        if let Some(q) = carrier.evaluate(u, v) {
+            worst = worst.max((p - q).length());
+        }
+    }
+    worst
+}
+
+/// Refuse an inner analytic-curved face whose linear-miter boundary has left
+/// its offset carrier beyond the qualified fraction of the wall thickness.
+///
+/// The miter is the intersection of the offset tangent planes, not of the
+/// offset surfaces. While the miss is a small fraction of the wall the shared
+/// edge pool still closes the mesh; once it approaches the wall itself the
+/// hollow meshes open (13 boundary edges on the 2026-09-29 fuse-cylinder
+/// witness at 119% of the wall) while staying relaxed-valid. An analytic
+/// carrier with an off-carrier boundary is not exact, so this fails closed as
+/// unqualified instead of shipping it under `Exact`.
+fn refuse_off_carrier_inner_face(
+    carrier: &FaceSurface,
+    outer: &[Point3],
+    holes: &[Vec<Point3>],
+    source: FaceId,
+    thickness: f64,
+) -> Result<(), crate::OperationsError> {
+    let bound = MAX_MITER_CARRIER_FRACTION * thickness;
+    let worst = max_carrier_deviation(
+        carrier,
+        outer.iter().copied().chain(holes.iter().flatten().copied()),
+    );
+    if worst > bound {
+        return Err(unsupported(format!(
+            "face {} offsets to a {} whose linear-miter boundary misses its carrier by \
+             {worst:.6} (over the {bound:.6} qualified bound at thickness {thickness}); \
+             the curved wall needs its exact offset-surface intersection, which this \
+             construction does not establish",
+            source.index(),
+            carrier.type_tag(),
+        )));
+    }
+    Ok(())
 }
 
 /// The outcome quality for a finished inner skin: exact when no face took

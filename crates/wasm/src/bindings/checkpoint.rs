@@ -100,6 +100,7 @@ mod tests {
     use crate::kernel::BrepKernel;
 
     const DEFLECTION: f64 = 0.01;
+    const TOL: f64 = 1e-6;
 
     // ── helpers ───────────────────────────────────────────────────
 
@@ -109,6 +110,10 @@ mod tests {
 
     fn volume(k: &BrepKernel, solid: u32) -> f64 {
         k.volume(solid, DEFLECTION).unwrap()
+    }
+
+    fn classify(k: &BrepKernel, solid: u32, x: f64, y: f64, z: f64) -> String {
+        k.classify_point(solid, x, y, z, TOL).unwrap()
     }
 
     // ── round-trip ────────────────────────────────────────────────
@@ -375,5 +380,57 @@ mod tests {
         // cp1 (id=1) is no longer valid because count is now 1.
         assert_eq!(k.checkpoint_count(), 1);
         assert!(cp1 >= k.checkpoint_count());
+    }
+
+    /// PERF-Q02: repeated `classifyPoint` hits the persistent cache, and
+    /// mutation plus checkpoint restore invalidate it without stale reuse.
+    #[test]
+    fn classify_cache_hits_repeated_calls_and_invalidates_on_restore() {
+        let mut k = BrepKernel::new();
+        let solid = make_box(&mut k, 2.0, 2.0, 2.0);
+
+        // First call rebuilds, second hits; both agree (box [0,2]^3).
+        assert_eq!(classify(&k, solid, 1.0, 1.0, 1.0), "inside");
+        let after_first = k.classify_cache.borrow().stats();
+        assert_eq!(after_first.rebuilds, 1);
+        assert_eq!(classify(&k, solid, 1.0, 1.0, 1.0), "inside");
+        let after_second = k.classify_cache.borrow().stats();
+        assert_eq!(after_second.hits, after_first.hits + 1);
+        assert_eq!(after_second.rebuilds, 1);
+
+        // An unrelated allocation bumps the whole-topology generation:
+        // conservative miss, still correct.
+        let _other = make_box(&mut k, 1.0, 1.0, 1.0);
+        assert_eq!(classify(&k, solid, 1.0, 1.0, 1.0), "inside");
+        assert_eq!(classify(&k, solid, 5.0, 5.0, 5.0), "outside");
+        let after_edit = k.classify_cache.borrow().stats();
+        assert!(after_edit.rebuilds > after_second.rebuilds);
+
+        // Checkpoint, mutate, restore: the restored verdict must not reuse
+        // the mutated preparation.
+        let cp = k.checkpoint();
+        let _third = make_box(&mut k, 3.0, 3.0, 3.0);
+        k.restore(cp).unwrap();
+        assert_eq!(classify(&k, solid, 1.0, 1.0, 1.0), "inside");
+        assert_eq!(classify(&k, solid, 5.0, 5.0, 5.0), "outside");
+    }
+
+    /// PERF-Q02: direct and batch `classifyPoint` agree, including after a
+    /// restore that rewinds the journal tick (ABA).
+    #[test]
+    fn classify_direct_and_batch_agree_across_restore() {
+        let mut k = BrepKernel::new();
+        let solid = make_box(&mut k, 2.0, 2.0, 2.0);
+        let cp = k.checkpoint();
+        let _other = make_box(&mut k, 1.0, 1.0, 1.0);
+        k.restore(cp).unwrap();
+
+        let direct = classify(&k, solid, 1.0, 1.0, 1.0);
+        let batch_json = format!(
+            r#"[{{"op":"classifyPoint","args":{{"solid":{solid},"x":1.0,"y":1.0,"z":1.0,"tolerance":{TOL}}}}}]"#
+        );
+        let batch_out = k.execute_batch(&batch_json);
+        let batch_val: serde_json::Value = serde_json::from_str(&batch_out).unwrap();
+        assert_eq!(batch_val[0]["ok"].as_str().unwrap(), direct);
     }
 }

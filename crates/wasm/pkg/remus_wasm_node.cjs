@@ -2531,7 +2531,7 @@ class BrepKernel {
      * Add a constraint from a JSON object string and return a constraint
      * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
      *
-     * All 26 constraint types are supported. Entity fields are `u32`
+     * All 35 constraint types are supported. Entity fields are `u32`
      * handles from the `gcsAdd*` calls. Types and fields:
      * `coincident{a,b}`, `distance{a,b,value}`,
      * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -2543,7 +2543,15 @@ class BrepKernel {
      * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
      * `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
      * `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
-     * `midpoint{point,line}`, `symmetric{a,b,axis}`.
+     * `midpoint{point,line}`, `symmetric{a,b,axis}`,
+     * `tangentLineCircle{line,circle}`, `symmetricAboutPoint{a,b,center}`,
+     * `pointOnEllipse{point,ellipse}`,
+     * `concentricEllipseEllipse{ellipse1,ellipse2}`,
+     * `concentricEllipseCircle{ellipse,circle}`,
+     * `concentricEllipseArc{ellipse,arc}`,
+     * `tangentLineEllipse{line,ellipse,point}`,
+     * `ellipseAxisA{ellipse,value}`, `ellipseAxisB{ellipse,value}`,
+     * `ellipseAngle{ellipse,value}`, `equalEllipseRadii{ellipse1,ellipse2}`.
      *
      * `circleRadius` takes a **radius**, not a diameter, and requires a
      * positive finite value. There is no first-class point-lock constraint:
@@ -2556,6 +2564,26 @@ class BrepKernel {
         const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.brepkernel_gcsAddConstraint(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a full ellipse with a center point, two semiaxes, and an
+     * orientation. `a` and `b` must be positive and finite; `angle` is the
+     * counter-clockwise rotation in radians from `+x` to the `a`-axis.
+     * Unlike arcs, a full ellipse has no endpoints and installs no internal
+     * constraint. Returns an ellipse handle.
+     * @param {number} sketch
+     * @param {number} center
+     * @param {number} a
+     * @param {number} b
+     * @param {number} angle
+     * @returns {number}
+     */
+    gcsAddEllipse(sketch, center, a, b, angle) {
+        const ret = wasm.brepkernel_gcsAddEllipse(this.__wbg_ptr, sketch, center, a, b, angle);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2619,10 +2647,26 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Current ellipse parameters as `[cx, cy, a, b, angle]` (angle in
+     * radians, stored as given — see the `gcsAddEllipse` contract).
+     * @param {number} sketch
+     * @param {number} ellipse
+     * @returns {Float64Array}
+     */
+    gcsEllipseParams(sketch, ellipse) {
+        const ret = wasm.brepkernel_gcsEllipseParams(this.__wbg_ptr, sketch, ellipse);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * Create a new typed GCS sketch. Returns a sketch handle.
      *
      * This is the successor to the legacy `sketch*` API: the constraint
-     * system persists across calls, entities are typed handles, all 26
+     * system persists across calls, entities are typed handles, all 35
      * constraint types are available, and constraints can be removed.
      * @returns {number}
      */
@@ -2658,6 +2702,24 @@ class BrepKernel {
         }
     }
     /**
+     * Move an ellipse's center to `(x, y)` and set its semiaxes and
+     * orientation without solving (e.g. while dragging). `a` and `b` must
+     * be positive and finite; `angle` is finite radians.
+     * @param {number} sketch
+     * @param {number} ellipse
+     * @param {number} x
+     * @param {number} y
+     * @param {number} a
+     * @param {number} b
+     * @param {number} angle
+     */
+    gcsSetEllipse(sketch, ellipse, x, y, a, b, angle) {
+        const ret = wasm.brepkernel_gcsSetEllipse(this.__wbg_ptr, sketch, ellipse, x, y, a, b, angle);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Move a point to `(x, y)` without solving (e.g. while dragging).
      * @param {number} sketch
      * @param {number} point
@@ -2675,8 +2737,9 @@ class BrepKernel {
      * solver. Returns a JSON string
      * `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
      * TypeScript type). Read solved geometry back with
-     * [`gcs_point_position`](Self::gcs_point_position) and
-     * [`gcs_circle_radius`](Self::gcs_circle_radius).
+     * [`gcs_point_position`](Self::gcs_point_position),
+     * [`gcs_circle_radius`](Self::gcs_circle_radius), and
+     * [`gcs_ellipse_params`](Self::gcs_ellipse_params).
      * @param {number} sketch
      * @param {number} max_iterations
      * @param {number} tolerance
