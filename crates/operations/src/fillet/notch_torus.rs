@@ -61,7 +61,7 @@ pub struct NotchFrame {
 pub fn qualify_notch(
     edge_faces: &[[usize; 2]],
     outward: &HashMap<usize, Vec3>,
-    convex: &[bool; 3],
+    convex: [bool; 3],
     tol: Tolerance,
 ) -> Option<(NotchFrame, usize)> {
     if edge_faces.len() != 3 {
@@ -167,8 +167,8 @@ pub fn notch_torus(
     // Ring center: one radius into the void along each wall outward plus one
     // radius off the cap along its outward normal.
     let ring_center = vertex + (frame.wall_a + frame.wall_b) * radius - frame.cap_outward * radius;
-    let torus = ToroidalSurface::with_axis(ring_center, 2.0 * radius, radius, frame.cap_outward)
-        .ok()?;
+    let torus =
+        ToroidalSurface::with_axis(ring_center, 2.0 * radius, radius, frame.cap_outward).ok()?;
     // Contact crossings: each convex stripe's wall-contact meets the concave
     // stripe's wall-contact one radius along the convex edge from the vertex
     // and one radius off the cap.
@@ -203,7 +203,13 @@ pub struct SeamArc {
 
 /// Build a seam arc on the exact circle through `center` with `axis`,
 /// spanning `start -> end`.
-fn seam_arc(center: Point3, axis: Vec3, radius: f64, start: Point3, end: Point3) -> Option<SeamArc> {
+fn seam_arc(
+    center: Point3,
+    axis: Vec3,
+    radius: f64,
+    start: Point3,
+    end: Point3,
+) -> Option<SeamArc> {
     let circle = Circle3D::new(center, axis, radius).ok()?;
     // Both endpoints must lie on the circle (within linear tolerance
     // relative to the radius); the assembly trim pins the exact span.
@@ -215,29 +221,31 @@ fn seam_arc(center: Point3, axis: Vec3, radius: f64, start: Point3, end: Point3)
             return None;
         }
     }
-    Some(SeamArc {
-        circle,
-        start,
-        end,
-    })
+    Some(SeamArc { circle, start, end })
 }
 
 /// Orient a seam circle for assembly: returns the circle (axis possibly
 /// negated) with a CCW trim span covering the short arc `start -> end`.
 /// Quarter-circle seams always span less than pi, so the short span is
 /// unambiguous; anything else returns `None` (fail-closed, never a chord).
-pub fn oriented_seam(circle: &Circle3D, start: Point3, end: Point3) -> Option<(Circle3D, (f64, f64))> {
+pub fn oriented_seam(
+    circle: &Circle3D,
+    start: Point3,
+    end: Point3,
+) -> Option<(Circle3D, (f64, f64))> {
     let normalize_ccw = |circle: &Circle3D| -> Option<(f64, f64)> {
         let a0 = circle.project(start);
-        let mut a1 = circle.project(end);
-        while a1 <= a0 {
-            a1 += std::f64::consts::TAU;
+        let a1 = circle.project(end);
+        // CCW span from a0 into (0, TAU]; rem_euclid folds the wrap-around
+        // without a float loop.
+        let mut span = (a1 - a0).rem_euclid(std::f64::consts::TAU);
+        if span <= 0.0 {
+            span += std::f64::consts::TAU;
         }
-        let span = a1 - a0;
-        if span <= 0.0 || span >= std::f64::consts::PI {
+        if span >= std::f64::consts::PI {
             return None;
         }
-        Some((a0, a1))
+        Some((a0, a0 + span))
     };
     if let Some(trim) = normalize_ccw(circle) {
         return Some((circle.clone(), trim));
@@ -305,7 +313,7 @@ mod tests {
     fn ring_and_stations_match_reference() {
         let tol = Tolerance::new();
         let (faces, outward, convex) = bracket_input();
-        let (frame, concave_idx) = qualify_notch(&faces, &outward, &convex, tol).unwrap();
+        let (frame, concave_idx) = qualify_notch(&faces, &outward, convex, tol).unwrap();
         assert_eq!(concave_idx, 2);
         let nt = notch_torus(
             frame,
@@ -333,7 +341,7 @@ mod tests {
     fn seams_are_exact_quarter_circles() {
         let tol = Tolerance::new();
         let (faces, outward, convex) = bracket_input();
-        let (frame, _) = qualify_notch(&faces, &outward, &convex, tol).unwrap();
+        let (frame, _) = qualify_notch(&faces, &outward, convex, tol).unwrap();
         let nt = notch_torus(
             frame,
             Point3::new(8.0, 8.0, 0.0),
@@ -365,8 +373,16 @@ mod tests {
     fn seams_are_g1_tangent_to_stripes_and_supports() {
         let tol = Tolerance::new();
         let (faces, outward, convex) = bracket_input();
-        let (frame, _) = qualify_notch(&faces, &outward, &convex, tol).unwrap();
-        let nt = notch_torus(frame, Point3::new(8.0, 8.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0, tol).unwrap();
+        let (frame, _) = qualify_notch(&faces, &outward, convex, tol).unwrap();
+        let nt = notch_torus(
+            frame,
+            Point3::new(8.0, 8.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0,
+            tol,
+        )
+        .unwrap();
         // Torus normal at M1 is parallel to wall A (S1 tangency).
         let (u, w) = nt.torus.project_point(nt.m1);
         let n = nt.torus.normal(u, w);
@@ -387,7 +403,7 @@ mod tests {
     fn oriented_seams_span_quarters() {
         let tol = Tolerance::new();
         let (faces, outward, convex) = bracket_input();
-        let (frame, _) = qualify_notch(&faces, &outward, &convex, tol).unwrap();
+        let (frame, _) = qualify_notch(&faces, &outward, convex, tol).unwrap();
         let nt = notch_torus(
             frame,
             Point3::new(8.0, 8.0, 0.0),
@@ -412,7 +428,11 @@ mod tests {
             "station quarter must span pi/2, got {span}"
         );
         // Arc midpoint lands on the quarter bisector (independent check).
-        let mid_expected = Point3::new(9.0, 7.0 + std::f64::consts::FRAC_1_SQRT_2, 1.0 - std::f64::consts::FRAC_1_SQRT_2);
+        let mid_expected = Point3::new(
+            9.0,
+            7.0 + std::f64::consts::FRAC_1_SQRT_2,
+            1.0 - std::f64::consts::FRAC_1_SQRT_2,
+        );
         let mid = circle.evaluate((t0 + t1) * 0.5);
         assert!(
             (mid - mid_expected).length() < 1e-9,
@@ -425,22 +445,22 @@ mod tests {
         let tol = Tolerance::new();
         let (faces, outward, _) = bracket_input();
         // Concave singleton (e3) qualifies, whichever edge is concave.
-        assert!(qualify_notch(&faces, &outward, &[true, true, false], tol).is_some());
-        assert!(qualify_notch(&faces, &outward, &[false, true, true], tol).is_some());
-        assert!(qualify_notch(&faces, &outward, &[true, false, true], tol).is_some());
+        assert!(qualify_notch(&faces, &outward, [true, true, false], tol).is_some());
+        assert!(qualify_notch(&faces, &outward, [false, true, true], tol).is_some());
+        assert!(qualify_notch(&faces, &outward, [true, false, true], tol).is_some());
         // All-convex, all-concave, two-concave (convex singleton / spike):
         // refused (later families).
-        assert!(qualify_notch(&faces, &outward, &[true, true, true], tol).is_none());
-        assert!(qualify_notch(&faces, &outward, &[false, false, false], tol).is_none());
-        assert!(qualify_notch(&faces, &outward, &[true, false, false], tol).is_none());
+        assert!(qualify_notch(&faces, &outward, [true, true, true], tol).is_none());
+        assert!(qualify_notch(&faces, &outward, [false, false, false], tol).is_none());
+        assert!(qualify_notch(&faces, &outward, [true, false, false], tol).is_none());
         // Wrong edge count: refused.
-        assert!(qualify_notch(&faces[..2], &outward, &[true, true, false], tol).is_none());
+        assert!(qualify_notch(&faces[..2], &outward, [true, true, false], tol).is_none());
         // Oblique walls: refused.
         let mut oblique = outward.clone();
         oblique.insert(2, Vec3::new(1.0, 1.0, 0.0).normalize().unwrap());
-        assert!(qualify_notch(&faces, &oblique, &[true, true, false], tol).is_none());
+        assert!(qualify_notch(&faces, &oblique, [true, true, false], tol).is_none());
         // Shared-face degeneracy (all edges on two faces): refused.
         let degenerate = [[0usize, 1], [0, 1], [0, 1]];
-        assert!(qualify_notch(&degenerate, &outward, &[true, true, false], tol).is_none());
+        assert!(qualify_notch(&degenerate, &outward, [true, true, false], tol).is_none());
     }
 }

@@ -637,13 +637,14 @@ fn assemble_solid_mixed_traced(
     // below would mint chords across the seams and open the shell. Fail
     // closed before materialising anything.
     for spec in face_specs {
-        let is_uncovered_torus = matches!(
-            spec,
-            FaceSpec::Surface {
-                surface: remus_topology::face::FaceSurface::Torus(_),
-                ..
-            }
-        ) && !torus_has_full_override_coverage(spec.vertices(), boundary_curves, tol);
+        let is_uncovered_torus =
+            matches!(
+                spec,
+                FaceSpec::Surface {
+                    surface: remus_topology::face::FaceSurface::Torus(_),
+                    ..
+                }
+            ) && !torus_has_full_override_coverage(spec.vertices(), boundary_curves, tol);
         if is_uncovered_torus {
             return Err(crate::OperationsError::Unsupported {
                 operation: "assemble_solid_mixed",

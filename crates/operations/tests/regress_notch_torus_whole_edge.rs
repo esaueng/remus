@@ -25,7 +25,12 @@
 //!   The implementation must meet BOTH this closed form AND the reference
 //!   totals (13027.2829 at r=1, 12755.9621 at r=2).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stderr)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
@@ -42,7 +47,7 @@ use remus_topology::face::{Face, FaceSurface};
 use remus_topology::solid::SolidId;
 
 const V0: f64 = 13120.0;
-const T3: f64 = 0.1978130679;
+const T3: f64 = 0.197_813_067_9;
 
 fn edge_term(r: f64) -> f64 {
     let a = r * r * (1.0 - std::f64::consts::FRAC_PI_4);
@@ -96,7 +101,11 @@ fn census(topo: &Topology, solid: SolidId) -> (usize, usize, usize, usize) {
 fn fillet_all(topo: &mut Topology, solid: SolidId, radius: f64) -> SolidId {
     let all = solid_edges(topo, solid).unwrap();
     let physical = filter_filletable_edges(topo, solid, &all).unwrap();
-    assert_eq!(physical.len(), 18, "whole-edge selection must stay complete");
+    assert_eq!(
+        physical.len(),
+        18,
+        "whole-edge selection must stay complete"
+    );
     let result = fillet_cascade(topo, solid, &physical, radius)
         .unwrap_or_else(|e| panic!("r={radius}: whole-edge fillet must build: {e}"));
     assert!(!result.is_partial, "r={radius}: no partial blends");
@@ -158,16 +167,17 @@ fn torus_seams_are_g1() {
     let mut seam_count = 0;
     for eid in solid_edges(&topo, out).unwrap() {
         let edge = topo.edge(eid).unwrap();
-        if !matches!(
-            edge.curve(),
-            remus_topology::edge::EdgeCurve::Circle(_)
-        ) {
+        if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
             continue;
         }
         let a = topo.vertex(edge.start()).unwrap().point();
         let b = topo.vertex(edge.end()).unwrap().point();
         let near_notch = |p: Point3| {
-            p.x() > 6.5 && p.x() < 9.5 && p.y() > 6.5 && p.y() < 9.5 && (p.z() < 2.5 || p.z() > 17.5)
+            p.x() > 6.5
+                && p.x() < 9.5
+                && p.y() > 6.5
+                && p.y() < 9.5
+                && (p.z() < 2.5 || p.z() > 17.5)
         };
         if near_notch(a) && near_notch(b) {
             // The two incident faces of this seam edge.

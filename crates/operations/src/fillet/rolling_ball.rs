@@ -741,8 +741,10 @@ pub fn fillet_rolling_ball_with_origins(
         //
         // Stored per vertex: solved torus, edge directions from the vertex
         // (aligned with `edge_list` below), and the concave position.
-        let mut torus_corners: HashMap<usize, (crate::fillet::notch_torus::NotchTorus, [Vec3; 3], usize)> =
-            HashMap::new();
+        let mut torus_corners: HashMap<
+            usize,
+            (crate::fillet::notch_torus::NotchTorus, [Vec3; 3], usize),
+        > = HashMap::new();
         // (edge index, vertex index) -> setback distance, merged into
         // `setback_map` with the ball stations below.
         let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
@@ -756,9 +758,10 @@ pub fn fillet_rolling_ball_with_origins(
             let mut qualified = true;
             for (i, edge_id) in incident_edges.iter().enumerate().take(3) {
                 edge_list[i] = *edge_id;
-                let edge_ok = topo.edge(*edge_id).is_ok_and(|edge| {
-                    matches!(edge.curve(), EdgeCurve::Line)
-                }) && planar_edge_sides.contains_key(&edge_id.index())
+                let edge_ok = topo
+                    .edge(*edge_id)
+                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+                    && planar_edge_sides.contains_key(&edge_id.index())
                     && edge_to_faces
                         .get(&edge_id.index())
                         .is_some_and(|faces| faces.len() == 2);
@@ -774,7 +777,11 @@ pub fn fillet_rolling_ball_with_origins(
                 let faces = &edge_to_faces[&edge_id.index()];
                 [faces[0].index(), faces[1].index()]
             };
-            let face_pairs = [edge_faces(edge_list[0]), edge_faces(edge_list[1]), edge_faces(edge_list[2])];
+            let face_pairs = [
+                edge_faces(edge_list[0]),
+                edge_faces(edge_list[1]),
+                edge_faces(edge_list[2]),
+            ];
             let convex = [
                 planar_edge_sides[&edge_list[0].index()] < 0.0,
                 planar_edge_sides[&edge_list[1].index()] < 0.0,
@@ -796,7 +803,7 @@ pub fn fillet_rolling_ball_with_origins(
                         .flat_map(|faces| faces.iter())
                         .find(|face| face.index() == *face_index)
                         .and_then(|face| topo.face(*face).ok())
-                        .and_then(|face| face.effective_plane_normal())
+                        .and_then(remus_topology::face::Face::effective_plane_normal)
                         .and_then(|normal| normal.normalize().ok())
                     else {
                         qualified = false;
@@ -811,12 +818,9 @@ pub fn fillet_rolling_ball_with_origins(
             if !qualified {
                 continue;
             }
-            let Some((frame, concave_pos)) = crate::fillet::notch_torus::qualify_notch(
-                &face_pairs,
-                &outward,
-                &convex,
-                tol,
-            ) else {
+            let Some((frame, concave_pos)) =
+                crate::fillet::notch_torus::qualify_notch(&face_pairs, &outward, convex, tol)
+            else {
                 continue;
             };
             // Vertex position and edge directions from the vertex (exact for
@@ -828,8 +832,7 @@ pub fn fillet_rolling_ball_with_origins(
                     qualified = false;
                     break;
                 };
-                let (Ok(vs), Ok(ve)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
-                else {
+                let (Ok(vs), Ok(ve)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
                     qualified = false;
                     break;
                 };
@@ -1477,7 +1480,9 @@ pub fn fillet_rolling_ball_with_origins(
         // angle-heuristic setbacks above at rectangular junctions and pin
         // the exact station planes the torus seams consume.
         for ((edge_index, vertex_index), setback) in &torus_setbacks {
-            let entry = setback_map.entry((*edge_index, *vertex_index)).or_insert(0.0);
+            let entry = setback_map
+                .entry((*edge_index, *vertex_index))
+                .or_insert(0.0);
             if *setback > *entry {
                 *entry = *setback;
             }
@@ -2537,7 +2542,10 @@ pub fn fillet_rolling_ball_with_origins(
                         let normal2 = topo.face(f2).ok()?.effective_plane_normal()?;
                         planar_rolling_ball_section(p, normal1, normal2, side, radius, tol)
                     });
-                    let side = planar_edge_sides.get(&edge_id.index()).copied().unwrap_or(-1.0);
+                    let side = planar_edge_sides
+                        .get(&edge_id.index())
+                        .copied()
+                        .unwrap_or(-1.0);
                     let (contact1, contact2, bisector) =
                         if let Some((center, contact1, contact2)) = exact_planar {
                             // Bisector must point from the edge toward the
@@ -2549,11 +2557,7 @@ pub fn fillet_rolling_ball_with_origins(
                             // it backwards silently winds concave stripes
                             // inside-out.
                             let to_center = (center - p).normalize().unwrap_or(d1_ref);
-                            let bisector = if side < 0.0 {
-                                to_center
-                            } else {
-                                -to_center
-                            };
+                            let bisector = if side < 0.0 { to_center } else { -to_center };
                             (contact1, contact2, bisector)
                         } else {
                             // Curved or unqualified planar fallback.
@@ -2878,8 +2882,7 @@ pub fn fillet_rolling_ball_with_origins(
             // trims already account for the R-setback stations; the assembly
             // shares each seam circle with the stripe or cap that mints it.
             if let Some((torus, dirs, concave_pos)) = torus_corners.get(&vi) {
-                let convex_pos: Vec<usize> =
-                    (0..3).filter(|i| *i != *concave_pos).collect();
+                let convex_pos: Vec<usize> = (0..3).filter(|i| *i != *concave_pos).collect();
                 let (dir_a, dir_b) = (dirs[convex_pos[0]], dirs[convex_pos[1]]);
                 if let Some(arcs) = crate::fillet::notch_torus::seam_arcs(
                     torus,

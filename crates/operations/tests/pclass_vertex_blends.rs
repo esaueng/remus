@@ -7,7 +7,7 @@ use std::f64::consts::TAU;
 
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
-use remus_operations::blend_ops::{blend_failure_code, fillet_v2};
+use remus_operations::blend_ops::fillet_v2;
 use remus_operations::extrude::extrude;
 use remus_operations::heal::unify_faces;
 use remus_operations::measure::solid_volume;
@@ -231,8 +231,7 @@ fn alternating_material_sides_at_a_planar_vertex_builds_torus() {
         },
     ));
     let input = extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
-    let vol_before =
-        remus_operations::measure::solid_volume(&topo, input, 0.05).unwrap();
+    let vol_before = remus_operations::measure::solid_volume(&topo, input, 0.05).unwrap();
     let corner = Point3::new(2.0, 2.0, 5.0);
     let edges = [
         edge_between(&topo, input, Point3::new(2.0, 2.0, 0.0), corner),
@@ -260,8 +259,7 @@ fn alternating_material_sides_at_a_planar_vertex_builds_torus() {
     let shell = topo.solid(result.solid).unwrap().outer_shell();
     remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
         .expect("notch triple shell must be closed");
-    let vol_after =
-        remus_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
+    let vol_after = remus_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
     assert!(
         (vol_after - vol_before).abs() < 2.0,
         "notch triple must stay near {vol_before:.3}, got {vol_after:.3}"
