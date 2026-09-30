@@ -1446,8 +1446,12 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
             // fall back to the (negative) volume sign if it is inconclusive.
             shell_is_outward_oriented(topo, shell).unwrap_or(false)
         } else {
-            // Multi-shell: a negative shell is the tool's interior cavity (hole).
-            false
+            // Multi-shell: a negative shell is normally the tool's interior
+            // cavity (hole). A disconnected growth lump whose corner-fan
+            // volume degenerates to zero (e.g. the B64 wall caps) can sign-flip
+            // to a tiny negative under translation rounding; outward flux
+            // keeps such lumps as growth, inward (or inconclusive) stays hole.
+            shell_is_outward_oriented(topo, shell).unwrap_or(false)
         };
         if std::env::var("BK_AREAS").is_ok() {
             let mut mix: HashMap<&str, usize> = HashMap::new();
@@ -4682,6 +4686,13 @@ fn remove_doubled_faces(
 /// Only a closed (or otherwise non-simply-connected) surface can host two
 /// distinct patches with one shared boundary, hence the non-planar requirement.
 ///
+/// A mixed-carrier group (e.g. a plane disc and a sphere cap sharing one
+/// latitude circle, the B64 lid lump) is also complementary: different
+/// carriers cannot coincide over an area, so a shared boundary must bound
+/// different regions (a lens) rather than the same region twice. Such groups
+/// are kept regardless of walk directions (which agree when the merge keeps
+/// one orientation for coincident closed circles).
+///
 /// Purely topological: edge IDs have already been unified by
 /// [`merge_duplicate_edges`], so this compares identity, not position, and
 /// introduces no tolerance or length constant of any kind.
@@ -4692,6 +4703,25 @@ fn group_is_complementary_curved_patches(
 ) -> bool {
     use remus_topology::edge::EdgeId;
     use remus_topology::face::FaceSurface;
+
+    // Mixed carriers (different surface families) cannot be coincident copies:
+    // a plane disc and a sphere cap sharing one circle bound a lens (B64),
+    // not the same region twice. Keep the whole group.
+    {
+        let mut tags: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+        for &m in members {
+            let Some(&fid) = face_ids.get(m) else {
+                return false;
+            };
+            let Ok(face) = topo.face(fid) else {
+                return false;
+            };
+            tags.insert(face.surface().type_tag());
+        }
+        if tags.len() > 1 {
+            return true;
+        }
+    }
 
     let mut walks: Vec<HashSet<(EdgeId, bool)>> = Vec::with_capacity(members.len());
     for &m in members {
