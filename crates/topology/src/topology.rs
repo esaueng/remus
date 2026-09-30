@@ -122,7 +122,16 @@ pub struct CacheIdentity {
 /// from it restores exactly) and an empty undo log. Cache identity is *not*
 /// shared: the clone receives a fresh [`CacheIdentity::lineage`] so two
 /// diverging documents can never alias one persistent preparation.
-#[derive(Debug)]
+///
+/// `Debug` formats every session-state field but omits the PERF-Q02 cache
+/// identity (`cache_lineage`, `cache_generation`, `cache_poisoned`): those
+/// are process-local runtime invalidation counters, never persisted, and the
+/// generation moves forward across rollbacks and copy-on-write clones by
+/// design. Session-state oracles (the W9 preflight `session_unchanged`
+/// stage, rollback `format!("{topo:?}")` equality tests) compare logical
+/// document state, so runtime identity must not participate. When adding a
+/// field, add it to the manual `Debug` impl below unless it is likewise
+/// runtime-only.
 pub struct Topology {
     /// Mutation-local rollback storage and append-only guards.
     pub(crate) undo: UndoLog,
@@ -188,6 +197,34 @@ pub struct Topology {
 /// not reachable in practice (one allocation per `Topology` value); the
 /// skip-zero loop still guarantees no allocated lineage aliases the
 /// reserved value even across a wrap.
+/// Manual `Debug`: every session-state field, except the PERF-Q02 runtime
+/// cache identity (`cache_lineage`, `cache_generation`, `cache_poisoned`).
+/// See the struct documentation for why runtime invalidation counters must
+/// not participate in state-oracle comparisons. Keep this in sync with the
+/// struct definition above.
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Topology")
+            .field("undo", &self.undo)
+            .field("vertices", &self.vertices)
+            .field("edges", &self.edges)
+            .field("wires", &self.wires)
+            .field("faces", &self.faces)
+            .field("shells", &self.shells)
+            .field("solids", &self.solids)
+            .field("compounds", &self.compounds)
+            .field("compsolids", &self.compsolids)
+            .field("pcurves", &self.pcurves)
+            .field("loops", &self.loops)
+            .field("coedges", &self.coedges)
+            .field("attributes", &self.attributes)
+            .field("journal", &self.journal)
+            .field("mutation_ticks", &self.mutation_ticks)
+            .finish()
+    }
+}
+
 fn fresh_cache_lineage() -> u64 {
     static NEXT_CACHE_LINEAGE: AtomicU64 = AtomicU64::new(1);
     loop {
@@ -3202,5 +3239,26 @@ mod tests {
         topo.set_wire_body_class(wire, BodyClass::Wire).unwrap();
         assert_eq!(topo.mutation_ticks(), ticks_before);
         assert!(topo.cache_generation() > gen_before);
+    }
+
+    #[test]
+    fn debug_oracle_ignores_runtime_cache_identity() {
+        // Session-state oracles (`format!("{topo:?}")`, the W9 preflight
+        // `session_unchanged` stage) compare logical document state. A
+        // copy-on-write clone (fresh lineage, e.g. `Rc::make_mut` after a
+        // wasm checkpoint) and a forward-moved invalidation generation
+        // (e.g. a rolled-back refused import) must both compare identical.
+        let mut topo = Topology::new();
+        let _ = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let before = format!("{topo:?}");
+
+        let clone = topo.clone();
+        assert_ne!(clone.cache_lineage(), topo.cache_lineage());
+        assert_eq!(format!("{clone:?}"), before);
+
+        let gen_before = topo.cache_generation();
+        topo.bump_cache_generation();
+        assert!(topo.cache_generation() > gen_before);
+        assert_eq!(format!("{topo:?}"), before);
     }
 }
