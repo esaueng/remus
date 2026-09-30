@@ -8,8 +8,8 @@
 //!
 //! Actual cause (rechecked 2026-09-30 on origin/main `594cd308`): the two
 //! notch vertices `(8,8,0)` and `(8,8,20)` are mixed-side 3-way planar
-//! junctions (two convex edges + one concave edge). No qualified corner
-//! patch exists there yet: the rolling-ball engine's exact corner ball
+//! junctions (two convex edges + one concave edge) for which no qualified
+//! corner patch exists yet: the rolling-ball engine's exact corner ball
 //! requires one connected material-side orientation
 //! (`exact_planar_corner_ball` returns `None` on alternating sides) and the
 //! walking builder has no watertight assembly for multi-chain vertices, so
@@ -18,11 +18,10 @@
 //! (`fillet_builder.rs`), not a geometric classification: the failing
 //! junctions each join THREE selected edges.
 //!
-//! Slice 2 will teach the kernel a qualified mixed-side patch and flip the
-//! `REFUSED` assertions below to success oracles (closed-form volume, G1,
-//! watertightness, STEP round-trip). Until then this test pins the typed
-//! refusal and the failure-atomicity contract: the input solid must be
-//! bit-identical afterwards.
+//! The independent boundary oracle (`oracle_mixed_notch_boundary.rs`) maps
+//! the true surface (slivers, lens, ball-tube junctions, station
+//! crossings); the corner family remains unqualified until an implementation
+//! lands. Slice 2 works toward that patch.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
