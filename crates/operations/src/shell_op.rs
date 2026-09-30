@@ -34,6 +34,11 @@ use crate::dot_normal_point;
 /// Operation name carried by [`crate::OperationsError::Unsupported`] refusals.
 const OP: &str = "shell";
 
+/// Contributing carriers per quantized vertex, for the narrow exact coaxial
+/// bore repair: the surface, the face's concavity (reversal flag), whether the
+/// face was opened, and the source face.
+type Contributor = (FaceSurface, bool, bool, FaceId);
+
 /// Deflection for the closing volume check. `solid_volume` integrates the
 /// analytic surfaces a shell is made of in closed form, so this only bounds
 /// the fallback paths.
@@ -45,22 +50,36 @@ const VOLUME_DEFLECTION: f64 = 0.01;
 /// work prevents crafted, highly perforated faces from monopolising a worker.
 const MAX_RIM_CONTAINMENT_WORK: usize = 1_000_000;
 
-/// Largest permitted linear-miter deviation of an inner analytic-curved
-/// boundary from its offset carrier, as a fraction of the wall thickness.
-///
-/// The miter is the intersection of the offset *tangent planes* at a vertex,
-/// not of the offset surfaces themselves. On planes it is exact; on a curved
-/// carrier it misses radially by order `t²/r`. The mesh still closes while the
-/// miss is a small fraction of the wall (B76 thin 1.8–11.9%, the
-/// box-fuse-cylinder boss thin 8.6–29.3% at 0.05–0.16, all indexed+welded
-/// shut), then opens once the miss approaches the wall itself (33.3% at 0.18,
-/// 37–119% at 0.20–0.60, 10–13 boundary edges). Thirty percent keeps every
-/// currently-qualified thin hollow and every exact positive (box, cup, sphere:
-/// 0%) while refusing the open-mesh regime with margin. Scale-invariant by
-/// construction (both sides scale together); rigid-motion invariant. NURBS
-/// inner skins are exempt — they already disclose `Approximate` — and planes
-/// are exempt — the miter is their exact intersection.
-const MAX_MITER_CARRIER_FRACTION: f64 = 0.30;
+// Carrier-consistency bound for inner analytic-curved boundaries.
+//
+// The miter is the intersection of the offset *tangent planes* at a vertex,
+// not of the offset surfaces themselves. On planes it is exact; on a curved
+// carrier it misses radially by order `t²/r`. An analytic carrier whose
+// boundary has left the carrier is not exact, however small the fraction of
+// the wall (B76 thin 1.8–11.9% and the box-fuse-cylinder boss thin 8.6–29.3%
+// at 0.05–0.16 both mesh shut indexed+welded yet sit 0.0009–0.047 off
+// carrier). Exactness is therefore judged against the kernel tolerance
+// contract (`OperationContext` default tolerance: linear 1e-7, relative
+// 1e-10), not against a fraction of the wall: every inner analytic-curved
+// vertex must lie on its offset carrier within the scale-aware bound below.
+// A closed welded mesh is not an exactness certificate — B76 open-thick (11
+// indexed / 0 welded) and B78 open-thin (3–5 indexed / 0 welded) both pass the
+// weld while leaking indexed edges.
+//
+// The bounded exact support domain is the set where the miter coincides with
+// the true offset-surface intersection within that bound: all-planar bodies,
+// orthogonal plane–cylinder junctions (cylinder cups, bored plates: 5e-8),
+// concentric spherical hollows (vertices 4e-8; edge chords carry the input's
+// own segmentation sag, shared through the vertex-quantized edge pool), and
+// coaxial sphere–cylinder bores repaired below via `exact_sphere_cylinder`.
+// Oblique plane–sphere / plane–cylinder fuse seams (B76/B78, 0.0009–0.72 off
+// at every thickness including thin) lie outside: their exact offset-surface
+// intersections exist as primitives (`intersect_plane_sphere`,
+// `intersect_plane_cylinder`) but the shell's miter-plus-shared-edge
+// construction does not establish them with shared edge topology, so they
+// refuse with the missing primitive named. NURBS inner skins are exempt —
+// they already disclose `Approximate` — and planes are exempt — the miter is
+// their exact intersection.
 
 fn unsupported(reason: impl Into<String>) -> crate::OperationsError {
     crate::OperationsError::Unsupported {
@@ -449,6 +468,36 @@ fn shell_with_evolution_impl(
         face_holes.push(holes);
     }
 
+    // Carrier-consistency bound from the kernel tolerance contract
+    // (`OperationContext::default().tolerance`: linear 1e-7, relative 1e-10),
+    // scale-relativized by the input extent so 1e-3/1/1e3 positives share one
+    // gate: exact miter vertices sit at 0–5e-8 absolute across those scales,
+    // while oblique/curved–curved miter misses sit at 0.0009–0.72 (thin through
+    // thick). Never a fraction of the wall.
+    let carrier_bound: f64 = {
+        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let mut any = false;
+        for (_, verts) in &face_verts {
+            for p in verts {
+                min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
+                max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
+                any = true;
+            }
+        }
+        for holes in &face_holes {
+            for rim in holes {
+                for p in rim {
+                    min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
+                    max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
+                    any = true;
+                }
+            }
+        }
+        let diag = if any { (max - min).length() } else { thickness };
+        tol.linear.max(tol.relative * diag.max(thickness))
+    };
+
     let mut result_specs: Vec<FaceSpec> = Vec::new();
     // In step with `result_specs`: which input face each spec derives from,
     // and whether it is a fresh inner-skin face (`generated`) or the outer
@@ -475,10 +524,15 @@ fn shell_with_evolution_impl(
     };
 
     let mut vertex_normals: HashMap<(i64, i64, i64), Vec<(Vec3, bool)>> = HashMap::new();
+    let mut vertex_contributors: HashMap<(i64, i64, i64), Vec<Contributor>> = HashMap::new();
+    // One precise outer position per key: the quantized reconstruction alone
+    // carries up to half a grid step (5e-8) of error, the whole budget.
+    let mut outer_rep: HashMap<(i64, i64, i64), Point3> = HashMap::new();
 
     for (&(fid, ref verts), holes) in face_verts.iter().zip(&face_holes) {
         let face = topo.face(fid)?;
         let is_open = open_set.contains(&fid.index());
+        let concave = face.is_reversed();
 
         // A convex fillet whose radius the thickness swallows does not offset
         // to a smaller fillet — it collapses to a sharp edge where the two
@@ -516,13 +570,21 @@ fn shell_with_evolution_impl(
             if face.is_reversed() {
                 normal = -normal;
             }
-            let entry = vertex_normals.entry(quantize_pt(*v)).or_default();
+            let key = quantize_pt(*v);
+            let entry = vertex_normals.entry(key).or_default();
             if let Some((n_a, n_b)) = extreme_normals {
                 entry.push((n_a, is_open));
                 entry.push((n_b, is_open));
             } else {
                 entry.push((normal, is_open));
             }
+            vertex_contributors.entry(key).or_default().push((
+                face.surface().clone(),
+                concave,
+                is_open,
+                fid,
+            ));
+            outer_rep.entry(key).or_insert(*v);
         }
     }
 
@@ -572,8 +634,29 @@ fn shell_with_evolution_impl(
         );
 
         // Build the miter offset: solve N · m = b where b_i = thickness
-        // for non-open faces, 0 for open faces.
-        let inner = compute_miter_offset(outer_pt, &unique, thickness);
+        // for non-open faces, 0 for open faces. Narrow exact repair first:
+        // coaxial sphere–cylinder bore rims (a bore through a sphere meets
+        // along two circles whose miter misses by ~t²/r — 0.10 at t=1, R=10,
+        // r=3 — while sharing vertices keeps even the indexed mesh closed,
+        // the mislabelled-Exact class this campaign removes). The true offset
+        // intersection is two circles from `exact_sphere_cylinder` (coaxial
+        // only; quartic otherwise, left to the refusal below): where the
+        // vertex's contributors are exactly one sphere and one cylinder,
+        // coaxial within tolerance and both closed, the inner point goes on
+        // the offset circles at the outer azimuth, exactly on both carriers
+        // with shared topology through the same `inner_pos` pool. All other
+        // curved–curved or oblique junctions keep the miter and meet the
+        // tolerance gate below.
+        let inner = if let Some(exact) = exact_coaxial_bore_inner_point(
+            vertex_contributors.get(&key),
+            outer_rep.get(&key).copied().unwrap_or(outer_pt),
+            thickness,
+            tol.linear,
+        ) {
+            exact
+        } else {
+            compute_miter_offset(outer_pt, &unique, thickness)
+        };
         inner_pos.insert(key, inner);
     }
 
@@ -732,6 +815,7 @@ fn shell_with_evolution_impl(
                         &inner_holes,
                         fid,
                         thickness,
+                        carrier_bound,
                     )?;
                     result_specs.push(FaceSpec::CylindricalFace {
                         vertices: inner_verts_fwd,
@@ -768,6 +852,7 @@ fn shell_with_evolution_impl(
                     &inner_holes,
                     fid,
                     thickness,
+                    carrier_bound,
                 )?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
@@ -804,6 +889,7 @@ fn shell_with_evolution_impl(
                     &inner_holes,
                     fid,
                     thickness,
+                    carrier_bound,
                 )?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
@@ -882,6 +968,7 @@ fn shell_with_evolution_impl(
                     &inner_holes,
                     fid,
                     thickness,
+                    carrier_bound,
                 )?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
@@ -1162,24 +1249,124 @@ fn max_carrier_deviation(carrier: &FaceSurface, points: impl IntoIterator<Item =
     worst
 }
 
+/// Exact inner point for a coaxial sphere–cylinder bore rim.
+///
+/// Returns `Some` only for the narrow supported configuration: the vertex's
+/// contributors deduplicate to exactly one sphere face and one cylinder face,
+/// both closed, with the sphere centre on the cylinder axis within `tol`. The
+/// offset intersection is then two circles (`exact_sphere_cylinder`, coaxial
+/// arm): sphere centre ± axis·√(R²−r²) with radius r, where R/r are the offset
+/// radii (concave +t, convex −t). The inner point preserves the outer azimuth
+/// on the circle matching the outer side, landing exactly on both carriers
+/// while sharing topology through the common `inner_pos` pool.
+///
+/// All other junctions (oblique plane–sphere / plane–cylinder fuse seams,
+/// non-coaxial or curved–curved pairs, open faces, collapsed radii) return
+/// `None` and keep the miter: they meet the tolerance gate below, which
+/// refuses them outside the bounded exact domain with the missing primitive
+/// named.
+fn exact_coaxial_bore_inner_point(
+    contributors: Option<&Vec<(FaceSurface, bool, bool, FaceId)>>,
+    outer: Point3,
+    thickness: f64,
+    tol: f64,
+) -> Option<Point3> {
+    let list = contributors?;
+    // Deduplicate by source face: a rim shared by two faces contributes once
+    // per face (holes double-count within a face, not across faces).
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut spheres: Vec<(&remus_math::surfaces::SphericalSurface, bool)> = Vec::new();
+    let mut cylinders: Vec<(&remus_math::surfaces::CylindricalSurface, bool)> = Vec::new();
+    for (surface, concave, is_open, fid) in list {
+        if *is_open || !seen.insert(fid.index()) {
+            continue;
+        }
+        match surface {
+            FaceSurface::Sphere(s) => spheres.push((s, *concave)),
+            FaceSurface::Cylinder(c) => cylinders.push((c, *concave)),
+            _ => return None,
+        }
+    }
+    if spheres.len() != 1 || cylinders.len() != 1 {
+        return None;
+    }
+    let (sphere, concave_sphere) = spheres[0];
+    let (cyl, concave_cyl) = cylinders[0];
+    let r_sphere_out = sphere.radius();
+    let r_cyl_out = cyl.radius();
+    let r_sphere_in = if concave_sphere {
+        r_sphere_out + thickness
+    } else {
+        r_sphere_out - thickness
+    };
+    let r_cyl_in = if concave_cyl {
+        r_cyl_out + thickness
+    } else {
+        r_cyl_out - thickness
+    };
+    if r_sphere_in <= 0.0 || r_cyl_in <= 0.0 || r_cyl_in > r_sphere_in {
+        return None;
+    }
+    let center = sphere.center();
+    let axis = cyl.axis();
+    // Coaxiality: sphere centre on the cylinder axis within tolerance.
+    let delta = center - cyl.origin();
+    let delta_v = Vec3::new(delta.x(), delta.y(), delta.z());
+    let along = delta_v.dot(axis);
+    let perp = delta_v - axis * along;
+    if perp.length() > tol {
+        return None;
+    }
+    let z_sq = r_sphere_in * r_sphere_in - r_cyl_in * r_cyl_in;
+    if z_sq < 0.0 {
+        return None;
+    }
+    let z = z_sq.sqrt();
+    // Outer side selects the matching inner circle (top stays top).
+    let outer_rel = outer - center;
+    let outer_rel_v = Vec3::new(outer_rel.x(), outer_rel.y(), outer_rel.z());
+    let outer_side = outer_rel_v.dot(axis);
+    let z_offset = if outer_side >= 0.0 { z } else { -z };
+    // Degenerate single-circle (tangent-internal) case: z≈0.
+    let circle_center = if z < tol {
+        center
+    } else {
+        center + axis * z_offset
+    };
+    // Radial direction from the outer azimuth, perpendicular to the axis.
+    let radial = outer_rel_v - axis * outer_side;
+    let radial_len = radial.length();
+    if radial_len <= tol {
+        return None;
+    }
+    let dir = radial * (1.0 / radial_len);
+    Some(circle_center + dir * r_cyl_in)
+}
+
 /// Refuse an inner analytic-curved face whose linear-miter boundary has left
-/// its offset carrier beyond the qualified fraction of the wall thickness.
+/// its offset carrier beyond the kernel tolerance contract.
 ///
 /// The miter is the intersection of the offset tangent planes, not of the
-/// offset surfaces. While the miss is a small fraction of the wall the shared
-/// edge pool still closes the mesh; once it approaches the wall itself the
-/// hollow meshes open (13 boundary edges on the 2026-09-29 fuse-cylinder
-/// witness at 119% of the wall) while staying relaxed-valid. An analytic
-/// carrier with an off-carrier boundary is not exact, so this fails closed as
-/// unqualified instead of shipping it under `Exact`.
+/// offset surfaces. An analytic carrier with an off-carrier boundary is not
+/// exact at any fraction of the wall — B76 thin (1.8–11.9%, 0.0009–0.048 off)
+/// and the box-fuse-cylinder boss thin (8.6–29.3%, 0.004–0.047 off) both mesh
+/// shut indexed+welded yet sit orders of magnitude beyond `Tolerance::linear`
+/// (1e-7). The bound is the [`remus_math::context::OperationContext`] default
+/// tolerance (linear 1e-7, scale-relativized below), never a fraction of the
+/// wall: a closed welded mesh is not an exactness certificate (B76 open-thick
+/// 11 indexed / 0 welded; B78 open-thin 3–5 indexed / 0 welded).
+///
+/// `bound` is the scale-aware carrier-consistency bound computed once per
+/// shell from the input extent (see `shell_with_evolution_impl`); `thickness`
+/// is carried for the diagnostic only.
 fn refuse_off_carrier_inner_face(
     carrier: &FaceSurface,
     outer: &[Point3],
     holes: &[Vec<Point3>],
     source: FaceId,
     thickness: f64,
+    bound: f64,
 ) -> Result<(), crate::OperationsError> {
-    let bound = MAX_MITER_CARRIER_FRACTION * thickness;
     let worst = max_carrier_deviation(
         carrier,
         outer.iter().copied().chain(holes.iter().flatten().copied()),
@@ -1187,9 +1374,13 @@ fn refuse_off_carrier_inner_face(
     if worst > bound {
         return Err(unsupported(format!(
             "face {} offsets to a {} whose linear-miter boundary misses its carrier by \
-             {worst:.6} (over the {bound:.6} qualified bound at thickness {thickness}); \
-             the curved wall needs its exact offset-surface intersection, which this \
-             construction does not establish",
+             {worst:.9} (over the {bound:.9} tolerance bound at thickness {thickness}); \
+             the curved wall needs its exact offset-surface intersection with shared \
+             edge topology, which this construction does not establish \
+             (oblique plane–sphere: `intersect_plane_sphere`; oblique plane–cylinder: \
+             `intersect_plane_cylinder`; coaxial sphere–cylinder bore rims are repaired \
+             via `exact_sphere_cylinder`, other curved–curved junctions have no \
+             shell-established intersection primitive)",
             source.index(),
             carrier.type_tag(),
         )));
