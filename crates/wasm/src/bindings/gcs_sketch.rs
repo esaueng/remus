@@ -3,8 +3,8 @@
 //! Unlike the legacy `sketch*` bindings (point-index based, system rebuilt on
 //! every solve, no constraint removal), the `gcs*` surface holds a persistent
 //! [`remus_sketch::GcsSystem`] per sketch and speaks typed entity
-//! handles: points, lines, circles, and arcs are created explicitly and
-//! constraints reference them by handle. All 26 GCS constraint types are
+//! handles: points, lines, circles, arcs, and ellipses are created explicitly
+//! and constraints reference them by handle. All 35 GCS constraint types are
 //! reachable, constraints can be removed, and solving does not lose state.
 //!
 //! Handle model: JS holds opaque `u32` values that index per-sketch handle
@@ -16,7 +16,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use remus_sketch::{ArcId, CircleId, Constraint, LineId, PointId};
+use remus_sketch::{ArcId, CircleId, Constraint, EllipseId, LineId, PointId};
 
 use crate::error::{WasmError, validate_work_count};
 use crate::kernel::BrepKernel;
@@ -66,6 +66,14 @@ fn table_get<T: Copy>(table: &[T], entity: &'static str, idx: u32) -> Result<T, 
 /// | `symmetric` | `a`, `b` (points), `axis` (line) |
 /// | `tangentLineCircle` | `line`, `circle` (point-free tangency) |
 /// | `symmetricAboutPoint` | `a`, `b`, `center` (points) |
+/// | `pointOnEllipse` | `point`, `ellipse` |
+/// | `concentricEllipseEllipse` | `ellipse1`, `ellipse2` |
+/// | `concentricEllipseCircle` | `ellipse`, `circle` |
+/// | `concentricEllipseArc` | `ellipse`, `arc` |
+/// | `tangentLineEllipse` | `line`, `ellipse`, `point` (shared tangency point) |
+/// | `ellipseAxisA` / `ellipseAxisB` | `ellipse`, `value` (semiaxis; must be > 0) |
+/// | `ellipseAngle` | `ellipse`, `value` (radians; π-periodic) |
+/// | `equalEllipseRadii` | `ellipse1`, `ellipse2` |
 fn parse_gcs_constraint(
     sk: &GcsSketchState,
     val: &serde_json::Value,
@@ -116,6 +124,9 @@ fn parse_gcs_constraint(
     };
     let arc =
         |key: &str| -> Result<ArcId, WasmError> { table_get(&sk.arcs, "gcs arc", handle(key)?) };
+    let ellipse = |key: &str| -> Result<EllipseId, WasmError> {
+        table_get(&sk.ellipses, "gcs ellipse", handle(key)?)
+    };
 
     let ty = val
         .get("type")
@@ -196,6 +207,43 @@ fn parse_gcs_constraint(
             point("a")?,
             point("b")?,
             point("center")?,
+        )),
+        "pointOnEllipse" => Ok(Constraint::PointOnEllipse(
+            point("point")?,
+            ellipse("ellipse")?,
+        )),
+        "concentricEllipseEllipse" => Ok(Constraint::ConcentricEllipseEllipse(
+            ellipse("ellipse1")?,
+            ellipse("ellipse2")?,
+        )),
+        "concentricEllipseCircle" => Ok(Constraint::ConcentricEllipseCircle(
+            ellipse("ellipse")?,
+            circle("circle")?,
+        )),
+        "concentricEllipseArc" => Ok(Constraint::ConcentricEllipseArc(
+            ellipse("ellipse")?,
+            arc("arc")?,
+        )),
+        "tangentLineEllipse" => Ok(Constraint::TangentLineEllipse(
+            line("line")?,
+            ellipse("ellipse")?,
+            point("point")?,
+        )),
+        "ellipseAxisA" => Ok(Constraint::EllipseAxisA(
+            ellipse("ellipse")?,
+            positive_number("value")?,
+        )),
+        "ellipseAxisB" => Ok(Constraint::EllipseAxisB(
+            ellipse("ellipse")?,
+            positive_number("value")?,
+        )),
+        "ellipseAngle" => Ok(Constraint::EllipseAngle(
+            ellipse("ellipse")?,
+            number("value")?,
+        )),
+        "equalEllipseRadii" => Ok(Constraint::EqualEllipseRadii(
+            ellipse("ellipse1")?,
+            ellipse("ellipse2")?,
         )),
         other => Err(WasmError::InvalidInput {
             reason: format!("unknown constraint type: '{other}'"),
@@ -311,6 +359,42 @@ impl BrepKernel {
         Ok((sk.arcs.len() - 1) as u32)
     }
 
+    pub(crate) fn gcs_add_ellipse_impl(
+        &mut self,
+        sketch: u32,
+        center: u32,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<u32, WasmError> {
+        if !(a.is_finite() && a > 0.0) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse semiaxis a must be positive and finite, got {a}"),
+            });
+        }
+        if !(b.is_finite() && b > 0.0) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse semiaxis b must be positive and finite, got {b}"),
+            });
+        }
+        if !angle.is_finite() {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse angle must be finite radians, got {angle}"),
+            });
+        }
+        let sk = self.gcs_sketch_mut(sketch)?;
+        let c = table_get(&sk.points, "gcs point", center)?;
+        let id = sk
+            .sys
+            .add_ellipse(c, a, b, angle)
+            .map_err(|e| WasmError::InvalidInput {
+                reason: format!("addEllipse: {e}"),
+            })?;
+        sk.ellipses.push(id);
+        #[allow(clippy::cast_possible_truncation)]
+        Ok((sk.ellipses.len() - 1) as u32)
+    }
+
     pub(crate) fn gcs_add_constraint_impl(
         &mut self,
         sketch: u32,
@@ -396,6 +480,90 @@ impl BrepKernel {
             reason: "circle was removed".into(),
         })?;
         Ok(data.radius)
+    }
+
+    pub(crate) fn gcs_ellipse_params_impl(
+        &self,
+        sketch: u32,
+        ellipse: u32,
+    ) -> Result<[f64; 5], WasmError> {
+        let sk = self.gcs_sketch(sketch)?;
+        let id = table_get(&sk.ellipses, "gcs ellipse", ellipse)?;
+        let data = sk.sys.ellipse(id).ok_or_else(|| WasmError::InvalidInput {
+            reason: "ellipse was removed".into(),
+        })?;
+        let center = sk
+            .sys
+            .point(data.center)
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: "ellipse center was removed".into(),
+            })?;
+        Ok([center.x, center.y, data.a, data.b, data.angle])
+    }
+
+    // Seven cosmetic parameters (handles + center + scalars + angle) mirror
+    // the direct JS signature one-to-one; bundling them would obscure the
+    // binding boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn gcs_set_ellipse_impl(
+        &mut self,
+        sketch: u32,
+        ellipse: u32,
+        x: f64,
+        y: f64,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<(), WasmError> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse center must be finite, got ({x}, {y})"),
+            });
+        }
+        if !(a.is_finite() && a > 0.0) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse semiaxis a must be positive and finite, got {a}"),
+            });
+        }
+        if !(b.is_finite() && b > 0.0) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse semiaxis b must be positive and finite, got {b}"),
+            });
+        }
+        if !angle.is_finite() {
+            return Err(WasmError::InvalidInput {
+                reason: format!("ellipse angle must be finite radians, got {angle}"),
+            });
+        }
+        let sk = self.gcs_sketch_mut(sketch)?;
+        let id = table_get(&sk.ellipses, "gcs ellipse", ellipse)?;
+        // Read the center handle first so a stale ellipse errors before any
+        // mutation; then write center and scalars atomically.
+        let center_id = sk
+            .sys
+            .ellipse(id)
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: "ellipse was removed".into(),
+            })?
+            .center;
+        let center = sk
+            .sys
+            .point_mut(center_id)
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: "ellipse center was removed".into(),
+            })?;
+        center.x = x;
+        center.y = y;
+        let data = sk
+            .sys
+            .ellipse_mut(id)
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: "ellipse was removed".into(),
+            })?;
+        data.a = a;
+        data.b = b;
+        data.angle = angle;
+        Ok(())
     }
 
     pub(crate) fn gcs_solve_impl(
@@ -515,7 +683,7 @@ impl BrepKernel {
     /// Create a new typed GCS sketch. Returns a sketch handle.
     ///
     /// This is the successor to the legacy `sketch*` API: the constraint
-    /// system persists across calls, entities are typed handles, all 26
+    /// system persists across calls, entities are typed handles, all 35
     /// constraint types are available, and constraints can be removed.
     #[wasm_bindgen(js_name = "gcsNew")]
     pub fn gcs_new(&mut self) -> u32 {
@@ -571,10 +739,27 @@ impl BrepKernel {
         Ok(self.gcs_add_arc_impl(sketch, center, start, end)?)
     }
 
+    /// Add a full ellipse with a center point, two semiaxes, and an
+    /// orientation. `a` and `b` must be positive and finite; `angle` is the
+    /// counter-clockwise rotation in radians from `+x` to the `a`-axis.
+    /// Unlike arcs, a full ellipse has no endpoints and installs no internal
+    /// constraint. Returns an ellipse handle.
+    #[wasm_bindgen(js_name = "gcsAddEllipse")]
+    pub fn gcs_add_ellipse(
+        &mut self,
+        sketch: u32,
+        center: u32,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<u32, JsError> {
+        Ok(self.gcs_add_ellipse_impl(sketch, center, a, b, angle)?)
+    }
+
     /// Add a constraint from a JSON object string and return a constraint
     /// handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
     ///
-    /// All 26 constraint types are supported. Entity fields are `u32`
+    /// All 35 constraint types are supported. Entity fields are `u32`
     /// handles from the `gcsAdd*` calls. Types and fields:
     /// `coincident{a,b}`, `distance{a,b,value}`,
     /// `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -586,7 +771,15 @@ impl BrepKernel {
     /// `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
     /// `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
     /// `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
-    /// `midpoint{point,line}`, `symmetric{a,b,axis}`.
+    /// `midpoint{point,line}`, `symmetric{a,b,axis}`,
+    /// `tangentLineCircle{line,circle}`, `symmetricAboutPoint{a,b,center}`,
+    /// `pointOnEllipse{point,ellipse}`,
+    /// `concentricEllipseEllipse{ellipse1,ellipse2}`,
+    /// `concentricEllipseCircle{ellipse,circle}`,
+    /// `concentricEllipseArc{ellipse,arc}`,
+    /// `tangentLineEllipse{line,ellipse,point}`,
+    /// `ellipseAxisA{ellipse,value}`, `ellipseAxisB{ellipse,value}`,
+    /// `ellipseAngle{ellipse,value}`, `equalEllipseRadii{ellipse1,ellipse2}`.
     ///
     /// `circleRadius` takes a **radius**, not a diameter, and requires a
     /// positive finite value. There is no first-class point-lock constraint:
@@ -627,12 +820,38 @@ impl BrepKernel {
         Ok(self.gcs_circle_radius_impl(sketch, circle)?)
     }
 
+    /// Current ellipse parameters as `[cx, cy, a, b, angle]` (angle in
+    /// radians, stored as given — see the `gcsAddEllipse` contract).
+    #[wasm_bindgen(js_name = "gcsEllipseParams")]
+    pub fn gcs_ellipse_params(&self, sketch: u32, ellipse: u32) -> Result<Vec<f64>, JsError> {
+        Ok(self.gcs_ellipse_params_impl(sketch, ellipse)?.to_vec())
+    }
+
+    /// Move an ellipse's center to `(x, y)` and set its semiaxes and
+    /// orientation without solving (e.g. while dragging). `a` and `b` must
+    /// be positive and finite; `angle` is finite radians.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = "gcsSetEllipse")]
+    pub fn gcs_set_ellipse(
+        &mut self,
+        sketch: u32,
+        ellipse: u32,
+        x: f64,
+        y: f64,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<(), JsError> {
+        Ok(self.gcs_set_ellipse_impl(sketch, ellipse, x, y, a, b, angle)?)
+    }
+
     /// Solve the constraint system in place with the DogLeg trust-region
     /// solver. Returns a JSON string
     /// `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
     /// TypeScript type). Read solved geometry back with
-    /// [`gcs_point_position`](Self::gcs_point_position) and
-    /// [`gcs_circle_radius`](Self::gcs_circle_radius).
+    /// [`gcs_point_position`](Self::gcs_point_position),
+    /// [`gcs_circle_radius`](Self::gcs_circle_radius), and
+    /// [`gcs_ellipse_params`](Self::gcs_ellipse_params).
     #[wasm_bindgen(js_name = "gcsSolve")]
     pub fn gcs_solve(
         &mut self,
@@ -872,6 +1091,8 @@ mod tests {
         let ci2 = k.gcs_add_circle_impl(s, p3, 2.0).unwrap();
         let a0 = k.gcs_add_arc_impl(s, p0, p1, p2).unwrap();
         let a1 = k.gcs_add_arc_impl(s, p3, p1, p2).unwrap();
+        let e0 = k.gcs_add_ellipse_impl(s, p0, 3.0, 2.0, 0.1).unwrap();
+        let e1 = k.gcs_add_ellipse_impl(s, p3, 4.0, 1.0, -0.2).unwrap();
 
         let constraints = [
             format!(r#"{{"type":"coincident","a":{p0},"b":{p1}}}"#),
@@ -902,12 +1123,22 @@ mod tests {
             // still says 24 in history; the kernel supports 26.
             format!(r#"{{"type":"tangentLineCircle","line":{l0},"circle":{ci}}}"#),
             format!(r#"{{"type":"symmetricAboutPoint","a":{p0},"b":{p1},"center":{p2}}}"#),
+            // B75: the nine ellipse tags.
+            format!(r#"{{"type":"pointOnEllipse","point":{p2},"ellipse":{e0}}}"#),
+            format!(r#"{{"type":"concentricEllipseEllipse","ellipse1":{e0},"ellipse2":{e1}}}"#),
+            format!(r#"{{"type":"concentricEllipseCircle","ellipse":{e0},"circle":{ci}}}"#),
+            format!(r#"{{"type":"concentricEllipseArc","ellipse":{e0},"arc":{a0}}}"#),
+            format!(r#"{{"type":"tangentLineEllipse","line":{l0},"ellipse":{e0},"point":{p1}}}"#),
+            format!(r#"{{"type":"ellipseAxisA","ellipse":{e0},"value":3.0}}"#),
+            format!(r#"{{"type":"ellipseAxisB","ellipse":{e0},"value":2.0}}"#),
+            format!(r#"{{"type":"ellipseAngle","ellipse":{e0},"value":0.5}}"#),
+            format!(r#"{{"type":"equalEllipseRadii","ellipse1":{e0},"ellipse2":{e1}}}"#),
         ];
         for c in &constraints {
             k.gcs_add_constraint_impl(s, c)
                 .unwrap_or_else(|e| panic!("constraint failed to add: {c}: {e:?}"));
         }
-        assert_eq!(constraints.len(), 26);
+        assert_eq!(constraints.len(), 35);
     }
 
     /// Unknown types and bad handles produce typed errors.
@@ -1488,5 +1719,171 @@ mod tests {
         assert!(r.converged, "binding T tangency: max_r={}", r.max_residual);
         let pos = k.gcs_point_position_impl(s, c).unwrap();
         assert!(((pos[1] - ty).abs() - 2.0).abs() < 1e-8, "T y={pos:?}");
+    }
+
+    // ── B75 ellipse bindings ──────────────────────────────────────
+
+    /// Ellipse creation validates, query reads back, mutation edits.
+    #[test]
+    fn ellipse_add_query_mutate_validates() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
+        let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.5).unwrap();
+        let params = k.gcs_ellipse_params_impl(s, e).unwrap();
+        for (got, want) in params.iter().zip([1.0, 2.0, 3.0, 2.0, 0.5]) {
+            assert!((got - want).abs() < 1e-15, "{params:?}");
+        }
+
+        k.gcs_set_ellipse_impl(s, e, 4.0, 5.0, 6.0, 1.5, -0.25)
+            .unwrap();
+        let params = k.gcs_ellipse_params_impl(s, e).unwrap();
+        for (got, want) in params.iter().zip([4.0, 5.0, 6.0, 1.5, -0.25]) {
+            assert!((got - want).abs() < 1e-15, "{params:?}");
+        }
+        // The center point moved with the ellipse.
+        let center = k.gcs_point_position_impl(s, c).unwrap();
+        assert!((center[0] - 4.0).abs() < 1e-15 && (center[1] - 5.0).abs() < 1e-15);
+
+        // Bad values refused at the boundary.
+        assert!(k.gcs_add_ellipse_impl(s, c, 0.0, 1.0, 0.0).is_err());
+        assert!(k.gcs_add_ellipse_impl(s, c, 1.0, -2.0, 0.0).is_err());
+        assert!(k.gcs_add_ellipse_impl(s, c, f64::NAN, 1.0, 0.0).is_err());
+        assert!(
+            k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, f64::INFINITY)
+                .is_err()
+        );
+        assert!(k.gcs_add_ellipse_impl(s, 99, 1.0, 1.0, 0.0).is_err());
+        assert!(
+            k.gcs_set_ellipse_impl(s, e, 0.0, 0.0, 0.0, 1.0, 0.0)
+                .is_err()
+        );
+        assert!(
+            k.gcs_set_ellipse_impl(s, e, 0.0, 0.0, 1.0, 1.0, f64::NAN)
+                .is_err()
+        );
+        assert!(
+            k.gcs_set_ellipse_impl(s, 99, 0.0, 0.0, 1.0, 1.0, 0.0)
+                .is_err()
+        );
+        assert!(k.gcs_ellipse_params_impl(s, 99).is_err());
+        // Axis/angle constraint values validated.
+        assert!(
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"ellipseAxisA","ellipse":{e},"value":0.0}}"#),
+            )
+            .is_err()
+        );
+        assert!(
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"ellipseAngle","ellipse":{e},"value":"NaN"}}"#),
+            )
+            .is_err()
+        );
+    }
+
+    /// Driven ellipse solves through the binding with an independent oracle.
+    #[test]
+    fn ellipse_driven_solve_via_binding() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let e = k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, 0.0).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"ellipseAxisA","ellipse":{e},"value":6.0}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"ellipseAxisB","ellipse":{e},"value":2.5}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"ellipseAngle","ellipse":{e},"value":0.7}}"#),
+        )
+        .unwrap();
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(r.converged, "{r:?}");
+        let params = k.gcs_ellipse_params_impl(s, e).unwrap();
+        assert!((params[2] - 6.0).abs() < 1e-9, "{params:?}");
+        assert!((params[3] - 2.5).abs() < 1e-9, "{params:?}");
+        assert!((params[4] - 0.7).abs() < 1e-9, "{params:?}");
+        // Detailed report: fully driven, solved, nothing redundant.
+        let d = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        assert!(d.converged);
+        assert_eq!(d.classification, "solved");
+        assert_eq!(d.dof, 0);
+    }
+
+    /// Line tangent to an ellipse through the binding (contact composition).
+    #[test]
+    fn ellipse_tangent_solves_via_binding() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let e = k.gcs_add_ellipse_impl(s, c, 4.0, 2.0, 0.0).unwrap();
+        for (ty, val) in [
+            ("ellipseAxisA", 4.0),
+            ("ellipseAxisB", 2.0),
+            ("ellipseAngle", 0.0),
+        ] {
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"{ty}","ellipse":{e},"value":{val}}}"#),
+            )
+            .unwrap();
+        }
+        let q = k.gcs_add_point_impl(s, 3.0, 1.5, false).unwrap();
+        let a = k.gcs_add_point_impl(s, -6.0, 6.0, true).unwrap();
+        let b = k.gcs_add_point_impl(s, 6.0, 6.5, false).unwrap();
+        let line = k.gcs_add_line_impl(s, a, b).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"pointOnEllipse","point":{q},"ellipse":{e}}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"pointLineDistance","point":{q},"line":{line},"value":0.0}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"tangentLineEllipse","line":{line},"ellipse":{e},"point":{q}}}"#),
+        )
+        .unwrap();
+        let r = k.gcs_solve_impl(s, 500, 1e-10).unwrap();
+        assert!(r.converged, "{r:?}");
+        // Independent oracle: contact on ellipse, on line, ⊥ gradient.
+        let qpos = k.gcs_point_position_impl(s, q).unwrap();
+        let (qx, qy) = (qpos[0], qpos[1]);
+        assert!(((qx / 4.0) * (qx / 4.0) + (qy / 2.0) * (qy / 2.0) - 1.0).abs() < 1e-8);
+        let apos = k.gcs_point_position_impl(s, a).unwrap();
+        let bpos = k.gcs_point_position_impl(s, b).unwrap();
+        let (lx, ly) = (bpos[0] - apos[0], bpos[1] - apos[1]);
+        let len = lx.hypot(ly);
+        assert!((lx * (qy - apos[1]) - ly * (qx - apos[0])).abs() / len < 1e-8);
+    }
+
+    /// GCS checkpoint/restore covers ellipse entities and their scalars.
+    #[test]
+    fn checkpoint_restores_gcs_ellipse_state() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
+        let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.5).unwrap();
+
+        let cp = k.checkpoint();
+        k.gcs_set_ellipse_impl(s, e, 9.0, 9.0, 6.0, 1.0, 1.2)
+            .unwrap();
+        k.restore(cp).unwrap();
+        let params = k.gcs_ellipse_params_impl(s, e).unwrap();
+        for (got, want) in params.iter().zip([1.0, 2.0, 3.0, 2.0, 0.5]) {
+            assert!((got - want).abs() < 1e-15, "{params:?}");
+        }
     }
 }

@@ -20,6 +20,7 @@ fn two_point_snap(x1: f64, y1: f64, x2: f64, y2: f64) -> (PointId, PointId, Enti
         lines: HashMap::new(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     (p1, p2, snap)
 }
@@ -108,9 +109,41 @@ fn check_jacobian_fd(c: &Constraint, snap: &EntitySnapshot, params: &[ParamRef])
                     lines: snap.lines.clone(),
                     circles: perturbed_circles,
                     arcs: snap.arcs.clone(),
+                    ellipses: snap.ellipses.clone(),
                 };
                 let mut r1 = Vec::new();
                 eval_residuals(c, &perturbed_snap_circ, &mut r1);
+                for row in 0..m {
+                    let fd = (r1[row] - r0[row]) / eps;
+                    let analytic = jac[row * n + col];
+                    let err = (fd - analytic).abs();
+                    let scale = 1.0_f64.max(analytic.abs());
+                    assert!(
+                        err < 1e-5 * scale + 1e-8,
+                        "Jacobian mismatch at ({row},{col}): analytic={analytic}, fd={fd}, err={err}"
+                    );
+                }
+                continue;
+            }
+            ParamRef::EllipseA(eid) | ParamRef::EllipseB(eid) | ParamRef::EllipsePhi(eid) => {
+                // Perturb an ellipse scalar — needs a mutable copy of ellipses.
+                let mut perturbed_ellipses = snap.ellipses.clone();
+                if let Some(entry) = perturbed_ellipses.get_mut(eid) {
+                    match pr {
+                        ParamRef::EllipseA(_) => entry.1 += eps,
+                        ParamRef::EllipseB(_) => entry.2 += eps,
+                        _ => entry.3 += eps,
+                    }
+                }
+                let perturbed_snap_ell = EntitySnapshot {
+                    points: perturbed_points,
+                    lines: snap.lines.clone(),
+                    circles: snap.circles.clone(),
+                    arcs: snap.arcs.clone(),
+                    ellipses: perturbed_ellipses,
+                };
+                let mut r1 = Vec::new();
+                eval_residuals(c, &perturbed_snap_ell, &mut r1);
                 for row in 0..m {
                     let fd = (r1[row] - r0[row]) / eps;
                     let analytic = jac[row * n + col];
@@ -129,6 +162,7 @@ fn check_jacobian_fd(c: &Constraint, snap: &EntitySnapshot, params: &[ParamRef])
             lines: snap.lines.clone(),
             circles: snap.circles.clone(),
             arcs: snap.arcs.clone(),
+            ellipses: snap.ellipses.clone(),
         };
         let mut r1 = Vec::new();
         eval_residuals(c, &perturbed_snap, &mut r1);
@@ -202,6 +236,7 @@ fn jacobian_horizontal_vertical() {
         lines: std::iter::once((l, (p1, p2))).collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let params = vec![
         ParamRef::PointX(p1),
@@ -254,6 +289,7 @@ fn jacobian_parallel_perpendicular() {
         lines: [(l1, (p1, p2)), (l2, (p3, p4))].into_iter().collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let params = vec![
         ParamRef::PointX(p1),
@@ -310,6 +346,7 @@ fn jacobian_angle() {
         lines: [(l1, (p1, p2)), (l2, (p3, p4))].into_iter().collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let params = vec![
         ParamRef::PointX(p1),
@@ -351,6 +388,7 @@ fn jacobian_point_on_circle() {
         lines: HashMap::new(),
         circles: [(circ, (center, 3.0))].into_iter().collect(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::PointOnCircle(pt, circ);
     let params = vec![
@@ -402,6 +440,7 @@ fn jacobian_point_on_arc() {
         lines: HashMap::new(),
         circles: HashMap::new(),
         arcs: [(arc, (center, start, end))].into_iter().collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::PointOnArc(pt, arc);
     let params = vec![
@@ -463,6 +502,7 @@ fn jacobian_tangent_line_arc() {
         lines: [(line, (p1, p2))].into_iter().collect(),
         circles: HashMap::new(),
         arcs: [(arc, (center, start, end))].into_iter().collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::TangentLineArc(line, arc, p2);
     let params = vec![
@@ -544,6 +584,7 @@ fn jacobian_tangent_arc_arc() {
         arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
             .into_iter()
             .collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::TangentArcArc(arc1, arc2, shared);
     let params = vec![
@@ -619,6 +660,7 @@ fn jacobian_equal_radius_arc_arc() {
         arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
             .into_iter()
             .collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::EqualRadiusArcArc(arc1, arc2);
     let params = vec![
@@ -682,6 +724,7 @@ fn jacobian_equal_radius_arc_circle() {
         lines: HashMap::new(),
         circles: [(circ, (cc, 3.0))].into_iter().collect(),
         arcs: [(arc, (ac, as_, ae))].into_iter().collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::EqualRadiusArcCircle(arc, circ);
     let params = vec![
@@ -723,6 +766,7 @@ fn jacobian_arc_length() {
         lines: HashMap::new(),
         circles: HashMap::new(),
         arcs: [(arc, (center, start, end))].into_iter().collect(),
+        ellipses: HashMap::new(),
     };
     let target = std::f64::consts::PI; // 90 degrees * r=2
     let c = Constraint::ArcLength(arc, target);
@@ -799,6 +843,7 @@ fn jacobian_concentric_arc_arc() {
         arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
             .into_iter()
             .collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::ConcentricArcArc(arc1, arc2);
     let params = vec![
@@ -858,6 +903,7 @@ fn jacobian_concentric_arc_circle() {
         lines: HashMap::new(),
         circles: [(circ, (cc, 2.0))].into_iter().collect(),
         arcs: [(arc, (ac, as_, ae))].into_iter().collect(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::ConcentricArcCircle(arc, circ);
     let params = vec![
@@ -899,6 +945,7 @@ fn jacobian_point_line_distance() {
         lines: std::iter::once((l, (lp1, lp2))).collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let params = vec![
         ParamRef::PointX(pt),
@@ -938,6 +985,7 @@ fn point_line_distance_rejects_nonzero_target_on_degenerate_line() {
         lines: [(line, (line_point, line_point))].into_iter().collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let mut residuals = Vec::new();
     eval_residuals(
@@ -961,6 +1009,7 @@ fn point_line_distance_rejects_nonzero_target_on_degenerate_line() {
 fn perturb(snap: &EntitySnapshot, pr: ParamRef, delta: f64) -> EntitySnapshot {
     let mut points = snap.points.clone();
     let mut circles = snap.circles.clone();
+    let mut ellipses = snap.ellipses.clone();
     match pr {
         ParamRef::PointX(pid) => {
             if let Some(xy) = points.get_mut(&pid) {
@@ -977,12 +1026,28 @@ fn perturb(snap: &EntitySnapshot, pr: ParamRef, delta: f64) -> EntitySnapshot {
                 entry.1 += delta;
             }
         }
+        ParamRef::EllipseA(eid) => {
+            if let Some(entry) = ellipses.get_mut(&eid) {
+                entry.1 += delta;
+            }
+        }
+        ParamRef::EllipseB(eid) => {
+            if let Some(entry) = ellipses.get_mut(&eid) {
+                entry.2 += delta;
+            }
+        }
+        ParamRef::EllipsePhi(eid) => {
+            if let Some(entry) = ellipses.get_mut(&eid) {
+                entry.3 += delta;
+            }
+        }
     }
     EntitySnapshot {
         points,
         lines: snap.lines.clone(),
         circles,
         arcs: snap.arcs.clone(),
+        ellipses,
     }
 }
 
@@ -1050,6 +1115,7 @@ fn circle_radius_residual_and_jacobian() {
             lines: HashMap::new(),
             circles: [(circ, (center, radius))].into_iter().collect(),
             arcs: HashMap::new(),
+            ellipses: HashMap::new(),
         };
 
         // At the target: zero residual. Away from it: the signed difference.
@@ -1112,6 +1178,7 @@ fn equal_radius_circle_circle_residual_and_jacobian() {
                 .into_iter()
                 .collect(),
             arcs: HashMap::new(),
+            ellipses: HashMap::new(),
         };
 
         let c = Constraint::EqualRadiusCircleCircle(circ1, circ2);
@@ -1159,6 +1226,7 @@ fn equal_radius_circle_circle_self_reference_cancels() {
         lines: HashMap::new(),
         circles: [(circ, (center, 4.0))].into_iter().collect(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let c = Constraint::EqualRadiusCircleCircle(circ, circ);
     let mut r = Vec::new();
@@ -1214,6 +1282,7 @@ fn two_line_snap(scale: f64) -> (LineId, LineId, [PointId; 4], EntitySnapshot) {
             .collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     (l1, l2, [ids[0], ids[1], ids[2], ids[3]], snap)
 }
@@ -1270,6 +1339,7 @@ fn equal_length_at_solution() {
             .collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     let mut r = Vec::new();
     eval_residuals(&Constraint::EqualLength(l1, l2), &snap, &mut r);
@@ -1304,6 +1374,7 @@ fn equal_length_degenerate_line_is_finite() {
             .collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
 
     let c = Constraint::EqualLength(degenerate, normal);
@@ -1361,6 +1432,7 @@ fn midpoint_residual_and_jacobian() {
             lines: std::iter::once((line, (a, b))).collect(),
             circles: HashMap::new(),
             arcs: HashMap::new(),
+            ellipses: HashMap::new(),
         };
 
         // mid sits at (2,1)·scale; the true midpoint is (5,3)·scale.
@@ -1411,6 +1483,7 @@ fn symmetric_snap(
         lines: std::iter::once((axis, (ids[2], ids[3]))).collect(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     (ids[0], ids[1], axis, [ids[0], ids[1], ids[2], ids[3]], snap)
 }
@@ -1555,6 +1628,7 @@ fn tangent_snap(
         lines: [(line, (ids[0], ids[1]))].into_iter().collect(),
         circles: [(circle, (ids[2], radius * scale))].into_iter().collect(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     (line, circle, [ids[0], ids[1], ids[2]], snap)
 }
@@ -1678,6 +1752,7 @@ fn three_point_snap(
         lines: HashMap::new(),
         circles: HashMap::new(),
         arcs: HashMap::new(),
+        ellipses: HashMap::new(),
     };
     ([ids[0], ids[1], ids[2]], snap)
 }
@@ -1819,6 +1894,7 @@ fn b16_jacobian_line_orient_at_1e3_and_translation() {
             lines: [(l1, (p1, p2)), (l2, (p3, p4))].into_iter().collect(),
             circles: HashMap::new(),
             arcs: HashMap::new(),
+            ellipses: HashMap::new(),
         };
         let params = vec![
             ParamRef::PointX(p1),
@@ -1870,6 +1946,7 @@ fn b16_jacobian_point_on_circle_arc_at_1e3_and_translation() {
                 lines: HashMap::new(),
                 circles: [(circ, (center, 3.0 * scale))].into_iter().collect(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::PointOnCircle(pt, circ),
@@ -1921,6 +1998,7 @@ fn b16_jacobian_point_on_circle_arc_at_1e3_and_translation() {
                 lines: HashMap::new(),
                 circles: HashMap::new(),
                 arcs: [(arc, (center, start, end))].into_iter().collect(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::PointOnArc(pt, arc),
@@ -1968,6 +2046,7 @@ fn b16_jacobian_point_on_circle_arc_at_1e3_and_translation() {
                 lines: [(l, (a, b))].into_iter().collect(),
                 circles: HashMap::new(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::PointLineDistance(p, l, 1.5 * scale),
@@ -2035,6 +2114,7 @@ fn b16_jacobian_tangency_equal_arc_at_1e3_and_translation() {
                 lines: [(line, (p1, p2))].into_iter().collect(),
                 circles: HashMap::new(),
                 arcs: [(arc, (center, start, end))].into_iter().collect(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::TangentLineArc(line, arc, p2),
@@ -2116,6 +2196,7 @@ fn b16_jacobian_tangency_equal_arc_at_1e3_and_translation() {
                 arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
                     .into_iter()
                     .collect(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::TangentArcArc(arc1, arc2, shared),
@@ -2202,6 +2283,7 @@ fn b16_jacobian_tangency_equal_arc_at_1e3_and_translation() {
                 arcs: [(arc1, (c1, s1, e1)), (arc2, (c2, s2, e2))]
                     .into_iter()
                     .collect(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::EqualRadiusArcArc(arc1, arc2),
@@ -2310,6 +2392,7 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
                     .into_iter()
                     .collect(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::CircleRadius(circ1, 2.0 * scale),
@@ -2363,6 +2446,7 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
                 lines: [(l1, (a, b)), (l2, (c, d))].into_iter().collect(),
                 circles: HashMap::new(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             let params = vec![
                 ParamRef::PointX(a),
@@ -2416,6 +2500,7 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
                 lines: [(axis, (ax, bx))].into_iter().collect(),
                 circles: HashMap::new(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             let params = vec![
                 ParamRef::PointX(ax),
@@ -2470,6 +2555,7 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
                 lines: [(line, (a, b))].into_iter().collect(),
                 circles: [(circ, (cc, 2.0 * scale))].into_iter().collect(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             check_jacobian_central(
                 &Constraint::TangentLineCircle(line, circ),
@@ -2515,6 +2601,7 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
                 lines: HashMap::new(),
                 circles: HashMap::new(),
                 arcs: HashMap::new(),
+                ellipses: HashMap::new(),
             };
             let params: Vec<ParamRef> = [p1, p2, cc]
                 .iter()
@@ -2538,4 +2625,606 @@ fn b16_jacobian_new_variants_at_1e3_and_translation() {
             .values()
             .all(|v| v.0.is_finite() && v.1.is_finite())
     );
+}
+
+// ── B75 ellipse constraints ─────────────────────────────────────────
+// Every analytic Jacobian below is checked against central differences at
+// three coordinate scales. Length-like parameters step with the geometry
+// scale; the orientation parameter steps in absolute radians — a
+// scale-relative step would span ~0.1 rad at 1e5 and drown the
+// trigonometric derivatives in truncation error. Angle units are
+// scale-invariant (see `EllipseData`), so the split is principled.
+
+/// Central-difference Jacobian check for ellipse constraints, with
+/// per-kind steps: `1e-6 * scale` for length-like parameters (point
+/// coordinates, semiaxes), `1e-7` absolute for the orientation angle.
+fn check_ellipse_jacobian_central(
+    c: &Constraint,
+    snap: &EntitySnapshot,
+    params: &[ParamRef],
+    scale: f64,
+) {
+    let param_index: HashMap<ParamRef, usize> =
+        params.iter().enumerate().map(|(i, p)| (*p, i)).collect();
+    let n = params.len();
+    let m = residual_count(c);
+
+    let mut jac = vec![0.0; m * n];
+    let mut jw = JacobianWriter {
+        data: &mut jac,
+        ncols: n,
+        param_index: &param_index,
+    };
+    eval_jacobian(c, snap, &mut jw, 0);
+
+    for (col, pr) in params.iter().enumerate() {
+        // Orientation is scale-invariant; everything else scales.
+        let eps = match pr {
+            ParamRef::EllipsePhi(_) => 1e-7,
+            _ => 1e-6 * scale,
+        };
+        let mut r_plus = Vec::new();
+        eval_residuals(c, &perturb(snap, *pr, eps), &mut r_plus);
+        let mut r_minus = Vec::new();
+        eval_residuals(c, &perturb(snap, *pr, -eps), &mut r_minus);
+
+        for row in 0..m {
+            let fd = (r_plus[row] - r_minus[row]) / (2.0 * eps);
+            let analytic = jac[row * n + col];
+            let err = (fd - analytic).abs();
+            assert!(
+                err < 1e-6 * 1.0_f64.max(analytic.abs()),
+                "Jacobian mismatch at ({row},{col}) scale={scale}: \
+                 analytic={analytic}, fd={fd}, err={err}"
+            );
+        }
+    }
+}
+
+/// Build a snapshot holding one ellipse plus caller-supplied extra points.
+///
+/// Returns `(center, ellipse, extra ids, snapshot)`. Arenas are dropped on
+/// return; handles stay valid as snapshot keys (same pattern as
+/// `two_point_snap`).
+fn ellipse_fixture(
+    cx: f64,
+    cy: f64,
+    a: f64,
+    b: f64,
+    phi: f64,
+    extras: &[(f64, f64)],
+) -> (PointId, EllipseId, Vec<PointId>, EntitySnapshot) {
+    use super::super::entity::{EllipseData, GenArena, PointData};
+    let mut pts = GenArena::new();
+    let center = pts.insert(PointData {
+        x: cx,
+        y: cy,
+        fixed: false,
+    });
+    let mut extra_ids = Vec::with_capacity(extras.len());
+    for (x, y) in extras {
+        extra_ids.push(pts.insert(PointData {
+            x: *x,
+            y: *y,
+            fixed: false,
+        }));
+    }
+    let mut ells = GenArena::new();
+    let ell = ells.insert(EllipseData {
+        center,
+        a,
+        b,
+        angle: phi,
+    });
+    let mut points: HashMap<PointId, (f64, f64)> = HashMap::new();
+    points.insert(center, (cx, cy));
+    for (id, (x, y)) in extra_ids.iter().zip(extras.iter()) {
+        points.insert(*id, (*x, *y));
+    }
+    let snap = EntitySnapshot {
+        points,
+        lines: HashMap::new(),
+        circles: HashMap::new(),
+        arcs: HashMap::new(),
+        ellipses: [(ell, (center, a, b, phi))].into_iter().collect(),
+    };
+    (center, ell, extra_ids, snap)
+}
+
+/// Point on the ellipse curve at curve parameter `t`.
+fn ellipse_point(cx: f64, cy: f64, a: f64, b: f64, phi: f64, t: f64) -> (f64, f64) {
+    let (s, c) = phi.sin_cos();
+    let (st, ct) = t.sin_cos();
+    (cx + a * ct * c - b * st * s, cy + a * ct * s + b * st * c)
+}
+
+/// Tangent direction of the ellipse curve at parameter `t` (unnormalized).
+fn ellipse_tangent(a: f64, b: f64, phi: f64, t: f64) -> (f64, f64) {
+    let (s, c) = phi.sin_cos();
+    let (st, ct) = t.sin_cos();
+    (-a * st * c - b * ct * s, -a * st * s + b * ct * c)
+}
+
+#[test]
+fn point_on_ellipse_residual_and_jacobian() {
+    for scale in SCALES {
+        let (cx, cy, a, b, phi) = (1.0 * scale, 2.0 * scale, 3.0 * scale, 2.0 * scale, 0.5);
+        let t = 0.7;
+        let (px, py) = ellipse_point(cx, cy, a, b, phi, t);
+        let (center, ell, extras, snap) = ellipse_fixture(cx, cy, a, b, phi, &[(px, py)]);
+        let pt = extras[0];
+
+        // On-curve: zero residual.
+        let c = Constraint::PointOnEllipse(pt, ell);
+        let mut r = Vec::new();
+        eval_residuals(&c, &snap, &mut r);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].abs() < 1e-12, "on-curve residual {}", r[0]);
+
+        // Off-curve (center): residual -1.
+        let cc = Constraint::PointOnEllipse(center, ell);
+        let mut r2 = Vec::new();
+        eval_residuals(&cc, &snap, &mut r2);
+        assert!((r2[0] + 1.0).abs() < 1e-12, "center residual {}", r2[0]);
+
+        check_ellipse_jacobian_central(
+            &c,
+            &snap,
+            &[
+                ParamRef::PointX(pt),
+                ParamRef::PointY(pt),
+                ParamRef::PointX(center),
+                ParamRef::PointY(center),
+                ParamRef::EllipseA(ell),
+                ParamRef::EllipseB(ell),
+                ParamRef::EllipsePhi(ell),
+            ],
+            scale,
+        );
+    }
+}
+
+#[test]
+fn point_on_ellipse_rotated_high_eccentricity() {
+    // High eccentricity (10:1) with a near-quarter-turn orientation: the
+    // phi column is large here, the opposite corner from near-circles.
+    for scale in SCALES {
+        let (cx, cy, a, b, phi) = (1.0 * scale, -scale, 10.0 * scale, 1.0 * scale, 1.4);
+        let t = 2.1;
+        let (px, py) = ellipse_point(cx, cy, a, b, phi, t);
+        let (center, ell, extras, snap) = ellipse_fixture(cx, cy, a, b, phi, &[(px, py)]);
+        let pt = extras[0];
+        let c = Constraint::PointOnEllipse(pt, ell);
+        let mut r = Vec::new();
+        eval_residuals(&c, &snap, &mut r);
+        assert!(r[0].abs() < 1e-12, "on-curve residual {}", r[0]);
+        check_ellipse_jacobian_central(
+            &c,
+            &snap,
+            &[
+                ParamRef::PointX(pt),
+                ParamRef::PointY(pt),
+                ParamRef::PointX(center),
+                ParamRef::PointY(center),
+                ParamRef::EllipseA(ell),
+                ParamRef::EllipseB(ell),
+                ParamRef::EllipsePhi(ell),
+            ],
+            scale,
+        );
+    }
+}
+
+#[test]
+fn point_on_ellipse_phi_column_vanishes_at_equal_axes() {
+    // The documented orientation indeterminacy: at a == b the curve is a
+    // circle, the residual is phi-independent, and the analytic phi entry
+    // is exactly zero.
+    let scale = 1.0;
+    let (cx, cy, a, phi) = (1.0 * scale, 2.0 * scale, 3.0 * scale, 0.5);
+    let (px, py) = ellipse_point(cx, cy, a, a, phi, 0.7);
+    let (_center, ell, extras, snap) = ellipse_fixture(cx, cy, a, a, phi, &[(px, py)]);
+    let pt = extras[0];
+    let c = Constraint::PointOnEllipse(pt, ell);
+    let params = vec![ParamRef::EllipsePhi(ell)];
+    let param_index: HashMap<ParamRef, usize> =
+        params.iter().enumerate().map(|(i, p)| (*p, i)).collect();
+    let mut jac = vec![0.0; 1];
+    let mut jw = JacobianWriter {
+        data: &mut jac,
+        ncols: 1,
+        param_index: &param_index,
+    };
+    eval_jacobian(&c, &snap, &mut jw, 0);
+    // dru*v - drv*u with bitwise-identical 1/a² factors: cancellation to
+    // rounding level. The contract is "vanishes", not "bitwise zero".
+    assert!(
+        jac[0].abs() < 1e-15,
+        "phi column must vanish for a == b, got {}",
+        jac[0]
+    );
+    check_ellipse_jacobian_central(&c, &snap, &params, scale);
+}
+
+#[test]
+fn point_on_ellipse_periodicity_contract() {
+    // (a, b, phi) ~ (a, b, phi + π): identical residuals at the same point.
+    let (cx, cy, a, b, phi) = (1.0, 2.0, 3.0, 2.0, 0.5);
+    let (px, py) = ellipse_point(cx, cy, a, b, phi, 0.7);
+    let (_, ell, extras, snap) = ellipse_fixture(cx, cy, a, b, phi, &[(px, py)]);
+    let (_, ell2, _, snap2) =
+        ellipse_fixture(cx, cy, a, b, phi + std::f64::consts::PI, &[(px, py)]);
+    let pt = extras[0];
+    let mut r1 = Vec::new();
+    eval_residuals(&Constraint::PointOnEllipse(pt, ell), &snap, &mut r1);
+    // Re-key: snap2 holds different handles; evaluate the same geometric
+    // query by rebuilding with ell2's own point handle.
+    let pt2 = snap2
+        .points
+        .iter()
+        .find(|kv| kv.1 == &(px, py))
+        .map(|(id, _)| *id)
+        .unwrap();
+    let mut r2 = Vec::new();
+    eval_residuals(&Constraint::PointOnEllipse(pt2, ell2), &snap2, &mut r2);
+    assert!((r1[0] - r2[0]).abs() < 1e-12, "{r1:?} vs {r2:?}");
+}
+
+#[test]
+fn concentric_ellipse_residuals_and_jacobians() {
+    use super::super::entity::{ArcData, CircleData, GenArena, LineData, PointData};
+    for scale in SCALES {
+        let mut pts = GenArena::new();
+        let c1 = pts.insert(PointData {
+            x: 1.0 * scale,
+            y: 2.0 * scale,
+            fixed: false,
+        });
+        let c2 = pts.insert(PointData {
+            x: 4.0 * scale,
+            y: -scale,
+            fixed: false,
+        });
+        let mut ells = GenArena::new();
+        let e1 = ells.insert(super::super::entity::EllipseData {
+            center: c1,
+            a: 3.0 * scale,
+            b: 2.0 * scale,
+            angle: 0.5,
+        });
+        let e2 = ells.insert(super::super::entity::EllipseData {
+            center: c2,
+            a: 5.0 * scale,
+            b: 1.0 * scale,
+            angle: -0.3,
+        });
+        let mut circs = GenArena::new();
+        let circ = circs.insert(CircleData {
+            center: c2,
+            radius: 2.0 * scale,
+        });
+        let mut arc_arena = GenArena::<ArcData>::new();
+        let arc = arc_arena.insert(ArcData {
+            center: c2,
+            start: c1,
+            end: c1,
+        });
+        let _ = LineData { p1: c1, p2: c2 };
+        let snap = EntitySnapshot {
+            points: [
+                (c1, (1.0 * scale, 2.0 * scale)),
+                (c2, (4.0 * scale, -scale)),
+            ]
+            .into_iter()
+            .collect(),
+            lines: HashMap::new(),
+            circles: [(circ, (c2, 2.0 * scale))].into_iter().collect(),
+            arcs: [(arc, (c2, c1, c1))].into_iter().collect(),
+            ellipses: [
+                (e1, (c1, 3.0 * scale, 2.0 * scale, 0.5)),
+                (e2, (c2, 5.0 * scale, 1.0 * scale, -0.3)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let params = vec![
+            ParamRef::PointX(c1),
+            ParamRef::PointY(c1),
+            ParamRef::PointX(c2),
+            ParamRef::PointY(c2),
+        ];
+        for (c, name) in [
+            (Constraint::ConcentricEllipseEllipse(e1, e2), "ee"),
+            (Constraint::ConcentricEllipseCircle(e1, circ), "ec"),
+            (Constraint::ConcentricEllipseArc(e1, arc), "ea"),
+        ] {
+            let mut r = Vec::new();
+            eval_residuals(&c, &snap, &mut r);
+            assert_eq!(r.len(), 2, "{name}");
+            assert!(
+                (r[0] - (1.0 * scale - 4.0 * scale)).abs() < 1e-9 * scale.max(1.0),
+                "{name} {r:?}"
+            );
+            assert!(
+                (r[1] - (2.0 * scale + 1.0 * scale)).abs() < 1e-9 * scale.max(1.0),
+                "{name} {r:?}"
+            );
+            check_ellipse_jacobian_central(&c, &snap, &params, scale);
+        }
+    }
+}
+
+#[test]
+fn tangent_line_ellipse_residual_and_jacobian() {
+    use super::super::entity::{GenArena, LineData, PointData};
+    for scale in SCALES {
+        let (cx, cy, a, b, phi) = (1.0 * scale, 2.0 * scale, 4.0 * scale, 2.0 * scale, 0.5);
+        let t = 0.9;
+        let (qx, qy) = ellipse_point(cx, cy, a, b, phi, t);
+        let (tx, ty) = ellipse_tangent(a, b, phi, t);
+        // Line through the contact along the tangent.
+        let (ax, ay) = (qx - tx, qy - ty);
+        let (bx, by) = (qx + tx, qy + ty);
+        let mut pts = GenArena::new();
+        let center = pts.insert(PointData {
+            x: cx,
+            y: cy,
+            fixed: false,
+        });
+        let contact = pts.insert(PointData {
+            x: qx,
+            y: qy,
+            fixed: false,
+        });
+        let p1 = pts.insert(PointData {
+            x: ax,
+            y: ay,
+            fixed: false,
+        });
+        let p2 = pts.insert(PointData {
+            x: bx,
+            y: by,
+            fixed: false,
+        });
+        let mut lines = GenArena::new();
+        let line = lines.insert(LineData { p1, p2 });
+        let mut ells = GenArena::new();
+        let ell = ells.insert(super::super::entity::EllipseData {
+            center,
+            a,
+            b,
+            angle: phi,
+        });
+        let snap = EntitySnapshot {
+            points: [
+                (center, (cx, cy)),
+                (contact, (qx, qy)),
+                (p1, (ax, ay)),
+                (p2, (bx, by)),
+            ]
+            .into_iter()
+            .collect(),
+            lines: [(line, (p1, p2))].into_iter().collect(),
+            circles: HashMap::new(),
+            arcs: HashMap::new(),
+            ellipses: [(ell, (center, a, b, phi))].into_iter().collect(),
+        };
+        let c = Constraint::TangentLineEllipse(line, ell, contact);
+        let mut r = Vec::new();
+        eval_residuals(&c, &snap, &mut r);
+        assert_eq!(r.len(), 1);
+        // Tangent construction: residual ~0 up to the unnormalized scaling.
+        // Normalize by |line_dir|·|gradient| for the assertion.
+        let lx = bx - ax;
+        let ly = by - ay;
+        assert!(
+            r[0].abs() / (lx.hypot(ly) + 1e-300) < 1e-9 * scale.max(1.0).max(lx.hypot(ly)),
+            "tangent residual {}",
+            r[0]
+        );
+        check_ellipse_jacobian_central(
+            &c,
+            &snap,
+            &[
+                ParamRef::PointX(p1),
+                ParamRef::PointY(p1),
+                ParamRef::PointX(p2),
+                ParamRef::PointY(p2),
+                ParamRef::PointX(contact),
+                ParamRef::PointY(contact),
+                ParamRef::PointX(center),
+                ParamRef::PointY(center),
+                ParamRef::EllipseA(ell),
+                ParamRef::EllipseB(ell),
+                ParamRef::EllipsePhi(ell),
+            ],
+            scale,
+        );
+    }
+}
+
+#[test]
+fn ellipse_axis_and_angle_residuals_and_jacobians() {
+    for scale in SCALES {
+        let (cx, cy, a, b, phi) = (1.0 * scale, 2.0 * scale, 3.0 * scale, 2.0 * scale, 0.5);
+        let (center, ell, _, snap) = ellipse_fixture(cx, cy, a, b, phi, &[]);
+        let params_full = vec![
+            ParamRef::PointX(center),
+            ParamRef::PointY(center),
+            ParamRef::EllipseA(ell),
+            ParamRef::EllipseB(ell),
+            ParamRef::EllipsePhi(ell),
+        ];
+        // At-target: zero; off-target: signed difference.
+        let mut r = Vec::new();
+        eval_residuals(&Constraint::EllipseAxisA(ell, a), &snap, &mut r);
+        assert!(r[0].abs() < 1e-12 * scale.max(1.0), "{}", r[0]);
+        let mut r = Vec::new();
+        eval_residuals(&Constraint::EllipseAxisB(ell, 1.0 * scale), &snap, &mut r);
+        assert!((r[0] - scale).abs() < 1e-12 * scale.max(1.0), "{r:?}");
+        let mut r = Vec::new();
+        eval_residuals(&Constraint::EllipseAngle(ell, phi), &snap, &mut r);
+        assert!(r[0].abs() < 1e-15, "{}", r[0]);
+        // π-shifted target describes the same orientation (sign flip only).
+        let mut r = Vec::new();
+        eval_residuals(
+            &Constraint::EllipseAngle(ell, phi + std::f64::consts::PI),
+            &snap,
+            &mut r,
+        );
+        assert!(r[0].abs() < 1e-15, "{}", r[0]);
+
+        check_ellipse_jacobian_central(
+            &Constraint::EllipseAxisA(ell, a),
+            &snap,
+            &params_full,
+            scale,
+        );
+        check_ellipse_jacobian_central(
+            &Constraint::EllipseAxisB(ell, b),
+            &snap,
+            &params_full,
+            scale,
+        );
+        check_ellipse_jacobian_central(
+            &Constraint::EllipseAngle(ell, phi + 0.1),
+            &snap,
+            &params_full,
+            scale,
+        );
+    }
+}
+
+#[test]
+fn equal_ellipse_radii_residual_and_jacobian() {
+    use super::super::entity::GenArena;
+    for scale in SCALES {
+        let mut pts = GenArena::new();
+        let c1 = pts.insert(super::super::entity::PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        });
+        let c2 = pts.insert(super::super::entity::PointData {
+            x: 5.0 * scale,
+            y: 0.0,
+            fixed: false,
+        });
+        let mut ells = GenArena::new();
+        let e1 = ells.insert(super::super::entity::EllipseData {
+            center: c1,
+            a: 3.0 * scale,
+            b: 2.0 * scale,
+            angle: 0.1,
+        });
+        let e2 = ells.insert(super::super::entity::EllipseData {
+            center: c2,
+            a: 3.0 * scale,
+            b: 4.0 * scale,
+            angle: -0.2,
+        });
+        let snap = EntitySnapshot {
+            points: [(c1, (0.0, 0.0)), (c2, (5.0 * scale, 0.0))]
+                .into_iter()
+                .collect(),
+            lines: HashMap::new(),
+            circles: HashMap::new(),
+            arcs: HashMap::new(),
+            ellipses: [
+                (e1, (c1, 3.0 * scale, 2.0 * scale, 0.1)),
+                (e2, (c2, 3.0 * scale, 4.0 * scale, -0.2)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let c = Constraint::EqualEllipseRadii(e1, e2);
+        let mut r = Vec::new();
+        eval_residuals(&c, &snap, &mut r);
+        assert_eq!(r.len(), 2);
+        assert!(r[0].abs() < 1e-12 * scale.max(1.0), "{r:?}");
+        assert!((r[1] + 2.0 * scale).abs() < 1e-12 * scale.max(1.0), "{r:?}");
+        check_ellipse_jacobian_central(
+            &c,
+            &snap,
+            &[
+                ParamRef::EllipseA(e1),
+                ParamRef::EllipseB(e1),
+                ParamRef::EllipsePhi(e1),
+                ParamRef::EllipseA(e2),
+                ParamRef::EllipseB(e2),
+                ParamRef::EllipsePhi(e2),
+                ParamRef::PointX(c1),
+            ],
+            scale,
+        );
+    }
+}
+
+#[test]
+fn ellipse_degeneracy_contract() {
+    use super::super::entity::{GenArena, PointData};
+    // Degenerate axes read satisfied-with-zero-gradient (the line-axis
+    // contract), never NaN or inf; non-finite axes poison to NaN.
+    let mut pts = GenArena::new();
+    let center = pts.insert(PointData {
+        x: 0.0,
+        y: 0.0,
+        fixed: false,
+    });
+    let pt = pts.insert(PointData {
+        x: 1.0,
+        y: 0.0,
+        fixed: false,
+    });
+    let mut ells = GenArena::new();
+    let deg = ells.insert(super::super::entity::EllipseData {
+        center,
+        a: 0.0,
+        b: 1.0,
+        angle: 0.0,
+    });
+    let nan_ax = ells.insert(super::super::entity::EllipseData {
+        center,
+        a: f64::NAN,
+        b: 1.0,
+        angle: 0.0,
+    });
+    let snap = EntitySnapshot {
+        points: [(center, (0.0, 0.0)), (pt, (1.0, 0.0))]
+            .into_iter()
+            .collect(),
+        lines: HashMap::new(),
+        circles: HashMap::new(),
+        arcs: HashMap::new(),
+        ellipses: [
+            (deg, (center, 0.0, 1.0, 0.0)),
+            (nan_ax, (center, f64::NAN, 1.0, 0.0)),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let mut r = Vec::new();
+    eval_residuals(&Constraint::PointOnEllipse(pt, deg), &snap, &mut r);
+    // Degenerate axes push exactly 0.0 (the documented fail-quiet value).
+    assert!(
+        r[0] == 0.0,
+        "degenerate axis must read satisfied, got {}",
+        r[0]
+    );
+    let mut r = Vec::new();
+    eval_residuals(&Constraint::PointOnEllipse(pt, nan_ax), &snap, &mut r);
+    assert!(r[0].is_nan(), "non-finite axis must poison, got {}", r[0]);
+    // Jacobian on the degenerate row writes nothing (stays zero).
+    let params = [ParamRef::PointX(pt), ParamRef::EllipseA(deg)];
+    let param_index: HashMap<ParamRef, usize> =
+        params.iter().enumerate().map(|(i, p)| (*p, i)).collect();
+    // Pre-zero like production does, then confirm nothing is written.
+    let mut jac = vec![0.0; 2];
+    let mut jw = JacobianWriter {
+        data: &mut jac,
+        ncols: 2,
+        param_index: &param_index,
+    };
+    eval_jacobian(&Constraint::PointOnEllipse(pt, deg), &snap, &mut jw, 0);
+    assert_eq!(jac, vec![0.0, 0.0]);
 }
