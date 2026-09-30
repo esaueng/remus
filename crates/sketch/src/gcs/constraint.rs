@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::entity::{ArcId, CircleId, Handle, LineId, ParamRef, PointData, PointId};
+use super::entity::{ArcId, CircleId, EllipseId, Handle, LineId, ParamRef, PointData, PointId};
 
 /// Internal storage for a constraint.
 #[derive(Debug, Clone)]
@@ -150,6 +150,69 @@ pub enum Constraint {
     /// Both residuals are linear in the parameters, so the Jacobian is
     /// exact and constant, like [`Constraint::Midpoint`].
     SymmetricAboutPoint(PointId, PointId, PointId),
+
+    /// Point must lie on a full ellipse. Produces 1 residual from the
+    /// normalized implicit form: `(u/a)² + (v/b)² - 1`, where `(u, v)` is
+    /// the point in the ellipse frame (center translated, rotated by
+    /// `-phi`).
+    ///
+    /// The residual is dimensionless, so the solver tolerance applies
+    /// directly (unlike length- or area-scaled forms). The `phi` column of
+    /// the Jacobian scales with `2·u·v·(1/a² - 1/b²)` and vanishes for
+    /// near-circles — the documented orientation indeterminacy, not a bug.
+    PointOnEllipse(PointId, EllipseId),
+
+    /// Two ellipses must share their center. Produces 2 residuals:
+    /// `[c1.x - c2.x, c1.y - c2.y]`. Axes and orientation are untouched;
+    /// use [`Constraint::EqualEllipseRadii`] and [`Constraint::EllipseAngle`]
+    /// to tie those.
+    ConcentricEllipseEllipse(EllipseId, EllipseId),
+
+    /// An ellipse and a circle must share their center. Produces 2
+    /// residuals: `[ce.x - cc.x, ce.y - cc.y]`. The circle radius is never
+    /// read, so a radius constraint on the same circle stays an independent
+    /// component — mirroring [`Constraint::ConcentricArcCircle`].
+    ConcentricEllipseCircle(EllipseId, CircleId),
+
+    /// An ellipse and an arc must share their center. Produces 2 residuals:
+    /// `[ce.x - ca.x, ce.y - ca.y]`.
+    ConcentricEllipseArc(EllipseId, ArcId),
+
+    /// A line must be tangent to an ellipse at a specified contact point.
+    /// Produces 1 residual: `dot(line_dir, ellipse_gradient)` at the
+    /// contact point, where the gradient is that of the implicit form
+    /// `(u/a)² + (v/b)² - 1` mapped back to world coordinates.
+    ///
+    /// Contact contract (mirrors [`Constraint::TangentLineArc`]): this
+    /// residual enforces tangency direction only. The caller composes it
+    /// with [`Constraint::PointOnEllipse`] on the same contact point to pin
+    /// the contact onto the curve, and with a point-on-line condition to pin
+    /// it onto the line. Without those, the contact point is free to drift
+    /// along the tangent.
+    TangentLineEllipse(LineId, EllipseId, PointId),
+
+    /// An ellipse's `a` semiaxis must equal a target value. Produces 1
+    /// residual: `a - target`. The target must be finite and positive.
+    EllipseAxisA(EllipseId, f64),
+
+    /// An ellipse's `b` semiaxis must equal a target value. Produces 1
+    /// residual: `b - target`. The target must be finite and positive.
+    EllipseAxisB(EllipseId, f64),
+
+    /// An ellipse's orientation must equal a target angle. Produces 1
+    /// residual: `sin(phi - target)`, with `target` in radians.
+    ///
+    /// The sine form respects the π-periodicity of an undirected axis:
+    /// targets differing by `k·π` describe the same constraint (their
+    /// residuals differ only by sign). Near a solution the residual reads as
+    /// the signed angular error in radians. At or near the equal-axis limit
+    /// the angle is geometrically indeterminate (see [`EllipseData`]); this
+    /// constraint still solves parametrically there.
+    EllipseAngle(EllipseId, f64),
+
+    /// Two ellipses must have equal semiaxes. Produces 2 residuals:
+    /// `[a1 - a2, b1 - b2]`. Orientation is untouched.
+    EqualEllipseRadii(EllipseId, EllipseId),
 }
 
 /// Entity data snapshot used during residual/Jacobian evaluation.
@@ -166,6 +229,8 @@ pub struct EntitySnapshot {
     pub circles: HashMap<CircleId, (PointId, f64)>,
     /// Arc definitions keyed by handle: `(center, start, end)`.
     pub arcs: HashMap<ArcId, (PointId, PointId, PointId)>,
+    /// Ellipse definitions keyed by handle: `(center_id, a, b, phi)`.
+    pub ellipses: HashMap<EllipseId, (PointId, f64, f64, f64)>,
 }
 
 impl EntitySnapshot {
@@ -212,6 +277,17 @@ impl EntitySnapshot {
             (dummy, dummy, dummy)
         })
     }
+
+    /// Look up an ellipse's `(center_id, a, b, phi)`.
+    ///
+    /// Returns a dummy center ID and NaN axes/angle for stale handles, so
+    /// downstream arithmetic poisons to NaN exactly like the other lookups.
+    fn ellipse(&self, id: EllipseId) -> (PointId, f64, f64, f64) {
+        self.ellipses
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| (PointId::dummy(), f64::NAN, f64::NAN, f64::NAN))
+    }
 }
 
 impl Handle<PointData> {
@@ -234,6 +310,10 @@ pub const fn residual_count(c: &Constraint) -> usize {
         Constraint::Coincident(_, _)
         | Constraint::ConcentricArcArc(_, _)
         | Constraint::ConcentricArcCircle(_, _)
+        | Constraint::ConcentricEllipseEllipse(_, _)
+        | Constraint::ConcentricEllipseCircle(_, _)
+        | Constraint::ConcentricEllipseArc(_, _)
+        | Constraint::EqualEllipseRadii(_, _)
         | Constraint::Midpoint(_, _)
         | Constraint::Symmetric(_, _, _)
         | Constraint::SymmetricAboutPoint(_, _, _) => 2,
@@ -256,8 +336,38 @@ pub const fn residual_count(c: &Constraint) -> usize {
         | Constraint::CircleRadius(_, _)
         | Constraint::EqualRadiusCircleCircle(_, _)
         | Constraint::EqualLength(_, _)
+        | Constraint::PointOnEllipse(_, _)
+        | Constraint::TangentLineEllipse(_, _, _)
+        | Constraint::EllipseAxisA(_, _)
+        | Constraint::EllipseAxisB(_, _)
+        | Constraint::EllipseAngle(_, _)
         | Constraint::TangentLineCircle(_, _) => 1,
     }
+}
+
+/// Ellipse frame read through a snapshot: center, semiaxes, and orientation.
+///
+/// Returns `(cx, cy, a, b, cos_phi, sin_phi)`. A stale center handle reads
+/// as `(NaN, NaN)` and stale axes as NaN through [`EntitySnapshot::ellipse`];
+/// callers fail those closed with an explicit NaN residual rather than
+/// evaluating against garbage.
+fn ellipse_frame(snap: &EntitySnapshot, id: EllipseId) -> (f64, f64, f64, f64, f64, f64) {
+    let (center_id, a, b, phi) = snap.ellipse(id);
+    let (cx, cy) = snap.point(center_id);
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    (cx, cy, a, b, cos_phi, sin_phi)
+}
+
+/// Whether finite ellipse axes are usable in the implicit form.
+///
+/// Only finite magnitudes at or above `1e-300` qualify. Non-finite axes are
+/// never "usable" either, but they must take the NaN-poisoning path, not the
+/// degenerate path — hence the explicit finiteness check at each call site.
+/// Magnitudes below the threshold (including transient non-positive values
+/// mid-solve) take the documented degenerate contract: zero residual with
+/// zero gradient, matching a degenerate line axis.
+fn ellipse_axes_usable(a: f64, b: f64) -> bool {
+    a.is_finite() && b.is_finite() && a.abs() >= 1e-300 && b.abs() >= 1e-300
 }
 
 /// Length and unit direction of a line, read through a snapshot.
@@ -534,6 +644,101 @@ pub fn eval_residuals(c: &Constraint, snap: &EntitySnapshot, out: &mut Vec<f64>)
             let (cx, cy) = snap.point(*center);
             out.push(0.5 * (x1 + x2) - cx);
             out.push(0.5 * (y1 + y2) - cy);
+        }
+        Constraint::PointOnEllipse(pt, ell) => {
+            let (px, py) = snap.point(*pt);
+            let (cx, cy, a, b, cos_phi, sin_phi) = ellipse_frame(snap, *ell);
+            if !a.is_finite() || !b.is_finite() {
+                // Stale handle or overflowed axis: poison, never evaluate.
+                out.push(f64::NAN);
+                return;
+            }
+            if !ellipse_axes_usable(a, b) {
+                // Degenerate ellipse: documented fail-quiet contract.
+                out.push(0.0);
+                return;
+            }
+            let dx = px - cx;
+            let dy = py - cy;
+            let u = dx * cos_phi + dy * sin_phi;
+            let v = -dx * sin_phi + dy * cos_phi;
+            out.push((u / a) * (u / a) + (v / b) * (v / b) - 1.0);
+        }
+        Constraint::ConcentricEllipseEllipse(e1, e2) => {
+            let (c1_id, _, _, _) = snap.ellipse(*e1);
+            let (c2_id, _, _, _) = snap.ellipse(*e2);
+            let (c1x, c1y) = snap.point(c1_id);
+            let (c2x, c2y) = snap.point(c2_id);
+            out.push(c1x - c2x);
+            out.push(c1y - c2y);
+        }
+        Constraint::ConcentricEllipseCircle(ell, circ) => {
+            let (e_center, _, _, _) = snap.ellipse(*ell);
+            let (c_center, _radius) = snap.circle(*circ);
+            let (ex, ey) = snap.point(e_center);
+            let (ccx, ccy) = snap.point(c_center);
+            out.push(ex - ccx);
+            out.push(ey - ccy);
+        }
+        Constraint::ConcentricEllipseArc(ell, arc) => {
+            let (e_center, _, _, _) = snap.ellipse(*ell);
+            let (a_center, _s, _e) = snap.arc(*arc);
+            let (ex, ey) = snap.point(e_center);
+            let (acx, acy) = snap.point(a_center);
+            out.push(ex - acx);
+            out.push(ey - acy);
+        }
+        Constraint::TangentLineEllipse(line, ell, contact) => {
+            let (lp1, lp2) = snap.line(*line);
+            let (x1, y1) = snap.point(lp1);
+            let (x2, y2) = snap.point(lp2);
+            let (px, py) = snap.point(*contact);
+            let (cx, cy, a, b, cos_phi, sin_phi) = ellipse_frame(snap, *ell);
+            if !a.is_finite() || !b.is_finite() {
+                out.push(f64::NAN);
+                return;
+            }
+            let lx = x2 - x1;
+            let ly = y2 - y1;
+            if lx.hypot(ly) < 1e-300 || !ellipse_axes_usable(a, b) {
+                // Degenerate line or ellipse: tangency is undefined.
+                out.push(0.0);
+                return;
+            }
+            let dx = px - cx;
+            let dy = py - cy;
+            let u = dx * cos_phi + dy * sin_phi;
+            let v = -dx * sin_phi + dy * cos_phi;
+            // Implicit-form gradient mapped to world: g = R(phi)·(2u/a², 2v/b²).
+            let inv_a2 = 1.0 / (a * a);
+            let inv_b2 = 1.0 / (b * b);
+            let gx = cos_phi * (2.0 * u * inv_a2) - sin_phi * (2.0 * v * inv_b2);
+            let gy = sin_phi * (2.0 * u * inv_a2) + cos_phi * (2.0 * v * inv_b2);
+            if gx.hypot(gy) < 1e-300 {
+                // Contact at the center: the tangent is undefined.
+                out.push(0.0);
+                return;
+            }
+            // Tangency ⟺ line direction ⊥ gradient.
+            out.push(lx * gx + ly * gy);
+        }
+        Constraint::EllipseAxisA(ell, target) => {
+            let (_center, a, _b, _phi) = snap.ellipse(*ell);
+            out.push(a - target);
+        }
+        Constraint::EllipseAxisB(ell, target) => {
+            let (_center, _a, b, _phi) = snap.ellipse(*ell);
+            out.push(b - target);
+        }
+        Constraint::EllipseAngle(ell, target) => {
+            let (_center, _a, _b, phi) = snap.ellipse(*ell);
+            out.push((phi - target).sin());
+        }
+        Constraint::EqualEllipseRadii(e1, e2) => {
+            let (_c1, a1, b1, _p1) = snap.ellipse(*e1);
+            let (_c2, a2, b2, _p2) = snap.ellipse(*e2);
+            out.push(a1 - a2);
+            out.push(b1 - b2);
         }
     }
 }
@@ -1259,6 +1464,173 @@ pub fn eval_jacobian(
             jw.add(row1, ParamRef::PointY(*p1), 0.5);
             jw.add(row1, ParamRef::PointY(*p2), 0.5);
             jw.add(row1, ParamRef::PointY(*center), -1.0);
+        }
+        Constraint::PointOnEllipse(pt, ell) => {
+            // r = (u/a)² + (v/b)² - 1 with u = dx·c + dy·s, v = -dx·s + dy·c.
+            let (center_id, a, b, phi) = snap.ellipse(*ell);
+            if !ellipse_axes_usable(a, b) {
+                // Degenerate (residual 0) or non-finite (residual NaN):
+                // no gradient either way. A NaN residual still fails the
+                // solve; zeros here only keep the matrix finite.
+                return;
+            }
+            let (px, py) = snap.point(*pt);
+            let (cx, cy) = snap.point(center_id);
+            let (sin_phi, cos_phi) = phi.sin_cos();
+            let dx = px - cx;
+            let dy = py - cy;
+            let u = dx * cos_phi + dy * sin_phi;
+            let v = -dx * sin_phi + dy * cos_phi;
+            let inv_a2 = 1.0 / (a * a);
+            let inv_b2 = 1.0 / (b * b);
+            let dru = 2.0 * u * inv_a2;
+            let drv = 2.0 * v * inv_b2;
+            // ∂r/∂px = dru·c - drv·s, ∂r/∂py = dru·s + drv·c.
+            let dr_dpx = dru * cos_phi - drv * sin_phi;
+            let dr_dpy = dru * sin_phi + drv * cos_phi;
+            jw.add(row_offset, ParamRef::PointX(*pt), dr_dpx);
+            jw.add(row_offset, ParamRef::PointY(*pt), dr_dpy);
+            // u, v depend on the center only through dx, dy.
+            jw.add(row_offset, ParamRef::PointX(center_id), -dr_dpx);
+            jw.add(row_offset, ParamRef::PointY(center_id), -dr_dpy);
+            // ∂r/∂a = -2u²/a³, ∂r/∂b = -2v²/b³.
+            jw.add(
+                row_offset,
+                ParamRef::EllipseA(*ell),
+                -2.0 * u * u / (a * a * a),
+            );
+            jw.add(
+                row_offset,
+                ParamRef::EllipseB(*ell),
+                -2.0 * v * v / (b * b * b),
+            );
+            // ∂u/∂phi = v, ∂v/∂phi = -u, so ∂r/∂phi = 2·u·v·(1/a² - 1/b²).
+            // Vanishes identically at the equal-axis limit — the documented
+            // orientation indeterminacy.
+            jw.add(row_offset, ParamRef::EllipsePhi(*ell), dru * v - drv * u);
+        }
+        Constraint::ConcentricEllipseEllipse(e1, e2) => {
+            let (c1_id, _, _, _) = snap.ellipse(*e1);
+            let (c2_id, _, _, _) = snap.ellipse(*e2);
+            // r0 = c1x - c2x, r1 = c1y - c2y. `add` so a self-pair cancels.
+            jw.add(row_offset, ParamRef::PointX(c1_id), 1.0);
+            jw.add(row_offset, ParamRef::PointX(c2_id), -1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(c1_id), 1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(c2_id), -1.0);
+        }
+        Constraint::ConcentricEllipseCircle(ell, circ) => {
+            let (e_center, _, _, _) = snap.ellipse(*ell);
+            let (c_center, _radius) = snap.circle(*circ);
+            jw.add(row_offset, ParamRef::PointX(e_center), 1.0);
+            jw.add(row_offset, ParamRef::PointX(c_center), -1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(e_center), 1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(c_center), -1.0);
+        }
+        Constraint::ConcentricEllipseArc(ell, arc) => {
+            let (e_center, _, _, _) = snap.ellipse(*ell);
+            let (a_center, _s, _e) = snap.arc(*arc);
+            jw.add(row_offset, ParamRef::PointX(e_center), 1.0);
+            jw.add(row_offset, ParamRef::PointX(a_center), -1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(e_center), 1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(a_center), -1.0);
+        }
+        Constraint::TangentLineEllipse(line, ell, contact) => {
+            // r = lx·gx + ly·gy with (gx, gy) = R(phi)·(2u/a², 2v/b²).
+            let (center_id, a, b, phi) = snap.ellipse(*ell);
+            if !ellipse_axes_usable(a, b) {
+                return;
+            }
+            let (lp1, lp2) = snap.line(*line);
+            let (x1, y1) = snap.point(lp1);
+            let (x2, y2) = snap.point(lp2);
+            let lx = x2 - x1;
+            let ly = y2 - y1;
+            if lx.hypot(ly) < 1e-300 {
+                return;
+            }
+            let (px, py) = snap.point(*contact);
+            let (cx, cy) = snap.point(center_id);
+            let (sin_phi, cos_phi) = phi.sin_cos();
+            let dx = px - cx;
+            let dy = py - cy;
+            let u = dx * cos_phi + dy * sin_phi;
+            let v = -dx * sin_phi + dy * cos_phi;
+            let inv_a2 = 1.0 / (a * a);
+            let inv_b2 = 1.0 / (b * b);
+            // U = 2u/a², V = 2v/b² and their axis partials.
+            let uu = 2.0 * u * inv_a2;
+            let vv = 2.0 * v * inv_b2;
+            let gx = cos_phi * uu - sin_phi * vv;
+            let gy = sin_phi * uu + cos_phi * vv;
+            if gx.hypot(gy) < 1e-300 {
+                return;
+            }
+            // Line endpoints see the gradient directly.
+            jw.add(row_offset, ParamRef::PointX(lp1), -gx);
+            jw.add(row_offset, ParamRef::PointY(lp1), -gy);
+            jw.add(row_offset, ParamRef::PointX(lp2), gx);
+            jw.add(row_offset, ParamRef::PointY(lp2), gy);
+            // Chain through (u, v): ∂U/∂u = 2/a², ∂V/∂v = 2/b².
+            let ku = 2.0 * inv_a2;
+            let kv = 2.0 * inv_b2;
+            // ∂gx/∂w = c·ku·∂u/∂w - s·kv·∂v/∂w,
+            // ∂gy/∂w = s·ku·∂u/∂w + c·kv·∂v/∂w, then ∂r/∂w = lx·∂gx + ly·∂gy.
+            // (du, dv) per variable: px:(c,-s), py:(s,c), cx:(-c,s), cy:(-s,-c).
+            let partial = |du: f64, dv: f64| -> f64 {
+                let dgx = cos_phi * ku * du - sin_phi * kv * dv;
+                let dgy = sin_phi * ku * du + cos_phi * kv * dv;
+                lx * dgx + ly * dgy
+            };
+            let dr_dpx = partial(cos_phi, -sin_phi);
+            let dr_dpy = partial(sin_phi, cos_phi);
+            jw.add(row_offset, ParamRef::PointX(*contact), dr_dpx);
+            jw.add(row_offset, ParamRef::PointY(*contact), dr_dpy);
+            jw.add(row_offset, ParamRef::PointX(center_id), -dr_dpx);
+            jw.add(row_offset, ParamRef::PointY(center_id), -dr_dpy);
+            // Axis partials: ∂U/∂a = -4u/a³, ∂V/∂b = -4v/b³.
+            let du_da = -4.0 * u / (a * a * a);
+            let dv_db = -4.0 * v / (b * b * b);
+            jw.add(
+                row_offset,
+                ParamRef::EllipseA(*ell),
+                lx * cos_phi * du_da + ly * sin_phi * du_da,
+            );
+            jw.add(
+                row_offset,
+                ParamRef::EllipseB(*ell),
+                lx * (-sin_phi) * dv_db + ly * cos_phi * dv_db,
+            );
+            // Angle partials: ∂U/∂phi = ku·v, ∂V/∂phi = -kv·u, plus rotation.
+            let du_dphi = ku * v;
+            let dv_dphi = -kv * u;
+            let dgx_dphi = -sin_phi * uu + cos_phi * du_dphi - cos_phi * vv - sin_phi * dv_dphi;
+            let dgy_dphi = cos_phi * uu + sin_phi * du_dphi - sin_phi * vv + cos_phi * dv_dphi;
+            jw.add(
+                row_offset,
+                ParamRef::EllipsePhi(*ell),
+                lx * dgx_dphi + ly * dgy_dphi,
+            );
+        }
+        Constraint::EllipseAxisA(ell, _target) => {
+            // r = a - target.
+            jw.add(row_offset, ParamRef::EllipseA(*ell), 1.0);
+        }
+        Constraint::EllipseAxisB(ell, _target) => {
+            // r = b - target.
+            jw.add(row_offset, ParamRef::EllipseB(*ell), 1.0);
+        }
+        Constraint::EllipseAngle(ell, target) => {
+            // r = sin(phi - target) → ∂r/∂phi = cos(phi - target).
+            let (_center, _a, _b, phi) = snap.ellipse(*ell);
+            jw.add(row_offset, ParamRef::EllipsePhi(*ell), (phi - target).cos());
+        }
+        Constraint::EqualEllipseRadii(e1, e2) => {
+            // r0 = a1 - a2, r1 = b1 - b2. `add` so a self-pair cancels.
+            jw.add(row_offset, ParamRef::EllipseA(*e1), 1.0);
+            jw.add(row_offset, ParamRef::EllipseA(*e2), -1.0);
+            let row1 = row_offset + 1;
+            jw.add(row1, ParamRef::EllipseB(*e1), 1.0);
+            jw.add(row1, ParamRef::EllipseB(*e2), -1.0);
         }
     }
 }

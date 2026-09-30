@@ -122,13 +122,16 @@ export const brepkernel_fuseWithOptions: (a: number, b: number, c: number, d: nu
 export const brepkernel_gcsAddArc: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_gcsAddCircle: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_gcsAddConstraint: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_gcsAddEllipse: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_gcsAddLine: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_gcsAddPoint: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_gcsCircleRadius: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_gcsDof: (a: number, b: number) => [number, number, number];
+export const brepkernel_gcsEllipseParams: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_gcsNew: (a: number) => number;
 export const brepkernel_gcsPointPosition: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_gcsRemoveConstraint: (a: number, b: number, c: number) => [number, number];
+export const brepkernel_gcsSetEllipse: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
 export const brepkernel_gcsSetPoint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const brepkernel_gcsSolve: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_gcsSolveDetailed: (a: number, b: number, c: number, d: number) => [number, number, number];
