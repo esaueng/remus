@@ -282,7 +282,7 @@ inference, and every drawing-sheet construct.
 
 ### File-interoperability consumer overlay (2026-09-29)
 
-OpenZCAD's [format specification](https://github.com/esaueng/OpenZCAD/blob/f18d69fc29134bc04002d7fa658d0214ca8c4111/docs/plans/file-format-interoperability.md)
+OpenZCAD's [format specification](https://github.com/esaueng/OpenZCAD/blob/0ce8c31ef70a70fe65cdecccd5f9347f86b268a6/docs/plans/file-format-interoperability.md)
 separates application readers/writers from kernel geometry work. The native
 and IGES qualification contract is [specified here](native-format-interoperability.md).
 Select bounded work under the owners below without displacing the correctness
