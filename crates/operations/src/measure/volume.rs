@@ -767,12 +767,19 @@ fn analytic_faces_solid_volume(
         return Ok(None);
     }
 
-    let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let options = remus_check::properties::PropertiesOptions::default();
+    // B58 contract: every boundary integral is taken about the body's own
+    // integration reference, never the world origin. The bored-quadric path
+    // was the one remaining caller of the origin-only `integrate_face`.
+    let reference = match remus_check::properties::integration_reference(topo, solid) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
     let mut total = 0.0;
     for &fid in &faces {
-        let Ok(properties) =
-            remus_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
-        else {
+        let Ok(properties) = remus_check::properties::face_integrator::integrate_face_about(
+            topo, fid, &options, reference,
+        ) else {
             return Ok(None);
         };
         total += properties.volume;
@@ -879,6 +886,9 @@ fn analytic_revolution_solid_volume(topo: &Topology, solid: SolidId) -> Option<f
     // be the degenerate on-axis band (zero radial extent). Cache each planar
     // cap's analytic volume here so the summation below reuses it rather than
     // re-traversing the wire and re-running arc recognition a second time.
+    //
+    // B58 contract: one body reference for every face.
+    let reference = remus_check::properties::integration_reference(topo, solid).ok()?;
     let mut cap_volumes: std::collections::HashMap<FaceId, f64> = std::collections::HashMap::new();
     for &fid in &faces {
         let face = topo.face(fid).ok()?;
@@ -891,7 +901,7 @@ fn analytic_revolution_solid_volume(topo: &Topology, solid: SolidId) -> Option<f
                     return None;
                 }
                 // Must be analytically integrable (a circular-arc-bounded cap).
-                let v = planar_cap_signed_volume(topo, fid).ok()??;
+                let v = planar_cap_signed_volume(topo, fid, reference).ok()??;
                 cap_volumes.insert(fid, v);
             }
             FaceSurface::Nurbs(_) if !nurbs_band_is_on_axis(topo, fid, axis_o, axis_d) => {
@@ -922,14 +932,14 @@ fn analytic_revolution_solid_volume(topo: &Topology, solid: SolidId) -> Option<f
     for &fid in &faces {
         let face = topo.face(fid).ok()?;
         let c = match face.surface() {
-            FaceSurface::Cylinder(_) => line_circle_cylinder_signed_volume(topo, fid)?,
+            FaceSurface::Cylinder(_) => line_circle_cylinder_signed_volume(topo, fid, reference)?,
             FaceSurface::Cone(_) => {
                 if quadric_face_has_nurbs_trim(topo, fid) {
                     return None;
                 }
-                analytic_cone_signed_volume(topo, fid).ok()?
+                analytic_cone_signed_volume(topo, fid, reference).ok()?
             }
-            FaceSurface::Torus(_) => analytic_torus_signed_volume(topo, fid).ok()?,
+            FaceSurface::Torus(_) => analytic_torus_signed_volume(topo, fid, reference).ok()?,
             FaceSurface::Plane { .. } => *cap_volumes.get(&fid)?,
             FaceSurface::Nurbs(_) => 0.0, // degenerate on-axis band
             FaceSurface::Sphere(_) => return None,
@@ -1788,11 +1798,52 @@ pub fn shell_signed_volume(
     shell: remus_topology::shell::ShellId,
     gauss_order: usize,
 ) -> Option<f64> {
+    let faces = topo.shell(shell).ok()?.faces().to_vec();
+    // B58 contract: about the shell's own reference, never the origin.
+    let mut lo: Option<Point3> = None;
+    let mut hi: Option<Point3> = None;
+    for &fid in &faces {
+        let face = topo.face(fid).ok()?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).ok()?.edges() {
+                let edge = topo.edge(oe.edge()).ok()?;
+                for vid in [edge.start(), edge.end()] {
+                    let p = topo.vertex(vid).ok()?.point();
+                    lo = Some(match lo {
+                        None => p,
+                        Some(l) => {
+                            Point3::new(l.x().min(p.x()), l.y().min(p.y()), l.z().min(p.z()))
+                        }
+                    });
+                    hi = Some(match hi {
+                        None => p,
+                        Some(h) => {
+                            Point3::new(h.x().max(p.x()), h.y().max(p.y()), h.z().max(p.z()))
+                        }
+                    });
+                }
+            }
+        }
+    }
+    let reference = match (lo, hi) {
+        (Some(l), Some(h)) => Point3::new(
+            f64::midpoint(l.x(), h.x()),
+            f64::midpoint(l.y(), h.y()),
+            f64::midpoint(l.z(), h.z()),
+        ),
+        _ => Point3::new(0.0, 0.0, 0.0),
+    };
+    let options = remus_check::properties::PropertiesOptions {
+        gauss_order,
+        ..Default::default()
+    };
     let mut total = 0.0;
-    for &fid in topo.shell(shell).ok()?.faces() {
-        total += remus_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
-            .ok()?
-            .volume;
+    for &fid in &faces {
+        total += remus_check::properties::face_integrator::integrate_face_about(
+            topo, fid, &options, reference,
+        )
+        .ok()?
+        .volume;
     }
     Some(total)
 }
@@ -1975,18 +2026,28 @@ pub fn solid_volume(
     // Qualified two-rim torus bands integrate over their retained surface.
     // Unsupported trims still need the shared-vertex, whole-solid mesh path.
     if solid_has_torus_notch_band(topo, solid) {
+        // B58 contract: every face about the same body reference.
+        let reference = remus_check::properties::integration_reference(topo, solid)
+            .unwrap_or(Point3::new(0.0, 0.0, 0.0));
         let mut integral = Some(0.0);
         for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
             let contribution = match topo.face(face_id)?.surface() {
                 FaceSurface::Torus(_) => {
-                    remus_check::properties::face_integrator::integrate_torus_band_face(
-                        topo, face_id, 8,
+                    remus_check::properties::face_integrator::integrate_torus_band_face_about(
+                        topo, face_id, 8, reference,
                     )
                     .ok()
                     .flatten()
                 }
                 FaceSurface::Plane { .. } => {
-                    remus_check::properties::face_integrator::integrate_face(topo, face_id, 8).ok()
+                    let options = remus_check::properties::PropertiesOptions {
+                        gauss_order: 8,
+                        ..Default::default()
+                    };
+                    remus_check::properties::face_integrator::integrate_face_about(
+                        topo, face_id, &options, reference,
+                    )
+                    .ok()
                 }
                 // Only the torus band and its planar notch walls integrate
                 // here. Any other carrier (cylinder, cone, sphere, NURBS, or
@@ -2471,7 +2532,14 @@ fn volume_from_per_face_tessellation(
 /// where `ox = O.ex`, `oy = O.ey`, `h = v2 - v1`.
 ///
 /// For a reversed face the contribution is negated.
-fn line_circle_cylinder_signed_volume(topo: &Topology, face_id: FaceId) -> Option<f64> {
+///
+/// The integral is taken about `reference` (B58 contract): the origin terms
+/// are `(O − reference)·ex/ey`, so the sum is translation-invariant.
+fn line_circle_cylinder_signed_volume(
+    topo: &Topology,
+    face_id: FaceId,
+    reference: Point3,
+) -> Option<f64> {
     let face = topo.face(face_id).ok()?;
     let FaceSurface::Cylinder(cylinder) = face.surface() else {
         return None;
@@ -2480,7 +2548,7 @@ fn line_circle_cylinder_signed_volume(topo: &Topology, face_id: FaceId) -> Optio
         return None;
     }
     let tolerance = remus_math::tolerance::Tolerance::new();
-    let origin = cylinder.origin() - Point3::new(0.0, 0.0, 0.0);
+    let origin = cylinder.origin() - reference;
     let ox = origin.dot(cylinder.x_axis());
     let oy = origin.dot(cylinder.y_axis());
     let mut boundary_integral = 0.0;
@@ -2596,10 +2664,11 @@ fn line_circle_cylinder_signed_volume(topo: &Topology, face_id: FaceId) -> Optio
 fn analytic_cylinder_signed_volume(
     topo: &Topology,
     face_id: FaceId,
+    reference: Point3,
 ) -> Result<f64, crate::OperationsError> {
     // Green's theorem integrates the actual rim sweeps, including major arcs
     // and stepped heights; an endpoint bounding rectangle cannot do that.
-    if let Some(volume) = line_circle_cylinder_signed_volume(topo, face_id) {
+    if let Some(volume) = line_circle_cylinder_signed_volume(topo, face_id, reference) {
         return Ok(volume);
     }
     let face = topo.face(face_id)?;
@@ -2676,7 +2745,7 @@ fn analytic_cylinder_signed_volume(
     let x_axis = cyl.x_axis();
     let y_axis = cyl.y_axis();
 
-    let o_vec = Vec3::new(cyl.origin().x(), cyl.origin().y(), cyl.origin().z());
+    let o_vec = cyl.origin() - reference;
     let ox = o_vec.dot(x_axis);
     let oy = o_vec.dot(y_axis);
 
@@ -2706,11 +2775,12 @@ fn analytic_cylinder_signed_volume(
 fn planar_cap_signed_volume(
     topo: &Topology,
     face_id: FaceId,
+    reference: Point3,
 ) -> Result<Option<f64>, crate::OperationsError> {
     // Only claim a circular CAP (disc / annulus / sector): a face with no arc
     // edge is an ordinary polygon, which keeps this recogniser scoped to
     // genuine revolve caps and out of arbitrary planar-faced solids.
-    Ok(planar_face_signed_volume(topo, face_id)?
+    Ok(planar_face_signed_volume_about(topo, face_id, reference)?
         .and_then(|exact| (exact.arc_edges > 0).then_some(exact.volume)))
 }
 
@@ -2807,6 +2877,34 @@ fn planar_face_signed_volume(
         arc_length,
         exact_boundary,
     }))
+}
+
+/// [`planar_face_signed_volume`] with the divergence term taken about
+/// `reference` instead of the world origin (B58 contract).
+///
+/// The area, arc coverage and trim qualification are reference-free; only
+/// the `(p·n̂_out)` anchor shifts by `reference·n̂_out`.
+fn planar_face_signed_volume_about(
+    topo: &Topology,
+    face_id: FaceId,
+    reference: Point3,
+) -> Result<Option<PlanarFaceExact>, crate::OperationsError> {
+    let Some(mut exact) = planar_face_signed_volume(topo, face_id)? else {
+        return Ok(None);
+    };
+    let face = topo.face(face_id)?;
+    let FaceSurface::Plane { normal, .. } = face.surface() else {
+        return Ok(None);
+    };
+    let n_len = normal.length();
+    if n_len <= 0.0 || !n_len.is_finite() {
+        return Ok(None);
+    }
+    let n_hat = *normal * (1.0 / n_len);
+    let n_out = if face.is_reversed() { -n_hat } else { n_hat };
+    let r = Vec3::new(reference.x(), reference.y(), reference.z());
+    exact.volume -= r.dot(n_out) * exact.area / 3.0;
+    Ok(Some(exact))
 }
 
 /// One planar wire's Green's-theorem terms.
@@ -2985,6 +3083,7 @@ fn planar_wire_signed_area2(
 fn analytic_cone_signed_volume(
     topo: &Topology,
     face_id: FaceId,
+    reference: Point3,
 ) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
     let cone = match face.surface() {
@@ -3065,7 +3164,7 @@ fn analytic_cone_signed_volume(
     let y_axis = cone.y_axis();
     let axis = cone.axis();
     let apex = cone.apex();
-    let a_vec = Vec3::new(apex.x(), apex.y(), apex.z());
+    let a_vec = apex - reference;
 
     // Compute the divergence-theorem integral analytically.
     //
@@ -3157,6 +3256,7 @@ fn sphere_wire_u_winding(
 fn analytic_sphere_signed_volume(
     topo: &Topology,
     face_id: FaceId,
+    reference: Point3,
 ) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
     let sph = match face.surface() {
@@ -3255,7 +3355,7 @@ fn analytic_sphere_signed_volume(
     let y_axis = sph.y_axis();
     let z_axis = sph.z_axis();
     let c = sph.center();
-    let c_vec = Vec3::new(c.x(), c.y(), c.z());
+    let c_vec = c - reference;
 
     // P.n = C.(cos_v*cos_u*ex + cos_v*sin_u*ey + sin_v*ez) + r
     // dA = r^2 * cos_v * du * dv
@@ -3306,6 +3406,7 @@ fn analytic_sphere_signed_volume(
 fn analytic_torus_signed_volume(
     topo: &Topology,
     face_id: FaceId,
+    reference: Point3,
 ) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
     let tor = match face.surface() {
@@ -3423,7 +3524,7 @@ fn analytic_torus_signed_volume(
     let y_axis = tor.y_axis();
     let z_axis = tor.z_axis();
     let c = tor.center();
-    let c_vec = Vec3::new(c.x(), c.y(), c.z());
+    let c_vec = c - reference;
 
     // P.n = [C + (R+r*cos_v)*radial_u + r*sin_v*ez] . [cos_v*radial_u + sin_v*ez]
     //     = C.(cos_v*radial_u + sin_v*ez) + (R+r*cos_v)*cos_v + r*sin^2_v
@@ -3530,6 +3631,9 @@ fn exact_analytic_face_volume(
         return None;
     }
 
+    // B58 contract: one body reference for every face.
+    let reference = remus_check::properties::integration_reference(topo, solid).ok()?;
+
     let mut total = 0.0;
     for fid in faces {
         let face = topo.face(fid).ok()?;
@@ -3537,7 +3641,7 @@ fn exact_analytic_face_volume(
         total += match face.surface() {
             FaceSurface::Nurbs(_) => return None,
             FaceSurface::Plane { .. } => {
-                let exact = planar_face_signed_volume(topo, fid).ok()??;
+                let exact = planar_face_signed_volume_about(topo, fid, reference).ok()??;
                 if !exact.exact_boundary
                     || !planar_face_area_is_consistent(topo, fid, &exact, deflection)
                 {
@@ -3547,14 +3651,20 @@ fn exact_analytic_face_volume(
             }
             FaceSurface::Cylinder(_) if !holed => {
                 if require_cylinder_trim_authority {
-                    line_circle_cylinder_signed_volume(topo, fid)?
+                    line_circle_cylinder_signed_volume(topo, fid, reference)?
                 } else {
-                    analytic_cylinder_signed_volume(topo, fid).ok()?
+                    analytic_cylinder_signed_volume(topo, fid, reference).ok()?
                 }
             }
-            FaceSurface::Cone(_) if !holed => analytic_cone_signed_volume(topo, fid).ok()?,
-            FaceSurface::Sphere(_) if !holed => analytic_sphere_signed_volume(topo, fid).ok()?,
-            FaceSurface::Torus(_) if !holed => analytic_torus_signed_volume(topo, fid).ok()?,
+            FaceSurface::Cone(_) if !holed => {
+                analytic_cone_signed_volume(topo, fid, reference).ok()?
+            }
+            FaceSurface::Sphere(_) if !holed => {
+                analytic_sphere_signed_volume(topo, fid, reference).ok()?
+            }
+            FaceSurface::Torus(_) if !holed => {
+                analytic_torus_signed_volume(topo, fid, reference).ok()?
+            }
             // Holed quadric walls have no hole-aware integrator on this path:
             // each holed carrier declines explicitly so a future variant
             // cannot silently inherit the unholed arm above.
@@ -3653,48 +3763,55 @@ pub fn volume_from_direct_face_tessellation(
     // contribution subtracts the void.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
+    // B58 contract: one body reference for every face. The analytic terms and
+    // the tessellated tetrahedra are all taken about it, so the sum does not
+    // move with the body. The previous origin-anchored split (`det(a,b,c) =
+    // det(a−r,…) + r·area`) reintroduced `r·gap` whenever the per-face meshes
+    // left chord-sized seam cracks, which is the placed-hollow drift.
+    let global = remus_check::properties::integration_reference(topo, solid)
+        .unwrap_or(Point3::new(0.0, 0.0, 0.0));
+
     let mut total: f64 = 0.0;
     for fid in faces {
         let face = topo.face(fid)?;
 
-        // Use exact analytical volume for analytic surface faces.
+        // Exact analytic volume for UNHOLED analytic faces only. A holed
+        // quadric wall has no hole-aware closed form on this path (the
+        // bounding-rectangle integrators would credit the removed patch), so
+        // it takes its own tessellation below, which subtracts its holes.
+        // This matches `exact_analytic_face_volume`'s explicit decline.
+        let holed = !face.inner_wires().is_empty();
         match face.surface() {
-            FaceSurface::Cylinder(_) => {
-                let v = analytic_cylinder_signed_volume(topo, fid)? * 6.0;
+            FaceSurface::Cylinder(_) if !holed => {
+                let v = analytic_cylinder_signed_volume(topo, fid, global)? * 6.0;
                 vol_trace(|| format!("direct cyl face {} -> {}", fid.index(), v / 6.0));
                 total += v;
                 continue;
             }
-            FaceSurface::Cone(_) => {
-                total += analytic_cone_signed_volume(topo, fid)? * 6.0;
+            FaceSurface::Cone(_) if !holed => {
+                total += analytic_cone_signed_volume(topo, fid, global)? * 6.0;
                 continue;
             }
-            FaceSurface::Sphere(_) => {
-                total += analytic_sphere_signed_volume(topo, fid)? * 6.0;
+            FaceSurface::Sphere(_) if !holed => {
+                total += analytic_sphere_signed_volume(topo, fid, global)? * 6.0;
                 continue;
             }
-            FaceSurface::Torus(_) => {
-                total += analytic_torus_signed_volume(topo, fid)? * 6.0;
+            FaceSurface::Torus(_) if !holed => {
+                total += analytic_torus_signed_volume(topo, fid, global)? * 6.0;
                 continue;
             }
-            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => {}
         }
 
-        // The analytic terms above are taken about the world origin, so this
-        // face's tetrahedra must be too. Each is split exactly as
-        // `det(a, b, c) = det(a - r, b - r, c - r) + r . ((b - a) x (c - a))`
-        // about a local `r`: both parts are formed from differences, which
-        // keeps the rounding error of order `ε·|r|·L²`, like the analytic
-        // terms', instead of the `ε·|r|³` of the triple product about the
-        // origin (B56).
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
-        let Some(reference) = local_reference(mesh.positions.iter().copied()) else {
-            continue;
-        };
-        let r = reference - Point3::new(0.0, 0.0, 0.0);
         for t in mesh.indices.chunks_exact(3) {
             let [p0, p1, p2] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
-            total += six_tetra_volume(reference, p0, p1, p2) + r.dot((p1 - p0).cross(p2 - p0));
+            total += six_tetra_volume(global, p0, p1, p2);
         }
     }
 
@@ -4673,7 +4790,9 @@ mod regression_tests {
                     })
             })
             .expect("top disc cap");
-        let cap_v = planar_cap_signed_volume(&topo, top_cap).unwrap().unwrap();
+        let cap_v = planar_cap_signed_volume(&topo, top_cap, Point3::new(0.0, 0.0, 0.0))
+            .unwrap()
+            .unwrap();
         assert!(
             (cap_v.abs() - 12.0 * PI * 4.0 / 3.0).abs() < 1e-9,
             "closed-circle disc cap contribution should be (1/3)·12·π·4, got {cap_v}"
@@ -4718,7 +4837,9 @@ mod regression_tests {
             FaceSurface::Plane { normal: axis, d: h },
         ));
 
-        let cap_v = planar_cap_signed_volume(&topo, cap).unwrap().unwrap();
+        let cap_v = planar_cap_signed_volume(&topo, cap, Point3::new(0.0, 0.0, 0.0))
+            .unwrap()
+            .unwrap();
         // Exact annulus contribution: (1/3)·h·π·(R²−r²) (outward normal +axis).
         let expected = h * PI * (r_out * r_out - r_in * r_in) / 3.0;
         assert!(
