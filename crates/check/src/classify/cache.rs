@@ -108,7 +108,7 @@ pub struct CacheStats {
 /// Owns bounded derived preparation; every query takes `&Topology` and
 /// checks identity before reuse. Misses rebuild exactly what
 /// [`super::PreparedSolid::prepare`] builds, then run the shared
-/// [`super::classify_point_with_source`] vote loop so verdicts match the
+/// `super::classify_point_with_source` vote loop so verdicts match the
 /// one-shot and borrowed-prepared paths bit for bit.
 #[derive(Debug, Clone)]
 pub struct ClassificationCache {
