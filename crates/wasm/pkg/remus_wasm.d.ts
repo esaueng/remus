@@ -1809,7 +1809,7 @@ export class BrepKernel {
      * Add a constraint from a JSON object string and return a constraint
      * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
      *
-     * All 26 constraint types are supported. Entity fields are `u32`
+     * All 35 constraint types are supported. Entity fields are `u32`
      * handles from the `gcsAdd*` calls. Types and fields:
      * `coincident{a,b}`, `distance{a,b,value}`,
      * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -1821,13 +1821,29 @@ export class BrepKernel {
      * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
      * `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
      * `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
-     * `midpoint{point,line}`, `symmetric{a,b,axis}`.
+     * `midpoint{point,line}`, `symmetric{a,b,axis}`,
+     * `tangentLineCircle{line,circle}`, `symmetricAboutPoint{a,b,center}`,
+     * `pointOnEllipse{point,ellipse}`,
+     * `concentricEllipseEllipse{ellipse1,ellipse2}`,
+     * `concentricEllipseCircle{ellipse,circle}`,
+     * `concentricEllipseArc{ellipse,arc}`,
+     * `tangentLineEllipse{line,ellipse,point}`,
+     * `ellipseAxisA{ellipse,value}`, `ellipseAxisB{ellipse,value}`,
+     * `ellipseAngle{ellipse,value}`, `equalEllipseRadii{ellipse1,ellipse2}`.
      *
      * `circleRadius` takes a **radius**, not a diameter, and requires a
      * positive finite value. There is no first-class point-lock constraint:
      * compose one from `fixX` + `fixY` on the same point.
      */
     gcsAddConstraint(sketch: number, json: string): number;
+    /**
+     * Add a full ellipse with a center point, two semiaxes, and an
+     * orientation. `a` and `b` must be positive and finite; `angle` is the
+     * counter-clockwise rotation in radians from `+x` to the `a`-axis.
+     * Unlike arcs, a full ellipse has no endpoints and installs no internal
+     * constraint. Returns an ellipse handle.
+     */
+    gcsAddEllipse(sketch: number, center: number, a: number, b: number, angle: number): number;
     /**
      * Add a line through two existing points. Returns a line handle.
      */
@@ -1848,10 +1864,15 @@ export class BrepKernel {
      */
     gcsDof(sketch: number): any;
     /**
+     * Current ellipse parameters as `[cx, cy, a, b, angle]` (angle in
+     * radians, stored as given — see the `gcsAddEllipse` contract).
+     */
+    gcsEllipseParams(sketch: number, ellipse: number): Float64Array;
+    /**
      * Create a new typed GCS sketch. Returns a sketch handle.
      *
      * This is the successor to the legacy `sketch*` API: the constraint
-     * system persists across calls, entities are typed handles, all 26
+     * system persists across calls, entities are typed handles, all 35
      * constraint types are available, and constraints can be removed.
      */
     gcsNew(): number;
@@ -1865,6 +1886,12 @@ export class BrepKernel {
      */
     gcsRemoveConstraint(sketch: number, constraint: number): void;
     /**
+     * Move an ellipse's center to `(x, y)` and set its semiaxes and
+     * orientation without solving (e.g. while dragging). `a` and `b` must
+     * be positive and finite; `angle` is finite radians.
+     */
+    gcsSetEllipse(sketch: number, ellipse: number, x: number, y: number, a: number, b: number, angle: number): void;
+    /**
      * Move a point to `(x, y)` without solving (e.g. while dragging).
      */
     gcsSetPoint(sketch: number, point: number, x: number, y: number): void;
@@ -1873,8 +1900,9 @@ export class BrepKernel {
      * solver. Returns a JSON string
      * `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
      * TypeScript type). Read solved geometry back with
-     * [`gcs_point_position`](Self::gcs_point_position) and
-     * [`gcs_circle_radius`](Self::gcs_circle_radius).
+     * [`gcs_point_position`](Self::gcs_point_position),
+     * [`gcs_circle_radius`](Self::gcs_circle_radius), and
+     * [`gcs_ellipse_params`](Self::gcs_ellipse_params).
      */
     gcsSolve(sketch: number, max_iterations: number, tolerance: number): any;
     /**

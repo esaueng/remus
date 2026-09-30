@@ -287,6 +287,8 @@ pub type LineId = Handle<LineData>;
 pub type CircleId = Handle<CircleData>;
 /// A handle to an arc in the GCS.
 pub type ArcId = Handle<ArcData>;
+/// A handle to a full ellipse in the GCS.
+pub type EllipseId = Handle<EllipseData>;
 
 /// A 2D point in the constraint system.
 #[derive(Debug, Clone, Copy)]
@@ -331,6 +333,55 @@ pub struct ArcData {
     pub end: PointId,
 }
 
+/// A full ellipse: a center point, two positive semiaxes, and an orientation.
+///
+/// This is the B75 constrained-ellipse entity. A full ellipse has no
+/// endpoints — unlike [`ArcData`], there is no start/end to tie together,
+/// so creating an ellipse installs no internal constraint.
+///
+/// # Numerical contract
+///
+/// - `a` and `b` are the semiaxis lengths along the local `u` and `v` axes.
+///   Both must be finite and strictly positive at creation; the solver treats
+///   them as length-unit parameters like a circle radius.
+/// - `angle` (`phi`) is the counter-clockwise rotation, in **radians**, from
+///   the sketch `+x` axis to the `a`-axis (the local `u` direction). Any
+///   finite value is accepted; it is stored as given and the solver moves it
+///   continuously (no wrapping at entry).
+/// - No ordering is enforced between `a` and `b`: the `a`-axis is simply
+///   whichever axis `angle` points at. Callers that need a canonical form
+///   (e.g. major-first) canonicalize at their own boundary.
+/// - Equivalent representations of the same geometric curve:
+///   `(a, b, phi) ~ (a, b, phi + k·π)` for any integer `k` (the axes are
+///   undirected), and `(a, b, phi) ~ (b, a, phi + π/2 + k·π)` (axis swap).
+///   The solver does not canonicalize: two ellipses can be geometrically
+///   identical while differing parametrically.
+/// - Equal-axis limit (`a == b`): the curve is a circle and `angle` is
+///   geometrically indeterminate. The orientation constraints still solve
+///   parametrically there (their residual depends on `phi`), but the solved
+///   angle carries no geometric meaning. Near-circles (`a ≈ b`) are
+///   correspondingly ill-conditioned in orientation: the `PointOnEllipse`
+///   Jacobian's `phi` column scales with `(1/a² - 1/b²)` and vanishes in the
+///   limit, which the rank/DOF analysis reports truthfully.
+/// - Degeneracy: an axis at or below `1e-300` (including a transient
+///   non-positive value mid-solve) makes the implicit form undefined. The
+///   ellipse constraints then report a zero residual with zero gradient —
+///   the same fail-quiet contract as a degenerate line axis — rather than
+///   dividing by zero. Creation rejects non-positive axes, so this path is
+///   reachable only mid-solve, never from a constructed ellipse.
+#[derive(Debug, Clone, Copy)]
+pub struct EllipseData {
+    /// Center point of the ellipse.
+    pub center: PointId,
+    /// Semiaxis length along the local `u` direction (solver parameter).
+    pub a: f64,
+    /// Semiaxis length along the local `v` direction (solver parameter).
+    pub b: f64,
+    /// Counter-clockwise rotation in radians from `+x` to the `a`-axis
+    /// (solver parameter, scale-invariant).
+    pub angle: f64,
+}
+
 /// A reference to a solver parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamRef {
@@ -340,6 +391,19 @@ pub enum ParamRef {
     PointY(PointId),
     /// Radius of a circle.
     CircleRadius(CircleId),
+    /// Semiaxis `a` of an ellipse (length units).
+    EllipseA(EllipseId),
+    /// Semiaxis `b` of an ellipse (length units).
+    EllipseB(EllipseId),
+    /// Orientation `phi` of an ellipse (radians, scale-invariant).
+    ///
+    /// Length and angle parameters share one DogLeg trust region, so at
+    /// large coordinate scales/offsets the angular column is relatively
+    /// stiffer than the length columns. The solver still converges (the
+    /// region shrinks on rejection), but ellipse-heavy sketches at assembly
+    /// scale may need a larger iteration budget than pure point/circle
+    /// sketches. This is measured, not assumed — see the mixed-scale tests.
+    EllipsePhi(EllipseId),
 }
 
 #[cfg(test)]
