@@ -3,6 +3,7 @@
 //! Non-Uniform Rational B-Spline (NURBS) geometry is the standard
 //! representation for free-form curves and surfaces in CAD.
 
+pub(crate) mod banded;
 pub mod basis;
 pub mod bezier_clip;
 pub mod curvature;
