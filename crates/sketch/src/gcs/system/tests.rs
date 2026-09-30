@@ -2224,3 +2224,576 @@ fn arc_system_with_internal_tie_agrees() {
     assert!(expect.converged && got.converged);
     assert_contracted_eq(&expect, &got, "arc");
 }
+
+// ── B75 ellipse entity lifecycle ──────────────────────────────────
+
+#[test]
+fn add_ellipse_validates_inputs() {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    // Valid.
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.5).unwrap();
+    assert_eq!(sys.ellipse_count(), 1);
+    let data = sys.ellipse(e).unwrap();
+    assert_eq!((data.a, data.b, data.angle), (3.0, 2.0, 0.5));
+    // Bad center.
+    let orphan = sys
+        .add_point(PointData {
+            x: 9.0,
+            y: 9.0,
+            fixed: true,
+        })
+        .unwrap();
+    let _ = sys.remove_point(orphan).unwrap();
+    // Non-positive / non-finite axes rejected.
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(sys.add_ellipse(c, bad, 1.0, 0.0).is_err(), "a={bad}");
+        assert!(sys.add_ellipse(c, 1.0, bad, 0.0).is_err(), "b={bad}");
+    }
+    // Non-finite angle rejected; any finite angle (even huge) accepted.
+    assert!(sys.add_ellipse(c, 1.0, 1.0, f64::NAN).is_err());
+    assert!(sys.add_ellipse(c, 1.0, 1.0, 1e6).is_ok());
+}
+
+#[test]
+fn add_ellipse_rejects_stale_center() {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
+    // Center is in use by the ellipse.
+    assert!(sys.remove_point(c).is_err());
+    // Free the center by removing the ellipse first.
+    sys.remove_ellipse(e).unwrap();
+    assert_eq!(sys.ellipse_count(), 0);
+    assert!(sys.remove_point(c).is_ok());
+}
+
+#[test]
+fn remove_ellipse_refuses_referenced_entity() {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let p = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
+    let cid = sys
+        .add_constraint(Constraint::PointOnEllipse(p, e))
+        .unwrap();
+    // Referenced: refusal, and the constraint still solves afterwards.
+    assert!(sys.remove_ellipse(e).is_err());
+    // Removing the constraint releases the ellipse; the handle never dangles.
+    sys.remove_constraint(cid).unwrap();
+    sys.remove_ellipse(e).unwrap();
+    assert!(sys.ellipse(e).is_none());
+    // Double remove is a typed stale-handle error, not a panic.
+    assert!(sys.remove_ellipse(e).is_err());
+}
+
+#[test]
+fn ellipse_mut_edits_between_solves() {
+    // Drag sequence: solve, mutate the ellipse directly, re-solve.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 5.0))
+        .unwrap();
+    let r = sys.solve(100, TOL).unwrap();
+    assert!(r.converged);
+    assert!((sys.ellipse(e).unwrap().a - 5.0).abs() < 1e-9);
+    // Drag: reshape + rotate between solves.
+    {
+        let data = sys.ellipse_mut(e).unwrap();
+        data.b = 4.0;
+        data.angle = 0.25;
+    }
+    sys.add_constraint(Constraint::EllipseAxisB(e, 4.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.25))
+        .unwrap();
+    let r = sys.solve(100, TOL).unwrap();
+    assert!(r.converged);
+    let data = sys.ellipse(e).unwrap();
+    assert!((data.a - 5.0).abs() < 1e-9, "a={}", data.a);
+    assert!((data.b - 4.0).abs() < 1e-9, "b={}", data.b);
+    assert!((data.angle - 0.25).abs() < 1e-9, "phi={}", data.angle);
+}
+
+#[test]
+fn ellipse_free_dof_counts() {
+    // One free ellipse: 5 parameters (cx, cy, a, b, phi), no equations.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .unwrap();
+    sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
+    let dof = sys.dof();
+    assert_eq!(
+        (dof.dof, dof.rank, dof.num_params, dof.num_equations),
+        (5, 0, 5, 0)
+    );
+    // Fixed center: 3 left. Driving all three scalars closes the system.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 1.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
+    let dof = sys.dof();
+    assert_eq!((dof.dof, dof.num_params, dof.num_equations), (3, 3, 0));
+    sys.add_constraint(Constraint::EllipseAxisA(e, 3.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.0))
+        .unwrap();
+    let d = sys.solve_detailed(100, TOL).unwrap();
+    assert!(d.converged);
+    assert_eq!(d.classification, SolveClassification::Solved);
+    assert_eq!(d.dof, 0);
+}
+
+// ── B75 ellipse solves ────────────────────────────────────────────
+
+#[test]
+fn ellipse_axes_and_angle_drive_to_targets() {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 1.0, 1.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 6.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.5))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.7))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "max_r={}", r.max_residual);
+    let data = sys.ellipse(e).unwrap();
+    assert!((data.a - 6.0).abs() < 1e-9, "a={}", data.a);
+    assert!((data.b - 2.5).abs() < 1e-9, "b={}", data.b);
+    assert!((data.angle - 0.7).abs() < 1e-9, "phi={}", data.angle);
+}
+
+#[test]
+fn point_on_ellipse_pulls_free_point_onto_curve() {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 4.0, 2.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 4.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.0))
+        .unwrap();
+    let p = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 5.0,
+            fixed: false,
+        })
+        .unwrap();
+    // Pin x off the axis tip (x=2): the implicit residual is linear in y
+    // there (gradient y/2 ≈ 0.87), so the solve pins y tightly. Exactly at
+    // the tip the residual goes quadratic (y²/4) and a 1e-10 residual
+    // tolerance only pins y to ~2e-5 — geometry, not solver error.
+    sys.add_constraint(Constraint::FixX(p, 2.0)).unwrap();
+    sys.add_constraint(Constraint::PointOnEllipse(p, e))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "max_r={}", r.max_residual);
+    // (2/4)² + (y/2)² = 1 → y = √3 (positive branch from the y=5 start).
+    let pt = sys.point(p).unwrap();
+    assert!((pt.x - 2.0).abs() < 1e-9, "x={}", pt.x);
+    assert!((pt.y - 3.0f64.sqrt()).abs() < 1e-8, "y={}", pt.y);
+}
+
+#[test]
+fn tangent_line_ellipse_placement_solves() {
+    // Fixed axis-aligned ellipse; a two-point line through a free contact
+    // point becomes tangent there. Contact composition: point-on-ellipse +
+    // point-on-line (signed distance 0) + tangency direction.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 4.0, 2.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 4.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.0))
+        .unwrap();
+    // Contact starts near the first-quadrant arc; line starts horizontal-ish.
+    let q = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 1.5,
+            fixed: false,
+        })
+        .unwrap();
+    let a = sys
+        .add_point(PointData {
+            x: -6.0,
+            y: 6.0,
+            fixed: true,
+        })
+        .unwrap();
+    let b = sys
+        .add_point(PointData {
+            x: 6.0,
+            y: 6.5,
+            fixed: false,
+        })
+        .unwrap();
+    let line = sys.add_line(a, b).unwrap();
+    sys.add_constraint(Constraint::PointOnEllipse(q, e))
+        .unwrap();
+    sys.add_constraint(Constraint::PointLineDistance(q, line, 0.0))
+        .unwrap();
+    sys.add_constraint(Constraint::TangentLineEllipse(line, e, q))
+        .unwrap();
+    let r = sys.solve(500, 1e-10).unwrap();
+    assert!(r.converged, "max_r={}", r.max_residual);
+    // Independent geometric verification (not the solver residual): contact
+    // on the ellipse, contact on the line, line direction ⊥ gradient.
+    let (qx, qy) = (sys.point(q).unwrap().x, sys.point(q).unwrap().y);
+    assert!(((qx / 4.0) * (qx / 4.0) + (qy / 2.0) * (qy / 2.0) - 1.0).abs() < 1e-8);
+    let (ax, ay) = (sys.point(a).unwrap().x, sys.point(a).unwrap().y);
+    let (bx, by) = (sys.point(b).unwrap().x, sys.point(b).unwrap().y);
+    let (lx, ly) = (bx - ax, by - ay);
+    let len = lx.hypot(ly);
+    assert!((lx * (qy - ay) - ly * (qx - ax)).abs() / len < 1e-8);
+    let (gx, gy) = (2.0 * qx / 16.0, 2.0 * qy / 4.0);
+    assert!((lx * gx + ly * gy).abs() / (len * gx.hypot(gy)) < 1e-8);
+}
+
+#[test]
+fn concentric_and_equal_radii_couple_ellipses() {
+    let mut sys = GcsSystem::new();
+    let c1 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let c2 = sys
+        .add_point(PointData {
+            x: 9.0,
+            y: 9.0,
+            fixed: false,
+        })
+        .unwrap();
+    let e1 = sys.add_ellipse(c1, 5.0, 3.0, 0.2).unwrap();
+    let e2 = sys.add_ellipse(c2, 1.0, 1.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e1, 5.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e1, 3.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e1, 0.2))
+        .unwrap();
+    sys.add_constraint(Constraint::ConcentricEllipseEllipse(e1, e2))
+        .unwrap();
+    sys.add_constraint(Constraint::EqualEllipseRadii(e1, e2))
+        .unwrap();
+    let r = sys.solve(200, TOL).unwrap();
+    assert!(r.converged, "max_r={}", r.max_residual);
+    let p2 = sys.point(c2).unwrap();
+    assert!(
+        p2.x.abs() < 1e-9 && p2.y.abs() < 1e-9,
+        "({},{})",
+        p2.x,
+        p2.y
+    );
+    let d2 = sys.ellipse(e2).unwrap();
+    assert!(
+        (d2.a - 5.0).abs() < 1e-9 && (d2.b - 3.0).abs() < 1e-9,
+        "{d2:?}"
+    );
+}
+
+#[test]
+fn ellipse_couples_to_circle_and_arc_centers() {
+    // Mixed-component system: ellipse concentric with a circle and an arc,
+    // circle radius driven, arc radius tied — everything converges together.
+    let mut sys = GcsSystem::new();
+    let ce = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(ce, 4.0, 2.0, 0.3).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 4.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.3))
+        .unwrap();
+    let cc = sys
+        .add_point(PointData {
+            x: 7.0,
+            y: -3.0,
+            fixed: false,
+        })
+        .unwrap();
+    let circ = sys.add_circle(cc, 1.0).unwrap();
+    sys.add_constraint(Constraint::ConcentricEllipseCircle(e, circ))
+        .unwrap();
+    sys.add_constraint(Constraint::CircleRadius(circ, 2.0))
+        .unwrap();
+    let ca = sys
+        .add_point(PointData {
+            x: -4.0,
+            y: 8.0,
+            fixed: false,
+        })
+        .unwrap();
+    let s0 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .unwrap();
+    let s1 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .unwrap();
+    let arc = sys.add_arc(ca, s0, s1).unwrap();
+    sys.add_constraint(Constraint::ConcentricEllipseArc(e, arc))
+        .unwrap();
+    let r = sys.solve(300, TOL).unwrap();
+    assert!(r.converged, "max_r={}", r.max_residual);
+    for (id, name) in [(cc, "circle"), (ca, "arc")] {
+        let p = sys.point(id).unwrap();
+        assert!(
+            p.x.abs() < 1e-8 && p.y.abs() < 1e-8,
+            "{name}: ({},{})",
+            p.x,
+            p.y
+        );
+    }
+    assert!((sys.circle(circ).unwrap().radius - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn ellipse_redundant_and_inconsistent_systems() {
+    // Redundant: duplicate axis drive on a fully-driven ellipse classifies
+    // redundant, still solved. (A lone duplicate with free scalars left
+    // would be underConstrained by the classify precedence — DOF first.)
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 3.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 3.0))
+        .unwrap();
+    let d = sys.solve_detailed(100, TOL).unwrap();
+    assert!(d.converged);
+    assert_eq!(d.classification, SolveClassification::Redundant);
+    assert!(d.redundant);
+    // Inconsistent: conflicting axis drives fail and roll back exactly.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 3.0, 2.0, 0.1).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 3.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 9.0))
+        .unwrap();
+    let d = sys.solve_detailed(200, TOL).unwrap();
+    assert!(!d.converged);
+    assert_eq!(d.classification, SolveClassification::Unsatisfied);
+    assert!(d.rolled_back);
+    let data = sys.ellipse(e).unwrap();
+    assert!(
+        (data.a - 3.0).abs() < 1e-15,
+        "rollback must restore a, got {}",
+        data.a
+    );
+    assert!(
+        (data.b - 2.0).abs() < 1e-15,
+        "rollback must restore b, got {}",
+        data.b
+    );
+    assert!(
+        (data.angle - 0.1).abs() < 1e-15,
+        "rollback must restore phi, got {}",
+        data.angle
+    );
+}
+
+#[test]
+fn ellipse_translated_and_rotated_solves() {
+    // Same sketch at unit scale and translated by (1e3, -1e3) with a
+    // non-axis-aligned orientation: translation must not change the outcome.
+    for (ox, oy) in [(0.0, 0.0), (1e3, -1e3)] {
+        let mut sys = GcsSystem::new();
+        let c = sys
+            .add_point(PointData {
+                x: ox,
+                y: oy,
+                fixed: true,
+            })
+            .unwrap();
+        let e = sys.add_ellipse(c, 1.0, 1.0, 0.0).unwrap();
+        sys.add_constraint(Constraint::EllipseAxisA(e, 6.0))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAxisB(e, 2.5))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAngle(e, 0.7))
+            .unwrap();
+        let r = sys.solve(300, TOL).unwrap();
+        assert!(r.converged, "offset ({ox},{oy}): max_r={}", r.max_residual);
+        let data = sys.ellipse(e).unwrap();
+        assert!((data.a - 6.0).abs() < 1e-9, "a={}", data.a);
+        assert!((data.angle - 0.7).abs() < 1e-9, "phi={}", data.angle);
+    }
+}
+
+#[test]
+fn ellipse_mixed_scale_components_stay_independent() {
+    // Two disconnected ellipse systems at 1e-3 and 1e3 in one GcsSystem:
+    // per-component trust regions keep both converging.
+    let mut sys = GcsSystem::new();
+    let mut driven = Vec::new();
+    for (s, ox) in [(1e-3, 0.0), (1e3, 50.0 * 1e3)] {
+        let c = sys
+            .add_point(PointData {
+                x: ox,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let e = sys.add_ellipse(c, s, s, 0.0).unwrap();
+        sys.add_constraint(Constraint::EllipseAxisA(e, 6.0 * s))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAxisB(e, 2.5 * s))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAngle(e, 0.7))
+            .unwrap();
+        driven.push((e, s));
+    }
+    let r = sys.solve(300, 1e-10).unwrap();
+    assert!(r.converged, "max_r={}", r.max_residual);
+    for (e, s) in driven {
+        let data = sys.ellipse(e).unwrap();
+        assert!((data.a - 6.0 * s).abs() < 1e-9 * s.max(1.0), "a={}", data.a);
+        assert!((data.angle - 0.7).abs() < 1e-9, "phi={}", data.angle);
+    }
+}
+
+#[test]
+fn ellipse_drag_sequence_between_solves() {
+    // Drag the center point between solves (the browser drag pattern):
+    // each solve starts from the previous result and re-converges. The
+    // center is solver-fixed so the drag sticks — direct mutation still
+    // applies to fixed points (as does the `gcsSetPoint` binding) — while
+    // the free on-curve point re-settles onto the moved ellipse.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, 4.0, 2.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e, 4.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 2.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.0))
+        .unwrap();
+    let p = sys
+        .add_point(PointData {
+            x: 4.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .unwrap();
+    sys.add_constraint(Constraint::PointOnEllipse(p, e))
+        .unwrap();
+    sys.add_constraint(Constraint::FixY(p, 0.0)).unwrap();
+    for (cx, expected_px) in [(0.0, 4.0), (1.0, 5.0), (1.0, 5.0), (-2.0, 2.0)] {
+        sys.point_mut(c).unwrap().x = cx;
+        let r = sys.solve(200, TOL).unwrap();
+        assert!(r.converged, "drag to {cx}: max_r={}", r.max_residual);
+        let pt = sys.point(p).unwrap();
+        assert!(
+            (pt.x - expected_px).abs() < 1e-8,
+            "drag to {cx}: x={}",
+            pt.x
+        );
+    }
+}

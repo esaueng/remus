@@ -434,3 +434,123 @@ fn large_system_budget_reports_refusal_shape() {
     let jacobian_bytes = (num_equations as u64) * (n_params as u64) * 8;
     assert!(jacobian_bytes > 256 * 1024 * 1024);
 }
+
+/// B75 ellipse workloads (see `benches/gcs_perf.rs`). Each fixed-center
+/// driven ellipse carries 3 params (a, b, phi) and 3 equations — Solved
+/// with rank == num_params at every gated size.
+fn build_ellipse_driven(n_params: usize) -> GcsSystem {
+    assert!(n_params.is_multiple_of(3) && n_params >= 3);
+    let mut sys = GcsSystem::new();
+    for i in 0..n_params / 3 {
+        let ax = 20.0 * i as f64;
+        let center = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let ell = sys.add_ellipse(center, 1.0, 1.0, 0.0).unwrap();
+        sys.add_constraint(Constraint::EllipseAxisA(ell, 6.0))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAxisB(ell, 2.5))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAngle(ell, 0.7))
+            .unwrap();
+    }
+    sys
+}
+
+fn build_ellipse_mixed(n_params: usize) -> GcsSystem {
+    assert!(n_params.is_multiple_of(30) && n_params >= 30);
+    let mut sys = GcsSystem::new();
+    for i in 0..(3 * n_params / 10) {
+        let ax = 10.0 * i as f64;
+        let anchor = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let free = sys
+            .add_point(PointData {
+                x: ax + 1.0,
+                y: 1.0,
+                fixed: false,
+            })
+            .unwrap();
+        sys.add_constraint(Constraint::Distance(anchor, free, 5.0))
+            .unwrap();
+        sys.add_constraint(Constraint::FixY(free, 4.0)).unwrap();
+    }
+    for i in 0..(2 * n_params / 5 / 3) {
+        let ax = 1.0e4 + 20.0 * i as f64;
+        let center = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let ell = sys.add_ellipse(center, 1.0, 1.0, 0.0).unwrap();
+        sys.add_constraint(Constraint::EllipseAxisA(ell, 6.0))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAxisB(ell, 2.5))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAngle(ell, 0.7))
+            .unwrap();
+    }
+    sys
+}
+
+#[test]
+fn ellipse_driven_dimensions_and_outcome() {
+    for n_params in [9, 99] {
+        let mut sys = build_ellipse_driven(n_params);
+        let d = sys.dof();
+        assert_eq!(d.num_params, n_params);
+        assert_eq!(d.num_equations, n_params);
+        let r = sys.solve(MAX_ITER, TOL).unwrap();
+        assert!(r.converged, "n={n_params}: max_r={}", r.max_residual);
+        let det = sys.solve_detailed(MAX_ITER, TOL).unwrap();
+        assert!(det.converged);
+        assert_eq!(det.dof, 0);
+        assert_eq!(det.rank, n_params);
+        assert_eq!(det.classification, SolveClassification::Solved);
+        // Independent oracle: every ellipse reached its driven scalars.
+        for (_, data) in sys.ellipses() {
+            assert!((data.a - 6.0).abs() <= 1e-8, "n={n_params}: a {}", data.a);
+            assert!((data.b - 2.5).abs() <= 1e-8, "n={n_params}: b {}", data.b);
+            assert!(
+                (data.angle - 0.7).abs() <= 1e-8,
+                "n={n_params}: phi {}",
+                data.angle
+            );
+        }
+    }
+}
+
+#[test]
+fn ellipse_mixed_dimensions_and_outcome() {
+    for n_params in [30, 300] {
+        let mut sys = build_ellipse_mixed(n_params);
+        let d = sys.dof();
+        assert_eq!(d.num_params, n_params, "n={n_params}");
+        assert_eq!(d.num_equations, n_params, "n={n_params}");
+        let r = sys.solve(MAX_ITER, TOL).unwrap();
+        assert!(r.converged, "n={n_params}: max_r={}", r.max_residual);
+        let det = sys.solve_detailed(MAX_ITER, TOL).unwrap();
+        assert!(det.converged);
+        assert_eq!(det.dof, 0);
+        assert_eq!(det.classification, SolveClassification::Solved);
+        for (_, data) in sys.ellipses() {
+            assert!((data.a - 6.0).abs() <= 1e-8, "n={n_params}: a {}", data.a);
+            assert!(
+                (data.angle - 0.7).abs() <= 1e-8,
+                "n={n_params}: phi {}",
+                data.angle
+            );
+        }
+    }
+}

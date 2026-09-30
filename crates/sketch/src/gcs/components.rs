@@ -90,7 +90,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::constraint::{Constraint, ConstraintId, EntitySnapshot, residual_count};
-use super::entity::{ArcId, CircleId, LineId, ParamRef, PointId};
+use super::entity::{ArcId, CircleId, EllipseId, LineId, ParamRef, PointId};
 use super::system::GcsSystem;
 
 /// One independent block of the decomposed system.
@@ -160,6 +160,17 @@ impl Decomposition {
 /// radius, or both, while an arc reference always names the whole
 /// center/start/end triple (the arc's internal tie couples the triple through
 /// every live arc, so finer arc splitting could never separate anything).
+/// An ellipse reference names the center point and/or the scalar parameters
+/// (`a`, `b`, `phi`) per variant, following the same precision rule as
+/// circles: `ConcentricEllipseCircle` names the circle center but not its
+/// radius, and the ellipse center but not its scalars, because those
+/// residuals never read them. Unlike arcs — whose internal tie couples the
+/// center/start/end triple through every live arc — ellipses carry no
+/// internal constraint, so a center-only reference is exact and keeps a
+/// center-coincidence system independent from axis-driving constraints on
+/// the same ellipse. Variants whose residual reads the implicit form
+/// (`PointOnEllipse`, `TangentLineEllipse`) name the full center-plus-scalars
+/// set, which re-joins everything the formula couples.
 ///
 /// The contract per variant is the union of parameters appearing in any of its
 /// residual rows — never a numerical observation. `FixX` names only X,
@@ -183,6 +194,8 @@ struct StructuralRefs {
     circle_radii: Vec<CircleId>,
     /// Arcs, always expanded to the full center/start/end triple.
     arcs: Vec<ArcId>,
+    /// `(ellipse, use_center, use_a, use_b, use_phi)`.
+    ellipses: Vec<(EllipseId, bool, bool, bool, bool)>,
 }
 
 /// Direct entity handles named by a constraint (exhaustive over variants).
@@ -193,6 +206,7 @@ fn direct_refs(c: &Constraint) -> StructuralRefs {
         circle_centers: Vec::new(),
         circle_radii: Vec::new(),
         arcs: Vec::new(),
+        ellipses: Vec::new(),
     };
     match c {
         Constraint::Coincident(p1, p2) => {
@@ -293,6 +307,42 @@ fn direct_refs(c: &Constraint) -> StructuralRefs {
             refs.points.push((*p2, true, true));
             refs.points.push((*center, true, true));
         }
+        Constraint::PointOnEllipse(pt, ell) => {
+            refs.points.push((*pt, true, true));
+            refs.ellipses.push((*ell, true, true, true, true));
+        }
+        Constraint::ConcentricEllipseEllipse(e1, e2) => {
+            // Center-only on both sides: the residuals never read the axes
+            // or the orientation.
+            refs.ellipses.push((*e1, true, false, false, false));
+            refs.ellipses.push((*e2, true, false, false, false));
+        }
+        Constraint::ConcentricEllipseCircle(ell, circ) => {
+            refs.ellipses.push((*ell, true, false, false, false));
+            refs.circle_centers.push((*circ, true, true));
+        }
+        Constraint::ConcentricEllipseArc(ell, arc) => {
+            refs.ellipses.push((*ell, true, false, false, false));
+            refs.arcs.push(*arc);
+        }
+        Constraint::TangentLineEllipse(line, ell, contact) => {
+            refs.lines.push((*line, true, true));
+            refs.ellipses.push((*ell, true, true, true, true));
+            refs.points.push((*contact, true, true));
+        }
+        Constraint::EllipseAxisA(ell, _) => {
+            refs.ellipses.push((*ell, false, true, false, false));
+        }
+        Constraint::EllipseAxisB(ell, _) => {
+            refs.ellipses.push((*ell, false, false, true, false));
+        }
+        Constraint::EllipseAngle(ell, _) => {
+            refs.ellipses.push((*ell, false, false, false, true));
+        }
+        Constraint::EqualEllipseRadii(e1, e2) => {
+            refs.ellipses.push((*e1, false, true, true, false));
+            refs.ellipses.push((*e2, false, true, true, false));
+        }
     }
     refs
 }
@@ -351,6 +401,22 @@ pub fn constraint_param_indices(
             push_point(arc.end, true, true, &mut params);
         }
     }
+    for (id, use_center, use_a, use_b, use_phi) in refs.ellipses {
+        if let Some(ellipse) = sys.ellipse(id) {
+            if use_center {
+                push_point(ellipse.center, true, true, &mut params);
+            }
+            if use_a {
+                params.push(ParamRef::EllipseA(id));
+            }
+            if use_b {
+                params.push(ParamRef::EllipseB(id));
+            }
+            if use_phi {
+                params.push(ParamRef::EllipsePhi(id));
+            }
+        }
+    }
 
     let mut indices: Vec<usize> = params
         .iter()
@@ -379,13 +445,16 @@ pub struct ComponentEntities {
     pub circles: Vec<(CircleId, (PointId, f64))>,
     /// `(arc, (center, start, end))` for every arc the component can read.
     pub arcs: Vec<(ArcId, (PointId, PointId, PointId))>,
+    /// `(ellipse, (center, a, b, phi))` for every ellipse the component reads.
+    pub ellipses: Vec<(EllipseId, (PointId, f64, f64, f64))>,
 }
 
 /// Collect the entity subset for a constraint list, in arena order.
 ///
 /// The subset covers every entity the component's constraints can read: named
 /// points at both coordinates, both endpoints of named lines, circle centers
-/// and radii, and full arc triples. Masks are widened to full entities here —
+/// and radii, full arc triples, and ellipse centers plus their scalar
+/// parameters. Masks are widened to full entities here —
 /// snapshots are keyed by entity, and a point's fixed coordinates ride along
 /// at base value either way.
 pub fn component_entities(constraints: &[Constraint], sys: &GcsSystem) -> ComponentEntities {
@@ -394,12 +463,14 @@ pub fn component_entities(constraints: &[Constraint], sys: &GcsSystem) -> Compon
     let mut lines: Vec<LineId> = Vec::new();
     let mut circles: Vec<CircleId> = Vec::new();
     let mut arcs: Vec<ArcId> = Vec::new();
+    let mut ellipses: Vec<EllipseId> = Vec::new();
     for refs in &refs_list {
         points.extend(refs.points.iter().map(|(id, _, _)| *id));
         lines.extend(refs.lines.iter().map(|(id, _, _)| *id));
         circles.extend(refs.circle_centers.iter().map(|(id, _, _)| *id));
         circles.extend(refs.circle_radii.iter().copied());
         arcs.extend(refs.arcs.iter().copied());
+        ellipses.extend(refs.ellipses.iter().map(|(id, _, _, _, _)| *id));
     }
     // Snapshots are keyed by entity: expand structural references to the
     // points they read through (line endpoints, circle centers, arc triples).
@@ -423,6 +494,11 @@ pub fn component_entities(constraints: &[Constraint], sys: &GcsSystem) -> Compon
             points.push(arc.end);
         }
     }
+    for id in &ellipses {
+        if let Some(ellipse) = sys.ellipse(*id) {
+            points.push(ellipse.center);
+        }
+    }
     points.sort_by_key(|id: &PointId| id.index());
     points.dedup();
     lines.sort_by_key(|id: &LineId| id.index());
@@ -431,6 +507,8 @@ pub fn component_entities(constraints: &[Constraint], sys: &GcsSystem) -> Compon
     circles.dedup();
     arcs.sort_by_key(|id: &ArcId| id.index());
     arcs.dedup();
+    ellipses.sort_by_key(|id: &EllipseId| id.index());
+    ellipses.dedup();
 
     let point_bases: Vec<(PointId, f64, f64)> = points
         .into_iter()
@@ -448,18 +526,25 @@ pub fn component_entities(constraints: &[Constraint], sys: &GcsSystem) -> Compon
         .into_iter()
         .filter_map(|id| sys.arc(id).map(|a| (id, (a.center, a.start, a.end))))
         .collect();
+    let ellipse_defs: Vec<(EllipseId, (PointId, f64, f64, f64))> = ellipses
+        .into_iter()
+        .filter_map(|id| sys.ellipse(id).map(|e| (id, (e.center, e.a, e.b, e.angle))))
+        .collect();
     ComponentEntities {
         points: point_bases,
         lines: line_defs,
         circles: circle_defs,
         arcs: arc_defs,
+        ellipses: ellipse_defs,
     }
 }
 
 /// Build a snapshot of exactly the component's entities at base values.
 ///
-/// Structure entries (lines, circles, arcs) are static for the solve; point
-/// coordinates are refreshed per evaluation by [`refresh_subset_snapshot`].
+/// Structure entries (lines, circles, arcs, ellipses) are static for the
+/// solve; point coordinates and scalar parameters are refreshed per
+/// evaluation by [`refresh_subset_snapshot`], [`refresh_subset_radii`], and
+/// [`refresh_subset_ellipses`].
 pub fn subset_snapshot(entities: &ComponentEntities) -> EntitySnapshot {
     EntitySnapshot {
         points: entities
@@ -478,6 +563,11 @@ pub fn subset_snapshot(entities: &ComponentEntities) -> EntitySnapshot {
             .map(|(id, def)| (*id, *def))
             .collect(),
         arcs: entities.arcs.iter().map(|(id, def)| (*id, *def)).collect(),
+        ellipses: entities
+            .ellipses
+            .iter()
+            .map(|(id, def)| (*id, *def))
+            .collect(),
     }
 }
 
@@ -521,6 +611,32 @@ pub fn refresh_subset_radii(
             .get(&ParamRef::CircleRadius(*id))
             .map_or(*base_r, |&i| local[i]);
         snap.circles.insert(*id, (*center, r));
+    }
+}
+
+/// Refresh a subset snapshot's ellipse scalars from component-local parameters.
+///
+/// Covers the `(a, b, phi)` half of ellipse definitions; the center point
+/// rides with [`refresh_subset_snapshot`] at its base unless free.
+#[allow(clippy::type_complexity)]
+pub fn refresh_subset_ellipses(
+    snap: &mut EntitySnapshot,
+    ellipses: &[(EllipseId, (PointId, f64, f64, f64))],
+    local: &[f64],
+    local_index: &HashMap<ParamRef, usize>,
+) {
+    snap.ellipses.clear();
+    for (id, (center, base_a, base_b, base_phi)) in ellipses {
+        let a = local_index
+            .get(&ParamRef::EllipseA(*id))
+            .map_or(*base_a, |&i| local[i]);
+        let b = local_index
+            .get(&ParamRef::EllipseB(*id))
+            .map_or(*base_b, |&i| local[i]);
+        let phi = local_index
+            .get(&ParamRef::EllipsePhi(*id))
+            .map_or(*base_phi, |&i| local[i]);
+        snap.ellipses.insert(*id, (*center, a, b, phi));
     }
 }
 
