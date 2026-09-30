@@ -646,3 +646,111 @@ fn large_fixtures_pin_block_dimensions_and_byte_sizes() {
     assert_eq!((chain_blocks, pair_blocks), (1, 250));
     assert_eq!(block_bytes, 500 * 500 * 8 + 250 * 2 * 2 * 8);
 }
+
+#[test]
+fn ellipse_point_on_names_full_scalar_set() {
+    use super::super::entity::ParamRef::{EllipseA as A, EllipseB as B, EllipsePhi as P};
+    let mut sys = GcsSystem::new();
+    let center = free_pt(&mut sys, 0.0, 0.0);
+    let pt = free_pt(&mut sys, 3.0, 0.0);
+    let ell = sys.add_ellipse(center, 3.0, 2.0, 0.0).unwrap();
+    let c = Constraint::PointOnEllipse(pt, ell);
+    let idx = param_index_of(&mut sys);
+    let mut got = constraint_param_indices(&c, &sys, &idx);
+    got.sort_unstable();
+    let mut want = vec![
+        idx[&X(pt)],
+        idx[&Y(pt)],
+        idx[&X(center)],
+        idx[&Y(center)],
+        idx[&A(ell)],
+        idx[&B(ell)],
+        idx[&P(ell)],
+    ];
+    want.sort_unstable();
+    assert_eq!(got, want);
+    // The degenerate zero-gradient case keeps the same structural edge:
+    // a coincident contact zeroes analytic entries but must not split.
+    let c2 = Constraint::TangentLineEllipse(sys.add_line(center, pt).unwrap(), ell, center);
+    let idx = param_index_of(&mut sys);
+    let got = constraint_param_indices(&c2, &sys, &idx);
+    assert!(got.contains(&idx[&P(ell)]), "phi stays structural: {got:?}");
+    assert!(got.contains(&idx[&A(ell)]), "a stays structural: {got:?}");
+}
+
+#[test]
+fn ellipse_concentric_names_centers_only() {
+    use super::super::entity::ParamRef::{EllipseA as A, EllipseB as B, EllipsePhi as P};
+    let mut sys = GcsSystem::new();
+    let c1 = free_pt(&mut sys, 0.0, 0.0);
+    let c2 = free_pt(&mut sys, 5.0, 0.0);
+    let e1 = sys.add_ellipse(c1, 3.0, 2.0, 0.0).unwrap();
+    let e2 = sys.add_ellipse(c2, 4.0, 1.0, 0.0).unwrap();
+    // Center-only refs: a concentric pair plus an axis drive on e1's `a`
+    // splits three ways — the center block, the scalar block, and the free
+    // group of untouched scalars — exactly like the circle center/radius
+    // split. The axis drive must NOT join the center block.
+    sys.add_constraint(Constraint::ConcentricEllipseEllipse(e1, e2))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAxisA(e1, 3.0))
+        .unwrap();
+    let d = decompose(&mut sys);
+    assert_eq!(d.components.len(), 3, "{d:?}");
+    let normal = d
+        .components
+        .iter()
+        .filter(|c| !c.is_free() && !c.is_pinned())
+        .count();
+    assert_eq!(normal, 2, "{d:?}");
+    // Joining needs a full-set constraint: point-on-ellipse touches the
+    // center and the scalars, so adding one merges the center block, the
+    // scalar block, and the free point into a single component.
+    let p = free_pt(&mut sys, 3.0, 0.0);
+    sys.add_constraint(Constraint::PointOnEllipse(p, e1))
+        .unwrap();
+    let d = decompose(&mut sys);
+    assert_eq!(d.components.len(), 2, "{d:?}");
+    // e2's untouched scalars remain the lone free group; everything else
+    // (both centers, e1's scalars, p) solved as one block.
+    let free = d.components.iter().find(|c| c.is_free()).unwrap();
+    assert_eq!(free.params.len(), 3, "{d:?}");
+    let _ = (A(e1), B(e1), P(e1));
+}
+
+#[test]
+fn disjoint_ellipse_systems_solve_independently() {
+    // Two disconnected driven ellipses: decomposition splits, solve
+    // converges on both, matching the dense single-system result.
+    let build = || {
+        let mut sys = GcsSystem::new();
+        let mut want = Vec::new();
+        for (s, ox) in [(2.0, 0.0), (5.0, 100.0)] {
+            let c = fixed_pt(&mut sys, ox, 0.0);
+            let e = sys.add_ellipse(c, 1.0, 1.0, 0.0).unwrap();
+            sys.add_constraint(Constraint::EllipseAxisA(e, 3.0 * s))
+                .unwrap();
+            sys.add_constraint(Constraint::EllipseAxisB(e, 1.5 * s))
+                .unwrap();
+            sys.add_constraint(Constraint::EllipseAngle(e, 0.4))
+                .unwrap();
+            want.push((e, 3.0 * s, 1.5 * s));
+        }
+        (sys, want)
+    };
+    let (mut sys, want) = build();
+    // Fixed centers contribute no parameters, so each scalar drive is its
+    // own 1×1 block: six independent components, the finest correct split.
+    let d = decompose(&mut sys);
+    assert_eq!(d.components.len(), 6, "{d:?}");
+    for comp in &d.components {
+        assert_eq!(comp.params.len(), 1, "{d:?}");
+        assert_eq!(comp.constraint_ids.len(), 1, "{d:?}");
+    }
+    let r = sys.solve(200, 1e-10).unwrap();
+    assert!(r.converged, "{r:?}");
+    for (e, a, b) in want {
+        let data = sys.ellipse(e).unwrap();
+        assert!((data.a - a).abs() < 1e-9, "{data:?}");
+        assert!((data.b - b).abs() < 1e-9, "{data:?}");
+    }
+}

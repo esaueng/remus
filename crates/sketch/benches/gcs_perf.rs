@@ -288,6 +288,117 @@ fn sketch_perf(c: &mut Criterion) {
     bench_drag(c);
     bench_mixed_sizes(c);
     bench_large_independent(c);
+    bench_ellipse_scaling(c, "ellipse_driven", build_ellipse_driven);
+    bench_ellipse_scaling(c, "ellipse_mixed", build_ellipse_mixed);
+}
+
+/// B75 ellipse workloads: `n_params` counts free solver parameters.
+/// A fixed-center driven ellipse carries 3 (a, b, phi).
+fn build_ellipse_driven(n_params: usize) -> GcsSystem {
+    assert!(n_params.is_multiple_of(3) && n_params >= 3);
+    let mut sys = GcsSystem::new();
+    for i in 0..n_params / 3 {
+        let ax = 20.0 * i as f64;
+        let center = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let ell = sys.add_ellipse(center, 1.0, 1.0, 0.0).unwrap();
+        sys.add_constraint(Constraint::EllipseAxisA(ell, 6.0))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAxisB(ell, 2.5))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAngle(ell, 0.7))
+            .unwrap();
+    }
+    sys
+}
+
+/// Mixed components: disjoint distance pairs beside driven ellipses, so the
+/// component path handles heterogeneous blocks in one solve.
+///
+/// `n_params` must be a multiple of 30: 3/5 fall on distance pairs (2 params
+/// each) and 2/5 on driven ellipses (3 params each) at a far offset, so a
+/// shared trust region would couple unrelated scales.
+fn build_ellipse_mixed(n_params: usize) -> GcsSystem {
+    assert!(n_params.is_multiple_of(30) && n_params >= 30);
+    let mut sys = GcsSystem::new();
+    // 3/5 of params: classic anchor/free distance pairs (2 params each).
+    // Pair count is (3n/5)/2 = 3n/10.
+    for i in 0..(3 * n_params / 10) {
+        let ax = 10.0 * i as f64;
+        let anchor = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let free = sys
+            .add_point(PointData {
+                x: ax + 1.0,
+                y: 1.0,
+                fixed: false,
+            })
+            .unwrap();
+        sys.add_constraint(Constraint::Distance(anchor, free, 5.0))
+            .unwrap();
+        sys.add_constraint(Constraint::FixY(free, 4.0)).unwrap();
+    }
+    // 2/5 of params: driven ellipses (3 params each) at a far offset, so a
+    // shared trust region would couple unrelated scales.
+    // Ellipse count is (2n/5)/3 = 2n/15.
+    for i in 0..(2 * n_params / 5 / 3) {
+        let ax = 1.0e4 + 20.0 * i as f64;
+        let center = sys
+            .add_point(PointData {
+                x: ax,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let ell = sys.add_ellipse(center, 1.0, 1.0, 0.0).unwrap();
+        sys.add_constraint(Constraint::EllipseAxisA(ell, 6.0))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAxisB(ell, 2.5))
+            .unwrap();
+        sys.add_constraint(Constraint::EllipseAngle(ell, 0.7))
+            .unwrap();
+    }
+    sys
+}
+
+/// Ellipse scaling: driven ellipses at 9/99/999 params, mixed at 30/300/990.
+fn bench_ellipse_scaling(c: &mut Criterion, name: &str, build: fn(usize) -> GcsSystem) {
+    let sizes: &[usize] = if name == "ellipse_mixed" {
+        &[30, 300, 990]
+    } else {
+        &[9, 99, 999]
+    };
+    let mut group = c.benchmark_group(format!("sketch/{name}"));
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(2));
+    for size in sizes.iter().copied() {
+        group.bench_with_input(BenchmarkId::new("solve", size), &size, |b, &size| {
+            b.iter_batched(
+                || build(size),
+                |mut sys| black_box(sys.solve(MAX_ITER, TOL)).unwrap(),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        group.bench_with_input(BenchmarkId::new("detailed", size), &size, |b, &size| {
+            b.iter_batched(
+                || build(size),
+                |mut sys| black_box(sys.solve_detailed(MAX_ITER, TOL)).unwrap(),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
 }
 
 /// Mixed block-size distribution at 100/1000 parameters.

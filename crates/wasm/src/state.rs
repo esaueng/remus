@@ -32,6 +32,8 @@ pub struct GcsSketchState {
     pub circles: Vec<remus_sketch::CircleId>,
     /// JS handle → arc id.
     pub arcs: Vec<remus_sketch::ArcId>,
+    /// JS handle → ellipse id.
+    pub ellipses: Vec<remus_sketch::EllipseId>,
     /// JS handle → constraint id.
     pub constraints: Vec<remus_sketch::ConstraintId>,
 }
