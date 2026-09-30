@@ -3,8 +3,8 @@
 //! 2D parametric geometric constraint solver for sketch-mode design.
 //!
 //! Provides a production-grade GCS (Geometric Constraint System) with:
-//! - **Entities**: Points, Lines, Circles with generational arena handles
-//! - **Constraints**: 26 constraint types with analytic Jacobians
+//! - **Entities**: Points, Lines, Circles, Arcs, Ellipses with generational arena handles
+//! - **Constraints**: 35 constraint types with analytic Jacobians
 //! - **Solver**: DogLeg trust-region (globally convergent)
 //! - **DOF analysis**: QR-based rank detection
 //! - **Diagnostics**: transactional [`GcsSystem::solve_detailed`], reporting
@@ -30,8 +30,8 @@ mod gcs;
 
 pub use gcs::{
     ArcData, ArcId, CircleData, CircleId, Constraint, ConstraintEntry, ConstraintId,
-    ConstraintResidual, DofAnalysis, GcsSystem, LineData, LineId, PointData, PointId,
-    SolveClassification, SolveDiagnostics, SolveResult, classify_solve,
+    ConstraintResidual, DofAnalysis, EllipseData, EllipseId, GcsSystem, LineData, LineId,
+    PointData, PointId, SolveClassification, SolveDiagnostics, SolveResult, classify_solve,
 };
 
 /// Errors from the sketch constraint solver.

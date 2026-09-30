@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::SketchError;
 
 use super::components::{
-    Component, Decomposition, component_entities, decompose, refresh_subset_radii,
-    refresh_subset_snapshot, subset_snapshot,
+    Component, Decomposition, component_entities, decompose, refresh_subset_ellipses,
+    refresh_subset_radii, refresh_subset_snapshot, subset_snapshot,
 };
 use super::constraint::{
     Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, eval_jacobian,
@@ -15,14 +15,15 @@ use super::constraint::{
 use super::diagnostics::{ConstraintResidual, SolveDiagnostics, classify as classify_solve};
 use super::dof::{self, DofAnalysis};
 use super::entity::{
-    ArcData, ArcId, CircleData, CircleId, GenArena, LineData, LineId, ParamRef, PointData, PointId,
+    ArcData, ArcId, CircleData, CircleId, EllipseData, EllipseId, GenArena, LineData, LineId,
+    ParamRef, PointData, PointId,
 };
 use super::final_eval::FinalEvaluation;
 use super::solver::{DoglegWorkspace, SolveResult, SolveStats};
 
 /// The geometric constraint system.
 ///
-/// Owns all entities (points, lines, circles) and constraints.
+/// Owns all entities (points, lines, circles, arcs, ellipses) and constraints.
 /// Provides CRUD operations and orchestrates the solver.
 #[derive(Debug)]
 pub struct GcsSystem {
@@ -30,6 +31,7 @@ pub struct GcsSystem {
     lines: GenArena<LineData>,
     circles: GenArena<CircleData>,
     arcs: GenArena<ArcData>,
+    ellipses: GenArena<EllipseData>,
     constraints: GenArena<ConstraintEntry>,
     /// Internal constraints auto-added by `add_arc` (center–end distance).
     /// Keyed by `ArcId` so they can be removed with the arc.
@@ -49,6 +51,7 @@ impl Clone for GcsSystem {
             lines: self.lines.clone(),
             circles: self.circles.clone(),
             arcs: self.arcs.clone(),
+            ellipses: self.ellipses.clone(),
             constraints: self.constraints.clone(),
             arc_internal_constraints: self.arc_internal_constraints.clone(),
             param_map: self.param_map.clone(),
@@ -102,6 +105,7 @@ impl GcsSystem {
             lines: GenArena::new(),
             circles: GenArena::new(),
             arcs: GenArena::new(),
+            ellipses: GenArena::new(),
             constraints: GenArena::new(),
             arc_internal_constraints: HashMap::new(),
             param_map: Vec::new(),
@@ -141,13 +145,14 @@ impl GcsSystem {
         self.points.get_mut(id)
     }
 
-    /// Remove a point. Fails if referenced by any line, circle, or constraint.
+    /// Remove a point. Fails if referenced by any line, circle, arc, ellipse,
+    /// or constraint.
     ///
     /// # Errors
     ///
     /// Returns `SketchError::EntityInUse` if the point is referenced by a line,
-    /// circle, or constraint. Returns `SketchError::InvalidHandle` if the handle
-    /// is stale or invalid.
+    /// circle, arc center, ellipse center, or constraint. Returns
+    /// `SketchError::InvalidHandle` if the handle is stale or invalid.
     pub fn remove_point(&mut self, id: PointId) -> Result<PointData, SketchError> {
         for (_, line) in self.lines.iter() {
             if line.p1 == id || line.p2 == id {
@@ -161,6 +166,11 @@ impl GcsSystem {
         }
         for (_, arc) in self.arcs.iter() {
             if arc.center == id || arc.start == id || arc.end == id {
+                return Err(SketchError::EntityInUse);
+            }
+        }
+        for (_, ellipse) in self.ellipses.iter() {
+            if ellipse.center == id {
                 return Err(SketchError::EntityInUse);
             }
         }
@@ -244,6 +254,90 @@ impl GcsSystem {
         }
         self.dirty = true;
         self.circles.remove(id).ok_or(SketchError::InvalidHandle)
+    }
+
+    /// Add a full ellipse with a center point, two semiaxes, and an orientation.
+    ///
+    /// See [`EllipseData`] for the numerical contract: `a` and `b` must be
+    /// finite and strictly positive, `angle` must be finite (radians, stored
+    /// as given). No ordering is enforced between `a` and `b`, and no
+    /// internal constraint is installed — a full ellipse has no endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SketchError::InvalidHandle` if the center point handle is invalid.
+    /// Returns `SketchError::InvalidValue` if a semiaxis is NaN, infinite, or
+    /// non-positive, or if the angle is NaN or infinite.
+    pub fn add_ellipse(
+        &mut self,
+        center: PointId,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<EllipseId, SketchError> {
+        if !self.points.contains(center) {
+            return Err(SketchError::InvalidHandle);
+        }
+        if !(a.is_finite() && a > 0.0) {
+            return Err(SketchError::InvalidValue);
+        }
+        if !(b.is_finite() && b > 0.0) {
+            return Err(SketchError::InvalidValue);
+        }
+        if !angle.is_finite() {
+            return Err(SketchError::InvalidValue);
+        }
+        self.dirty = true;
+        Ok(self.ellipses.insert(EllipseData {
+            center,
+            a,
+            b,
+            angle,
+        }))
+    }
+
+    /// Get an ellipse by handle.
+    #[must_use]
+    pub fn ellipse(&self, id: EllipseId) -> Option<&EllipseData> {
+        self.ellipses.get(id)
+    }
+
+    /// Get a mutable reference to an ellipse (for drag/edit sequences between
+    /// solves: move the center, reshape the axes, or rotate, then re-solve).
+    pub fn ellipse_mut(&mut self, id: EllipseId) -> Option<&mut EllipseData> {
+        self.ellipses.get_mut(id)
+    }
+
+    /// Remove an ellipse. Fails if referenced by any constraint.
+    ///
+    /// Ellipses carry no internal constraint, so removal deletes exactly the
+    /// entity. Deleting a referenced ellipse is refused — constraints never
+    /// dangle — following the established [`remove_circle`](Self::remove_circle)
+    /// contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SketchError::EntityInUse` if the ellipse is referenced by a constraint.
+    /// Returns `SketchError::InvalidHandle` if the handle is stale or invalid.
+    pub fn remove_ellipse(&mut self, id: EllipseId) -> Result<EllipseData, SketchError> {
+        for (_, entry) in self.constraints.iter() {
+            if constraint_references_ellipse(&entry.constraint, id) {
+                return Err(SketchError::EntityInUse);
+            }
+        }
+        self.dirty = true;
+        self.ellipses.remove(id).ok_or(SketchError::InvalidHandle)
+    }
+
+    /// Number of ellipses.
+    #[must_use]
+    pub fn ellipse_count(&self) -> usize {
+        self.ellipses.len()
+    }
+
+    /// Iterate over all ellipses.
+    pub fn ellipses(&self) -> impl Iterator<Item = (EllipseId, &EllipseData)> {
+        self.ellipses.iter()
     }
 
     /// Add an arc defined by center, start, and end points.
@@ -527,12 +621,14 @@ impl GcsSystem {
             lines: HashMap::with_capacity(self.lines.len()),
             circles: HashMap::with_capacity(self.circles.len()),
             arcs: HashMap::with_capacity(self.arcs.len()),
+            ellipses: HashMap::with_capacity(self.ellipses.len()),
         };
         let mut snap_j = EntitySnapshot {
             points: HashMap::with_capacity(self.points.len()),
             lines: HashMap::with_capacity(self.lines.len()),
             circles: HashMap::with_capacity(self.circles.len()),
             arcs: HashMap::with_capacity(self.arcs.len()),
+            ellipses: HashMap::with_capacity(self.ellipses.len()),
         };
 
         let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
@@ -713,6 +809,7 @@ impl GcsSystem {
         let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
             refresh_subset_snapshot(&mut snap_r, &entities.points, p, &local_index);
             refresh_subset_radii(&mut snap_r, &entities.circles, p, &local_index);
+            refresh_subset_ellipses(&mut snap_r, &entities.ellipses, p, &local_index);
             out.clear();
             for c in &comp.constraints {
                 eval_residuals(c, &snap_r, out);
@@ -721,6 +818,7 @@ impl GcsSystem {
         let mut jacobian_fill = |p: &[f64], out: &mut [f64]| {
             refresh_subset_snapshot(&mut snap_j, &entities.points, p, &local_index);
             refresh_subset_radii(&mut snap_j, &entities.circles, p, &local_index);
+            refresh_subset_ellipses(&mut snap_j, &entities.ellipses, p, &local_index);
             out.fill(0.0);
             let mut row = 0;
             {
@@ -1291,6 +1389,18 @@ impl GcsSystem {
             self.param_index.insert(ParamRef::CircleRadius(id), idx);
         }
 
+        for (id, _) in self.ellipses.iter() {
+            let idx = self.param_map.len();
+            self.param_map.push(ParamRef::EllipseA(id));
+            self.param_index.insert(ParamRef::EllipseA(id), idx);
+            let idx = self.param_map.len();
+            self.param_map.push(ParamRef::EllipseB(id));
+            self.param_index.insert(ParamRef::EllipseB(id), idx);
+            let idx = self.param_map.len();
+            self.param_map.push(ParamRef::EllipsePhi(id));
+            self.param_index.insert(ParamRef::EllipsePhi(id), idx);
+        }
+
         self.dirty = false;
     }
 
@@ -1306,6 +1416,9 @@ impl GcsSystem {
                 ParamRef::PointX(id) => self.points.get(*id).map_or(0.0, |p| p.x),
                 ParamRef::PointY(id) => self.points.get(*id).map_or(0.0, |p| p.y),
                 ParamRef::CircleRadius(id) => self.circles.get(*id).map_or(0.0, |c| c.radius),
+                ParamRef::EllipseA(id) => self.ellipses.get(*id).map_or(0.0, |e| e.a),
+                ParamRef::EllipseB(id) => self.ellipses.get(*id).map_or(0.0, |e| e.b),
+                ParamRef::EllipsePhi(id) => self.ellipses.get(*id).map_or(0.0, |e| e.angle),
             })
             .collect()
     }
@@ -1333,6 +1446,21 @@ impl GcsSystem {
                         c.radius = params[i];
                     }
                 }
+                ParamRef::EllipseA(id) => {
+                    if let Some(e) = self.ellipses.get_mut(*id) {
+                        e.a = params[i];
+                    }
+                }
+                ParamRef::EllipseB(id) => {
+                    if let Some(e) = self.ellipses.get_mut(*id) {
+                        e.b = params[i];
+                    }
+                }
+                ParamRef::EllipsePhi(id) => {
+                    if let Some(e) = self.ellipses.get_mut(*id) {
+                        e.angle = params[i];
+                    }
+                }
             }
         }
     }
@@ -1355,6 +1483,11 @@ impl GcsSystem {
                 .arcs
                 .iter()
                 .map(|(id, d)| (id, (d.center, d.start, d.end)))
+                .collect(),
+            ellipses: self
+                .ellipses
+                .iter()
+                .map(|(id, d)| (id, (d.center, d.a, d.b, d.angle)))
                 .collect(),
         }
     }
@@ -1477,6 +1610,43 @@ impl GcsSystem {
                 self.check_point(*p2)?;
                 self.check_point(*center)?;
             }
+            Constraint::PointOnEllipse(pt, ell) => {
+                self.check_point(*pt)?;
+                self.check_ellipse(*ell)?;
+            }
+            Constraint::ConcentricEllipseEllipse(e1, e2) => {
+                self.check_ellipse(*e1)?;
+                self.check_ellipse(*e2)?;
+            }
+            Constraint::ConcentricEllipseCircle(ell, circ) => {
+                self.check_ellipse(*ell)?;
+                self.check_circle(*circ)?;
+            }
+            Constraint::ConcentricEllipseArc(ell, arc) => {
+                self.check_ellipse(*ell)?;
+                self.check_arc(*arc)?;
+            }
+            Constraint::TangentLineEllipse(line, ell, contact) => {
+                self.check_line(*line)?;
+                self.check_ellipse(*ell)?;
+                self.check_point(*contact)?;
+            }
+            Constraint::EllipseAxisA(ell, value) | Constraint::EllipseAxisB(ell, value) => {
+                self.check_ellipse(*ell)?;
+                if !(value.is_finite() && *value > 0.0) {
+                    return Err(SketchError::InvalidValue);
+                }
+            }
+            Constraint::EllipseAngle(ell, target) => {
+                self.check_ellipse(*ell)?;
+                if !target.is_finite() {
+                    return Err(SketchError::InvalidValue);
+                }
+            }
+            Constraint::EqualEllipseRadii(e1, e2) => {
+                self.check_ellipse(*e1)?;
+                self.check_ellipse(*e2)?;
+            }
         }
         Ok(())
     }
@@ -1507,6 +1677,14 @@ impl GcsSystem {
 
     fn check_arc(&self, id: ArcId) -> Result<(), SketchError> {
         if self.arcs.contains(id) {
+            Ok(())
+        } else {
+            Err(SketchError::InvalidHandle)
+        }
+    }
+
+    fn check_ellipse(&self, id: EllipseId) -> Result<(), SketchError> {
+        if self.ellipses.contains(id) {
             Ok(())
         } else {
             Err(SketchError::InvalidHandle)
@@ -1603,6 +1781,20 @@ fn refresh_snapshot_from_params(
     for (id, d) in sys.arcs.iter() {
         snap.arcs.insert(id, (d.center, d.start, d.end));
     }
+
+    snap.ellipses.clear();
+    for (id, data) in sys.ellipses.iter() {
+        let a = param_index
+            .get(&ParamRef::EllipseA(id))
+            .map_or(data.a, |&i| params[i]);
+        let b = param_index
+            .get(&ParamRef::EllipseB(id))
+            .map_or(data.b, |&i| params[i]);
+        let phi = param_index
+            .get(&ParamRef::EllipsePhi(id))
+            .map_or(data.angle, |&i| params[i]);
+        snap.ellipses.insert(id, (data.center, a, b, phi));
+    }
 }
 
 /// Check if a constraint references a specific point.
@@ -1611,11 +1803,12 @@ fn constraint_references_point(c: &Constraint, id: PointId) -> bool {
         Constraint::Coincident(p1, p2) | Constraint::Distance(p1, p2, _) => *p1 == id || *p2 == id,
         Constraint::PointLineDistance(pt, _, _)
         | Constraint::PointOnCircle(pt, _)
-        | Constraint::PointOnArc(pt, _) => *pt == id,
+        | Constraint::PointOnArc(pt, _)
+        | Constraint::PointOnEllipse(pt, _) => *pt == id,
         Constraint::FixX(p, _) | Constraint::FixY(p, _) => *p == id,
-        Constraint::TangentLineArc(_, _, shared) | Constraint::TangentArcArc(_, _, shared) => {
-            *shared == id
-        }
+        Constraint::TangentLineArc(_, _, shared)
+        | Constraint::TangentArcArc(_, _, shared)
+        | Constraint::TangentLineEllipse(_, _, shared) => *shared == id,
         Constraint::Midpoint(pt, _) => *pt == id,
         Constraint::Symmetric(p1, p2, _) => *p1 == id || *p2 == id,
         Constraint::SymmetricAboutPoint(p1, p2, center) => *p1 == id || *p2 == id || *center == id,
@@ -1629,6 +1822,13 @@ fn constraint_references_point(c: &Constraint, id: PointId) -> bool {
         | Constraint::ArcLength(_, _)
         | Constraint::ConcentricArcArc(_, _)
         | Constraint::ConcentricArcCircle(_, _)
+        | Constraint::ConcentricEllipseEllipse(_, _)
+        | Constraint::ConcentricEllipseCircle(_, _)
+        | Constraint::ConcentricEllipseArc(_, _)
+        | Constraint::EqualEllipseRadii(_, _)
+        | Constraint::EllipseAxisA(_, _)
+        | Constraint::EllipseAxisB(_, _)
+        | Constraint::EllipseAngle(_, _)
         | Constraint::CircleRadius(_, _)
         | Constraint::EqualRadiusCircleCircle(_, _)
         | Constraint::EqualLength(_, _)
@@ -1641,7 +1841,9 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
     match c {
         Constraint::Horizontal(l) | Constraint::Vertical(l) => *l == id,
         Constraint::PointLineDistance(_, l, _) => *l == id,
-        Constraint::TangentLineArc(l, _, _) | Constraint::TangentLineCircle(l, _) => *l == id,
+        Constraint::TangentLineArc(l, _, _)
+        | Constraint::TangentLineCircle(l, _)
+        | Constraint::TangentLineEllipse(l, _, _) => *l == id,
         Constraint::Midpoint(_, l) | Constraint::Symmetric(_, _, l) => *l == id,
         Constraint::Angle(l1, l2, _)
         | Constraint::Perpendicular(l1, l2)
@@ -1653,12 +1855,20 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
         | Constraint::FixY(_, _)
         | Constraint::PointOnCircle(_, _)
         | Constraint::PointOnArc(_, _)
+        | Constraint::PointOnEllipse(_, _)
         | Constraint::TangentArcArc(_, _, _)
         | Constraint::EqualRadiusArcArc(_, _)
         | Constraint::EqualRadiusArcCircle(_, _)
         | Constraint::ArcLength(_, _)
         | Constraint::ConcentricArcArc(_, _)
         | Constraint::ConcentricArcCircle(_, _)
+        | Constraint::ConcentricEllipseEllipse(_, _)
+        | Constraint::ConcentricEllipseCircle(_, _)
+        | Constraint::ConcentricEllipseArc(_, _)
+        | Constraint::EqualEllipseRadii(_, _)
+        | Constraint::EllipseAxisA(_, _)
+        | Constraint::EllipseAxisB(_, _)
+        | Constraint::EllipseAngle(_, _)
         | Constraint::CircleRadius(_, _)
         | Constraint::EqualRadiusCircleCircle(_, _)
         | Constraint::SymmetricAboutPoint(_, _, _) => false,
@@ -1669,9 +1879,9 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
 fn constraint_references_circle(c: &Constraint, id: CircleId) -> bool {
     match c {
         Constraint::PointOnCircle(_, circ) | Constraint::TangentLineCircle(_, circ) => *circ == id,
-        Constraint::EqualRadiusArcCircle(_, circ) | Constraint::ConcentricArcCircle(_, circ) => {
-            *circ == id
-        }
+        Constraint::EqualRadiusArcCircle(_, circ)
+        | Constraint::ConcentricArcCircle(_, circ)
+        | Constraint::ConcentricEllipseCircle(_, circ) => *circ == id,
         Constraint::CircleRadius(circ, _) => *circ == id,
         Constraint::EqualRadiusCircleCircle(c1, c2) => *c1 == id || *c2 == id,
         Constraint::Coincident(_, _)
@@ -1685,11 +1895,19 @@ fn constraint_references_circle(c: &Constraint, id: CircleId) -> bool {
         | Constraint::Perpendicular(_, _)
         | Constraint::Parallel(_, _)
         | Constraint::PointOnArc(_, _)
+        | Constraint::PointOnEllipse(_, _)
         | Constraint::TangentLineArc(_, _, _)
         | Constraint::TangentArcArc(_, _, _)
+        | Constraint::TangentLineEllipse(_, _, _)
         | Constraint::EqualRadiusArcArc(_, _)
         | Constraint::ArcLength(_, _)
         | Constraint::ConcentricArcArc(_, _)
+        | Constraint::ConcentricEllipseEllipse(_, _)
+        | Constraint::ConcentricEllipseArc(_, _)
+        | Constraint::EqualEllipseRadii(_, _)
+        | Constraint::EllipseAxisA(_, _)
+        | Constraint::EllipseAxisB(_, _)
+        | Constraint::EllipseAngle(_, _)
         | Constraint::EqualLength(_, _)
         | Constraint::Midpoint(_, _)
         | Constraint::Symmetric(_, _, _)
@@ -1705,8 +1923,51 @@ fn constraint_references_arc(c: &Constraint, id: ArcId) -> bool {
         Constraint::TangentArcArc(a1, a2, _)
         | Constraint::EqualRadiusArcArc(a1, a2)
         | Constraint::ConcentricArcArc(a1, a2) => *a1 == id || *a2 == id,
-        Constraint::EqualRadiusArcCircle(arc, _) | Constraint::ConcentricArcCircle(arc, _) => {
-            *arc == id
+        Constraint::EqualRadiusArcCircle(arc, _)
+        | Constraint::ConcentricArcCircle(arc, _)
+        | Constraint::ConcentricEllipseArc(_, arc) => *arc == id,
+        Constraint::Coincident(_, _)
+        | Constraint::Distance(_, _, _)
+        | Constraint::PointLineDistance(_, _, _)
+        | Constraint::FixX(_, _)
+        | Constraint::FixY(_, _)
+        | Constraint::Horizontal(_)
+        | Constraint::Vertical(_)
+        | Constraint::Angle(_, _, _)
+        | Constraint::Perpendicular(_, _)
+        | Constraint::Parallel(_, _)
+        | Constraint::PointOnCircle(_, _)
+        | Constraint::PointOnEllipse(_, _)
+        | Constraint::TangentLineEllipse(_, _, _)
+        | Constraint::ConcentricEllipseEllipse(_, _)
+        | Constraint::ConcentricEllipseCircle(_, _)
+        | Constraint::EqualEllipseRadii(_, _)
+        | Constraint::EllipseAxisA(_, _)
+        | Constraint::EllipseAxisB(_, _)
+        | Constraint::EllipseAngle(_, _)
+        | Constraint::CircleRadius(_, _)
+        | Constraint::EqualRadiusCircleCircle(_, _)
+        | Constraint::EqualLength(_, _)
+        | Constraint::Midpoint(_, _)
+        | Constraint::Symmetric(_, _, _)
+        | Constraint::TangentLineCircle(_, _)
+        | Constraint::SymmetricAboutPoint(_, _, _) => false,
+    }
+}
+
+/// Check if a constraint references a specific ellipse.
+fn constraint_references_ellipse(c: &Constraint, id: EllipseId) -> bool {
+    match c {
+        Constraint::PointOnEllipse(_, ell)
+        | Constraint::TangentLineEllipse(_, ell, _)
+        | Constraint::EllipseAxisA(ell, _)
+        | Constraint::EllipseAxisB(ell, _)
+        | Constraint::EllipseAngle(ell, _) => *ell == id,
+        Constraint::ConcentricEllipseEllipse(e1, e2) | Constraint::EqualEllipseRadii(e1, e2) => {
+            *e1 == id || *e2 == id
+        }
+        Constraint::ConcentricEllipseCircle(ell, _) | Constraint::ConcentricEllipseArc(ell, _) => {
+            *ell == id
         }
         Constraint::Coincident(_, _)
         | Constraint::Distance(_, _, _)
@@ -1719,6 +1980,14 @@ fn constraint_references_arc(c: &Constraint, id: ArcId) -> bool {
         | Constraint::Perpendicular(_, _)
         | Constraint::Parallel(_, _)
         | Constraint::PointOnCircle(_, _)
+        | Constraint::PointOnArc(_, _)
+        | Constraint::TangentLineArc(_, _, _)
+        | Constraint::TangentArcArc(_, _, _)
+        | Constraint::EqualRadiusArcArc(_, _)
+        | Constraint::EqualRadiusArcCircle(_, _)
+        | Constraint::ArcLength(_, _)
+        | Constraint::ConcentricArcArc(_, _)
+        | Constraint::ConcentricArcCircle(_, _)
         | Constraint::CircleRadius(_, _)
         | Constraint::EqualRadiusCircleCircle(_, _)
         | Constraint::EqualLength(_, _)
