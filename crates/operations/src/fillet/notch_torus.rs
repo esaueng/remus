@@ -131,13 +131,7 @@ pub fn qualify_notch(
 pub struct NotchTorus {
     /// Ring (spine) center.
     pub ring_center: Point3,
-    /// Ring radius: exactly `2R` for the rectangular notch.
-    pub ring_radius: f64,
-    /// Tube radius: the fillet radius `R`.
-    pub tube_radius: f64,
-    /// Ring axis: cap outward (matches the reference orientation).
-    pub axis: Vec3,
-    /// Torus carrier surface.
+    /// Torus carrier surface (major radius `2R`, minor radius `R`).
     pub torus: ToroidalSurface,
     /// Convex-A station contact crossing (on wall A).
     pub m1: Point3,
@@ -147,8 +141,6 @@ pub struct NotchTorus {
     pub b1: Point3,
     /// Convex-B station meets cap contact.
     pub b2: Point3,
-    /// The vertex this corner replaces.
-    pub vertex: Point3,
     /// Fillet radius.
     pub radius: f64,
     /// Frame used (cap + walls).
@@ -188,15 +180,11 @@ pub fn notch_torus(
     let b2 = vertex + dir_convex_b * radius - frame.wall_b * radius;
     Some(NotchTorus {
         ring_center,
-        ring_radius: 2.0 * radius,
-        tube_radius: radius,
-        axis: frame.cap_outward,
         torus,
         m1,
         m2,
         b1,
         b2,
-        vertex,
         radius,
         frame,
     })
@@ -259,9 +247,10 @@ pub fn oriented_seam(circle: &Circle3D, start: Point3, end: Point3) -> Option<(C
     let flipped = Circle3D::new(circle.center(), -circle.normal(), circle.radius()).ok()?;
     normalize_ccw(&flipped).map(|trim| (flipped, trim))
 }
-/// The four patch-loop seam arcs in order M1 -> B1 -> B2 -> M2 -> M1:
+/// The four patch-loop seam arcs in loop order M1 -> B1 -> B2 -> M2 -> M1:
 /// convex-A station quarter, cap tangency quarter, convex-B station
-/// quarter, concave station quarter. Returns `None` if any arc degenerates.
+/// quarter, concave station quarter. Each arc is stored in loop-traversal
+/// direction. Returns `None` if any arc degenerates.
 pub fn seam_arcs(
     corner: &NotchTorus,
     dir_convex_a: Vec3,
@@ -283,8 +272,8 @@ pub fn seam_arcs(
     // Cap tangency circle: cap plane through the ring-center foot, radius 2R.
     let foot = corner.ring_center + corner.frame.cap_outward * r;
     let s1 = seam_arc(t1_center, dir_convex_a, r, corner.m1, corner.b1)?;
-    let s2 = seam_arc(t2_center, dir_convex_b, r, corner.m2, corner.b2)?;
-    let s3 = seam_arc(t3_center, dir_concave, r, corner.m1, corner.m2)?;
+    let s2 = seam_arc(t2_center, dir_convex_b, r, corner.b2, corner.m2)?;
+    let s3 = seam_arc(t3_center, dir_concave, r, corner.m2, corner.m1)?;
     let s4 = seam_arc(
         foot,
         corner.frame.cap_outward,
@@ -336,8 +325,8 @@ mod tests {
         ] {
             assert!((got - want).length() < 1e-9, "got {got:?}, want {want:?}");
         }
-        assert!((nt.ring_radius - 2.0).abs() < 1e-12);
-        assert!((nt.tube_radius - 1.0).abs() < 1e-12);
+        assert!((nt.torus.major_radius() - 2.0).abs() < 1e-12);
+        assert!((nt.torus.minor_radius() - 1.0).abs() < 1e-12);
     }
 
     #[test]
