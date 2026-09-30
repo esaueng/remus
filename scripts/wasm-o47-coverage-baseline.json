@@ -953,6 +953,16 @@
       "reason": "GCS session CRUD; no solid twin applicable"
     },
     {
+      "js": "gcsAddEllipse",
+      "rust": "gcs_add_ellipse",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B75",
+      "reason": "GCS session CRUD for the B75 ellipse slice; no solid twin applicable"
+    },
+    {
       "js": "gcsAddLine",
       "rust": "gcs_add_line",
       "file": "bindings/gcs_sketch.rs",
@@ -1001,6 +1011,16 @@
       "coverage": "special",
       "owner": "B16",
       "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsSetEllipse",
+      "rust": "gcs_set_ellipse",
+      "file": "bindings/gcs_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B75",
+      "reason": "GCS session CRUD for the B75 ellipse slice; no solid twin applicable"
     },
     {
       "js": "gcsSetPoint",

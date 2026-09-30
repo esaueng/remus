@@ -250,6 +250,30 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "addRefDiscriminator"
         | "resolveRef"
         | "resolveRefFaceAttributes" => Some(BatchOpKind::ReadOnly),
+        // Typed GCS sketch ops (`gcs*` bindings): they never touch the
+        // topology, so the ReadOnly path is exact for them — the Rc snapshot
+        // is O(1) and its error-path restore is a no-op over unmutated
+        // arenas. Per-op atomicity comes from the `*_impl` fns themselves:
+        // add/remove/set validate before mutating, `gcsSolve` publishes its
+        // final iterate exactly as the direct binding does, and
+        // `gcsSolveDetailed` rolls back internally. No sketch-state snapshot
+        // is taken here, so batch behavior matches direct behavior verbatim.
+        "gcsNew"
+        | "gcsAddPoint"
+        | "gcsAddLine"
+        | "gcsAddCircle"
+        | "gcsAddArc"
+        | "gcsAddEllipse"
+        | "gcsAddConstraint"
+        | "gcsRemoveConstraint"
+        | "gcsSetPoint"
+        | "gcsSetEllipse"
+        | "gcsPointPosition"
+        | "gcsCircleRadius"
+        | "gcsEllipseParams"
+        | "gcsSolve"
+        | "gcsSolveDetailed"
+        | "gcsDof" => Some(BatchOpKind::ReadOnly),
         "makeBox"
         | "makeCompound"
         | "fuseJournaled"
@@ -3264,7 +3288,163 @@ impl BrepKernel {
             other => self
                 .dispatch_naming_op(other, args)
                 .or_else(|| self.dispatch_evolution_op(other, args))
+                .or_else(|| self.dispatch_gcs_op(other, args))
                 .unwrap_or_else(|| Err(StructuredWasmError::unknown_operation(other))),
+        }
+    }
+
+    /// Dispatch one typed GCS sketch operation (`gcs*` bindings) in batch form.
+    ///
+    /// Returns `None` for non-GCS operation names so the caller falls through
+    /// to the unknown-operation error. Arguments mirror the direct `gcs*`
+    /// methods, with entity references as `u32` handles and `gcsAddConstraint`
+    /// taking its constraint as an inline JSON object (not a string).
+    /// Results match the direct bindings value-for-value: handles as numbers,
+    /// positions/params as arrays, solve outcomes as the same serialized
+    /// structs (so `executeBatch` and `executeBatchV2` agree with direct
+    /// calls on results, diagnostics, errors, and rollback behavior).
+    fn dispatch_gcs_op(
+        &mut self,
+        op: &str,
+        args: &serde_json::Value,
+    ) -> Option<Result<serde_json::Value, StructuredWasmError>> {
+        match op {
+            "gcsNew" => Some(Ok(serde_json::json!(self.gcs_new()))),
+            "gcsAddPoint" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let x = get_f64(args, "x")?;
+                let y = get_f64(args, "y")?;
+                let fixed = get_bool(args, "fixed")?;
+                self.gcs_add_point_impl(sketch, x, y, fixed)
+                    .map(|h| serde_json::json!(h))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsAddLine" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let p1 = get_u32(args, "p1")?;
+                let p2 = get_u32(args, "p2")?;
+                self.gcs_add_line_impl(sketch, p1, p2)
+                    .map(|h| serde_json::json!(h))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsAddCircle" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let center = get_u32(args, "center")?;
+                let radius = get_f64(args, "radius")?;
+                self.gcs_add_circle_impl(sketch, center, radius)
+                    .map(|h| serde_json::json!(h))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsAddArc" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let center = get_u32(args, "center")?;
+                let start = get_u32(args, "start")?;
+                let end = get_u32(args, "end")?;
+                self.gcs_add_arc_impl(sketch, center, start, end)
+                    .map(|h| serde_json::json!(h))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsAddEllipse" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let center = get_u32(args, "center")?;
+                let a = get_f64(args, "a")?;
+                let b = get_f64(args, "b")?;
+                let angle = get_f64(args, "angle")?;
+                self.gcs_add_ellipse_impl(sketch, center, a, b, angle)
+                    .map(|h| serde_json::json!(h))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsAddConstraint" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let constraint = args.get("constraint").ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing 'constraint' object",
+                        Some("constraint"),
+                    )
+                })?;
+                if !constraint.is_object() {
+                    return Err(StructuredWasmError::invalid_argument(
+                        "'constraint' must be a JSON object",
+                        Some("constraint"),
+                    ));
+                }
+                let constraint_str = constraint.to_string();
+                self.gcs_add_constraint_impl(sketch, &constraint_str)
+                    .map(|h| serde_json::json!(h))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsRemoveConstraint" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let constraint = get_u32(args, "constraint")?;
+                self.gcs_remove_constraint_impl(sketch, constraint)
+                    .map(|()| serde_json::Value::Null)
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsSetPoint" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let point = get_u32(args, "point")?;
+                let x = get_f64(args, "x")?;
+                let y = get_f64(args, "y")?;
+                self.gcs_set_point_impl(sketch, point, x, y)
+                    .map(|()| serde_json::Value::Null)
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsSetEllipse" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let ellipse = get_u32(args, "ellipse")?;
+                let x = get_f64(args, "x")?;
+                let y = get_f64(args, "y")?;
+                let a = get_f64(args, "a")?;
+                let b = get_f64(args, "b")?;
+                let angle = get_f64(args, "angle")?;
+                self.gcs_set_ellipse_impl(sketch, ellipse, x, y, a, b, angle)
+                    .map(|()| serde_json::Value::Null)
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsPointPosition" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let point = get_u32(args, "point")?;
+                self.gcs_point_position_impl(sketch, point)
+                    .map(|p| serde_json::json!(p))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsCircleRadius" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let circle = get_u32(args, "circle")?;
+                self.gcs_circle_radius_impl(sketch, circle)
+                    .map(|r| serde_json::json!(r))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsEllipseParams" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let ellipse = get_u32(args, "ellipse")?;
+                self.gcs_ellipse_params_impl(sketch, ellipse)
+                    .map(|p| serde_json::json!(p))
+                    .map_err(StructuredWasmError::from)
+            })()),
+            "gcsSolve" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let max_iterations = get_u32(args, "maxIterations")?;
+                let tolerance = get_f64(args, "tolerance")?;
+                self.gcs_solve_impl(sketch, max_iterations, tolerance)
+                    .map_err(StructuredWasmError::from)
+                    .and_then(|r| serde_json::to_value(r).map_err(StructuredWasmError::from))
+            })()),
+            "gcsSolveDetailed" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                let max_iterations = get_u32(args, "maxIterations")?;
+                let tolerance = get_f64(args, "tolerance")?;
+                self.gcs_solve_detailed_impl(sketch, max_iterations, tolerance)
+                    .map_err(StructuredWasmError::from)
+                    .and_then(|d| serde_json::to_value(d).map_err(StructuredWasmError::from))
+            })()),
+            "gcsDof" => Some((|| {
+                let sketch = get_u32(args, "sketch")?;
+                self.gcs_dof_impl(sketch)
+                    .map_err(StructuredWasmError::from)
+                    .and_then(|d| serde_json::to_value(d).map_err(StructuredWasmError::from))
+            })()),
+            _ => None,
         }
     }
 }
@@ -4550,6 +4730,233 @@ mod rollback_tests {
             let out = k.execute_batch(&format!("[{op}]"));
             assert!(!out.contains("\"error\""), "{op} failed: {out}");
             assert_eq!(before, counts(&k), "{op} mutated topology");
+        }
+    }
+
+    // ── B75 GCS batch parity ─────────────────────────────────────
+    //
+    // The typed GCS surface runs through `executeBatch`/`executeBatchV2` via
+    // `dispatch_gcs_op`. These tests pin direct/batch/V2 parity for the
+    // ellipse contract: identical results and diagnostics, matching errors,
+    // and identical rollback on a failed detailed solve.
+
+    fn parse_gcs_out(response: &str) -> serde_json::Value {
+        serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    /// Batch JSON that builds a fully-driven ellipse sketch and solves it.
+    fn ellipse_batch_json() -> String {
+        serde_json::json!([
+            {"op": "gcsNew", "args": {}},
+            {"op": "gcsAddPoint", "args": {"sketch": 0, "x": 0.0, "y": 0.0, "fixed": true}},
+            {"op": "gcsAddEllipse", "args": {"sketch": 0, "center": 0, "a": 1.0, "b": 1.0, "angle": 0.0}},
+            {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "ellipseAxisA", "ellipse": 0, "value": 6.0}}},
+            {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "ellipseAxisB", "ellipse": 0, "value": 2.5}}},
+            {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "ellipseAngle", "ellipse": 0, "value": 0.7}}},
+            {"op": "gcsSolve", "args": {"sketch": 0, "maxIterations": 200, "tolerance": 1e-10}},
+            {"op": "gcsEllipseParams", "args": {"sketch": 0, "ellipse": 0}},
+            {"op": "gcsSolveDetailed", "args": {"sketch": 0, "maxIterations": 200, "tolerance": 1e-10}},
+            {"op": "gcsDof", "args": {"sketch": 0}},
+        ])
+        .to_string()
+    }
+
+    #[test]
+    fn gcs_ellipse_batch_matches_direct() {
+        // Direct reference.
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let e = k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, 0.0).unwrap();
+        for (ty, val) in [
+            ("ellipseAxisA", 6.0),
+            ("ellipseAxisB", 2.5),
+            ("ellipseAngle", 0.7),
+        ] {
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"{ty}","ellipse":{e},"value":{val}}}"#),
+            )
+            .unwrap();
+        }
+        let direct = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        let direct_params = k.gcs_ellipse_params_impl(s, e).unwrap();
+        let direct_diag = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+
+        // Batch path on a fresh kernel.
+        let mut b = BrepKernel::new();
+        let out = parse_gcs_out(&b.execute_batch(&ellipse_batch_json()));
+        let items = out.as_array().unwrap();
+        assert_eq!(items.len(), 10, "{out}");
+        for (i, item) in items.iter().enumerate() {
+            assert!(item.get("ok").is_some(), "op {i} failed: {item}");
+        }
+        assert_eq!(items[0]["ok"], 0, "gcsNew handle");
+        assert_eq!(items[1]["ok"], 0, "point handle");
+        assert_eq!(items[2]["ok"], 0, "ellipse handle");
+        let batch_solve = &items[6]["ok"];
+        assert_eq!(batch_solve["converged"], direct.converged);
+        assert_eq!(batch_solve["iterations"], direct.iterations as u64);
+        assert!(
+            (batch_solve["maxResidual"].as_f64().unwrap() - direct.max_residual).abs() < 1e-15,
+            "{batch_solve:?} vs {direct:?}"
+        );
+        let batch_params = items[7]["ok"].as_array().unwrap();
+        assert_eq!(batch_params.len(), 5);
+        for (got, want) in batch_params.iter().zip(direct_params.iter()) {
+            assert!(
+                (got.as_f64().unwrap() - want).abs() < 1e-12,
+                "{batch_params:?}"
+            );
+        }
+        assert!((batch_params[2].as_f64().unwrap() - 6.0).abs() < 1e-9);
+        assert!((batch_params[3].as_f64().unwrap() - 2.5).abs() < 1e-9);
+        assert!((batch_params[4].as_f64().unwrap() - 0.7).abs() < 1e-9);
+        // Diagnostics parity: classification, counts, residuals.
+        let batch_diag = &items[8]["ok"];
+        assert_eq!(batch_diag["converged"], direct_diag.converged);
+        assert_eq!(
+            batch_diag["classification"],
+            direct_diag.classification.as_str()
+        );
+        assert_eq!(batch_diag["dof"], direct_diag.dof as u64);
+        assert_eq!(batch_diag["rank"], direct_diag.rank as u64);
+        assert_eq!(batch_diag["numParams"], direct_diag.num_params as u64);
+        assert_eq!(batch_diag["numEquations"], direct_diag.num_equations as u64);
+        assert_eq!(batch_diag["rolledBack"], direct_diag.rolled_back);
+        assert_eq!(batch_diag["redundant"], direct_diag.redundant);
+        let batch_dof = &items[9]["ok"];
+        assert_eq!(batch_dof["dof"], 0);
+    }
+
+    #[test]
+    fn gcs_batch_v2_envelope_matches_v1_results() {
+        let json = ellipse_batch_json();
+        let mut k1 = BrepKernel::new();
+        let mut k2 = BrepKernel::new();
+        let v1 = parse_gcs_out(&k1.execute_batch(&json));
+        let v2 = parse_gcs_out(&k2.execute_batch_v2(&json));
+        assert_eq!(
+            v1, v2,
+            "success envelopes must be identical across contracts"
+        );
+    }
+
+    #[test]
+    fn gcs_batch_errors_match_direct_across_contracts() {
+        // One bad op (non-positive semiaxis) among good ones: the failure is
+        // reported at its position, siblings still run, and both contracts
+        // agree with the direct error.
+        let json = serde_json::json!([
+            {"op": "gcsNew", "args": {}},
+            {"op": "gcsAddPoint", "args": {"sketch": 0, "x": 0.0, "y": 0.0, "fixed": true}},
+            {"op": "gcsAddEllipse", "args": {"sketch": 0, "center": 0, "a": 0.0, "b": 1.0, "angle": 0.0}},
+            {"op": "gcsAddEllipse", "args": {"sketch": 0, "center": 0, "a": 2.0, "b": 1.0, "angle": 0.0}},
+            {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "warp"}}},
+        ])
+        .to_string();
+        let mut k1 = BrepKernel::new();
+        let legacy = parse_gcs_out(&k1.execute_batch(&json));
+        let items = legacy.as_array().unwrap();
+        assert_eq!(items.len(), 5);
+        assert!(items[0].get("ok").is_some());
+        assert!(items[1].get("ok").is_some());
+        let e2 = items[2]
+            .get("error")
+            .expect("a=0 must fail")
+            .as_str()
+            .unwrap();
+        assert!(e2.contains("semiaxis"), "unexpected message: {e2}");
+        assert!(
+            items[3].get("ok").is_some(),
+            "siblings still run after an error"
+        );
+        assert!(items[4].get("error").is_some(), "unknown type must fail");
+
+        let mut k2 = BrepKernel::new();
+        let v2 = parse_gcs_out(&k2.execute_batch_v2(&json));
+        let items2 = v2.as_array().unwrap();
+        assert_eq!(items2[0], items[0]);
+        assert_eq!(items2[3], items[3]);
+        assert_eq!(items2[2]["error"]["code"], "invalid_argument");
+        assert_eq!(items2[2]["error"]["message"].as_str().unwrap(), e2);
+        assert_eq!(
+            items2[2]["error"]["category"], "invalid_input",
+            "GCS input failures project to invalid_input"
+        );
+        // Direct call fails with the same message the legacy envelope carries.
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let err = k.gcs_add_ellipse_impl(s, c, 0.0, 1.0, 0.0).unwrap_err();
+        assert!(format!("{err:?}").contains("semiaxis"), "{err:?}");
+
+        // Stale-handle errors project to invalid_handle in V2.
+        let json = serde_json::json!([
+            {"op": "gcsNew", "args": {}},
+            {"op": "gcsEllipseParams", "args": {"sketch": 0, "ellipse": 7}},
+        ])
+        .to_string();
+        let mut k3 = BrepKernel::new();
+        let v3 = parse_gcs_out(&k3.execute_batch_v2(&json));
+        assert_eq!(v3[1]["error"]["code"], "invalid_handle");
+    }
+
+    #[test]
+    fn gcs_batch_failed_detailed_solve_rolls_back_like_direct() {
+        // Contradictory axis drives: solveDetailed reports unsatisfied with
+        // rolledBack, and the published params are the pre-solve values —
+        // identically in direct, batch, and batchV2.
+        let build_direct = || {
+            let mut k = BrepKernel::new();
+            let s = k.gcs_new();
+            let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+            let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.1).unwrap();
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"ellipseAxisA","ellipse":{e},"value":3.0}}"#),
+            )
+            .unwrap();
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"ellipseAxisA","ellipse":{e},"value":9.0}}"#),
+            )
+            .unwrap();
+            (k, s, e)
+        };
+        let (mut k, s, e) = build_direct();
+        let direct_diag = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        assert!(!direct_diag.converged);
+        assert!(direct_diag.rolled_back);
+        let direct_params = k.gcs_ellipse_params_impl(s, e).unwrap();
+
+        let json = serde_json::json!([
+            {"op": "gcsNew", "args": {}},
+            {"op": "gcsAddPoint", "args": {"sketch": 0, "x": 0.0, "y": 0.0, "fixed": true}},
+            {"op": "gcsAddEllipse", "args": {"sketch": 0, "center": 0, "a": 3.0, "b": 2.0, "angle": 0.1}},
+            {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "ellipseAxisA", "ellipse": 0, "value": 3.0}}},
+            {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "ellipseAxisA", "ellipse": 0, "value": 9.0}}},
+            {"op": "gcsSolveDetailed", "args": {"sketch": 0, "maxIterations": 200, "tolerance": 1e-10}},
+            {"op": "gcsEllipseParams", "args": {"sketch": 0, "ellipse": 0}},
+        ])
+        .to_string();
+        let run_batch = |b: &mut BrepKernel, json: &str| b.execute_batch(json);
+        let run_batch_v2 = |b: &mut BrepKernel, json: &str| b.execute_batch_v2(json);
+        for run in [run_batch, run_batch_v2] {
+            let mut b = BrepKernel::new();
+            let out = parse_gcs_out(&run(&mut b, &json));
+            let items = out.as_array().unwrap();
+            let diag = &items[5]["ok"];
+            assert_eq!(diag["converged"], false, "{diag:?}");
+            assert_eq!(diag["rolledBack"], true, "{diag:?}");
+            assert_eq!(diag["classification"], "unsatisfied", "{diag:?}");
+            let params = items[6]["ok"].as_array().unwrap();
+            for (got, want) in params.iter().zip(direct_params.iter()) {
+                assert!(
+                    (got.as_f64().unwrap() - want).abs() < 1e-15,
+                    "rollback params must match direct: {params:?} vs {direct_params:?}"
+                );
+            }
         }
     }
 }
