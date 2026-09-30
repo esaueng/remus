@@ -732,13 +732,161 @@ pub fn fillet_rolling_ball_with_origins(
             })
             .collect();
 
+        // Mixed-side notch vertices (two convex + one concave planar edge
+        // over a 90-degree rectangular corner) close with an exact torus
+        // patch, not a sphere: solve them here, station their three stripes
+        // one radius out from the vertex (contact crossings), and skip the
+        // N-way refusal below for exactly this qualified family. Anything
+        // unqualified keeps its typed refusal (fail-closed).
+        //
+        // Stored per vertex: solved torus, edge directions from the vertex
+        // (aligned with `edge_list` below), and the concave position.
+        let mut torus_corners: HashMap<usize, (crate::fillet::notch_torus::NotchTorus, [Vec3; 3], usize)> =
+            HashMap::new();
+        // (edge index, vertex index) -> setback distance, merged into
+        // `setback_map` with the ball stations below.
+        let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
+        for (&vertex_index, incident_edges) in &vertex_fillet_edges {
+            if incident_edges.len() != 3 || exact_corner_balls.contains_key(&vertex_index) {
+                continue;
+            }
+            // All three incident edges must be straight two-plane stripes
+            // with known material sides.
+            let mut edge_list = [incident_edges[0], incident_edges[0], incident_edges[0]];
+            let mut qualified = true;
+            for (i, edge_id) in incident_edges.iter().enumerate().take(3) {
+                edge_list[i] = *edge_id;
+                let edge_ok = topo.edge(*edge_id).is_ok_and(|edge| {
+                    matches!(edge.curve(), EdgeCurve::Line)
+                }) && planar_edge_sides.contains_key(&edge_id.index())
+                    && edge_to_faces
+                        .get(&edge_id.index())
+                        .is_some_and(|faces| faces.len() == 2);
+                if !edge_ok {
+                    qualified = false;
+                    break;
+                }
+            }
+            if !qualified {
+                continue;
+            }
+            let edge_faces = |edge_id: EdgeId| -> [usize; 2] {
+                let faces = &edge_to_faces[&edge_id.index()];
+                [faces[0].index(), faces[1].index()]
+            };
+            let face_pairs = [edge_faces(edge_list[0]), edge_faces(edge_list[1]), edge_faces(edge_list[2])];
+            let convex = [
+                planar_edge_sides[&edge_list[0].index()] < 0.0,
+                planar_edge_sides[&edge_list[1].index()] < 0.0,
+                planar_edge_sides[&edge_list[2].index()] < 0.0,
+            ];
+            // Outward support normals. The plane normals stored by
+            // construction (extrude, primitives, exact booleans) face
+            // outward; this is the same trust the corner-ball solver above
+            // places in `effective_plane_normal`, and the Phase 6 validation
+            // gates arbitrate the assembled result either way.
+            let mut outward = HashMap::with_capacity(3);
+            for pair in &face_pairs {
+                for face_index in pair {
+                    if outward.contains_key(face_index) {
+                        continue;
+                    }
+                    let Some(normal) = edge_to_faces
+                        .values()
+                        .flat_map(|faces| faces.iter())
+                        .find(|face| face.index() == *face_index)
+                        .and_then(|face| topo.face(*face).ok())
+                        .and_then(|face| face.effective_plane_normal())
+                        .and_then(|normal| normal.normalize().ok())
+                    else {
+                        qualified = false;
+                        break;
+                    };
+                    outward.insert(*face_index, normal);
+                }
+                if !qualified {
+                    break;
+                }
+            }
+            if !qualified {
+                continue;
+            }
+            let Some((frame, concave_pos)) = crate::fillet::notch_torus::qualify_notch(
+                &face_pairs,
+                &outward,
+                &convex,
+                tol,
+            ) else {
+                continue;
+            };
+            // Vertex position and edge directions from the vertex (exact for
+            // straight edges).
+            let mut vertex_pos = None;
+            let mut dirs = [Vec3::new(0.0, 0.0, 0.0); 3];
+            for (i, edge_id) in edge_list.iter().enumerate() {
+                let Ok(edge) = topo.edge(*edge_id) else {
+                    qualified = false;
+                    break;
+                };
+                let (Ok(vs), Ok(ve)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
+                else {
+                    qualified = false;
+                    break;
+                };
+                if edge.start().index() == vertex_index {
+                    vertex_pos = Some(vs.point());
+                    let Ok(dir) = (ve.point() - vs.point()).normalize() else {
+                        qualified = false;
+                        break;
+                    };
+                    dirs[i] = dir;
+                } else if edge.end().index() == vertex_index {
+                    vertex_pos = Some(ve.point());
+                    let Ok(dir) = (vs.point() - ve.point()).normalize() else {
+                        qualified = false;
+                        break;
+                    };
+                    dirs[i] = dir;
+                } else {
+                    qualified = false;
+                    break;
+                }
+            }
+            if !qualified {
+                continue;
+            }
+            let Some(vertex_pos) = vertex_pos else {
+                continue;
+            };
+            let convex_pos: Vec<usize> = (0..3).filter(|i| convex[*i]).collect();
+            let Some(torus) = crate::fillet::notch_torus::notch_torus(
+                frame,
+                vertex_pos,
+                dirs[convex_pos[0]],
+                dirs[convex_pos[1]],
+                radius,
+                tol,
+            ) else {
+                continue;
+            };
+            torus_corners.insert(vertex_index, (torus, dirs, concave_pos));
+            // Stations one radius out from the vertex along each incident
+            // stripe (contact crossings): standard setback semantics.
+            for edge_id in edge_list {
+                torus_setbacks.insert((edge_id.index(), vertex_index), radius);
+            }
+        }
+
         // A wholly planar N-way junction that did not qualify above must not
         // drift into the legacy normal-sum corner heuristic. That estimate is
         // only exact for an orthogonal, consistently oriented corner and can
         // otherwise return a plausible closed solid with the wrong material
         // side. Keep alternating sides and inconsistent plane systems typed.
         for (&vertex_index, incident_edges) in &vertex_fillet_edges {
-            if incident_edges.len() < 3 || exact_corner_balls.contains_key(&vertex_index) {
+            if incident_edges.len() < 3
+                || exact_corner_balls.contains_key(&vertex_index)
+                || torus_corners.contains_key(&vertex_index)
+            {
                 continue;
             }
             let wholly_planar = incident_edges.iter().all(|edge_id| {
@@ -1321,6 +1469,17 @@ pub fn fillet_rolling_ball_with_origins(
                 if setback > tol.linear {
                     setback_map.insert((edge_id.index(), vertex_index), setback);
                 }
+            }
+        }
+
+        // Mixed-notch torus stations: one radius out from the vertex along
+        // each incident stripe (contact crossings). These agree with the
+        // angle-heuristic setbacks above at rectangular junctions and pin
+        // the exact station planes the torus seams consume.
+        for ((edge_index, vertex_index), setback) in &torus_setbacks {
+            let entry = setback_map.entry((*edge_index, *vertex_index)).or_insert(0.0);
+            if *setback > *entry {
+                *entry = *setback;
             }
         }
 
@@ -2165,23 +2324,29 @@ pub fn fillet_rolling_ball_with_origins(
                         }
                     }
                     (true, true, _) => {
-                        // dir_prev (along "before" edge) → perpendicular to
-                        // the "after" fillet edge → use "after" edge's contact.
-                        let ei_after = poly.wire_edge_ids[i].index();
-                        if let Some(&pt) = fillet_contact_map.get(&(vi, ei_after, fi)) {
-                            new_verts.push(pt);
-                        } else {
-                            let dir_prev = (prev_pos - pos).normalize()?;
-                            new_verts.push(pos + dir_prev * radius);
-                        }
-                        // dir_next (along "after" edge) → perpendicular to
-                        // the "before" fillet edge → use "before" edge's contact.
+                        // Emit the before-edge contact first, then the
+                        // after-edge contact: each contact lies on its edge
+                        // toward the neighbouring vertex, so this order keeps
+                        // the trimmed loop adjacent to both neighbours'
+                        // trims (before-contact meets the prev-vertex trim,
+                        // after-contact the next-vertex trim). At common-ball
+                        // corners both contacts coincide and the order is
+                        // immaterial; at torus-notch corners the contacts are
+                        // distinct (B1/B2, M1/M2) and this order is what
+                        // closes the loop watertight.
                         let ei_before = poly.wire_edge_ids[prev_i].index();
                         if let Some(&pt) = fillet_contact_map.get(&(vi, ei_before, fi)) {
                             new_verts.push(pt);
                         } else {
                             let dir_next = (next_pos - pos).normalize()?;
                             new_verts.push(pos + dir_next * radius);
+                        }
+                        let ei_after = poly.wire_edge_ids[i].index();
+                        if let Some(&pt) = fillet_contact_map.get(&(vi, ei_after, fi)) {
+                            new_verts.push(pt);
+                        } else {
+                            let dir_prev = (prev_pos - pos).normalize()?;
+                            new_verts.push(pos + dir_prev * radius);
                         }
                     }
                 }
@@ -2372,13 +2537,24 @@ pub fn fillet_rolling_ball_with_origins(
                         let normal2 = topo.face(f2).ok()?.effective_plane_normal()?;
                         planar_rolling_ball_section(p, normal1, normal2, side, radius, tol)
                     });
+                    let side = planar_edge_sides.get(&edge_id.index()).copied().unwrap_or(-1.0);
                     let (contact1, contact2, bisector) =
                         if let Some((center, contact1, contact2)) = exact_planar {
-                            (
-                                contact1,
-                                contact2,
-                                (center - p).normalize().unwrap_or(d1_ref),
-                            )
+                            // Bisector must point from the edge toward the
+                            // MATERIAL interior: the ball center sits inside
+                            // the material on convex edges but out in the
+                            // void on concave ones, so flip by side. The
+                            // stripe `reversed` flags below compare the
+                            // surface normal against this direction; getting
+                            // it backwards silently winds concave stripes
+                            // inside-out.
+                            let to_center = (center - p).normalize().unwrap_or(d1_ref);
+                            let bisector = if side < 0.0 {
+                                to_center
+                            } else {
+                                -to_center
+                            };
+                            (contact1, contact2, bisector)
                         } else {
                             // Curved or unqualified planar fallback.
                             let c1 = local_dir.cross(ln1);
@@ -2695,6 +2871,87 @@ pub fn fillet_rolling_ball_with_origins(
             } else {
                 FaceSpecOrigin::Generated(corner_sources)
             };
+
+            // Mixed-notch torus corner: emit the exact torus patch with its
+            // four analytic seam overrides and skip every ball/runout path
+            // below for this vertex. Stripe spans, contact maps, and support
+            // trims already account for the R-setback stations; the assembly
+            // shares each seam circle with the stripe or cap that mints it.
+            if let Some((torus, dirs, concave_pos)) = torus_corners.get(&vi) {
+                let convex_pos: Vec<usize> =
+                    (0..3).filter(|i| *i != *concave_pos).collect();
+                let (dir_a, dir_b) = (dirs[convex_pos[0]], dirs[convex_pos[1]]);
+                if let Some(arcs) = crate::fillet::notch_torus::seam_arcs(
+                    torus,
+                    dir_a,
+                    dir_b,
+                    dirs[*concave_pos],
+                    tol,
+                ) {
+                    // Loop order M1 -> B1 -> B2 -> M2; orient CCW about the
+                    // torus parametric normal at the patch centroid.
+                    let (m1, b1, b2, m2) = (torus.m1, torus.b1, torus.b2, torus.m2);
+                    let centroid = Point3::new(
+                        (m1.x() + b1.x() + b2.x() + m2.x()) * 0.25,
+                        (m1.y() + b1.y() + b2.y() + m2.y()) * 0.25,
+                        (m1.z() + b1.z() + b2.z() + m2.z()) * 0.25,
+                    );
+                    let Ok(loop_normal) = ((b1 - m1).cross(b2 - m1)).normalize() else {
+                        continue;
+                    };
+                    let (pu, pv) = torus.torus.project_point(centroid);
+                    let parametric_normal = torus.torus.normal(pu, pv);
+                    let mut loop_verts = vec![m1, b1, b2, m2];
+                    if loop_normal.dot(parametric_normal) < 0.0 {
+                        loop_verts.reverse();
+                    }
+                    let pushed_specs = all_specs.len();
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        FaceSpec::Surface {
+                            vertices: loop_verts,
+                            surface: FaceSurface::Torus(torus.torus.clone()),
+                            reversed: false,
+                            inner_wires: vec![],
+                        },
+                        corner_origin.clone(),
+                    );
+                    // Analytic seam overrides in loop order (assembly mints
+                    // each circle once; neighbours pick them up by sharing).
+                    let loop_arcs = [
+                        (&arcs[0], m1, b1),
+                        (&arcs[3], b1, b2),
+                        (&arcs[1], b2, m2),
+                        (&arcs[2], m2, m1),
+                    ];
+                    let pushed = analytic_boundary_curves.len();
+                    let mut overrides_ok = true;
+                    for (arc, start, end) in loop_arcs {
+                        let Some((circle, trim)) =
+                            crate::fillet::notch_torus::oriented_seam(&arc.circle, start, end)
+                        else {
+                            overrides_ok = false;
+                            break;
+                        };
+                        analytic_boundary_curves.push(crate::boolean::BoundaryCurveOverride {
+                            start,
+                            end,
+                            curve: EdgeCurve::Circle(circle),
+                            trim,
+                        });
+                    }
+                    if overrides_ok {
+                        continue;
+                    }
+                    // Override failure: retract the spec and fall through to
+                    // the legacy paths (which will refuse or approximate;
+                    // never silent gaps).
+                    analytic_boundary_curves.truncate(pushed);
+                    all_specs.truncate(pushed_specs);
+                    all_spec_origins.truncate(pushed_specs);
+                }
+            }
 
             // The original (about to be rounded away) vertex position.
             let original_vertex = face_polygons

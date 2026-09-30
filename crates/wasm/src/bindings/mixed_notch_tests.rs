@@ -5,19 +5,18 @@
 //! kernel's mixed convex/concave corner boundary through the same entry
 //! points a JS consumer uses:
 //!
-//! - whole-edge constant-radius fillet refuses typed with
-//!   `unsupported-vertex-blend` on both the legacy string contract and the
-//!   `executeBatchV2` structured `kernelCode`, leaving the input (volume
-//!   and edge inventory) unchanged;
+//! - whole-edge constant-radius fillet succeeds with torus corners on both
+//!   the legacy and `executeBatchV2` contracts, meeting the closed-form
+//!   volume and preserving the input;
 //! - whole-edge chamfer at distance 1 succeeds with the native closed-form
-//!   volume (`12905.3333 mm^3`), proving the refusal is fillet-specific.
+//!   volume.
 //!
 //! Fixture construction uses the direct polygon binding (infallible here)
 //! plus batch extrude; every fallible step goes through `executeBatch`.
 //! The direct `#[wasm_bindgen]` methods are not callable from native tests
 //! on failure paths; these batch tests cover the dispatch plus the shared
-//! helpers, while `crates/operations/tests/regress_mixed_notch_whole_edge.rs`
-//! and `regress_chamfer_mixed_notch_whole_edge.rs` pin the engines natively.
+//! helpers, while `crates/operations/tests/regress_notch_torus_whole_edge.rs`
+//! pins the engine natively.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -81,9 +80,15 @@ fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
     out[0]["ok"].as_f64().unwrap()
 }
 
-/// Whole-edge fillet refuses typed on both contracts; input is unchanged.
+/// Whole-edge fillet succeeds on both contracts with torus corners;
+/// the input is preserved and the result meets the closed form.
+///
+/// Measurement note: batch `volume` runs the mesh route (non-latitude
+/// sphere octants force it, pre-existing pattern), so the oracle asserts
+/// mesh tolerance; geometry is proven identical to the independent
+/// reference by STEP exchange (1.2e-5).
 #[test]
-fn mixed_notch_whole_edge_fillet_refuses_typed_on_both_contracts() {
+fn mixed_notch_whole_edge_fillet_succeeds_on_both_contracts() {
     let mut kernel = BrepKernel::new();
     let solid = make_l_bracket(&mut kernel);
     let edges = edge_handles(&mut kernel, solid);
@@ -97,7 +102,6 @@ fn mixed_notch_whole_edge_fillet_refuses_typed_on_both_contracts() {
         (before_volume - 13120.0).abs() < 1.0,
         "extruded L volume must be 13120, got {before_volume}"
     );
-    let before_edges = edges.len();
 
     let out = run(
         &mut kernel,
@@ -106,10 +110,12 @@ fn mixed_notch_whole_edge_fillet_refuses_typed_on_both_contracts() {
             serde_json::json!({"solid": solid, "edges": edges, "radius": 1.0}),
         )],
     );
-    let err = out[0]["error"].as_str().unwrap().to_string();
+    let result = u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap();
+    assert_ne!(result, solid, "fillet must return a new handle");
+    let vol = volume(&mut kernel, result);
     assert!(
-        err.contains("unsupported vertex blend") && err.contains("stripes meet"),
-        "legacy refusal must name the vertex-blend cause, got: {err}"
+        (vol - 13027.2829).abs() < 2.0,
+        "batch fillet must meet the closed form 13027.2829, got {vol}"
     );
 
     let out = run_v2(
@@ -119,25 +125,21 @@ fn mixed_notch_whole_edge_fillet_refuses_typed_on_both_contracts() {
             serde_json::json!({"solid": solid, "edges": edges, "radius": 1.0}),
         )],
     );
-    let code = out[0]["error"]["details"]["kernelCode"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(
-        code, "unsupported-vertex-blend",
-        "V2 refusal must carry the structured code, got: {}",
-        out[0]["error"]
+    assert!(
+        out[0].get("ok").is_some(),
+        "V2 fillet must succeed, got: {}",
+        out[0]
     );
 
-    // Atomicity across the WASM boundary: same volume, same edge inventory.
+    // Success preserves the input across the WASM boundary.
     assert!(
         (volume(&mut kernel, solid) - before_volume).abs() < 1e-9,
-        "refused fillet must not move volume"
+        "successful fillet must not move input volume"
     );
     assert_eq!(
         edge_handles(&mut kernel, solid).len(),
-        before_edges,
-        "refused fillet must not change the edge inventory"
+        18,
+        "successful fillet must not change the input edge inventory"
     );
 }
 
