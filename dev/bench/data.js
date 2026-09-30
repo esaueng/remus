@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790737505350,
+  "lastUpdate": 1790739857303,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -79765,6 +79765,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 80152,
             "range": "± 804",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "475a2c27ea3cd810869c85fd2e71f1a52ae249ec",
+          "message": "feat(sketch): add B75 constrained-ellipse entity with solver and WASM qualification (#882)\n\n* feat(sketch): add B75 constrained-ellipse entity with solver and WASM qualification\n\nB75 ellipse slice: native EllipseData (center + semiaxes a/b + radians\nphi) with full lifecycle, 9 constraints, analytic Jacobians, component\ndecomposition, typed GCS bindings and direct/batch/batchV2 parity.\n\n- Entity/numerics: EllipseData documents angle units, axis ordering,\n  equivalent representations and the equal-axis indeterminacy; creation\n  rejects non-positive/non-finite axes and non-finite angles; degenerate\n  mid-solve axes read satisfied-with-zero-gradient (line-axis contract).\n- Lifecycle: add/query/mutate/remove with typed handles; param\n  extraction/writeback, snapshots, Clone/checkpoint; deletion refused\n  while constrained (no dangling references, no internal constraints).\n- Constraints: pointOnEllipse, concentric x3 (ellipse/ellipse,\n  ellipse/circle, ellipse/arc), tangentLineEllipse with an explicit\n  contact-point contract, ellipseAxisA/B, pi-periodic ellipseAngle,\n  equalEllipseRadii. No endpoint semantics invented.\n- Solver: residual counts, residuals, analytic Jacobians, validation,\n  reference discovery and per-variant structural refs (concentric is\n  center-only, like the circle side); rank/DOF diagnostics,\n  solve_detailed rollback and the global rank policy unchanged.\n- Verification: central FD Jacobians at 1e-3/1/1e5 with scale-invariant\n  angle steps; translated/rotated/high-eccentricity/near-circle/tangent/\n  redundant/inconsistent/mixed-scale/circle-arc coupling solves; drag\n  sequences and edits between solves; component split/join structure.\n- Browser: gcsAddEllipse/gcsEllipseParams/gcsSetEllipse, 9 constraint\n  tags, batch dispatch for the typed GCS surface with direct/batch/V2\n  parity over results, diagnostics, errors and rollback.\n- Perf: ellipse_driven + ellipse_mixed bench workloads with identity\n  gates; independent_solved within 3% of pristine origin/main (noise).\n- Roadmap: B75 records the qualified ellipse slice; splines, elliptical\n  arcs and the symmetry recipe stay explicit remainder.\n\nSplines and elliptical arcs remain separate B75 work. Do not merge.\n\n* chore(o47): classify B75 gcsAddEllipse/gcsSetEllipse mutations as session CRUD\n\nRepository-policy twin-coverage ratchet requires every mutating\nBrepKernel export to carry a baseline row. Both new B75 ellipse\nmutations are GCS session CRUD with no solid twin, mirroring the\nexisting gcs* rows; owned by B75.\n\n* docs(sketch): fix EllipseData intra-doc link path in constraint.rs",
+          "timestamp": "2026-09-29T20:35:38-07:00",
+          "tree_id": "7f1e98332b81ceef3786a60548e32999f1db8036",
+          "url": "https://github.com/esaueng/remus/commit/475a2c27ea3cd810869c85fd2e71f1a52ae249ec"
+        },
+        "date": 1790739855244,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1402252,
+            "range": "± 1955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1499064,
+            "range": "± 1523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 36626,
+            "range": "± 1126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11928683,
+            "range": "± 28580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11936764,
+            "range": "± 22656",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11495970,
+            "range": "± 23852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1159735,
+            "range": "± 2788",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17809795,
+            "range": "± 33682",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 37395265,
+            "range": "± 268376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 221,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 161,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 810,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 154,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 355,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 213,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 519,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 745,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3271,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 581290,
+            "range": "± 2008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 8983388,
+            "range": "± 11473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 173751,
+            "range": "± 133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 539196,
+            "range": "± 740",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 63430,
+            "range": "± 811",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 925996,
+            "range": "± 4041",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10670655,
+            "range": "± 16964",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 856804,
+            "range": "± 1858",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1318335,
+            "range": "± 1627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 87724,
+            "range": "± 1130",
             "unit": "ns/iter"
           }
         ]
