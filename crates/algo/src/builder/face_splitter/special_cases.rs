@@ -985,8 +985,12 @@ fn chain_open_path(
 ///
 /// When the face has a latitude cap, the sample is a point on the cap's
 /// latitude nudged toward the equator so it lands on the collar surface (not in
-/// the removed cap). Otherwise the patch reaches the pole, so use a near-pole
-/// point on the hemisphere the open arcs bulge toward.
+/// the removed cap). The nudge stops halfway to the first wall arc on the
+/// sample's meridian, so a wall close under the lid (B65) cannot push the
+/// sample beyond it into a wall cap: the sample is provably inside the walls
+/// (|x| < a, |y| < a) by monotonicity of the meridian from the lid (inside)
+/// to the wall (on the boundary). Otherwise the patch reaches the pole, so use
+/// a near-pole point on the hemisphere the open arcs bulge toward.
 fn patch_interior_point(
     surface: &FaceSurface,
     hole_loops: &[Vec<OrientedPCurveEdge>],
@@ -999,6 +1003,9 @@ fn patch_interior_point(
 
     if let Some(cap) = hole_loops.first().and_then(|h| h.first()) {
         let (u_cap, v_cap) = sphere.project_point(cap.start_3d);
+        if let Some(pt) = collar_sample_bounded_by_walls(sphere, u_cap, v_cap, open_sections) {
+            return pt;
+        }
         let v_sample = v_cap - v_cap.signum() * (v_cap.abs() * 0.25 + 0.05);
         return sphere.evaluate(u_cap, v_sample);
     }
@@ -1020,6 +1027,112 @@ fn patch_interior_point(
     match dir.normalize() {
         Ok(d) => sphere.center() + d * sphere.radius(),
         Err(_) => sphere.center() + Vec3::new(0.0, 0.0, sphere.radius()),
+    }
+}
+
+/// Collar sample stopped halfway to the first wall arc on its meridian.
+///
+/// The lid's latitude circle has radius `ρ_c < a` (inside the walls), so the
+/// lid point itself is inside. Moving along the meridian `u_cap` toward the
+/// equator, `|x| = r·cos(v)·|cos(u)|` and `|y| = r·cos(v)·|sin(u)|` grow
+/// monotonically (cos falls on `[0, π/2]`). The first wall hit is at
+/// `cos(v) = a/(r·|cos(u)|)` (x-walls) or `a/(r·|sin(u)|)` (y-walls); the
+/// halfway latitude is strictly between the lid (inside) and the wall (on
+/// the boundary), hence strictly inside both walls and strictly below the
+/// lid. Returns `None` when no wall circle is recognised (non-box tool) or
+/// the meridian misses every wall (diagonal, equator still inside) so the
+/// caller keeps the legacy nudge, which the same monotonicity then keeps
+/// inside.
+fn collar_sample_bounded_by_walls(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    u_cap: f64,
+    v_cap: f64,
+    open_sections: &[OrientedPCurveEdge],
+) -> Option<Point3> {
+    use remus_topology::edge::EdgeCurve;
+
+    if !v_cap.is_finite() || v_cap.abs() < 1e-12 {
+        return None;
+    }
+    // Box half-width from the wall circles (centres on the axes, normals
+    // horizontal). All four walls share one `a`; take the median for
+    // robustness against a single misbuilt section.
+    let mut half_widths = Vec::new();
+    for section in open_sections {
+        let EdgeCurve::Circle(circle) = &section.curve_3d else {
+            continue;
+        };
+        let normal = circle.normal();
+        if normal.z().abs() > 0.5 {
+            continue;
+        }
+        let center = circle.center();
+        if normal.x().abs() >= normal.y().abs() {
+            half_widths.push(center.x().abs());
+        } else {
+            half_widths.push(center.y().abs());
+        }
+    }
+    if half_widths.is_empty() {
+        return None;
+    }
+    half_widths.sort_by(f64::total_cmp);
+    let a = half_widths[half_widths.len() / 2];
+    let r = sphere.radius();
+    if !(a.is_finite() && r.is_finite() && a > 0.0 && r > 0.0 && a < r) {
+        return None;
+    }
+    // Lid must start inside the walls, else the arrangement itself is not
+    // the lidded-box collar (lid circle escapes the walls).
+    let lid = sphere.evaluate(u_cap, v_cap);
+    if lid.x().abs() >= a || lid.y().abs() >= a {
+        return None;
+    }
+    let sign = v_cap.signum();
+    let cu = u_cap.cos().abs();
+    let su = u_cap.sin().abs();
+    let mut wall_vs: Vec<f64> = Vec::new();
+    if cu > 1e-12 {
+        let cos_v = a / (r * cu);
+        if cos_v <= 1.0 && cos_v > 0.0 {
+            let v_wall = sign * cos_v.acos();
+            if sign > 0.0 && v_wall >= 0.0 && v_wall < v_cap
+                || sign < 0.0 && v_wall <= 0.0 && v_wall > v_cap
+            {
+                wall_vs.push(v_wall);
+            }
+        }
+    }
+    if su > 1e-12 {
+        let cos_v = a / (r * su);
+        if cos_v <= 1.0 && cos_v > 0.0 {
+            let v_wall = sign * cos_v.acos();
+            if sign > 0.0 && v_wall >= 0.0 && v_wall < v_cap
+                || sign < 0.0 && v_wall <= 0.0 && v_wall > v_cap
+            {
+                wall_vs.push(v_wall);
+            }
+        }
+    }
+    let &v_wall = (if sign > 0.0 {
+        wall_vs.iter().max_by(|a, b| a.total_cmp(b))
+    } else {
+        wall_vs.iter().min_by(|a, b| a.total_cmp(b))
+    })?;
+    let v_sample = 0.5 * (v_cap + v_wall);
+    let pt = sphere.evaluate(u_cap, v_sample);
+    // Demonstrated containment: strictly inside both walls (with margin) and
+    // strictly between the lid and the wall on the same meridian, hence on
+    // the collar rather than in the cap or beyond a wall.
+    let margin = 1e-9 * r.max(a).max(1.0);
+    if pt.x().abs() < a - margin
+        && pt.y().abs() < a - margin
+        && (sign > 0.0 && v_sample < v_cap && v_sample > v_wall
+            || sign < 0.0 && v_sample > v_cap && v_sample < v_wall)
+    {
+        Some(pt)
+    } else {
+        None
     }
 }
 
