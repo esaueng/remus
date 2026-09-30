@@ -1,0 +1,9 @@
+{
+  "baseline": "origin/main 4a93e75877d2adde4a24e39bf3d7602ff4b32aa8",
+  "candidate": "codex/iges-atomic-append on top of 4a93e758 (uncommitted at measurement; committed for PR)",
+  "rustc": "1.96.0",
+  "profile": "release",
+  "harness": "crates/io/examples/iges_import_scaling.rs",
+  "reps": 11,
+  "note": "Quiet-machine paired runs; medians in-process. Baseline and candidate share the same harness source (public APIs only). IGES never took a whole-document clone, so no snapshot cost is removed; the comparison proves the new scope adds no document-size-dependent cost."
+}
