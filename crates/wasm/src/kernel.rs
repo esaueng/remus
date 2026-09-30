@@ -46,6 +46,13 @@ pub struct BrepKernel {
     pub(crate) gcs_sketches: Vec<GcsSketchState>,
     pub(crate) checkpoints: Vec<Checkpoint>,
     pub(crate) poisoned: bool,
+    /// Persistent classification preparation (PERF-Q02).
+    ///
+    /// Keyed by whole-topology [`remus_topology::CacheIdentity`]; every
+    /// mutation, restore, and rollback bumps the generation, so stale
+    /// preparation misses instead of reusing. `RefCell` because
+    /// `classifyPoint` is a read-only `&self` binding.
+    pub(crate) classify_cache: std::cell::RefCell<remus_check::classify::ClassificationCache>,
 }
 
 #[wasm_bindgen]
@@ -62,6 +69,9 @@ impl BrepKernel {
             gcs_sketches: Vec::new(),
             checkpoints: Vec::new(),
             poisoned: false,
+            classify_cache: std::cell::RefCell::new(
+                remus_check::classify::ClassificationCache::new(),
+            ),
         }
     }
 }

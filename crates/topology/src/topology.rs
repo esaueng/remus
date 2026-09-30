@@ -4,6 +4,7 @@
 //! create or query topological entities take a reference to this struct.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
@@ -73,6 +74,40 @@ pub enum BodyId {
     Wire(WireId),
 }
 
+/// Whole-topology cache identity for persistent spatial-query preparation
+/// (PERF-Q02).
+///
+/// A cache entry is usable only when both fields match the current topology:
+/// `lineage` distinguishes independent [`Topology`] values that happen to
+/// reuse the same numeric [`crate::solid::SolidId`] indices, and `generation`
+/// is a monotonic mutation counter that never moves backwards across
+/// rollback, checkpoint restore, foreign restore, or deserialization.
+///
+/// `mutation_ticks` cannot serve this role: it is restored with model state
+/// for journal continuity and can revisit an old value after a restore (the
+/// ABA case). The cache generation below only moves forwards and poisons on
+/// overflow instead of wrapping, so two different geometries can never share
+/// a usable entry via a recycled counter. Runtime identity is never written
+/// to persistent file formats; serialization carries entities, not this
+/// counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CacheIdentity {
+    /// Process-local identity of one [`Topology`] value lineage.
+    ///
+    /// Fresh on every [`Topology::new`] and every [`Topology::clone`];
+    /// never copied by restore paths, which keep the destination lineage.
+    /// Zero is reserved as "never cacheable" and is never allocated.
+    pub lineage: u64,
+    /// Monotonic invalidation generation within one lineage.
+    ///
+    /// Bumped before any observable mutation escapes (allocation, exclusive
+    /// access, replacement, retirement, loop/coedge rebuilds, pcurve and
+    /// periodic-winding writes, attribute writes, and every restore/rewind
+    /// path). Never restored backwards; overflow poisons instead of
+    /// aliasing (see [`Topology::cache_identity`]).
+    pub generation: u64,
+}
+
 /// Central context owning all topological entity arenas.
 ///
 /// Arena fields are private to enforce invariants through the public API.
@@ -83,9 +118,20 @@ pub enum BodyId {
 /// create or query topological entities take a reference to this struct.
 ///
 /// `Clone` copies every arena and map but starts independent transaction
-/// coordination: the clone keeps the source's lineage (so a snapshot taken
-/// from it restores exactly) and an empty undo log.
-#[derive(Debug, Default)]
+/// coordination: the clone keeps the source's undo lineage (so a snapshot taken
+/// from it restores exactly) and an empty undo log. Cache identity is *not*
+/// shared: the clone receives a fresh [`CacheIdentity::lineage`] so two
+/// diverging documents can never alias one persistent preparation.
+///
+/// `Debug` formats every session-state field but omits the PERF-Q02 cache
+/// identity (`cache_lineage`, `cache_generation`, `cache_poisoned`): those
+/// are process-local runtime invalidation counters, never persisted, and the
+/// generation moves forward across rollbacks and copy-on-write clones by
+/// design. Session-state oracles (the W9 preflight `session_unchanged`
+/// stage, rollback `format!("{topo:?}")` equality tests) compare logical
+/// document state, so runtime identity must not participate. When adding a
+/// field, add it to the manual `Debug` impl below unless it is likewise
+/// runtime-only.
 pub struct Topology {
     /// Mutation-local rollback storage and append-only guards.
     pub(crate) undo: UndoLog,
@@ -124,14 +170,105 @@ pub struct Topology {
     /// false gap fails closed while a missed mutation would fake
     /// continuity.
     mutation_ticks: u64,
+    /// Process-local lineage for persistent query caches (PERF-Q02).
+    ///
+    /// Fresh on every [`Self::new`] and every [`Clone`]; never copied by
+    /// restore paths, which keep the destination lineage. Zero is reserved
+    /// as "never cacheable" and is never allocated. Kept out of all
+    /// persistent file formats (serialization carries entities, never this
+    /// counter).
+    cache_lineage: u64,
+    /// Monotonic cache invalidation generation within one lineage.
+    ///
+    /// Bumped before any observable mutation escapes; never restored
+    /// backwards. See [`CacheIdentity`] for the ABA and overflow contract.
+    cache_generation: u64,
+    /// Once true, persistent caching is disabled forever for this value.
+    ///
+    /// Set when `cache_generation` would otherwise wrap past `u64::MAX`.
+    /// A needless miss is acceptable; aliasing two different geometries at
+    /// the saturated counter is not.
+    cache_poisoned: bool,
+}
+
+/// Allocates a fresh non-zero cache lineage.
+///
+/// Zero is reserved as "never cacheable". Wrapping the 64-bit counter is
+/// not reachable in practice (one allocation per `Topology` value); the
+/// skip-zero loop still guarantees no allocated lineage aliases the
+/// reserved value even across a wrap.
+/// Manual `Debug`: every session-state field, except the PERF-Q02 runtime
+/// cache identity (`cache_lineage`, `cache_generation`, `cache_poisoned`).
+/// See the struct documentation for why runtime invalidation counters must
+/// not participate in state-oracle comparisons. Keep this in sync with the
+/// struct definition above.
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Topology")
+            .field("undo", &self.undo)
+            .field("vertices", &self.vertices)
+            .field("edges", &self.edges)
+            .field("wires", &self.wires)
+            .field("faces", &self.faces)
+            .field("shells", &self.shells)
+            .field("solids", &self.solids)
+            .field("compounds", &self.compounds)
+            .field("compsolids", &self.compsolids)
+            .field("pcurves", &self.pcurves)
+            .field("loops", &self.loops)
+            .field("coedges", &self.coedges)
+            .field("attributes", &self.attributes)
+            .field("journal", &self.journal)
+            .field("mutation_ticks", &self.mutation_ticks)
+            .finish()
+    }
+}
+
+fn fresh_cache_lineage() -> u64 {
+    static NEXT_CACHE_LINEAGE: AtomicU64 = AtomicU64::new(1);
+    loop {
+        let lineage = NEXT_CACHE_LINEAGE.fetch_add(1, Ordering::Relaxed);
+        if lineage != 0 {
+            return lineage;
+        }
+    }
+}
+
+impl Default for Topology {
+    fn default() -> Self {
+        Self {
+            undo: UndoLog::default(),
+            vertices: Arena::new(),
+            edges: Arena::new(),
+            wires: Arena::new(),
+            faces: Arena::new(),
+            shells: Arena::new(),
+            solids: Arena::new(),
+            compounds: Arena::new(),
+            compsolids: Arena::new(),
+            pcurves: PCurveRegistry::new(),
+            loops: Arena::new(),
+            coedges: Arena::new(),
+            attributes: AttributeStore::default(),
+            journal: Journal::default(),
+            mutation_ticks: 0,
+            cache_lineage: fresh_cache_lineage(),
+            cache_generation: 0,
+            cache_poisoned: false,
+        }
+    }
 }
 
 impl Clone for Topology {
     /// Copies all topology state with independent transaction coordination.
     ///
     /// Keep in sync with the struct definition: every arena, map, and
-    /// counter below must be cloned. The undo log itself is never shared —
-    /// the clone records the source's lineage and starts empty.
+    /// counter below must be cloned, except cache lineage which is always
+    /// fresh (see [`CacheIdentity`]). The undo log itself is never shared —
+    /// the clone records the source's lineage and starts empty. Cache
+    /// generation and poison state are carried so a saturated source cannot
+    /// become cacheable by cloning.
     fn clone(&self) -> Self {
         // An intermediate clone retains its source lineage even after a
         // private mutation. Foreign restores of that changed state must be
@@ -162,6 +299,9 @@ impl Clone for Topology {
             attributes: self.attributes.clone(),
             journal: self.journal.clone(),
             mutation_ticks: self.mutation_ticks,
+            cache_lineage: fresh_cache_lineage(),
+            cache_generation: self.cache_generation,
+            cache_poisoned: self.cache_poisoned,
         }
     }
 }
@@ -232,6 +372,7 @@ macro_rules! arena_get_mut {
         pub fn $method(&mut self, id: $Id) -> Result<&mut $T, TopologyError> {
             self.$record(id)?;
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+            self.bump_cache_generation();
             self.$field.get_mut(id).ok_or(TopologyError::$err(id))
         }
     };
@@ -257,6 +398,7 @@ macro_rules! arena_api {
         /// Allocates a new entity in the arena and returns its typed handle.
         pub fn $add(&mut self, value: $T) -> $Id {
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+            self.bump_cache_generation();
             let id = self.$arena.alloc(value);
             self.record_alloc($tag, id.index());
             id
@@ -288,6 +430,99 @@ impl Topology {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whole-topology cache identity for persistent query preparation.
+    ///
+    /// Usable as a cache key together with the queried [`crate::solid::SolidId`]
+    /// and all numerical query options. Two cache entries with different
+    /// identities never alias, including across clones (fresh lineage),
+    /// checkpoint restore and rollback (monotonic generation, never restored
+    /// backwards), foreign restores, deserialization into an existing value
+    /// (allocation bumps), and ID retirement (slots never reused).
+    ///
+    /// When [`Self::is_cache_poisoned`] is true — only after `u64::MAX`
+    /// generations — the identity must not be used for caching: every lookup
+    /// misses. This saturates instead of wrapping so two different
+    /// geometries can never share the saturated counter.
+    #[must_use]
+    pub const fn cache_identity(&self) -> CacheIdentity {
+        CacheIdentity {
+            lineage: self.cache_lineage,
+            generation: self.cache_generation,
+        }
+    }
+
+    /// Process-local lineage distinguishing independent [`Topology`] values.
+    ///
+    /// Zero is reserved as "never cacheable" and is never allocated.
+    #[must_use]
+    pub const fn cache_lineage(&self) -> u64 {
+        self.cache_lineage
+    }
+
+    /// Monotonic invalidation generation within one lineage.
+    ///
+    /// Bumped before any observable mutation escapes; never restored
+    /// backwards. Do not persist this counter: it is runtime identity only.
+    #[must_use]
+    pub const fn cache_generation(&self) -> u64 {
+        self.cache_generation
+    }
+
+    /// Whether persistent caching is disabled for this value (overflow).
+    ///
+    /// Only reachable after `u64::MAX` generations. Lookups must miss and no
+    /// new entries may be stored while true.
+    #[must_use]
+    pub const fn is_cache_poisoned(&self) -> bool {
+        self.cache_poisoned || self.cache_lineage == 0 || self.cache_generation == u64::MAX
+    }
+
+    /// Current journal-continuity tick count (read-only).
+    ///
+    /// Exposed for tests and diagnostics only. Persistent caches must never
+    /// key solely by this counter: restores move it backwards, so two
+    /// different geometries can share one tick (the ABA case). Use
+    /// [`Self::cache_identity`] for cache keys.
+    #[must_use]
+    pub const fn mutation_ticks(&self) -> u64 {
+        self.mutation_ticks
+    }
+
+    /// Bumps the cache generation forward, poisoning on overflow.
+    ///
+    /// Called before any observable mutation escapes, including paths that
+    /// deliberately do not bump `mutation_ticks` (wire body-class tags,
+    /// attribute writes, loop/coedge rebuilds) so journal semantics stay
+    /// untouched while the spatial cache still invalidates. Restore and
+    /// rewind paths call this instead of restoring the generation
+    /// backwards, which closes the ABA case where two different geometries
+    /// reach the same old journal tick.
+    pub(crate) fn bump_cache_generation(&mut self) {
+        if self.cache_poisoned {
+            return;
+        }
+        if self.cache_generation == u64::MAX {
+            self.cache_poisoned = true;
+            return;
+        }
+        let next = self.cache_generation.saturating_add(1);
+        self.cache_generation = next;
+        if next == u64::MAX {
+            // The saturated counter itself is never cacheable: the next
+            // distinct state would otherwise alias it.
+            self.cache_poisoned = true;
+        }
+    }
+
+    /// Test-only hook to force the poisoned state.
+    ///
+    /// Production code reaches it only via `u64::MAX` generations.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn poison_cache_for_test(&mut self) {
+        self.cache_poisoned = true;
     }
 
     /// Returns the dimensional class of a body root.
@@ -345,6 +580,11 @@ impl Topology {
             });
         }
         self.record_wire_overwrite(wire)?;
+        // Intentionally cache-only: wire body-class tags are observable
+        // topology state for spatial queries, but journal gap detection
+        // historically does not count them. Preserve that contract while
+        // still invalidating persistent preparation.
+        self.bump_cache_generation();
         let stored = self
             .wires
             .get_mut(wire)
@@ -396,6 +636,12 @@ impl Topology {
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
+        // Persistent preparation invalidates on every restore, even when the
+        // restored state is bit-identical: the journal tick rolls back with
+        // the state and could otherwise alias an earlier generation (ABA).
+        // Lineage stays with the destination; only the generation moves
+        // forward.
+        self.bump_cache_generation();
         self.undo_truncate_for_foreign_restore(snapshot);
         let mut snapshot_face_authority: HashMap<
             FaceId,
@@ -515,11 +761,15 @@ impl Topology {
     /// barrier instead: there a retirement may already have been reported
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
+        self.bump_cache_generation();
         self.undo_truncate_for_foreign_restore(snapshot);
         self.restore_rollback_fields(snapshot);
     }
 
     pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {
+        // `restore_for_rollback` already bumped; direct callers (undo
+        // machinery) must also invalidate, since the tick rolls back.
+        self.bump_cache_generation();
         self.vertices.restore_for_rollback(&snapshot.vertices);
         self.edges.restore_for_rollback(&snapshot.edges);
         self.wires.restore_for_rollback(&snapshot.wires);
@@ -666,6 +916,10 @@ impl Topology {
     ) -> Result<(), TopologyError> {
         let _ = self.solid(solid)?;
         self.record_solid_attribute(solid)?;
+        // Conservative cache-only invalidation: attributes never affect
+        // spatial bounds, but a needless rebuild is acceptable and this
+        // closes any future attribute-derived query without a second audit.
+        self.bump_cache_generation();
         self.attributes.set_solid(solid, attributes);
         Ok(())
     }
@@ -688,6 +942,8 @@ impl Topology {
     ) -> Result<(), TopologyError> {
         let _ = self.face(face)?;
         self.record_face_attribute(face)?;
+        // See `set_solid_attributes`: conservative, cache-only.
+        self.bump_cache_generation();
         self.attributes.set_face(face, attributes);
         Ok(())
     }
@@ -878,6 +1134,10 @@ impl Topology {
     pub fn load_journal(&mut self, journal: Journal) {
         self.record_journal_replace();
         self.trip_append_if_armed();
+        // Journal-only replacement does not change geometry, but the tick
+        // sync can move backwards. Invalidate conservatively so no caller
+        // can mistake the synced tick for an unchanged cache generation.
+        self.bump_cache_generation();
         if let Some(ticks) = journal.last_ticks() {
             self.mutation_ticks = ticks;
         }
@@ -954,6 +1214,7 @@ impl Topology {
         // share another face's owned Loop handles.
         value.replace_boundary_loops(Vec::new());
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         let face_id = self.faces.alloc(value);
         self.record_alloc(ArenaTag::Face, face_id.index());
         if let Ok(specs) = specs {
@@ -1096,6 +1357,11 @@ impl Topology {
         mut carried_authority: HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
         replace_existing: bool,
     ) -> Result<Vec<LoopId>, TopologyError> {
+        // Loop/coedge rebuilds change boundary identity even when the
+        // journal tick path does not bump (notably the `build_face_loops`
+        // derivation fallback). Invalidate the spatial cache up front:
+        // a needless rebuild on error is acceptable, stale reuse is not.
+        self.bump_cache_generation();
         if replace_existing {
             // Record every removed index entry before destroying it; entries
             // of a pre-existing face trip an armed append-only guard here,
@@ -1211,6 +1477,7 @@ impl Topology {
             .ok_or(TopologyError::WireNotFound(wire_id))?;
         *stored = replacement;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
 
         for (face_id, specs) in affected {
             self.install_face_loop_specs(face_id, specs)?;
@@ -1246,6 +1513,7 @@ impl Topology {
             .ok_or(TopologyError::FaceNotFound(face_id))?;
         face.replace_boundary_wires(outer_wire, inner_wires);
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         self.install_face_loop_specs(face_id, specs)?;
         Ok(())
     }
@@ -1371,6 +1639,7 @@ impl Topology {
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         let mut retiring = self.collect_solid_entities(solid)?;
         if let Some((compound_id, _)) = self
             .compounds
@@ -1764,6 +2033,7 @@ impl Topology {
         self.validate_coedge_authority(coedge_id)?;
         self.record_coedge_overwrite(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         Ok(self
             .coedges
             .get_mut(coedge_id)
@@ -1783,6 +2053,7 @@ impl Topology {
         self.validate_coedge_authority(coedge_id)?;
         self.record_coedge_overwrite(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         Ok(self
             .coedges
             .get_mut(coedge_id)
@@ -1804,6 +2075,7 @@ impl Topology {
         self.validate_coedge_authority(coedge_id)?;
         self.record_coedge_overwrite(coedge_id)?;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         Ok(self
             .coedges
             .get_mut(coedge_id)
@@ -2874,5 +3146,119 @@ mod tests {
             topo.coedge(orphan).unwrap().periodic_winding(),
             PeriodicWinding::ZERO
         );
+    }
+
+    #[test]
+    fn cache_identity_contract_fresh_clone_and_monotonic() {
+        // Fresh values never alias.
+        let a = Topology::new();
+        let b = Topology::new();
+        assert_ne!(a.cache_lineage(), 0);
+        assert_ne!(b.cache_lineage(), 0);
+        assert_ne!(a.cache_lineage(), b.cache_lineage());
+        assert!(!a.is_cache_poisoned());
+
+        // Clone gets a fresh lineage but carries generation/ticks.
+        let mut topo = Topology::new();
+        let _ = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let gen_before = topo.cache_generation();
+        let ticks_before = topo.mutation_ticks();
+        let clone = topo.clone();
+        assert_ne!(clone.cache_lineage(), topo.cache_lineage());
+        assert_eq!(clone.cache_generation(), gen_before);
+        assert_eq!(clone.mutation_ticks(), ticks_before);
+
+        // Allocation and exclusive access bump the generation.
+        let generation = topo.cache_generation();
+        let _ = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        assert!(topo.cache_generation() > generation);
+        let vid = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let generation2 = topo.cache_generation();
+        let _ = topo.vertex_mut(vid).unwrap();
+        assert!(topo.cache_generation() > generation2);
+    }
+
+    #[test]
+    fn cache_generation_never_moves_backwards_across_restore() {
+        let mut topo = Topology::new();
+        let _ = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let lineage = topo.cache_lineage();
+        let snapshot = topo.clone();
+        let ticks_a = topo.mutation_ticks();
+        let gen_a = topo.cache_generation();
+
+        let _ = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        assert!(topo.mutation_ticks() > ticks_a);
+        assert!(topo.cache_generation() > gen_a);
+
+        // Checkpoint restore rewinds ticks but moves generation forward,
+        // closing the ABA case where two geometries share one tick.
+        topo.restore_preserving_handle_slots(&snapshot);
+        assert_eq!(topo.mutation_ticks(), ticks_a);
+        assert_eq!(topo.cache_lineage(), lineage);
+        assert!(topo.cache_generation() > gen_a);
+
+        // Rollback restore behaves the same way.
+        let snap2 = topo.clone();
+        let ticks_b = topo.mutation_ticks();
+        let gen_b = topo.cache_generation();
+        let _ = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        topo.restore_for_rollback(&snap2);
+        assert_eq!(topo.mutation_ticks(), ticks_b);
+        assert!(topo.cache_generation() > gen_b);
+    }
+
+    #[test]
+    fn cache_overflow_poisons_without_aliasing() {
+        let mut topo = Topology::new();
+        // Drive the generation to the saturation edge without 2^64 bumps.
+        topo.cache_generation = u64::MAX - 1;
+        topo.cache_poisoned = false;
+        assert!(!topo.is_cache_poisoned());
+        topo.bump_cache_generation();
+        assert!(topo.is_cache_poisoned());
+        let poisoned_gen = topo.cache_generation();
+        // Further bumps never wrap to a cacheable generation.
+        topo.bump_cache_generation();
+        assert!(topo.is_cache_poisoned());
+        assert_eq!(topo.cache_generation(), poisoned_gen);
+    }
+
+    #[test]
+    fn wire_body_class_and_attributes_invalidate_cache_only() {
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+        let ticks_before = topo.mutation_ticks();
+        let gen_before = topo.cache_generation();
+
+        // Wire body-class tags bump the cache generation without disturbing
+        // the journal tick contract they historically did not participate in.
+        topo.set_wire_body_class(wire, BodyClass::Wire).unwrap();
+        assert_eq!(topo.mutation_ticks(), ticks_before);
+        assert!(topo.cache_generation() > gen_before);
+    }
+
+    #[test]
+    fn debug_oracle_ignores_runtime_cache_identity() {
+        // Session-state oracles (`format!("{topo:?}")`, the W9 preflight
+        // `session_unchanged` stage) compare logical document state. A
+        // copy-on-write clone (fresh lineage, e.g. `Rc::make_mut` after a
+        // wasm checkpoint) and a forward-moved invalidation generation
+        // (e.g. a rolled-back refused import) must both compare identical.
+        let mut topo = Topology::new();
+        let _ = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let before = format!("{topo:?}");
+
+        let clone = topo.clone();
+        assert_ne!(clone.cache_lineage(), topo.cache_lineage());
+        assert_eq!(format!("{clone:?}"), before);
+
+        let gen_before = topo.cache_generation();
+        topo.bump_cache_generation();
+        assert!(topo.cache_generation() > gen_before);
+        assert_eq!(format!("{topo:?}"), before);
     }
 }

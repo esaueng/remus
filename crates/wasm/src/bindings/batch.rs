@@ -2381,9 +2381,32 @@ impl BrepKernel {
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let pt = Point3::new(x, y, z);
-                let result =
-                    remus_operations::classify::classify_point(&self.topo, solid_id, pt, 0.1, tol)
-                        .map_err(StructuredWasmError::from)?;
+                let options = remus_check::classify::ClassifyOptions {
+                    tolerance: tol,
+                    ..Default::default()
+                };
+                // Same persistent cache as the direct binding: the first
+                // item in a repeated-solid batch rebuilds, the rest hit.
+                // Falls back to one-shot on re-entrant borrow.
+                let verdict = if let Ok(mut cache) = self.classify_cache.try_borrow_mut() {
+                    cache
+                        .classify_point(&self.topo, solid_id, pt, &options)
+                        .map_err(StructuredWasmError::from)?
+                } else {
+                    remus_check::classify::classify_point(&self.topo, solid_id, pt, &options)
+                        .map_err(StructuredWasmError::from)?
+                };
+                let result = match verdict {
+                    remus_check::classify::PointClassification::Inside => {
+                        remus_operations::classify::PointClassification::Inside
+                    }
+                    remus_check::classify::PointClassification::Outside => {
+                        remus_operations::classify::PointClassification::Outside
+                    }
+                    remus_check::classify::PointClassification::OnBoundary => {
+                        remus_operations::classify::PointClassification::OnBoundary
+                    }
+                };
                 Ok(serde_json::json!(classify_to_string(result)))
             }
             "loft" => {

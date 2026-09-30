@@ -6,10 +6,12 @@
 
 pub(crate) mod boundary;
 pub use boundary::surface_point_in_face;
+pub mod cache;
 pub mod prepared;
 pub(crate) mod ray_surface;
 pub(crate) mod winding;
 
+pub use cache::{CacheStats, ClassificationCache, DEFAULT_CACHE_CAPACITY};
 pub use prepared::PreparedSolid;
 
 use remus_math::vec::{Point3, Vec3};
