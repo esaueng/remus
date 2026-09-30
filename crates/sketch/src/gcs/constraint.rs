@@ -206,7 +206,8 @@ pub enum Constraint {
     /// targets differing by `k·π` describe the same constraint (their
     /// residuals differ only by sign). Near a solution the residual reads as
     /// the signed angular error in radians. At or near the equal-axis limit
-    /// the angle is geometrically indeterminate (see [`EllipseData`]); this
+    /// the angle is geometrically indeterminate (see
+    /// [`super::entity::EllipseData`]); this
     /// constraint still solves parametrically there.
     EllipseAngle(EllipseId, f64),
 
