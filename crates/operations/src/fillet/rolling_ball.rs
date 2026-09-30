@@ -2919,11 +2919,12 @@ pub fn fillet_rolling_ball_with_origins(
                     );
                     // Analytic seam overrides in loop order (assembly mints
                     // each circle once; neighbours pick them up by sharing).
+                    // Arcs are stored in loop-traversal direction.
                     let loop_arcs = [
-                        (&arcs[0], m1, b1),
-                        (&arcs[3], b1, b2),
-                        (&arcs[1], b2, m2),
-                        (&arcs[2], m2, m1),
+                        (&arcs[0], arcs[0].start, arcs[0].end),
+                        (&arcs[3], arcs[3].start, arcs[3].end),
+                        (&arcs[1], arcs[1].start, arcs[1].end),
+                        (&arcs[2], arcs[2].start, arcs[2].end),
                     ];
                     let pushed = analytic_boundary_curves.len();
                     let mut overrides_ok = true;
