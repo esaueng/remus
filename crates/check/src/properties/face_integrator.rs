@@ -707,6 +707,29 @@ pub fn integrate_torus_band_face(
     face_id: FaceId,
     gauss_order: usize,
 ) -> Result<Option<FaceContribution>, CheckError> {
+    integrate_torus_band_face_about(topo, face_id, gauss_order, Point3::new(0.0, 0.0, 0.0))
+}
+
+/// [`integrate_torus_band_face`] with every positional integrand taken about
+/// `reference` instead of the world origin (B58 contract).
+///
+/// # Errors
+///
+/// As [`integrate_torus_band_face`], plus a non-finite `reference`.
+pub fn integrate_torus_band_face_about(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+    reference: Point3,
+) -> Result<Option<FaceContribution>, CheckError> {
+    if ![reference.x(), reference.y(), reference.z()]
+        .iter()
+        .all(|c| c.is_finite())
+    {
+        return Err(CheckError::IntegrationFailed(
+            "integration reference point must be finite".into(),
+        ));
+    }
     let face = topo.face(face_id)?;
     let FaceSurface::Torus(torus) = face.surface() else {
         return Ok(None);
@@ -719,7 +742,7 @@ pub fn integrate_torus_band_face(
             order: gauss_order,
             adaptive: None,
             knots: None,
-            reference: Point3::new(0.0, 0.0, 0.0),
+            reference,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
