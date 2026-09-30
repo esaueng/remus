@@ -26,9 +26,8 @@
 //! 90-degree-rectangular family is qualified; anything else returns `None`
 //! and the caller keeps its typed refusal.
 
-use std::collections::HashMap;
-
 use remus_math::curves::Circle3D;
+use remus_math::det_hash::DetHashMap;
 use remus_math::surfaces::ToroidalSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
@@ -60,7 +59,7 @@ pub struct NotchFrame {
 /// caller keeps its typed refusal.
 pub fn qualify_notch(
     edge_faces: &[[usize; 2]],
-    outward: &HashMap<usize, Vec3>,
+    outward: &DetHashMap<usize, Vec3>,
     convex: [bool; 3],
     tol: Tolerance,
 ) -> Option<(NotchFrame, usize)> {
@@ -202,22 +201,26 @@ pub struct SeamArc {
 }
 
 /// Build a seam arc on the exact circle through `center` with `axis`,
-/// spanning `start -> end`.
+/// spanning `start -> end`. The axis is normalized (non-unit input is
+/// refused, never silently mis-validated) and endpoints are checked against
+/// the kernel linear tolerance.
 fn seam_arc(
     center: Point3,
     axis: Vec3,
     radius: f64,
     start: Point3,
     end: Point3,
+    tol: Tolerance,
 ) -> Option<SeamArc> {
+    let axis = axis.normalize().ok()?;
     let circle = Circle3D::new(center, axis, radius).ok()?;
-    // Both endpoints must lie on the circle (within linear tolerance
-    // relative to the radius); the assembly trim pins the exact span.
+    // Both endpoints must lie on the circle; the assembly trim pins the
+    // exact span.
     for p in [start, end] {
         let rel = p - center;
         let axial = rel.dot(axis);
         let radial = (rel - axis * axial).length();
-        if axial.abs() > radius * 1e-6 || (radial - radius).abs() > radius * 1e-6 {
+        if axial.abs() > tol.linear || (radial - radius).abs() > tol.linear {
             return None;
         }
     }
@@ -279,15 +282,16 @@ pub fn seam_arcs(
     let t3_center = corner.ring_center;
     // Cap tangency circle: cap plane through the ring-center foot, radius 2R.
     let foot = corner.ring_center + corner.frame.cap_outward * r;
-    let s1 = seam_arc(t1_center, dir_convex_a, r, corner.m1, corner.b1)?;
-    let s2 = seam_arc(t2_center, dir_convex_b, r, corner.b2, corner.m2)?;
-    let s3 = seam_arc(t3_center, dir_concave, r, corner.m2, corner.m1)?;
+    let s1 = seam_arc(t1_center, dir_convex_a, r, corner.m1, corner.b1, tol)?;
+    let s2 = seam_arc(t2_center, dir_convex_b, r, corner.b2, corner.m2, tol)?;
+    let s3 = seam_arc(t3_center, dir_concave, r, corner.m2, corner.m1, tol)?;
     let s4 = seam_arc(
         foot,
         corner.frame.cap_outward,
         2.0 * r,
         corner.b1,
         corner.b2,
+        tol,
     )?;
     Some([s1, s2, s3, s4])
 }
@@ -301,8 +305,8 @@ mod tests {
     /// Bottom notch vertex of the L-bracket, R=1: cap B (face 0), walls S1
     /// (face 1) and S2 (face 2); edges: e1 (B,S1) convex +X, e2 (B,S2)
     /// convex +Y, e3 (S1,S2) concave +Z.
-    fn bracket_input() -> ([[usize; 2]; 3], HashMap<usize, Vec3>, [bool; 3]) {
-        let mut outward = HashMap::new();
+    fn bracket_input() -> ([[usize; 2]; 3], DetHashMap<usize, Vec3>, [bool; 3]) {
+        let mut outward = DetHashMap::default();
         outward.insert(0, Vec3::new(0.0, 0.0, -1.0));
         outward.insert(1, Vec3::new(0.0, 1.0, 0.0));
         outward.insert(2, Vec3::new(1.0, 0.0, 0.0));
