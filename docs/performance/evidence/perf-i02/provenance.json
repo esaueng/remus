@@ -1,0 +1,9 @@
+{
+  "baseline": "origin/main 594cd308eba3632f9a320c88c8bbb7b41a68bb45",
+  "candidate": "codex/perf-i02-step-atomic-import on top of 594cd308 (uncommitted at measurement; committed for PR)",
+  "rustc": "1.96.0 (ac68faa20 2026-05-25)",
+  "profile": "release",
+  "harness": "crates/io/examples/step_import_scaling.rs",
+  "reps": 11,
+  "note": "Quiet-machine paired runs; medians in-process. Baseline and candidate share the same harness source (public APIs only)."
+}
