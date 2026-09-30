@@ -15,6 +15,9 @@ pub use diagnostics::{
     ConstraintResidual, SolveClassification, SolveDiagnostics, classify as classify_solve,
 };
 pub use dof::DofAnalysis;
-pub use entity::{ArcData, ArcId, CircleData, CircleId, LineData, LineId, PointData, PointId};
+pub use entity::{
+    ArcData, ArcId, CircleData, CircleId, EllipseData, EllipseId, LineData, LineId, PointData,
+    PointId,
+};
 pub use solver::SolveResult;
 pub use system::GcsSystem;
