@@ -437,13 +437,24 @@ impl BrepKernel {
         }
         let solid_id = self.resolve_solid(solid)?;
         let point = remus_math::vec::Point3::new(x, y, z);
-        let result = remus_operations::classify::classify_point(
-            &self.topo, solid_id, point, 0.1, tolerance,
-        )?;
-        Ok(match result {
-            remus_operations::classify::PointClassification::Inside => "inside".into(),
-            remus_operations::classify::PointClassification::Outside => "outside".into(),
-            remus_operations::classify::PointClassification::OnBoundary => "boundary".into(),
+        let options = remus_check::classify::ClassifyOptions {
+            tolerance,
+            ..Default::default()
+        };
+        // Persistent preparation (PERF-Q02): reuse bounds/BVH/trims across
+        // calls while the topology identity matches; any mutation, restore,
+        // or rollback bumps the generation and forces a rebuild. A
+        // re-entrant borrow (not reachable through this binding) falls back
+        // to the one-shot path rather than panicking.
+        let verdict = if let Ok(mut cache) = self.classify_cache.try_borrow_mut() {
+            cache.classify_point(&self.topo, solid_id, point, &options)?
+        } else {
+            remus_check::classify::classify_point(&self.topo, solid_id, point, &options)?
+        };
+        Ok(match verdict {
+            remus_check::classify::PointClassification::Inside => "inside".into(),
+            remus_check::classify::PointClassification::Outside => "outside".into(),
+            remus_check::classify::PointClassification::OnBoundary => "boundary".into(),
         })
     }
 

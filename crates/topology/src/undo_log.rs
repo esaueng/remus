@@ -705,6 +705,10 @@ impl Topology {
     /// API restores each snapshot at most once, so this is unreachable
     /// through it).
     pub(crate) fn undo_rewind_scope(&mut self, mark: UndoMark) {
+        // Any rewind invalidates persistent preparation, even when the
+        // restored tick equals an earlier generation (ABA). The cache
+        // generation only moves forward; the journal tick still rolls back.
+        self.bump_cache_generation();
         self.purge_dead_scopes();
         if self.undo.records.len() >= mark.log_len {
             let mut created = Vec::new();
@@ -736,6 +740,10 @@ impl Topology {
     /// An armed append-only guard always trips: its slot marks no longer
     /// describe the swapped state.
     pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self) {
+        // Foreign restores swap state underneath live scopes. The caller
+        // (`restore_*`) already bumped, but invalidate here as well so a
+        // direct caller can never miss it; extra bumps are harmless.
+        self.bump_cache_generation();
         self.trip_append_if_armed();
         self.purge_dead_scopes();
         let base = snapshot.undo.base;

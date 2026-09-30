@@ -64,5 +64,9 @@ name = "boolean_tracking"
 harness = false
 name = "classify_perf"
 
+[[bench]]
+harness = false
+name = "classify_cache_perf"
+
 [lints]
 workspace = true
