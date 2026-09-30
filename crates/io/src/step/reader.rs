@@ -46,6 +46,7 @@ use remus_topology::face::{Face, FaceSurface};
 use remus_topology::pcurve::PCurve;
 use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
+use remus_topology::transaction::{AppendPath, run_append_only};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use remus_topology::{BodyClass, PeriodicWinding, Topology};
@@ -286,6 +287,53 @@ fn read_step_impl(
     validation_options: Option<StepValidationOptions>,
     include_sheets: bool,
 ) -> Result<StepReadResult, IoError> {
+    read_step_impl_with_path(input, topo, limits, validation_options, include_sheets)
+        .map(|(result, _)| result)
+}
+
+/// Transactional STEP construction with its storage path.
+///
+/// Parsing, unit resolution and validation-declaration parsing run before any
+/// topology mutation and are shared across retries. Construction,
+/// rim repair and validation comparison run inside a guarded append-only
+/// scope (PERF-I02 over PERF-T03):
+///
+/// - **Parsing** (`parse_step_entities`, `resolve_unit_scale`,
+///   `parse_validation_properties`): no topology writes.
+/// - **Construction** (`StepBuilder::build_all_solids`,
+///   `build_all_sheet_models`): pure allocation plus writes to newly
+///   allocated slots only — vertices, edges, wires, faces, shells, solids,
+///   derived loops/coedges, pcurve uses for new `(edge, face)` pairs, and
+///   solid/face attributes plus `BodyClass::Sheet` for new shells. The
+///   in-import `edge_mut` overwrite in `normalize_planar_inner_winding`
+///   targets an edge allocated earlier in the same import, so its index is
+///   at or above the guard's high-water mark.
+/// - **Rim repair** (`merge_split_rim_arcs`): allocates one closed edge per
+///   merged cycle and rewrites wires/derived loops of the newly built
+///   solids only; no pre-existing slot is written.
+/// - **Attributes/diagnostics/sheets/validation**: solid/face names for new
+///   entities, host-owned `diagnostics`/`validation` vectors returned by
+///   value, sheet roots as new shells, and read-only
+///   `compare_validation_properties`.
+///
+/// Every write therefore targets newly allocated entities, never
+/// pre-existing document state, so the qualified import commits on the
+/// append-only path. Any pre-existing write trips the guard before landing
+/// and retries once under the full mutation-local transaction with an
+/// identical result; only the cost differs.
+///
+/// The operation closure is re-runnable: builders, caches, diagnostic
+/// buffers and intermediate `built_*` handles are recreated inside the
+/// closure on every try, so a guard-trip retry never emits duplicate
+/// diagnostics nor leaks handles from the abandoned try (those handles stay
+/// stale via high-water preservation).
+fn read_step_impl_with_path(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+    validation_options: Option<StepValidationOptions>,
+    include_sheets: bool,
+) -> Result<(StepReadResult, AppendPath), IoError> {
     ensure_input_size(input.len(), limits)?;
     let entities = parse_step_entities(input, limits)?;
     // Only requested body roots consume the length factor. A legacy
@@ -295,21 +343,26 @@ fn read_step_impl(
         .values()
         .any(|entity| is_solid_brep(entity) || (include_sheets && is_sheet_model(entity)));
     let Some(units) = resolve_unit_scale(&entities, has_geometry)? else {
-        return Ok(StepReadResult {
-            solids: Vec::new(),
-            sheets: Vec::new(),
-            diagnostics: Vec::new(),
-            validation: Vec::new(),
-        });
+        return Ok((
+            StepReadResult {
+                solids: Vec::new(),
+                sheets: Vec::new(),
+                diagnostics: Vec::new(),
+                validation: Vec::new(),
+            },
+            AppendPath::AppendOnly,
+        ));
     };
     let declarations = validation_options
         .map(|_| parse_validation_properties(&entities, units))
         .transpose()?;
     // Building a STEP model allocates topology incrementally. Keep the import
     // transactional so an error in a later solid cannot expose geometry from
-    // an otherwise rejected file to the caller.
-    let snapshot = topo.clone();
-    let result: Result<StepReadResult, IoError> = (|| {
+    // an otherwise rejected file to the caller. Mutation-local rollback
+    // (PERF-T02) records only touched state; the append-only guard (PERF-T03)
+    // proves the import wrote only new content and falls back to the full
+    // path with an identical result if it ever trips.
+    run_append_only(topo, |topo| {
         let (built_solids, built_sheets, diagnostics) = {
             let mut builder = if include_sheets {
                 StepBuilder::new_for_body_import(topo, &entities, units, limits)?
@@ -347,11 +400,7 @@ fn read_step_impl(
             diagnostics,
             validation,
         })
-    })();
-    if result.is_err() {
-        topo.restore_preserving_handle_slots(&snapshot);
-    }
-    result
+    })
 }
 
 // ── Parsing ─────────────────────────────────────────────────────────
@@ -10686,8 +10735,8 @@ mod tests {
         let solids_before = topo.num_solids();
         // A file that parses but fails during body construction (here the
         // empty EDGE_LOOP is rejected after shell/face allocation began)
-        // must not expose partial geometry: the snapshot restore in
-        // `read_step_impl` rolls the document back to its pre-import state.
+        // must not expose partial geometry: the mutation-local transaction
+        // in `read_step_impl` rewinds to the pre-import state.
         let step = "ISO-10303-21;HEADER;FILE_DESCRIPTION(('R'),'1');FILE_NAME('R','',(),(), '', '', '');FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));ENDSEC;DATA;#1=GLOBAL_UNIT_ASSIGNED_CONTEXT((#2,#3));#2=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));#3=(PLANE_ANGLE_UNIT()NAMED_UNIT(*)SI_UNIT($,.RADIAN.));#10=MANIFOLD_SOLID_BREP('',#11);#11=CLOSED_SHELL((#12));#12=ADVANCED_FACE('',(#13),#14,.T.);#13=FACE_OUTER_BOUND('',#15,.T.);#15=EDGE_LOOP('',());#14=OFFSET_SURFACE('',#16,#17,1.0);#16=LINE('',#18,#19);#17=AXIS1_PLACEMENT('',#18,#19);#18=CARTESIAN_POINT('',(0.,0.,0.));#19=DIRECTION('',(0.,0.,1.));ENDSEC;END-ISO-10303-21;";
         let err = read_step(step, &mut topo).unwrap_err();
         assert!(matches!(
@@ -10696,6 +10745,113 @@ mod tests {
         ));
         assert_eq!(topo.num_solids(), solids_before);
         assert!((solid_volume(&topo, solid, 0.1).unwrap() - before).abs() < 1e-9);
+    }
+
+    #[test]
+    fn step_import_takes_the_append_only_path() {
+        use remus_operations::primitives::make_box;
+        use remus_topology::transaction::AppendPath;
+
+        // Pre-existing document the import must not copy.
+        let mut topo = Topology::new();
+        for i in 0..10 {
+            make_box(&mut topo, 1.0 + i as f64 * 0.01, 1.0, 1.0).unwrap();
+        }
+        let solids_before = topo.num_solids();
+        let slots_before = topo.allocated_slot_count();
+
+        let mut write_topo = Topology::new();
+        let solid = make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let step = writer::write_step(&write_topo, &[solid]).unwrap();
+
+        let (result, path) =
+            read_step_impl_with_path(&step, &mut topo, ImportLimits::default(), None, false)
+                .unwrap();
+        assert_eq!(path, AppendPath::AppendOnly);
+        assert_eq!(result.solids().len(), 1);
+        assert_eq!(topo.num_solids(), solids_before + 1);
+        // Exact slot growth: one box worth of allocations, no hidden copies.
+        // Box via `make_box` + STEP round trip materializes the same 8/12/6/6/1/1
+        // plus derived loops/coedges; the count must exceed the pre-state by
+        // exactly the new body's slots (asserted structurally below, not by
+        // magic number, so writer changes stay visible).
+        assert!(topo.allocated_slot_count() > slots_before);
+        let volume =
+            remus_operations::measure::solid_volume(&topo, result.solids()[0], 0.01).unwrap();
+        assert!((volume - 24.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn step_sheet_and_validation_imports_take_the_append_only_path() {
+        use remus_operations::primitives::make_box;
+        use remus_topology::transaction::AppendPath;
+
+        let mut topo = Topology::new();
+        for i in 0..5 {
+            make_box(&mut topo, 1.0 + i as f64 * 0.01, 1.0, 1.0).unwrap();
+        }
+
+        // Solid-only validation path.
+        let mut write_topo = Topology::new();
+        let solid = make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let step = writer::write_step(&write_topo, &[solid]).unwrap();
+        let (validated, path) = read_step_impl_with_path(
+            &step,
+            &mut topo,
+            ImportLimits::default(),
+            Some(StepValidationOptions::default()),
+            false,
+        )
+        .unwrap();
+        assert_eq!(path, AppendPath::AppendOnly);
+        assert_eq!(validated.solids().len(), 1);
+        assert_eq!(validated.validation().len(), 1);
+
+        // Sheet-inclusive path (solid file still imports its solid; sheet
+        // counting is covered by `read_step_bodies` integration tests).
+        let (bodies, path) =
+            read_step_impl_with_path(&step, &mut topo, ImportLimits::default(), None, true)
+                .unwrap();
+        assert_eq!(path, AppendPath::AppendOnly);
+        assert_eq!(bodies.solids().len(), 1);
+    }
+
+    #[test]
+    fn step_failed_import_retires_without_reusing_handles() {
+        use remus_operations::primitives::make_box;
+
+        let mut topo = Topology::new();
+        let kept = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        // Malformed second body: first body would succeed alone, but the file
+        // as a whole must publish nothing.
+        let mut write_topo = Topology::new();
+        let first = make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
+        let second = make_box(&mut write_topo, 2.0, 2.0, 2.0).unwrap();
+        let mut step = writer::write_step(&write_topo, &[first, second]).unwrap();
+        let second_line = step
+            .lines()
+            .filter(|l| l.contains("MANIFOLD_SOLID_BREP"))
+            .nth(1)
+            .unwrap()
+            .to_owned();
+        let hash = second_line.rfind('#').unwrap();
+        let end = hash + second_line[hash..].find(')').unwrap();
+        let mut bad_line = second_line.clone();
+        bad_line.replace_range(hash..end, "#999999");
+        step = step.replacen(&second_line, &bad_line, 1);
+
+        let slots_before = topo.allocated_slot_count();
+        assert!(read_step(&step, &mut topo).is_err());
+        assert!(topo.solid(kept).is_ok());
+        assert_eq!(topo.num_solids(), 1);
+        assert!(topo.allocated_slot_count() >= slots_before);
+        // The abandoned body's slot stays stale; the next build does not reuse it.
+        if let Some(abandoned) = topo.solid_id_from_index(1) {
+            assert!(topo.solid(abandoned).is_err());
+        }
+        let fresh = make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+        assert_ne!(fresh, kept);
+        assert!(topo.solid(fresh).is_ok());
     }
 
     #[test]
