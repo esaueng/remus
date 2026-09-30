@@ -39,6 +39,8 @@ mod growing_holder_volume_tests;
 #[cfg(test)]
 mod holed_face_tests;
 #[cfg(test)]
+mod mixed_notch_tests;
+#[cfg(test)]
 mod qualify_convex_hull_tests;
 #[cfg(test)]
 mod qualify_ops_tests;
