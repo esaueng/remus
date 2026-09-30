@@ -13,7 +13,7 @@
 
 use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_math::vec::{Point3, Vec3};
-use remus_operations::blend_ops::{blend_failure_code, chamfer_v2, fillet_cascade};
+use remus_operations::blend_ops::{chamfer_v2, fillet_cascade};
 use remus_operations::extrude::extrude;
 use remus_operations::measure::solid_volume;
 use remus_operations::query::filter_filletable_edges;
@@ -74,8 +74,8 @@ fn mixed_notch_bracket_step_round_trip_preserves_shape() {
     assert!(report.is_valid(), "reimported solid must validate");
 }
 
-/// The reimported solid keeps the fillet refusal (typed, atomic) and the
-/// chamfer success (closed form); the chamfered solid round-trips too.
+/// The reimported solid keeps the fillet success (torus corners, closed
+/// form) and the chamfer success; the filleted solid round-trips too.
 #[test]
 fn reimported_bracket_keeps_boundary_contracts() {
     let mut topo = Topology::new();
@@ -87,16 +87,13 @@ fn reimported_bracket_keeps_boundary_contracts() {
     let physical = filter_filletable_edges(&imported, back, &all).unwrap();
     assert_eq!(physical.len(), 18, "reimport must keep all physical edges");
 
-    let before = solid_volume(&imported, back, 0.01).unwrap();
-    let err = match fillet_cascade(&mut imported, back, &physical, 1.0) {
-        Ok(_) => panic!("reimported whole-edge fillet must still refuse"),
-        Err(e) => e,
-    };
-    assert_eq!(blend_failure_code(&err), "unsupported-vertex-blend");
-    let after = solid_volume(&imported, back, 0.01).unwrap();
+    let filleted = fillet_cascade(&mut imported, back, &physical, 1.0)
+        .unwrap_or_else(|e| panic!("reimported whole-edge fillet must build: {e}"));
+    assert!(!filleted.is_partial);
+    let fvol = solid_volume(&imported, filleted.solid, 0.01).unwrap();
     assert!(
-        (after - before).abs() < 1e-9,
-        "refusal must leave the reimported solid intact"
+        (fvol - 13027.2829).abs() < 2.0,
+        "reimported fillet must meet the closed form, got {fvol:.4}"
     );
 
     let chamfered = chamfer_v2(&mut imported, back, &physical, 1.0, 1.0)
@@ -108,14 +105,14 @@ fn reimported_bracket_keeps_boundary_contracts() {
         "reimported chamfer must meet the closed form, got {cvol:.4}"
     );
 
-    // The chamfered solid itself round-trips with volume agreement.
-    let step2 = remus_io::step::writer::write_step(&imported, &[chamfered.solid]).unwrap();
+    // The filleted solid itself round-trips with volume agreement.
+    let step2 = remus_io::step::writer::write_step(&imported, &[filleted.solid]).unwrap();
     let (imported2, back2) = reimport(&step2);
-    let cvol2 = solid_volume(&imported2, back2, 0.01).unwrap();
+    let fvol2 = solid_volume(&imported2, back2, 0.01).unwrap();
     assert!(
-        (cvol2 - cvol).abs() < 0.5,
-        "chamfer round-trip must agree: {cvol:.4} vs {cvol2:.4}"
+        (fvol2 - fvol).abs() < 0.5,
+        "fillet round-trip must agree: {fvol:.4} vs {fvol2:.4}"
     );
     let report = validate_solid(&imported2, back2, &ValidateOptions::default()).unwrap();
-    assert!(report.is_valid(), "reimported chamfer must validate");
+    assert!(report.is_valid(), "reimported fillet must validate");
 }

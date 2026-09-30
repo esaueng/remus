@@ -211,7 +211,7 @@ fn four_stripe_pyramid_apex_is_watertight_and_g1() {
 }
 
 #[test]
-fn alternating_material_sides_at_a_planar_vertex_fail_closed() {
+fn alternating_material_sides_at_a_planar_vertex_builds_torus() {
     let mut topo = Topology::new();
     let profile = [
         Point3::new(0.0, 0.0, 0.0),
@@ -231,35 +231,39 @@ fn alternating_material_sides_at_a_planar_vertex_fail_closed() {
         },
     ));
     let input = extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+    let vol_before =
+        remus_operations::measure::solid_volume(&topo, input, 0.05).unwrap();
     let corner = Point3::new(2.0, 2.0, 5.0);
     let edges = [
         edge_between(&topo, input, Point3::new(2.0, 2.0, 0.0), corner),
         edge_between(&topo, input, Point3::new(7.0, 2.0, 5.0), corner),
         edge_between(&topo, input, corner, Point3::new(2.0, 7.0, 5.0)),
     ];
-    let before = (
-        topo.num_vertices(),
-        topo.num_edges(),
-        topo.num_wires(),
-        topo.num_faces(),
-        topo.num_shells(),
-        topo.num_solids(),
-    );
-    let error = match fillet_v2(&mut topo, input, &edges, 0.4) {
-        Ok(_) => panic!("alternating material sides unexpectedly built"),
-        Err(error) => error,
-    };
-    assert_eq!(blend_failure_code(&error), "unsupported-vertex-blend");
-    assert_eq!(
-        before,
-        (
-            topo.num_vertices(),
-            topo.num_edges(),
-            topo.num_wires(),
-            topo.num_faces(),
-            topo.num_shells(),
-            topo.num_solids(),
-        ),
-        "typed refusal must be transactional"
+    // Alternating material sides over a 90-degree rectangular notch now
+    // close with an exact torus patch (one concave + two convex stripes).
+    let result = remus_operations::blend_ops::fillet_v2(&mut topo, input, &edges, 0.4)
+        .unwrap_or_else(|e| panic!("notch triple must build: {e}"));
+    assert!(!result.is_partial);
+    assert_eq!(result.succeeded.len(), 3);
+    let mut kinds = std::collections::HashMap::new();
+    for fid in remus_topology::explorer::solid_faces(&topo, result.solid).unwrap() {
+        let tag = match topo.face(fid).unwrap().surface() {
+            FaceSurface::Plane { .. } => "Plane",
+            FaceSurface::Cylinder(_) => "Cylinder",
+            FaceSurface::Torus(_) => "Torus",
+            _ => "other",
+        };
+        *kinds.entry(tag).or_insert(0usize) += 1;
+    }
+    assert_eq!(kinds.get("Cylinder"), Some(&3));
+    assert_eq!(kinds.get("Torus"), Some(&1));
+    let shell = topo.solid(result.solid).unwrap().outer_shell();
+    remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+        .expect("notch triple shell must be closed");
+    let vol_after =
+        remus_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
+    assert!(
+        (vol_after - vol_before).abs() < 2.0,
+        "notch triple must stay near {vol_before:.3}, got {vol_after:.3}"
     );
 }
