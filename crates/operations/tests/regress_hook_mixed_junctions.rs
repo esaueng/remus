@@ -15,10 +15,11 @@
 //!   plate faces;
 //! - lip junctions: all-convex (same family as the box corners).
 //!
-//! Whole-edge fillet at r = 1 refuses typed (the mixed vertices admit no
-//! qualified patch); the test pins the refusal, the junction census, and
-//! failure atomicity. The lip-only convex subset is covered by the existing
-//! box-corner pins.
+//! Whole-edge fillet at r = 1 succeeds in one operation (twelve tori:
+//! eight rib-base mirrors, two lip notches over coplanar-split caps, and
+//! two hole-rim bands); the test pins the junction census, the torus count,
+//! validity, and material removal. The lip-only convex subset is covered by
+//! the existing box-corner pins.
 
 #![allow(
     clippy::unwrap_used,
@@ -31,7 +32,7 @@ use std::collections::HashMap;
 
 use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_math::mat::Mat4;
-use remus_operations::blend_ops::{blend_failure_code, fillet_cascade};
+use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
@@ -129,13 +130,22 @@ fn hook_fixture_is_valid_with_documented_topology() {
     );
 }
 
-/// Whole-hook fillet refuses typed with a mixed-junction census; input intact.
+/// Whole-hook fillet succeeds in one operation: every sharp physical edge
+/// (46) through the public cascade — plate and lip perimeters, both rib
+/// bases (convex-singleton mirror tori), lip-notch corners (concave
+/// singleton tori over coplanar-split caps), and both hole rims.
+/// The junction census documents the families involved.
 #[test]
-fn hook_whole_edge_fillet_refuses_with_family_census() {
+fn hook_whole_edge_fillet_succeeds_with_family_census() {
     let mut topo = Topology::new();
     let solid = hose_hook(&mut topo);
     let all = solid_edges(&topo, solid).unwrap();
     let physical = filter_filletable_edges(&topo, solid, &all).unwrap();
+    assert_eq!(
+        physical.len(),
+        46,
+        "whole-edge selection must stay complete"
+    );
     let census = junction_census(&topo, solid, &physical);
     assert_eq!(
         (
@@ -148,29 +158,62 @@ fn hook_whole_edge_fillet_refuses_with_family_census() {
         "hook junction census must be stable: {census:?}"
     );
 
+    let vol_before = solid_volume(&topo, solid, 0.05).unwrap();
+    let result = fillet_cascade(&mut topo, solid, &physical, FILLET_R)
+        .unwrap_or_else(|e| panic!("hook whole-edge fillet must build: {e}"));
+    assert!(
+        !result.is_partial,
+        "hook whole-edge fillet: no partial blends"
+    );
+    let report = validate_solid(&topo, result.solid, &ValidateOptions::default()).unwrap();
+    assert!(report.is_valid(), "filleted hook must validate");
+    // Twelve tori: eight rib-base mirrors, two lip notches, and the two
+    // hole-rim bands (each rim rounds into one torus).
+    let torus = solid_faces(&topo, result.solid)
+        .unwrap()
+        .iter()
+        .filter(|fid| {
+            matches!(
+                topo.face(**fid).unwrap().surface(),
+                remus_topology::face::FaceSurface::Torus(_)
+            )
+        })
+        .count();
+    assert_eq!(
+        torus, 12,
+        "all mixed junctions must close with torus patches"
+    );
+    let vol_after = solid_volume(&topo, result.solid, 0.05).unwrap();
+    assert!(
+        vol_after < vol_before,
+        "a convex fillet must remove material: {vol_before:.4} -> {vol_after:.4}"
+    );
+    eprintln!("hook whole-edge r=1: {vol_before:.4} -> {vol_after:.4}");
+}
+
+/// Oversized radius still refuses atomically: r=5 exceeds the rib
+/// half-width (3) and the plate thickness (6), so no feature can take it.
+#[test]
+fn hook_oversized_fillet_refuses_atomically() {
+    let mut topo = Topology::new();
+    let solid = hose_hook(&mut topo);
+    let all = solid_edges(&topo, solid).unwrap();
+    let physical = filter_filletable_edges(&topo, solid, &all).unwrap();
     let faces_before = solid_faces(&topo, solid).unwrap().len();
     let vol_before = solid_volume(&topo, solid, 0.05).unwrap();
-    let err = match fillet_cascade(&mut topo, solid, &physical, FILLET_R) {
-        Ok(result) => panic!(
-            "hook whole-edge fillet must refuse (mixed junctions); built engine={:?}",
-            result.engine
-        ),
+    let err = match fillet_cascade(&mut topo, solid, &physical, 5.0) {
+        Ok(_) => panic!("hook oversized fillet must refuse"),
         Err(e) => e,
     };
-    eprintln!("hook refusal code: {}", blend_failure_code(&err));
-    assert_eq!(
-        blend_failure_code(&err),
-        "unsupported-vertex-blend",
-        "hook whole-edge fillet must refuse at a mixed vertex junction"
-    );
+    eprintln!("hook oversized refusal: {err}");
     assert_eq!(
         solid_faces(&topo, solid).unwrap().len(),
         faces_before,
-        "refusal must not change the face inventory"
+        "oversized refusal must not change the face inventory"
     );
     let vol_after = solid_volume(&topo, solid, 0.05).unwrap();
     assert!(
         (vol_after - vol_before).abs() < 1e-9,
-        "refusal must not move volume"
+        "oversized refusal must not move volume"
     );
 }

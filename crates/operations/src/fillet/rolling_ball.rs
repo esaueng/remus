@@ -470,6 +470,382 @@ fn record_strip_contacts(
     end.push((f2, c2_end));
 }
 
+/// Insert tangency-split points into a trimmed support polygon.
+///
+/// Q's from torus cap-tangency arcs crossing coplanar seams lie strictly
+/// inside this face's straight boundary spans (never at its corners, which
+/// the corner trimmer already resolved to stations). Each is inserted where
+/// it lies so the assembly adopts the tangency sub-arcs instead of chording
+/// across them. Spans without a Q pass through unchanged.
+fn insert_tangency_splits(poly: Vec<Point3>, qs: &[Point3], tol: Tolerance) -> Vec<Point3> {
+    if qs.is_empty() || poly.len() < 2 {
+        return poly;
+    }
+    let mut out = Vec::with_capacity(poly.len() + qs.len());
+    let n = poly.len();
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        out.push(a);
+        let ab = b - a;
+        let len_sq = ab.dot(ab);
+        if len_sq <= tol.linear * tol.linear {
+            continue;
+        }
+        let len = len_sq.sqrt();
+        let mut hits: Vec<(f64, Point3)> = Vec::new();
+        for q in qs {
+            let t = (*q - a).dot(ab) / len_sq;
+            if t <= tol.linear / len || t >= 1.0 - tol.linear / len {
+                continue;
+            }
+            let proj = a + ab * t;
+            if (proj - *q).length() <= tol.linear {
+                hits.push((t, *q));
+            }
+        }
+        hits.sort_by(|x, y| x.0.total_cmp(&y.0));
+        for (_, q) in hits {
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// Cap-tangency split points for one torus corner: where its S4' arc
+/// crosses straight seam edges on the cap plane (a fused-flush lip splits
+/// the cap). Empty when uncrossed or uncomputable; downstream assembly
+/// refuses loudly on the resulting gap, never silently.
+///
+/// Runs both at detection time (so Phase 3 inserts the splits into cap
+/// polygons) and at emission (single source; pure and cheap).
+#[allow(clippy::too_many_arguments)]
+fn tangency_qs(
+    topo: &Topology,
+    solid: SolidId,
+    edge_to_faces: &HashMap<usize, Vec<FaceId>>,
+    target_set: &HashSet<usize>,
+    torus: &crate::fillet::notch_torus::NotchTorus,
+    dirs: &[Vec3; 3],
+    singleton_pos: usize,
+    tol: Tolerance,
+) -> Vec<Point3> {
+    use crate::fillet::notch_torus::{SupportPlane, same_plane, split_tangency_span};
+    // Pair directions (complement of the singleton) for the seam solve.
+    let pair: Vec<usize> = (0..3).filter(|i| *i != singleton_pos).collect();
+    let [Some(&pa), Some(&pb)] = [pair.first(), pair.get(1)] else {
+        return Vec::new();
+    };
+    let (Some(&dir_a), Some(&dir_b), Some(&dir_c)) =
+        (dirs.get(pa), dirs.get(pb), dirs.get(singleton_pos))
+    else {
+        return Vec::new();
+    };
+    let Some(arcs) =
+        crate::fillet::notch_torus::seam_arcs(torus, dir_a, dir_b, dir_c, torus.mirror, tol)
+    else {
+        return Vec::new();
+    };
+    let s4 = &arcs[3];
+    let Some((s4circle, s4trim)) =
+        crate::fillet::notch_torus::oriented_seam(&s4.circle, s4.start, s4.end)
+    else {
+        return Vec::new();
+    };
+    let cap_n = torus.frame.cap_outward;
+    let foot = s4circle.center();
+    let cap_d = cap_n.dot(Vec3::new(foot.x(), foot.y(), foot.z()));
+    let cap_plane = SupportPlane {
+        normal: cap_n,
+        d: cap_d,
+    };
+    let rbox = 2.0 * torus.radius + tol.linear;
+    let mut segments: Vec<(Point3, Point3)> = Vec::new();
+    let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
+        return Vec::new();
+    };
+    for fid in faces {
+        let Ok(face) = topo.face(fid) else {
+            return Vec::new();
+        };
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let Ok(wire) = topo.wire(wid) else {
+                return Vec::new();
+            };
+            for oe in wire.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    return Vec::new();
+                };
+                if !matches!(edge.curve(), EdgeCurve::Line) {
+                    continue;
+                }
+                if target_set.contains(&oe.edge().index()) {
+                    continue;
+                }
+                let (Ok(va), Ok(vb)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                    return Vec::new();
+                };
+                let (p0, p1) = (va.point(), vb.point());
+                if (p0 - p1).length() <= tol.linear {
+                    continue;
+                }
+                if p0.x().min(p1.x()) > foot.x() + rbox
+                    || p0.x().max(p1.x()) < foot.x() - rbox
+                    || p0.y().min(p1.y()) > foot.y() + rbox
+                    || p0.y().max(p1.y()) < foot.y() - rbox
+                    || p0.z().min(p1.z()) > foot.z() + rbox
+                    || p0.z().max(p1.z()) < foot.z() - rbox
+                {
+                    continue;
+                }
+                let Some(adj) = edge_to_faces.get(&oe.edge().index()) else {
+                    continue;
+                };
+                if adj.len() != 2 {
+                    continue;
+                }
+                let mut both_cap = true;
+                for f in adj {
+                    let Ok(ff) = topo.face(*f) else {
+                        both_cap = false;
+                        break;
+                    };
+                    let Some(n) = remus_topology::face::Face::effective_plane_normal(ff)
+                        .and_then(|n| n.normalize().ok())
+                    else {
+                        both_cap = false;
+                        break;
+                    };
+                    let d = n.dot(Vec3::new(p0.x(), p0.y(), p0.z()));
+                    if !same_plane(SupportPlane { normal: n, d }, cap_plane, tol) {
+                        both_cap = false;
+                        break;
+                    }
+                }
+                if both_cap {
+                    segments.push((p0, p1));
+                }
+            }
+        }
+    }
+    split_tangency_span(&s4circle, s4trim, &segments, tol)
+}
+
+/// Tangency splits strictly inside the directed edge `pos -> far`, sorted
+/// by distance from `pos`. A groove crossing owns the edge region: the
+/// caller emits these instead of its setback preservation (and records no
+/// runout — the edge continues past every split).
+fn edge_tangency_splits(pos: Point3, far: Point3, qs: &[Point3], tol: Tolerance) -> Vec<Point3> {
+    let dir = far - pos;
+    let len_sq = dir.dot(dir);
+    if len_sq <= tol.linear * tol.linear {
+        return Vec::new();
+    }
+    let len = len_sq.sqrt();
+    let mut hits: Vec<(f64, Point3)> = Vec::new();
+    for q in qs {
+        let t = (*q - pos).dot(dir) / len_sq;
+        if t <= tol.linear / len || t >= 1.0 - tol.linear / len {
+            continue;
+        }
+        let proj = pos + dir * t;
+        if (proj - *q).length() <= tol.linear {
+            hits.push((t, *q));
+        }
+    }
+    hits.sort_by(|x, y| x.0.total_cmp(&y.0));
+    hits.into_iter().map(|(_, q)| q).collect()
+}
+
+/// Trim one support-face polygon corner to its blend contacts.
+///
+/// Shared by outer wires and blend-adjacent inner (hole) wires: returns the
+/// replacement points for this corner — the original position untouched.
+/// `prev_ei` / `ei` are the wire edge indices before / after the corner;
+/// `face_normal` / `face_d` locate the runout tangent test; `qs` are the
+/// torus tangency-split points, which preempt setback preservations on the
+/// edge they cross (the groove boundary owns that edge region, so no
+/// runout triangle is needed there). Cases:
+/// untouched corners pass through; fillet-adjacent corners resolve to
+/// Phase 4 contacts, setback preservations, and runout legs exactly as the
+/// Phase 3 outer loop always has.
+#[allow(clippy::too_many_arguments)]
+fn trim_support_corner(
+    pos: Point3,
+    prev_pos: Point3,
+    next_pos: Point3,
+    vi: usize,
+    fi: usize,
+    before_filleted: bool,
+    after_filleted: bool,
+    at_fillet_endpoint: bool,
+    prev_ei: usize,
+    ei: usize,
+    face_normal: Vec3,
+    face_d: f64,
+    fillet_contact_map: &HashMap<(usize, usize, usize), Point3>,
+    setback_map: &HashMap<(usize, usize), f64>,
+    arc_runout: &HashMap<usize, (Point3, Point3, usize, Point3, usize)>,
+    corner_preserved: &mut HashMap<usize, Point3>,
+    qs: &[Point3],
+    radius: f64,
+    tol: Tolerance,
+) -> Result<Vec<Point3>, crate::OperationsError> {
+    let mut out = Vec::new();
+    match (before_filleted, after_filleted, at_fillet_endpoint) {
+        (false, false, false) => {
+            out.push(pos);
+        }
+        // Side face: use the two unique Phase 4 fillet contacts,
+        // paired by proximity to boundary offsets.
+        (false, false, true) => {
+            // Arc runout: this flat side face only touches the strip at
+            // a single contact lying on its own plane (the tangent
+            // point). Keep the corner and split the adjacent edge there
+            // so the runout triangle's leg corner→contact is shared.
+            let runout_contact = arc_runout.get(&vi).and_then(|&(_, ca, _, cb, _)| {
+                [ca, cb].into_iter().find(|p| {
+                    (face_normal.dot(Vec3::new(p.x(), p.y(), p.z())) - face_d).abs()
+                        < tol.linear * 100.0
+                })
+            });
+            if let Some(b) = runout_contact {
+                // Orient: keep the corner on the side of the un-split
+                // edge, place the contact on the edge it lies along.
+                let on_next = (next_pos - pos)
+                    .normalize()
+                    .ok()
+                    .is_some_and(|dn| (b - pos).dot(dn) > 0.0);
+                if on_next {
+                    out.push(pos);
+                    out.push(b);
+                } else {
+                    out.push(b);
+                    out.push(pos);
+                }
+                return Ok(out);
+            }
+
+            let mut unique_contacts: Vec<Point3> = Vec::new();
+            for (&(vi_k, _, _), &pt) in fillet_contact_map {
+                if vi_k == vi {
+                    let already = unique_contacts
+                        .iter()
+                        .any(|uc| (*uc - pt).length() < tol.linear);
+                    if !already {
+                        unique_contacts.push(pt);
+                    }
+                }
+            }
+
+            if unique_contacts.len() >= 2 {
+                let dir_prev = (prev_pos - pos).normalize()?;
+                let approx_prev = pos + dir_prev * radius;
+                let d0 = (unique_contacts[0] - approx_prev).length();
+                let d1 = (unique_contacts[1] - approx_prev).length();
+                if d0 <= d1 {
+                    out.push(unique_contacts[0]);
+                    out.push(unique_contacts[1]);
+                } else {
+                    out.push(unique_contacts[1]);
+                    out.push(unique_contacts[0]);
+                }
+            } else {
+                let dir_prev = (prev_pos - pos).normalize()?;
+                out.push(pos + dir_prev * radius);
+                let dir_next = (next_pos - pos).normalize()?;
+                out.push(pos + dir_next * radius);
+            }
+        }
+        (true, false, _) => {
+            if let Some(&pt) = fillet_contact_map.get(&(vi, prev_ei, fi)) {
+                out.push(pt);
+            } else {
+                let dir = (next_pos - pos).normalize()?;
+                out.push(pos + dir * radius);
+            }
+            // Arc runout: keep the original corner so the runout
+            // triangle's leg (contact→corner, along the unfilleted edge)
+            // is shared with this face (Phase 5e closes the strip end).
+            if arc_runout.contains_key(&vi) {
+                out.push(pos);
+            }
+            // The "after" edge is the unfilleted edge at this corner.
+            // If the filleted edge was set back here, preserve it — unless
+            // a tangency split crosses this edge first, in which case the
+            // groove boundary owns the region and no runout is needed.
+            if setback_map.contains_key(&(prev_ei, vi)) {
+                let splits = edge_tangency_splits(pos, next_pos, qs, tol);
+                if splits.is_empty() {
+                    if let Ok(dir) = (next_pos - pos).normalize() {
+                        let p = pos + dir * radius;
+                        out.push(p);
+                        corner_preserved.entry(vi).or_insert(p);
+                    }
+                } else {
+                    out.extend(splits);
+                }
+            }
+        }
+        (false, true, _) => {
+            // The "before" edge is the unfilleted edge at this corner.
+            // If the filleted edge was set back here, preserve it by
+            // emitting a trim point on it *before* the fillet contact —
+            // unless a tangency split crosses it first (same ownership).
+            if setback_map.contains_key(&(ei, vi)) {
+                let mut splits = edge_tangency_splits(pos, prev_pos, qs, tol);
+                if splits.is_empty() {
+                    if let Ok(dir) = (prev_pos - pos).normalize() {
+                        let p = pos + dir * radius;
+                        out.push(p);
+                        corner_preserved.entry(vi).or_insert(p);
+                    }
+                } else {
+                    // Traversal runs toward the corner: far side first.
+                    splits.reverse();
+                    out.extend(splits);
+                }
+            }
+            // Arc runout: keep the original corner (before the contact)
+            // so the runout triangle's leg is shared with this face.
+            if arc_runout.contains_key(&vi) {
+                out.push(pos);
+            }
+            if let Some(&pt) = fillet_contact_map.get(&(vi, ei, fi)) {
+                out.push(pt);
+            } else {
+                let dir = (prev_pos - pos).normalize()?;
+                out.push(pos + dir * radius);
+            }
+        }
+        (true, true, _) => {
+            // Emit the before-edge contact first, then the
+            // after-edge contact: each contact lies on its edge
+            // toward the neighbouring vertex, so this order keeps
+            // the trimmed loop adjacent to both neighbours'
+            // trims (before-contact meets the prev-vertex trim,
+            // after-contact the next-vertex trim). At common-ball
+            // corners both contacts coincide and the order is
+            // immaterial; at torus-notch corners the contacts are
+            // distinct (B1/B2, M1/M2) and this order is what
+            // closes the loop watertight.
+            if let Some(&pt) = fillet_contact_map.get(&(vi, prev_ei, fi)) {
+                out.push(pt);
+            } else {
+                let dir_next = (next_pos - pos).normalize()?;
+                out.push(pos + dir_next * radius);
+            }
+            if let Some(&pt) = fillet_contact_map.get(&(vi, ei, fi)) {
+                out.push(pt);
+            } else {
+                let dir_prev = (prev_pos - pos).normalize()?;
+                out.push(pos + dir_prev * radius);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Fillet one or more edges of a solid using the rolling-ball algorithm.
 ///
 /// Produces true NURBS cylindrical fillet surfaces with G1 tangent
@@ -749,6 +1125,10 @@ pub fn fillet_rolling_ball_with_origins(
         // (edge index, vertex index) -> setback distance, merged into
         // `setback_map` with the ball stations below.
         let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
+        // Per torus vertex: incident edges [pair_a, pair_b, singleton] and
+        // support faces [cap, wall_a, wall_b], for the contact-map overwrite
+        // below (exact stations must be bitwise identical everywhere).
+        let mut torus_station_faces: HashMap<usize, ([EdgeId; 3], [usize; 3])> = HashMap::new();
         for (&vertex_index, incident_edges) in &vertex_fillet_edges {
             if incident_edges.len() != 3 || exact_corner_balls.contains_key(&vertex_index) {
                 continue;
@@ -832,11 +1212,6 @@ pub fn fillet_rolling_ball_with_origins(
             if !qualified {
                 continue;
             }
-            let Some((frame, concave_pos)) =
-                crate::fillet::notch_torus::qualify_notch(&face_pairs, &outward, convex, tol)
-            else {
-                continue;
-            };
             // Vertex position and edge directions from the vertex (exact for
             // straight edges).
             let mut vertex_pos = None;
@@ -875,24 +1250,136 @@ pub fn fillet_rolling_ball_with_origins(
             let Some(vertex_pos) = vertex_pos else {
                 continue;
             };
-            let convex_pos: Vec<usize> = (0..3).filter(|i| convex[*i]).collect();
-            let Some(torus) = crate::fillet::notch_torus::notch_torus(
-                frame,
-                vertex_pos,
-                dirs[convex_pos[0]],
-                dirs[convex_pos[1]],
-                radius,
+            // Plane offsets along the outward normals through the corner
+            // vertex (which lies on every support face): coplanar fuse
+            // splits share one logical plane and pair by plane, not index.
+            let mut offsets: remus_math::det_hash::DetHashMap<usize, f64> =
+                remus_math::det_hash::DetHashMap::with_capacity_and_hasher(
+                    3,
+                    remus_math::det_hash::DetState,
+                );
+            for (face_index, normal) in &outward {
+                let d = normal.dot(Vec3::new(vertex_pos.x(), vertex_pos.y(), vertex_pos.z()));
+                offsets.insert(*face_index, d);
+            }
+            // Concave-singleton notch first, then the convex-singleton rib
+            // mirror. The two qualifiers are disjoint by convexity pattern;
+            // unqualified keeps its typed refusal (fail-closed).
+            let (frame, singleton_pos, mirror) = if let Some((frame, pos)) =
+                crate::fillet::notch_torus::qualify_notch(
+                    &face_pairs,
+                    &outward,
+                    &offsets,
+                    convex,
+                    tol,
+                ) {
+                (frame, pos, false)
+            } else if let Some((frame, pos)) = crate::fillet::notch_torus::qualify_convex_singleton(
+                &face_pairs,
+                &outward,
+                &offsets,
+                convex,
                 tol,
+            ) {
+                (frame, pos, true)
+            } else {
+                continue;
+            };
+            // The pair is the majority side: the convex pair for a notch, the
+            // concave pair for a rib mirror. Resolved fail-closed (the
+            // qualifier guarantees exactly one singleton, but the maps are
+            // keyed lookups).
+            let pair_pos: Vec<usize> = (0..3).filter(|i| *i != singleton_pos).collect();
+            let [Some(&pa), Some(&pb)] = [pair_pos.first(), pair_pos.get(1)] else {
+                continue;
+            };
+            let (Some(&dir_a), Some(&dir_b)) = (dirs.get(pa), dirs.get(pb)) else {
+                continue;
+            };
+            let Some(torus) = crate::fillet::notch_torus::notch_torus(
+                frame, vertex_pos, dir_a, dir_b, radius, mirror, tol,
             ) else {
                 continue;
             };
-            torus_corners.insert(vertex_index, (torus, dirs, concave_pos));
+            torus_corners.insert(vertex_index, (torus, dirs, singleton_pos));
+            // Support-face indices for the contact-map overwrite below
+            // (exact stations must be bitwise identical everywhere): match
+            // each incident edge's supports to the frame by nearest outward
+            // normal (supports are 90 degrees apart; the qualifier already
+            // established the pairing by plane). Fail closed on any
+            // mismatch — the caller keeps today's values instead.
+            {
+                let pick = |pair: [usize; 2], target: Vec3| -> Option<usize> {
+                    let (Some(&n0), Some(&n1)) = (outward.get(&pair[0]), outward.get(&pair[1]))
+                    else {
+                        return None;
+                    };
+                    Some(if n0.dot(target) >= n1.dot(target) {
+                        pair[0]
+                    } else {
+                        pair[1]
+                    })
+                };
+                let other = |pair: [usize; 2], chosen: usize| -> usize {
+                    if pair[0] == chosen { pair[1] } else { pair[0] }
+                };
+                let near = |idx: usize, target: Vec3| -> bool {
+                    outward
+                        .get(&idx)
+                        .is_some_and(|n| (n.dot(target) - 1.0).abs() <= tol.angular)
+                };
+                let (Some(wa_a), Some(wb_b), Some(wa_s), Some(wb_s)) = (
+                    pick(face_pairs[pa], frame.wall_a),
+                    pick(face_pairs[pb], frame.wall_b),
+                    pick(face_pairs[singleton_pos], frame.wall_a),
+                    pick(face_pairs[singleton_pos], frame.wall_b),
+                ) else {
+                    continue;
+                };
+                let (cap_a, cap_b) = (other(face_pairs[pa], wa_a), other(face_pairs[pb], wb_b));
+                if wa_s == wb_s
+                    || !near(cap_a, frame.cap_outward)
+                    || !near(cap_b, frame.cap_outward)
+                    || wa_a != wa_s
+                    || wb_b != wb_s
+                {
+                    continue;
+                }
+                torus_station_faces.insert(
+                    vertex_index,
+                    (
+                        [edge_list[pa], edge_list[pb], edge_list[singleton_pos]],
+                        [cap_a, wa_a, wb_b],
+                    ),
+                );
+            }
             // Stations one radius out from the vertex along each incident
             // stripe (contact crossings): standard setback semantics.
             for edge_id in edge_list {
                 torus_setbacks.insert((edge_id.index(), vertex_index), radius);
             }
         }
+
+        // Cap-tangency split points per torus vertex, computed now so
+        // Phase 3 inserts them into cap polygons (emission reuses the same
+        // source; both are pure and deterministic).
+        let mut torus_qs: HashMap<usize, Vec<Point3>> = HashMap::new();
+        for (&vi, (torus, dirs, singleton_pos)) in &torus_corners {
+            torus_qs.insert(
+                vi,
+                tangency_qs(
+                    topo,
+                    solid,
+                    &edge_to_faces,
+                    &target_set,
+                    torus,
+                    dirs,
+                    *singleton_pos,
+                    tol,
+                ),
+            );
+        }
+        let all_qs: Vec<Point3> = torus_qs.values().flatten().copied().collect();
 
         // A wholly planar N-way junction that did not qualify above must not
         // drift into the legacy normal-sum corner heuristic. That estimate is
@@ -1631,7 +2118,7 @@ pub fn fillet_rolling_ball_with_origins(
         // and the spherical-triangle corner-patch boundary.
         //
         // Key: (vertex_index, edge_index, face_index) → contact Point3
-        let fillet_contact_map: HashMap<(usize, usize, usize), Point3> = {
+        let mut fillet_contact_map: HashMap<(usize, usize, usize), Point3> = {
             let mut map = HashMap::new();
             // For G1 junctions: keep the first edge's contacts (entry().or_insert).
             for &edge_id in &filtered_edges {
@@ -1769,6 +2256,28 @@ pub fn fillet_rolling_ball_with_origins(
         };
         log::debug!("fillet contact map: {} entries", fillet_contact_map.len());
 
+        // Exact torus stations overwrite the section-computed contacts: every
+        // consumer (support trims, stripe ends, cap tangency) must share
+        // bitwise-identical stations, or assembly mints duplicate edges that
+        // no tolerance can merge. Entries absent here keep today's values;
+        // validation arbitrates either way.
+        for (&vi, (torus, _, _)) in &torus_corners {
+            let Some((edges, faces)) = torus_station_faces.get(&vi) else {
+                continue;
+            };
+            let ([ea, eb, es], [cap, wa, wb]) = (*edges, *faces);
+            for ((ei, fi), pt) in [
+                ((ea.index(), wa), torus.m1),
+                ((ea.index(), cap), torus.b1),
+                ((eb.index(), wb), torus.m2),
+                ((eb.index(), cap), torus.b2),
+                ((es.index(), wa), torus.m1),
+                ((es.index(), wb), torus.m2),
+            ] {
+                fillet_contact_map.insert((vi, ei, fi), pt);
+            }
+        }
+
         // Arc-runout closure data. When a single arc fillet terminates tangent to a
         // flat neighbour, its strip end cross-section straddles two planes (the two
         // contact-face planes) and cannot be shared by either neighbour alone. The
@@ -1886,6 +2395,12 @@ pub fn fillet_rolling_ball_with_origins(
         // as a shared boundary. Phase 5b reads P to close the patch against it.
         // Key: corner vertex index → preserved trim point P.
         let mut corner_preserved: HashMap<usize, Point3> = HashMap::new();
+        // Analytic seam overrides for the assembly: torus corner patches
+        // (Phase 5b) and carried-through analytic faces (below) publish
+        // their exact boundary circles here; neighbours pick them up by
+        // vertex sharing. Declared before Phase 3 so pass-through faces
+        // can publish too.
+        let mut analytic_boundary_curves: Vec<crate::boolean::BoundaryCurveOverride> = Vec::new();
 
         for &face_id in &shell_face_ids {
             // A face the blend never reaches, carrying a loop only topology can
@@ -1922,6 +2437,11 @@ pub fn fillet_rolling_ball_with_origins(
                     // No target edges: pass through unchanged.
                     let verts = crate::boolean::face_polygon(topo, face_id)?;
                     let np_inner = extract_inner_wire_positions(topo, face)?;
+                    // Orientation is part of the face: a blend-built face
+                    // (a concave stripe, a mirror torus patch) passing
+                    // through a later feature keeps its reversal flag, or
+                    // its outward normal flips.
+                    let pass_reversed = face.is_reversed();
                     // A cylindrical pass-through face whose boundary has angular
                     // (constant-v) arc edges — e.g. a rounded-corner wall — must be
                     // emitted as a CylindricalFace so the assembler rebuilds those
@@ -1945,7 +2465,7 @@ pub fn fillet_rolling_ball_with_origins(
                             FaceSpec::CylindricalFace {
                                 vertices: verts,
                                 cylinder: cyl.clone(),
-                                reversed: false,
+                                reversed: pass_reversed,
                                 inner_wires: np_inner,
                             },
                             FaceSpecOrigin::Modified(face_id),
@@ -1956,12 +2476,52 @@ pub fn fillet_rolling_ball_with_origins(
                             &mut all_spec_origins,
                             FaceSpec::Surface {
                                 vertices: verts,
-                                surface,
-                                reversed: false,
+                                surface: surface.clone(),
+                                reversed: pass_reversed,
                                 inner_wires: np_inner,
                             },
                             FaceSpecOrigin::Modified(face_id),
                         );
+                    }
+                    // A carried torus patch keeps its analytic seams: publish
+                    // its wire circles as overrides (with their stored trims,
+                    // else recomputed), or the assembly pre-check — which
+                    // cannot recover small-circle arcs positionally — refuses
+                    // a face its own earlier step built. Closed rims need no
+                    // override (their single-vertex spans auto-cover).
+                    if let FaceSurface::Torus(_) = &surface {
+                        for oe in wire.edges() {
+                            let Ok(edge) = topo.edge(oe.edge()) else {
+                                continue;
+                            };
+                            let EdgeCurve::Circle(circle) = edge.curve() else {
+                                continue;
+                            };
+                            if edge.start() == edge.end() {
+                                continue;
+                            }
+                            let (Ok(va), Ok(vb)) =
+                                (topo.vertex(edge.start()), topo.vertex(edge.end()))
+                            else {
+                                continue;
+                            };
+                            let (start, end) = (va.point(), vb.point());
+                            let trim = if let Some(trim) = edge.trim() {
+                                trim
+                            } else if let Some((_, trim)) =
+                                crate::fillet::notch_torus::oriented_seam(circle, start, end)
+                            {
+                                trim
+                            } else {
+                                continue;
+                            };
+                            analytic_boundary_curves.push(crate::boolean::BoundaryCurveOverride {
+                                start,
+                                end,
+                                curve: EdgeCurve::Circle(circle.clone()),
+                                trim,
+                            });
+                        }
                     }
                     continue;
                 }
@@ -2229,161 +2789,135 @@ pub fn fillet_rolling_ball_with_origins(
                 // For fillet-adjacent vertices, use Phase 4's exact contact.
                 let vi = poly.vertex_ids[i].index();
                 let fi = face_id.index();
-                match (before_filleted, after_filleted, at_fillet_endpoint) {
-                    (false, false, false) => {
-                        new_verts.push(pos);
-                    }
-                    // Side face: use the two unique Phase 4 fillet contacts,
-                    // paired by proximity to boundary offsets.
-                    (false, false, true) => {
-                        // Arc runout: this flat side face only touches the strip at
-                        // a single contact lying on its own plane (the tangent
-                        // point). Keep the corner and split the adjacent edge there
-                        // so the runout triangle's leg corner→contact is shared.
-                        let runout_contact = arc_runout.get(&vi).and_then(|&(_, ca, _, cb, _)| {
-                            [ca, cb].into_iter().find(|p| {
-                                (poly.normal.dot(Vec3::new(p.x(), p.y(), p.z())) - poly.d).abs()
-                                    < tol.linear * 100.0
-                            })
+                new_verts.extend(trim_support_corner(
+                    pos,
+                    prev_pos,
+                    next_pos,
+                    vi,
+                    fi,
+                    before_filleted,
+                    after_filleted,
+                    at_fillet_endpoint,
+                    poly.wire_edge_ids[prev_i].index(),
+                    poly.wire_edge_ids[i].index(),
+                    poly.normal,
+                    poly.d,
+                    &fillet_contact_map,
+                    &setback_map,
+                    &arc_runout,
+                    &mut corner_preserved,
+                    &all_qs,
+                    radius,
+                    tol,
+                )?);
+            }
+
+            // Trim blend-adjacent inner (hole) wires with the same corner
+            // logic as the outer: a rib standing in its plate cap leaves a
+            // footprint hole whose corners are fillet vertices (replaced by
+            // contacts, so the cap-tangency arcs close the loop), while an
+            // untouched bore keeps its rim for its bore wall. Only planar
+            // support faces reach this loop.
+            let face_is_plane = matches!(topo.face(face_id)?.surface(), FaceSurface::Plane { .. });
+            // Per-inner-wire sources for the Existing spec below: untouched
+            // loops stay `None` (verbatim topology, still shared); touched
+            // loops carry their trimmed positions.
+            let mut inner_override: Vec<Option<Vec<Point3>>> = Vec::new();
+            // Fail closed on any inner-wire bookkeeping mismatch: keep the
+            // original positions unless every inner loop trims cleanly.
+            let inner_ids: Vec<_> = topo.face(face_id)?.inner_wires().to_vec();
+            if face_is_plane && inner_ids.len() == poly.inner_wires.len() {
+                for wid in inner_ids {
+                    let wire = topo.wire(wid)?;
+                    let oes = wire.edges();
+                    let m = oes.len();
+                    let mut ids = Vec::with_capacity(m);
+                    for oe in oes {
+                        let edge = topo.edge(oe.edge())?;
+                        ids.push(if oe.is_forward() {
+                            edge.start()
+                        } else {
+                            edge.end()
                         });
-                        if let Some(b) = runout_contact {
-                            // Orient: keep the corner on the side of the un-split
-                            // edge, place the contact on the edge it lies along.
-                            let on_next = (next_pos - pos)
-                                .normalize()
-                                .ok()
-                                .is_some_and(|dn| (b - pos).dot(dn) > 0.0);
-                            if on_next {
-                                new_verts.push(pos);
-                                new_verts.push(b);
-                            } else {
-                                new_verts.push(b);
-                                new_verts.push(pos);
-                            }
-                            continue;
-                        }
-
-                        let mut unique_contacts: Vec<Point3> = Vec::new();
-                        for (&(vi_k, _, _), &pt) in &fillet_contact_map {
-                            if vi_k == vi {
-                                let already = unique_contacts
-                                    .iter()
-                                    .any(|uc| (*uc - pt).length() < tol.linear);
-                                if !already {
-                                    unique_contacts.push(pt);
-                                }
-                            }
-                        }
-
-                        if unique_contacts.len() >= 2 {
-                            let dir_prev = (prev_pos - pos).normalize()?;
-                            let approx_prev = pos + dir_prev * radius;
-                            let d0 = (unique_contacts[0] - approx_prev).length();
-                            let d1 = (unique_contacts[1] - approx_prev).length();
-                            if d0 <= d1 {
-                                new_verts.push(unique_contacts[0]);
-                                new_verts.push(unique_contacts[1]);
-                            } else {
-                                new_verts.push(unique_contacts[1]);
-                                new_verts.push(unique_contacts[0]);
-                            }
-                        } else {
-                            let dir_prev = (prev_pos - pos).normalize()?;
-                            new_verts.push(pos + dir_prev * radius);
-                            let dir_next = (next_pos - pos).normalize()?;
-                            new_verts.push(pos + dir_next * radius);
-                        }
                     }
-                    (true, false, _) => {
-                        let ei = poly.wire_edge_ids[prev_i].index();
-                        if let Some(&pt) = fillet_contact_map.get(&(vi, ei, fi)) {
-                            new_verts.push(pt);
-                        } else {
-                            let dir = (next_pos - pos).normalize()?;
-                            new_verts.push(pos + dir * radius);
-                        }
-                        // Arc runout: keep the original corner so the runout
-                        // triangle's leg (contact→corner, along the unfilleted edge)
-                        // is shared with this face (Phase 5e closes the strip end).
-                        if arc_runout.contains_key(&vi) {
-                            new_verts.push(pos);
-                        }
-                        // The "after" edge is the unfilleted edge at this corner.
-                        // If the filleted edge was set back here, preserve it.
-                        if setback_map.contains_key(&(ei, vi))
-                            && let Ok(dir) = (next_pos - pos).normalize()
-                        {
-                            let p = pos + dir * radius;
-                            new_verts.push(p);
-                            corner_preserved.entry(vi).or_insert(p);
-                        }
+                    let mut trimmed = Vec::new();
+                    let mut touched = false;
+                    for j in 0..m {
+                        let prev_j = if j == 0 { m - 1 } else { j - 1 };
+                        let next_j = (j + 1) % m;
+                        let before = target_set.contains(&oes[prev_j].edge().index());
+                        let after = target_set.contains(&oes[j].edge().index());
+                        let at_end = vertex_fillet_edges.contains_key(&ids[j].index());
+                        touched |= before || after || at_end;
+                        let pos = topo.vertex(ids[j])?.point();
+                        let prev_pos = topo.vertex(ids[prev_j])?.point();
+                        let next_pos = topo.vertex(ids[next_j])?.point();
+                        trimmed.extend(trim_support_corner(
+                            pos,
+                            prev_pos,
+                            next_pos,
+                            ids[j].index(),
+                            face_id.index(),
+                            before,
+                            after,
+                            at_end,
+                            oes[prev_j].edge().index(),
+                            oes[j].edge().index(),
+                            poly.normal,
+                            poly.d,
+                            &fillet_contact_map,
+                            &setback_map,
+                            &arc_runout,
+                            &mut corner_preserved,
+                            &all_qs,
+                            radius,
+                            tol,
+                        )?);
                     }
-                    (false, true, _) => {
-                        let ei = poly.wire_edge_ids[i].index();
-                        // The "before" edge is the unfilleted edge at this corner.
-                        // If the filleted edge was set back here, preserve it by
-                        // emitting a trim point on it *before* the fillet contact.
-                        if setback_map.contains_key(&(ei, vi))
-                            && let Ok(dir) = (prev_pos - pos).normalize()
-                        {
-                            let p = pos + dir * radius;
-                            new_verts.push(p);
-                            corner_preserved.entry(vi).or_insert(p);
-                        }
-                        // Arc runout: keep the original corner (before the contact)
-                        // so the runout triangle's leg is shared with this face.
-                        if arc_runout.contains_key(&vi) {
-                            new_verts.push(pos);
-                        }
-                        if let Some(&pt) = fillet_contact_map.get(&(vi, ei, fi)) {
-                            new_verts.push(pt);
-                        } else {
-                            let dir = (prev_pos - pos).normalize()?;
-                            new_verts.push(pos + dir * radius);
-                        }
-                    }
-                    (true, true, _) => {
-                        // Emit the before-edge contact first, then the
-                        // after-edge contact: each contact lies on its edge
-                        // toward the neighbouring vertex, so this order keeps
-                        // the trimmed loop adjacent to both neighbours'
-                        // trims (before-contact meets the prev-vertex trim,
-                        // after-contact the next-vertex trim). At common-ball
-                        // corners both contacts coincide and the order is
-                        // immaterial; at torus-notch corners the contacts are
-                        // distinct (B1/B2, M1/M2) and this order is what
-                        // closes the loop watertight.
-                        let ei_before = poly.wire_edge_ids[prev_i].index();
-                        if let Some(&pt) = fillet_contact_map.get(&(vi, ei_before, fi)) {
-                            new_verts.push(pt);
-                        } else {
-                            let dir_next = (next_pos - pos).normalize()?;
-                            new_verts.push(pos + dir_next * radius);
-                        }
-                        let ei_after = poly.wire_edge_ids[i].index();
-                        if let Some(&pt) = fillet_contact_map.get(&(vi, ei_after, fi)) {
-                            new_verts.push(pt);
-                        } else {
-                            let dir_prev = (prev_pos - pos).normalize()?;
-                            new_verts.push(pos + dir_prev * radius);
-                        }
+                    if touched && trimmed.len() >= 3 {
+                        inner_override.push(Some(trimmed));
+                    } else {
+                        inner_override.push(None);
                     }
                 }
             }
+            // Tangency-split points from torus corners crossing coplanar
+            // seams land strictly inside straight boundary spans here.
+            let new_verts = insert_tangency_splits(new_verts, &all_qs, tol);
+            let inner_override: Vec<Option<Vec<Point3>>> = inner_override
+                .into_iter()
+                .map(|w| w.map(|pts| insert_tangency_splits(pts, &all_qs, tol)))
+                .collect();
+            let inners_touched = inner_override.iter().any(Option::is_some);
 
             if verbatim_faces.contains(&face_id.index()) {
                 // A trimmed cap that carries holes: the outer wire is rebuilt from
-                // the blend contacts, but every inner loop is carried through as
-                // topology so its rim stays the edge its bore wall is bounded by.
-                push_face_spec(
-                    &mut all_specs,
-                    &mut all_spec_origins,
-                    FaceSpec::Existing {
-                        face: face_id,
-                        outer: Some(new_verts),
-                    },
-                    FaceSpecOrigin::Modified(face_id),
-                );
+                // the blend contacts. Untouched inner loops copy verbatim so a
+                // bore rim stays the edge its bore wall is bounded by; a
+                // blend-adjacent inner loop (a rib footprint) rebuilds from
+                // contacts instead.
+                if inners_touched && face_is_plane {
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        FaceSpec::ExistingTrimmedInners {
+                            face: face_id,
+                            outer: Some(new_verts),
+                            inner: inner_override,
+                        },
+                        FaceSpecOrigin::Modified(face_id),
+                    );
+                } else {
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        FaceSpec::Existing {
+                            face: face_id,
+                            outer: Some(new_verts),
+                        },
+                        FaceSpecOrigin::Modified(face_id),
+                    );
+                }
             } else {
                 let new_d = dot_normal_point(poly.normal, new_verts[0]);
                 push_face_spec(
@@ -2413,7 +2947,6 @@ pub fn fillet_rolling_ball_with_origins(
         // for a complete one.
         let mut blended_edges: HashSet<usize> = HashSet::new();
         let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::new();
-        let mut analytic_boundary_curves: Vec<crate::boolean::BoundaryCurveOverride> = Vec::new();
         // For G1 chain junctions, store the contact points computed by the first
         // edge so the second edge can reuse them exactly.
         let mut g1_contact_cache: HashMap<usize, (Point3, Point3)> = HashMap::new();
@@ -2895,7 +3428,10 @@ pub fn fillet_rolling_ball_with_origins(
             // below for this vertex. Stripe spans, contact maps, and support
             // trims already account for the R-setback stations; the assembly
             // shares each seam circle with the stripe or cap that mints it.
-            if let Some((torus, dirs, concave_pos)) = torus_corners.get(&vi) {
+            // The loop runs CCW about the parametric normal (reversed when
+            // the cross product says otherwise) for the notch and the
+            // rib-base mirror alike; the overrides match bidirectionally.
+            if let Some((torus, dirs, singleton_pos)) = torus_corners.get(&vi) {
                 // Fail-closed vertex resolution for the typed refusal below.
                 let torus_vertex_id: Option<VertexId> =
                     vertex_fillet_edges.get(&vi).and_then(|incident| {
@@ -2922,21 +3458,50 @@ pub fn fillet_rolling_ball_with_origins(
                 // legacy ball paths below: the wholly-planar refusal above
                 // was skipped for it, so any emission failure is a typed
                 // refusal, never a silent normal-sum ball.
-                let convex_pos: Vec<usize> = (0..3).filter(|i| *i != *concave_pos).collect();
-                let [Some(&pa), Some(&pb)] = [convex_pos.first(), convex_pos.get(1)] else {
+                // The pair is the majority side (complement of the singleton),
+                // for both the notch and the rib mirror.
+                let pair_pos: Vec<usize> = (0..3).filter(|i| *i != *singleton_pos).collect();
+                let [Some(&pa), Some(&pb)] = [pair_pos.first(), pair_pos.get(1)] else {
                     return Err(unsupported(torus_vertex_id));
                 };
                 let (Some(&dir_a), Some(&dir_b), Some(&dir_c)) =
-                    (dirs.get(pa), dirs.get(pb), dirs.get(*concave_pos))
+                    (dirs.get(pa), dirs.get(pb), dirs.get(*singleton_pos))
                 else {
                     return Err(unsupported(torus_vertex_id));
                 };
-                if let Some(arcs) =
-                    crate::fillet::notch_torus::seam_arcs(torus, dir_a, dir_b, dir_c, tol)
-                {
-                    // Loop order M1 -> B1 -> B2 -> M2; orient CCW about the
-                    // torus parametric normal at the patch centroid.
+                if let Some(arcs) = crate::fillet::notch_torus::seam_arcs(
+                    torus,
+                    dir_a,
+                    dir_b,
+                    dir_c,
+                    torus.mirror,
+                    tol,
+                ) {
+                    // Loop order M1 -> B1 -> B2 -> M2, oriented CCW about
+                    // the torus parametric normal at the patch centroid
+                    // (the face convention, notch and mirror alike); the
+                    // seam overrides match bidirectionally. The rib-base
+                    // mirror's outward is the negated parametric normal
+                    // (the ring sits in rib material), so its face is
+                    // marked reversed.
                     let (m1, b1, b2, m2) = (torus.m1, torus.b1, torus.b2, torus.m2);
+                    // The tangency span may cross coplanar cap seams (a
+                    // fused-flush lip splits the cap plane): split it there
+                    // so each cap face adopts its half (same source Phase 3
+                    // used, so the split vertices coincide exactly).
+                    let s4 = &arcs[3];
+                    let mut tangency_chain = vec![s4.start];
+                    tangency_chain.extend(tangency_qs(
+                        topo,
+                        solid,
+                        &edge_to_faces,
+                        &target_set,
+                        torus,
+                        dirs,
+                        *singleton_pos,
+                        tol,
+                    ));
+                    tangency_chain.push(s4.end);
                     let centroid = Point3::new(
                         (m1.x() + b1.x() + b2.x() + m2.x()) * 0.25,
                         (m1.y() + b1.y() + b2.y() + m2.y()) * 0.25,
@@ -2947,7 +3512,22 @@ pub fn fillet_rolling_ball_with_origins(
                     };
                     let (pu, pv) = torus.torus.project_point(centroid);
                     let parametric_normal = torus.torus.normal(pu, pv);
-                    let mut loop_verts = vec![m1, b1, b2, m2];
+                    let mut loop_verts = vec![m1];
+                    // Analytic seam spans for the override bag below (the
+                    // tangency span contributes one override per
+                    // coplanar-split sub-arc); loop_verts consumes the
+                    // chain afterwards.
+                    let mut span_arcs: Vec<(&remus_math::curves::Circle3D, Point3, Point3)> =
+                        vec![(&arcs[0].circle, arcs[0].start, arcs[0].end)];
+                    for w in tangency_chain.windows(2) {
+                        span_arcs.push((&s4.circle, w[0], w[1]));
+                    }
+                    span_arcs.push((&arcs[1].circle, arcs[1].start, arcs[1].end));
+                    span_arcs.push((&arcs[2].circle, arcs[2].start, arcs[2].end));
+                    loop_verts.extend(tangency_chain);
+                    loop_verts.push(m2);
+                    // tangency_chain is [b1, Q..., b2], so the loop holds
+                    // [m1, b1, Q..., b2, m2] before orientation below.
                     if loop_normal.dot(parametric_normal) < 0.0 {
                         loop_verts.reverse();
                     }
@@ -2958,25 +3538,18 @@ pub fn fillet_rolling_ball_with_origins(
                         FaceSpec::Surface {
                             vertices: loop_verts,
                             surface: FaceSurface::Torus(torus.torus.clone()),
-                            reversed: false,
+                            reversed: torus.mirror,
                             inner_wires: vec![],
                         },
                         corner_origin.clone(),
                     );
-                    // Analytic seam overrides in loop order (assembly mints
-                    // each circle once; neighbours pick them up by sharing).
-                    // Arcs are stored in loop-traversal direction.
-                    let loop_arcs = [
-                        (&arcs[0], arcs[0].start, arcs[0].end),
-                        (&arcs[3], arcs[3].start, arcs[3].end),
-                        (&arcs[1], arcs[1].start, arcs[1].end),
-                        (&arcs[2], arcs[2].start, arcs[2].end),
-                    ];
+                    // Analytic seam overrides (assembly mints each circle
+                    // once; neighbours pick them up by sharing).
                     let pushed = analytic_boundary_curves.len();
                     let mut overrides_ok = true;
-                    for (arc, start, end) in loop_arcs {
+                    for (circle, start, end) in span_arcs {
                         let Some((circle, trim)) =
-                            crate::fillet::notch_torus::oriented_seam(&arc.circle, start, end)
+                            crate::fillet::notch_torus::oriented_seam(circle, start, end)
                         else {
                             overrides_ok = false;
                             break;
@@ -3353,9 +3926,14 @@ pub fn fillet_rolling_ball_with_origins(
                 FaceSpec::Existing {
                     outer: Some(vertices),
                     ..
+                }
+                | FaceSpec::ExistingTrimmedInners {
+                    outer: Some(vertices),
+                    ..
                 } => vertices,
                 // A face copied verbatim has no positional wire to clean up.
-                FaceSpec::Existing { outer: None, .. } => continue,
+                FaceSpec::Existing { outer: None, .. }
+                | FaceSpec::ExistingTrimmedInners { outer: None, .. } => continue,
             };
             // Only dedup if there are actually zero-length edges (consecutive
             // vertices within tolerance). Count them first.
@@ -3444,9 +4022,14 @@ pub fn fillet_rolling_ball_with_origins(
                     FaceSpec::Existing {
                         outer: Some(vertices),
                         ..
+                    }
+                    | FaceSpec::ExistingTrimmedInners {
+                        outer: Some(vertices),
+                        ..
                     } => vertices,
                     // A face copied verbatim keeps its own vertices.
-                    FaceSpec::Existing { outer: None, .. } => continue,
+                    FaceSpec::Existing { outer: None, .. }
+                    | FaceSpec::ExistingTrimmedInners { outer: None, .. } => continue,
                 };
                 for v in verts.iter_mut() {
                     if let Some(closest) = original_verts
@@ -3550,6 +4133,7 @@ pub fn fillet_rolling_ball_with_origins(
         // Phase 6: Assemble the solid using mixed-surface assembly.  Each fillet
         // strip and corner-patch spec already carries the `reversed` flag needed
         // for an outward-facing normal, so no post-assembly fix-up is required.
+
         let assembly = crate::boolean::assemble_solid_mixed_with_history_and_curves(
             topo,
             &all_specs,
@@ -3562,7 +4146,6 @@ pub fn fillet_rolling_ball_with_origins(
         // face count minimal, preventing the downstream boolean from triggering
         // the mesh boolean fallback on moderate-complexity filleted solids.
         let unify_history = crate::heal::unify_faces_with_history(topo, solid_id).ok();
-
         // Reject a geometrically-degenerate assembly. This engine is built around
         // polygonal wires with distinct corner vertices; a closed circular edge
         // (a cylinder/cone rim, where start vertex == end vertex) collapses its

@@ -148,6 +148,25 @@ pub enum FaceSpec {
         /// Inner wires are always copied verbatim.
         outer: Option<Vec<Point3>>,
     },
+    /// An [`Existing`] face whose blend-adjacent inner loops are rebuilt
+    /// from positions while untouched loops copy verbatim.
+    ///
+    /// A rib standing in its plate cap leaves a footprint hole whose
+    /// corners are fillet vertices: that loop must trim to contacts (so
+    /// the cap-tangency arcs close), while a bore rim on the same cap
+    /// must stay the exact edge its bore wall is bounded by. Per-wire
+    /// sources express exactly that.
+    ExistingTrimmedInners {
+        /// The face whose surface and orientation are copied.
+        face: FaceId,
+        /// Replacement outer-wire vertex positions, or `None` to copy
+        /// the source's outer wire verbatim.
+        outer: Option<Vec<Point3>>,
+        /// Per-inner-wire sources, parallel to the source face's inner
+        /// wires: `None` copies that loop verbatim, `Some` rebuilds it
+        /// from positions. Empty means all verbatim.
+        inner: Vec<Option<Vec<Point3>>>,
+    },
 }
 
 impl FaceSpec {
@@ -162,7 +181,7 @@ impl FaceSpec {
             | Self::Surface { inner_wires, .. }
             | Self::CylindricalFace { inner_wires, .. }
             | Self::SphereCapFace { inner_wires, .. } => inner_wires,
-            Self::Existing { .. } => &[],
+            Self::Existing { .. } | Self::ExistingTrimmedInners { .. } => &[],
         }
     }
 
@@ -173,7 +192,7 @@ impl FaceSpec {
             | Self::Surface { inner_wires, .. }
             | Self::CylindricalFace { inner_wires, .. }
             | Self::SphereCapFace { inner_wires, .. } => inner_wires,
-            Self::Existing { .. } => &mut [],
+            Self::Existing { .. } | Self::ExistingTrimmedInners { .. } => &mut [],
         }
     }
 
@@ -186,7 +205,9 @@ impl FaceSpec {
             | Self::Surface { vertices, .. }
             | Self::CylindricalFace { vertices, .. }
             | Self::SphereCapFace { vertices, .. } => vertices,
-            Self::Existing { outer, .. } => outer.as_deref_mut().unwrap_or(&mut []),
+            Self::Existing { outer, .. } | Self::ExistingTrimmedInners { outer, .. } => {
+                outer.as_deref_mut().unwrap_or(&mut [])
+            }
         }
     }
 
@@ -198,7 +219,9 @@ impl FaceSpec {
             | Self::Surface { vertices, .. }
             | Self::CylindricalFace { vertices, .. }
             | Self::SphereCapFace { vertices, .. } => vertices,
-            Self::Existing { outer, .. } => outer.as_deref().unwrap_or(&[]),
+            Self::Existing { outer, .. } | Self::ExistingTrimmedInners { outer, .. } => {
+                outer.as_deref().unwrap_or(&[])
+            }
         }
     }
 }
