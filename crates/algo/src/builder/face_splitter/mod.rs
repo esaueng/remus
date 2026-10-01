@@ -21,6 +21,8 @@ mod closed_form_split_tests;
 mod containment;
 mod conversion;
 mod edge_splitting;
+#[cfg(test)]
+mod rim_chain_oracle_tests;
 mod sampling;
 mod special_cases;
 pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;

@@ -11,7 +11,7 @@ Deep catalog behind SKILL.md. Everything here was verified against the repo; whe
  render, boundaries, deny, audit, docs, machete, secrets-scan, taplo]
 ```
 
-It asserts every one of those resolved to `success` or `skipped`. It is NOT required by branch protection — `main` has no protection at all (see "Repo merge settings"), so `CI Pass` is advisory unless you choose to honour it.
+It asserts every one of those resolved to `success` or `skipped`. Branch protection on `main` requires it under the context name `checks / CI Pass`, with up-to-date branches (see "Repo merge settings"). It is the only required check.
 
 Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `doc-paths`, and `wasm-size`. Read them yourself.
 
@@ -46,9 +46,9 @@ Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only 
 ## Repo merge settings (verified via `gh api repos/esaueng/remus`)
 
 - `allow_squash_merge: true`, but `allow_merge_commit: true` and `allow_rebase_merge: true` as well — squash is NOT the only option, so always pass `--squash` explicitly.
-- `allow_auto_merge: **false**` — `gh pr merge --auto` is unavailable. Merge once checks are green.
-- `delete_branch_on_merge: **false**` — the remote branch survives the merge. Delete it yourself: `git push origin --delete <branch>`.
-- Branch protection on `main`: **none**. `gh api repos/esaueng/remus/branches/main/protection` returns 404 "Branch not protected". No required checks, no required approvals, force pushes and direct pushes to `main` are not blocked by GitHub. Not pushing to `main` is a rule you follow, not one the server enforces.
+- `allow_auto_merge: **true**` — `gh pr merge <N> --squash --auto` merges once `checks / CI Pass` passes. It does not wait for the three checks outside the fan-in.
+- `delete_branch_on_merge: **true**` — GitHub deletes the head branch on merge, which auto-closes any PR stacked on it. Retarget stacked PRs to `main` before merging the parent.
+- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass` with `strict: true`, so a PR behind `main` must be updated (`gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>`) before it can merge; required approvals none; `enforce_admins` false, so admins bypass the check; force pushes allowed. A disabled ruleset "Bounded merge queue" exists. Not pushing to `main` is still a rule you follow: the server stops a non-admin push only through the required check.
 - Squash commit titles on `main` look like `type(scope): subject (#N)`.
 
 ## Code review
@@ -162,11 +162,11 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | commitlint prints `✖ found N problems` yet the commit succeeded | The commit-msg hook swallows commitlint failures and exits 0 by design of its fallback | Treat as a rejection: `git commit --amend` to `type(scope): subject` form |
 | pre-commit fails on clippy warnings you did not write | Pre-existing breakage on the branch base | Stop and report; never `--no-verify` |
 | `⚠️ commitlint not available` warning on commit | `node_modules` missing, but only if no `✖` lines print above it; the same warning also follows a real lint failure (see the `✖` row) because the hook's fallback fires on any nonzero commitlint exit | If `✖` lines precede it, fix the message; otherwise `npm install` at repo root. Either way the commit went through unchecked, re-verify the message manually |
-| PR shows mergeable with nothing green yet | `main` has no branch protection, so mergeability says nothing about checks | Wait for `CI Pass`; mergeable is not a quality signal here |
+| PR shows mergeable with nothing green yet | `mergeable` only means conflict-free; `mergeStateStatus` carries the check and freshness state | Read `mergeStateStatus`: `BLOCKED` waits on `CI Pass`, `BEHIND` needs a branch update |
 | A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
-| `gh pr merge --auto` errors or is refused | `allow_auto_merge` is false repo-wide | Wait for checks, then plain `gh pr merge <N> --squash` |
-| Merged PR's branch still on the remote | `delete_branch_on_merge` is false | `git push origin --delete <branch>`, but check for stacked PRs first (next row) |
-| A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged; GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
+| Auto-merge enabled but the PR never merges | `mergeStateStatus: BEHIND`; protection is `strict`, so the branch must be current with `main` | Update the branch via the `update-branch` API; CI reruns, then auto-merge fires |
+| `gh pr update-branch` prints usage text | The installed `gh` predates that subcommand | `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` |
+| A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged (`delete_branch_on_merge` is on); GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
 | `WASM Size Report` shows a delta on a test-only diff | NOT a stale baseline — the job builds `github.base_ref`, your real base; the `main` column label is hardcoded. Both sides build from committed `Cargo.lock`s, so unless your diff touches the lockfile, resolution is identical | Confirm your diff cannot reach the binary or the lockfile, then report the delta as unexplained rather than calling it expected drift |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
@@ -177,7 +177,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | `deny` or `audit` fails on a PR that never touched deps | A newly published advisory against a version pinned in the committed `Cargo.lock` (both jobs fetch the advisory DB live) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | The committed `Cargo.lock` now pins a dep version requiring Rust newer than 1.88 — usually after a dependabot lock bump | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |
-| You pushed straight to `main` and it succeeded | There is no branch protection to stop you | Nothing rejects this — do not rely on the server. Branch and open a PR; if you already pushed, say so immediately |
+| You pushed straight to `main` and it succeeded | Admin pushes bypass protection (`enforce_admins` is false) | Do not rely on the server. Branch and open a PR; if you already pushed, say so immediately |
 
 ## Anti-patterns (what NOT to conclude)
 
@@ -187,6 +187,6 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 - "CLAUDE.md says pre-push runs tests and cargo-deny": stale. The hook file delegates to CI; do not re-add local suites to it and do not cite the stale description.
 - "High-risk change, better wait for a human": no gate of any kind will stop you, which is an argument for more self-review, not less.
 - "gh pr view showed no comments, so there are no findings": inline findings live on `pulls/<N>/comments` (the API), check both surfaces.
-- "Branch protection will catch it": there is no branch protection on `main`. Nothing will catch it.
+- "Branch protection will catch it": protection checks only `CI Pass` and freshness, admins bypass it, and three checks sit outside it. It catches a red `CI Pass`, nothing else.
 - "The plan doc helps reviewers, commit it": working plans and specs never get committed.
 - "The commit went through, so the message passed commitlint": the commit-msg hook never blocks. Check the hook output for `✖` lines and amend if any appeared.
