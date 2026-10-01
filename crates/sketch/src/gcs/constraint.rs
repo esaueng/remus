@@ -754,7 +754,21 @@ pub struct JacobianWriter<'a> {
     pub param_index: &'a HashMap<ParamRef, usize>,
 }
 
-impl JacobianWriter<'_> {
+/// Sink for analytic Jacobian entries (PERF-S04).
+///
+/// The dense [`JacobianWriter`] and the sparse CSR writer in `gcs/sparse.rs`
+/// both implement this so the single [`eval_jacobian`] formula source serves
+/// both layouts. `set` overwrites (for terms that own their entry) and `add`
+/// accumulates (for terms that share an entry across sub-expressions);
+/// missing parameters (fixed geometry) are ignored by both implementations.
+pub trait JacobianSink {
+    /// Write a value to row `row`, parameter `param_ref`.
+    fn set(&mut self, row: usize, pr: ParamRef, val: f64);
+    /// Add a value (accumulate) to row `row`, parameter `param_ref`.
+    fn add(&mut self, row: usize, pr: ParamRef, val: f64);
+}
+
+impl JacobianSink for JacobianWriter<'_> {
     /// Write a value to row `row`, parameter `param_ref`.
     fn set(&mut self, row: usize, pr: ParamRef, val: f64) {
         if let Some(&col) = self.param_index.get(&pr) {
@@ -774,10 +788,10 @@ impl JacobianWriter<'_> {
 ///
 /// `row_offset` is the first residual row for this constraint.
 #[allow(clippy::too_many_lines)]
-pub fn eval_jacobian(
+pub fn eval_jacobian<S: JacobianSink>(
     c: &Constraint,
     snap: &EntitySnapshot,
-    jw: &mut JacobianWriter<'_>,
+    jw: &mut S,
     row_offset: usize,
 ) {
     match c {
