@@ -60,14 +60,13 @@ to a face boundary vertex.
 - *Carrier*: centres, vertices and semi-axes within `1e-9·scale` of the
   closed forms below; axis directions parallel within `1e-9`.
 
-The oracle does not use the kernel's trim tests. On these full-turn
-primitive faces, `remus_check::distance::point_to_face` rejects points on
-the `make_cylinder` lateral face and accepts points of one `make_sphere`
-hemisphere on the other, and `remus_check::classify::surface_point_in_face`
-rejects points on the pointed `make_cone` lateral face. Each oracle face
-instead carries a closed-form region in fixture-local coordinates, and the
-surface distance comes from `remus_geometry::extrema`. Those defects are
-filed separately; M5 depends on the `surface_point_in_face` fix (§8).
+The oracle does not use the kernel's trim tests, so it stays independent
+of the code under test: each oracle face carries a closed-form region in
+fixture-local coordinates, and the surface distance comes from
+`remus_geometry::extrema`. (While this contract was written, both
+`remus_check::distance::point_to_face` and
+`remus_check::classify::surface_point_in_face` misjudged points on these
+full-turn primitive faces; #909 fixed them.)
 
 ## 3. API
 
@@ -434,9 +433,9 @@ dispatch to geometry, clipping (§5), seam splitting, vertex sharing,
 atomicity. Allowed deps: `geometry`, `check` (midpoint classification),
 `topology`, `math` — no new crate edges.
 
-**Prerequisite.** `surface_point_in_face` rejects points on the pointed
-`make_cone` lateral face; M5's midpoint classification depends on it.
-Land that fix first (or in M5 as a separate, labelled commit).
+**Prerequisite (met).** M5's midpoint classification depends on
+`surface_point_in_face` being right on pointed-cone lateral faces; #909
+fixed the pole handling that made it reject them.
 
 **`remus-wasm` (L4)** — `bindings/project_curve.rs`, results as tsify types
 in `types.rs`, errors as structured errors whose code is

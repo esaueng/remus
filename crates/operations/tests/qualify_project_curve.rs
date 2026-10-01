@@ -367,13 +367,9 @@ fn ray_roots(surface: &FaceSurface, p: Point3, d: Vec3) -> Vec<f64> {
 /// Trimmed region of a fixture face, in fixture-local (unplaced, unscaled)
 /// coordinates.
 ///
-/// The oracle does not use the kernel's trim tests: on the full-turn
-/// primitive faces used here, `remus_check::distance::point_to_face` rejects
-/// points on the `make_cylinder` lateral face and accepts points of one
-/// `make_sphere` hemisphere on the other, and
-/// `remus_check::classify::surface_point_in_face` rejects points on the
-/// `make_cone` lateral face. Every fixture face's region is simple enough to
-/// state in closed form instead.
+/// The oracle does not use the kernel's trim tests, so it stays independent
+/// of the code under test; every fixture face's region is simple enough to
+/// state in closed form.
 #[derive(Clone, Copy, Debug)]
 enum Region {
     /// A face of the box `[0, dx] × [0, dy] × [0, dz]`.
