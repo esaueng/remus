@@ -742,7 +742,7 @@ fn edge_relation_with_faces_and_probe(
 /// Classify one edge of `solid`, with an optional caller probe.
 ///
 /// This is the single-edge bulk path: adjacency is built once for the lookup
-/// and the non-robust [`edge_concavity_from_faces`] classifier runs, so a
+/// and the non-robust `edge_concavity_from_faces` classifier runs, so a
 /// per-edge loop over [`solid_edge_relations`] stays consistent with this
 /// call. `probe = None` selects [`default_concavity_probe`]
 /// (`0.05 * local_scale`); `Some(p)` must be positive and finite. A
@@ -793,7 +793,7 @@ pub fn edge_relation(
 
 /// Classify every edge of `solid` in one pass.
 ///
-/// Adjacency is built once and the bulk [`edge_concavity_from_faces`]
+/// Adjacency is built once and the bulk `edge_concavity_from_faces`
 /// classifier runs per edge, so a 2 000-edge import costs one adjacency plus
 /// one classification per edge — never the quadratic rebuild a per-edge loop
 /// over the single-edge binding would pay. `probe = None` selects the

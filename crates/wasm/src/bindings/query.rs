@@ -1807,7 +1807,7 @@ impl BrepKernel {
     /// typed `InvalidInput` refusal. A foreign or deleted solid or edge
     /// handle is a typed refusal naming the handle.
     ///
-    /// For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations):
+    /// For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
     /// a per-edge loop over this call rebuilds adjacency per edge (the
     /// quadratic trap on a 2 000-edge import), while the bulk call builds it
     /// once.
