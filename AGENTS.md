@@ -412,6 +412,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Draft (taper faces) | `draft.rs` |
 | Section / Split | `section.rs`, `split.rs` |
 | Exact solid-face imprint with journal history | `imprint.rs` |
+| Directional curve projection onto faces, solids, sketch planes (P-Class 7.4 contract stub) | `project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Distance queries | `distance.rs` |
