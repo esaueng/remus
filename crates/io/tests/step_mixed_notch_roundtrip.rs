@@ -92,7 +92,7 @@ fn reimported_bracket_keeps_boundary_contracts() {
     assert!(!filleted.is_partial);
     let fvol = solid_volume(&imported, filleted.solid, 0.01).unwrap();
     assert!(
-        (fvol - 13027.2829).abs() < 2.0,
+        (fvol - 13027.2829).abs() < 0.2,
         "reimported fillet must meet the closed form, got {fvol:.4}"
     );
 
@@ -110,7 +110,7 @@ fn reimported_bracket_keeps_boundary_contracts() {
     let (imported2, back2) = reimport(&step2);
     let fvol2 = solid_volume(&imported2, back2, 0.01).unwrap();
     assert!(
-        (fvol2 - fvol).abs() < 0.5,
+        (fvol2 - fvol).abs() < 0.1,
         "fillet round-trip must agree: {fvol:.4} vs {fvol2:.4}"
     );
     let report = validate_solid(&imported2, back2, &ValidateOptions::default()).unwrap();
