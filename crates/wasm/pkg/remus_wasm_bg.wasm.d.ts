@@ -83,6 +83,7 @@ export const brepkernel_detectSmallFeatures: (a: number, b: number, c: number, d
 export const brepkernel_discardCheckpoint: (a: number, b: number) => [number, number];
 export const brepkernel_draft: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
 export const brepkernel_draftJournaled: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
+export const brepkernel_edgeConvexity: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_edgeLength: (a: number, b: number) => [number, number, number];
 export const brepkernel_edgeToFaceMap: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_evaluateEdgeCurve: (a: number, b: number, c: number) => [number, number, number, number];
@@ -96,6 +97,7 @@ export const brepkernel_extrudeDetailed: (a: number, b: number, c: number, d: nu
 export const brepkernel_faceArea: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_faceFaceBlend: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_faceFaceBlendWithHoldLine: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
+export const brepkernel_faceMaterialSense: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_facePerimeter: (a: number, b: number) => [number, number, number];
 export const brepkernel_faceWires: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_fillCoonsPatch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
@@ -306,6 +308,7 @@ export const brepkernel_sketchAddPoint: (a: number, b: number, c: number, d: num
 export const brepkernel_sketchDof: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_sketchNew: (a: number) => number;
 export const brepkernel_sketchSolve: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const brepkernel_solidEdgeRelations: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_solidFromShell: (a: number, b: number) => [number, number, number];
 export const brepkernel_solidToSolidDistance: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_split: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
