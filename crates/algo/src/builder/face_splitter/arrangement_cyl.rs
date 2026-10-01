@@ -200,7 +200,15 @@ pub(super) fn collect_cylinder_uses(
         match (edge.curve(), closed) {
             (EdgeCurve::Circle(_), true) => rim_coedges.push((coedge_id, edge_id, forward)),
             (EdgeCurve::Line, false) => seam_coedges.push((coedge_id, edge_id, forward)),
-            _ => return Ok(None),
+            (EdgeCurve::Circle(_), false)
+            | (EdgeCurve::Line, true)
+            | (
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                true | false,
+            ) => return Ok(None),
         }
     }
     // Loop must close.
@@ -383,7 +391,10 @@ pub(super) fn collect_cylinder_uses(
                 }
                 ruls.push(Rul { u_rel, idx });
             }
-            _ => return Ok(None),
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(None),
         }
     }
     if lats.is_empty() && ruls.is_empty() {
@@ -455,14 +466,28 @@ pub(super) fn collect_cylinder_uses(
         .map(remus_topology::edge::Edge::curve)
     {
         Ok(EdgeCurve::Circle(c)) => c.clone(),
-        _ => return Ok(None),
+        Ok(
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        )
+        | Err(_) => return Ok(None),
     };
     let top_circle = match topo
         .edge(top_entry.1)
         .map(remus_topology::edge::Edge::curve)
     {
         Ok(EdgeCurve::Circle(c)) => c.clone(),
-        _ => return Ok(None),
+        Ok(
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        )
+        | Err(_) => return Ok(None),
     };
     // Native seam angles for the rims (where their trims start at the seam).
     let bot_native = bot_circle.project(lb_3d);
@@ -1281,7 +1306,10 @@ fn emit_cylinder_run(
                 source_span[1] >= source_span[0],
             )
         }
-        _ => return Err(internal("non-line/circle carrier")),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Err(internal("non-line/circle carrier")),
     };
     // Pave-block sharing only for full-span sections (subspans drop it, like
     // the established splitter's split pieces).
@@ -1502,7 +1530,10 @@ mod tests {
                     })
                     .collect()
             }
-            _ => vec![e.start_3d, e.end_3d],
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => vec![e.start_3d, e.end_3d],
         }
     }
 

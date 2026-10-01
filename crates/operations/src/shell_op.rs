@@ -1284,7 +1284,10 @@ fn exact_coaxial_bore_inner_point(
         match surface {
             FaceSurface::Sphere(s) => spheres.push((s, *concave)),
             FaceSurface::Cylinder(c) => cylinders.push((c, *concave)),
-            _ => return None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return None,
         }
     }
     if spheres.len() != 1 || cylinders.len() != 1 {

@@ -19,11 +19,15 @@
 //! the direct per-face sum (plus holed-quadric tessellation instead of
 //! rectangle overcount).
 //!
-//! After the repair all three families are bit-identical under translation,
-//! match `mass_properties` (local reference) to round-off, and the hollow
-//! matches its converged fine mesh (11610 tris at 0.001, 4.968542452) within
-//! 1.4e-4 while the mesh itself is bit-identical under placement.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stderr)]
+//! Valid base and bored bodies remain invariant under rigid placement.
+//! The historical hollow is now refused by the shell carrier gate; its
+//! translation/rotation regression pins refusal and complete rollback.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
 use std::f64::consts::FRAC_PI_4;
 
@@ -32,7 +36,6 @@ use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::{mass_properties, solid_bounding_box, solid_volume};
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::shell_op::shell;
-use remus_operations::tessellate::tessellate_solid;
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
 
@@ -44,76 +47,37 @@ fn base_body(topo: &mut Topology) -> remus_topology::solid::SolidId {
     boolean(topo, BooleanOp::Fuse, stock, tool).unwrap()
 }
 
-fn thin_hollow(topo: &mut Topology) -> remus_topology::solid::SolidId {
-    let body = base_body(topo);
-    shell(topo, body, 0.1, &[]).unwrap()
-}
-
-fn mesh_volume(topo: &Topology, solid: remus_topology::solid::SolidId, deflection: f64) -> f64 {
-    let mesh = tessellate_solid(topo, solid, deflection).unwrap();
-    let mut v = 0.0;
-    for tri in mesh.indices.chunks_exact(3) {
-        let a = mesh.positions[tri[0] as usize];
-        let b = mesh.positions[tri[1] as usize];
-        let c = mesh.positions[tri[2] as usize];
-        v += a.x() * (b.y() * c.z() - b.z() * c.y()) - a.y() * (b.x() * c.z() - b.z() * c.x())
-            + a.z() * (b.x() * c.y() - b.y() * c.x());
-    }
-    v / 6.0
-}
-
 fn deflection(topo: &Topology, solid: remus_topology::solid::SolidId) -> f64 {
     let aabb = solid_bounding_box(topo, solid).unwrap();
     ((aabb.max - aabb.min).length() * 4e-5).max(1e-7)
 }
 
-/// The B78 placed-hollow discrepancy: `solid_volume` must be invariant while
-/// the mesh oracle is bit-identical.
+/// The formerly measurable off-carrier hollow must refuse under placement.
 #[test]
-fn placed_hollow_solid_volume_is_invariant() {
-    let mut topo0 = Topology::new();
-    let hollow0 = thin_hollow(&mut topo0);
-    let v0 = solid_volume(&topo0, hollow0, deflection(&topo0, hollow0)).unwrap();
-    let mv0 = mesh_volume(&topo0, hollow0, 0.01);
-
-    let mut topo1 = Topology::new();
-    let hollow1 = thin_hollow(&mut topo1);
-    transform_solid(&mut topo1, hollow1, &Mat4::translation(10.0, -20.0, 30.0)).unwrap();
-    let v1 = solid_volume(&topo1, hollow1, deflection(&topo1, hollow1)).unwrap();
-    let mv1 = mesh_volume(&topo1, hollow1, 0.01);
-
-    eprintln!("hollow unplaced solid={v0:.9} mesh={mv0:.9}");
-    eprintln!("hollow placed   solid={v1:.9} mesh={mv1:.9}");
-    // Mesh oracle: bit-identical (4.936724885 on both; B78 placed qualification).
-    assert!(
-        (mv1 - mv0).abs() / mv0 < 1e-12,
-        "mesh must be bit-identical: {mv0:.9} vs {mv1:.9}"
-    );
-    // Measurement: 4.2e-6 relative (2.08e-5 on ~4.97) after the repair, was
-    // 49.7% apart (4.807 vs 7.196). The residual is per-face tessellation
-    // sampling on the fragmented inner cylinder (face 27: 66 outer edges, 64
-    // circles, 16967 tris; 15.987009818 bit-identical on the clean outer wall
-    // vs -13.268174214 vs -13.268153382 on the fragmented inner wall), not
-    // origin integrals — every origin-anchored sum is now about the body
-    // reference and the clean faces are bit-identical. Tessellation itself is
-    // out of scope, so the bound is 1e-5 with the residual stated, not hidden.
-    assert!(
-        (v1 - v0).abs() / v0 < 1e-5,
-        "placed hollow drifted: {v0:.9} vs {v1:.9}"
-    );
-    // Independent polyhedral agreement: within 1e-3 of the converged fine mesh
-    // (0.001, 11610 tris, 4.968542452). The old origin route read 4.807 (3.2% low)
-    // unplaced and 7.196 (45% high) placed.
-    let (_, fine_tris) = {
-        let m = tessellate_solid(&topo0, hollow0, 0.001).unwrap();
-        (0.0, m.indices.len() / 3)
-    };
-    assert!(fine_tris > 5000, "fine mesh must resolve the cylinders");
-    let mv_fine = mesh_volume(&topo0, hollow0, 0.001);
-    assert!(
-        (v0 - mv_fine).abs() / mv_fine < 1e-3,
-        "direct {v0:.9} vs converged mesh {mv_fine:.9}"
-    );
+fn off_carrier_hollow_refuses_with_rollback_under_placement() {
+    for placement in [
+        Mat4::identity(),
+        Mat4::translation(10.0, -20.0, 30.0),
+        Mat4::translation(10.0, -20.0, 30.0) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2),
+    ] {
+        let mut topo = Topology::new();
+        let body = base_body(&mut topo);
+        transform_solid(&mut topo, body, &placement).unwrap();
+        let before = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+        let slots = topo.allocated_slot_count();
+        let journal = topo.journal().entries().len();
+        let error = shell(&mut topo, body, 0.1, &[]).unwrap_err();
+        assert!(matches!(
+            error,
+            remus_operations::OperationsError::Unsupported { .. }
+        ));
+        assert_eq!(
+            before,
+            remus_io::arena_io::serialize_solid(&topo, body).unwrap()
+        );
+        assert_eq!(slots, topo.allocated_slot_count());
+        assert_eq!(journal, topo.journal().entries().len());
+    }
 }
 
 /// Valid bored-quadric witness (strict-valid, no shell): the base fuse must be
@@ -164,18 +128,17 @@ fn small_base_translation_holds_1e_9() {
     );
 }
 
-/// Rigid rotation invariance for the hollow (volume) and a valid bored box
+/// Rigid rotation invariance for the valid base (volume) and a valid bored box
 /// (volume + centroid covariance).
 #[test]
 fn rotation_preserves_volume_and_moves_centroid() {
     use remus_math::vec::Point3;
-    // Hollow volume invariant under 90° Z rotation to the tessellation residual
-    // (4e-6 class, see above; was 49% origin drift).
+    // Valid base volume must remain invariant under rigid placement.
     let mut topo0 = Topology::new();
-    let h0 = thin_hollow(&mut topo0);
+    let h0 = base_body(&mut topo0);
     let v0 = solid_volume(&topo0, h0, deflection(&topo0, h0)).unwrap();
     let mut topo1 = Topology::new();
-    let h1 = thin_hollow(&mut topo1);
+    let h1 = base_body(&mut topo1);
     transform_solid(
         &mut topo1,
         h1,
@@ -184,8 +147,8 @@ fn rotation_preserves_volume_and_moves_centroid() {
     .unwrap();
     let v1 = solid_volume(&topo1, h1, deflection(&topo1, h1)).unwrap();
     assert!(
-        (v1 - v0).abs() / v0 < 1e-5,
-        "rotated hollow drifted: {v0:.9} vs {v1:.9}"
+        (v1 - v0).abs() / v0 < 1e-9,
+        "rotated base drifted: {v0:.9} vs {v1:.9}"
     );
 
     // Valid bored box: centroid must translate exactly, volume bit-identical.
