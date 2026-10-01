@@ -16,6 +16,8 @@ use remus_topology::face::FaceId;
 use remus_topology::face_loop::LoopId;
 
 mod geometry;
+#[cfg(test)]
+mod oracle_tests;
 mod periodic;
 mod regions;
 #[cfg(test)]
