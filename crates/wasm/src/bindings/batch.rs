@@ -241,6 +241,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getEdgeParamSpan"
         | "getFaceVertexPositions"
         | "getOpposingPlanarFacePairs"
+        | "edgeConvexity"
+        | "solidEdgeRelations"
+        | "faceMaterialSense"
         | "wireLength"
         | "volume" => Some(BatchOpKind::ReadOnly),
         // Serialized-reference ops: the reference codec is always linked, so
@@ -2668,6 +2671,51 @@ impl BrepKernel {
                 let (t0, t1) = remus_operations::query::trimmed_edge_domain(self.topo(), edge_id)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!([t0, t1]))
+            }
+            "edgeConvexity" => {
+                // One edge's convexity verdict plus its signed normal angle
+                // (same query as the direct `edgeConvexity` binding). A
+                // foreign or deleted handle is a typed refusal naming the
+                // handle; a zero or negative probe is `InvalidInput`.
+                let s = get_u32(args, "solid")?;
+                let e = get_u32(args, "edge")?;
+                let probe = get_optional_f64(args, "probe")?;
+                let result = self
+                    .edge_convexity_impl(s, e, probe)
+                    .map_err(StructuredWasmError::from)?;
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
+            }
+            "solidEdgeRelations" => {
+                // Every edge of a solid in one pass (same query as the direct
+                // `solidEdgeRelations` binding). The consumer must use this
+                // for whole-solid scans: a per-edge `edgeConvexity` loop
+                // rebuilds adjacency per call. Unknown edges report
+                // `"unknown"` with a null angle, never a guess.
+                let s = get_u32(args, "solid")?;
+                let probe = get_optional_f64(args, "probe")?;
+                let rows = self
+                    .solid_edge_relations_impl(s, probe)
+                    .map_err(StructuredWasmError::from)?;
+                serde_json::to_value(rows).map_err(StructuredWasmError::from)
+            }
+            "faceMaterialSense" => {
+                // One analytic face's material side (same query as the direct
+                // `faceMaterialSense` binding): `"outward"` for a boss-like
+                // wall, `"inward"` for a bore- or pocket-like wall. Planes
+                // and NURBS are a typed unsupported refusal.
+                let s = get_u32(args, "solid")?;
+                let f = get_u32(args, "face")?;
+                let sense = self
+                    .face_material_sense_impl(s, f)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(match sense {
+                    crate::types::FaceMaterialSense::Outward => {
+                        serde_json::json!("outward")
+                    }
+                    crate::types::FaceMaterialSense::Inward => {
+                        serde_json::json!("inward")
+                    }
+                })
             }
             "defeature" => {
                 let s = get_u32(args, "solid")?;
