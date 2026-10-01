@@ -14,6 +14,8 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
+use remus_topology::transaction::{AppendPath, run_append_only};
+
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
@@ -39,6 +41,36 @@ pub fn read_iges_with_limits(
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<Vec<SolidId>, IoError> {
+    read_iges_impl_with_path(input, topo, limits).map(|(solids, _)| solids)
+}
+
+/// Transactional IGES construction with its storage path.
+///
+/// Parsing runs before any topology mutation and is shared across retries.
+/// The generated-entity bound is checked before allocation with checked
+/// arithmetic, so hostile counts fail honestly without expensive work.
+/// Construction (`build_topology`: vertices, edges, wires, faces, shells,
+/// solids, plus derived loops/coedges via `add_face`) runs inside a guarded
+/// append-only scope (PERF-I02 over PERF-T03):
+///
+/// - Every write targets newly allocated entities — vertices, edges, wires,
+///   faces, shells, solids, derived loops/coedges for new faces — never
+///   pre-existing document state, so the qualified import commits on the
+///   append-only path. Any pre-existing write would trip the guard and retry
+///   once under the full transaction with an identical result; only the cost
+///   differs.
+/// - The importer writes no attributes, pcurves, or journal entries; those
+///   stores are preserved by the transaction on both success and failure.
+/// - The operation closure is re-runnable: the parsed `entities` slice is
+///   shared, and intermediate `face_ids` handles are recreated inside the
+///   closure on every try, so a guard-trip retry never emits duplicates nor
+///   leaks handles from the abandoned try (those handles stay stale via
+///   high-water preservation).
+fn read_iges_impl_with_path(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<(Vec<SolidId>, AppendPath), IoError> {
     ensure_input_size(input.len(), limits)?;
     // IGES uses fixed-width ASCII records. Rejecting non-ASCII input before
     // fixed-column parsing keeps every subsequent byte offset on a UTF-8
@@ -49,7 +81,36 @@ pub fn read_iges_with_limits(
         });
     }
     let entities = parse_iges_entities(input, limits)?;
-    build_topology(topo, &entities)
+    // Bound generated arena slots before expensive allocation: each type-108
+    // plane materializes at most 4 vertices + 4 edges + 1 wire + 1 face +
+    // 1 loop + 4 coedges (15 slots), plus one shell and one solid per import.
+    // Checked arithmetic keeps hostile counts honest; overflow is a limit
+    // refusal, never a wrap.
+    let plane_count = entities.iter().filter(|e| e.entity_type == 108).count();
+    let required_slots = if plane_count == 0 {
+        0
+    } else {
+        plane_count
+            .checked_mul(15)
+            .and_then(|v| v.checked_add(2))
+            .ok_or(IoError::LimitExceeded {
+                resource: "IGES generated entities",
+                limit: limits.max_model_entities,
+                actual: usize::MAX,
+            })?
+    };
+    ensure_limit(
+        "IGES generated entities",
+        required_slots,
+        limits.max_model_entities,
+    )?;
+    // Building an IGES model allocates topology incrementally. Keep the
+    // import transactional so an error in a later plane cannot expose
+    // geometry from an otherwise rejected file to the caller. Mutation-local
+    // rollback (PERF-T02) records only touched state; the append-only guard
+    // (PERF-T03) proves the import wrote only new content and falls back to
+    // the full path with an identical result if it ever trips.
+    run_append_only(topo, |topo| build_topology(topo, &entities))
 }
 
 // ── IGES entity representation ──────────────────────────────────────
@@ -75,6 +136,11 @@ fn parse_iges_entities(input: &str, limits: ImportLimits) -> Result<Vec<IgesEnti
 
     for line in input.lines() {
         if line.len() < 73 {
+            // Truncated fixed-width records carry no parseable section tag;
+            // skipping keeps short-line input from panicking on column
+            // indexing. Such lines contribute no entities, so a truncated
+            // file imports as fewer bodies (possibly zero) rather than
+            // failing mid-construction with partial topology.
             continue;
         }
         let section = line.as_bytes().get(72).copied().unwrap_or(b' ');
@@ -83,11 +149,27 @@ fn parse_iges_entities(input: &str, limits: ImportLimits) -> Result<Vec<IgesEnti
             b'P' => p_lines.push(line),
             _ => {} // Skip S, G, T sections.
         }
-        ensure_limit(
-            "IGES records",
-            d_lines.len().saturating_add(p_lines.len()),
-            limits.max_model_entities.saturating_mul(3),
-        )?;
+        // Checked arithmetic keeps hostile record counts honest: overflow is
+        // a limit refusal, never a wrap into a small accepted count.
+        let record_count =
+            d_lines
+                .len()
+                .checked_add(p_lines.len())
+                .ok_or(IoError::LimitExceeded {
+                    resource: "IGES records",
+                    limit: limits.max_model_entities,
+                    actual: usize::MAX,
+                })?;
+        let record_limit =
+            limits
+                .max_model_entities
+                .checked_mul(3)
+                .ok_or(IoError::LimitExceeded {
+                    resource: "IGES records",
+                    limit: limits.max_model_entities,
+                    actual: usize::MAX,
+                })?;
+        ensure_limit("IGES records", record_count, record_limit)?;
     }
 
     // Parse directory entries (pairs of lines).
@@ -175,13 +257,20 @@ fn strip_entity_prefix(params: &str, entity_type: u32) -> String {
 // ── Topology building ───────────────────────────────────────────────
 
 /// Build topology from parsed IGES entities.
+///
+/// Every type-108 plane is constructed fallibly: a malformed plane is a hard
+/// [`IoError`], not a silent skip, so a later bad entity after earlier good
+/// allocations fails the whole import and the surrounding append-only scope
+/// rewinds to the pre-import state. Entity types 110 (line), 126 (NURBS
+/// curve), 128 (NURBS surface) remain skipped — they would be referenced by
+/// higher-level entities, and broadening geometric support is out of scope.
 fn build_topology(topo: &mut Topology, entities: &[IgesEntity]) -> Result<Vec<SolidId>, IoError> {
+    // Restartable: recreated inside the append-only closure on every try.
     let mut face_ids = Vec::new();
 
     for entity in entities {
-        if entity.entity_type == 108
-            && let Ok(face_id) = build_plane_face(topo, &entity.params)
-        {
+        if entity.entity_type == 108 {
+            let face_id = build_plane_face(topo, &entity.params)?;
             face_ids.push(face_id);
         }
         // Entity types 110 (line), 126 (NURBS curve), 128 (NURBS surface)
@@ -207,20 +296,35 @@ fn build_plane_face(
     topo: &mut Topology,
     params: &str,
 ) -> Result<remus_topology::face::FaceId, IoError> {
-    let values = parse_float_params(params);
+    let values = parse_float_params(params)?;
     if values.len() < 4 {
         return Err(IoError::ParseError {
             reason: format!("IGES plane entity needs 4 params, got {}", values.len()),
         });
     }
 
+    // Strict finite checks before any allocation: nonfinite plane data must
+    // refuse with a typed error, never materialize corrupt geometry.
+    for (idx, value) in values.iter().take(4).enumerate() {
+        if !value.is_finite() {
+            return Err(IoError::ParseError {
+                reason: format!("IGES plane param {idx} is nonfinite: {value}"),
+            });
+        }
+    }
+
     let normal = Vec3::new(values[0], values[1], values[2]);
     let d = values[3];
 
     let norm_len = normal.length();
-    if norm_len < 1e-10 {
+    if !norm_len.is_finite() || norm_len < 1e-10 {
         return Err(IoError::ParseError {
-            reason: "IGES plane has zero normal".to_string(),
+            reason: "IGES plane has zero or nonfinite normal".to_string(),
+        });
+    }
+    if !d.is_finite() {
+        return Err(IoError::ParseError {
+            reason: "IGES plane offset D is nonfinite".to_string(),
         });
     }
 
@@ -230,12 +334,23 @@ fn build_plane_face(
         normal.y() / norm_len,
         normal.z() / norm_len,
     );
+    if !unit_normal.x().is_finite() || !unit_normal.y().is_finite() || !unit_normal.z().is_finite()
+    {
+        return Err(IoError::ParseError {
+            reason: "IGES plane unit normal is nonfinite".to_string(),
+        });
+    }
 
     let origin = Point3::new(
         unit_normal.x() * d / norm_len,
         unit_normal.y() * d / norm_len,
         unit_normal.z() * d / norm_len,
     );
+    if !origin.x().is_finite() || !origin.y().is_finite() || !origin.z().is_finite() {
+        return Err(IoError::ParseError {
+            reason: "IGES plane origin is nonfinite".to_string(),
+        });
+    }
 
     let ax = Vec3::new(1.0, 0.0, 0.0);
     let ay = Vec3::new(0.0, 1.0, 0.0);
@@ -246,14 +361,37 @@ fn build_plane_face(
     };
     let u_dir = unit_normal.cross(candidate);
     let u_len = u_dir.length().max(1e-10);
+    if !u_len.is_finite() {
+        return Err(IoError::ParseError {
+            reason: "IGES plane tangent frame is nonfinite".to_string(),
+        });
+    }
     let u_dir = Vec3::new(u_dir.x() / u_len, u_dir.y() / u_len, u_dir.z() / u_len);
     let v_dir = unit_normal.cross(u_dir);
+    if !u_dir.x().is_finite()
+        || !u_dir.y().is_finite()
+        || !u_dir.z().is_finite()
+        || !v_dir.x().is_finite()
+        || !v_dir.y().is_finite()
+        || !v_dir.z().is_finite()
+    {
+        return Err(IoError::ParseError {
+            reason: "IGES plane tangent directions are nonfinite".to_string(),
+        });
+    }
 
     let half = 0.5;
     let p0 = offset_point(origin, u_dir, -half, v_dir, -half);
     let p1 = offset_point(origin, u_dir, half, v_dir, -half);
     let p2 = offset_point(origin, u_dir, half, v_dir, half);
     let p3 = offset_point(origin, u_dir, -half, v_dir, half);
+    for (idx, point) in [p0, p1, p2, p3].iter().enumerate() {
+        if !point.x().is_finite() || !point.y().is_finite() || !point.z().is_finite() {
+            return Err(IoError::ParseError {
+                reason: format!("IGES plane corner {idx} is nonfinite"),
+            });
+        }
+    }
 
     let v0 = topo.add_vertex(Vertex::new(p0, 1e-7));
     let v1 = topo.add_vertex(Vertex::new(p1, 1e-7));
@@ -298,19 +436,30 @@ fn offset_point(origin: Point3, u: Vec3, a: f64, v: Vec3, b: f64) -> Point3 {
 }
 
 /// Parse comma-separated float parameters from IGES parameter data.
-fn parse_float_params(params: &str) -> Vec<f64> {
+///
+/// Every non-empty token must parse as a finite `f64`: malformed or
+/// nonfinite tokens are a typed [`IoError::ParseError`], never silently
+/// dropped. Empty tokens (from `,,`) are skipped, so a short list still
+/// fails at the caller's arity check with an honest count.
+fn parse_float_params(params: &str) -> Result<Vec<f64>, IoError> {
     let clean = params.trim_end_matches(';');
-    clean
-        .split(',')
-        .filter_map(|s| {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                trimmed.parse::<f64>().ok()
-            }
-        })
-        .collect()
+    let mut out = Vec::new();
+    for token in clean.split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: f64 = trimmed.parse().map_err(|e| IoError::ParseError {
+            reason: format!("invalid IGES float param '{trimmed}': {e}"),
+        })?;
+        if !value.is_finite() {
+            return Err(IoError::ParseError {
+                reason: format!("IGES float param '{trimmed}' is nonfinite"),
+            });
+        }
+        out.push(value);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -362,7 +511,7 @@ mod tests {
 
     #[test]
     fn parse_float_params_basic() {
-        let floats = parse_float_params("1.0,2.5,-3.0,0.;");
+        let floats = parse_float_params("1.0,2.5,-3.0,0.;").unwrap();
         assert_eq!(floats.len(), 4);
         assert!((floats[0] - 1.0).abs() < 1e-10);
         assert!((floats[1] - 2.5).abs() < 1e-10);
@@ -386,5 +535,139 @@ mod tests {
 
         assert!(matches!(result, Err(IoError::ParseError { .. })));
         assert!(topo.vertices().is_empty());
+    }
+
+    /// Corrupt the last type-108 plane's P data to a zero normal, so the file
+    /// parses but fails during construction after earlier planes allocated.
+    fn malform_last_plane_to_zero_normal(valid: &str) -> String {
+        let mut lines: Vec<String> = valid.lines().map(str::to_owned).collect();
+        let mut last_idx = None;
+        for (i, line) in lines.iter().enumerate() {
+            if line.len() >= 73
+                && line.as_bytes().get(72).copied().unwrap_or(b' ') == b'P'
+                && line[..64.min(line.len())].contains("108,")
+            {
+                last_idx = Some(i);
+            }
+        }
+        let idx = last_idx.expect("valid IGES must contain a 108 plane");
+        let suffix = lines[idx][64..].to_owned();
+        let zero_plane = format!("{:<64}", "108,0.,0.,0.,0.,0,0,0,0;");
+        lines[idx] = format!("{zero_plane}{suffix}");
+        lines.join("\n")
+    }
+
+    #[test]
+    fn iges_import_takes_the_append_only_path() {
+        use remus_operations::primitives::make_box;
+        use remus_topology::transaction::AppendPath;
+
+        // Pre-existing document the import must not copy.
+        let mut topo = Topology::new();
+        for i in 0..10 {
+            make_box(&mut topo, 1.0 + i as f64 * 0.01, 1.0, 1.0).unwrap();
+        }
+        let solids_before = topo.num_solids();
+        let faces_before = topo.num_faces();
+        let slots_before = topo.allocated_slot_count();
+
+        let mut write_topo = Topology::new();
+        let solid = make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let iges = writer::write_iges(&write_topo, &[solid]).unwrap();
+
+        let (result, path) =
+            read_iges_impl_with_path(&iges, &mut topo, ImportLimits::default()).unwrap();
+        assert_eq!(path, AppendPath::AppendOnly);
+        assert_eq!(result.len(), 1);
+        assert_eq!(topo.num_solids(), solids_before + 1);
+        // Six planes → six 1×1 preview faces; pre-existing faces untouched.
+        let shell = topo.solid(result[0]).unwrap().outer_shell();
+        assert_eq!(topo.shell(shell).unwrap().faces().len(), 6);
+        assert_eq!(topo.num_faces(), faces_before + 6);
+        // Exact slot growth: 6 planes × 15 slots + 1 shell + 1 solid.
+        assert_eq!(topo.allocated_slot_count(), slots_before + 6 * 15 + 2);
+    }
+
+    #[test]
+    fn iges_failed_import_retires_without_reusing_handles() {
+        use remus_operations::primitives::make_box;
+
+        let mut topo = Topology::new();
+        let kept = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+
+        let mut write_topo = Topology::new();
+        let solid = make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let valid = writer::write_iges(&write_topo, &[solid]).unwrap();
+        let bad = malform_last_plane_to_zero_normal(&valid);
+
+        let slots_before = topo.allocated_slot_count();
+        let err = read_iges(&bad, &mut topo).unwrap_err();
+        assert!(
+            matches!(err, IoError::ParseError { .. }),
+            "unexpected {err:?}"
+        );
+        assert!(topo.solid(kept).is_ok());
+        assert_eq!(topo.num_solids(), 1);
+        assert!(topo.allocated_slot_count() >= slots_before);
+        // The abandoned body's slot stays stale; the next build does not reuse it.
+        if let Some(abandoned) = topo.solid_id_from_index(1) {
+            assert!(topo.solid(abandoned).is_err());
+        }
+        let fresh = make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+        assert_ne!(fresh, kept);
+        assert!(topo.solid(fresh).is_ok());
+    }
+
+    #[test]
+    fn parse_float_params_rejects_malformed_and_nonfinite() {
+        assert!(matches!(
+            parse_float_params("1.0,abc,3.0,4.0;"),
+            Err(IoError::ParseError { .. })
+        ));
+        assert!(matches!(
+            parse_float_params("1.0,inf,3.0,4.0;"),
+            Err(IoError::ParseError { .. })
+        ));
+        assert!(matches!(
+            parse_float_params("1.0,NaN,3.0,4.0;"),
+            Err(IoError::ParseError { .. })
+        ));
+        assert!(matches!(
+            parse_float_params("1.0,1e999,3.0,4.0;"),
+            Err(IoError::ParseError { .. })
+        ));
+    }
+
+    #[test]
+    fn generated_entity_bound_fails_before_allocation() {
+        use remus_operations::primitives::make_box;
+
+        let mut write_topo = Topology::new();
+        let solid = make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let iges = writer::write_iges(&write_topo, &[solid]).unwrap();
+
+        // Six planes need 92 slots; a budget of 10 must refuse without growth.
+        let limits = ImportLimits {
+            max_model_entities: 10,
+            ..ImportLimits::default()
+        };
+        let mut topo = Topology::new();
+        let slots_before = topo.allocated_slot_count();
+        let err = read_iges_with_limits(&iges, &mut topo, limits).unwrap_err();
+        assert!(
+            matches!(err, IoError::LimitExceeded { .. }),
+            "unexpected {err:?}"
+        );
+        assert_eq!(topo.allocated_slot_count(), slots_before);
+        assert_eq!(topo.num_solids(), 0);
+
+        // Exact boundary succeeds: 92 slots.
+        let exact = ImportLimits {
+            max_model_entities: 92,
+            ..ImportLimits::default()
+        };
+        let mut topo2 = Topology::new();
+        let solids = read_iges_with_limits(&iges, &mut topo2, exact).unwrap();
+        assert_eq!(solids.len(), 1);
     }
 }
