@@ -157,7 +157,9 @@ collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_
 the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
 two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
 `closed_rim_oracles`), and the B69, B70 and B71 tessellation witnesses
-(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`.
+(`operations/src/tessellate/tests/mutation_oracles.rs`.
+- **cargo-mutants `--file` is ignored under the committed `.cargo/mutants.toml`;** scope a file with `-F` (regex on the mutant name) or drop to `--no-config` for the listing, and verify with `scripts/test-mutants-scope.py` before quoting a count (M2 proof tranche, 2026-10-01).
+- **An unexamined tail is a plan problem, not a verdict:** a sharded mutation run that times out reports its remainder as unexamined — carry that tail into the next in-diff set or a catch-up shard matrix instead of quoting the reachable prefix (M2 proof tranche, 84 unexamined in one shard, 2026-10-01).), all failing on `main`.
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
