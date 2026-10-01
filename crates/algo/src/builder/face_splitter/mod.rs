@@ -10,6 +10,12 @@ mod arrangement;
 // Production adapter onto the core (O2.3c): qualified planar faces with
 // provenance-preserving uses, dispatched from `split_face_2d_impl`.
 mod arrangement_prod;
+// Production cylinder adapter (O2.3b/c/d): finite cylindrical laterals with
+// exact latitude circles and axial rulings, dispatched from
+// `split_face_2d_impl` ahead of the band/sector emitters. Declines on default
+// budgets (preserving legacy) and on out-of-domain inputs; the established
+// band/sector paths remain as fallbacks. No emitter deleted in this slice.
+mod arrangement_cyl;
 #[cfg(test)]
 mod closed_form_split_tests;
 mod containment;
@@ -6179,6 +6185,33 @@ fn split_face_2d_impl(
         )
     {
         return Ok(bands);
+    }
+
+    // Provenance-preserving cylinder arrangement (O2.3b/c/d): finite
+    // cylindrical laterals with exact latitude circles and/or axial rulings.
+    // Fires ahead of the band/sector emitters for qualified cylinder inputs
+    // when budgets allow (declines on default budgets, preserving legacy);
+    // out-of-domain inputs (`None`) fall through to the established paths,
+    // while claimed-domain refusals (`Err`) propagate. Cone, torus, oblique
+    // traces and unsupported contacts remain on the established paths. No
+    // emitter deleted in this slice; bands/sectors remain as fallbacks.
+    if u_periodic
+        && !is_plane
+        && original_inner_wires.is_empty()
+        && !sections.is_empty()
+        && matches!(&surface, FaceSurface::Cylinder(_))
+        && let Some(cyl_subfaces) =
+            arrangement_cyl::try_split_cylinder_face_by_provenance_arrangement(
+                topo,
+                face_id,
+                sections,
+                rank,
+                tol,
+                context,
+                split_registry.as_deref_mut(),
+            )?
+    {
+        return Ok(cyl_subfaces);
     }
 
     // Band shortcut: closed section circles on a u-periodic face split it

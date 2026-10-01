@@ -20,6 +20,10 @@ use super::entity::{
 };
 use super::final_eval::FinalEvaluation;
 use super::solver::{DoglegWorkspace, SolveResult, SolveStats};
+use super::sparse::{
+    SparsePattern, SparseWorkspace, SparseWriter, build_pattern, max_column_norm,
+    should_use_sparse, solve_dogleg_sparse, sparse_full_rank_with_threshold,
+};
 
 /// The geometric constraint system.
 ///
@@ -602,20 +606,71 @@ impl GcsSystem {
             .map(|(_, e)| residual_count(&e.constraint))
             .sum();
 
-        let mut params = self.extract_params();
-        let param_index = self.param_index.clone();
-
         let constraints: Vec<Constraint> = self
             .constraints
             .iter()
             .map(|(_, e)| e.constraint.clone())
             .collect();
+        let param_index = self.param_index.clone();
+
+        // PERF-S04: bounded sparse slice for large banded single-component
+        // systems. Structural pattern first; any miss falls through to dense.
+        let row_counts: Vec<usize> = constraints.iter().map(residual_count).collect();
+        let pattern = build_pattern(&constraints, &row_counts, self, &param_index, m, n);
+        if should_use_sparse(m, n, pattern.band)
+            && let Some((result, eval, stats)) = self.solve_dense_sparse(
+                &constraints,
+                &row_counts,
+                &pattern,
+                &param_index,
+                m,
+                n,
+                max_iterations,
+                tolerance,
+                capture_final,
+            )
+        {
+            return Ok((result, eval, stats));
+        }
 
         // Solve-local snapshot storage (PERF-S03): cleared and refilled on
         // every residual/Jacobian evaluation instead of reallocated.
         // Separate stores for the residual and Jacobian paths so the two
         // fill closures own disjoint scratch. Nothing is retained across
         // solves; capacities are per-solve only.
+        self.solve_dense_direct(
+            &constraints,
+            &param_index,
+            m,
+            n,
+            max_iterations,
+            tolerance,
+            capture_final,
+        )
+    }
+
+    /// Direct dense loop without sparse dispatch (reference for tests).
+    ///
+    /// Production [`Self::solve_dense`] tries sparse first; this runs dense
+    /// bit-for-bit for agreement testing on large systems above the dispatch
+    /// threshold.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::too_many_arguments,
+        clippy::unnecessary_wraps,
+        clippy::redundant_pub_crate
+    )]
+    pub(crate) fn solve_dense_direct(
+        &mut self,
+        constraints: &[Constraint],
+        param_index: &HashMap<ParamRef, usize>,
+        m: usize,
+        n: usize,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        let mut params = self.extract_params();
         let mut snap_r = EntitySnapshot {
             points: HashMap::with_capacity(self.points.len()),
             lines: HashMap::with_capacity(self.lines.len()),
@@ -632,24 +687,24 @@ impl GcsSystem {
         };
 
         let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
-            refresh_snapshot_from_params(&mut snap_r, p, &param_index, self);
+            refresh_snapshot_from_params(&mut snap_r, p, param_index, self);
             out.clear();
-            for c in &constraints {
+            for c in constraints {
                 eval_residuals(c, &snap_r, out);
             }
         };
 
         let mut jacobian_fill = |p: &[f64], out: &mut [f64]| {
-            refresh_snapshot_from_params(&mut snap_j, p, &param_index, self);
+            refresh_snapshot_from_params(&mut snap_j, p, param_index, self);
             out.fill(0.0);
             let mut row = 0;
             {
                 let mut jw = JacobianWriter {
                     data: out,
                     ncols: n,
-                    param_index: &param_index,
+                    param_index,
                 };
-                for c in &constraints {
+                for c in constraints {
                     eval_jacobian(c, &snap_j, &mut jw, row);
                     row += residual_count(c);
                 }
@@ -675,6 +730,87 @@ impl GcsSystem {
             FinalEvaluation::capture(&params, workspace.final_residuals(), self.constraint_rows())
         });
         Ok((result, eval, stats))
+    }
+
+    /// Whole-system sparse attempt for single-component solves (PERF-S04).
+    ///
+    /// Mirrors [`Self::solve_dense`] storage (full snapshots, single
+    /// write-back) with CSR Jacobian assembly and the sparse DogLeg loop.
+    /// Returns `None` on any miss so the caller runs dense bit-for-bit.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn solve_dense_sparse(
+        &mut self,
+        constraints: &[Constraint],
+        row_counts: &[usize],
+        pattern: &SparsePattern,
+        param_index: &HashMap<ParamRef, usize>,
+        m: usize,
+        n: usize,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Option<(SolveResult, Option<FinalEvaluation>, SolveStats)> {
+        if n != pattern.n || m != pattern.m {
+            return None;
+        }
+        let mut params = self.extract_params();
+        let mut snap_r = EntitySnapshot {
+            points: HashMap::with_capacity(self.points.len()),
+            lines: HashMap::with_capacity(self.lines.len()),
+            circles: HashMap::with_capacity(self.circles.len()),
+            arcs: HashMap::with_capacity(self.arcs.len()),
+            ellipses: HashMap::with_capacity(self.ellipses.len()),
+        };
+        let mut snap_j = EntitySnapshot {
+            points: HashMap::with_capacity(self.points.len()),
+            lines: HashMap::with_capacity(self.lines.len()),
+            circles: HashMap::with_capacity(self.circles.len()),
+            arcs: HashMap::with_capacity(self.arcs.len()),
+            ellipses: HashMap::with_capacity(self.ellipses.len()),
+        };
+        let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
+            refresh_snapshot_from_params(&mut snap_r, p, param_index, self);
+            out.clear();
+            for c in constraints {
+                eval_residuals(c, &snap_r, out);
+            }
+        };
+        let mut jacobian_fill_sparse = |p: &[f64], out: &mut [f64]| {
+            refresh_snapshot_from_params(&mut snap_j, p, param_index, self);
+            for v in out.iter_mut() {
+                *v = 0.0;
+            }
+            let mut row = 0_usize;
+            {
+                let mut jw = SparseWriter {
+                    values: out,
+                    row_ptr: &pattern.row_ptr,
+                    col_idx: &pattern.col_idx,
+                    param_index,
+                };
+                for (c, k) in constraints.iter().zip(row_counts.iter()) {
+                    eval_jacobian(c, &snap_j, &mut jw, row);
+                    row += *k;
+                }
+            }
+        };
+        let mut ws = SparseWorkspace::new();
+        let mut stats = SolveStats::default();
+        let result = solve_dogleg_sparse(
+            &mut params,
+            &mut residual_fill,
+            &mut jacobian_fill_sparse,
+            pattern,
+            max_iterations,
+            tolerance,
+            &mut ws,
+            &mut stats,
+        )?;
+        self.write_params(&params);
+        let eval = capture_final.then(|| {
+            FinalEvaluation::capture(&params, ws.final_residuals(), self.constraint_rows())
+        });
+        Some((result, eval, stats))
     }
 
     /// Solve each independent component with its own DogLeg loop (PERF-S02).
@@ -802,6 +938,32 @@ impl GcsSystem {
             local_index.insert(self.param_map[global_i], local_i);
         }
         let entities = component_entities(&comp.constraints, self);
+        // PERF-S04: attempt the bounded sparse slice first. Pattern assembly
+        // is structural (no numerics) and cheap O(nnz); any miss (small,
+        // wide-band, underconstrained, rank-deficient, nonfinite) falls back
+        // to the dense loop below with identical diagnostics.
+        let pattern = build_pattern(
+            &comp.constraints,
+            &comp.row_counts,
+            self,
+            &local_index,
+            m_c,
+            n_c,
+        );
+        if should_use_sparse(m_c, n_c, pattern.band)
+            && let Some(outcome) = Self::solve_component_sparse(
+                comp,
+                &pattern,
+                &local_index,
+                &entities,
+                global_params,
+                max_iterations,
+                tolerance,
+                stats,
+            )
+        {
+            return Ok(outcome);
+        }
         let mut snap_r = subset_snapshot(&entities);
         let mut snap_j = subset_snapshot(&entities);
 
@@ -851,6 +1013,83 @@ impl GcsSystem {
             max_residual: result.max_residual,
             final_params: local,
             final_residuals,
+        })
+    }
+
+    /// Run one component through the bounded sparse slice (PERF-S04).
+    ///
+    /// Returns `Some` only when every DogLeg iteration succeeds via banded
+    /// Givens under the component's own full-rank policy; any tiny pivot,
+    /// nonfinite, or structural miss returns `None` so the caller reruns the
+    /// dense loop from the same start. Snapshots cover the same entity
+    /// subset as dense; residual formulas are shared, only Jacobian storage
+    /// (CSR) and linear algebra (sparse matvecs + Givens) differ.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn solve_component_sparse(
+        comp: &Component,
+        pattern: &SparsePattern,
+        local_index: &HashMap<ParamRef, usize>,
+        entities: &super::components::ComponentEntities,
+        global_params: &[f64],
+        max_iterations: usize,
+        tolerance: f64,
+        stats: &mut SolveStats,
+    ) -> Option<ComponentOutcome> {
+        let n_c = comp.params.len();
+        let m_c = comp.num_equations();
+        if n_c != pattern.n || m_c != pattern.m {
+            return None;
+        }
+        let mut local: Vec<f64> = comp.params.iter().map(|&gi| global_params[gi]).collect();
+        let mut snap_r = subset_snapshot(entities);
+        let mut snap_j = subset_snapshot(entities);
+        let mut residual_fill = |p: &[f64], out: &mut Vec<f64>| {
+            refresh_subset_snapshot(&mut snap_r, &entities.points, p, local_index);
+            refresh_subset_radii(&mut snap_r, &entities.circles, p, local_index);
+            refresh_subset_ellipses(&mut snap_r, &entities.ellipses, p, local_index);
+            out.clear();
+            for c in &comp.constraints {
+                eval_residuals(c, &snap_r, out);
+            }
+        };
+        let mut jacobian_fill_sparse = |p: &[f64], out: &mut [f64]| {
+            refresh_subset_snapshot(&mut snap_j, &entities.points, p, local_index);
+            refresh_subset_radii(&mut snap_j, &entities.circles, p, local_index);
+            refresh_subset_ellipses(&mut snap_j, &entities.ellipses, p, local_index);
+            for v in out.iter_mut() {
+                *v = 0.0;
+            }
+            let mut row = 0_usize;
+            {
+                let mut jw = SparseWriter {
+                    values: out,
+                    row_ptr: &pattern.row_ptr,
+                    col_idx: &pattern.col_idx,
+                    param_index: local_index,
+                };
+                for c in &comp.constraints {
+                    eval_jacobian(c, &snap_j, &mut jw, row);
+                    row += residual_count(c);
+                }
+            }
+        };
+        let mut ws = SparseWorkspace::new();
+        let result = solve_dogleg_sparse(
+            &mut local,
+            &mut residual_fill,
+            &mut jacobian_fill_sparse,
+            pattern,
+            max_iterations,
+            tolerance,
+            &mut ws,
+            stats,
+        )?;
+        Some(ComponentOutcome {
+            converged: result.converged,
+            iterations: result.iterations,
+            max_residual: result.max_residual,
+            final_params: local,
+            final_residuals: ws.final_residuals().to_vec(),
         })
     }
 
@@ -1079,6 +1318,19 @@ impl GcsSystem {
         counts: &mut DetailedCounts,
     ) -> (DofAnalysis, Vec<ConstraintResidual>, f64) {
         if let Some(eval) = eval.filter(|eval| self.eval_matches(eval, m, n)) {
+            // PERF-S04: sparse rank first for large banded full-rank systems.
+            // One sparse assembly plus one sparse factorization replaces the
+            // dense `m*n` Jacobian plus dense QR; any miss falls back to dense
+            // with identical rank/DOF/classification.
+            if let Some(analysis) = self.sparse_rank_if_full(m, n, counts) {
+                if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
+                    counts.shared_residuals_used = true;
+                    return (analysis, residuals, internal_max);
+                }
+                counts.fallback_residual_passes += 1;
+                let (residuals, internal_max) = self.constraint_residuals();
+                return (analysis, residuals, internal_max);
+            }
             // Shared path: one snapshot backs the fresh Jacobian the rank
             // needs; per-constraint residuals slice the verified final
             // vector instead of re-evaluating every constraint.
@@ -1268,6 +1520,11 @@ impl GcsSystem {
 
         let decomp = decompose(self);
         if decomp.is_single_connected() {
+            if let Some(analysis) = self.sparse_rank_if_full(m, n, &mut DetailedCounts::default()) {
+                // `dof()` has no counts to report; sparse success means full
+                // column rank (rank == n) under the global policy.
+                return analysis;
+            }
             let snap = self.build_snapshot();
             let jac = self.jacobian_for_snapshot(&snap, m, n);
             dof::analyze(&jac, m, n)
@@ -1275,6 +1532,65 @@ impl GcsSystem {
             let blocks = self.component_jacobians(&decomp);
             dof::analyze_blocks(&blocks, n, m)
         }
+    }
+
+    /// Sparse full-rank check for single-component analysis (PERF-S04).
+    ///
+    /// Builds one CSR Jacobian at the live state and checks full column rank
+    /// under the single global `1e-10·max_col_norm` policy. Returns `Some`
+    /// with `rank == n` (hence `dof == 0` for `m >= n`) only for the bounded
+    /// slice (large, banded, full-rank); any miss returns `None` so the
+    /// caller runs dense with identical results. Counts mirror the dense
+    /// path (one Jacobian + one QR) so PERF-S06 evaluation accounting stays
+    /// comparable.
+    fn sparse_rank_if_full(
+        &mut self,
+        m: usize,
+        n: usize,
+        counts: &mut DetailedCounts,
+    ) -> Option<DofAnalysis> {
+        self.rebuild_if_dirty();
+        if n < super::sparse::SPARSE_MIN_N || m < n {
+            return None;
+        }
+        let entries = self.ordered_constraints();
+        let cs: Vec<Constraint> = entries.iter().map(|(_, c)| c.clone()).collect();
+        let rows: Vec<usize> = entries.iter().map(|(_, c)| residual_count(c)).collect();
+        let pattern = build_pattern(&cs, &rows, self, &self.param_index.clone(), m, n);
+        if !should_use_sparse(m, n, pattern.band) {
+            return None;
+        }
+        let snap = self.build_snapshot();
+        let mut values = vec![0.0_f64; pattern.nnz];
+        {
+            let mut row = 0_usize;
+            let mut jw = SparseWriter {
+                values: &mut values,
+                row_ptr: &pattern.row_ptr,
+                col_idx: &pattern.col_idx,
+                param_index: &self.param_index,
+            };
+            for (_, entry) in self.constraints.iter() {
+                eval_jacobian(&entry.constraint, &snap, &mut jw, row);
+                row += residual_count(&entry.constraint);
+            }
+        }
+        counts.analysis_jacobian_evals += 1;
+        let global = max_column_norm(&pattern, &values);
+        if !global.is_finite() || global < 1e-300 {
+            return None;
+        }
+        let threshold = 1e-10 * global;
+        if !sparse_full_rank_with_threshold(&pattern, &values, threshold) {
+            return None;
+        }
+        counts.analysis_qr_factorizations += 1;
+        Some(DofAnalysis {
+            dof: n.saturating_sub(n),
+            rank: n,
+            num_params: n,
+            num_equations: m,
+        })
     }
 
     /// Row-major Jacobian at the entities held by `snap`.

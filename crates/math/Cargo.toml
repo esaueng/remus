@@ -29,6 +29,10 @@ name = "intersection_inner_loops"
 harness = false
 name = "cdt_insertion"
 
+[[bench]]
+harness = false
+name = "fitting_interpolation"
+
 [features]
 default = []
 serde = ["dep:serde"]

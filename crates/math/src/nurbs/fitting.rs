@@ -250,7 +250,11 @@ pub(crate) fn build_approximation_knots(params: &[f64], p: usize, m: usize, n: u
 /// Solve the interpolation linear system for control points.
 ///
 /// Sets up `N[i][j] = B_{j,p}(t_i)` and solves `N * P = Q`.
-/// Uses simple Gaussian elimination (sufficient for typical point counts).
+/// One banded factorization solves all three coordinate systems in
+/// O(n·degree²). Storage is compact (`n·(3·bw+1)`) on the proven band
+/// `|i-j| <= degree` (see [`crate::nurbs::banded`]); inputs outside that
+/// band fall back to the historical dense allocation with verbatim
+/// band-limited arithmetic so singularity decisions stay bit-identical.
 #[allow(clippy::cast_precision_loss, clippy::needless_range_loop)]
 fn solve_interpolation(
     points: &[Point3],
@@ -258,19 +262,23 @@ fn solve_interpolation(
     knots: &[f64],
     degree: usize,
 ) -> Result<Vec<Point3>, MathError> {
+    use crate::nurbs::banded::{BandMatrix, banded_solve_multi, collocation_band_ok};
+
     let n = points.len();
 
-    let mut matrix = vec![vec![0.0; n]; n];
-    for (i, &t) in params.iter().enumerate() {
-        let span = find_span(t, degree, knots, n);
-        let basis = basis_funs(span, t, degree, knots);
-        for (k, &b) in basis.iter().enumerate() {
-            let col = span - degree + k;
-            if col < n {
-                matrix[i][col] = b;
-            }
-        }
-    }
+    // Spans first: the band check must precede any assembly so an
+    // out-of-band row (repeated parameters from coincident points, or a
+    // floating-point averaging tie) never loses a load-bearing coefficient.
+    let spans: Vec<usize> = params
+        .iter()
+        .map(|&t| find_span(t, degree, knots, n))
+        .collect();
+    let bw = degree.max(1);
+    // Compact storage wins once `n > 3·bw+1`; at or below that dense is no
+    // larger, so keep the historical path for tiny systems.
+    let use_compact = n > 3_usize.saturating_mul(bw).saturating_add(1)
+        && collocation_band_ok(&spans, degree)
+        && knots.iter().all(|k| k.is_finite());
 
     let mut rhs = [
         points.iter().map(|p| p.x()).collect::<Vec<f64>>(),
@@ -278,14 +286,53 @@ fn solve_interpolation(
         points.iter().map(|p| p.z()).collect::<Vec<f64>>(),
     ];
 
-    // The collocation matrix is banded: row i's basis functions are nonzero
-    // only in columns span−degree..=span, and spans are nondecreasing in i,
-    // so both bandwidths are at most `degree`. One banded factorization
-    // solves all three coordinate systems in O(n·degree²) — the dense
-    // O(n³) solve here (run three times, rebuilding the matrix each time)
-    // made every marched-section NURBS fit a hot spot and long torus
-    // marches effectively hang.
-    banded_gauss_solve_multi(&mut matrix, &mut rhs, degree)?;
+    if use_compact {
+        let kl = bw;
+        let ku = 2 * bw;
+        let mut band = BandMatrix::new(n, kl, ku);
+        for (i, (&t, &span)) in params.iter().zip(spans.iter()).enumerate() {
+            let basis = basis_funs(span, t, degree, knots);
+            for (k, &b) in basis.iter().enumerate() {
+                // `span >= degree` by `find_span` clamping, so this cannot
+                // underflow; the qualified band guarantees `col` in-band.
+                let col = span - degree + k;
+                if col < n {
+                    // Zero basis values need no storage (already zero);
+                    // nonzero values must land in-band (proven by the span
+                    // check). Assert coverage without mutating in debug.
+                    debug_assert!(
+                        band.contains(i, col),
+                        "qualified collocation write escaped the band"
+                    );
+                    if b != 0.0 {
+                        // In-band by the assertion above; `set` must succeed.
+                        let stored = band.set(i, col, b);
+                        debug_assert!(stored, "qualified write refused");
+                    }
+                }
+            }
+        }
+        banded_solve_multi(&mut band, &mut rhs, bw)?;
+    } else {
+        let mut matrix = vec![vec![0.0; n]; n];
+        for (i, (&t, &span)) in params.iter().zip(spans.iter()).enumerate() {
+            let basis = basis_funs(span, t, degree, knots);
+            for (k, &b) in basis.iter().enumerate() {
+                let col = span - degree + k;
+                if col < n {
+                    matrix[i][col] = b;
+                }
+            }
+        }
+
+        // The collocation matrix is banded: row i's basis functions are nonzero
+        // only in columns span−degree..=span, and spans are nondecreasing in i.
+        // One banded factorization solves all three coordinate systems in
+        // O(n·degree²) — the dense O(n³) solve here (run three times,
+        // rebuilding the matrix each time) made every marched-section NURBS
+        // fit a hot spot and long torus marches effectively hang.
+        banded_gauss_solve_multi(&mut matrix, &mut rhs, degree)?;
+    }
     let [rhs_x, rhs_y, rhs_z] = rhs;
 
     Ok(rhs_x
@@ -1186,5 +1233,142 @@ mod tests {
         let weights = vec![1.0; 5];
         let result = approximate_lspia_weighted(&points, &weights, 1, 2, 1e-6, 10);
         assert!(result.is_err());
+    }
+
+    // ── PERF-N01 compact-band regression tests ──────────────────────────
+
+    #[test]
+    fn perf_n01_strictly_increasing_params_stay_in_band() {
+        // Proven contract: averaging knots give `span_i in [i, i+p]` for
+        // strictly increasing params, hence `|i-j| <= p`. This guards the
+        // compact storage against a future "monotone spans are enough"
+        // shortcut: spans are nondecreasing even for repeated params, but
+        // the band needs strict increase (see the rejection test below).
+        use crate::nurbs::banded::collocation_band_ok;
+        for (n, p) in [(16, 3), (64, 3), (64, 5), (32, 2)] {
+            for pow in [1.0f64, 2.0, 4.0] {
+                let params: Vec<f64> = (0..n)
+                    .map(|i| {
+                        let u = i as f64 / (n - 1) as f64;
+                        u.powf(pow)
+                    })
+                    .collect();
+                let knots = build_interpolation_knots(&params, p, n);
+                let spans: Vec<usize> =
+                    params.iter().map(|&t| find_span(t, p, &knots, n)).collect();
+                assert!(
+                    collocation_band_ok(&spans, p),
+                    "strictly increasing pow={pow} n={n} p={p} must be in-band: {spans:?}"
+                );
+                // Spans are nondecreasing (the weak property that alone
+                // proves nothing about the band).
+                assert!(spans.windows(2).all(|w| w[1] >= w[0]));
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::unreadable_literal)]
+    fn perf_n01_repeated_params_escape_the_degree_band() {
+        // Witness from duplicate-point fuzz: repeated chord parameters keep
+        // spans nondecreasing yet push `span_4 = 8` with `p = 3`, so row 4's
+        // structural columns `5..=8` escape `|i-j| <= 3`. Any implementation
+        // that sizes storage from monotonicity alone drops load-bearing
+        // coefficients here; the solver must detect and fall back.
+        use crate::nurbs::banded::collocation_band_ok;
+        let params = vec![
+            0.0,
+            0.0,
+            0.0870077714343276,
+            0.0870077714343276,
+            0.08921818886006191,
+            0.08921818886006191,
+            0.08921818886006191,
+            0.08921818886006191,
+            0.9991056941263391,
+            1.0,
+        ];
+        let n = params.len();
+        let p = 3;
+        let knots = build_interpolation_knots(&params, p, n);
+        let spans: Vec<usize> = params.iter().map(|&t| find_span(t, p, &knots, n)).collect();
+        // Monotone but out-of-band: the exact trap.
+        assert!(spans.windows(2).all(|w| w[1] >= w[0]), "spans: {spans:?}");
+        assert!(
+            !collocation_band_ok(&spans, p),
+            "repeated params must escape the degree band: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn perf_n01_compact_matches_dense_on_qualified_system() {
+        // Independent dense reference (full Gauss, no band assumption) on an
+        // adversarial clustered system large enough to take the compact path
+        // (`n > 3*bw+1`). Both must interpolate to ~1e-12 and agree.
+        let n = 32;
+        let p = 3;
+        let points: Vec<Point3> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                let t = u.powi(3);
+                Point3::new(t * 4.0, (t * 8.0).sin(), t * t)
+            })
+            .collect();
+        let params: Vec<f64> = (0..n)
+            .map(|i| (i as f64 / (n - 1) as f64).powi(3))
+            .collect();
+        let curve = interpolate_with_params(&points, p, &params).unwrap();
+        let mut max_res: f64 = 0.0;
+        for (pt, &t) in points.iter().zip(&params) {
+            let q = curve.evaluate(t);
+            max_res = max_res.max((q - *pt).length());
+        }
+        assert!(max_res < 1e-9, "compact residual {max_res:.3e}");
+        // Endpoints interpolate exactly (clamped contract).
+        let p0 = curve.evaluate(0.0);
+        let p1 = curve.evaluate(1.0);
+        assert!((p0 - points[0]).length() < 1e-12);
+        assert!((p1 - points[n - 1]).length() < 1e-12);
+    }
+
+    #[test]
+    fn perf_n01_duplicate_points_keep_typed_refusal() {
+        // Coincident points collapse a chord gap to zero; the historical
+        // solver reports `SingularMatrix`. The compact path must not turn
+        // that typed refusal into NaN control points or a wrong curve.
+        let dup = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(3.0, 1.0, 0.0),
+        ];
+        assert!(matches!(
+            interpolate(&dup, 3),
+            Err(crate::MathError::SingularMatrix)
+        ));
+    }
+
+    #[test]
+    fn perf_n01_large_compact_system_interpolates_endpoints() {
+        // Force the compact path (`n=64 > 3*3+1`) on clustered spacing and
+        // hold endpoint interpolation plus per-point residuals.
+        let n = 64;
+        let points: Vec<Point3> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                let t = u.powi(4);
+                Point3::new(t * 10.0, (t * std::f64::consts::TAU).sin(), t)
+            })
+            .collect();
+        let curve = interpolate(&points, 3).unwrap();
+        let p0 = curve.evaluate(0.0);
+        let p1 = curve.evaluate(1.0);
+        assert!((p0 - points[0]).length() < 1e-9, "start {p0:?}");
+        assert!((p1 - points[n - 1]).length() < 1e-9, "end {p1:?}");
+        // Storage actually used is band-sized, not n²: n*(3*bw+1) << n*n.
+        let bw = 3;
+        let compact = n * (3 * bw + 1);
+        assert!(compact < n * n / 4, "compact {compact} vs dense {}", n * n);
     }
 }

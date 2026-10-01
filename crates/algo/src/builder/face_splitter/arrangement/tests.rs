@@ -547,6 +547,29 @@ fn cylinder_sectors_join_across_seam_and_are_permutation_invariant() {
         format!("{:?}", cylinder(&variant).unwrap())
     );
 }
+#[test]
+fn cylinder_single_ruling_keeps_two_sectors_sharing_the_seam() {
+    // One ruling plus the seam: two sectors sharing both the seam and the
+    // ruling as common boundaries (not one wrapping face). The quotient must
+    // keep them separate (each chi=1, one boundary, winding 0) with the seam
+    // retained in both wires via the shared vertex identifications.
+    let uses = cylinder_uses(&[2.0], &[]);
+    let a = cylinder(&uses).unwrap();
+    assert_eq!(a.periodic_regions.len(), 2);
+    assert!(a.periodic_regions.iter().all(|r| r.cells.len() == 1));
+    for r in &a.periodic_regions {
+        assert_eq!(r.euler_characteristic, 1);
+        assert_eq!(r.boundaries.len(), 1);
+        assert_eq!(r.boundaries[0].1, 0);
+    }
+    near(a.periodic_regions.iter().map(|r| r.area).sum(), 12.0 * PI);
+    // The two sectors tile the lateral: areas r*theta*h and r*(TAU-theta)*h.
+    let mut areas: Vec<_> = a.periodic_regions.iter().map(|r| r.area).collect();
+    areas.sort_by(f64::total_cmp);
+    near(areas[0], 2.0 * 2.0 * 3.0);
+    near(areas[1], 2.0 * (TAU - 2.0) * 3.0);
+    invariants(&a, &uses);
+}
 
 #[test]
 fn tangent_overlaps_slits_and_bad_certificates_refuse() {
