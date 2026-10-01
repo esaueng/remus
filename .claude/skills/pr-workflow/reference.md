@@ -48,7 +48,7 @@ Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only 
 - `allow_squash_merge: true`, but `allow_merge_commit: true` and `allow_rebase_merge: true` as well — squash is NOT the only option, so always pass `--squash` explicitly.
 - `allow_auto_merge: **true**` — `gh pr merge <N> --squash --auto` merges once `checks / CI Pass` passes. It does not wait for the three checks outside the fan-in.
 - `delete_branch_on_merge: **true**` — GitHub deletes the head branch on merge, which auto-closes any PR stacked on it. Retarget stacked PRs to `main` before merging the parent.
-- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass` with `strict: true`, so a PR behind `main` must be updated (`gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>`) before it can merge; required approvals none; `enforce_admins` false, so admins bypass the check; force pushes allowed. A disabled ruleset "Bounded merge queue" exists. Not pushing to `main` is still a rule you follow: the server stops a non-admin push only through the required check.
+- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass` with `strict: true`, so a PR behind `main` must be updated (`gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>`) before it can merge; `required_conversation_resolution: true`, so every review thread must be resolved; required approvals none; `enforce_admins` false, so admins bypass the check; force pushes allowed. A disabled ruleset "Bounded merge queue" exists. Not pushing to `main` is still a rule you follow: the server stops a non-admin push only through the required check.
 - Squash commit titles on `main` look like `type(scope): subject (#N)`.
 
 ## Code review
@@ -165,6 +165,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | PR shows mergeable with nothing green yet | `mergeable` only means conflict-free; `mergeStateStatus` carries the check and freshness state | Read `mergeStateStatus`: `BLOCKED` waits on `CI Pass`, `BEHIND` needs a branch update |
 | A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
 | Auto-merge enabled but the PR never merges | `mergeStateStatus: BEHIND`; protection is `strict`, so the branch must be current with `main` | Update the branch via the `update-branch` API; CI reruns, then auto-merge fires |
+| `BLOCKED` with every check green and the branch current | An unresolved review thread; protection requires conversation resolution | Address the thread, then ask its author to resolve it (GraphQL `resolveReviewThread`); auto-merge fires on resolution |
 | `gh pr update-branch` prints usage text | The installed `gh` predates that subcommand | `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` |
 | A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged (`delete_branch_on_merge` is on); GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
@@ -187,6 +188,6 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 - "CLAUDE.md says pre-push runs tests and cargo-deny": stale. The hook file delegates to CI; do not re-add local suites to it and do not cite the stale description.
 - "High-risk change, better wait for a human": no gate of any kind will stop you, which is an argument for more self-review, not less.
 - "gh pr view showed no comments, so there are no findings": inline findings live on `pulls/<N>/comments` (the API), check both surfaces.
-- "Branch protection will catch it": protection checks only `CI Pass` and freshness, admins bypass it, and three checks sit outside it. It catches a red `CI Pass`, nothing else.
+- "Branch protection will catch it": protection checks only `CI Pass`, freshness and resolved threads, admins bypass it, and three checks sit outside it. It catches a red `CI Pass` or an open thread, nothing else.
 - "The plan doc helps reviewers, commit it": working plans and specs never get committed.
 - "The commit went through, so the message passed commitlint": the commit-msg hook never blocks. Check the hook output for `✖` lines and amend if any appeared.
