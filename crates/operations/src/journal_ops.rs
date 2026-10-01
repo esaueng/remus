@@ -26,6 +26,7 @@ use remus_algo::bop::BooleanOp;
 use remus_algo::gfa::{self, EdgeEvent, EntityEvolution, VertexEvent};
 use remus_topology::Topology;
 use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+use remus_topology::face::FaceId;
 use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft, OpId, PendingOp};
 use remus_topology::solid::SolidId;
 
@@ -768,6 +769,96 @@ pub fn offset_journaled_with_entities(
         let pending = begin_scoped(topo, "offset", &[solid])?;
         let result =
             crate::offset_v2::offset_solid_v2_with_entity_evolution(topo, solid, distance)?;
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.faces,
+            &[result.solid],
+            &[],
+            &result.boundary.journal_events(),
+        )?;
+        Ok(JournaledEntityOp {
+            solid: result.solid,
+            op,
+            map: result.faces,
+            boundary: result.boundary,
+            completeness: result.completeness,
+        })
+    })
+}
+
+/// Every entity of a profile face as journal entity keys: the face itself,
+/// every edge of its outer and inner wires, and their endpoint vertices.
+///
+/// This is the pre-operation half of an extrusion entry's scope: the
+/// profile survives the operation, so its entities need lineage claims
+/// (the caps' `modified` split, the shared boundary's self claims) rather
+/// than the severing an unclaimed in-scope entity would get.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the face's topology tree contains an
+/// invalid handle.
+pub fn profile_entity_keys(
+    topo: &Topology,
+    face: FaceId,
+) -> Result<Vec<EntityKey>, OperationsError> {
+    let data = topo.face(face)?;
+    let mut keys = vec![EntityKey::face(face.index())];
+    let mut wires = vec![data.outer_wire()];
+    wires.extend(data.inner_wires().iter().copied());
+    for wire_id in wires {
+        for oriented in topo.wire(wire_id)?.edges() {
+            let edge_id = oriented.edge();
+            keys.push(EntityKey::edge(edge_id.index()));
+            let edge = topo.edge(edge_id)?;
+            keys.push(EntityKey::vertex(edge.start().index()));
+            keys.push(EntityKey::vertex(edge.end().index()));
+        }
+    }
+    // Corner vertices repeat around the wire; the journal refuses duplicate
+    // subjects, so the scope carries each entity once.
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+/// Runs an extrusion and journals its construction-derived face, edge and
+/// vertex evolution as one entry (kind `extrude`), scoped over the profile
+/// face and the result solid.
+///
+/// Faces keep the [`extrude_with_entity_evolution`](crate::extrude::extrude_with_entity_evolution)
+/// contract (both caps `modified` from the profile, every side wall
+/// `generated` from it). Edges and vertices ride the same construction
+/// record: shared boundary entities are `modified` into themselves, split
+/// pieces and translated copies name their exact source, and longitudinal
+/// edges name the profile face they were built from — by construction from
+/// the builder's source identities, never by coordinate or centroid
+/// matching. Nothing is deleted and nothing is left unresolved on the
+/// qualified profile classes.
+///
+/// The whole call is transactional: a failed extrusion, postcondition, or
+/// journal recording restores both topology and history, including
+/// unpublished mutation gaps.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the extrusion, its completeness check, or
+/// the recording fails.
+pub fn extrude_journaled(
+    topo: &mut Topology,
+    face: FaceId,
+    direction: remus_math::vec::Vec3,
+    distance: f64,
+) -> Result<JournaledEntityOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        // Validate the profile before opening the scope, so a retired face
+        // cannot publish a barrier or consume an operation ID.
+        let scope = profile_entity_keys(topo, face)?;
+        let mut pending = topo.journal_begin("extrude");
+        pending.add_scope(scope);
+        let result =
+            crate::extrude::extrude_with_entity_evolution(topo, face, direction, distance)?;
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
