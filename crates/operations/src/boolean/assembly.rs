@@ -83,6 +83,34 @@ pub(crate) fn ccw_arc_trim(
     Ok((t0, t1))
 }
 
+/// A torus patch is arc-minting only when every loop edge arrives as an
+/// analytic override. Torus seam arcs are small circles with independent
+/// centers (unlike sphere-cap great circles), so positional inference can
+/// never recover them; without full coverage the generic chord path would
+/// silently flatten the seams.
+fn torus_has_full_override_coverage(
+    verts: &[Point3],
+    boundary_curves: &[BoundaryCurveOverride],
+    tol: Tolerance,
+) -> bool {
+    let n = verts.len();
+    if n < 3 {
+        return false;
+    }
+    (0..n).all(|i| {
+        let j = (i + 1) % n;
+        if (verts[j] - verts[i]).length() <= tol.linear {
+            return true;
+        }
+        boundary_curves.iter().any(|candidate| {
+            ((candidate.start - verts[i]).length() <= tol.linear
+                && (candidate.end - verts[j]).length() <= tol.linear)
+                || ((candidate.start - verts[j]).length() <= tol.linear
+                    && (candidate.end - verts[i]).length() <= tol.linear)
+        })
+    })
+}
+
 fn cylindrical_boundary_spans(
     cylinder: &remus_math::surfaces::CylindricalSurface,
     verts: &[Point3],
@@ -602,6 +630,29 @@ fn assemble_solid_mixed_traced(
     let mut face_ids = Vec::with_capacity(face_specs.len());
     let mut face_spec_indices = Vec::with_capacity(face_specs.len());
 
+    // A torus patch (mixed-notch corner) carries exact seam circles that no
+    // positional inference can recover: its boundaries are small-circle arcs
+    // with independent centers, not great circles through one center. Every
+    // loop edge must arrive as an analytic override, or the generic path
+    // below would mint chords across the seams and open the shell. Fail
+    // closed before materialising anything.
+    for spec in face_specs {
+        let is_uncovered_torus =
+            matches!(
+                spec,
+                FaceSpec::Surface {
+                    surface: remus_topology::face::FaceSurface::Torus(_),
+                    ..
+                }
+            ) && !torus_has_full_override_coverage(spec.vertices(), boundary_curves, tol);
+        if is_uncovered_torus {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "assemble_solid_mixed",
+                reason: "torus face without full analytic boundary overrides".into(),
+            });
+        }
+    }
+
     // The order faces are materialised in is load-bearing: an edge is minted by
     // whichever face reaches it first, and every later face spanning the same
     // two vertices reuses it. The face that knows an edge's true curve must go
@@ -622,7 +673,13 @@ fn assemble_solid_mixed_traced(
         matches!(
             s,
             FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. }
-        )
+        ) || matches!(
+            s,
+            FaceSpec::Surface {
+                surface: remus_topology::face::FaceSurface::Torus(_),
+                ..
+            }
+        ) && torus_has_full_override_coverage(s.vertices(), boundary_curves, tol)
     };
     let rebuilt_outer = |s: &FaceSpec| matches!(s, FaceSpec::Existing { outer: Some(_), .. });
     let mut ordered_indices = Vec::with_capacity(face_specs.len());
@@ -894,6 +951,116 @@ fn assemble_solid_mixed_traced(
                 )?;
 
                 let surface = FaceSurface::Cylinder(cylinder.clone());
+                let face = if *reversed {
+                    topo.add_face(Face::new_reversed(wire_id, inner_wire_ids, surface))
+                } else {
+                    topo.add_face(Face::new(wire_id, inner_wire_ids, surface))
+                };
+                face_ids.push(face);
+                face_spec_indices.push(spec_index);
+            }
+            FaceSpec::Surface {
+                vertices,
+                surface: FaceSurface::Torus(torus),
+                reversed,
+                ..
+            } if torus_has_full_override_coverage(vertices, boundary_curves, tol) => {
+                // Mixed-notch torus corner patch. Every loop edge is an exact
+                // seam circle supplied by the fillet engine as an analytic
+                // override (station circles shared with the three stripes,
+                // cap-tangency circle shared with the trimmed cap). Mint each
+                // override curve verbatim so neighbours pick the true arcs up
+                // by vertex sharing; anything else is a caller bug.
+                let verts = vertices;
+                let n = verts.len();
+                if n < 3 {
+                    continue;
+                }
+                let vert_ids: Vec<VertexId> = verts
+                    .iter()
+                    .map(|p| {
+                        let key = quantize_point(*p, resolution);
+                        *vertex_map
+                            .entry(key)
+                            .or_insert_with(|| topo.add_vertex(Vertex::new(*p, tol.linear)))
+                    })
+                    .collect();
+
+                let mut oriented_edges = Vec::with_capacity(n);
+                for i in 0..n {
+                    let j = (i + 1) % n;
+                    if (verts[j] - verts[i]).length() <= tol.linear {
+                        continue;
+                    }
+                    let vi = vert_ids[i].index();
+                    let vj = vert_ids[j].index();
+                    if vi == vj {
+                        continue;
+                    }
+                    let (key_min, key_max) = if vi <= vj { (vi, vj) } else { (vj, vi) };
+
+                    let edge_id = if let Some(&existing) = edge_map.get(&(key_min, key_max)) {
+                        existing
+                    } else {
+                        let start = vert_ids[i];
+                        let end = vert_ids[j];
+                        let override_curve = boundary_curves.iter().find(|candidate| {
+                            ((candidate.start - verts[i]).length() <= tol.linear
+                                && (candidate.end - verts[j]).length() <= tol.linear)
+                                || ((candidate.start - verts[j]).length() <= tol.linear
+                                    && (candidate.end - verts[i]).length() <= tol.linear)
+                        });
+                        let Some(candidate) = override_curve else {
+                            return Err(crate::OperationsError::Unsupported {
+                                operation: "assemble_solid_mixed",
+                                reason: "torus face loop edge has no analytic override".into(),
+                            });
+                        };
+                        let remus_topology::edge::EdgeCurve::Circle(_) = candidate.curve else {
+                            return Err(crate::OperationsError::Unsupported {
+                                operation: "assemble_solid_mixed",
+                                reason: "torus face override is not a circle arc".into(),
+                            });
+                        };
+                        let forward = (candidate.start - verts[i]).length() <= tol.linear;
+                        let (curve_start, curve_end) =
+                            if forward { (start, end) } else { (end, start) };
+                        let mut edge = Edge::with_tolerance(
+                            curve_start,
+                            curve_end,
+                            candidate.curve.clone(),
+                            None,
+                        );
+                        edge.set_trim(Some(candidate.trim));
+                        let minted = topo.add_edge(edge);
+                        edge_map.insert((key_min, key_max), minted);
+                        minted
+                    };
+                    let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
+
+                    if oriented_edges
+                        .last()
+                        .is_some_and(|last: &OrientedEdge| last.edge() == edge_id)
+                    {
+                        continue;
+                    }
+                    oriented_edges.push(OrientedEdge::new(edge_id, is_forward));
+                }
+
+                let wire =
+                    Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
+                let wire_id = topo.add_wire(wire);
+
+                let inner_wire_ids = build_inner_wires(
+                    topo,
+                    spec.inner_wires(),
+                    &mut vertex_map,
+                    &mut edge_map,
+                    resolution,
+                    tol,
+                )?;
+
+                let surface = FaceSurface::Torus(torus.clone());
                 let face = if *reversed {
                     topo.add_face(Face::new_reversed(wire_id, inner_wire_ids, surface))
                 } else {

@@ -28,6 +28,7 @@
 
 mod geometry;
 mod helpers;
+pub(crate) mod notch_torus;
 mod rolling_ball;
 #[cfg(test)]
 mod tests;
