@@ -107,7 +107,10 @@ impl DoglegWorkspace {
 /// the solver would exit `converged: true` with `max_residual: 0.0` on input
 /// that never evaluated to a number. NaN short-circuits instead, so a
 /// poisoned residual can only ever fail the `< tol` convergence test.
-fn max_abs_residual(values: &[f64]) -> f64 {
+///
+/// Shared with the PERF-S04 sparse loop, which must use the identical
+/// convergence norm; any change here must be mirrored there.
+pub fn max_abs_residual(values: &[f64]) -> f64 {
     let mut max = 0.0_f64;
     for &v in values {
         let a = v.abs();
@@ -432,7 +435,16 @@ fn solve_gn_step(ws: &mut DoglegWorkspace, m: usize, n: usize) {
 /// `h_gn - h_sd` interpolation scratch. `out` and `diff_tmp` are fully
 /// overwritten on the paths that read them, so no stale step survives a
 /// resize.
-fn dogleg_step_into(h_gn: &[f64], h_sd: &[f64], delta: f64, out: &mut [f64], diff_tmp: &mut [f64]) {
+///
+/// Shared with the PERF-S04 sparse loop, which must use the identical
+/// trust-region interpolation; any change here must be mirrored there.
+pub fn dogleg_step_into(
+    h_gn: &[f64],
+    h_sd: &[f64],
+    delta: f64,
+    out: &mut [f64],
+    diff_tmp: &mut [f64],
+) {
     let gn_norm = h_gn.iter().map(|&v| v * v).sum::<f64>().sqrt();
 
     // If GN step is within trust region, use it
