@@ -572,6 +572,62 @@ fn batch_refuses_foreign_and_deleted_handles_naming_them() {
     assert!(results[0].get("error").is_some());
 }
 
+/// Two valid solids in one session: an existing edge or face of one is
+/// refused when queried against the other, on both the batch and the direct
+/// path, instead of reading as an `unknown` relation.
+#[test]
+fn batch_and_direct_refuse_an_entity_of_another_valid_solid() {
+    let mut k = BrepKernel::new();
+    let boxed = batch_solid(
+        &mut k,
+        "makeBox",
+        serde_json::json!({"width": 1.0, "height": 1.0, "depth": 1.0}),
+    );
+    let cylinder = batch_solid(
+        &mut k,
+        "makeCylinder",
+        serde_json::json!({"radius": 1.0, "height": 2.0}),
+    );
+    let box_edge = batch_edges(&mut k, boxed)[0];
+    let cylinder_edge = batch_edges(&mut k, cylinder)[0];
+    for (solid, edge) in [(cylinder, box_edge), (boxed, cylinder_edge)] {
+        let results = run(
+            &mut k,
+            &[op(
+                "edgeConvexity",
+                serde_json::json!({"solid": solid, "edge": edge}),
+            )],
+        );
+        let message = results[0]["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("not part of the solid"),
+            "batch edgeConvexity must refuse edge {edge} of another solid: {results:?}"
+        );
+        let direct = k.edge_convexity_impl(solid, edge, None);
+        assert!(
+            direct.is_err(),
+            "direct edgeConvexity must refuse edge {edge} of another solid: {direct:?}"
+        );
+    }
+    let wall = cylinder_walls(&k, cylinder)[0];
+    let results = run(
+        &mut k,
+        &[op(
+            "faceMaterialSense",
+            serde_json::json!({"solid": boxed, "face": wall}),
+        )],
+    );
+    let message = results[0]["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("not part of the solid"),
+        "batch faceMaterialSense must refuse a face of another solid: {results:?}"
+    );
+    assert!(k.face_material_sense_impl(boxed, wall).is_err());
+    // Each solid still answers for its own entities.
+    assert_eq!(batch_convexity(&mut k, boxed, box_edge).0, "convex");
+    assert_eq!(batch_sense(&mut k, cylinder, wall), "outward");
+}
+
 #[test]
 fn batch_refuses_bad_probes_and_plane_sense() {
     let mut k = BrepKernel::new();

@@ -754,8 +754,9 @@ fn edge_relation_with_faces_and_probe(
 ///
 /// # Errors
 ///
-/// Returns `InvalidInput` for a non-positive or non-finite caller probe, or
-/// propagates topology and classification errors.
+/// Returns `InvalidInput` for a non-positive or non-finite caller probe or
+/// for an edge that is not part of `solid`, or propagates topology and
+/// classification errors.
 pub fn edge_relation(
     topo: &Topology,
     solid: SolidId,
@@ -765,6 +766,14 @@ pub fn edge_relation(
     if probe.is_some_and(|p| !p.is_finite() || p <= 0.0) {
         return Err(OperationsError::InvalidInput {
             reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
+    // Ownership first: adjacency alone gives another solid's edge no faces,
+    // which would read as the conservative `Unknown` meant for this solid's
+    // own seams and non-manifold edges.
+    if !remus_topology::explorer::solid_edges(topo, solid)?.contains(&edge) {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("edge {} is not part of the solid", edge.index()),
         });
     }
     let adjacency = topo.build_adjacency(solid)?;
@@ -1637,14 +1646,38 @@ mod tests {
         let seam_bulk = bulk.iter().find(|r| r.edge == seam).expect("seam in bulk");
         assert_eq!(seam_bulk.concavity, EdgeConcavity::Unknown);
         assert_eq!(seam_bulk.dihedral_angle, None);
-        // An edge that does not belong to the solid has no incident faces
-        // here: also unknown, never a guess.
-        let mut other = Topology::new();
-        let other_box = make_box(&mut other, 1.0, 1.0, 1.0).unwrap();
-        let foreign = solid_edges(&other, other_box).unwrap()[0];
-        // `foreign` is not in `topo` at all; the adjacency lookup finds no
-        // faces, which the bulk path reports as unknown.
-        let _ = (foreign, cylinder);
+    }
+
+    /// An existing edge owned by another solid is a typed refusal, not the
+    /// conservative `Unknown` reserved for this solid's seams and
+    /// non-manifold edges: the adjacency lookup alone would find no faces
+    /// for it and report a successful `Unknown`.
+    #[test]
+    fn b16_edge_relation_refuses_an_edge_of_another_solid() {
+        let mut topo = Topology::new();
+        let boxed = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let cylinder = make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let box_edge = solid_edges(&topo, boxed).unwrap()[0];
+        let cylinder_edge = solid_edges(&topo, cylinder).unwrap()[0];
+        for (solid, edge) in [(cylinder, box_edge), (boxed, cylinder_edge)] {
+            for probe in [None, Some(0.01)] {
+                match edge_relation(&topo, solid, edge, probe) {
+                    Err(crate::OperationsError::InvalidInput { reason }) => assert!(
+                        reason.contains("not part of the solid"),
+                        "refusal must say why: {reason}"
+                    ),
+                    other => panic!("foreign edge {edge:?} probe {probe:?}: {other:?}"),
+                }
+            }
+        }
+        // The owners still classify their own edges.
+        assert_eq!(
+            edge_relation(&topo, boxed, box_edge, None)
+                .unwrap()
+                .concavity,
+            EdgeConcavity::Convex
+        );
+        assert!(edge_relation(&topo, cylinder, cylinder_edge, None).is_ok());
     }
 
     #[test]
@@ -1664,8 +1697,6 @@ mod tests {
             Err(crate::OperationsError::Unsupported { .. })
         ));
         // A face from another solid is not part of this solid.
-        let second = Topology::new();
-        let _ = (second, solid);
         let mut topo2 = Topology::new();
         let a = make_box(&mut topo2, 1.0, 1.0, 1.0).unwrap();
         let b = make_cylinder(&mut topo2, 1.0, 2.0).unwrap();

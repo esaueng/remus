@@ -1805,7 +1805,8 @@ impl BrepKernel {
     /// `max(min(face spans), edge span)`; the default keeps the probe local
     /// from 1e-3 through 1e3. A zero, negative, or non-finite probe is a
     /// typed `InvalidInput` refusal. A foreign or deleted solid or edge
-    /// handle is a typed refusal naming the handle.
+    /// handle, or a live edge that belongs to a different solid, is a typed
+    /// refusal naming the handle.
     ///
     /// For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
     /// a per-edge loop over this call rebuilds adjacency per edge (the
