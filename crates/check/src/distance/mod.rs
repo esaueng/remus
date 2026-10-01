@@ -314,7 +314,7 @@ fn point_to_face_validated(
         }
         FaceSurface::Cylinder(cyl) => {
             let (dist, closest) = analytic::point_to_cylinder(point, cyl);
-            if is_point_in_face_boundary(topo, face_id, closest)? {
+            if crate::classify::surface_point_in_face(topo, face_id, closest)? {
                 Ok(Some((dist, closest)))
             } else {
                 Ok(closest_point_on_wire_edges(topo, face_id, point)?)
@@ -322,7 +322,7 @@ fn point_to_face_validated(
         }
         FaceSurface::Cone(cone) => {
             let (dist, closest) = analytic::point_to_cone(point, cone);
-            if is_point_in_face_boundary(topo, face_id, closest)? {
+            if crate::classify::surface_point_in_face(topo, face_id, closest)? {
                 Ok(Some((dist, closest)))
             } else {
                 Ok(closest_point_on_wire_edges(topo, face_id, point)?)
@@ -330,7 +330,7 @@ fn point_to_face_validated(
         }
         FaceSurface::Sphere(sph) => {
             let (dist, closest) = analytic::point_to_sphere(point, sph);
-            if is_point_in_face_boundary(topo, face_id, closest)? {
+            if crate::classify::surface_point_in_face(topo, face_id, closest)? {
                 Ok(Some((dist, closest)))
             } else {
                 Ok(closest_point_on_wire_edges(topo, face_id, point)?)
@@ -338,7 +338,7 @@ fn point_to_face_validated(
         }
         FaceSurface::Torus(tor) => {
             let (dist, closest) = analytic::point_to_torus(point, tor);
-            if is_point_in_face_boundary(topo, face_id, closest)? {
+            if crate::classify::surface_point_in_face(topo, face_id, closest)? {
                 Ok(Some((dist, closest)))
             } else {
                 Ok(closest_point_on_wire_edges(topo, face_id, point)?)
@@ -640,7 +640,13 @@ fn collect_solid_edge_segments(
     Ok(segments)
 }
 
-/// Check if a point lies within the face's boundary polygon.
+/// Check if a point lies within the face's boundary polygon, projected onto
+/// the polygon's best-fit plane.
+///
+/// Only sound where that projection is injective. A full-turn curved face is
+/// not: a cylinder wall's boundary flattens to a sliver, so most of the wall
+/// read as off-face. The analytic arms use the UV trim test instead; the NURBS
+/// arm still relies on this.
 fn is_point_in_face_boundary(
     topo: &Topology,
     face_id: FaceId,
