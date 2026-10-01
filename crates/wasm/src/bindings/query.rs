@@ -12,7 +12,9 @@ use remus_operations::query::opposing_planar_face_pairs;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 
-use crate::error::{WasmError, validate_face_pair_count, validate_finite, validate_work_count};
+use crate::error::{
+    WasmError, validate_face_pair_count, validate_finite, validate_positive, validate_work_count,
+};
 use crate::handles::{
     edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, vertex_id_to_u32,
     wire_id_to_u32,
@@ -21,6 +23,9 @@ use remus_geometry::convert::{DetectedCurveKind, detect_curve_kind, detect_surfa
 
 use crate::helpers::{frenet_from_derivatives, sample_full_period_curve, sample_open_span};
 use crate::kernel::BrepKernel;
+use crate::types::{
+    EdgeConvexityRelation, EdgeConvexityResult, EdgeRelationRow, FaceMaterialSense,
+};
 
 #[wasm_bindgen]
 impl BrepKernel {
@@ -1768,6 +1773,118 @@ impl BrepKernel {
     }
 }
 
+// ── Per-edge convexity + face material sense (B16) ────────────────
+
+fn map_edge_concavity(concavity: remus_operations::query::EdgeConcavity) -> EdgeConvexityRelation {
+    match concavity {
+        remus_operations::query::EdgeConcavity::Convex => EdgeConvexityRelation::Convex,
+        remus_operations::query::EdgeConcavity::Concave => EdgeConvexityRelation::Concave,
+        remus_operations::query::EdgeConcavity::Tangent => EdgeConvexityRelation::Tangent,
+        remus_operations::query::EdgeConcavity::Unknown => EdgeConvexityRelation::Unknown,
+    }
+}
+
+#[wasm_bindgen]
+impl BrepKernel {
+    /// Classify one manifold edge of a solid as convex, concave, tangent,
+    /// or unknown.
+    ///
+    /// Returns a JSON string `{ relation, dihedralAngle }` (see the
+    /// `EdgeConvexityResult` TypeScript type). `relation` is the kernel's
+    /// own quadrant-probe verdict and retires the consumer adapter's
+    /// `radialSense` inference with its `'convex'` fallback. `dihedralAngle`
+    /// is the signed angle between the two effective outward normals in
+    /// radians — positive for convex, negative for concave, near zero for
+    /// tangent — and `null` when the relation is `unknown` or the angle is
+    /// unavailable. Unknown never guesses: self-seams, non-manifold edges,
+    /// degenerate normals, and probes above 25 % of the local edge/face
+    /// scale report `unknown` with a `null` angle.
+    ///
+    /// `probe` is an optional override in model units. Omit it to use the
+    /// per-edge default `0.05 * local_scale`, where `local_scale` is
+    /// `max(min(face spans), edge span)`; the default keeps the probe local
+    /// from 1e-3 through 1e3. A zero, negative, or non-finite probe is a
+    /// typed `InvalidInput` refusal. A foreign or deleted solid or edge
+    /// handle, or a live edge that belongs to a different solid, is a typed
+    /// refusal naming the handle.
+    ///
+    /// For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
+    /// a per-edge loop over this call rebuilds adjacency per edge (the
+    /// quadratic trap on a 2 000-edge import), while the bulk call builds it
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign or deleted handle, an invalid probe,
+    /// or a topology or classification failure.
+    #[wasm_bindgen(js_name = "edgeConvexity")]
+    pub fn edge_convexity(
+        &self,
+        solid: u32,
+        edge: u32,
+        probe: Option<f64>,
+    ) -> Result<JsValue, JsError> {
+        let result = self.edge_convexity_impl(solid, edge, probe)?;
+        serde_json::to_string(&result)
+            .map(JsValue::from)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Classify every edge of a solid in one pass.
+    ///
+    /// Returns a JSON string array of `{ edge, relation, dihedralAngle }`
+    /// rows (see `EdgeRelationRow`). Same verdicts and angles as
+    /// [`edgeConvexity`](Self::edge_convexity), but adjacency is built once
+    /// — this is the call the consumer must use for whole-solid scans. The
+    /// optional `probe` override applies to every edge; omit it for the
+    /// per-edge `0.05 * local_scale` default. Unknown edges report
+    /// `relation: "unknown"` with a `null` angle, never a guess.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign or deleted solid handle, an invalid
+    /// probe, or a topology or classification failure.
+    #[wasm_bindgen(js_name = "solidEdgeRelations")]
+    pub fn solid_edge_relations_binding(
+        &self,
+        solid: u32,
+        probe: Option<f64>,
+    ) -> Result<JsValue, JsError> {
+        let rows = self.solid_edge_relations_impl(solid, probe)?;
+        serde_json::to_string(&rows)
+            .map(JsValue::from)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Material side of one analytic face: `"outward"` (boss-like) or
+    /// `"inward"` (bore- or pocket-like).
+    ///
+    /// The verdict compares the face's effective outward normal against its
+    /// radial direction at a boundary sample — no probe, no classification
+    /// call. Cylinder and cone walls read against their axis-perpendicular
+    /// radial, spheres against the centre radial, tori against the
+    /// tube-centre radial. Planes and NURBS have no axis or centre and are a
+    /// typed unsupported refusal.
+    ///
+    /// Edge convexity and face material sense are different questions: a
+    /// bore's top rim is convex while its wall is inward. Report both;
+    /// never collapse them into one value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign or deleted handle, for a face that is
+    /// not part of the solid, or a typed unsupported refusal for plane and
+    /// NURBS faces.
+    #[wasm_bindgen(js_name = "faceMaterialSense")]
+    pub fn face_material_sense_binding(&self, solid: u32, face: u32) -> Result<String, JsError> {
+        let sense = self.face_material_sense_impl(solid, face)?;
+        Ok(match sense {
+            FaceMaterialSense::Outward => "outward".to_string(),
+            FaceMaterialSense::Inward => "inward".to_string(),
+        })
+    }
+}
+
 // Non-exported helpers. `JsError` cannot be constructed on non-wasm targets,
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
@@ -1801,6 +1918,75 @@ impl BrepKernel {
             &new_holes,
         )?;
         Ok(face_id_to_u32(fid))
+    }
+
+    /// Implementation behind `edgeConvexity`.
+    ///
+    /// # Errors
+    ///
+    /// See [`edge_convexity`](Self::edge_convexity).
+    pub(crate) fn edge_convexity_impl(
+        &self,
+        solid: u32,
+        edge: u32,
+        probe: Option<f64>,
+    ) -> Result<EdgeConvexityResult, WasmError> {
+        if let Some(p) = probe {
+            validate_positive(p, "probe")?;
+        }
+        let solid_id = self.resolve_solid(solid)?;
+        let edge_id = self.resolve_edge(edge)?;
+        let relation =
+            remus_operations::query::edge_relation(self.topo(), solid_id, edge_id, probe)?;
+        Ok(EdgeConvexityResult {
+            relation: map_edge_concavity(relation.concavity),
+            dihedral_angle: relation.dihedral_angle,
+        })
+    }
+
+    /// Implementation behind `solidEdgeRelations`.
+    ///
+    /// # Errors
+    ///
+    /// See [`solid_edge_relations_binding`](Self::solid_edge_relations_binding).
+    pub(crate) fn solid_edge_relations_impl(
+        &self,
+        solid: u32,
+        probe: Option<f64>,
+    ) -> Result<Vec<EdgeRelationRow>, WasmError> {
+        if let Some(p) = probe {
+            validate_positive(p, "probe")?;
+        }
+        let solid_id = self.resolve_solid(solid)?;
+        let relations =
+            remus_operations::query::solid_edge_relations(self.topo(), solid_id, probe)?;
+        Ok(relations
+            .into_iter()
+            .map(|rel| EdgeRelationRow {
+                edge: edge_id_to_u32(rel.edge),
+                relation: map_edge_concavity(rel.concavity),
+                dihedral_angle: rel.dihedral_angle,
+            })
+            .collect())
+    }
+
+    /// Implementation behind `faceMaterialSense`.
+    ///
+    /// # Errors
+    ///
+    /// See [`face_material_sense_binding`](Self::face_material_sense_binding).
+    pub(crate) fn face_material_sense_impl(
+        &self,
+        solid: u32,
+        face: u32,
+    ) -> Result<FaceMaterialSense, WasmError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let face_id = self.resolve_face(face)?;
+        let sense = remus_operations::query::face_material_sense(self.topo(), solid_id, face_id)?;
+        Ok(match sense {
+            remus_operations::query::MaterialSense::Outward => FaceMaterialSense::Outward,
+            remus_operations::query::MaterialSense::Inward => FaceMaterialSense::Inward,
+        })
     }
 }
 
