@@ -7,7 +7,7 @@ description: Use when committing, pushing, opening, reviewing, or merging a pull
 
 End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squash-merge, release. Every change lands as a squash-merged PR.
 
-**Only CI blocks a merge here, never a reviewer.** `main` requires the `checks / CI Pass` status and an up-to-date branch, and nothing else: zero required approvals, admins not enforced, force pushes allowed. The Codex connector app posts on every PR but has produced no review (every recent PR carries only its usage-limit notice), and no PR in this repo's history has received a review from any account. Everything in the gate below beyond a green `CI Pass` is self-imposed.
+**CI and open threads block a merge here, never a reviewer's approval.** `main` requires the `checks / CI Pass` status, an up-to-date branch, and every review conversation resolved, and nothing else: zero required approvals, admins not enforced, force pushes allowed. The Codex connector app posts on every PR but has produced no review (every recent PR carries only its usage-limit notice), and no PR in this repo's history has received a review from any account. Everything in the gate below beyond a green `CI Pass` and resolved threads is self-imposed.
 
 ## Quick reference
 
@@ -57,13 +57,13 @@ Hard rules:
 
 ## The merge gate
 
-There is no working automated reviewer on this repo, and branch protection enforces CI only. Verified state (2026-10-01), not assumption:
+There is no working automated reviewer on this repo, and branch protection enforces CI, freshness and conversation resolution only. Verified state (2026-10-01), not assumption:
 
-- `gh api repos/esaueng/remus/branches/main/protection`: required status check `checks / CI Pass`, `strict: true` (the branch must be up to date with `main`), required approvals none, `enforce_admins` false, force pushes allowed. A ruleset named "Bounded merge queue" exists but is disabled.
+- `gh api repos/esaueng/remus/branches/main/protection`: required status check `checks / CI Pass`, `strict: true` (the branch must be up to date with `main`), `required_conversation_resolution: true` (every review thread resolved), required approvals none, `enforce_admins` false, force pushes allowed. A ruleset named "Bounded merge queue" exists but is disabled.
 - The only check-run apps that post here are `github-actions` and `blacksmith-sh` (the CI runner provider — its `[code]smith` entry reports SKIPPED and is not a reviewer). The `chatgpt-codex-connector` app posts an issue comment on each PR; on every recent PR it is a usage-limit notice, not a review.
 - Recent PRs have zero reviews and zero inline comments.
 
-So a red `CI Pass` blocks the merge, but an unread diff, a red check outside its fan-in, or a stale head does not. Admins can bypass even the CI requirement. The gate is what you do, in this order:
+So a red `CI Pass` or an unresolved review thread blocks the merge, but an unread diff, a red check outside its fan-in, or a stale head does not. Admins can bypass even the CI requirement. The gate is what you do, in this order:
 
 1. **Wait for every check to complete.** List the rollup unfiltered; do not filter by a name you have not confirmed exists:
    ```bash
@@ -74,7 +74,7 @@ So a red `CI Pass` blocks the merge, but an unread diff, a red check outside its
 2. **Confirm `CI Pass` is SUCCESS**, and separately read the three checks outside its fan-in: `Apache Lineage`, `Doc Paths`, `WASM Size Report`.
 3. **Check both comment surfaces anyway** — `gh api repos/esaueng/remus/pulls/<N>/comments` (inline) and `gh pr view <N> --comments` (issue-level). Expect zero from reviewers; the WASM size bot posts here. Cheap insurance in case an app is installed later.
 4. **Confirm the head you tested is the head being merged**: `gh pr view <N> --json headRefOid` vs `git rev-parse HEAD`.
-5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly: it keeps `main` at one conventional-titled commit per PR, which the history conventions assume. When asked to merge "once green", `--squash --auto` hands the wait to GitHub; steps 2–4 still apply to the three checks outside the fan-in, which auto-merge does not wait for. If `mergeStateStatus` is `BEHIND`, update the branch first (quick reference) or auto-merge will wait forever.
+5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly: it keeps `main` at one conventional-titled commit per PR, which the history conventions assume. When asked to merge "once green", `--squash --auto` hands the wait to GitHub; steps 2–4 still apply to the three checks outside the fan-in, which auto-merge does not wait for. If `mergeStateStatus` is `BEHIND`, update the branch first (quick reference) or auto-merge will wait forever. If it is `BLOCKED` with every check green, look for an unresolved review thread (`gh api graphql` on `pullRequest.reviewThreads { isResolved }`); resolving it is the reviewer's sign-off, so ask before resolving someone else's thread.
 
 Because no second pair of eyes exists, the diff you push is the diff that lands. On high-risk changes (GFA boolean engine, public WASM API), self-review the full diff before merging and say plainly in the PR body what you verified and what you did not.
 
