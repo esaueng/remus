@@ -617,13 +617,17 @@ mod tests {
         ));
         let opposite_x = -(1.0 - center.y().powi(2) - center.z().powi(2)).sqrt();
         let opposite = Point3::new(opposite_x, center.y(), center.z());
-        let (_, accepted) = super::super::point_to_face(&topo, opposite, face)
+        // The rim runs counter-clockwise about the outward normal, so the face
+        // is the small cap and the opposite point is off it: the nearest face
+        // point lies on the rim, not at the witness itself.
+        let (dist, accepted) = super::super::point_to_face(&topo, opposite, face)
             .unwrap()
             .unwrap();
-        assert!((accepted - opposite).length() < 1e-7);
+        assert!(dist > 0.5, "opposite witness accepted on the cap: {dist}");
         let bound = face_bound(&topo, face).unwrap();
         assert!(bound.prunable);
         assert!(bound.aabb.contains_point(accepted));
+        assert!(bound.aabb.contains_point(opposite));
     }
 
     #[test]
