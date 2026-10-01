@@ -139,6 +139,16 @@ fn torus_face_is_notch_patch(topo: &Topology, fid: FaceId) -> bool {
         let EdgeCurve::Circle(circle) = edge.curve() else {
             return false;
         };
+        let Ok((t0, t1)) = edge.strict_domain() else {
+            return false;
+        };
+        // Endpoint projection folds full turns; the stored span is authoritative.
+        if !t0.is_finite()
+            || !t1.is_finite()
+            || ((t1 - t0).abs() - std::f64::consts::FRAC_PI_2).abs() > NOTCH_ARC_TOL
+        {
+            return false;
+        }
         let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
             return false;
         };
@@ -5347,5 +5357,69 @@ mod regression_tests {
                 "at {deflection:e}: an open clamp mesh must refuse, got {refusal:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod notch_patch_qualification_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::ToroidalSurface;
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    #[test]
+    fn notch_patch_rejects_a_full_turn_hidden_in_a_quarter_seam_trim() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let circle = Circle3D::new(center, axis, 3.0).unwrap();
+        let vertices: Vec<_> = (0..4)
+            .map(|i| {
+                topo.add_vertex(Vertex::new(
+                    circle.evaluate(f64::from(i) * std::f64::consts::FRAC_PI_2),
+                    1e-7,
+                ))
+            })
+            .collect();
+        let edges: Vec<_> = (0..4)
+            .map(|i| {
+                let mut edge = Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % 4],
+                    EdgeCurve::Circle(circle.clone()),
+                );
+                edge.set_trim(Some((
+                    i as f64 * std::f64::consts::FRAC_PI_2,
+                    (i + 1) as f64 * std::f64::consts::FRAC_PI_2,
+                )));
+                topo.add_edge(edge)
+            })
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .iter()
+                    .map(|&edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let torus = ToroidalSurface::with_axis(center, 2.0, 1.0, axis).unwrap();
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(torus)));
+        assert!(torus_face_is_notch_patch(&topo, face));
+        topo.edge_mut(edges[0]).unwrap().set_trim(Some((
+            0.0,
+            std::f64::consts::TAU + std::f64::consts::FRAC_PI_2,
+        )));
+        assert!(
+            !torus_face_is_notch_patch(&topo, face),
+            "a stored full turn must not qualify as a quarter seam"
+        );
     }
 }
