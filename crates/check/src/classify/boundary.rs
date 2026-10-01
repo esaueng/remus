@@ -49,16 +49,26 @@ pub fn unwrap_periodic(prev: f64, next: f64, period: f64) -> f64 {
 /// and, for the torus alone, in v. A NURBS parameter is a knot value with no
 /// inherent period: it gets `Some(knot span)` only when the control grid
 /// actually closes in that direction, and `None` otherwise.
+///
+/// `u_pole`: the `v` at which the surface collapses to a point and `u` is
+/// undefined (a cone's apex, `v = 0`), or `None`. See [`insert_pole_segments`].
 fn build_uv_boundary<F>(
     verts: &[Point3],
     project: &F,
     u_period: Option<f64>,
     v_period: Option<f64>,
+    u_pole: Option<f64>,
 ) -> Vec<(f64, f64)>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     let mut uv: Vec<(f64, f64)> = verts.iter().map(|&p| project(p)).collect();
+
+    if let Some(pole_v) = u_pole
+        && let Some(with_poles) = insert_pole_segments(&uv, pole_v, u_period)
+    {
+        return with_poles;
+    }
 
     for i in 1..uv.len() {
         if let Some(period) = u_period {
@@ -70,6 +80,86 @@ where
     }
 
     uv
+}
+
+/// `ConicalSurface::project_point` measures `v` along the generator from the
+/// apex, so the apex — where `u` is undefined — sits at `v = 0`.
+const CONE_APEX_V: f64 = 0.0;
+
+/// Samples within this fraction of the loop's `v` extent of the pole are the
+/// pole itself; relative so it holds at any model scale.
+const POLE_REL_EPS: f64 = 1e-9;
+
+/// Unwrap a loop that visits a surface pole, where `u` collapses.
+///
+/// A sample at the pole projects to an arbitrary `u` (`atan2(0, 0)`), so
+/// unwrapping straight through it bends the loop toward that meaningless
+/// angle. On `make_cone(3, 0, 3)`'s lateral face, whose wire is base circle,
+/// seam up to the apex and seam back, the apex projected to `u = 0` while the
+/// seam sits at `u = 3pi/2`: the "rectangle" became a triangle, and half the
+/// wall at mid-height, `(0, 1.5, 1.5)` included, tested outside its own trim.
+///
+/// In `(u, v)` the pole is a segment along `v = pole_v`, not a point. Each pole
+/// visit becomes two samples, one at the arriving neighbour's `u` and one at
+/// the departing neighbour's. A loop that winds once around the axis (the full
+/// cone) unwraps with a net period shift; the first pole segment absorbs it,
+/// spanning the whole turn so the polygon closes on itself.
+///
+/// Returns `None` when no sample is at the pole (or every sample is), leaving
+/// the caller's ordinary unwrapping in charge.
+fn insert_pole_segments(
+    uv: &[(f64, f64)],
+    pole_v: f64,
+    u_period: Option<f64>,
+) -> Option<Vec<(f64, f64)>> {
+    let extent = uv
+        .iter()
+        .map(|(_, v)| (v - pole_v).abs())
+        .fold(0.0_f64, f64::max);
+    let at_pole = |v: f64| (v - pole_v).abs() <= POLE_REL_EPS * extent;
+    let start = uv.iter().position(|&(_, v)| !at_pole(v))?;
+    if !uv.iter().any(|&(_, v)| at_pole(v)) {
+        return None;
+    }
+    let unwrap = |prev: f64, next: f64| u_period.map_or(next, |p| unwrap_periodic(prev, next, p));
+
+    // Start at a regular sample so every pole visit has an arriving `u`.
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(uv.len() + 2);
+    let mut first_departure: Option<usize> = None;
+    let mut pending_departure = false;
+    for k in 0..uv.len() {
+        let (u, v) = uv[(start + k) % uv.len()];
+        let prev_u = out.last().map_or(u, |&(pu, _)| pu);
+        if at_pole(v) {
+            if !pending_departure {
+                out.push((prev_u, pole_v));
+                pending_departure = true;
+            }
+            continue;
+        }
+        let u = unwrap(prev_u, u);
+        if pending_departure {
+            first_departure.get_or_insert(out.len());
+            out.push((u, pole_v));
+            pending_departure = false;
+        }
+        out.push((u, v));
+    }
+    if pending_departure {
+        // The loop ends at the pole and departs toward its first sample.
+        let prev_u = out.last().map_or(0.0, |&(pu, _)| pu);
+        first_departure.get_or_insert(out.len());
+        out.push((unwrap(prev_u, out[0].0), pole_v));
+    }
+
+    if let (Some(period), Some(from)) = (u_period, first_departure) {
+        let closing = unwrap(out[out.len() - 1].0, out[0].0);
+        let drift = ((closing - out[0].0) / period).round() * period;
+        for sample in &mut out[from..] {
+            sample.0 -= drift;
+        }
+    }
+    Some(out)
 }
 
 /// Twice the signed area of a UV polygon (the shoelace sum).
@@ -344,13 +434,14 @@ fn hole_uv_boundaries_from_cached<F>(
     project: &F,
     u_period: Option<f64>,
     v_period: Option<f64>,
+    u_pole: Option<f64>,
 ) -> Vec<Vec<(f64, f64)>>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     holes_3d
         .iter()
-        .map(|poly| build_uv_boundary(poly, project, u_period, v_period))
+        .map(|poly| build_uv_boundary(poly, project, u_period, v_period, u_pole))
         .collect()
 }
 
@@ -473,11 +564,12 @@ fn count_analytic_crossings<F>(
     hits: &[Point3],
     project: F,
     v_periodic: bool,
+    u_pole: Option<f64>,
 ) -> Result<u32, CheckError>
 where
     F: Fn(Point3) -> (f64, f64),
 {
-    count_analytic_crossings_with_trim(topo, face_id, None, hits, project, v_periodic)
+    count_analytic_crossings_with_trim(topo, face_id, None, hits, project, v_periodic, u_pole)
 }
 
 /// [`count_analytic_crossings`] with caller-supplied trim data.
@@ -491,6 +583,7 @@ fn count_analytic_crossings_with_trim<F>(
     hits: &[Point3],
     project: F,
     v_periodic: bool,
+    u_pole: Option<f64>,
 ) -> Result<u32, CheckError>
 where
     F: Fn(Point3) -> (f64, f64),
@@ -521,8 +614,9 @@ where
     let u_period = Some(std::f64::consts::TAU);
     let v_period = v_periodic.then_some(std::f64::consts::TAU);
     let uv_boundary =
-        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period));
-    let holes = hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period);
+        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period, u_pole));
+    let holes =
+        hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period, u_pole);
 
     // A loop that wraps a period bounds no polygon: decide by orientation.
     // Only on the torus. Booleans bound cylinder and cone walls with doubled
@@ -926,6 +1020,7 @@ pub fn count_face_ray_crossings_with_trim(
                 &ray_hit_points(origin, direction, &roots),
                 |p| cyl.project_point(p),
                 false,
+                None,
             )
         }
         FaceSurface::Cone(cone) => {
@@ -938,6 +1033,7 @@ pub fn count_face_ray_crossings_with_trim(
                 &ray_hit_points(origin, direction, &roots),
                 |p| cone.project_point(p),
                 false,
+                Some(CONE_APEX_V),
             )
         }
         FaceSurface::Sphere(sph) => {
@@ -982,6 +1078,7 @@ pub fn count_face_ray_crossings_with_trim(
                 &ray_hit_points(origin, direction, &roots),
                 |p| tor.project_point(p),
                 true,
+                None,
             )
         }
         FaceSurface::Nurbs(surface) => {
@@ -1198,7 +1295,7 @@ fn count_nurbs_hits_with_trim(
         .is_periodic_v()
         .then(|| surface.domain_v().1 - surface.domain_v().0);
     let uv_boundary =
-        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period));
+        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period, None));
 
     // A boundary that encloses no UV area does not bound a patch -- it splits
     // the surface, and which half this face takes is carried by the WINDING of
@@ -1230,7 +1327,8 @@ fn count_nurbs_hits_with_trim(
         return count_3d_polygon_crossings_with_trim(topo, face_id, Some(trim_data), &points);
     }
 
-    let holes = hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period);
+    let holes =
+        hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period, None);
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in hits {
@@ -1276,15 +1374,30 @@ pub fn surface_point_in_face(
             return Ok(point_in_polygon_3d(&point, &trim.outer, normal)
                 && !hit_in_hole_3d(&trim.holes, point, *normal));
         }
-        FaceSurface::Cylinder(surface) => {
-            count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), false)?
-        }
-        FaceSurface::Cone(surface) => {
-            count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), false)?
-        }
-        FaceSurface::Torus(surface) => {
-            count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), true)?
-        }
+        FaceSurface::Cylinder(surface) => count_analytic_crossings(
+            topo,
+            face_id,
+            &hits,
+            |p| surface.project_point(p),
+            false,
+            None,
+        )?,
+        FaceSurface::Cone(surface) => count_analytic_crossings(
+            topo,
+            face_id,
+            &hits,
+            |p| surface.project_point(p),
+            false,
+            Some(CONE_APEX_V),
+        )?,
+        FaceSurface::Torus(surface) => count_analytic_crossings(
+            topo,
+            face_id,
+            &hits,
+            |p| surface.project_point(p),
+            true,
+            None,
+        )?,
         FaceSurface::Sphere(surface) => {
             if let Some(count) = count_sphere_cap_crossings(topo, face_id, &hits, surface)? {
                 count
