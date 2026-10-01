@@ -14,7 +14,7 @@
 //! | **Blend** | [`fillet`], [`chamfer`], [`blend_ops`], [`resize_blend`] | Edge smoothing and exact band editing |
 //! | **Offset** | [`offset_face`], [`offset_trim`], [`offset_v2`], [`offset_wire`] | Wall thickness |
 //! | **Direct edit** | [`push_pull`] | Move a face of an existing solid |
-//! | **Surface** | [`fill_face`], [`thicken`], [`shell_op`], [`draft`], [`section`], [`split`] | Surface/solid modification |
+//! | **Surface** | [`fill_face`], [`thicken`], [`shell_op`], [`draft`], [`section`], [`split`], [`project_curve`] | Surface/solid modification |
 //! | **Repair** | [`heal`], [`defeature`], [`sew`], [`untrim`] | Shape fixing |
 //! | **Analysis** | [`measure`], [`distance`], [`classify`], [`validate`], [`query`], [`feature_recognition`] | Interrogation |
 //! | **Tessellation** | [`tessellate`] | Mesh generation |
@@ -59,6 +59,7 @@ pub mod replace_surface;
 pub mod draft;
 pub mod fill_face;
 pub mod imprint;
+pub mod project_curve;
 pub mod section;
 pub mod shell_op;
 pub mod split;

@@ -224,6 +224,8 @@ Quick reference — find the right file for any task:
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | Bounded cylinder arrangement adapter | `builder/face_splitter/arrangement_cyl.rs` |
+| Closed-form oracles for the rim-chain splitter, the orphaned-rim detector and the cone-lateral dispatch (tests) | `builder/face_splitter/rim_chain_oracle_tests.rs` |
+| Closed-form oracles for the O2.3b arrangement engine: intersections, tangent order, ray crossing, distance, work budgets, periodic quotient (tests) | `builder/face_splitter/arrangement/oracle_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
@@ -410,6 +412,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Draft (taper faces) | `draft.rs` |
 | Section / Split | `section.rs`, `split.rs` |
 | Exact solid-face imprint with journal history | `imprint.rs` |
+| Directional curve projection onto faces, solids, sketch planes (P-Class 7.4 contract stub) | `project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Distance queries | `distance.rs` |
@@ -526,6 +529,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
 | Direct/batch B6 convex-hull/Minkowski qualification | `bindings/qualify_convex_hull_tests.rs` |
 | Direct/batch B6 plane-section/split qualification | `bindings/qualify_section_split_tests.rs` |
+| Per-edge convexity + face material-sense qualification (B16) | `bindings/qualify_edge_relations_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |
 

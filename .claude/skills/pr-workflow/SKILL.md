@@ -7,7 +7,7 @@ description: Use when committing, pushing, opening, reviewing, or merging a pull
 
 End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squash-merge, release. Every change lands as a squash-merged PR.
 
-**Nothing mechanically blocks a merge here.** `main` has no branch protection at all: no required checks, no required approvals. No code-review app is installed, and no PR in this repo's history has ever received a review from any account. The gate described below is entirely self-imposed — if you skip it, GitHub will happily merge a red PR straight into `main`.
+**CI and open threads block a merge here, never a reviewer's approval.** `main` requires the `checks / CI Pass` status, an up-to-date branch, and every review conversation resolved, and nothing else: zero required approvals, admins not enforced, force pushes allowed. The Codex connector app posts on every PR but has produced no review (every recent PR carries only its usage-limit notice), and no PR in this repo's history has received a review from any account. Everything in the gate below beyond a green `CI Pass` and resolved threads is self-imposed.
 
 ## Quick reference
 
@@ -20,8 +20,9 @@ End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squa
 | Verify remote head | `gh pr view <N> --json headRefOid --jq .headRefOid` vs `git rev-parse HEAD` |
 | Gate poll | `gh pr view <N> --json statusCheckRollup` until every check completes and `CI Pass` is SUCCESS |
 | Check for findings | `gh api repos/esaueng/remus/pulls/<N>/comments` and `gh pr view <N> --comments` (expect none; see gate section) |
-| Merge | `gh pr merge <N> --squash` (auto-merge is disabled repo-wide; `--auto` is unavailable) |
-| Post-merge | `git fetch origin main` and delete the branch yourself (`delete_branch_on_merge` is off) |
+| Merge | `gh pr merge <N> --squash` once green, or `gh pr merge <N> --squash --auto` to let GitHub merge when `checks / CI Pass` passes (only when the merge itself is authorized) |
+| Behind `main` | `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` (older `gh` lacks `pr update-branch`); restarts CI |
+| Post-merge | `git fetch origin main`; GitHub deletes the head branch (`delete_branch_on_merge` is on), so retarget stacked PRs first |
 | Worktree | `git worktree add .worktrees/<branch-name> <branch>` |
 
 ## Hooks: what actually runs
@@ -45,24 +46,24 @@ Hard rules:
 5. **Push.** `git push -u origin <branch>` works normally: `origin` is `https://github.com/esaueng/remus.git`, credentials come from the osxkeychain helper, and there is no `insteadOf` rewrite in this checkout. Checkpoint: `gh pr view <N> --json headRefOid --jq .headRefOid` matches `git rev-parse HEAD`. (If you ever push via an explicit token URL instead, local `origin/<branch>` refs do not update — verify against the remote, not the tracking ref.)
 6. **Create the PR** with `gh pr create`. Never `--draft`; if one slips through, `gh pr ready <N>`.
 7. **Merge gate** (next section).
-8. **After merge:** `git fetch origin main`. The remote branch is NOT deleted automatically (`delete_branch_on_merge` is false) — delete it yourself with `git push origin --delete <branch>`. **Before deleting, check whether another PR is based on it:**
+8. **After merge:** `git fetch origin main`. GitHub deletes the remote head branch automatically (`delete_branch_on_merge` is on), so the stacked-PR check below must run BEFORE you merge, not after. **Before merging, check whether another PR is based on this branch:**
 
    ```bash
    gh pr list --repo esaueng/remus --state open --json number,baseRefName \
      --jq '.[] | select(.baseRefName == "<branch>") | .number'
    ```
 
-   Deleting the base of an open PR makes GitHub auto-close it, and that is not reversible: a closed PR's base cannot be retargeted and it cannot be reopened while its base is missing (`Cannot change the base branch of a closed pull request`). Recovery means rebasing onto `main` and opening a NEW PR, losing the old thread. Retarget the stacked PR to `main` first, then delete. If `main` is checked out in another worktree, fetch rather than trying to switch this one.
+   Deleting the base of an open PR makes GitHub auto-close it, and that is not reversible: a closed PR's base cannot be retargeted and it cannot be reopened while its base is missing (`Cannot change the base branch of a closed pull request`). Recovery means rebasing onto `main` and opening a NEW PR, losing the old thread. Retarget the stacked PR to `main` first, then merge the parent. If `main` is checked out in another worktree, fetch rather than trying to switch this one.
 
 ## The merge gate
 
-There is no automated reviewer on this repo and no branch protection. Verified state, not assumption:
+There is no working automated reviewer on this repo, and branch protection enforces CI, freshness and conversation resolution only. Verified state (2026-10-01), not assumption:
 
-- `gh api repos/esaueng/remus/branches/main/protection` returns **404 Branch not protected**. No required checks, no required approvals.
-- The only check-run apps that post here are `github-actions` and `blacksmith-sh` (the CI runner provider — its `[code]smith` entry reports SKIPPED and is not a reviewer).
-- Every PR in the repo's history has zero reviews and zero inline comments.
+- `gh api repos/esaueng/remus/branches/main/protection`: required status check `checks / CI Pass`, `strict: true` (the branch must be up to date with `main`), `required_conversation_resolution: true` (every review thread resolved), required approvals none, `enforce_admins` false, force pushes allowed. A ruleset named "Bounded merge queue" exists but is disabled.
+- The only check-run apps that post here are `github-actions` and `blacksmith-sh` (the CI runner provider — its `[code]smith` entry reports SKIPPED and is not a reviewer). The `chatgpt-codex-connector` app posts an issue comment on each PR; on every recent PR it is a usage-limit notice, not a review.
+- Recent PRs have zero reviews and zero inline comments.
 
-So `CI Pass` is an *aggregate* check, not a *required* one, and nothing stops a merge — not a red CI, not an unread diff. The gate is what you do, in this order:
+So a red `CI Pass` or an unresolved review thread blocks the merge, but an unread diff, a red check outside its fan-in, or a stale head does not. Admins can bypass even the CI requirement. The gate is what you do, in this order:
 
 1. **Wait for every check to complete.** List the rollup unfiltered; do not filter by a name you have not confirmed exists:
    ```bash
@@ -73,16 +74,16 @@ So `CI Pass` is an *aggregate* check, not a *required* one, and nothing stops a 
 2. **Confirm `CI Pass` is SUCCESS**, and separately read the three checks outside its fan-in: `Apache Lineage`, `Doc Paths`, `WASM Size Report`.
 3. **Check both comment surfaces anyway** — `gh api repos/esaueng/remus/pulls/<N>/comments` (inline) and `gh pr view <N> --comments` (issue-level). Expect zero from reviewers; the WASM size bot posts here. Cheap insurance in case an app is installed later.
 4. **Confirm the head you tested is the head being merged**: `gh pr view <N> --json headRefOid` vs `git rev-parse HEAD`.
-5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly: it keeps `main` at one conventional-titled commit per PR, which the history conventions assume.
+5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly: it keeps `main` at one conventional-titled commit per PR, which the history conventions assume. When asked to merge "once green", `--squash --auto` hands the wait to GitHub; steps 2–4 still apply to the three checks outside the fan-in, which auto-merge does not wait for. If `mergeStateStatus` is `BEHIND`, update the branch first (quick reference) or auto-merge will wait forever. If it is `BLOCKED` with every check green, look for an unresolved review thread (`gh api graphql` on `pullRequest.reviewThreads { isResolved }`); resolving it is the reviewer's sign-off, so ask before resolving someone else's thread.
 
 Because no second pair of eyes exists, the diff you push is the diff that lands. On high-risk changes (GFA boolean engine, public WASM API), self-review the full diff before merging and say plainly in the PR body what you verified and what you did not.
 
 Anti-patterns:
 - Do NOT poll for `cubic · AI code reviewer`, Greptile, or Copilot. None are installed. A poll keyed to a check name that does not exist stays silent forever and reads exactly like "no findings" — this is the single most dangerous failure mode in this workflow, because the false pass is indistinguishable from a real one.
 - Do NOT report "review came back clean" when the truth is "no reviewer ran". Say which gate actually passed.
-- Do NOT pass `--auto`. `allow_auto_merge` is false repo-wide; auto-merge is unavailable.
+- Do NOT pass `--auto` unless the merge itself was authorized. It lands the PR without another look once `CI Pass` is green, ignoring `Apache Lineage`, `Doc Paths` and `WASM Size Report`.
 - Do NOT conclude "no findings" from an empty `gh pr view --comments`; inline comments live on the pulls comments API. Check both.
-- Do NOT treat `mergeStateStatus: CLEAN` as a quality signal. With no protection and no reviewer, it means only that the branch merges without conflict.
+- Do NOT treat `mergeStateStatus: CLEAN` as a quality signal. With no reviewer, it means only that the branch is current, conflict-free and has a green `CI Pass`.
 
 ## Banned-name compliance
 
