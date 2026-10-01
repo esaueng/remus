@@ -125,10 +125,12 @@ fn mixed_notch_whole_edge_fillet_succeeds_on_both_contracts() {
             serde_json::json!({"solid": solid, "edges": edges, "radius": 1.0}),
         )],
     );
+    let v2 = u32::try_from(out[0]["ok"].as_u64().expect("V2 fillet must succeed")).unwrap();
+    assert_ne!(v2, solid, "V2 fillet must return a new handle");
+    let v2_vol = volume(&mut kernel, v2);
     assert!(
-        out[0].get("ok").is_some(),
-        "V2 fillet must succeed, got: {}",
-        out[0]
+        (v2_vol - 13027.2829).abs() < 0.05,
+        "V2 fillet must meet the closed form 13027.2829 on the exact route, got {v2_vol}"
     );
 
     // Success preserves the input across the WASM boundary.

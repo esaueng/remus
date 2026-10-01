@@ -265,6 +265,39 @@ fn a_coarse_order_reaches_the_same_verdict_and_skip_reaches_none() {
     }
 }
 
+#[test]
+fn coarse_sphere_orientation_is_preserved_under_translation_and_reversal() {
+    use remus_operations::validate::{OrientationCheck, ValidationOptions};
+
+    let options = ValidationOptions {
+        orientation: OrientationCheck::Order(1),
+        ..ValidationOptions::default()
+    };
+
+    for k in SCALES {
+        let mut topo = Topology::new();
+        let (solid, _) = a_sphere(&mut topo, k);
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        transform_solid(
+            &mut topo,
+            solid,
+            &Mat4::translation(1000.0 * k, -2000.0 * k, 3000.0 * k),
+        )
+        .unwrap();
+        for inverted in [false, true] {
+            if inverted {
+                reverse_shell(&mut topo, shell);
+            }
+            let report = validate::validate_solid_with_options(&topo, solid, &options).unwrap();
+            let detected = report
+                .issues
+                .iter()
+                .any(|issue| issue.description.contains("inside out"));
+            assert_eq!(detected, inverted, "translated sphere at {k}x");
+        }
+    }
+}
+
 /// A cavity wound the wrong way round is the mirror statement: its void adds
 /// material instead of removing it, and it is invisible to every other check
 /// for the same reason.

@@ -24,14 +24,25 @@
 //! outer and inner, so the remover must not see open cups). No weld-tolerance
 //! or coincident-triangle change; B71's wrong-side-blend refusal is untouched.
 //!
-//! Bounded refusal (not capability closure): thickness past half the thin
-//! planar separation (here 0.5) on this mixed lump refuses like the plain box
-//! does. Thin walls (≤0.4) still hollow exactly; the linear-miter sphere
-//! deviation at those walls (0.0009–0.048) and the open-thick (0.6, one face
-//! opened) indexed leak hidden by the 1µm weld remain documented residuals.
+//! Bounded exact domain, revised by the shell-correctness campaign (tolerance
+//! contract, not wall fraction): the oblique plane–sphere cut carries an
+//! off-carrier inner sphere at EVERY thickness (0.0009 at 0.05 through 0.096
+//! at 0.6, all orders of magnitude beyond `Tolerance::linear` 1e-7), so no
+//! wall hollows exactly — thin through thick refuse typed `Unsupported` with
+//! rollback, naming the face, carrier, miss, and the missing exact
+//! offset-surface intersection primitive (`intersect_plane_sphere` with shared
+//! edge topology). PROMINENT NARROWING: thin walls (0.05–0.4) previously
+//! hollowed `Exact` with indexed+welded closure despite 1.8–11.9% carrier miss;
+//! they were mislabelled and now refuse like the thick collapse. The base body
+//! stays valid/watertight/measured (pinned separately); the defect is in shell
+//! construction, not the boolean. Open-thick (0.6, one face opened) previously
+//! leaked 11 indexed edges hidden by the weld (0 welded); it now refuses via
+//! the same carrier gate without breaking valid planar cups.
 //!
-//! Fails before the fix (shell Ok with 11 boundary edges at the harness
-//! deflection) and passes after (typed `Unsupported` with rollback).
+//! Fails before the B76 fix (shell Ok with 11 boundary edges at the harness
+//! deflection) and before the campaign (thin Ok labelled `Exact` despite
+//! off-carrier); passes after (typed `Unsupported` with rollback at every
+//! thickness).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -47,7 +58,7 @@ use remus_operations::measure::{mass_properties, solid_bounding_box, solid_volum
 use remus_operations::primitives::{make_box, make_sphere};
 use remus_operations::shell_op::shell;
 use remus_operations::tessellate::{
-    boundary_edge_count, non_manifold_edge_count, tessellate_solid, welded_mesh_quality,
+    boundary_edge_count, non_manifold_edge_count, tessellate_solid,
 };
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid_relaxed;
@@ -61,31 +72,6 @@ fn base_body(topo: &mut Topology) -> SolidId {
     let place = Mat4::translation(1.5, 2.5, -0.5) * Mat4::rotation_y(FRAC_PI_4);
     transform_solid(topo, tool, &place).unwrap();
     boolean(topo, BooleanOp::Cut, stock, tool).unwrap()
-}
-
-fn harness_deflection(topo: &Topology, solid: SolidId) -> f64 {
-    let aabb = solid_bounding_box(topo, solid).unwrap();
-    ((aabb.max - aabb.min).length() * 4e-5).max(1e-7) * 4.0
-}
-
-fn same_sense_pairs(topo: &Topology, solid: SolidId) -> usize {
-    use std::collections::HashMap;
-    let faces = explorer::solid_faces(topo, solid).unwrap();
-    let mut uses: HashMap<remus_topology::edge::EdgeId, Vec<bool>> = HashMap::new();
-    for &fid in &faces {
-        let face = topo.face(fid).unwrap();
-        let rev = face.is_reversed();
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            for oe in topo.wire(wid).unwrap().edges() {
-                uses.entry(oe.edge())
-                    .or_default()
-                    .push(oe.is_forward() != rev);
-            }
-        }
-    }
-    uses.values()
-        .filter(|u| u.len() == 2 && u[0] == u[1])
-        .count()
 }
 
 /// The exact fuzz input body, before any shell: valid, watertight, and
@@ -161,81 +147,47 @@ fn closed_shell_at_0_5_refuses_with_rollback() {
     );
 }
 
-fn assert_thin_wall_ok(thickness: f64) {
+fn assert_thin_wall_refuses(thickness: f64) {
+    // Campaign narrowing: every wall on this oblique mixed lump refuses —
+    // the inner sphere misses its carrier by 0.0009 at 0.05 through 0.048 at
+    // 0.4 (1.8–11.9% of the wall, all indexed+welded shut pre-campaign yet
+    // thousands of tolerance lengths off). Grouped attribution is the refusal
+    // itself: it names the off-carrier sphere face, carrier, miss, and bound.
     let mut topo = Topology::new();
     let body = base_body(&mut topo);
-    let v_before = solid_volume(&topo, body, 1e-4)
-        .unwrap_or_else(|_| mass_properties(&topo, body).unwrap().mass);
-    let hollow = shell(&mut topo, body, thickness, &[]).unwrap_or_else(|e| {
-        panic!("thin wall {thickness} must hollow, got refusal {e}");
-    });
-    // B-Rep: relaxed-valid (hollow is two components in one shell), no free
-    // or non-manifold edge uses, no same-sense pairs.
-    let report = validate_solid_relaxed(&topo, hollow).unwrap();
-    assert!(report.is_valid(), "thin {thickness} relaxed-valid");
-    let map = explorer::edge_to_face_map(&topo, hollow).unwrap();
-    assert_eq!(map.values().filter(|v| v.len() == 1).count(), 0);
-    assert_eq!(map.values().filter(|v| v.len() > 2).count(), 0);
-    assert_eq!(same_sense_pairs(&topo, hollow), 0);
-    // Mesh: indexed and 1µm-welded closure at three physical deflections.
-    let harness = harness_deflection(&topo, hollow);
-    for d in [0.1, 0.01, harness] {
-        let mesh = tessellate_solid(&topo, hollow, d).unwrap();
-        assert_eq!(boundary_edge_count(&mesh), 0, "thin {thickness} d={d}");
-        assert_eq!(non_manifold_edge_count(&mesh), 0);
-        let wq = welded_mesh_quality(&mesh);
-        assert_eq!(wq.boundary_edges, 0);
-        assert_eq!(wq.non_manifold_edges, 0);
-        assert!(wq.triangle_count > 0);
-    }
-    // Volume: hollowing shrinks, both routes agree (independent oracles share
-    // the face integrator, so this is a co-signature paired with the mesh and
-    // classification checks, not a standalone proof).
-    let aabb = solid_bounding_box(&topo, hollow).unwrap();
-    let diag = (aabb.max - aabb.min).length();
-    let v = solid_volume(&topo, hollow, (diag * 4e-5).max(1e-7)).unwrap();
-    let m = mass_properties(&topo, hollow).unwrap().mass;
-    eprintln!("thin {thickness}: solid_volume={v:.9} mass={m:.9} before={v_before:.9}");
-    assert!(v < v_before, "hollowing must not invent material");
-    assert!((v - m).abs() / v.max(m) < 1e-2);
-    // Classification spot checks: cavity Outside, wall Inside. The wall probe
-    // sits 0.02 from the outer corner so it stays in material for every thin
-    // wall in this family (0.05–0.4); 0.05 itself lies on the 0.05 cavity wall.
-    let outside = remus_math::vec::Point3::new(0.5, 0.75, 0.75);
-    let wall = remus_math::vec::Point3::new(0.02, 0.02, 0.02);
-    assert_eq!(
-        remus_check::classify::classify_point(
-            &topo,
-            hollow,
-            outside,
-            &remus_check::classify::ClassifyOptions::default()
-        )
-        .unwrap(),
-        remus_check::classify::PointClassification::Outside
+    let before = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+    let err = shell(&mut topo, body, thickness, &[]).expect_err(&format!(
+        "thin wall {thickness} must refuse as off-carrier, not ship Exact"
+    ));
+    assert!(
+        matches!(err, remus_operations::OperationsError::Unsupported { .. }),
+        "thin {thickness}: typed refusal expected, got {err}"
+    );
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("misses its carrier") && msg.contains("sphere"),
+        "thin {thickness}: off-carrier sphere reason expected, got: {msg}"
     );
     assert_eq!(
-        remus_check::classify::classify_point(
-            &topo,
-            hollow,
-            wall,
-            &remus_check::classify::ClassifyOptions::default()
-        )
-        .unwrap(),
-        remus_check::classify::PointClassification::Inside
+        remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
+        before,
+        "thin {thickness}: refusal must roll back"
     );
 }
 
 #[test]
-fn thin_walls_hollow_watertight() {
+fn thin_walls_refuse_as_off_carrier() {
     for t in [0.05, 0.1, 0.2, 0.3, 0.4] {
-        assert_thin_wall_ok(t);
+        assert_thin_wall_refuses(t);
     }
 }
 
-/// One relevant opening (top cap removed) at a thin wall stays exact and
-/// closed; the rim is a single annulus.
+/// The previously pinned open-top thin hollow (single annulus rim) also
+/// refuses: its inner sphere carries the same off-carrier boundary as the
+/// closed thin walls. Valid planar cups (box open-top) still hollow — pinned
+/// in the bounded-domain regression, not here.
 #[test]
-fn open_top_at_thin_wall_hollows_watertight() {
+fn open_top_at_thin_wall_refuses_as_off_carrier() {
     let mut topo = Topology::new();
     let body = base_body(&mut topo);
     let faces = explorer::solid_faces(&topo, body).unwrap();
@@ -248,66 +200,57 @@ fn open_top_at_thin_wall_hollows_watertight() {
         .copied()
         .collect();
     assert_eq!(open.len(), 1);
-    let hollow = shell(&mut topo, body, 0.1, &open).unwrap();
-    let harness = harness_deflection(&topo, hollow);
-    for d in [0.1, 0.01, harness] {
-        let mesh = tessellate_solid(&topo, hollow, d).unwrap();
-        assert_eq!(boundary_edge_count(&mesh), 0, "open thin d={d}");
-        assert_eq!(non_manifold_edge_count(&mesh), 0);
-        assert_eq!(welded_mesh_quality(&mesh).boundary_edges, 0);
-    }
-    assert!(validate_solid_relaxed(&topo, hollow).unwrap().is_valid());
-}
-
-/// Scale: the same thin wall at 1000× carries census, s³ volume, and
-/// watertightness.
-#[test]
-fn scaled_thin_wall_matches() {
-    let mut topo = Topology::new();
-    let body = base_body(&mut topo);
-    transform_solid(&mut topo, body, &Mat4::scale(1000.0, 1000.0, 1000.0)).unwrap();
-    let hollow = shell(&mut topo, body, 0.1 * 1000.0, &[]).unwrap();
-    let harness = harness_deflection(&topo, hollow);
-    let mesh = tessellate_solid(&topo, hollow, harness).unwrap();
-    assert_eq!(boundary_edge_count(&mesh), 0);
-    assert_eq!(non_manifold_edge_count(&mesh), 0);
-    let aabb = solid_bounding_box(&topo, hollow).unwrap();
-    let diag = (aabb.max - aabb.min).length();
-    let v = solid_volume(&topo, hollow, (diag * 4e-5).max(1e-7)).unwrap();
-    let m = mass_properties(&topo, hollow).unwrap().mass;
-    assert!((v - m).abs() / v.max(m) < 1e-2);
-    // s³ of the unit thin-wall volume (0.887_121 at 0.1, measured above).
-    assert!((v / 1e9 - 0.887_121).abs() / 0.887_121 < 2e-2);
-}
-
-/// Rigid placement: translating the base body preserves the thin-wall
-/// success and the thick-wall refusal with translation-invariant volume.
-#[test]
-fn rigid_placement_preserves_outcome() {
-    let place = Mat4::translation(10.0, -20.0, 30.0);
-    let mut topo = Topology::new();
-    let body = base_body(&mut topo);
-    transform_solid(&mut topo, body, &place).unwrap();
-    let hollow = shell(&mut topo, body, 0.1, &[]).unwrap();
-    let harness = harness_deflection(&topo, hollow);
-    let mesh = tessellate_solid(&topo, hollow, harness).unwrap();
-    assert_eq!(boundary_edge_count(&mesh), 0);
-    let aabb = solid_bounding_box(&topo, hollow).unwrap();
-    let diag = (aabb.max - aabb.min).length();
-    let v = solid_volume(&topo, hollow, (diag * 4e-5).max(1e-7)).unwrap();
-    assert!((v - 0.887_121).abs() / 0.887_121 < 2e-2);
-
-    let mut topo2 = Topology::new();
-    let body2 = base_body(&mut topo2);
-    transform_solid(&mut topo2, body2, &place).unwrap();
-    let before = remus_io::arena_io::serialize_solid(&topo2, body2).unwrap();
-    let err = shell(&mut topo2, body2, 0.6, &[]).expect_err("placed thick must refuse");
+    let before = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+    let err = shell(&mut topo, body, 0.1, &open).expect_err("open thin must refuse");
     assert!(matches!(
         err,
         remus_operations::OperationsError::Unsupported { .. }
     ));
+    assert!(format!("{err}").contains("misses its carrier"));
     assert_eq!(
-        remus_io::arena_io::serialize_solid(&topo2, body2).unwrap(),
+        remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
         before
     );
+}
+
+/// Scale: the same thin wall at 1000× refuses (carrier miss scales with the
+/// wall, tolerance bound with the extent — the ratio never closes).
+#[test]
+fn scaled_thin_wall_refuses() {
+    let mut topo = Topology::new();
+    let body = base_body(&mut topo);
+    transform_solid(&mut topo, body, &Mat4::scale(1000.0, 1000.0, 1000.0)).unwrap();
+    let before = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+    let err = shell(&mut topo, body, 0.1 * 1000.0, &[]).expect_err("scaled thin must refuse");
+    assert!(matches!(
+        err,
+        remus_operations::OperationsError::Unsupported { .. }
+    ));
+    assert!(format!("{err}").contains("misses its carrier"));
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
+        before
+    );
+}
+
+/// Rigid placement: translating the base body preserves the refusal at thin
+/// and thick alike, with rollback.
+#[test]
+fn rigid_placement_preserves_outcome() {
+    let place = Mat4::translation(10.0, -20.0, 30.0);
+    for t in [0.1, 0.6] {
+        let mut topo = Topology::new();
+        let body = base_body(&mut topo);
+        transform_solid(&mut topo, body, &place).unwrap();
+        let before = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+        let err = shell(&mut topo, body, t, &[]).expect_err(&format!("placed {t} must refuse"));
+        assert!(matches!(
+            err,
+            remus_operations::OperationsError::Unsupported { .. }
+        ));
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
+            before
+        );
+    }
 }
