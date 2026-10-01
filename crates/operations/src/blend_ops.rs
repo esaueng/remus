@@ -1160,20 +1160,6 @@ fn fillet_group(
     })
 }
 
-/// Which of `edges` no longer name a manifold edge of `solid`.
-fn stale_edges(
-    topo: &Topology,
-    solid: SolidId,
-    edges: &[EdgeId],
-) -> Result<Vec<EdgeId>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
-    Ok(edges
-        .iter()
-        .copied()
-        .filter(|&e| adjacency.faces_for_edge(e).len() != 2)
-        .collect())
-}
-
 /// Fillet a selection that splits into features which cannot reach each other,
 /// one feature at a time, on whichever engine each one needs.
 ///
@@ -1185,12 +1171,16 @@ fn stale_edges(
 /// cap it rebuilds, so a bore rim that has not been blended yet loses its edge
 /// identity when the cap above it is rebuilt; the rim assembler, by contrast,
 /// carries the cap's other loops through verbatim, so straight edges named for
-/// a later feature survive it. Features the planar path cannot take therefore
-/// go first.
+/// a later feature survive it — and any that do not re-resolve by position
+/// (see `remap_group`). Features the planar path cannot take therefore
+/// go first, and refusals name the caller's edges.
 ///
-/// The identity assumption is checked rather than trusted: a feature whose
-/// edges did not survive an earlier one is reported as
-/// [`BlendError::EdgesNotBlended`] naming them, never dropped. Failure anywhere
+/// The identity assumption is checked rather than trusted, then repaired:
+/// a feature whose edges did not survive an earlier one is re-resolved by
+/// position (endpoints plus curve class, unique match) against the current
+/// solid, because rebuilds re-mint edges at identical positions. Only an
+/// edge with no unique live counterpart is reported as
+/// [`BlendError::EdgesNotBlended`] naming it, never dropped. Failure anywhere
 /// aborts the whole call, and the caller's `transactional` wrapper puts the
 /// input back exactly as it was.
 fn fillet_by_feature(
@@ -1200,25 +1190,124 @@ fn fillet_by_feature(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let mut ordered: Vec<(bool, &[EdgeId])> = Vec::with_capacity(groups.len());
-    for group in groups {
-        ordered.push((is_planar_line_blend(topo, solid, group)?, group.as_slice()));
+    let tol = remus_math::tolerance::Tolerance::new();
+    // Seed geometry for position remapping: rebuilt edges keep identical
+    // positions, so a stale handle re-resolves by endpoints + curve class.
+    let mut seed_geom: std::collections::HashMap<
+        usize,
+        (remus_math::vec::Point3, remus_math::vec::Point3, u8),
+    > = std::collections::HashMap::new();
+    for &eid in edges {
+        let Ok(edge) = topo.edge(eid) else {
+            continue;
+        };
+        let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            continue;
+        };
+        let tag = match edge.curve() {
+            EdgeCurve::Line => 0,
+            EdgeCurve::Circle(_) => 1,
+            _ => 2,
+        };
+        seed_geom.insert(eid.index(), (a.point(), b.point(), tag));
     }
-    ordered.sort_by_key(|&(planar, _)| planar);
-
-    let mut current = solid;
-    let mut engine: Option<BlendEngine> = None;
-    for (_, group) in ordered {
-        let stale = stale_edges(topo, current, group)?;
-        if !stale.is_empty() {
+    let remap_group = |topo: &Topology,
+                       current: SolidId,
+                       group: &[EdgeId]|
+     -> Result<Vec<EdgeId>, OperationsError> {
+        let adjacency = topo.build_adjacency(current)?;
+        let live = |eid: EdgeId| adjacency.faces_for_edge(eid).len() == 2;
+        let mut remapped = Vec::with_capacity(group.len());
+        let mut unresolvable = Vec::new();
+        for &eid in group {
+            if live(eid) {
+                remapped.push(eid);
+                continue;
+            }
+            let Some((s, e, tag)) = seed_geom.get(&eid.index()) else {
+                unresolvable.push(eid);
+                continue;
+            };
+            let mut candidates = Vec::new();
+            for ceid in remus_topology::explorer::solid_edges(topo, current)? {
+                if !live(ceid) {
+                    continue;
+                }
+                let Ok(edge) = topo.edge(ceid) else {
+                    continue;
+                };
+                let edge_tag = match edge.curve() {
+                    EdgeCurve::Line => 0,
+                    EdgeCurve::Circle(_) => 1,
+                    _ => 2,
+                };
+                if edge_tag != *tag {
+                    continue;
+                }
+                let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                    continue;
+                };
+                let (a, b) = (a.point(), b.point());
+                let same = |p: remus_math::vec::Point3, q: remus_math::vec::Point3| {
+                    (p - q).length() <= tol.linear * 100.0
+                };
+                if (same(a, *s) && same(b, *e)) || (same(a, *e) && same(b, *s)) {
+                    candidates.push(ceid);
+                }
+            }
+            if candidates.len() == 1 {
+                remapped.push(candidates[0]);
+            } else {
+                unresolvable.push(eid);
+            }
+        }
+        if !unresolvable.is_empty() {
             return Err(OperationsError::Blend(BlendError::EdgesNotBlended {
-                edges: stale,
+                edges: unresolvable,
                 reason: "an earlier feature in the same selection rebuilt the faces \
                          carrying these edges, so they no longer name anything to blend"
                     .into(),
             }));
         }
-        let step = fillet_group(topo, current, group, radius)?;
+        Ok(remapped)
+    };
+    // Merge all planar-line groups into one when non-planar groups exist:
+    // the rolling-ball rebuild closes multi-corner planar selections
+    // (notch/mirror torus patches, balls) in a single call, while piecemeal
+    // planar features re-break analytic sharing across steps (re-minted
+    // spans that no tolerance can merge). Non-planar groups (rims, curved
+    // spines) keep their own engine each. All-planar selections keep today's
+    // piecemeal behavior (the merged set is the whole selection, which
+    // already failed above).
+    let mut planar_merged: Vec<EdgeId> = Vec::new();
+    let mut rest: Vec<&[EdgeId]> = Vec::new();
+    for group in groups {
+        if is_planar_line_blend(topo, solid, group)? {
+            planar_merged.extend(group.iter().copied());
+        } else {
+            rest.push(group.as_slice());
+        }
+    }
+    let owned_merged;
+    let groups: Vec<&[EdgeId]> = if planar_merged.is_empty() || rest.is_empty() {
+        groups.iter().map(Vec::as_slice).collect()
+    } else {
+        owned_merged = planar_merged;
+        std::iter::once(owned_merged.as_slice())
+            .chain(rest)
+            .collect()
+    };
+    let mut ordered: Vec<(bool, &[EdgeId])> = Vec::with_capacity(groups.len());
+    for &group in &groups {
+        ordered.push((is_planar_line_blend(topo, solid, group)?, group));
+    }
+    ordered.sort_by_key(|&(planar, _)| planar);
+
+    let mut current = solid;
+    let mut engine: Option<BlendEngine> = None;
+    for (_, group) in &ordered {
+        let group = remap_group(topo, current, group)?;
+        let step = fillet_group(topo, current, &group, radius)?;
         engine = Some(match engine {
             Some(seen) if seen != step.engine => BlendEngine::Mixed,
             Some(seen) => seen,
