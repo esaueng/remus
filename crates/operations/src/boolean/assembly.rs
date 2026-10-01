@@ -1356,14 +1356,17 @@ fn split_vertex_on_curve(topo: &Topology, eid: EdgeId, pos: Point3, tol: Toleran
         return false;
     };
     match edge.curve() {
-        EdgeCurve::Line => true,
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => true,
         EdgeCurve::Circle(c) => {
             let dx = pos.x() - c.center().x();
             let dy = pos.y() - c.center().y();
             let dz = pos.z() - c.center().z();
             ((dx * dx + dy * dy + dz * dz).sqrt() - c.radius()).abs() <= tol.linear
         }
-        _ => true,
     }
 }
 
