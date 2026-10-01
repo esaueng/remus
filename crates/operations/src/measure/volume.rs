@@ -1972,14 +1972,14 @@ pub fn shell_signed_volume(
         ),
         _ => Point3::new(0.0, 0.0, 0.0),
     };
-    let options = remus_check::properties::PropertiesOptions {
-        gauss_order,
-        ..Default::default()
-    };
     let mut total = 0.0;
     for &fid in &faces {
-        total += remus_check::properties::face_integrator::integrate_face_about(
-            topo, fid, &options, reference,
+        // Orientation probes need fixed-order signs, not adaptive moment convergence.
+        total += remus_check::properties::face_integrator::integrate_face_fixed_about(
+            topo,
+            fid,
+            gauss_order,
+            reference,
         )
         .ok()?
         .volume;
