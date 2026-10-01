@@ -36,7 +36,7 @@ use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::extrude::extrude;
-use remus_operations::measure::solid_volume;
+use remus_operations::measure::{mass_properties, solid_volume};
 use remus_operations::query::{edge_is_g1, filter_filletable_edges};
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
@@ -114,11 +114,14 @@ fn fillet_all(topo: &mut Topology, solid: SolidId, radius: f64) -> SolidId {
 
 /// r=1: census, closed form, and independent-reference agreement.
 ///
-/// Measurement note: the sphere-octant patches force the whole-solid mesh
-/// volume route (pre-existing pattern, same as box corners), whose inscribed
-/// mesh under-reads convex torus patches by a fraction of a unit. Geometry
-/// is proven identical to the independent reference (STEP exchange measures
-/// equal to 1.2e-5 there), so the oracle asserts mesh tolerance, box-style.
+/// Measurement: the solid carries torus-notch patches, so `solid_volume`
+/// sums the boundary-trimmed Gauss integrals on the true face boundaries
+/// (see `qualified_notch_family_exact_volume`) — not the closed whole-solid
+/// mesh, whose inscribed facets under-read the convex corners by ~0.64 here.
+/// The 0.05 window therefore distinguishes the exact route from the mesh
+/// route: a mesh reading cannot pass. Geometry is additionally proven
+/// identical to the independent reference (STEP exchange measures equal to
+/// 1.2e-5 there); the residual is trim-chord sampling, measured 7.6e-4.
 #[test]
 fn whole_edge_fillet_builds_with_torus_corners() {
     let mut topo = Topology::new();
@@ -127,17 +130,19 @@ fn whole_edge_fillet_builds_with_torus_corners() {
     assert_eq!(census(&topo, out), (8, 18, 10, 2));
     let volume = solid_volume(&topo, out, 0.01).unwrap();
     assert!(
-        (volume - expected_volume(1.0)).abs() < 2.0,
+        (volume - expected_volume(1.0)).abs() < 0.05,
         "closed form {} vs measured {volume:.4}",
         expected_volume(1.0)
     );
     assert!(
-        (volume - 13027.2829).abs() < 2.0,
+        (volume - 13027.2829).abs() < 0.05,
         "independent reference 13027.2829 vs measured {volume:.4}"
     );
 }
 
 /// r=2: closed form and reference agreement (similarity pins the torus term).
+/// Trim-chord residual scales with r^3 (measured 3.2e-3), hence the wider
+/// window — still far inside the mesh route's ~5-unit under-read at r=2.
 #[test]
 fn whole_edge_fillet_r2_matches_closed_form() {
     let mut topo = Topology::new();
@@ -146,13 +151,46 @@ fn whole_edge_fillet_r2_matches_closed_form() {
     assert_eq!(census(&topo, out), (8, 18, 10, 2));
     let volume = solid_volume(&topo, out, 0.01).unwrap();
     assert!(
-        (volume - expected_volume(2.0)).abs() < 4.0,
+        (volume - expected_volume(2.0)).abs() < 0.2,
         "closed form {} vs measured {volume:.4}",
         expected_volume(2.0)
     );
     assert!(
-        (volume - 12755.9621).abs() < 4.0,
+        (volume - 12755.9621).abs() < 0.2,
         "independent reference 12755.9621 vs measured {volume:.4}"
+    );
+}
+
+/// `solid_volume` and `mass_properties` share the exact Gauss route on this
+/// family (same point, order, controls), so they must agree to well inside
+/// either tolerance above — independent of the closed form entirely.
+#[test]
+fn notch_family_volume_agrees_with_mass_properties() {
+    let mut topo = Topology::new();
+    let solid = l_bracket(&mut topo);
+    let out = fillet_all(&mut topo, solid, 1.0);
+    let volume = solid_volume(&topo, out, 0.01).unwrap();
+    let mass = mass_properties(&topo, out).unwrap().mass;
+    assert!(
+        (volume - mass).abs() < 1e-3,
+        "exact routes must agree: solid_volume {volume:.6} vs mass_properties {mass:.6}"
+    );
+}
+
+/// Uniform 10x scale: the exact integral scales with the cube (measured
+/// relative residual 5.8e-8); a mesh reading would carry its absolute chord
+/// error scaled by 1000 instead.
+#[test]
+fn notch_family_volume_scales_exactly() {
+    let mut topo = Topology::new();
+    let solid = l_bracket(&mut topo);
+    let out = fillet_all(&mut topo, solid, 1.0);
+    transform_solid(&mut topo, out, &Mat4::scale(10.0, 10.0, 10.0)).unwrap();
+    let volume = solid_volume(&topo, out, 0.01).unwrap();
+    assert!(
+        (volume / 1000.0 - expected_volume(1.0)).abs() < 0.05,
+        "scaled volume {} must recover the closed form",
+        volume / 1000.0
     );
 }
 
@@ -247,7 +285,7 @@ fn whole_edge_fillet_survives_rigid_transform() {
     assert_eq!(census(&topo, out), (8, 18, 10, 2));
     let volume = solid_volume(&topo, out, 0.01).unwrap();
     assert!(
-        (volume - expected_volume(1.0)).abs() < 2.0,
+        (volume - expected_volume(1.0)).abs() < 0.05,
         "transformed volume {volume:.4} must meet the closed form"
     );
 }

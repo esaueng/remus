@@ -102,6 +102,124 @@ fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
     })
 }
 
+/// Whether a torus face is a mixed-notch corner patch: no inner wires and an
+/// outer loop of exactly four quarter-circle seams (two station quarters,
+/// the singleton-station quarter, the cap-tangency quarter).
+///
+/// The quarter-span bound is load-bearing, not incidental. A rim torus
+/// around a bore also presents an outer-only four-circle loop — but two of
+/// its edges are FULL contact circles (span 0 mod 2pi) joined by transit
+/// quarters, and the generic face integrator over-reads that band by 8.8e-3
+/// on a 28448 body (independent-reference checked), while true quarter-seam
+/// patches integrate to trim-chord residual. Torus bands (rims wrap the
+/// tube), bores, and full/partial revolve walls are likewise not this
+/// family.
+fn torus_face_is_notch_patch(topo: &Topology, fid: FaceId) -> bool {
+    /// Quarter seams read pi/2; full contact circles read 0 and band halves
+    /// read pi. The 0.05 window admits STEP import rounding with miles of
+    /// margin on both sides.
+    const NOTCH_ARC_TOL: f64 = 0.05;
+    let Ok(face) = topo.face(fid) else {
+        return false;
+    };
+    if !matches!(face.surface(), FaceSurface::Torus(_)) || !face.inner_wires().is_empty() {
+        return false;
+    }
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return false;
+    };
+    let edges = wire.edges();
+    if edges.len() != 4 {
+        return false;
+    }
+    edges.iter().all(|oe| {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            return false;
+        };
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return false;
+        };
+        let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            return false;
+        };
+        let span = (circle.project(b.point()) - circle.project(a.point()))
+            .rem_euclid(std::f64::consts::TAU);
+        (span - std::f64::consts::FRAC_PI_2).abs() <= NOTCH_ARC_TOL
+    })
+}
+
+/// Exact volume for the qualified trimmed torus-notch family: exact
+/// rolling-ball fillet output carrying torus corner patches (and the sphere
+/// caps, cylinders, and planes around them).
+///
+/// Every face of such a solid is inside the boundary-trimmed Gauss domain
+/// (see [`gauss_unqualified_face`]), so the per-face Gauss integrals on the
+/// true boundaries sum to the exact volume. Routing these bodies through the
+/// closed whole-solid mesh below would chord every convex patch and
+/// under-read the corners by a fraction of a unit; the Gauss sum agrees with
+/// the independent reference to trim-chord residual instead.
+///
+/// Returns `None` (existing dispatch untouched) when no notch patch is
+/// present, any face leaves the qualified domain, or the integral is not a
+/// volume. Integration errors propagate like [`open_mesh_exact_volume`].
+fn qualified_notch_family_exact_volume(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    if !faces
+        .iter()
+        .any(|&fid| torus_face_is_notch_patch(topo, fid))
+    {
+        return Ok(None);
+    }
+    for &fid in &faces {
+        let face = topo.face(fid)?;
+        // Only analytic carriers integrate here; NURBS (or a future variant)
+        // keeps the existing dispatch below.
+        if !matches!(
+            face.surface(),
+            FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+        ) {
+            vol_trace(|| format!("notch family: face {} non-analytic carrier", fid.index()));
+            return Ok(None);
+        }
+        if let Some(class) = gauss_unqualified_face(topo, fid)? {
+            vol_trace(|| {
+                format!(
+                    "notch family: face {} ({}) gauss-unqualified ({class})",
+                    fid.index(),
+                    face.surface().type_tag()
+                )
+            });
+            return Ok(None);
+        }
+    }
+    // The same point, order and controls as `mass_properties`, so the two
+    // agree to round-off (mirrors `open_mesh_exact_volume`).
+    let reference = remus_check::properties::integration_reference(topo, solid)?;
+    let options = remus_check::properties::PropertiesOptions {
+        gauss_order: OPEN_MESH_GAUSS_ORDER,
+        ..Default::default()
+    };
+    let mut total = 0.0;
+    for fid in faces {
+        total += remus_check::properties::face_integrator::integrate_face_about(
+            topo, fid, &options, reference,
+        )?
+        .volume;
+    }
+    if !total.is_finite() || negligible_volume(topo, solid).is_none_or(|floor| total.abs() <= floor)
+    {
+        return Ok(None);
+    }
+    Ok(Some(total.abs()))
+}
+
 /// True when a torus face wire's vertices span the full tube angle `v` (a
 /// `v`-wrapping seam loop), as opposed to a constant-`v` latitude circle. The
 /// ordered edge samples must accumulate exactly one full `v` period.
@@ -425,16 +543,27 @@ fn gauss_unqualified_face(
             && !sphere_outer_wire_constant_v(topo, fid, sphere)?)
         .then_some("scalloped sphere collar"),
         FaceSurface::Torus(torus) => {
-            let trimmed = !face.inner_wires().is_empty()
-                || torus_wire_wraps_tube(topo, face.outer_wire(), torus);
-            (trimmed
-                && remus_check::properties::face_integrator::integrate_torus_band_face(
-                    topo,
-                    fid,
-                    OPEN_MESH_GAUSS_ORDER,
-                )?
-                .is_none())
-            .then_some("torus trim outside the qualified two-rim band family")
+            // A mixed-notch corner patch (outer-only four-circle loop) is
+            // measured on its true UV outline by the generic face integrator,
+            // so it never consults the wrap heuristic below: that heuristic
+            // samples the tube angle along the loop, and a near-pi projection
+            // jump on one mirror twin reads as a full tube wrap (the other
+            // twin reads zero) even though the loop is null-homotopic either
+            // way. Bands and bores keep the existing classification.
+            if torus_face_is_notch_patch(topo, fid) {
+                None
+            } else {
+                let trimmed = !face.inner_wires().is_empty()
+                    || torus_wire_wraps_tube(topo, face.outer_wire(), torus);
+                (trimmed
+                    && remus_check::properties::face_integrator::integrate_torus_band_face(
+                        topo,
+                        fid,
+                        OPEN_MESH_GAUSS_ORDER,
+                    )?
+                    .is_none())
+                .then_some("torus trim outside the qualified two-rim band family")
+            }
         }
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
             (quadric_wall_is_notched_band(topo, fid)
@@ -2004,6 +2133,17 @@ pub fn solid_volume(
     let requested = deflection;
     let deflection = volume_tessellation_deflection(topo, solid, deflection);
     vol_trace(|| format!("deflection requested {requested:e} -> {deflection:e}"));
+
+    // Qualified trimmed torus-notch family (exact rolling-ball fillet output
+    // with torus corner patches): every face integrates exactly on its true
+    // boundary (see `qualified_notch_family_exact_volume`), so measure the
+    // Gauss sum instead of faceting the solid — the closed mesh below chords
+    // every convex patch and under-reads the corners. Unqualified bodies keep
+    // the existing dispatch untouched.
+    if let Some(volume) = qualified_notch_family_exact_volume(topo, solid)? {
+        vol_trace(|| format!("notch family exact faces -> {volume}"));
+        return Ok(volume);
+    }
 
     // A scalloped sphere collar (box ∩ sphere) cannot be per-face tessellated
     // watertight (its band path needs the solid's shared boundary vertices), and
