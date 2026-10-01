@@ -1654,6 +1654,50 @@ export class BrepKernel {
         }
     }
     /**
+     * Classify one manifold edge of a solid as convex, concave, tangent,
+     * or unknown.
+     *
+     * Returns a JSON string `{ relation, dihedralAngle }` (see the
+     * `EdgeConvexityResult` TypeScript type). `relation` is the kernel's
+     * own quadrant-probe verdict and retires the consumer adapter's
+     * `radialSense` inference with its `'convex'` fallback. `dihedralAngle`
+     * is the signed angle between the two effective outward normals in
+     * radians — positive for convex, negative for concave, near zero for
+     * tangent — and `null` when the relation is `unknown` or the angle is
+     * unavailable. Unknown never guesses: self-seams, non-manifold edges,
+     * degenerate normals, and probes above 25 % of the local edge/face
+     * scale report `unknown` with a `null` angle.
+     *
+     * `probe` is an optional override in model units. Omit it to use the
+     * per-edge default `0.05 * local_scale`, where `local_scale` is
+     * `max(min(face spans), edge span)`; the default keeps the probe local
+     * from 1e-3 through 1e3. A zero, negative, or non-finite probe is a
+     * typed `InvalidInput` refusal. A foreign or deleted solid or edge
+     * handle, or a live edge that belongs to a different solid, is a typed
+     * refusal naming the handle.
+     *
+     * For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
+     * a per-edge loop over this call rebuilds adjacency per edge (the
+     * quadratic trap on a 2 000-edge import), while the bulk call builds it
+     * once.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted handle, an invalid probe,
+     * or a topology or classification failure.
+     * @param {number} solid
+     * @param {number} edge
+     * @param {number | null} [probe]
+     * @returns {any}
+     */
+    edgeConvexity(solid, edge, probe) {
+        const ret = wasm.brepkernel_edgeConvexity(this.__wbg_ptr, solid, edge, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compute the length of an edge.
      *
      * # Errors
@@ -1931,6 +1975,48 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Material side of one analytic face: `"outward"` (boss-like) or
+     * `"inward"` (bore- or pocket-like).
+     *
+     * The verdict compares the face's effective outward normal against its
+     * radial direction at a boundary sample — no probe, no classification
+     * call. Cylinder and cone walls read against their axis-perpendicular
+     * radial, spheres against the centre radial, tori against the
+     * tube-centre radial. Planes and NURBS have no axis or centre and are a
+     * typed unsupported refusal.
+     *
+     * Edge convexity and face material sense are different questions: a
+     * bore's top rim is convex while its wall is inward. Report both;
+     * never collapse them into one value.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted handle, for a face that is
+     * not part of the solid, or a typed unsupported refusal for plane and
+     * NURBS faces.
+     * @param {number} solid
+     * @param {number} face
+     * @returns {string}
+     */
+    faceMaterialSense(solid, face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_faceMaterialSense(this.__wbg_ptr, solid, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Compute the perimeter of a face.
@@ -6727,6 +6813,32 @@ export class BrepKernel {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * Classify every edge of a solid in one pass.
+     *
+     * Returns a JSON string array of `{ edge, relation, dihedralAngle }`
+     * rows (see `EdgeRelationRow`). Same verdicts and angles as
+     * [`edgeConvexity`](Self::edge_convexity), but adjacency is built once
+     * — this is the call the consumer must use for whole-solid scans. The
+     * optional `probe` override applies to every edge; omit it for the
+     * per-edge `0.05 * local_scale` default. Unknown edges report
+     * `relation: "unknown"` with a `null` angle, never a guess.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted solid handle, an invalid
+     * probe, or a topology or classification failure.
+     * @param {number} solid
+     * @param {number | null} [probe]
+     * @returns {any}
+     */
+    solidEdgeRelations(solid, probe) {
+        const ret = wasm.brepkernel_solidEdgeRelations(this.__wbg_ptr, solid, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Create a solid from a shell.

@@ -57,6 +57,15 @@ export interface EvolutionShapeV1 {
 }
 
 /**
+ * Material side for `faceMaterialSense`: `"outward"` (boss-like) or
+ * `"inward"` (bore- or pocket-like).
+ *
+ * A different question from edge convexity: a bore's top rim is convex
+ * while its wall is inward. Report both; never collapse them.
+ */
+export type FaceMaterialSense = "outward" | "inward";
+
+/**
  * One counted healing repair category.
  */
 export interface HealRepairDisclosure {
@@ -85,12 +94,46 @@ export interface ValidationIssueResult {
 }
 
 /**
+ * One row of `solidEdgeRelations`: the edge handle plus its convexity.
+ *
+ * Ship the bulk binding and tell the consumer to use it: a per-edge loop
+ * over `edgeConvexity` on a 2 000-edge import rebuilds adjacency per call
+ * (the quadratic trap), while this call builds it once.
+ */
+export interface EdgeRelationRow {
+    /**
+     * Edge handle (`u32` arena index).
+     */
+    edge: number;
+    /**
+     * Convex, concave, tangent, or unknown (never a guess).
+     */
+    relation: EdgeConvexityRelation;
+    /**
+     * Signed normal angle in radians, or `null` for unknown edges.
+     */
+    dihedralAngle: number | undefined;
+}
+
+/**
  * One source face and the final-result faces related to it.
  */
 export interface EvolutionRelationV1 {
     source: number;
     results: number[];
 }
+
+/**
+ * Per-edge convexity verdict for `edgeConvexity`.
+ *
+ * The `relation` retires the consumer adapter's `radialSense` inference
+ * and its `'convex'` fallback: it is the kernel's own quadrant-probe
+ * verdict, and `unknown` never guesses. `dihedralAngle` is the signed angle
+ * between the two effective outward normals in radians — positive for
+ * convex, negative for concave, near zero for tangent — and `null` when
+ * the relation is `unknown` or the angle is unavailable.
+ */
+export type EdgeConvexityRelation = "convex" | "concave" | "tangent" | "unknown";
 
 /**
  * Per-step entry in a `HealPipelineResult`.
@@ -237,6 +280,20 @@ export interface BoundingBoxResult {
     max_x: number;
     max_y: number;
     max_z: number;
+}
+
+/**
+ * Typed result for `edgeConvexity`.
+ */
+export interface EdgeConvexityResult {
+    /**
+     * Convex, concave, tangent, or unknown (never a guess).
+     */
+    relation: EdgeConvexityRelation;
+    /**
+     * Signed normal angle in radians, or `null` for unknown edges.
+     */
+    dihedralAngle: number | undefined;
 }
 
 /**
@@ -1408,6 +1465,40 @@ export class BrepKernel {
      */
     draftJournaled(solid: number, faces: Uint32Array, pull_direction: Float64Array, neutral_point: Float64Array, angle_degrees: number): string;
     /**
+     * Classify one manifold edge of a solid as convex, concave, tangent,
+     * or unknown.
+     *
+     * Returns a JSON string `{ relation, dihedralAngle }` (see the
+     * `EdgeConvexityResult` TypeScript type). `relation` is the kernel's
+     * own quadrant-probe verdict and retires the consumer adapter's
+     * `radialSense` inference with its `'convex'` fallback. `dihedralAngle`
+     * is the signed angle between the two effective outward normals in
+     * radians — positive for convex, negative for concave, near zero for
+     * tangent — and `null` when the relation is `unknown` or the angle is
+     * unavailable. Unknown never guesses: self-seams, non-manifold edges,
+     * degenerate normals, and probes above 25 % of the local edge/face
+     * scale report `unknown` with a `null` angle.
+     *
+     * `probe` is an optional override in model units. Omit it to use the
+     * per-edge default `0.05 * local_scale`, where `local_scale` is
+     * `max(min(face spans), edge span)`; the default keeps the probe local
+     * from 1e-3 through 1e3. A zero, negative, or non-finite probe is a
+     * typed `InvalidInput` refusal. A foreign or deleted solid or edge
+     * handle, or a live edge that belongs to a different solid, is a typed
+     * refusal naming the handle.
+     *
+     * For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
+     * a per-edge loop over this call rebuilds adjacency per edge (the
+     * quadratic trap on a 2 000-edge import), while the bulk call builds it
+     * once.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted handle, an invalid probe,
+     * or a topology or classification failure.
+     */
+    edgeConvexity(solid: number, edge: number, probe?: number | null): any;
+    /**
      * Compute the length of an edge.
      *
      * # Errors
@@ -1523,6 +1614,28 @@ export class BrepKernel {
      * Build a face-face blend sheet and verify one prescribed contact line.
      */
     faceFaceBlendWithHoldLine(first_face: number, second_face: number, radius: number, hold_face: number, start_x: number, start_y: number, start_z: number, end_x: number, end_y: number, end_z: number): number;
+    /**
+     * Material side of one analytic face: `"outward"` (boss-like) or
+     * `"inward"` (bore- or pocket-like).
+     *
+     * The verdict compares the face's effective outward normal against its
+     * radial direction at a boundary sample — no probe, no classification
+     * call. Cylinder and cone walls read against their axis-perpendicular
+     * radial, spheres against the centre radial, tori against the
+     * tube-centre radial. Planes and NURBS have no axis or centre and are a
+     * typed unsupported refusal.
+     *
+     * Edge convexity and face material sense are different questions: a
+     * bore's top rim is convex while its wall is inward. Report both;
+     * never collapse them into one value.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted handle, for a face that is
+     * not part of the solid, or a typed unsupported refusal for plane and
+     * NURBS faces.
+     */
+    faceMaterialSense(solid: number, face: number): string;
     /**
      * Compute the perimeter of a face.
      *
@@ -3656,6 +3769,23 @@ export class BrepKernel {
      * positions, and arc definitions.
      */
     sketchSolve(sketch: number, max_iterations: number, tolerance: number): string;
+    /**
+     * Classify every edge of a solid in one pass.
+     *
+     * Returns a JSON string array of `{ edge, relation, dihedralAngle }`
+     * rows (see `EdgeRelationRow`). Same verdicts and angles as
+     * [`edgeConvexity`](Self::edge_convexity), but adjacency is built once
+     * — this is the call the consumer must use for whole-solid scans. The
+     * optional `probe` override applies to every edge; omit it for the
+     * per-edge `0.05 * local_scale` default. Unknown edges report
+     * `relation: "unknown"` with a `null` angle, never a guess.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted solid handle, an invalid
+     * probe, or a topology or classification failure.
+     */
+    solidEdgeRelations(solid: number, probe?: number | null): any;
     /**
      * Create a solid from a shell.
      *
