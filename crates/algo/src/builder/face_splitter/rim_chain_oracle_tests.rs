@@ -807,6 +807,7 @@ fn frustum_cut_by_two_rulings_is_two_sectors_through_the_dispatcher() {
             v_periodic: false,
         }),
         &remus_math::det_hash::DetHashMap::default(),
+        &remus_math::context::OperationContext::new(),
         None,
     )
     .unwrap();
