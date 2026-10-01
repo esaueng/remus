@@ -118,6 +118,7 @@ Quick reference — find the right file for any task:
 | Points, vectors, matrices | `vec.rs`, `mat.rs` |
 | Planes | `plane.rs` |
 | NURBS curve evaluation/manipulation | `nurbs/curve.rs` |
+| Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
 | NURBS surface evaluation | `nurbs/surface.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
@@ -222,6 +223,7 @@ Quick reference — find the right file for any task:
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
+| Bounded cylinder arrangement adapter | `builder/face_splitter/arrangement_cyl.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
@@ -375,6 +377,7 @@ Quick reference — find the right file for any task:
 | Constraint types (26 variants, Jacobians) | `gcs/constraint.rs` |
 | Entity arena (Points, Lines, Circles) | `gcs/entity.rs` |
 | DogLeg trust-region solver | `gcs/solver.rs` |
+| Bounded sparse coupled-sketch solver | `gcs/sparse.rs` |
 | QR factorization (rank detection) | `gcs/qr.rs` |
 | DOF analysis | `gcs/dof.rs` |
 | Solve diagnostics + classification | `gcs/diagnostics.rs` |

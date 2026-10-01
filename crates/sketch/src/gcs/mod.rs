@@ -8,6 +8,7 @@ mod entity;
 mod final_eval;
 mod qr;
 mod solver;
+mod sparse;
 mod system;
 
 pub use constraint::{Constraint, ConstraintEntry, ConstraintId};
