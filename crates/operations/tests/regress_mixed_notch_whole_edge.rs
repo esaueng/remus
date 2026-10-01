@@ -1,37 +1,26 @@
-//! Pinned regression: whole-edge fillet of the concave L-bracket (slice 1).
+//! Pinned input characterization for the concave L-bracket whole-edge
+//! fillet (supersedes the former refusal pin: the mixed-side notch family
+//! is now qualified via torus corners, see
+//! `regress_notch_torus_whole_edge.rs`).
 //!
 //! Fixture (exact task dimensions): closed XY polygon
 //! `[(0,0),(40,0),(40,8),(8,8),(8,50),(0,50)]` extruded 20 mm along +Z,
-//! all 18 sharp physical edges selected at radius 1 mm and 2 mm through the
-//! public cascade (`fillet_cascade`, the engine chain behind the WASM
-//! `fillet` binding).
+//! all 18 sharp physical edges selected through the public cascade
+//! (`fillet_cascade`, the engine chain behind the WASM `fillet` binding).
 //!
-//! Actual cause (rechecked 2026-09-30 on origin/main `594cd308`): the two
-//! notch vertices `(8,8,0)` and `(8,8,20)` are mixed-side 3-way planar
-//! junctions (two convex edges + one concave edge). No qualified corner
-//! patch exists there yet: the rolling-ball engine's exact corner ball
-//! requires one connected material-side orientation
-//! (`exact_planar_corner_ball` returns `None` on alternating sides) and the
-//! walking builder has no watertight assembly for multi-chain vertices, so
-//! the call fails with `unsupported-vertex-blend`. The visible
-//! "2 stripes meet" text is the walking-builder guard's hardcoded message
-//! (`fillet_builder.rs`), not a geometric classification: the failing
-//! junctions each join THREE selected edges.
-//!
-//! Slice 2 will teach the kernel a qualified mixed-side patch and flip the
-//! `REFUSED` assertions below to success oracles (closed-form volume, G1,
-//! watertightness, STEP round-trip). Until then this test pins the typed
-//! refusal and the failure-atomicity contract: the input solid must be
-//! bit-identical afterwards.
+//! Junction classification (the qualifying analysis): the two notch
+//! vertices `(8,8,0)` and `(8,8,20)` are mixed-side 3-way planar junctions
+//! (two convex edges + one concave edge) closing with exact torus patches;
+//! the other ten vertices are all-convex (sphere caps). Oversized radii
+//! still reject atomically (out of scope for any corner patch).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
 
 use remus_check::validate::{ValidateOptions, validate_solid};
-use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
-use remus_operations::blend_ops::{blend_failure_code, fillet_cascade};
+use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::extrude::extrude;
 use remus_operations::measure::solid_volume;
 use remus_operations::query::{EdgeConcavity, edge_concavity, filter_filletable_edges};
@@ -225,61 +214,6 @@ fn oversized_whole_edge_fillet_rejects_unchanged() {
         assert!(
             fillet_cascade(&mut topo, solid, &physical, radius).is_err(),
             "r={radius}: oversized whole-edge fillet must be rejected"
-        );
-        assert_eq!(
-            fingerprint(&topo, solid),
-            before,
-            "r={radius}: rejected fillet must leave the input bit-identical"
-        );
-    }
-}
-
-/// The refusal is scale-invariant: a 10x bracket at 10x radius refuses the
-/// same way (same code, intact input).
-#[test]
-fn whole_edge_refusal_scales_with_geometry() {
-    let mut topo = Topology::new();
-    let solid = l_bracket(&mut topo);
-    let scale = Mat4::scale(10.0, 10.0, 10.0);
-    remus_operations::transform::transform_solid(&mut topo, solid, &scale).unwrap();
-    let all = solid_edges(&topo, solid).unwrap();
-    let physical = filter_filletable_edges(&topo, solid, &all).unwrap();
-    assert_eq!(physical.len(), 18);
-    let before = fingerprint(&topo, solid);
-
-    let err = match fillet_cascade(&mut topo, solid, &physical, 10.0) {
-        Ok(result) => panic!(
-            "10x bracket at r=10 must still refuse; built engine={:?}",
-            result.engine
-        ),
-        Err(e) => e,
-    };
-    assert_eq!(blend_failure_code(&err), "unsupported-vertex-blend");
-    assert_eq!(fingerprint(&topo, solid), before);
-}
-#[test]
-fn whole_edge_fillet_refuses_typed_and_leaves_input_intact() {
-    for radius in [1.0_f64, 2.0] {
-        let mut topo = Topology::new();
-        let solid = l_bracket(&mut topo);
-        let all = solid_edges(&topo, solid).unwrap();
-        let physical = filter_filletable_edges(&topo, solid, &all).unwrap();
-        let before = fingerprint(&topo, solid);
-        assert!(before.valid, "fixture must start valid: {before:?}");
-        assert_eq!((before.faces, before.edges), (8, 18));
-
-        let err = match fillet_cascade(&mut topo, solid, &physical, radius) {
-            Ok(result) => panic!(
-                "r={radius}: slice 1 expects refusal (slice 2 implements the mixed-side patch); \
-                 unexpectedly built engine={:?}",
-                result.engine
-            ),
-            Err(e) => e,
-        };
-        assert_eq!(
-            blend_failure_code(&err),
-            "unsupported-vertex-blend",
-            "r={radius}: must fail with the vertex-blend code, got: {err}"
         );
         assert_eq!(
             fingerprint(&topo, solid),
