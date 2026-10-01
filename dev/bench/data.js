@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790818314910,
+  "lastUpdate": 1790822543770,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -82105,6 +82105,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 88701,
             "range": "± 385",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a24958287833d30d55467a0b22ee8016e6bb3bdb",
+          "message": "fix(kernel): integrate six pending PRs and repair merge blockers (#902)\n\n* fix(operations): qualify shell exactness by carrier tolerance, repair coaxial bores\n\nReplace the 30%-of-wall linear-miter acceptance with the kernel\ntolerance contract (Tolerance::linear 1e-7, scale-relativized): an\nanalytic carrier off its carrier by any fraction is not exact.\nB76 thin (0.0009-0.048) and B78 thin (0.004-0.047) mesh shut yet sit\nthousands of tolerance lengths off, so thin now refuses like thick\n(PROMINENT NARROWING of previously mislabelled Exact hollows).\nOpen-thin (3-5 indexed/0 welded) and open-thick (11/0) leaks now\nrefuse via the same gate; valid planar/cylinder cups, hollow\nspheres, pocketed blocks, bored plates still hollow, and coaxial\nsphere-cylinder bores are repaired exactly via exact_sphere_cylinder\n(preserves drilled spheres). Oblique fuse seams refuse naming the\nmissing offset-surface intersection primitive. Adds the bounded\nexact-domain regression (grouped attribution, full spans, pcurves,\nmatrix, fuzz neighbors) and updates B76/B78 scope.\n\n* feat(algo): add bounded production cylinder arrangement slice (O2.3b/c/d)\n\nProvenance-preserving UV arrangement for finite cylinder laterals with exact\nlatitude circles and axial rulings. Topology-to-chart adaptation preserves\ncarrier parameters, coedge identity, pave provenance and both seam uses;\nquotient reconstruction carries winding, metric area, interior seeds and\nsource subspans. Early dispatch with budget-gated fallback (declines on\ndefault, preserving legacy); established band/sector paths retained, no\nemitter deleted. Isolated single-ruling fix plus roundoff-tolerant seam\nmatching, differential vs bands/sectors with closed-form oracles, and full\npermutation/rigid/scale/thin qualifications.\n\nRefs O2.3b/c, design uv-arrangement-splitter appendix.\n\n* perf(sketch): integrate bounded sparse coupled solver source\n\n* fix(operations): reference all volume fast paths to the body (B78)\n\nExtend the B58 integration_reference contract to every volume fast path:\nbored-quadric Gauss, shell signed volumes, torus bands, exact analytic\nclosed forms (plane/cylinder/cone/sphere/torus), and the direct per-face\nsum (holed quadrics via tessellation, not rectangle overcount).\n\nValid bored quadrics (base fuse, cross-drilled bore 1/2) are now\nbit-identical under translation and match mass_properties; the B78 thin\nhollow goes from 49.7% drift (4.807 vs 7.196, mesh bit-identical 4.9367)\nto 4.967855257 vs 4.967876089 (4.2e-6 tessellation sampling on the\nfragmented inner wall, mesh bit-identical, converged fine mesh 4.9685\nwithin 1.4e-4). Thin-hollow mass_properties still declines with a typed\nbudget refusal (preserved).\n\nRegression: operations/tests/regress_b78_measurement_invariance.rs (4/4\nfail before, pass after). Roadmap B78 residual updated.\n\n* perf(math): compact band storage for NURBS interpolation (PERF-N01)\n\nStore the already-banded collocation solve in n*(3*bw+1) instead of n*n,\nretaining pivot fill (ku=2*kl), one factorization for all RHS, 1e-15\nsingularity threshold, and endpoint behavior. Strictly increasing params\nprove span in [i,i+p]; repeated-param drift falls back to dense with\nverbatim band-limited arithmetic. Least-squares untouched.\n\n* docs(roadmap): link PERF-N01 to review PR 898\n\n* fix(operations): exact Gauss volume for the trimmed torus-notch family\n\nsolid_volume summed the closed whole-solid mesh for any solid with a\nnon-latitude sphere patch, so torus-notch fillets measured 0.64 low at\nr=1 on inscribed facets. Per-face boundary-trimmed Gauss already measures\nevery face of the family exactly (13027.2837 vs the 13027.2829 reference);\nonly the routing forced the mesh.\n\nAdd qualified_notch_family_exact_volume: trigger on an outer-only\nfour-quarter-circle torus loop, require every face gauss-qualified on\nanalytic carriers, else fall through untouched. Exempt the quarter-seam\nsignature from the tube-wrap heuristic in gauss_unqualified_face (one\nmirror twin misreads a near-pi projection jump as a full wrap; bands and\nbores keep the existing classification). A bore-rim torus with full-circle\ncontact edges stays on the mesh route (generic Gauss over-reads it 8.8e-3,\nindependent-reference checked).\n\nOracles tightened to distinguish the routes (mesh cannot pass): r=1\n2.0->0.05, r=2 4.0->0.2, transform 2.0->0.05, STEP refillet 2.0->0.2,\nround-trip 0.5->0.1. New coverage: mass_properties agreement, 10x scale,\nV2 WASM exact-volume assert.\n\n* fix: reconcile PR policy gates and shell measurement contracts\n\n* fix(operations): require stored quarter spans for notch volume\n\n* chore(wasm): rebuild integrated packages to v2026.1.24\n\n* fix(measure): preserve fixed-order shell orientation probes\n\n* chore(wasm): rebuild fixed orientation packages to v2026.1.25",
+          "timestamp": "2026-09-30T19:34:20-07:00",
+          "tree_id": "498e7d9678e01212d9c6c893e631158cedde3842",
+          "url": "https://github.com/esaueng/remus/commit/a24958287833d30d55467a0b22ee8016e6bb3bdb"
+        },
+        "date": 1790822541780,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1412175,
+            "range": "± 3709",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1505848,
+            "range": "± 1892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 36744,
+            "range": "± 158",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11852638,
+            "range": "± 15106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11838388,
+            "range": "± 23689",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11399637,
+            "range": "± 12243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1181498,
+            "range": "± 15649",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17731408,
+            "range": "± 202864",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 37422500,
+            "range": "± 231718",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 216,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 160,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 801,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 154,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 214,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 518,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 745,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3249,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 578206,
+            "range": "± 1080",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 8977884,
+            "range": "± 14218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 171799,
+            "range": "± 210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 535027,
+            "range": "± 1918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 63440,
+            "range": "± 915",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 924467,
+            "range": "± 1917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10653735,
+            "range": "± 45554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 862428,
+            "range": "± 1587",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1314886,
+            "range": "± 6125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86459,
+            "range": "± 469",
             "unit": "ns/iter"
           }
         ]
