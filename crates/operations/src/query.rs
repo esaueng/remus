@@ -625,9 +625,401 @@ pub(crate) fn edge_is_tangent(
     edge_is_g1(topo, eid, face_a, face_b)
 }
 
+/// Material side of an analytic face, determined without any probe.
+///
+/// `Outward` is a boss-like wall whose effective outward normal points away
+/// from the surface's axis (cylinder, cone) or centre (sphere, tube centre
+/// for torus). `Inward` is a bore- or pocket-like wall whose effective
+/// outward normal points toward that axis or centre. Planes and NURBS have
+/// no axis or centre and are a typed refusal, never a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterialSense {
+    /// Boss-like wall: effective outward normal points away from the axis
+    /// or centre.
+    Outward,
+    /// Bore- or pocket-like wall: effective outward normal points toward
+    /// the axis or centre.
+    Inward,
+}
+
+impl MaterialSense {
+    /// Stable lowercase wire spelling (`"outward"` / `"inward"`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Outward => "outward",
+            Self::Inward => "inward",
+        }
+    }
+}
+
+/// Per-edge convexity plus its signed dihedral.
+///
+/// `dihedral_angle` is the angle between the two effective outward normals
+/// in `[0, pi]`, signed by the convexity verdict: positive for
+/// [`EdgeConcavity::Convex`], negative for [`EdgeConcavity::Concave`], and
+/// the unsigned near-zero angle for [`EdgeConcavity::Tangent`]. It is `None`
+/// when the edge is [`EdgeConcavity::Unknown`] or the normal angle is
+/// unavailable — an unknown edge never guesses, not even its angle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeRelation {
+    /// The classified edge.
+    pub edge: EdgeId,
+    /// Convex, concave, tangent, or unknown (never a guess).
+    pub concavity: EdgeConcavity,
+    /// Signed normal angle in radians, or `None` for unknown edges.
+    pub dihedral_angle: Option<f64>,
+}
+
+impl EdgeConcavity {
+    /// Stable lowercase wire spelling for the WASM boundary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Convex => "convex",
+            Self::Concave => "concave",
+            Self::Tangent => "tangent",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Default concavity probe for one manifold edge.
+///
+/// The formula is `0.05 * local_scale`, where `local_scale` is
+/// `max(min(face_vertex_span(a), face_vertex_span(b)), edge_curve_span(edge))`.
+/// Five percent sits well inside the classifier's 25 % local-scale cap,
+/// leaving a 5x margin against reading a neighbouring feature, while staying
+/// scale-relative from 1e-3 through 1e3. Returns an error when the local
+/// scale is non-positive or non-finite.
+///
+/// # Errors
+///
+/// Returns `OperationsError::Topology` when the edge or its faces cannot be
+/// traversed, or `InvalidInput` when the local scale is degenerate.
+pub fn default_concavity_probe(
+    topo: &Topology,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+) -> Result<f64, OperationsError> {
+    let face_scale = face_vertex_span(topo, face_a)?.min(face_vertex_span(topo, face_b)?);
+    let local_scale = face_scale.max(edge_curve_span(topo, edge)?);
+    if !local_scale.is_finite() || local_scale <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge convexity default probe has degenerate local scale".into(),
+        });
+    }
+    Ok(local_scale * 0.05)
+}
+
+fn signed_dihedral(concavity: EdgeConcavity, angle: Option<f64>) -> Option<f64> {
+    match (concavity, angle) {
+        (EdgeConcavity::Convex, Some(a)) => Some(a),
+        (EdgeConcavity::Concave, Some(a)) => Some(-a),
+        (EdgeConcavity::Tangent, Some(a)) => Some(a),
+        _ => None,
+    }
+}
+
+fn edge_relation_with_faces_and_probe(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+    probe: f64,
+) -> Result<EdgeRelation, OperationsError> {
+    let concavity = edge_concavity_from_faces(topo, solid, edge, face_a, face_b, probe)?;
+    let angle = edge_normal_angle(topo, edge, face_a, face_b)?;
+    Ok(EdgeRelation {
+        edge,
+        concavity,
+        dihedral_angle: signed_dihedral(concavity, angle),
+    })
+}
+
+/// Classify one edge of `solid`, with an optional caller probe.
+///
+/// This is the single-edge bulk path: adjacency is built once for the lookup
+/// and the non-robust `edge_concavity_from_faces` classifier runs, so a
+/// per-edge loop over [`solid_edge_relations`] stays consistent with this
+/// call. `probe = None` selects [`default_concavity_probe`]
+/// (`0.05 * local_scale`); `Some(p)` must be positive and finite. A
+/// non-manifold edge, a self-seam, or a probe above 25 % of the local scale
+/// reports [`EdgeConcavity::Unknown`] with no dihedral rather than a guess.
+///
+/// `edge_concavity`'s robust single-call semantics are untouched; this is the
+/// bulk-path sibling the WASM bindings share.
+///
+/// # Errors
+///
+/// Returns `InvalidInput` for a non-positive or non-finite caller probe or
+/// for an edge that is not part of `solid`, or propagates topology and
+/// classification errors.
+pub fn edge_relation(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    probe: Option<f64>,
+) -> Result<EdgeRelation, OperationsError> {
+    if probe.is_some_and(|p| !p.is_finite() || p <= 0.0) {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
+    // Ownership first: adjacency alone gives another solid's edge no faces,
+    // which would read as the conservative `Unknown` meant for this solid's
+    // own seams and non-manifold edges.
+    if !remus_topology::explorer::solid_edges(topo, solid)?.contains(&edge) {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("edge {} is not part of the solid", edge.index()),
+        });
+    }
+    let adjacency = topo.build_adjacency(solid)?;
+    let faces = adjacency.faces_for_edge(edge);
+    if faces.len() != 2 || faces[0] == faces[1] {
+        return Ok(EdgeRelation {
+            edge,
+            concavity: EdgeConcavity::Unknown,
+            dihedral_angle: None,
+        });
+    }
+    let (face_a, face_b) = (faces[0], faces[1]);
+    let probe_eff = if let Some(p) = probe {
+        p
+    } else if let Ok(p) = default_concavity_probe(topo, edge, face_a, face_b) {
+        p
+    } else {
+        return Ok(EdgeRelation {
+            edge,
+            concavity: EdgeConcavity::Unknown,
+            dihedral_angle: None,
+        });
+    };
+    edge_relation_with_faces_and_probe(topo, solid, edge, face_a, face_b, probe_eff)
+}
+
+/// Classify every edge of `solid` in one pass.
+///
+/// Adjacency is built once and the bulk `edge_concavity_from_faces`
+/// classifier runs per edge, so a 2 000-edge import costs one adjacency plus
+/// one classification per edge — never the quadratic rebuild a per-edge loop
+/// over the single-edge binding would pay. `probe = None` selects the
+/// per-edge [`default_concavity_probe`] (`0.05 * local_scale`, documented
+/// there); `Some(p)` applies one caller probe to every edge and must be
+/// positive and finite. Edges that are non-manifold, self-seams, degenerate,
+/// or probed above 25 % of their local scale report
+/// [`EdgeConcavity::Unknown`] with no dihedral rather than a guess.
+///
+/// # Errors
+///
+/// Returns `InvalidInput` for a non-positive or non-finite caller probe, or
+/// propagates topology and classification errors.
+pub fn solid_edge_relations(
+    topo: &Topology,
+    solid: SolidId,
+    probe: Option<f64>,
+) -> Result<Vec<EdgeRelation>, OperationsError> {
+    if probe.is_some_and(|p| !p.is_finite() || p <= 0.0) {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
+    let adjacency = topo.build_adjacency(solid)?;
+    let edges = remus_topology::explorer::solid_edges(topo, solid)?;
+    let mut out = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let faces = adjacency.faces_for_edge(edge);
+        if faces.len() != 2 || faces[0] == faces[1] {
+            out.push(EdgeRelation {
+                edge,
+                concavity: EdgeConcavity::Unknown,
+                dihedral_angle: None,
+            });
+            continue;
+        }
+        let (face_a, face_b) = (faces[0], faces[1]);
+        let probe_eff = if let Some(p) = probe {
+            p
+        } else if let Ok(p) = default_concavity_probe(topo, edge, face_a, face_b) {
+            p
+        } else {
+            out.push(EdgeRelation {
+                edge,
+                concavity: EdgeConcavity::Unknown,
+                dihedral_angle: None,
+            });
+            continue;
+        };
+        out.push(edge_relation_with_faces_and_probe(
+            topo, solid, edge, face_a, face_b, probe_eff,
+        )?);
+    }
+    Ok(out)
+}
+
+/// Material sense of one analytic face of `solid`, without any probe.
+///
+/// The verdict compares the face's effective outward normal
+/// ([`effective_face_normal`], orientation-aware) against the surface's
+/// radial direction at a boundary sample: cylinder and cone walls against
+/// the axis-perpendicular radial, spheres against the centre radial, tori
+/// against the tube-centre radial (closest point on the major circle). A
+/// positive projection is [`MaterialSense::Outward`] (boss-like), a negative
+/// one [`MaterialSense::Inward`] (bore- or pocket-like). This is a different
+/// question from edge convexity: a bore's top rim is convex while its wall
+/// is inward — report both, never collapse them.
+///
+/// Planes and NURBS have no axis or centre and are a typed
+/// [`OperationsError::Unsupported`] refusal. A face that does not belong to
+/// `solid`, a missing effective normal, or a degenerate radial is
+/// [`OperationsError::InvalidInput`].
+///
+/// # Errors
+///
+/// Returns `Unsupported` for plane and NURBS faces, `InvalidInput` when the
+/// face is not part of `solid` or its sense cannot be established, or
+/// propagates topology errors.
+pub fn face_material_sense(
+    topo: &Topology,
+    solid: SolidId,
+    face: FaceId,
+) -> Result<MaterialSense, OperationsError> {
+    let owned = remus_topology::explorer::solid_faces(topo, solid)?;
+    if !owned.contains(&face) {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("face {} is not part of the solid", face.index()),
+        });
+    }
+    let face_data = topo.face(face)?;
+    match face_data.surface() {
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+            return Err(OperationsError::Unsupported {
+                operation: "face_material_sense",
+                reason: "material sense is defined only for cylinder, cone, sphere and torus faces"
+                    .into(),
+            });
+        }
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => {}
+    }
+    let sample = {
+        let verts = remus_topology::explorer::face_vertices(topo, face)?;
+        let Some(first) = verts.first() else {
+            return Err(OperationsError::InvalidInput {
+                reason: "face has no vertices for material-sense sampling".into(),
+            });
+        };
+        topo.vertex(*first)?.point()
+    };
+    let Some(normal) = effective_face_normal(topo, face, sample) else {
+        return Err(OperationsError::InvalidInput {
+            reason: "face material sense needs a finite effective outward normal".into(),
+        });
+    };
+    let radial = match face_data.surface() {
+        FaceSurface::Cylinder(cyl) => {
+            let axis = cyl
+                .axis()
+                .normalize()
+                .map_err(|_| OperationsError::InvalidInput {
+                    reason: "cylindrical face has a degenerate axis".into(),
+                })?;
+            let to_point = sample - cyl.origin();
+            let closest = cyl.origin() + axis * axis.dot(to_point);
+            sample - closest
+        }
+        FaceSurface::Cone(cone) => {
+            let axis = cone
+                .axis()
+                .normalize()
+                .map_err(|_| OperationsError::InvalidInput {
+                    reason: "conical face has a degenerate axis".into(),
+                })?;
+            let to_point = sample - cone.apex();
+            let closest = cone.apex() + axis * axis.dot(to_point);
+            sample - closest
+        }
+        FaceSurface::Sphere(sphere) => sample - sphere.center(),
+        FaceSurface::Torus(torus) => {
+            let axis = torus
+                .z_axis()
+                .normalize()
+                .map_err(|_| OperationsError::InvalidInput {
+                    reason: "toroidal face has a degenerate axis".into(),
+                })?;
+            let to_point = sample - torus.center();
+            let along = axis * axis.dot(to_point);
+            let in_plane = to_point - along;
+            let planar_len = in_plane.length();
+            if !planar_len.is_finite() || planar_len <= 0.0 {
+                return Err(OperationsError::InvalidInput {
+                    reason: "toroidal face sample lies on its symmetry axis".into(),
+                });
+            }
+            let scale = torus.major_radius() / planar_len;
+            if !scale.is_finite() {
+                return Err(OperationsError::InvalidInput {
+                    reason: "toroidal tube centre is not finite".into(),
+                });
+            }
+            let circle_point = torus.center() + in_plane * scale;
+            if !circle_point.x().is_finite()
+                || !circle_point.y().is_finite()
+                || !circle_point.z().is_finite()
+            {
+                return Err(OperationsError::InvalidInput {
+                    reason: "toroidal tube centre is not finite".into(),
+                });
+            }
+            sample - circle_point
+        }
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+            return Err(OperationsError::Unsupported {
+                operation: "face_material_sense",
+                reason: "material sense is defined only for cylinder, cone, sphere and torus faces"
+                    .into(),
+            });
+        }
+    };
+    if !radial.x().is_finite() || !radial.y().is_finite() || !radial.z().is_finite() {
+        return Err(OperationsError::InvalidInput {
+            reason: "face material sense radial is not finite".into(),
+        });
+    }
+    let radial_len = radial.length();
+    if !radial_len.is_finite() || radial_len <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "face material sense radial is degenerate".into(),
+        });
+    }
+    let dot = normal.dot(radial);
+    if !dot.is_finite() {
+        return Err(OperationsError::InvalidInput {
+            reason: "face material sense projection is not finite".into(),
+        });
+    }
+    // Scale-relative zero: the dot is |radial| for cylinders and spheres,
+    // sin(a)*|radial| for cones, |tube| for tori. Anything at or below
+    // 1e-12 of the radial length is perpendicular, not a sense.
+    if dot.abs() <= 1e-12 * radial_len {
+        return Err(OperationsError::InvalidInput {
+            reason: "face material sense is perpendicular to its radial".into(),
+        });
+    }
+    Ok(if dot > 0.0 {
+        MaterialSense::Outward
+    } else {
+        MaterialSense::Inward
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, deprecated)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, deprecated)]
 
     use remus_math::mat::Mat4;
     use remus_topology::edge::EdgeCurve;
@@ -943,5 +1335,412 @@ mod tests {
             })
             .count();
         assert_eq!(bore_tangent, 0, "a plain bore has no G1 spring contacts");
+    }
+
+    // ── B16: bulk edge relations + face material sense ──────────────
+    //
+    // Closed-form fixtures at 1e-3, 1 and 1e3 plus one rigid placement.
+    // The default probe is 0.05 * local_scale per edge; every cell below
+    // runs with `None` except the oversized-probe Unknown pin.
+
+    fn circle_rim_at_z(
+        topo: &Topology,
+        solid: remus_topology::solid::SolidId,
+        z: f64,
+        tol: f64,
+    ) -> EdgeId {
+        solid_edges(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let data = topo.edge(edge).unwrap();
+                matches!(data.curve(), EdgeCurve::Circle(_))
+                    && (topo.vertex(data.start()).unwrap().point().z() - z).abs() < tol
+            })
+            .unwrap_or_else(|| panic!("no circle rim at z={z}"))
+    }
+
+    fn cylinder_wall_faces(topo: &Topology, solid: remus_topology::solid::SolidId) -> Vec<FaceId> {
+        solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .collect()
+    }
+
+    fn planar_faces(topo: &Topology, solid: remus_topology::solid::SolidId) -> Vec<FaceId> {
+        solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| topo.face(face).unwrap().surface().is_planar())
+            .collect()
+    }
+
+    #[test]
+    fn b16_box_edges_convex_with_pi_half_dihedral_across_scales() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut topo = Topology::new();
+            let solid = make_box(&mut topo, scale, scale, scale).unwrap();
+            let relations = solid_edge_relations(&topo, solid, None).unwrap();
+            assert_eq!(relations.len(), 12, "box has 12 edges at scale {scale:e}");
+            for rel in &relations {
+                assert_eq!(
+                    rel.concavity,
+                    EdgeConcavity::Convex,
+                    "box edge must be convex at scale {scale:e}"
+                );
+                let angle = rel.dihedral_angle.expect("convex carries a signed angle");
+                assert!(
+                    (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+                    "box dihedral must be +pi/2, got {angle} at scale {scale:e}"
+                );
+                // Bulk agrees with the single-edge bulk path.
+                let single = edge_relation(&topo, solid, rel.edge, None).unwrap();
+                assert_eq!(single.concavity, rel.concavity);
+                assert_eq!(single.dihedral_angle, rel.dihedral_angle);
+            }
+            // Oversized probe never guesses.
+            let huge = solid_edge_relations(&topo, solid, Some(scale * 10.0)).unwrap();
+            assert!(
+                huge.iter()
+                    .all(|r| r.concavity == EdgeConcavity::Unknown && r.dihedral_angle.is_none()),
+                "a probe far above local scale must be Unknown at scale {scale:e}"
+            );
+            // Zero and negative probes are typed refusals, not Unknown.
+            assert!(solid_edge_relations(&topo, solid, Some(0.0)).is_err());
+            assert!(solid_edge_relations(&topo, solid, Some(-1.0)).is_err());
+            assert!(edge_relation(&topo, solid, relations[0].edge, Some(0.0)).is_err());
+        }
+    }
+
+    #[test]
+    fn b16_box_convexity_survives_rigid_placement() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 4.0, 2.0, 1.0).unwrap();
+        let placed =
+            Mat4::translation(17.0, -23.0, 31.0) * Mat4::rotation_y(0.37) * Mat4::rotation_x(0.61);
+        transform_solid(&mut topo, solid, &placed).unwrap();
+        let relations = solid_edge_relations(&topo, solid, None).unwrap();
+        assert_eq!(relations.len(), 12);
+        for rel in &relations {
+            assert_eq!(rel.concavity, EdgeConcavity::Convex);
+            let angle = rel.dihedral_angle.unwrap();
+            assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn b16_pocket_floor_wall_edges_concave() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut topo = Topology::new();
+            let base = make_box(&mut topo, 20.0 * scale, 20.0 * scale, 10.0 * scale).unwrap();
+            let tool = make_box(&mut topo, 10.0 * scale, 10.0 * scale, 6.0 * scale).unwrap();
+            transform_solid(
+                &mut topo,
+                tool,
+                &Mat4::translation(5.0 * scale, 5.0 * scale, 4.0 * scale),
+            )
+            .unwrap();
+            let pocket = boolean(&mut topo, BooleanOp::Cut, base, tool).unwrap();
+            // Floor-wall rim: circle-free rectangular loop at the pocket floor.
+            let floor_z = 4.0 * scale;
+            let rim: Vec<EdgeRelation> = solid_edge_relations(&topo, pocket, None)
+                .unwrap()
+                .into_iter()
+                .filter(|rel| {
+                    let data = topo.edge(rel.edge).unwrap();
+                    [data.start(), data.end()].iter().all(|v| {
+                        (topo.vertex(*v).unwrap().point().z() - floor_z).abs()
+                            < 1e-9 * scale.max(1.0)
+                    }) && matches!(data.curve(), EdgeCurve::Line)
+                })
+                .collect();
+            assert_eq!(rim.len(), 4, "pocket floor must have 4 wall edges");
+            for rel in &rim {
+                assert_eq!(rel.concavity, EdgeConcavity::Concave);
+                let angle = rel.dihedral_angle.expect("concave carries a signed angle");
+                assert!(
+                    (angle + std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+                    "pocket dihedral must be -pi/2, got {angle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn b16_boss_rims_and_wall_sense() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut topo = Topology::new();
+            let plate = make_box(&mut topo, 80.0 * scale, 40.0 * scale, 8.0 * scale).unwrap();
+            let post = make_cylinder(&mut topo, 10.0 * scale, 32.0 * scale).unwrap();
+            transform_solid(
+                &mut topo,
+                post,
+                &Mat4::translation(40.0 * scale, 20.0 * scale, 8.0 * scale),
+            )
+            .unwrap();
+            let posted = boolean(&mut topo, BooleanOp::Fuse, plate, post).unwrap();
+            let tol = 1e-9 * scale.max(1.0);
+            let foot = circle_rim_at_z(&topo, posted, 8.0 * scale, tol);
+            let top = circle_rim_at_z(&topo, posted, 40.0 * scale, tol);
+            // Foot rim is re-entrant (plate top meets boss wall): concave.
+            // Top rim is the boss cap meeting its wall: a 90-degree convex edge.
+            assert_eq!(
+                edge_relation(&topo, posted, foot, None).unwrap().concavity,
+                EdgeConcavity::Concave
+            );
+            assert_eq!(
+                edge_relation(&topo, posted, top, None).unwrap().concavity,
+                EdgeConcavity::Convex
+            );
+            let walls = cylinder_wall_faces(&topo, posted);
+            assert!(!walls.is_empty(), "boss must keep a cylindrical wall");
+            for wall in walls {
+                assert_eq!(
+                    face_material_sense(&topo, posted, wall).unwrap(),
+                    MaterialSense::Outward,
+                    "boss wall must read outward"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn b16_through_bore_rims_convex_wall_inward() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut topo = Topology::new();
+            let plate = make_box(&mut topo, 20.0 * scale, 20.0 * scale, 6.0 * scale).unwrap();
+            let drill = make_cylinder(&mut topo, 3.0 * scale, 10.0 * scale).unwrap();
+            transform_solid(
+                &mut topo,
+                drill,
+                &Mat4::translation(10.0 * scale, 10.0 * scale, -2.0 * scale),
+            )
+            .unwrap();
+            let bored = boolean(&mut topo, BooleanOp::Cut, plate, drill).unwrap();
+            let tol = 1e-9 * scale.max(1.0);
+            // Both rims of a through-bore are 90-degree material wedges:
+            // convex by the quadrant probe, while the wall itself is inward.
+            for z in [0.0, 6.0 * scale] {
+                let rim = circle_rim_at_z(&topo, bored, z, tol);
+                let rel = edge_relation(&topo, bored, rim, None).unwrap();
+                assert_eq!(rel.concavity, EdgeConcavity::Convex, "bore rim at z={z}");
+                let angle = rel.dihedral_angle.unwrap();
+                assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+            }
+            let walls = cylinder_wall_faces(&topo, bored);
+            assert!(!walls.is_empty());
+            for wall in walls {
+                assert_eq!(
+                    face_material_sense(&topo, bored, wall).unwrap(),
+                    MaterialSense::Inward,
+                    "bore wall must read inward"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn b16_blind_hole_floor_rim_concave_wall_inward() {
+        let scale = 1.0;
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 20.0 * scale, 20.0 * scale, 6.0 * scale).unwrap();
+        let drill = make_cylinder(&mut topo, 3.0 * scale, 4.0 * scale).unwrap();
+        transform_solid(
+            &mut topo,
+            drill,
+            &Mat4::translation(10.0 * scale, 10.0 * scale, 2.0 * scale),
+        )
+        .unwrap();
+        let blind = boolean(&mut topo, BooleanOp::Cut, plate, drill).unwrap();
+        let tol = 1e-9;
+        // Opening rim convex, floor rim (wall meets hole floor) concave.
+        let opening = circle_rim_at_z(&topo, blind, 6.0 * scale, tol);
+        let floor = circle_rim_at_z(&topo, blind, 2.0 * scale, tol);
+        assert_eq!(
+            edge_relation(&topo, blind, opening, None)
+                .unwrap()
+                .concavity,
+            EdgeConcavity::Convex
+        );
+        let floor_rel = edge_relation(&topo, blind, floor, None).unwrap();
+        assert_eq!(floor_rel.concavity, EdgeConcavity::Concave);
+        assert!(floor_rel.dihedral_angle.unwrap() < 0.0);
+        for wall in cylinder_wall_faces(&topo, blind) {
+            assert_eq!(
+                face_material_sense(&topo, blind, wall).unwrap(),
+                MaterialSense::Inward
+            );
+        }
+    }
+
+    #[test]
+    fn b16_filleted_box_band_edges_tangent() {
+        let mut topo = Topology::new();
+        let cube = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edge = solid_edges(&topo, cube).unwrap()[0];
+        let filleted = crate::fillet::fillet_rolling_ball(&mut topo, cube, &[edge], 1.0).unwrap();
+        let relations = solid_edge_relations(&topo, filleted, None).unwrap();
+        let tangent = relations
+            .iter()
+            .filter(|r| r.concavity == EdgeConcavity::Tangent)
+            .count();
+        assert_eq!(tangent, 2, "one spring contact on each side of the band");
+        for rel in relations
+            .iter()
+            .filter(|r| r.concavity == EdgeConcavity::Tangent)
+        {
+            let angle = rel.dihedral_angle.expect("tangent carries ~0 angle");
+            assert!(
+                angle.abs() < 1e-6,
+                "tangent dihedral must be ~0, got {angle}"
+            );
+        }
+    }
+
+    #[test]
+    fn b16_cone_plane_rim_convex_and_wall_outward() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut topo = Topology::new();
+            let cone =
+                crate::primitives::make_cone(&mut topo, 2.0 * scale, 1.0 * scale, 2.0 * scale)
+                    .unwrap();
+            let tol = 1e-9 * scale.max(1.0);
+            let rim = circle_rim_at_z(&topo, cone, 0.0, tol);
+            let rel = edge_relation(&topo, cone, rim, None).unwrap();
+            assert_eq!(rel.concavity, EdgeConcavity::Convex);
+            let angle = rel.dihedral_angle.expect("convex carries +angle");
+            assert!(
+                angle > 0.0 && angle < std::f64::consts::PI,
+                "cone rim dihedral must be a positive angle below pi, got {angle}"
+            );
+            let wall = solid_faces(&topo, cone)
+                .unwrap()
+                .into_iter()
+                .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_)))
+                .expect("cone must have a conical wall");
+            assert_eq!(
+                face_material_sense(&topo, cone, wall).unwrap(),
+                MaterialSense::Outward
+            );
+        }
+    }
+
+    #[test]
+    fn b16_seam_and_degenerate_edges_are_unknown() {
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
+        let adjacency = topo.build_adjacency(cylinder).unwrap();
+        let seam = solid_edges(&topo, cylinder)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let faces = adjacency.faces_for_edge(edge);
+                faces.len() == 2 && faces[0] == faces[1]
+            })
+            .expect("periodic wall seam");
+        let rel = edge_relation(&topo, cylinder, seam, None).unwrap();
+        assert_eq!(rel.concavity, EdgeConcavity::Unknown);
+        assert_eq!(rel.dihedral_angle, None, "unknown never carries an angle");
+        let bulk = solid_edge_relations(&topo, cylinder, None).unwrap();
+        let seam_bulk = bulk.iter().find(|r| r.edge == seam).expect("seam in bulk");
+        assert_eq!(seam_bulk.concavity, EdgeConcavity::Unknown);
+        assert_eq!(seam_bulk.dihedral_angle, None);
+    }
+
+    /// An existing edge owned by another solid is a typed refusal, not the
+    /// conservative `Unknown` reserved for this solid's seams and
+    /// non-manifold edges: the adjacency lookup alone would find no faces
+    /// for it and report a successful `Unknown`.
+    #[test]
+    fn b16_edge_relation_refuses_an_edge_of_another_solid() {
+        let mut topo = Topology::new();
+        let boxed = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let cylinder = make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let box_edge = solid_edges(&topo, boxed).unwrap()[0];
+        let cylinder_edge = solid_edges(&topo, cylinder).unwrap()[0];
+        for (solid, edge) in [(cylinder, box_edge), (boxed, cylinder_edge)] {
+            for probe in [None, Some(0.01)] {
+                match edge_relation(&topo, solid, edge, probe) {
+                    Err(crate::OperationsError::InvalidInput { reason }) => assert!(
+                        reason.contains("not part of the solid"),
+                        "refusal must say why: {reason}"
+                    ),
+                    other => panic!("foreign edge {edge:?} probe {probe:?}: {other:?}"),
+                }
+            }
+        }
+        // The owners still classify their own edges.
+        assert_eq!(
+            edge_relation(&topo, boxed, box_edge, None)
+                .unwrap()
+                .concavity,
+            EdgeConcavity::Convex
+        );
+        assert!(edge_relation(&topo, cylinder, cylinder_edge, None).is_ok());
+    }
+
+    #[test]
+    fn b16_material_sense_refusals_and_primitives() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let plane = planar_faces(&topo, solid)[0];
+        assert!(matches!(
+            face_material_sense(&topo, solid, plane),
+            Err(crate::OperationsError::Unsupported { .. })
+        ));
+        // NURBS faces refuse the same way.
+        crate::heal::convert_to_bspline(&mut topo, solid).unwrap();
+        let nurbs = solid_faces(&topo, solid).unwrap()[0];
+        assert!(matches!(
+            face_material_sense(&topo, solid, nurbs),
+            Err(crate::OperationsError::Unsupported { .. })
+        ));
+        // A face from another solid is not part of this solid.
+        let mut topo2 = Topology::new();
+        let a = make_box(&mut topo2, 1.0, 1.0, 1.0).unwrap();
+        let b = make_cylinder(&mut topo2, 1.0, 2.0).unwrap();
+        let wall = cylinder_wall_faces(&topo2, b)[0];
+        assert!(matches!(
+            face_material_sense(&topo2, a, wall),
+            Err(crate::OperationsError::InvalidInput { .. })
+        ));
+        // Sphere and torus primitives read outward.
+        let sphere = crate::primitives::make_sphere(&mut topo2, 2.0, 16).unwrap();
+        for face in solid_faces(&topo2, sphere).unwrap() {
+            assert_eq!(
+                face_material_sense(&topo2, sphere, face).unwrap(),
+                MaterialSense::Outward
+            );
+        }
+        let torus = crate::primitives::make_torus(&mut topo2, 4.0, 1.0, 16).unwrap();
+        for face in solid_faces(&topo2, torus).unwrap() {
+            assert_eq!(
+                face_material_sense(&topo2, torus, face).unwrap(),
+                MaterialSense::Outward
+            );
+        }
+    }
+
+    #[test]
+    fn b16_default_probe_formula_is_five_percent_of_local_scale() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let adjacency = topo.build_adjacency(solid).unwrap();
+        let edge = solid_edges(&topo, solid).unwrap()[0];
+        let faces = adjacency.faces_for_edge(edge);
+        let probe = default_concavity_probe(&topo, edge, faces[0], faces[1]).unwrap();
+        // A 2-unit box face spans sqrt(8) ~= 2.828 (face diagonal); the edge
+        // spans 2, so local scale is the face diagonal and 5 % is ~0.1414.
+        let expected = 8.0_f64.sqrt() * 0.05;
+        assert!(
+            (probe - expected).abs() < 1e-9,
+            "default probe must be 0.05*local_scale, got {probe} vs {expected}"
+        );
+        // And it classifies: the box edge is convex with the default.
+        assert_eq!(
+            edge_relation(&topo, solid, edge, None).unwrap().concavity,
+            EdgeConcavity::Convex
+        );
     }
 }
