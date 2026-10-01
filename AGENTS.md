@@ -224,6 +224,8 @@ Quick reference — find the right file for any task:
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | Bounded cylinder arrangement adapter | `builder/face_splitter/arrangement_cyl.rs` |
+| Closed-form oracles for the rim-chain splitter, the orphaned-rim detector and the cone-lateral dispatch (tests) | `builder/face_splitter/rim_chain_oracle_tests.rs` |
+| Closed-form oracles for the O2.3b arrangement engine: intersections, tangent order, ray crossing, distance, work budgets, periodic quotient (tests) | `builder/face_splitter/arrangement/oracle_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
