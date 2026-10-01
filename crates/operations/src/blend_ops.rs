@@ -1160,6 +1160,375 @@ fn fillet_group(
     })
 }
 
+/// Re-minted trim vertices drift O(`linear`) from the seed's: rebuilt loops
+/// are re-intersected from the same supports and re-merged at the kernel
+/// tolerance, so this multiple absorbs a chain of such merges while staying
+/// orders of magnitude below any blend reach the cascade routes.
+const WITNESS_POSITION_SLACK_MULTIPLE: f64 = 100.0;
+
+/// Frame axes re-derived from re-intersected geometry agree to roundoff
+/// (~1e-12 on unit vectors); this slack is five orders above that and still
+/// far below any dihedral the convexity classifier resolves, so it only ever
+/// avoids a false refusal — the position and span checks carry the proof.
+const WITNESS_ANGLE_SLACK: f64 = 1e-7;
+
+/// Stored-parameter agreement for knots and spans. Authority is copied
+/// verbatim by rebuilds or re-projected with relative error ~1e-12; the
+/// absolute floor covers parameters near zero, the relative term covers
+/// large knot vectors.
+fn witness_params_close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9 + 1e-7 * a.abs().max(b.abs())
+}
+
+/// Complete curve-and-trim witness identifying one seed edge across cascade
+/// features.
+///
+/// Endpoints plus a curve-category tag cannot prove a curved edge survived a
+/// rebuild unchanged: two arcs can share endpoints under one tag while
+/// differing in center, span, or handedness. The witness therefore carries
+/// the curve's full defining parameters (which fix the point set) together
+/// with the stored parameter span and the trim vertices (which fix the
+/// portion). A candidate matches only when every component agrees, exactly
+/// one candidate matches, and no other seed claims it.
+#[derive(Debug, Clone)]
+struct EdgeWitness {
+    /// Trim vertices: the portion endpoints.
+    start: remus_math::vec::Point3,
+    end: remus_math::vec::Point3,
+    /// Signed stored-parameter extent (`t1 - t0`): the span and direction.
+    span: f64,
+    /// The curve's full defining parameters: the point set.
+    curve: CurveWitness,
+}
+
+/// Full defining parameters per curve kind. Every variant's fields fix its
+/// point set; the trim in [`EdgeWitness`] fixes the portion. Matching
+/// enumerates every seed variant explicitly (no catch-all): adding a curve
+/// kind breaks compilation at the matcher until its proof is written.
+#[derive(Debug, Clone)]
+enum CurveWitness {
+    /// No stored geometry: the trim vertices are the whole curve.
+    Line,
+    /// Center, radius, and plane: the circle. The in-plane phase needs no
+    /// field — the trim start pins it through the span rule in
+    /// [`edge_witnesses_match`].
+    Circle {
+        center: remus_math::vec::Point3,
+        radius: f64,
+        normal: remus_math::vec::Vec3,
+    },
+    /// Center, axes, plane, and major-axis line: the ellipse. The major axis
+    /// is compared sign-free, closing the in-plane rotation ambiguity that
+    /// start, end, and span alone leave open on symmetric arcs.
+    Ellipse {
+        center: remus_math::vec::Point3,
+        semi_major: f64,
+        semi_minor: f64,
+        normal: remus_math::vec::Vec3,
+        major_dir: remus_math::vec::Vec3,
+    },
+    /// Center, axes, plane, and branch frame: the hyperbola. The frame is
+    /// compared sign-free; a flipped branch cannot share the trim anyway, so
+    /// the trim check closes that hole.
+    Hyperbola {
+        center: remus_math::vec::Point3,
+        semi_major: f64,
+        semi_minor: f64,
+        normal: remus_math::vec::Vec3,
+        frame_u: remus_math::vec::Vec3,
+    },
+    /// Vertex, axis, focal length, and in-plane axis: the parabola. The
+    /// directions are compared sign-sensitive — flipping either changes the
+    /// point set outright.
+    Parabola {
+        vertex: remus_math::vec::Point3,
+        axis_dir: remus_math::vec::Vec3,
+        focal_length: f64,
+        frame_u: remus_math::vec::Vec3,
+    },
+    /// The whole control net plus the span: the NURBS curve.
+    Nurbs {
+        degree: usize,
+        knots: Vec<f64>,
+        poles: Vec<remus_math::vec::Point3>,
+        weights: Vec<f64>,
+    },
+}
+
+/// Capture the witness for one edge: trim vertices, stored span authority,
+/// and full curve parameters.
+///
+/// Returns an error when the edge, its vertices, or its stored domain cannot
+/// be read. Callers treat that as unresolvable, never as a match.
+fn capture_edge_witness(topo: &Topology, eid: EdgeId) -> Result<EdgeWitness, OperationsError> {
+    let edge = topo.edge(eid)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let (t0, t1) = crate::authoritative_edge_domain(edge, "cascade edge-remap witness")?;
+    let curve = match edge.curve() {
+        EdgeCurve::Line => CurveWitness::Line,
+        EdgeCurve::Circle(c) => CurveWitness::Circle {
+            center: c.center(),
+            radius: c.radius(),
+            normal: c.normal(),
+        },
+        EdgeCurve::Ellipse(e) => CurveWitness::Ellipse {
+            center: e.center(),
+            semi_major: e.semi_major(),
+            semi_minor: e.semi_minor(),
+            normal: e.normal(),
+            major_dir: e.u_axis(),
+        },
+        EdgeCurve::Hyperbola(h) => CurveWitness::Hyperbola {
+            center: h.center(),
+            semi_major: h.semi_major(),
+            semi_minor: h.semi_minor(),
+            normal: h.normal(),
+            frame_u: h.u_axis(),
+        },
+        EdgeCurve::Parabola(p) => CurveWitness::Parabola {
+            vertex: p.vertex(),
+            axis_dir: p.axis_dir(),
+            focal_length: p.focal_length(),
+            frame_u: p.u_axis(),
+        },
+        EdgeCurve::NurbsCurve(n) => CurveWitness::Nurbs {
+            degree: n.degree(),
+            knots: n.knots().to_vec(),
+            poles: n.control_points().to_vec(),
+            weights: n.weights().to_vec(),
+        },
+    };
+    Ok(EdgeWitness {
+        start,
+        end,
+        span: t1 - t0,
+        curve,
+    })
+}
+
+/// Whether `candidate` is the same geometric edge the `seed` witness was
+/// captured from: same point set (full curve parameters), same portion (trim
+/// vertices plus span compared in each edge's own parameterization, so a
+/// shared frame is never assumed), and — for closed edges, where start and
+/// end coincide — the same winding extent.
+fn edge_witnesses_match(
+    seed: &EdgeWitness,
+    candidate: &EdgeWitness,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    let slack = tol.linear * WITNESS_POSITION_SLACK_MULTIPLE;
+    let near = |a: remus_math::vec::Point3, b: remus_math::vec::Point3| (a - b).length() <= slack;
+    // Closedness is trim, not geometry: a full rim and an almost-full arc
+    // through the same points are different portions.
+    let seed_closed = near(seed.start, seed.end);
+    if seed_closed != near(candidate.start, candidate.end) {
+        return false;
+    }
+    // Orientation preservation is required, not assumed away: the span must
+    // agree in the edge's own parameterization direction, because the same
+    // frame with a negated span is the COMPLEMENT arc (minor vs major), not
+    // the same edge re-parameterized. A rebuild that flips a frame's
+    // orientation therefore refuses loudly here instead of risking a
+    // complement-arc mismatch; no engine in this cascade emits flipped
+    // re-mints (splits subdivide spans in place, carries are verbatim).
+    let trim_matches = if seed_closed {
+        // Start and end coincide, so orientation is meaningless; the winding
+        // extent is the whole portion proof.
+        witness_params_close(candidate.span.abs(), seed.span.abs())
+    } else {
+        let unswapped = near(candidate.start, seed.start) && near(candidate.end, seed.end);
+        let swapped = near(candidate.start, seed.end) && near(candidate.end, seed.start);
+        match (unswapped, swapped) {
+            (true, false) => witness_params_close(candidate.span, seed.span),
+            (false, true) => witness_params_close(candidate.span, -seed.span),
+            (true, true) | (false, false) => false,
+        }
+    };
+    if !trim_matches {
+        return false;
+    }
+    // Unit-vector agreement: sign-free for planes and lines (flipping them
+    // re-parameterizes the same point set), sign-sensitive for parabola
+    // directions (flipping them moves the point set).
+    let parallel = |a: remus_math::vec::Vec3, b: remus_math::vec::Vec3| {
+        (a - b).length() <= WITNESS_ANGLE_SLACK || (a + b).length() <= WITNESS_ANGLE_SLACK
+    };
+    let aligned = |a: remus_math::vec::Vec3, b: remus_math::vec::Vec3| {
+        (a - b).length() <= WITNESS_ANGLE_SLACK
+    };
+    let length_matches = |a: f64, b: f64| (a - b).abs() <= slack;
+    match (&seed.curve, &candidate.curve) {
+        (CurveWitness::Line, CurveWitness::Line) => true,
+        (
+            CurveWitness::Circle {
+                center: seed_center,
+                radius: seed_radius,
+                normal: seed_normal,
+            },
+            CurveWitness::Circle {
+                center: cand_center,
+                radius: cand_radius,
+                normal: cand_normal,
+            },
+        ) => {
+            near(*seed_center, *cand_center)
+                && length_matches(*seed_radius, *cand_radius)
+                && parallel(*seed_normal, *cand_normal)
+        }
+        (
+            CurveWitness::Ellipse {
+                center: seed_center,
+                semi_major: seed_major,
+                semi_minor: seed_minor,
+                normal: seed_normal,
+                major_dir: seed_dir,
+            },
+            CurveWitness::Ellipse {
+                center: cand_center,
+                semi_major: cand_major,
+                semi_minor: cand_minor,
+                normal: cand_normal,
+                major_dir: cand_dir,
+            },
+        ) => {
+            near(*seed_center, *cand_center)
+                && length_matches(*seed_major, *cand_major)
+                && length_matches(*seed_minor, *cand_minor)
+                && parallel(*seed_normal, *cand_normal)
+                && parallel(*seed_dir, *cand_dir)
+        }
+        (
+            CurveWitness::Hyperbola {
+                center: seed_center,
+                semi_major: seed_major,
+                semi_minor: seed_minor,
+                normal: seed_normal,
+                frame_u: seed_u,
+            },
+            CurveWitness::Hyperbola {
+                center: cand_center,
+                semi_major: cand_major,
+                semi_minor: cand_minor,
+                normal: cand_normal,
+                frame_u: cand_u,
+            },
+        ) => {
+            near(*seed_center, *cand_center)
+                && length_matches(*seed_major, *cand_major)
+                && length_matches(*seed_minor, *cand_minor)
+                && parallel(*seed_normal, *cand_normal)
+                && parallel(*seed_u, *cand_u)
+        }
+        (
+            CurveWitness::Parabola {
+                vertex: seed_vertex,
+                axis_dir: seed_axis,
+                focal_length: seed_focal,
+                frame_u: seed_u,
+            },
+            CurveWitness::Parabola {
+                vertex: cand_vertex,
+                axis_dir: cand_axis,
+                focal_length: cand_focal,
+                frame_u: cand_u,
+            },
+        ) => {
+            near(*seed_vertex, *cand_vertex)
+                && aligned(*seed_axis, *cand_axis)
+                && length_matches(*seed_focal, *cand_focal)
+                && aligned(*seed_u, *cand_u)
+        }
+        (
+            CurveWitness::Nurbs {
+                degree: seed_degree,
+                knots: seed_knots,
+                poles: seed_poles,
+                weights: seed_weights,
+            },
+            CurveWitness::Nurbs {
+                degree: cand_degree,
+                knots: cand_knots,
+                poles: cand_poles,
+                weights: cand_weights,
+            },
+        ) => {
+            seed_degree == cand_degree
+                && seed_knots.len() == cand_knots.len()
+                && seed_knots
+                    .iter()
+                    .zip(cand_knots.iter())
+                    .all(|(a, b)| witness_params_close(*a, *b))
+                && seed_poles.len() == cand_poles.len()
+                && seed_poles
+                    .iter()
+                    .zip(cand_poles.iter())
+                    .all(|(a, b)| near(*a, *b))
+                && seed_weights.len() == cand_weights.len()
+                && seed_weights.iter().zip(cand_weights.iter()).all(|(a, b)| {
+                    // Weights are scale-free shape factors near unity; a
+                    // relative slack far below any geometric significance
+                    // covers re-emission roundoff without hiding a reshape.
+                    (a - b).abs() <= 1e-9 * (1.0 + a.abs().max(b.abs()))
+                })
+        }
+        (
+            CurveWitness::Line
+            | CurveWitness::Circle { .. }
+            | CurveWitness::Ellipse { .. }
+            | CurveWitness::Hyperbola { .. }
+            | CurveWitness::Parabola { .. }
+            | CurveWitness::Nurbs { .. },
+            _,
+        ) => false,
+    }
+}
+
+/// Map each seed to its surviving edge: exactly one witness match, claimed
+/// by no other seed.
+///
+/// Returns the remapped edges in seed order, or the seeds that cannot be
+/// proven — zero matches (edge consumed), several matches (ambiguous twins),
+/// or a match another seed also proves (many-to-one). All three refuse;
+/// blending the wrong edge is worse than blending none.
+fn resolve_seed_mapping(
+    seeds: &[(EdgeId, EdgeWitness)],
+    candidates: &[(EdgeId, EdgeWitness)],
+    tol: remus_math::tolerance::Tolerance,
+) -> Result<Vec<EdgeId>, Vec<EdgeId>> {
+    let mut claims: Vec<Option<usize>> = Vec::with_capacity(seeds.len());
+    for (_, witness) in seeds {
+        let mut hits = 0;
+        let mut hit = 0;
+        for (index, (_, candidate)) in candidates.iter().enumerate() {
+            if edge_witnesses_match(witness, candidate, tol) {
+                hits += 1;
+                hit = index;
+            }
+        }
+        claims.push(if hits == 1 { Some(hit) } else { None });
+    }
+    // A candidate two seeds prove is proven for neither: count claims before
+    // mapping so both colliding seeds refuse.
+    let mut claim_count = vec![0_usize; candidates.len()];
+    for claim in claims.iter().flatten() {
+        claim_count[*claim] += 1;
+    }
+    let mut mapped = Vec::with_capacity(seeds.len());
+    let mut unresolvable = Vec::new();
+    for ((seed, _), claim) in seeds.iter().zip(claims.iter()) {
+        match claim {
+            Some(index) if claim_count[*index] == 1 => mapped.push(candidates[*index].0),
+            _ => unresolvable.push(*seed),
+        }
+    }
+    if unresolvable.is_empty() {
+        Ok(mapped)
+    } else {
+        Err(unresolvable)
+    }
+}
+
 /// Fillet a selection that splits into features which cannot reach each other,
 /// one feature at a time, on whichever engine each one needs.
 ///
@@ -1177,7 +1546,7 @@ fn fillet_group(
 ///
 /// The identity assumption is checked rather than trusted, then repaired:
 /// a feature whose edges did not survive an earlier one is re-resolved by
-/// position (endpoints plus curve class, unique match) against the current
+/// complete curve-and-trim witness (see [`EdgeWitness`]) against the current
 /// solid, because rebuilds re-mint edges at identical positions. Only an
 /// edge with no unique live counterpart is reported as
 /// [`BlendError::EdgesNotBlended`] naming it, never dropped. Failure anywhere
@@ -1191,25 +1560,15 @@ fn fillet_by_feature(
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
     let tol = remus_math::tolerance::Tolerance::new();
-    // Seed geometry for position remapping: rebuilt edges keep identical
-    // positions, so a stale handle re-resolves by endpoints + curve class.
-    let mut seed_geom: std::collections::HashMap<
-        usize,
-        (remus_math::vec::Point3, remus_math::vec::Point3, u8),
-    > = std::collections::HashMap::new();
+    // Seed witnesses for remapping: rebuilt edges keep identical positions,
+    // so a stale handle re-resolves by complete curve-and-trim witness.
+    let mut seeds: Vec<(EdgeId, EdgeWitness)> = Vec::with_capacity(edges.len());
     for &eid in edges {
-        let Ok(edge) = topo.edge(eid) else {
-            continue;
-        };
-        let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-            continue;
-        };
-        let tag = match edge.curve() {
-            EdgeCurve::Line => 0,
-            EdgeCurve::Circle(_) => 1,
-            _ => 2,
-        };
-        seed_geom.insert(eid.index(), (a.point(), b.point(), tag));
+        // An unreadable seed cannot be proven later; it joins the
+        // unresolvable set at remap time rather than failing the capture.
+        if let Ok(witness) = capture_edge_witness(topo, eid) {
+            seeds.push((eid, witness));
+        }
     }
     let remap_group = |topo: &Topology,
                        current: SolidId,
@@ -1217,59 +1576,45 @@ fn fillet_by_feature(
      -> Result<Vec<EdgeId>, OperationsError> {
         let adjacency = topo.build_adjacency(current)?;
         let live = |eid: EdgeId| adjacency.faces_for_edge(eid).len() == 2;
-        let mut remapped = Vec::with_capacity(group.len());
-        let mut unresolvable = Vec::new();
-        for &eid in group {
-            if live(eid) {
-                remapped.push(eid);
+        // Candidate witnesses, computed once: only manifold edges of the
+        // current solid can be blended, and only a capturable one can prove
+        // what it is. A live seed edge is simply one of these candidates and
+        // matches its own witness exactly — no identity shortcut is taken.
+        let mut candidates = Vec::new();
+        for ceid in remus_topology::explorer::solid_edges(topo, current)? {
+            if !live(ceid) {
                 continue;
             }
-            let Some((s, e, tag)) = seed_geom.get(&eid.index()) else {
-                unresolvable.push(eid);
-                continue;
-            };
-            let mut candidates = Vec::new();
-            for ceid in remus_topology::explorer::solid_edges(topo, current)? {
-                if !live(ceid) {
-                    continue;
-                }
-                let Ok(edge) = topo.edge(ceid) else {
-                    continue;
-                };
-                let edge_tag = match edge.curve() {
-                    EdgeCurve::Line => 0,
-                    EdgeCurve::Circle(_) => 1,
-                    _ => 2,
-                };
-                if edge_tag != *tag {
-                    continue;
-                }
-                let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-                    continue;
-                };
-                let (a, b) = (a.point(), b.point());
-                let same = |p: remus_math::vec::Point3, q: remus_math::vec::Point3| {
-                    (p - q).length() <= tol.linear * 100.0
-                };
-                if (same(a, *s) && same(b, *e)) || (same(a, *e) && same(b, *s)) {
-                    candidates.push(ceid);
-                }
-            }
-            if candidates.len() == 1 {
-                remapped.push(candidates[0]);
-            } else {
-                unresolvable.push(eid);
+            if let Ok(witness) = capture_edge_witness(topo, ceid) {
+                candidates.push((ceid, witness));
             }
         }
+        let mut wanted: Vec<(EdgeId, EdgeWitness)> = Vec::with_capacity(group.len());
+        let mut unresolvable: Vec<EdgeId> = Vec::new();
+        for &eid in group {
+            match seeds.iter().find(|(seed, _)| *seed == eid) {
+                Some((_, witness)) => wanted.push((eid, witness.clone())),
+                None => unresolvable.push(eid),
+            }
+        }
+        let mapped = match resolve_seed_mapping(&wanted, &candidates, tol) {
+            Ok(mapped) => mapped,
+            Err(mut more) => {
+                unresolvable.append(&mut more);
+                Vec::new()
+            }
+        };
         if !unresolvable.is_empty() {
             return Err(OperationsError::Blend(BlendError::EdgesNotBlended {
                 edges: unresolvable,
                 reason: "an earlier feature in the same selection rebuilt the faces \
-                         carrying these edges, so they no longer name anything to blend"
+                         carrying these edges, and no surviving edge carries their full \
+                         curve-and-trim witness: consumed, ambiguously twinned, or \
+                         claimed by another seed"
                     .into(),
             }));
         }
-        Ok(remapped)
+        Ok(mapped)
     };
     // Merge all planar-line groups into one when non-planar groups exist:
     // the rolling-ball rebuild closes multi-corner planar selections
@@ -1995,5 +2340,377 @@ mod tests {
                 .unwrap()
                 .len()
         );
+    }
+
+    /// One arc's construction parameters for [`witness_circle_edge`].
+    struct ArcSpec {
+        center: Point3,
+        normal: remus_math::vec::Vec3,
+        radius: f64,
+        a: Point3,
+        b: Point3,
+        t0: f64,
+        t1: f64,
+    }
+
+    /// Build a circle edge with an explicit frame and stored span authority.
+    ///
+    /// The frame is pinned (`u = +x`, `v = +y`) so trim parameters name exact
+    /// points: `t = 0` is `center + radius·x`, `t = π/2` is `center +
+    /// radius·y`.
+    fn witness_circle_edge(topo: &mut Topology, spec: &ArcSpec) -> EdgeId {
+        use remus_math::curves::Circle3D;
+        use remus_math::vec::Vec3;
+        let va = topo.add_vertex(Vertex::new(spec.a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(spec.b, 1e-7));
+        let circle = Circle3D::with_axes(
+            spec.center,
+            spec.normal,
+            spec.radius,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let mut edge = Edge::new(va, vb, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((spec.t0, spec.t1)));
+        topo.add_edge(edge)
+    }
+
+    /// The minor and major arcs between two points share endpoints, circle,
+    /// and curve tag — the old endpoints-plus-tag witness matched them. Only
+    /// the span tells them apart.
+    #[test]
+    fn remap_witness_rejects_major_arc_for_minor_seed() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
+        let a = Point3::new(1.0, 0.0, 0.0);
+        let b = Point3::new(0.0, 1.0, 0.0);
+        let minor = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let major = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: -1.5 * PI,
+            },
+        );
+        let seed = capture_edge_witness(&topo, minor).unwrap();
+        let other = capture_edge_witness(&topo, major).unwrap();
+        assert!(!edge_witnesses_match(&seed, &other, tol));
+        assert!(!edge_witnesses_match(&other, &seed, tol));
+        assert!(edge_witnesses_match(&seed, &seed, tol));
+    }
+
+    /// The same chord subtends a quarter arc on two unit circles whose
+    /// centers mirror across the chord: same endpoints, same radius, same
+    /// span magnitude. The signed span (handedness) plus the center reject
+    /// the impostor.
+    #[test]
+    fn remap_witness_rejects_same_chord_different_center() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut topo = Topology::new();
+        let normal = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
+        let a = Point3::new(1.0, 0.0, 0.0);
+        let b = Point3::new(0.0, 1.0, 0.0);
+        let seed_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: Point3::new(0.0, 0.0, 0.0),
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        // From (1,1,0): a is at angle -π/2, b at angle -π, same span magnitude.
+        let mirror_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: Point3::new(1.0, 1.0, 0.0),
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: -FRAC_PI_2,
+                t1: -PI,
+            },
+        );
+        let seed = capture_edge_witness(&topo, seed_id).unwrap();
+        let mirror = capture_edge_witness(&topo, mirror_id).unwrap();
+        assert!(!edge_witnesses_match(&seed, &mirror, tol));
+        assert!(!edge_witnesses_match(&mirror, &seed, tol));
+    }
+
+    /// A re-minted copy — every parameter drifted by re-intersection noise —
+    /// still proves, while drift past the slack refuses. This pins the
+    /// tolerance contract from both sides.
+    #[test]
+    fn remap_witness_accepts_rebuilt_copy_within_slack() {
+        use std::f64::consts::FRAC_PI_2;
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut topo = Topology::new();
+        let normal = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
+        let a = Point3::new(1.0, 0.0, 0.0);
+        let b = Point3::new(0.0, 1.0, 0.0);
+        let seed_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: Point3::new(0.0, 0.0, 0.0),
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let drift = |p: Point3| Point3::new(p.x() + 1e-9, p.y() - 1e-9, p.z() + 1e-9);
+        let rebuilt_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: drift(Point3::new(0.0, 0.0, 0.0)),
+                normal: remus_math::vec::Vec3::new(1e-9, 0.0, 1.0),
+                radius: 1.0 + 1e-9,
+                a: drift(a),
+                b: drift(b),
+                t0: 0.0,
+                t1: FRAC_PI_2 + 1e-12,
+            },
+        );
+        let seed = capture_edge_witness(&topo, seed_id).unwrap();
+        let rebuilt = capture_edge_witness(&topo, rebuilt_id).unwrap();
+        assert!(edge_witnesses_match(&seed, &rebuilt, tol));
+        // A millimeter-scale center shift is a different edge, not noise.
+        let moved_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: Point3::new(1e-3, 0.0, 0.0),
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let moved = capture_edge_witness(&topo, moved_id).unwrap();
+        assert!(!edge_witnesses_match(&seed, &moved, tol));
+    }
+
+    /// One seed with two identical (twinned) candidates is ambiguous; two
+    /// seeds proving one candidate is many-to-one. Both refuse naming every
+    /// seed they cannot prove.
+    #[test]
+    fn remap_resolve_rejects_ambiguity_and_many_to_one() {
+        use std::f64::consts::FRAC_PI_2;
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut topo = Topology::new();
+        let normal = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let a = Point3::new(1.0, 0.0, 0.0);
+        let b = Point3::new(0.0, 1.0, 0.0);
+        let seed_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        // Coincident twins, as boolean assembly emits: same witness, two ids.
+        let twin_a = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let twin_b = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let seed = capture_edge_witness(&topo, seed_id).unwrap();
+        let witness_a = capture_edge_witness(&topo, twin_a).unwrap();
+        let witness_b = capture_edge_witness(&topo, twin_b).unwrap();
+        let seeds = vec![(seed_id, seed.clone())];
+        let candidates = vec![(twin_a, witness_a.clone()), (twin_b, witness_b)];
+        assert_eq!(
+            resolve_seed_mapping(&seeds, &candidates, tol),
+            Err(vec![seed_id])
+        );
+        // Two seeds, one candidate: both refuse even though each matches.
+        let second_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let second = capture_edge_witness(&topo, second_id).unwrap();
+        let seeds = vec![(seed_id, seed), (second_id, second)];
+        let candidates = vec![(twin_a, witness_a)];
+        let unresolvable = resolve_seed_mapping(&seeds, &candidates, tol)
+            .err()
+            .unwrap_or_default();
+        assert!(unresolvable.contains(&seed_id));
+        assert!(unresolvable.contains(&second_id));
+    }
+
+    /// The working path: one seed, one rebuilt copy among unrelated edges,
+    /// maps in seed order.
+    #[test]
+    fn remap_resolve_maps_unique_rebuild() {
+        use std::f64::consts::FRAC_PI_2;
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut topo = Topology::new();
+        let normal = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let a = Point3::new(1.0, 0.0, 0.0);
+        let b = Point3::new(0.0, 1.0, 0.0);
+        let seed_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center,
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let rebuilt_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: Point3::new(1e-9, 0.0, 0.0),
+                normal,
+                radius: 1.0,
+                a,
+                b,
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let other_id = witness_circle_edge(
+            &mut topo,
+            &ArcSpec {
+                center: Point3::new(5.0, 5.0, 0.0),
+                normal,
+                radius: 2.0,
+                a: Point3::new(7.0, 5.0, 0.0),
+                b: Point3::new(5.0, 7.0, 0.0),
+                t0: 0.0,
+                t1: FRAC_PI_2,
+            },
+        );
+        let seed = capture_edge_witness(&topo, seed_id).unwrap();
+        let seeds = vec![(seed_id, seed)];
+        let candidates = vec![
+            (other_id, capture_edge_witness(&topo, other_id).unwrap()),
+            (rebuilt_id, capture_edge_witness(&topo, rebuilt_id).unwrap()),
+        ];
+        assert_eq!(
+            resolve_seed_mapping(&seeds, &candidates, tol),
+            Ok(vec![rebuilt_id])
+        );
+    }
+
+    /// A closed rim proves by winding extent: identical full circles match,
+    /// while a full rim never matches an almost-full arc through the same
+    /// points.
+    #[test]
+    fn remap_witness_matches_closed_rim_by_winding_extent() {
+        use std::f64::consts::PI;
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut topo = Topology::new();
+        let normal = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let p = Point3::new(1.0, 0.0, 0.0);
+        let circle = |radius: f64| {
+            remus_math::curves::Circle3D::with_axes(
+                center,
+                normal,
+                radius,
+                remus_math::vec::Vec3::new(1.0, 0.0, 0.0),
+                remus_math::vec::Vec3::new(0.0, 1.0, 0.0),
+            )
+            .unwrap()
+        };
+        let mut closed = |radius: f64, t1: f64| {
+            let v = topo.add_vertex(Vertex::new(p, 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle(radius)));
+            edge.set_trim(Some((0.0, t1)));
+            topo.add_edge(edge)
+        };
+        let rim = closed(1.0, 2.0 * PI);
+        let rim_copy = closed(1.0, 2.0 * PI);
+        let other_radius = closed(2.0, 2.0 * PI);
+        // An almost-full arc needs distinct vertices: a closed edge must span
+        // exactly one turn. Coincident within slack, so closedness agrees and
+        // only the winding extent can refuse it.
+        let va = topo.add_vertex(Vertex::new(p, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(Point3::new(p.x() + 1e-12, p.y(), p.z()), 1e-7));
+        let mut almost_edge = Edge::new(va, vb, EdgeCurve::Circle(circle(1.0)));
+        almost_edge.set_trim(Some((0.0, 2.0 * PI - 0.01)));
+        let almost = topo.add_edge(almost_edge);
+        let seed = capture_edge_witness(&topo, rim).unwrap();
+        assert!(edge_witnesses_match(
+            &seed,
+            &capture_edge_witness(&topo, rim_copy).unwrap(),
+            tol
+        ));
+        assert!(!edge_witnesses_match(
+            &seed,
+            &capture_edge_witness(&topo, other_radius).unwrap(),
+            tol
+        ));
+        assert!(!edge_witnesses_match(
+            &seed,
+            &capture_edge_witness(&topo, almost).unwrap(),
+            tol
+        ));
     }
 }
