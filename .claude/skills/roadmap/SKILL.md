@@ -157,7 +157,9 @@ collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_
 the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
 two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
 `closed_rim_oracles`), and the B69, B70 and B71 tessellation witnesses
-(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`.
+(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`;
+and the five B79 holed-plane internal-section repros
+(`operations/tests/regress_b79_holed_plane_internal_section.rs`, failing on `main`).
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -222,6 +224,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   `face_splitter` or section/clip change run ALL foils: d4, honeycomb pcut3,
   divider-lip, the nub fixtures, cylinder-slot, groove-mouth, junction-disc.
   Each has caught a discriminant that the target case alone blessed.
+- **A section loop strictly inside a plane face's OUTER wire can still cross one of its holes;** a shortcut that admits closed loops against the outer polygon alone carves overlapping holes, and an all-planar mesh fallback is nearly as compact as the exact result, so only the disclosed quality shows it (B79, `operations/tests/regress_b79_holed_plane_internal_section.rs`).
 - **Splitter interior points of notched or symmetric pieces land on
   feature-plane intersections by construction;** classification must survive
   on-plane samples (`classifier/ray_cast.rs` per-ray degeneracy re-cast).
