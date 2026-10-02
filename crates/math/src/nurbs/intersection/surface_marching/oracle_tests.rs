@@ -980,3 +980,56 @@ fn third_order_contact_line_is_marched_by_the_perturbation_search() {
         );
     }
 }
+
+/// Defect (fixed here): a march step that lands exactly on a crossing found
+/// `n1 × n2 = 0` there and dropped its incoming direction, so the next step
+/// took the first sorted null and turned onto the other branch (an L-turn).
+/// Seeded at `(0, -0.05)` with step `0.05`, the trace on `z = 0.2·x·y`
+/// lands on the origin exactly; it must continue along `x = 0`.
+#[test]
+fn march_landing_exactly_on_a_crossing_keeps_its_branch() {
+    let tol = 1e-7;
+    let (s1, s2) = (saddle(0.2), plane());
+    let seed = refine_ssi_point(&s1, &s2, 0.5, 0.475, 0.5, 0.475, tol).unwrap();
+    let (traced, branches) = march_with_branches(
+        &s1,
+        &s2,
+        &seed,
+        0.05,
+        tol,
+        &OperationContext::new(),
+        &mut SsiScratch::new(),
+    )
+    .unwrap();
+    assert!(
+        traced
+            .iter()
+            .any(|p| p.point.x() == 0.0 && p.point.y() == 0.0),
+        "fixture must land exactly on the crossing: {traced:?}"
+    );
+    // At the exact crossing `n1 × n2` vanishes, so the scan's incoming
+    // direction must come from the trace's neighbours (`±y`), making `y = 0`
+    // the transverse branch on both sides.
+    assert!(
+        !branches.is_empty(),
+        "exact crossing passed without a branch"
+    );
+    for b in &branches {
+        assert!(b.point.y().abs() < 1e-9, "branch seed not on y = 0: {b:?}");
+        assert!(
+            b.point.x().abs() > 10.0 * tol,
+            "branch seed on x = 0: {b:?}"
+        );
+    }
+    assert!(branches.iter().any(|b| b.point.x() > 0.0));
+    assert!(branches.iter().any(|b| b.point.x() < 0.0));
+    for p in &traced {
+        assert!(p.point.x().abs() <= tol, "trace left x = 0: {p:?}");
+    }
+    let top = traced.iter().map(|p| p.point.y()).fold(f64::MIN, f64::max);
+    let bottom = traced.iter().map(|p| p.point.y()).fold(f64::MAX, f64::min);
+    assert!(
+        top > 0.9 && bottom < -0.9,
+        "trace must span the line: {bottom}..{top}"
+    );
+}
