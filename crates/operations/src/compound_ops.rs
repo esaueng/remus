@@ -678,6 +678,9 @@ fn polyhedral_separated(a: &PolyhedralBounds, b: &PolyhedralBounds, margin: f64)
 
 /// Partition indices into groups that may actually touch (union-find).
 ///
+/// Groups are ordered by their smallest member and each group's members
+/// ascend, so the partition depends only on the inputs.
+///
 /// Two solids share a group when their AABBs overlap *unless* both are flat-faced
 /// and a separating axis proves a real gap between them. This keeps geometrically
 /// disjoint pieces whose loose AABBs overlap (honeycomb hex prisms, tightly
@@ -716,11 +719,21 @@ fn partition_touching(
         }
     }
 
-    let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    // Emit groups in order of their smallest member (members ascend within a
+    // group). This order shapes `fuse_all`'s lump order, so it must not come
+    // from a std `HashMap`, whose per-map random keys advance with every map
+    // the instance builds.
+    let mut slot_of_root = vec![usize::MAX; n];
+    let mut groups: Vec<Vec<usize>> = Vec::new();
     for i in 0..n {
-        groups.entry(uf_find(&mut parent, i)).or_default().push(i);
+        let root = uf_find(&mut parent, i);
+        if slot_of_root[root] == usize::MAX {
+            slot_of_root[root] = groups.len();
+            groups.push(Vec::new());
+        }
+        groups[slot_of_root[root]].push(i);
     }
-    groups.into_values().collect()
+    groups
 }
 
 /// Merge disjoint solids into a single solid by combining all faces.
@@ -881,6 +894,106 @@ mod tests {
             vol > 1.0 && vol < 2.0,
             "fused volume should be between 1 and 2, got {vol}"
         );
+    }
+
+    /// Build `count` throwaway std `HashMap`s. Each `RandomState` advances the
+    /// thread's hash keys, so this perturbs the iteration order of every map
+    /// built afterwards — the same effect unrelated kernel calls have on a
+    /// long-lived wasm instance.
+    fn advance_hash_keys(count: usize) {
+        for seed in 0..count {
+            let mut map = std::collections::HashMap::new();
+            for key in 0..8 {
+                map.insert(key, seed);
+            }
+            std::hint::black_box(&map);
+        }
+    }
+
+    /// Six unit boxes on the x axis, deliberately listed out of spatial order:
+    /// 0 and 2 share a face, 3 and 5 overlap, 1 and 4 stand alone.
+    fn make_interleaved_boxes(topo: &mut Topology) -> Vec<SolidId> {
+        [0.0, 4.0, 1.0, 7.0, 10.0, 7.5]
+            .iter()
+            .map(|&dx| {
+                let b = crate::primitives::make_box(topo, 1.0, 1.0, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    topo,
+                    b,
+                    &remus_math::mat::Mat4::translation(dx, 0.0, 0.0),
+                )
+                .unwrap();
+                b
+            })
+            .collect()
+    }
+
+    /// Groups come back ordered by their smallest member regardless of how
+    /// many hash maps were built first. `partition_touching` used to return
+    /// `HashMap::into_values()`, so `fuse_all` emitted its lumps in an order
+    /// that depended on unrelated earlier work in the same instance.
+    #[test]
+    fn partition_touching_order_ignores_prior_hash_maps() {
+        let mut topo = Topology::new();
+        let solids = make_interleaved_boxes(&mut topo);
+        let margin = remus_math::tolerance::Tolerance::new().linear;
+        let bboxes: Vec<Aabb3> = solids
+            .iter()
+            .map(|&s| crate::measure::solid_bounding_box(&topo, s).unwrap())
+            .collect();
+        let pb: Vec<Option<PolyhedralBounds>> = solids
+            .iter()
+            .map(|&s| polyhedral_bounds(&topo, s))
+            .collect();
+        let cylinders: Vec<Option<SimpleCylinder>> =
+            solids.iter().map(|&s| simple_cylinder(&topo, s)).collect();
+
+        for prior_maps in 0..32 {
+            advance_hash_keys(prior_maps);
+            let groups = partition_touching(&bboxes, &pb, &cylinders, margin);
+            assert_eq!(
+                groups,
+                vec![vec![0, 2], vec![1], vec![3, 5], vec![4]],
+                "group order changed after {prior_maps} unrelated hash maps"
+            );
+        }
+    }
+
+    /// End-to-end: the fused solid lists each lump's faces in input order, so
+    /// the lump sequence is identical however much hashing came before it.
+    #[test]
+    fn fuse_all_lump_order_ignores_prior_hash_maps() {
+        // Lumps are [0,2], [4,5], [7,8.5] and [10,11] along x.
+        let lump_of = |x: f64| match x {
+            x if x < 3.0 => 0,
+            x if x < 6.0 => 1,
+            x if x < 9.0 => 2,
+            _ => 3,
+        };
+        for prior_maps in 0..32 {
+            let mut topo = Topology::new();
+            let solids = make_interleaved_boxes(&mut topo);
+            advance_hash_keys(prior_maps);
+            let fused = fuse_solids(&mut topo, &solids).unwrap();
+
+            let mut lumps: Vec<usize> = Vec::new();
+            for fid in remus_topology::explorer::solid_faces(&topo, fused).unwrap() {
+                let min_x = remus_topology::explorer::face_vertices(&topo, fid)
+                    .unwrap()
+                    .into_iter()
+                    .map(|v| topo.vertex(v).unwrap().point().x())
+                    .fold(f64::INFINITY, f64::min);
+                let lump = lump_of(min_x);
+                if lumps.last() != Some(&lump) {
+                    lumps.push(lump);
+                }
+            }
+            assert_eq!(
+                lumps,
+                vec![0, 1, 2, 3],
+                "lump order changed after {prior_maps} unrelated hash maps"
+            );
+        }
     }
 
     /// A connected chain of four overlapping unit cubes forms ONE cluster, so
