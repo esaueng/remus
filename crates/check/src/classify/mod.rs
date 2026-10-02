@@ -11,7 +11,9 @@ pub mod prepared;
 pub(crate) mod ray_surface;
 pub(crate) mod winding;
 
-pub use cache::{CacheStats, ClassificationCache, DEFAULT_CACHE_CAPACITY};
+pub use cache::{
+    CacheStats, ClassificationCache, DEFAULT_CACHE_BYTE_BUDGET, DEFAULT_CACHE_CAPACITY,
+};
 pub use prepared::PreparedSolid;
 
 use remus_math::vec::{Point3, Vec3};

@@ -6,6 +6,13 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Compare this branch with the selected base ref
+        required: true
+        default: main
+        type: string
 
 concurrency:
   # Shared groups replace pending runs even when running cancellation is off.
@@ -27,6 +34,45 @@ permissions:
 # jobs don't need dtolnay/rust-toolchain.
 
 jobs:
+  public-commit-metadata:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check commit metadata
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          DISPATCH_BASE: origin/${{ inputs.base_ref }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE"
+            head="$PR_HEAD"
+          elif [[ "$EVENT_NAME" == push ]]; then
+            base="$BEFORE_SHA"
+            head="$HEAD_SHA"
+          else
+            base="$DISPATCH_BASE"
+            head="$HEAD_SHA"
+          fi
+          if [[ -z "$base" || -z "$head" || "$base" =~ ^0+$ || "$head" =~ ^0+$ ]]; then
+            echo 'Commit metadata range is unavailable.' >&2
+            exit 1
+          fi
+          python3 scripts/check_public_commit_metadata.py --base "$base" --head "$head"
+      - name: Test metadata policy with synthetic identities
+        run: python3 -m unittest discover -s scripts -p 'test_check_public_commit_metadata.py'
+
   checks:
     permissions:
       id-token: write

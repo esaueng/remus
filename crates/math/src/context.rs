@@ -113,10 +113,13 @@ impl FallbackPolicy {
 /// Every field is an upper bound the algorithm must respect; exhausting a
 /// budget terminates the work bounded, it never loops on. Defaults reproduce
 /// the constants used by the surface-surface intersection path before
-/// budgets were threaded through it.
+/// budgets were threaded through it, plus a bounded vertex-pair search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WorkBudgets {
+    /// Maximum candidate vertex-vertex comparisons across all overlapping source
+    /// pairs in one GFA pave-filling pass. Default: 1,000,000.
+    pub vertex_pairs: usize,
     /// Maximum marching steps per traced direction of one intersection
     /// curve.
     pub march_steps: usize,
@@ -135,10 +138,11 @@ pub struct WorkBudgets {
 }
 
 impl WorkBudgets {
-    /// Default budgets — identical to the pre-context constants.
+    /// Default budgets; the SSI fields retain their pre-context constants.
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            vertex_pairs: 1_000_000,
             march_steps: 200,
             queue_size: 100,
             segments: 50,
@@ -146,6 +150,13 @@ impl WorkBudgets {
             newton_iterations: 20,
             subdivision_depth: 6,
         }
+    }
+
+    /// Returns budgets with the given total vertex-pair comparison cap.
+    #[must_use]
+    pub const fn with_vertex_pairs(mut self, value: usize) -> Self {
+        self.vertex_pairs = value;
+        self
     }
 
     /// Returns budgets with the given marching-step cap.
@@ -322,6 +333,7 @@ mod tests {
     #[test]
     fn default_budgets_match_legacy_constants() {
         let b = WorkBudgets::new();
+        assert_eq!(b.vertex_pairs, 1_000_000);
         assert_eq!(b.march_steps, 200);
         assert_eq!(b.queue_size, 100);
         assert_eq!(b.segments, 50);

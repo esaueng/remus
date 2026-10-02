@@ -28,13 +28,13 @@ jobs:
         continue-on-error: true
         run: |
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --volume "$RUNNER_TEMP:/github/temp" --workdir /github/workspace \
             --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
             --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
             --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
             --entrypoint /root/osv-scanner "$OSV_IMAGE" \
             --format=json \
-            --output=old-results.json \
+            --output=/github/temp/old-results.json \
             --lockfile=Cargo.lock \
             --lockfile=package-lock.json
       - name: Select tested commit
@@ -43,40 +43,40 @@ jobs:
         continue-on-error: true
         run: |
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --volume "$RUNNER_TEMP:/github/temp" --workdir /github/workspace \
             --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
             --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
             --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
             --entrypoint /root/osv-scanner "$OSV_IMAGE" \
             --format=json \
-            --output=new-results.json \
+            --output=/github/temp/new-results.json \
             --lockfile=Cargo.lock \
             --lockfile=package-lock.json
       - name: Report new PR vulnerabilities
         if: github.event_name == 'pull_request'
         run: |
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --volume "$RUNNER_TEMP:/github/temp" --workdir /github/workspace \
             --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
             --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
             --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
             --entrypoint /root/osv-reporter "$OSV_IMAGE" \
             --output=results.sarif \
-            --old=old-results.json \
-            --new=new-results.json \
+            --old=/github/temp/old-results.json \
+            --new=/github/temp/new-results.json \
             --gh-annotations=true \
             --fail-on-vuln=true
       - name: Report main vulnerabilities
         if: github.event_name != 'pull_request'
         run: |
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --volume "$RUNNER_TEMP:/github/temp" --workdir /github/workspace \
             --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
             --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
             --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
             --entrypoint /root/osv-reporter "$OSV_IMAGE" \
             --output=results.sarif \
-            --new=new-results.json \
+            --new=/github/temp/new-results.json \
             --gh-annotations=false \
             --fail-on-vuln=true
       - name: Preserve scan evidence
@@ -86,8 +86,8 @@ jobs:
           name: osv-results
           path: |
             results.sarif
-            old-results.json
-            new-results.json
+            ${{ runner.temp }}/new-results.json
+            ${{ runner.temp }}/old-results.json
           if-no-files-found: error
           retention-days: 5
       - name: Upload code scanning results

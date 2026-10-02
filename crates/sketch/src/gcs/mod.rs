@@ -21,4 +21,4 @@ pub use entity::{
     PointId,
 };
 pub use solver::SolveResult;
-pub use system::GcsSystem;
+pub use system::{GcsLimits, GcsSystem};

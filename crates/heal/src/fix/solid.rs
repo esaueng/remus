@@ -27,8 +27,27 @@ use crate::status::Status;
 ///
 /// # Errors
 ///
-/// Returns [`HealError`] if entity lookups fail.
+/// Returns [`HealError`] if entity lookups or resource checks fail. Errors
+/// restore the topology and the context's pending repairs and messages.
 pub fn fix_solid(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    ctx: &mut HealContext,
+    config: &FixConfig,
+) -> Result<FixResult, HealError> {
+    let reshape = ctx.reshape.clone();
+    let messages = ctx.messages.len();
+    let result = remus_topology::transaction::run_transacted(topo, |topo| {
+        fix_solid_inner(topo, solid_id, ctx, config)
+    });
+    if result.is_err() {
+        ctx.reshape = reshape;
+        ctx.messages.truncate(messages);
+    }
+    result
+}
+
+fn fix_solid_inner(
     topo: &mut Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
