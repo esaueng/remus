@@ -154,7 +154,7 @@ fn datum_fixxy_solves_at_scales_and_translation() {
         // Independent oracle: coordinates themselves.
         assert_len("fixx x", x, tx, scale);
         assert_len("fixy y", y, ty, scale);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, 2, "one free point");
         assert_eq!(d.num_equations, 2);
         assert_eq!(d.rank, 2, "scale {scale}: rank");
@@ -529,7 +529,7 @@ fn circle_point_on_radius_equal_radii() {
         let r2 = sys.circle(circ2).expect("c2").radius;
         assert_len("equal radii r1 pinned", r1, 2.0 * scale, scale);
         assert_len("equal radii r2 follows", r2, 2.0 * scale, scale);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, 2);
         assert_eq!(d.num_equations, 2);
         assert_eq!(d.rank, 2, "equalradii rank {scale}");
@@ -1259,7 +1259,7 @@ fn contracts_budgets_repeats_and_dof_rank() {
     let p = free_pt(&mut sys, 9.0, 9.0);
     sys.add_constraint(Constraint::FixX(p, 1.0)).unwrap();
     sys.add_constraint(Constraint::FixY(p, 2.0)).unwrap();
-    let d = sys.dof();
+    let d = sys.dof().unwrap();
     assert_eq!(d.num_params, 2);
     assert_eq!(d.num_equations, 2);
     assert_eq!(d.rank, 2);
@@ -1273,7 +1273,7 @@ fn contracts_budgets_repeats_and_dof_rank() {
     let a = fixed_pt(&mut sys, 0.0, 0.0);
     let b = free_pt(&mut sys, 1.0, 0.0);
     sys.add_constraint(Constraint::Distance(a, b, 5.0)).unwrap();
-    let d = sys.dof();
+    let d = sys.dof().unwrap();
     assert_eq!(d.num_params, 2);
     assert_eq!(d.num_equations, 1);
     assert_eq!(d.rank, 1);

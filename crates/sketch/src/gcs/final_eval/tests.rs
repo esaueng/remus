@@ -146,7 +146,7 @@ fn solve_detailed_fresh(
 
     let result = sys.solve(max_iterations, tolerance).unwrap();
 
-    let analysis = sys.dof();
+    let analysis = sys.dof().unwrap();
     counts.analysis_jacobian_evals += 1;
     counts.analysis_qr_factorizations += 1;
     let (residuals, internal_max_residual) = sys.constraint_residuals();

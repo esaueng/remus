@@ -1624,9 +1624,13 @@ fn boolean_with_context_impl(
         // a fallback case. The mesh route would tessellate the conic and
         // hand back a faceted solid that looks like a successful boolean,
         // which is exactly the silent degradation the refusal exists to
-        // prevent. Every other GFA failure is a robustness problem where an
-        // approximate result still beats none, so those still fall through.
+        // prevent. Resource refusals and cancellation also stop here;
+        // starting another computation would bypass the caller's limit.
+        // Geometry failures can still use the declared fallback policy.
         Err(e @ remus_algo::error::AlgoError::UnsupportedCurve { .. }) => {
+            return Err(crate::OperationsError::Algo(e));
+        }
+        Err(e @ remus_algo::error::AlgoError::ResourceLimitExceeded { .. }) => {
             return Err(crate::OperationsError::Algo(e));
         }
         Err(e @ remus_algo::error::AlgoError::Math(remus_math::MathError::Cancelled)) => {
@@ -1937,7 +1941,8 @@ fn compound_cut_impl(
     // Measured on the kumiko wall lattice (180 strut prisms, one cluster):
     // batching is comfortably faster for an identical result. Replay it with
     // the captured operands under `kumiko-goma` in the parity-capture cache.
-    // Any failure falls back to the sequential loop.
+    // Geometry failures can fall back to the sequential loop; resource
+    // refusal and cancellation must preserve the caller's stop condition.
     let mut result = target;
     let mut batched = false;
     if tools.len() >= 2
@@ -1966,11 +1971,23 @@ fn compound_cut_impl(
                 )
             }
         });
-        if let Ok(cut) = batched_cut {
-            result = cut;
-            batched = true;
-        } else {
-            log::debug!("compound_cut: batched tool path failed, using sequential cuts");
+        match batched_cut {
+            Ok(cut) => {
+                result = cut;
+                batched = true;
+            }
+            Err(
+                error @ (crate::OperationsError::Algo(
+                    remus_algo::error::AlgoError::ResourceLimitExceeded { .. }
+                    | remus_algo::error::AlgoError::Math(remus_math::MathError::Cancelled),
+                )
+                | crate::OperationsError::Math(remus_math::MathError::Cancelled)),
+            ) => {
+                return Err(error);
+            }
+            Err(_) => {
+                log::debug!("compound_cut: batched tool path failed, using sequential cuts");
+            }
         }
     }
     if !batched {
@@ -2021,11 +2038,22 @@ fn fuse_cluster_with_context(
             reason: "fuse_cluster requires a non-empty cluster".into(),
         });
     };
-    if cluster.len() >= 3
-        && let Ok(fused) = remus_algo::gfa::fuse_n_with_context(topo, cluster, context)
-        && validate_boolean_result_with_tolerance(topo, fused, context.tolerance).is_ok()
-    {
-        return Ok(fused);
+    if cluster.len() >= 3 {
+        match remus_algo::gfa::fuse_n_with_context(topo, cluster, context) {
+            Ok(fused)
+                if validate_boolean_result_with_tolerance(topo, fused, context.tolerance)
+                    .is_ok() =>
+            {
+                return Ok(fused);
+            }
+            Err(
+                error @ (remus_algo::error::AlgoError::ResourceLimitExceeded { .. }
+                | remus_algo::error::AlgoError::Math(remus_math::MathError::Cancelled)),
+            ) => {
+                return Err(crate::OperationsError::Algo(error));
+            }
+            _ => {}
+        }
     }
     rest.iter().try_fold(first, |a, &t| {
         let mut used_fallback = false;
@@ -6004,3 +6032,67 @@ pub fn collect_face_signatures(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod resource_budget_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::context::{OperationContext, WorkBudgets};
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+
+    use super::*;
+
+    #[test]
+    fn n_way_budget_refusal_does_not_retry_with_a_fresh_sequential_budget() {
+        let mut topo = Topology::new();
+        let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+        let b = make_unit_cube_manifold_at(&mut topo, 0.2, 0.2, 0.2);
+        let c = make_unit_cube_manifold_at(&mut topo, 0.4, 0.4, 0.4);
+        let context =
+            OperationContext::new().with_budgets(WorkBudgets::new().with_vertex_pairs(191));
+        let error =
+            fuse_cluster_with_context(&mut topo, &[a, b, c], &context, &BooleanOptions::default())
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::OperationsError::Algo(remus_algo::error::AlgoError::ResourceLimitExceeded {
+                resource: "GFA vertex pairs",
+                limit: 191,
+                actual: 192,
+            })
+        ));
+        assert_eq!(topo.num_solids(), 3);
+        assert_eq!(topo.num_vertices(), 24);
+    }
+
+    #[test]
+    fn compound_cut_preserves_batched_resource_refusal() {
+        let mut topo = Topology::new();
+        let target = crate::primitives::make_box(&mut topo, 5.0, 5.0, 5.0).unwrap();
+        let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+        let b = make_unit_cube_manifold_at(&mut topo, 0.2, 0.2, 0.2);
+        let c = make_unit_cube_manifold_at(&mut topo, 0.4, 0.4, 0.4);
+        let context =
+            OperationContext::new().with_budgets(WorkBudgets::new().with_vertex_pairs(191));
+        let error = remus_topology::transaction::run_transacted(&mut topo, |topo| {
+            compound_cut_impl(
+                topo,
+                target,
+                &[a, b, c],
+                BooleanOptions::default(),
+                &context,
+            )
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::OperationsError::Algo(remus_algo::error::AlgoError::ResourceLimitExceeded {
+                resource: "GFA vertex pairs",
+                limit: 191,
+                actual: 192,
+            })
+        ));
+        assert_eq!(topo.num_solids(), 4);
+        assert_eq!(topo.num_vertices(), 32);
+    }
+}

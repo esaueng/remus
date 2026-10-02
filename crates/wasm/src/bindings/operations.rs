@@ -111,6 +111,32 @@ pub fn validate_move_faces_topology_work(
     )
 }
 
+pub(super) fn validate_defeature_face_count(count: usize) -> Result<(), WasmError> {
+    validate_work_count(u32::try_from(count).unwrap_or(u32::MAX), "faces")?;
+    Ok(())
+}
+
+pub(super) fn validate_offset_sample_grid(samples: u32, name: &str) -> Result<usize, WasmError> {
+    validate_work_count(samples, name)?;
+    validate_work_product(samples.max(4), samples.max(4), "sample grid")?;
+    Ok(samples as usize)
+}
+
+fn parse_offset_approximation_samples(samples: f64) -> Result<usize, WasmError> {
+    if !samples.is_finite() || samples.fract() != 0.0 || samples <= 0.0 {
+        return Err(WasmError::InvalidInput {
+            reason: "approximation_samples must be a positive integer".into(),
+        });
+    }
+    // Check the numeric range before narrowing: saturation or a subsequent
+    // u32 truncation must not hide the requested work.
+    let count = crate::error::validate_iteration_budget(samples, "approximation_samples")?;
+    validate_offset_sample_grid(
+        u32::try_from(count).unwrap_or(u32::MAX),
+        "approximation_samples",
+    )
+}
+
 fn wasm_blend_evolution(
     topo: &remus_topology::Topology,
     result: remus_topology::solid::SolidId,
@@ -2652,17 +2678,7 @@ impl BrepKernel {
 
         crate::error::validate_finite(distance, "distance")?;
         let approximation = approximation_samples
-            .map(|samples| {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let count = samples as usize;
-                if (count as f64 - samples).abs() > f64::EPSILON || count == 0 {
-                    return Err(crate::error::WasmError::InvalidInput {
-                        reason: "approximation_samples must be a positive integer".into(),
-                    });
-                }
-                crate::error::validate_work_count(count as u32, "approximation_samples")?;
-                Ok(count)
-            })
+            .map(parse_offset_approximation_samples)
             .transpose()?;
         let face_id = self.resolve_face(face)?;
         let outcome = offset_face_with_quality(self.topo_mut(), face_id, distance, approximation)?;
@@ -2712,6 +2728,68 @@ mod tests {
     };
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
+
+    #[test]
+    fn quality_offset_sample_counts_cannot_bypass_the_grid_budget() {
+        for samples in [
+            101.0,
+            10_000.0,
+            4_294_967_297.0,
+            f64::NAN,
+            f64::INFINITY,
+            -1.0,
+            0.0,
+            1.5,
+        ] {
+            assert!(
+                super::parse_offset_approximation_samples(samples).is_err(),
+                "{samples}"
+            );
+        }
+        assert_eq!(super::parse_offset_approximation_samples(1.0).unwrap(), 1);
+        assert_eq!(
+            super::parse_offset_approximation_samples(100.0).unwrap(),
+            100
+        );
+        // Batch zero retains its existing minimum-grid behavior.
+        assert_eq!(
+            super::validate_offset_sample_grid(0, "approximationSamples").unwrap(),
+            0
+        );
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let solid_id = kernel.resolve_solid(solid).unwrap();
+        let face = face_id_to_u32(
+            remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap()[0],
+        );
+        let before = kernel.topo().num_faces();
+        for samples in [101, 10_000, u32::MAX] {
+            let result = dispatch(
+                &mut kernel,
+                "offsetFaceWithQuality",
+                serde_json::json!({"face":face,"distance":0.5,"approximationSamples":samples}),
+            );
+            assert!(
+                result["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("must be at most")
+            );
+            assert_eq!(kernel.topo().num_faces(), before);
+        }
+        for samples in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(4),
+        ] {
+            let result = dispatch(
+                &mut kernel,
+                "offsetFaceWithQuality",
+                serde_json::json!({"face":face,"distance":0.5,"approximationSamples":samples}),
+            );
+            assert_eq!(result["ok"]["quality"], "exact");
+        }
+    }
 
     fn square_wire(k: &mut BrepKernel) -> u32 {
         let pts = [

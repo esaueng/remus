@@ -189,13 +189,6 @@ fn load_solids(bytes: &[u8]) -> Result<(Topology, Vec<SolidId>), IoWasmError> {
 }
 
 /// Solid roots as a document, or no bytes at all when there are none.
-fn solids_document(topo: &Topology, solids: &[SolidId]) -> Result<Vec<u8>, IoError> {
-    if solids.is_empty() {
-        return Ok(Vec::new());
-    }
-    arena_io::serialize_solids(topo, solids)
-}
-
 fn solids_document_with_limits(
     topo: &Topology,
     solids: &[SolidId],
@@ -210,17 +203,19 @@ fn solids_document_with_limits(
 fn sheets_document(
     topo: &Topology,
     sheets: &[remus_topology::shell::ShellId],
+    limits: ImportLimits,
 ) -> Result<Vec<u8>, IoError> {
     if sheets.is_empty() {
         return Ok(Vec::new());
     }
-    arena_io::serialize_sheets(topo, sheets)
+    arena_io::serialize_sheets_with_limits(topo, sheets, limits)
 }
 
 fn step_result(
     topo: &Topology,
     result: &StepReadResult,
     with_validation: bool,
+    limits: ImportLimits,
 ) -> Result<StepImportResult, IoWasmError> {
     let report = StepReport {
         solid_count: result.solids().len(),
@@ -233,9 +228,13 @@ fn step_result(
         validation: with_validation.then(|| result.validation()),
     };
     Ok(StepImportResult {
-        solids: solids_document(topo, result.solids())?,
-        sheets: sheets_document(topo, result.sheets())?,
-        report: serde_json::to_string(&report)?,
+        solids: solids_document_with_limits(topo, result.solids(), limits)?,
+        sheets: sheets_document(topo, result.sheets(), limits)?,
+        report: String::from_utf8(arena_io::serialize_json_with_limit(
+            &report,
+            limits.max_input_bytes,
+        )?)
+        .map_err(|error| IoWasmError::invalid(format!("STEP report encoding failed: {error}")))?,
     })
 }
 
@@ -343,7 +342,7 @@ impl RemusIo {
         let text = utf8(data, "STEP")?;
         let mut topo = Topology::new();
         let solids = remus_io::step::reader::read_step_with_limits(text, &mut topo, limits)?;
-        Ok(solids_document(&topo, &solids)?)
+        Ok(solids_document_with_limits(&topo, &solids, limits)?)
     }
 
     fn import_step_bodies_impl(
@@ -355,7 +354,7 @@ impl RemusIo {
         let text = utf8(data, "STEP")?;
         let mut topo = Topology::new();
         let result = remus_io::step::read_step_bodies_with_limits(text, &mut topo, limits)?;
-        step_result(&topo, &result, false)
+        step_result(&topo, &result, false, limits)
     }
 
     fn import_step_with_report_impl(
@@ -367,7 +366,7 @@ impl RemusIo {
         let text = utf8(data, "STEP")?;
         let mut topo = Topology::new();
         let result = remus_io::step::read_step_with_limits_and_report(text, &mut topo, limits)?;
-        step_result(&topo, &result, false)
+        step_result(&topo, &result, false, limits)
     }
 
     fn import_step_with_validation_impl(
@@ -381,7 +380,7 @@ impl RemusIo {
         let text = utf8(data, "STEP")?;
         let mut topo = Topology::new();
         let result = remus_io::step::read_step_with_validation(text, &mut topo, limits, options)?;
-        step_result(&topo, &result, true)
+        step_result(&topo, &result, true, limits)
     }
 
     fn import_iges_impl(
@@ -393,7 +392,7 @@ impl RemusIo {
         let text = utf8(data, "IGES")?;
         let mut topo = Topology::new();
         let solids = remus_io::iges::reader::read_iges_with_limits(text, &mut topo, limits)?;
-        Ok(solids_document(&topo, &solids)?)
+        Ok(solids_document_with_limits(&topo, &solids, limits)?)
     }
 
     fn import_stl_impl(
@@ -754,6 +753,40 @@ mod tests {
             .into_iter()
             .map(|solid| solid_volume(&topo, solid, 0.1).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn step_bridge_refuses_document_expansion_under_small_input_budget() {
+        let mut source = Topology::new();
+        let solid = make_box(&mut source, 2.0, 3.0, 4.0).unwrap();
+        let shell = source.solid(solid).unwrap().outer_shell();
+        let mut roots = vec![solid];
+        for _ in 0..15 {
+            roots.push(source.add_solid(remus_topology::solid::Solid::new(shell, Vec::new())));
+        }
+        let document = arena_io::serialize_solids(&source, &roots).unwrap();
+        let step = RemusIo::export_step_impl(&document, None).unwrap();
+        let input_limit = step.len() as f64;
+        // Shared input topology is reconstructed under each body's context;
+        // the resulting exact arena document exceeds the encoded STEP budget.
+        for result in [
+            RemusIo::import_step_impl(&step, Some(input_limit), None).map(|_| ()),
+            RemusIo::import_step_bodies_impl(&step, Some(input_limit), None).map(|_| ()),
+            RemusIo::import_step_with_report_impl(&step, Some(input_limit), None).map(|_| ()),
+            RemusIo::import_step_with_validation_impl(&step, None, Some(input_limit), None)
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(IoWasmError::Io(IoError::LimitExceeded {
+                        resource: "arena document bytes",
+                        ..
+                    }))
+                ),
+                "{result:?}"
+            );
+        }
     }
 
     #[test]

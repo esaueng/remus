@@ -30,13 +30,24 @@ mod gcs;
 
 pub use gcs::{
     ArcData, ArcId, CircleData, CircleId, Constraint, ConstraintEntry, ConstraintId,
-    ConstraintResidual, DofAnalysis, EllipseData, EllipseId, GcsSystem, LineData, LineId,
-    PointData, PointId, SolveClassification, SolveDiagnostics, SolveResult, classify_solve,
+    ConstraintResidual, DofAnalysis, EllipseData, EllipseId, GcsLimits, GcsSystem, LineData,
+    LineId, PointData, PointId, SolveClassification, SolveDiagnostics, SolveResult, classify_solve,
 };
 
 /// Errors from the sketch constraint solver.
 #[derive(Debug, thiserror::Error)]
 pub enum SketchError {
+    /// Dense solve/analysis would exceed the configured resource budget.
+    #[error("GCS resource limit exceeded: {resource} requires {actual}, limit {limit}")]
+    ResourceLimitExceeded {
+        /// Resource budget's stable name.
+        resource: &'static str,
+        /// Configured maximum.
+        limit: usize,
+        /// Checked requirement (`usize::MAX` when arithmetic overflows).
+        actual: usize,
+    },
+
     /// A GCS entity handle is invalid or stale (entity was removed).
     #[error("invalid or stale GCS entity handle")]
     InvalidHandle,
