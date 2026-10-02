@@ -520,6 +520,9 @@ impl BrepKernel {
             let result = sketch_obj.solve(max_iterations, tolerance);
             sk.points = sketch_obj.points;
             sk.constraints = sketch_obj.constraints;
+            if let Err(e @ remus_sketch::SketchError::ResourceLimitExceeded { .. }) = result {
+                return Err(WasmError::from(e).into());
+            }
             let (converged, iterations, max_residual) = match &result {
                 Ok(r) => (r.converged, r.iterations, Some(r.max_residual)),
                 Err(_) => (false, max_iterations, None),
@@ -543,6 +546,9 @@ impl BrepKernel {
         let gcs = build_gcs_from_state(sk)?;
         let mut sys = gcs.sys;
         let result = sys.solve(max_iterations, tolerance);
+        if let Err(e @ remus_sketch::SketchError::ResourceLimitExceeded { .. }) = result {
+            return Err(WasmError::from(e).into());
+        }
         let (converged, iterations, max_residual) = match &result {
             Ok(r) => (r.converged, r.iterations, Some(r.max_residual)),
             Err(_) => (false, max_iterations, None),
@@ -604,7 +610,7 @@ impl BrepKernel {
                 index: sketch as usize,
             })?;
         let GcsBuildResult { mut sys, .. } = build_gcs_from_state(sk)?;
-        let dof = sys.dof();
+        let dof = sys.dof().map_err(WasmError::from)?;
         Ok(serde_json::json!({
             "dof": dof.dof,
             "rank": dof.rank,

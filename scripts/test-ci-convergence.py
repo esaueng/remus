@@ -84,6 +84,16 @@ class ConvergenceTests(unittest.TestCase):
         self.assertNotIn("remus-ci-suite", CALLER)
         self.assertNotIn("concurrency:", FLEET)
 
+    def test_public_commit_metadata_checks_main_push_range_fail_closed(self):
+        metadata = jobs(CALLER)["public-commit-metadata"]
+        self.assertIn("github.event_name == 'push'", metadata)
+        self.assertIn("branches: [main]", CALLER)
+        self.assertIn("BEFORE_SHA: ${{ github.event.before }}", metadata)
+        self.assertIn('elif [[ "$EVENT_NAME" == push ]]', metadata)
+        self.assertIn('base="$BEFORE_SHA"', metadata)
+        self.assertIn("Commit metadata range is unavailable.", metadata)
+        self.assertNotIn("github.event_name == 'merge_group'", metadata)
+
     def test_expensive_jobs_wait_for_both_early_gates(self):
         for name in HEAVY | {"docs"}:
             with self.subTest(name=name):

@@ -171,7 +171,7 @@ fn independent_under_dimensions_and_outcome() {
     for n_params in [10, 100] {
         let mut sys = build_independent_under(n_params);
         let k = n_params / 2;
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, n_params);
         assert_eq!(d.num_equations, k);
         let r = sys.solve(MAX_ITER, TOL).unwrap();
@@ -198,7 +198,7 @@ fn independent_under_dimensions_and_outcome() {
 fn independent_solved_dimensions_and_outcome() {
     for n_params in [10, 100] {
         let mut sys = build_independent_solved(n_params);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, n_params);
         assert_eq!(d.num_equations, n_params);
         let r = sys.solve(MAX_ITER, TOL).unwrap();
@@ -228,7 +228,7 @@ fn independent_solved_dimensions_and_outcome() {
 fn coupled_chain_dimensions_and_outcome() {
     for n_params in [10, 100] {
         let mut sys = build_coupled_chain(n_params);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, n_params);
         assert_eq!(d.num_equations, n_params);
         let r = sys.solve(MAX_ITER, TOL).unwrap();
@@ -258,7 +258,7 @@ fn redundant_classification_and_convergence() {
     // validated per sample by the profiling-release runner.
     let n_params = 100;
     let mut sys = build_redundant(n_params);
-    let d = sys.dof();
+    let d = sys.dof().unwrap();
     assert_eq!(d.num_params, n_params);
     assert_eq!(d.num_equations, n_params + n_params / 2);
     let det = sys.solve_detailed(MAX_ITER, TOL).unwrap();
@@ -508,7 +508,7 @@ fn build_ellipse_mixed(n_params: usize) -> GcsSystem {
 fn ellipse_driven_dimensions_and_outcome() {
     for n_params in [9, 99] {
         let mut sys = build_ellipse_driven(n_params);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, n_params);
         assert_eq!(d.num_equations, n_params);
         let r = sys.solve(MAX_ITER, TOL).unwrap();
@@ -535,7 +535,7 @@ fn ellipse_driven_dimensions_and_outcome() {
 fn ellipse_mixed_dimensions_and_outcome() {
     for n_params in [30, 300] {
         let mut sys = build_ellipse_mixed(n_params);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, n_params, "n={n_params}");
         assert_eq!(d.num_equations, n_params, "n={n_params}");
         let r = sys.solve(MAX_ITER, TOL).unwrap();

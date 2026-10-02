@@ -276,6 +276,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "defeature")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn defeature(&mut self, solid: u32, face_handles: Vec<u32>) -> Result<u32, JsError> {
+        super::operations::validate_defeature_face_count(face_handles.len())?;
         let solid_id = self.resolve_solid(solid)?;
         let face_ids: Vec<_> = face_handles
             .iter()

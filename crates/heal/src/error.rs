@@ -23,6 +23,18 @@ pub enum HealError {
     #[error("fix failed: {0}")]
     FixFailed(String),
 
+    /// Healing exceeded a deterministic resource budget; no approximate
+    /// replacement or truncated repair is returned.
+    #[error("healing resource limit exceeded: {resource} needs {actual}, limit {limit}")]
+    ResourceLimitExceeded {
+        /// Bounded resource or work counter.
+        resource: &'static str,
+        /// Maximum allowed amount.
+        limit: usize,
+        /// Required amount (saturated when arithmetic overflowed).
+        actual: usize,
+    },
+
     /// A controlled repair could not meet its declared error budget; the
     /// original data was restored.
     #[error("repair achieved deviation {achieved} but the budget is {budget}")]
