@@ -480,6 +480,29 @@ fn indefinite_forms_return_their_two_null_lines() {
     }
 }
 
+/// The sorted, oriented output is a contract: callers without an incoming
+/// direction take the first null. With `root = -(b + sign(b)·√disc)`
+/// (`sign(0) = +`), `[[1, 0], [0, -1]]` gives `root = -1` and the nulls
+/// `(root, a) = (-1, 1)` and `(d, root) = (-1, -1)`, sorted by `(x, y)`; the
+/// saddle `[[0, 1], [1, 0]]` gives `root = -2`, i.e. `-e1` then `-e2`.
+#[test]
+fn indefinite_nulls_are_sorted_and_oriented_deterministically() {
+    let (e1, e2) = xy_frame();
+    let h = 0.5_f64.sqrt();
+    let dirs = nulls(1.0, 0.0, -1.0, e1, e2);
+    assert_eq!(dirs.len(), 2);
+    assert!(
+        close_vec(dirs[0], Vec3::new(-h, -h, 0.0), 1e-15),
+        "{dirs:?}"
+    );
+    assert!(close_vec(dirs[1], Vec3::new(-h, h, 0.0), 1e-15), "{dirs:?}");
+    let dirs = nulls(0.0, 1.0, 0.0, e1, e2);
+    assert_eq!(
+        dirs,
+        vec![Vec3::new(-1.0, 0.0, 0.0), Vec3::new(0.0, -1.0, 0.0)]
+    );
+}
+
 /// Classification is scale invariant: `λ·Q` keeps both nulls for `λ` from
 /// `1e-6` to `1e6`, though `|det|` then spans 24 decades.
 #[test]
@@ -550,6 +573,28 @@ fn classification_gates_are_strict() {
         let dirs = null_directions(1.0, 0.0, d, e1, e2, 1.0, d);
         assert_eq!(dirs.len(), 1, "det = {d:e}: {dirs:?}");
         assert!(close_vec(dirs[0], Vec3::new(0.0, 1.0, 0.0), 0.0));
+    }
+}
+
+/// Defect (fixed here): with one diagonal tiny but non-zero, the old solve
+/// divided by the *smaller* diagonal and lost the root `-b + √disc` to
+/// cancellation, returning `e1` for `[[1, 1], [1, 1e-20]]` although
+/// `Q(e1, e1) = 1`. Both nulls must be true nulls whichever diagonal is tiny.
+#[test]
+fn ill_conditioned_indefinite_forms_keep_true_nulls() {
+    let forms = [
+        (1.0, 1.0, 1e-20),
+        (1e-20, 1.0, 1.0),
+        (1.0, 1.0, 1e-16),
+        (1e-16, -1.0, 1.0),
+        (3.0, -1e8, 1e-9),
+    ];
+    for frame in [xy_frame(), tilted_frame()] {
+        for &(a, b, d) in &forms {
+            let dirs = nulls(a, b, d, frame.0, frame.1);
+            assert_eq!(dirs.len(), 2, "Q=({a},{b},{d}): {dirs:?}");
+            assert_all_null(a, b, d, frame, &dirs);
+        }
     }
 }
 
