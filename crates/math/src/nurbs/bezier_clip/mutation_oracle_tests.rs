@@ -229,9 +229,15 @@ fn fat_line_normal_of_a_closed_window() {
     assert!(vclose(m, Vec3::new(0.8, -0.6, 0.0), 1e-15), "{m:?}");
 }
 
-/// A perpendicular offset that overflows to infinity has no unit normal.
+/// A perpendicular offset that overflows to infinity has no unit normal:
+/// straight `a` at y = -1e308 borrows from `b` at y = +1e308, whose offset
+/// (2e308) overflows. (A curved window with such an offset has an infinite
+/// extent and is refused earlier, as a closed window with no finite chord.)
 #[test]
 fn fat_line_normal_refuses_an_overflowing_offset() {
+    let a = sub(vec![p(0.0, -1e308, 0.0), p(1.0, -1e308, 0.0)]);
+    let b = sub(vec![p(0.5, 1e308, 0.0), p(0.6, 1e308, 0.0)]);
+    assert!(fat_line_normal(&a, &b).is_none());
     let a = sub(vec![
         p(0.0, -1e308, 0.0),
         p(0.5, 1e308, 0.0),
@@ -632,9 +638,10 @@ fn shared_window_spans_the_given_parameters() {
 // ---------------------------------------------------------------------------
 
 /// `c2` runs along `c1` over x in [1, 3] (u1 in [0.25, 0.75]) and then
-/// crosses it three more times: at x = 2.5 (inside the overlap, removed),
-/// at x = 3.25 (outside, kept) and at x = 0.9995 (outside by 0.0005 in
-/// model space, inside the parameter slack tolerance / speed, removed).
+/// crosses it four more times: at x = 2.5 (inside the overlap, removed),
+/// at x = 3.25 (outside, kept), and at x = 0.9995 and x = 3.0005 (outside
+/// by 0.0005 in model space, inside the parameter slack tolerance / speed
+/// at either end, removed).
 #[test]
 fn hits_inside_an_overlap_are_removed_and_others_kept() {
     let c1 = line(p(0.0, 0.0, 0.0), p(4.0, 0.0, 0.0));
@@ -647,6 +654,9 @@ fn hits_inside_an_overlap_are_removed_and_others_kept() {
         p(4.5, 2.0, 0.0),
         p(0.9995, 2.0, 0.0),
         p(0.9995, -1.0, 0.0),
+        p(0.9995, -2.0, 0.0),
+        p(3.0005, -2.0, 0.0),
+        p(3.0005, 2.0, 0.0),
     ]);
     let tol = 1e-3;
     let r = curve_curve_intersect_full(&c1, &c2, tol).expect("intersect");
@@ -1001,4 +1011,153 @@ fn identical_arcs_overlap_only_past_the_depth_gate() {
         close(o.u2_start, 0.0, 1e-9) && close(o.u2_end, 1.0, 1e-9),
         "{o:?}"
     );
+}
+
+/// The depth-0 straight-overlap shortcut needs BOTH windows strictly
+/// thinner than `DEGENERATE_FAT_LINE` (1e-12). A parabola bump of exactly
+/// 1e-12 against its own chord is not straight, so the shortcut must not
+/// fire on the first call (it would return after one call); the pair still
+/// ends as one overlap.
+#[test]
+fn straight_overlap_shortcut_needs_flatness_strictly_below_the_bound() {
+    let bump = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![p(0.0, 0.0, 0.0), p(1.0, 1e-12, 0.0), p(2.0, 0.0, 0.0)],
+        vec![1.0; 3],
+    )
+    .expect("bump");
+    let flat = line(p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0));
+    let s = SubSegment::new(ClipSide::new(&bump, 0.0, 1.0)).expect("window");
+    assert_eq!(s.flatness(), DEGENERATE_FAT_LINE);
+    for (c1, c2) in [(&bump, &flat), (&flat, &bump)] {
+        let (r, calls) = recurse_calls(|| curve_curve_intersect_full(c1, c2, 1e-8).expect("ok"));
+        assert!(calls >= 2, "calls {calls}");
+        assert!(r.hits.is_empty(), "{:?}", r.hits);
+        assert_eq!(r.overlaps.len(), 1, "{:?}", r.overlaps);
+    }
+    // Strictly below the bound, the shortcut answers on the first call.
+    let thin = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![p(0.0, 0.0, 0.0), p(1.0, 5e-13, 0.0), p(2.0, 0.0, 0.0)],
+        vec![1.0; 3],
+    )
+    .expect("thin");
+    let (r, calls) = recurse_calls(|| curve_curve_intersect_full(&thin, &flat, 1e-8).expect("ok"));
+    assert_eq!(calls, 1);
+    assert_eq!(r.overlaps.len(), 1, "{:?}", r.overlaps);
+}
+
+/// The clip pad is 1e-12 of the coordinate magnitude. At magnitude 1e6 it
+/// is 1e-6, so the first clip of the perpendicular pair leaves a window of
+/// extent 2e-6, above the 1e-8 tolerance, and the three-call convergence of
+/// `perpendicular_lines_converge_in_three_calls` cannot happen; the hit is
+/// still exact.
+#[test]
+fn clip_pad_scales_with_the_coordinate_magnitude() {
+    let o = 1e6;
+    let a = line(p(o, o, 0.0), p(o + 2.0, o, 0.0));
+    let b = line(p(o + 0.8, o - 1.0, 0.0), p(o + 0.8, o + 1.0, 0.0));
+    let (r, calls) = recurse_calls(|| curve_curve_intersect_full(&a, &b, 1e-8).expect("ok"));
+    assert!(calls > 3, "calls {calls}");
+    assert_eq!(r.hits.len(), 1, "{:?}", r.hits);
+    assert!((r.hits[0].point - p(o + 0.8, o, 0.0)).length() < 1e-9);
+}
+
+/// Boundary cases of the overlap test, each exactly representable: the
+/// short-stretch guards are strict (`arc == 50 tol` and `span == 100 tol`
+/// are long enough), and so is the Hausdorff bound (a gap of exactly
+/// `10 tol` is too far).
+#[test]
+fn check_overlap_bounds_are_strict() {
+    assert_eq!(0.02 * 50.0, 1.0);
+    assert_eq!(0.01 * 100.0, 1.0);
+    assert_eq!(0.001 * 10.0, 0.01);
+    let len = |l: f64| line(p(0.0, 0.0, 0.0), p(l, 0.0, 0.0));
+    let run = |a: &NurbsCurve, wa: f64, b: &NurbsCurve, wb: f64, tol: f64| {
+        let mut o = out(tol);
+        check_overlap(
+            ClipSide::new(a, 0.0, wa),
+            ClipSide::new(b, 0.0, wb),
+            false,
+            &mut o,
+        )
+    };
+    // arc_a == 50 tol, spans below 100 tol.
+    assert!(run(&len(4.0), 0.25, &len(8.0), 0.125, 0.02));
+    // span_a == 100 tol, arc and span_b below their bounds.
+    assert!(run(&len(0.25), 1.0, &len(4.0), 0.0625, 0.01));
+    // span_b == 100 tol.
+    assert!(run(&len(4.0), 0.0625, &len(0.25), 1.0, 0.01));
+    // Parallel lines exactly 0.01 = 10 tol apart are not coincident.
+    let a = line(p(0.0, 0.0, 0.0), p(4.0, 0.0, 0.0));
+    let b = line(p(0.0, 0.01, 0.0), p(4.0, 0.01, 0.0));
+    let mut o = out(0.001);
+    assert!(!check_overlap(
+        ClipSide::new(&a, 0.2, 0.6),
+        ClipSide::new(&b, 0.2, 0.6),
+        false,
+        &mut o
+    ));
+}
+
+/// The Hausdorff samples cover the window interior, not just its ends.
+/// `b` is the segment y = 0, x in [0, 2], plus a quintic wiggle
+/// y = u (u - 1/2)^3 (u - 1) (Bernstein ordinates 0, 1/40, -3/80, 3/80,
+/// -1/40, 0): it meets the segment at both ends and agrees with it to
+/// second order at the middle, but its interior samples sit 0.00432 off
+/// it (at u = 1/5 and 4/5). So it is coincident within 10 tol = 0.01 and
+/// not within 10 tol = 0.001.
+#[test]
+fn check_overlap_samples_the_window_interior() {
+    let a = line(p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0));
+    let ys = [0.0, 0.025, -0.0375, 0.0375, -0.025, 0.0];
+    let b = NurbsCurve::new(
+        5,
+        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        (0..6u8)
+            .map(|i| p(0.4 * f64::from(i), ys[usize::from(i)], 0.0))
+            .collect(),
+        vec![1.0; 6],
+    )
+    .expect("quintic");
+    assert!((b.evaluate(0.2).y() - 0.00432).abs() < 1e-15);
+    let sa = ClipSide::new(&a, 0.0, 1.0);
+    let sb = ClipSide::new(&b, 0.0, 1.0);
+    assert!(coincident_to_second_order(sa, sb, 1e-12));
+    assert!(check_overlap(sa, sb, false, &mut out(1e-3)));
+    assert!(!check_overlap(sa, sb, false, &mut out(1e-4)));
+}
+
+/// A window lying exactly `tolerance` from the other still counts as
+/// within it (the test is `dist > tolerance` to refuse).
+#[test]
+fn tolerance_contact_accepts_a_gap_of_exactly_the_tolerance() {
+    let a = line(p(0.0, 0.0, 0.0), p(4.0, 0.0, 0.0));
+    let c = line(p(1.0, 0.01, 0.0), p(3.0, 0.01, 0.0));
+    let (u, v) = tolerance_contact(
+        ClipSide::new(&a, 0.0, 1.0),
+        ClipSide::new(&c, 0.0, 1.0),
+        0.01,
+    )
+    .expect("contact at exactly the tolerance");
+    assert!(close(u, 0.25, 1e-12) && v == 0.0, "{u} {v}");
+}
+
+/// Equidistant samples keep the first: the parabola (2t, 4t(1 - t)) seen
+/// from (1, -10) has its two ends equally near, Newton cannot improve
+/// either (the parabola bends away), and the lower parameter is returned.
+#[test]
+fn project_onto_window_keeps_the_first_of_equidistant_samples() {
+    let parabola = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![p(0.0, 0.0, 0.0), p(1.0, 2.0, 0.0), p(2.0, 0.0, 0.0)],
+        vec![1.0; 3],
+    )
+    .expect("parabola");
+    let (u, d) = project_onto_window(ClipSide::new(&parabola, 0.0, 1.0), p(1.0, -10.0, 0.0));
+    assert_eq!(u, 0.0);
+    assert!(close(d, 101.0_f64.sqrt(), 1e-14), "{d}");
 }
