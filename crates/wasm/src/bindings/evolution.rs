@@ -196,24 +196,56 @@ fn entity_history_json(
     })
 }
 
+// A plane/cylinder replacement has a fixed handful of scalar fields. Bound
+// direct JSON before serde builds its Value tree, including unknown fields.
+const MAX_REPLACEMENT_JSON_BYTES: usize = 4096;
+
+fn parse_replacement_json(replacement: &str) -> Result<serde_json::Value, StructuredWasmError> {
+    if replacement.len() > MAX_REPLACEMENT_JSON_BYTES {
+        return Err(StructuredWasmError::resource_limit(
+            "replacement JSON exceeds byte limit",
+            "replacement_json_bytes",
+            MAX_REPLACEMENT_JSON_BYTES,
+            replacement.len(),
+        ));
+    }
+    serde_json::from_str(replacement).map_err(|error| StructuredWasmError::invalid_json(&error))
+}
+
 fn replacement_vector(
     value: &serde_json::Value,
     key: &str,
 ) -> Result<remus_math::vec::Vec3, StructuredWasmError> {
-    let values = crate::helpers::get_f64_array(value, key)?;
-    let [x, y, z] = values.as_slice() else {
+    let values = value[key].as_array().ok_or_else(|| {
+        StructuredWasmError::invalid_argument(
+            format!("missing or invalid '{key}' array"),
+            Some(key),
+        )
+    })?;
+    if values.len() != 3 {
         return Err(StructuredWasmError::invalid_argument(
             format!("'{key}' must have exactly 3 components"),
             Some(key),
         ));
-    };
-    if values.iter().any(|component| !component.is_finite()) {
+    }
+    let mut components = [0.0; 3];
+    for (i, value) in values.iter().enumerate() {
+        components[i] = value.as_f64().ok_or_else(|| {
+            let argument = format!("{key}[{i}]");
+            StructuredWasmError::invalid_argument(
+                format!("{argument} is not a number"),
+                Some(&argument),
+            )
+        })?;
+    }
+    if components.iter().any(|component| !component.is_finite()) {
         return Err(StructuredWasmError::invalid_argument(
             format!("'{key}' must be finite"),
             Some(key),
         ));
     }
-    Ok(remus_math::vec::Vec3::new(*x, *y, *z))
+    let [x, y, z] = components;
+    Ok(remus_math::vec::Vec3::new(x, y, z))
 }
 
 fn parse_replacement_surface(
@@ -460,6 +492,8 @@ impl BrepKernel {
         solid: u32,
         faces: &[u32],
     ) -> Result<serde_json::Value, StructuredWasmError> {
+        super::operations::validate_defeature_face_count(faces.len())
+            .map_err(StructuredWasmError::from)?;
         let solid_id = self
             .resolve_solid(solid)
             .map_err(StructuredWasmError::from)?;
@@ -818,6 +852,10 @@ impl BrepKernel {
             })(),
             "defeatureJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
+                if let Some(faces) = args["faces"].as_array() {
+                    super::operations::validate_defeature_face_count(faces.len())
+                        .map_err(StructuredWasmError::from)?;
+                }
                 let faces = get_u32_array(args, "faces")?;
                 self.defeature_journaled_json(solid, &faces)
             })(),
@@ -1136,8 +1174,7 @@ impl BrepKernel {
         face: u32,
         replacement: &str,
     ) -> Result<String, JsError> {
-        let replacement = serde_json::from_str(replacement)
-            .map_err(|error| structured_to_js(StructuredWasmError::invalid_json(&error)))?;
+        let replacement = parse_replacement_json(replacement).map_err(structured_to_js)?;
         self.replace_surface_journaled_json(solid, face, &replacement)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
@@ -1628,6 +1665,102 @@ mod evolution_contract_tests {
             })
             .unwrap();
         (kernel, source, super::index_u32(face.index()))
+    }
+
+    #[test]
+    fn replacement_vectors_reject_length_before_reading_elements() {
+        let value = serde_json::json!({"normal":[0,0,1,"invalid"]});
+        let error = super::replacement_vector(&value, "normal").unwrap_err();
+        assert!(error.message().contains("exactly 3 components"));
+        for key in ["normal", "origin", "axis"] {
+            let value = serde_json::json!({key:vec![0.0; 10_001]});
+            assert!(
+                super::replacement_vector(&value, key)
+                    .unwrap_err()
+                    .message()
+                    .contains("exactly 3 components")
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_json_is_bounded_before_deserialization() {
+        let limit = super::MAX_REPLACEMENT_JSON_BYTES;
+        // Invalid syntax past the limit must be refused before JSON parsing.
+        for text in ["[".repeat(limit + 1), "é".repeat(limit / 2 + 1)] {
+            let error = super::parse_replacement_json(&text).unwrap_err();
+            let error = serde_json::to_value(error).unwrap();
+            assert_eq!(error["code"], "resource_limit_exceeded");
+            assert_eq!(error["details"]["actual"], text.len());
+        }
+        assert!(
+            super::parse_replacement_json("[")
+                .unwrap_err()
+                .message()
+                .contains("JSON")
+        );
+        let mut replacement =
+            serde_json::json!({"type":"plane","normal":[0,0,1],"d":8}).to_string();
+        replacement.push_str(&" ".repeat(limit - replacement.len()));
+        let value = super::parse_replacement_json(&replacement).unwrap();
+        let (mut kernel, source, face) = replacement_box();
+        assert!(
+            kernel
+                .replace_surface_journaled_json(source, face, &value)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn defeature_journaled_preserves_the_face_count_budget() {
+        let (mut kernel, source, face) = replacement_box();
+        let before = kernel.topo().journal().snapshot();
+        let counts = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_faces(),
+        );
+        let faces = vec![face; crate::error::MAX_WASM_WORK_ITEMS as usize + 1];
+        let error = kernel.defeature_journaled_json(source, &faces).unwrap_err();
+        assert!(
+            error.message().contains("faces must be at most"),
+            "{}",
+            error.message()
+        );
+        for op in ["defeatureJournaled", "defeature"] {
+            let response: serde_json::Value = serde_json::from_str(
+                &kernel.execute_batch_v2(
+                    &serde_json::json!([
+                        {"op":op,"args":{"solid":source,"faces":faces}}
+                    ])
+                    .to_string(),
+                ),
+            )
+            .unwrap();
+            assert_eq!(response[0]["error"]["message"], error.message());
+            // The raw JSON count is checked before handle-array collection.
+            let mut invalid = serde_json::json!(faces);
+            invalid[0] = serde_json::json!("invalid");
+            let response: serde_json::Value = serde_json::from_str(
+                &kernel.execute_batch_v2(
+                    &serde_json::json!([
+                        {"op":op,"args":{"solid":source,"faces":invalid}}
+                    ])
+                    .to_string(),
+                ),
+            )
+            .unwrap();
+            assert_eq!(response[0]["error"]["message"], error.message());
+        }
+        assert_eq!(kernel.topo().journal().snapshot(), before);
+        assert_eq!(
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_faces()
+            ),
+            counts
+        );
     }
 
     #[test]

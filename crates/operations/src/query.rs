@@ -6,7 +6,7 @@ use remus_math::polygon_boolean::{BooleanOp as PolygonBooleanOp, polygon_boolean
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::explorer::{face_edges, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
@@ -46,6 +46,171 @@ struct PlanarFaceRegion {
     holes: Vec<Vec<Point3>>,
     area: f64,
     borders_blend: bool,
+    polygon_work: PolygonWork,
+}
+
+// Query-local limits apply to native, scalar WASM, and batch entry points.
+// Preparation counts references (including repeated uses), not unique entities.
+#[derive(Clone, Copy)]
+struct PlanarQueryLimits {
+    faces: usize,
+    topology_uses: usize,
+    samples: usize,
+    work: usize,
+}
+
+impl Default for PlanarQueryLimits {
+    fn default() -> Self {
+        Self {
+            faces: 512,
+            topology_uses: 16_384,
+            samples: 262_144,
+            work: 1_000_000_000,
+        }
+    }
+}
+
+fn query_budget_error(resource: &str) -> OperationsError {
+    OperationsError::InvalidInput {
+        reason: format!("opposing planar face-pair query {resource} budget exceeded"),
+    }
+}
+
+fn reserve_query_budget(
+    remaining: &mut usize,
+    amount: Option<usize>,
+    resource: &str,
+) -> Result<(), OperationsError> {
+    *remaining = amount
+        .and_then(|amount| remaining.checked_sub(amount))
+        .ok_or_else(|| query_budget_error(resource))?;
+    Ok(())
+}
+
+// Summaries let us reserve ALL outer/outer, hole/outer, and hole/hole work in
+// constant time before projection, even when there are many degenerate rings.
+#[derive(Default)]
+struct PolygonWork {
+    rings: usize,
+    points: usize,
+    squared_points: usize,
+}
+
+impl PolygonWork {
+    fn from_region(outer: &[Point3], holes: &[Vec<Point3>]) -> Result<Self, OperationsError> {
+        let mut work = Self::default();
+        for ring in std::iter::once(outer).chain(holes.iter().map(Vec::as_slice)) {
+            // Empty rings still incur one polygon call and must not evade work accounting.
+            let n = ring.len().max(1);
+            work.rings = work
+                .rings
+                .checked_add(1)
+                .ok_or_else(|| query_budget_error("polygon work"))?;
+            work.points = work
+                .points
+                .checked_add(n)
+                .ok_or_else(|| query_budget_error("polygon work"))?;
+            work.squared_points = n
+                .checked_mul(n)
+                .and_then(|n| work.squared_points.checked_add(n))
+                .ok_or_else(|| query_budget_error("polygon work"))?;
+        }
+        Ok(work)
+    }
+
+    fn pair_cost(&self, other: &Self) -> Option<usize> {
+        // For n,m input points, splitting can emit at most S = 8nm+n+m
+        // subedges (four split parameters per edge pair, in each direction).
+        // S^2 bounds outgoing-candidate tracing, 3S(n+m) covers midpoint
+        // classification/winding and split sorting, and 2nm+n+m covers scans.
+        // Expand S^2 + 3S(n+m) + 2nm+n+m, then sum over every ring pair.
+        let terms: [(usize, usize, usize); 8] = [
+            (64, self.squared_points, other.squared_points),
+            (40, self.squared_points, other.points),
+            (40, self.points, other.squared_points),
+            (4, self.squared_points, other.rings),
+            (4, self.rings, other.squared_points),
+            (10, self.points, other.points),
+            (1, self.points, other.rings),
+            (1, self.rings, other.points),
+        ];
+        terms.into_iter().try_fold(0_usize, |sum, (factor, a, b)| {
+            factor.checked_mul(a)?.checked_mul(b)?.checked_add(sum)
+        })
+    }
+}
+
+fn preflight_planar_query(
+    topo: &Topology,
+    solid: SolidId,
+    limits: PlanarQueryLimits,
+    remaining_work: &mut usize,
+) -> Result<Vec<FaceId>, OperationsError> {
+    let solid_data = topo.solid(solid)?;
+    let mut remaining_uses = limits.topology_uses;
+    let mut remaining_faces = limits.faces;
+    let mut remaining_samples = limits.samples;
+    reserve_query_budget(
+        &mut remaining_uses,
+        solid_data.inner_shells().len().checked_add(1),
+        "topology",
+    )?;
+    // Count borrowed slices before solid_faces or adjacency can allocate.
+    for shell in
+        std::iter::once(solid_data.outer_shell()).chain(solid_data.inner_shells().iter().copied())
+    {
+        let count = topo.shell(shell)?.faces().len();
+        reserve_query_budget(
+            &mut remaining_faces,
+            Some(count),
+            "face count (maximum 512)",
+        )?;
+        reserve_query_budget(&mut remaining_uses, Some(count), "topology")?;
+    }
+    let faces = solid_faces(topo, solid)?;
+    let mut edge_uses = 0_usize;
+    for &face in &faces {
+        let face_data = topo.face(face)?;
+        reserve_query_budget(
+            &mut remaining_uses,
+            face_data.inner_wires().len().checked_add(1),
+            "topology",
+        )?;
+        for wire in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            let edges = topo.wire(wire)?.edges();
+            reserve_query_budget(&mut remaining_uses, Some(edges.len()), "topology")?;
+            edge_uses = edge_uses
+                .checked_add(edges.len())
+                .ok_or_else(|| query_budget_error("topology"))?;
+            if face_data.surface().is_planar() {
+                for oriented in edges {
+                    let edge = topo.edge(oriented.edge())?;
+                    // Reserve both materializations: area fallback emits at
+                    // most 257 curved-edge points and wire_polygon at most 32.
+                    // Line edges contribute one point to each.
+                    let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+                        2
+                    } else {
+                        289
+                    };
+                    reserve_query_budget(
+                        &mut remaining_samples,
+                        Some(samples),
+                        "boundary samples",
+                    )?;
+                }
+            }
+        }
+    }
+    // Adjacency and blend-border traversal also process repeated edge uses.
+    reserve_query_budget(
+        remaining_work,
+        edge_uses.checked_mul(edge_uses),
+        "preparation work",
+    )?;
+    Ok(faces)
 }
 
 fn plane_frame(normal: Vec3) -> Option<(Vec3, Vec3)> {
@@ -75,12 +240,22 @@ fn polygon_overlap_area(a: &[Point2], b: &[Point2], tolerance: Tolerance) -> f64
         .max(0.0)
 }
 
-fn projected_overlap_area(a: &PlanarFaceRegion, b: &PlanarFaceRegion, tolerance: Tolerance) -> f64 {
+fn projected_overlap_area(
+    a: &PlanarFaceRegion,
+    b: &PlanarFaceRegion,
+    tolerance: Tolerance,
+    remaining_work: &mut usize,
+) -> Result<f64, OperationsError> {
+    reserve_query_budget(
+        remaining_work,
+        a.polygon_work.pair_cost(&b.polygon_work),
+        "polygon work",
+    )?;
     let Some(&origin) = a.outer.first() else {
-        return 0.0;
+        return Ok(0.0);
     };
     let Some((u, v)) = plane_frame(a.normal) else {
-        return 0.0;
+        return Ok(0.0);
     };
     let outer_a = project_loop(&a.outer, origin, u, v);
     let outer_b = project_loop(&b.outer, origin, u, v);
@@ -107,7 +282,7 @@ fn projected_overlap_area(a: &PlanarFaceRegion, b: &PlanarFaceRegion, tolerance:
             overlap += polygon_overlap_area(hole_a, hole_b, tolerance);
         }
     }
-    overlap.clamp(0.0, a.area.min(b.area))
+    Ok(overlap.clamp(0.0, a.area.min(b.area)))
 }
 
 fn borders_blend(
@@ -137,15 +312,29 @@ fn borders_blend(
 ///
 /// # Errors
 ///
-/// Returns an error if the solid topology cannot be traversed or measured.
+/// Returns an error if the solid topology cannot be traversed or measured,
+/// or if the query exceeds 512 face references, 16,384 topology references,
+/// 262,144 boundary samples, or 1,000,000,000 conservative work units.
+/// Refusal returns no partial pairs and does not modify the topology.
 pub fn opposing_planar_face_pairs(
     topo: &Topology,
     solid: SolidId,
     tolerance: Tolerance,
 ) -> Result<Vec<OpposingPlanarFacePair>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    opposing_planar_face_pairs_with_limits(topo, solid, tolerance, PlanarQueryLimits::default())
+}
+
+fn opposing_planar_face_pairs_with_limits(
+    topo: &Topology,
+    solid: SolidId,
+    tolerance: Tolerance,
+    limits: PlanarQueryLimits,
+) -> Result<Vec<OpposingPlanarFacePair>, OperationsError> {
+    let mut remaining_work = limits.work;
+    let faces = preflight_planar_query(topo, solid, limits, &mut remaining_work)?;
+    let adjacency = remus_topology::adjacency::AdjacencyIndex::build_from_faces(topo, &faces)?;
     let mut regions = Vec::new();
-    for face in solid_faces(topo, solid)? {
+    for face in faces {
         let face_data = topo.face(face)?;
         let Some(normal) = face_data.effective_plane_normal() else {
             continue;
@@ -154,12 +343,14 @@ pub fn opposing_planar_face_pairs(
         if outer.len() < 3 {
             continue;
         }
-        let holes = face_data
+        let holes: Vec<Vec<Point3>> = face_data
             .inner_wires()
             .iter()
             .map(|&wire| wire_polygon(topo, wire))
             .collect::<Result<Vec<_>, _>>()?;
+        let polygon_work = PolygonWork::from_region(&outer, &holes)?;
         regions.push(PlanarFaceRegion {
+            polygon_work,
             face,
             normal,
             outer,
@@ -181,7 +372,7 @@ pub fn opposing_planar_face_pairs(
             if signed_distance >= -tolerance.linear {
                 continue;
             }
-            let overlap_area = projected_overlap_area(a, b, tolerance);
+            let overlap_area = projected_overlap_area(a, b, tolerance, &mut remaining_work)?;
             if overlap_area <= tolerance.linear_sq() {
                 continue;
             }
@@ -1053,6 +1244,306 @@ mod tests {
             pairs
                 .iter()
                 .all(|pair| { !pair.face_a_borders_blend && !pair.face_b_borders_blend })
+        );
+    }
+
+    fn assert_query_budget_refusal(
+        result: Result<Vec<OpposingPlanarFacePair>, OperationsError>,
+        resource: &str,
+    ) {
+        assert!(
+            matches!(result, Err(OperationsError::InvalidInput { reason }) if reason.contains(resource)),
+            "expected {resource} budget refusal"
+        );
+    }
+
+    #[test]
+    fn planar_query_preserves_512_face_reference_ceiling_before_collection() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let face = solid_faces(&topo, solid).unwrap()[0];
+        let shell = topo.add_shell(remus_topology::shell::Shell::new(vec![face; 512]).unwrap());
+        let bounded = topo.add_solid(remus_topology::solid::Solid::new(shell, vec![]));
+        assert!(
+            opposing_planar_face_pairs(&topo, bounded, Tolerance::default())
+                .unwrap()
+                .is_empty()
+        );
+        let extra = topo.add_shell(remus_topology::shell::Shell::new(vec![face]).unwrap());
+        topo.solid_mut(bounded).unwrap().add_inner_shell(extra);
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs(&topo, bounded, Tolerance::default()),
+            "face count",
+        );
+    }
+
+    #[test]
+    fn planar_query_bounds_topology_before_materializing_rings() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let face = solid_faces(&topo, solid).unwrap()[0];
+        let original = topo.face(face).unwrap().outer_wire();
+        let oriented = topo.wire(original).unwrap().edges()[0];
+        let repeated =
+            topo.add_wire(remus_topology::wire::Wire::new(vec![oriented; 32], true).unwrap());
+        topo.set_face_boundary_wires(face, repeated, vec![])
+            .unwrap();
+        assert_eq!(solid_faces(&topo, solid).unwrap().len(), 6);
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    topology_uses: 40,
+                    ..PlanarQueryLimits::default()
+                },
+            ),
+            "topology",
+        );
+        assert_eq!(topo.wire(repeated).unwrap().edges().len(), 32);
+    }
+
+    #[test]
+    fn planar_query_bounds_hole_references_even_when_reused() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let face = solid_faces(&topo, solid).unwrap()[0];
+        let outer = topo.face(face).unwrap().outer_wire();
+        topo.set_face_boundary_wires(face, outer, vec![outer; 32])
+            .unwrap();
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    topology_uses: 40,
+                    ..PlanarQueryLimits::default()
+                },
+            ),
+            "topology",
+        );
+        assert_eq!(topo.face(face).unwrap().inner_wires().len(), 32);
+    }
+
+    #[test]
+    fn planar_query_bounds_area_samples_before_curved_wire_sampling() {
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    samples: 256,
+                    ..PlanarQueryLimits::default()
+                },
+            ),
+            "boundary samples",
+        );
+        let pairs = opposing_planar_face_pairs(&topo, solid, Tolerance::default()).unwrap();
+        assert_eq!(pairs.len(), 1);
+        assert!((pairs[0].distance - 2.0).abs() < 1e-9);
+        assert!((pairs[0].face_area_a - std::f64::consts::PI).abs() < 1e-9);
+        let inscribed_area = 16.0 * (std::f64::consts::TAU / 32.0).sin();
+        assert!((pairs[0].overlap_area - inscribed_area).abs() < 1e-6);
+    }
+
+    #[test]
+    fn planar_query_charges_all_face_pairs_and_accepts_exact_work_boundary() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let work = PolygonWork {
+            rings: 1,
+            points: 4,
+            squared_points: 16,
+        };
+        let required = 24 * 24 + 3 * work.pair_cost(&work).unwrap();
+        let limits = PlanarQueryLimits {
+            work: required,
+            ..PlanarQueryLimits::default()
+        };
+        let expected = opposing_planar_face_pairs(&topo, solid, Tolerance::default()).unwrap();
+        assert_eq!(
+            opposing_planar_face_pairs_with_limits(&topo, solid, Tolerance::default(), limits)
+                .unwrap(),
+            expected
+        );
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    work: required - 1,
+                    ..limits
+                },
+            ),
+            "polygon work",
+        );
+    }
+
+    #[test]
+    fn planar_query_sums_hole_pair_costs_and_rejects_overflow() {
+        let outer = vec![Point3::new(0.0, 0.0, 0.0); 4];
+        let hole = vec![Point3::new(0.0, 0.0, 0.0); 3];
+        let a = PolygonWork::from_region(&outer, &[hole.clone(), Vec::new()]).unwrap();
+        let b = PolygonWork::from_region(&outer, std::slice::from_ref(&hole)).unwrap();
+        let mut expected = 0;
+        for n in [4, 3, 1] {
+            for m in [4, 3] {
+                let subedges = 8 * n * m + n + m;
+                expected += subedges * subedges + 3 * subedges * (n + m) + 2 * n * m + n + m;
+            }
+        }
+        assert_eq!(a.pair_cost(&b), Some(expected));
+        let oversized = PolygonWork {
+            rings: 1,
+            points: usize::MAX,
+            squared_points: usize::MAX,
+        };
+        assert!(oversized.pair_cost(&a).is_none());
+        let mut budget = 100;
+        assert!(
+            reserve_query_budget(&mut budget, oversized.pair_cost(&a), "polygon work").is_err()
+        );
+        assert_eq!(budget, 100);
+    }
+
+    #[test]
+    fn planar_query_preserves_hole_overlap_and_cumulative_hole_budget() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
+        let hole_solid = make_box(&mut topo, 2.0, 3.0, 2.0).unwrap();
+        transform_solid(&mut topo, hole_solid, &Mat4::translation(4.0, 4.0, 0.0)).unwrap();
+        let hole_faces = solid_faces(&topo, hole_solid).unwrap();
+        for face in solid_faces(&topo, solid).unwrap() {
+            let normal = topo.face(face).unwrap().effective_plane_normal().unwrap();
+            if normal.z().abs() < 0.9 {
+                continue;
+            }
+            let hole_face = hole_faces
+                .iter()
+                .copied()
+                .find(|&f| {
+                    topo.face(f)
+                        .unwrap()
+                        .effective_plane_normal()
+                        .unwrap()
+                        .dot(normal)
+                        > 0.9
+                })
+                .unwrap();
+            let outer = topo.face(face).unwrap().outer_wire();
+            let hole = topo.face(hole_face).unwrap().outer_wire();
+            topo.set_face_boundary_wires(face, outer, vec![hole])
+                .unwrap();
+        }
+        let pairs = opposing_planar_face_pairs(&topo, solid, Tolerance::default()).unwrap();
+        let cap_pair = pairs.iter().find(|p| p.normal.z().abs() > 0.9).unwrap();
+        assert!((cap_pair.overlap_area - 94.0).abs() < 1e-6);
+        assert!((cap_pair.face_area_a - 94.0).abs() < 1e-9);
+        let single = PolygonWork {
+            rings: 1,
+            points: 4,
+            squared_points: 16,
+        };
+        // Two side pairs plus FOUR cap ring pairs, including hole/hole.
+        let required = 32 * 32 + 6 * single.pair_cost(&single).unwrap();
+        let limits = PlanarQueryLimits {
+            work: required,
+            ..PlanarQueryLimits::default()
+        };
+        assert_eq!(
+            opposing_planar_face_pairs_with_limits(&topo, solid, Tolerance::default(), limits)
+                .unwrap(),
+            pairs
+        );
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    work: required - 1,
+                    ..limits
+                },
+            ),
+            "polygon work",
+        );
+    }
+
+    #[test]
+    fn planar_query_preflight_includes_cavity_and_curved_face_wires() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cavity = make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let shell = topo.solid(cavity).unwrap().outer_shell();
+        topo.solid_mut(solid).unwrap().add_inner_shell(shell);
+        let wall = solid_faces(&topo, cavity)
+            .unwrap()
+            .into_iter()
+            .find(|&f| !topo.face(f).unwrap().surface().is_planar())
+            .unwrap();
+        let edge = topo
+            .wire(topo.face(wall).unwrap().outer_wire())
+            .unwrap()
+            .edges()[0];
+        let repeated =
+            topo.add_wire(remus_topology::wire::Wire::new(vec![edge; 64], true).unwrap());
+        topo.set_face_boundary_wires(wall, repeated, vec![])
+            .unwrap();
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    topology_uses: 64,
+                    ..PlanarQueryLimits::default()
+                },
+            ),
+            "topology",
+        );
+    }
+
+    #[test]
+    fn planar_query_keeps_cavity_pairs_and_bounds_empty_shell_references() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+        let cavity = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        transform_solid(&mut topo, cavity, &Mat4::translation(3.0, 3.0, 3.0)).unwrap();
+        for face in solid_faces(&topo, cavity).unwrap() {
+            topo.face_mut(face).unwrap().set_reversed(true);
+        }
+        let shell = topo.solid(cavity).unwrap().outer_shell();
+        topo.solid_mut(solid).unwrap().add_inner_shell(shell);
+        let pairs = opposing_planar_face_pairs(&topo, solid, Tolerance::default()).unwrap();
+        assert_eq!(pairs.len(), 9);
+        assert_eq!(
+            pairs
+                .iter()
+                .filter(|p| (p.distance - 3.0).abs() < 1e-9 && (p.overlap_area - 4.0).abs() < 1e-9)
+                .count(),
+            6
+        );
+        let empty = topo.add_shell(remus_topology::shell::Shell::empty());
+        for _ in 0..32 {
+            topo.solid_mut(solid).unwrap().add_inner_shell(empty);
+        }
+        assert_query_budget_refusal(
+            opposing_planar_face_pairs_with_limits(
+                &topo,
+                solid,
+                Tolerance::default(),
+                PlanarQueryLimits {
+                    topology_uses: 32,
+                    ..PlanarQueryLimits::default()
+                },
+            ),
+            "topology",
         );
     }
 

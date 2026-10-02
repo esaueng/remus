@@ -25,7 +25,7 @@
 //! predicate, the tolerance policy, the deterministic survivor (lowest
 //! `FaceId` index in each duplicate group), and the nontransitive-nearness
 //! semantics (a removed face never anchors another removal) are preserved:
-//! on any input the plan equals the all-pairs reference over the same
+//! within the resource budget the plan equals the all-pairs reference over the same
 //! index-ordered descriptors, including which faces are removed — only
 //! provably non-matching pairs skip the exact predicate.
 //!
@@ -82,6 +82,97 @@ use crate::status::Status;
 /// tolerance can't widen the angular test into matching clearly-different
 /// orientations: `1 - cos θ ≈ θ²/2`, so 1e-6 ≈ 0.08°.
 const NORMAL_PARALLEL_COS_TOL: f64 = 1e-6;
+
+/// Resource limits for one duplicate-face pass, shared across all shells.
+/// Exceeding them refuses the repair without relaxing the geometric predicate.
+const MAX_FACE_USES: usize = 16_384;
+const MAX_HOLES: usize = 64;
+const MAX_WIRE_SEGMENTS: usize = 4_096;
+const MAX_DESCRIPTOR_SEGMENTS: usize = 131_072;
+const MAX_DUPLICATE_WORK: usize = 50_000_000;
+const MAX_VETO_DETAILS: usize = 64;
+
+#[derive(Default)]
+struct DuplicateBudget {
+    work: usize,
+    segments: usize,
+    veto_details: usize,
+}
+
+fn check_limit(resource: &'static str, actual: usize, limit: usize) -> Result<(), HealError> {
+    if actual > limit {
+        return Err(HealError::ResourceLimitExceeded {
+            resource,
+            limit,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+impl DuplicateBudget {
+    fn charge(&mut self, work: usize) -> Result<(), HealError> {
+        let actual = self.work.saturating_add(work);
+        check_limit("duplicate_face_work", actual, MAX_DUPLICATE_WORK)?;
+        self.work = actual;
+        Ok(())
+    }
+
+    fn retain_veto(&mut self, out: &mut Vec<(FaceId, FaceId)>, pair: (FaceId, FaceId)) {
+        if self.veto_details < MAX_VETO_DETAILS {
+            out.push(pair);
+            self.veto_details += 1;
+        }
+    }
+}
+
+/// Bound counts and normalization work before copying any descriptors.
+fn preflight_duplicate_faces(
+    topo: &Topology,
+    solid_id: SolidId,
+    budget: &mut DuplicateBudget,
+) -> Result<(), HealError> {
+    let solid = topo.solid(solid_id)?;
+    check_limit(
+        "duplicate_face_shells",
+        solid.inner_shells().len().saturating_add(1),
+        MAX_FACE_USES,
+    )?;
+    let mut face_uses = 0usize;
+    for shell in std::iter::once(solid.outer_shell()).chain(solid.inner_shells().iter().copied()) {
+        let shell = topo.shell(shell)?;
+        face_uses = face_uses.saturating_add(shell.faces().len());
+        check_limit("duplicate_face_uses", face_uses, MAX_FACE_USES)?;
+        for &face in shell.faces() {
+            let face = topo.face(face)?;
+            if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+                continue;
+            }
+            check_limit("duplicate_face_holes", face.inner_wires().len(), MAX_HOLES)?;
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let segments = topo.wire(wire)?.edges().len();
+                check_limit("duplicate_face_wire_segments", segments, MAX_WIRE_SEGMENTS)?;
+                let total = budget.segments.saturating_add(segments);
+                check_limit(
+                    "duplicate_face_descriptor_segments",
+                    total,
+                    MAX_DESCRIPTOR_SEGMENTS,
+                )?;
+                budget.segments = total;
+                // Normalization restarts after each merge and shifts the tail.
+                // Charge its quadratic upper bound before constructing the loop.
+                budget.charge(
+                    segments
+                        .saturating_mul(segments)
+                        .saturating_mul(2)
+                        .saturating_add(segments),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Normal-bucket cell width per unit-normal component.
 ///
@@ -194,8 +285,10 @@ struct FaceDescriptor {
 struct DuplicatePlan {
     /// `(survivor, removed)` pairs in ascending removed-face order.
     pairs: Vec<(FaceId, FaceId)>,
-    /// Geometric matches retained because attributes prohibit removal.
+    /// Bounded sample of geometric matches retained due to attributes.
     vetoed: Vec<(FaceId, FaceId)>,
+    /// Total vetoes, including omitted diagnostic details.
+    veto_count: usize,
     /// Candidate examinations, including removed-anchor skips that never
     /// reach the exact predicate.
     candidate_exams: u64,
@@ -224,6 +317,8 @@ pub(super) fn fix_duplicate_faces(
     solid_id: SolidId,
     ctx: &mut HealContext,
 ) -> Result<FixResult, HealError> {
+    let mut budget = DuplicateBudget::default();
+    preflight_duplicate_faces(topo, solid_id, &mut budget)?;
     let solid = topo.solid(solid_id)?;
     let shells: Vec<_> = std::iter::once(solid.outer_shell())
         .chain(solid.inner_shells().iter().copied())
@@ -241,6 +336,7 @@ pub(super) fn fix_duplicate_faces(
             shell,
             &face_shell_uses,
             ctx,
+            &mut budget,
         )?);
     }
     Ok(result)
@@ -251,6 +347,7 @@ fn fix_shell_duplicate_faces(
     shell_id: remus_topology::shell::ShellId,
     face_shell_uses: &DetHashMap<FaceId, usize>,
     ctx: &mut HealContext,
+    budget: &mut DuplicateBudget,
 ) -> Result<FixResult, HealError> {
     let tol = ctx.tolerance.linear;
     let shell = topo.shell(shell_id)?;
@@ -272,16 +369,19 @@ fn fix_shell_duplicate_faces(
 
     // A vetoed face remains an anchor for later candidates. Decide attribute
     // compatibility during grouping, before marking a geometric match removed.
-    let plan = plan_duplicate_removals(&descriptors, tol, |survivor, removed| {
-        match (
+    let plan = plan_duplicate_removals(
+        &descriptors,
+        tol,
+        |survivor, removed| match (
             topo.attributes().face(survivor),
             topo.attributes().face(removed),
         ) {
             (_, None) => true,
             (Some(kept), Some(dropped)) => kept == dropped,
             (None, Some(_)) => false,
-        }
-    });
+        },
+        budget,
+    )?;
     let pairs = &plan.pairs;
     let mut vetoed: Vec<String> = plan
         .vetoed
@@ -289,11 +389,12 @@ fn fix_shell_duplicate_faces(
         .map(|(survivor, removed)| format!("F{}<-F{}", survivor.index(), removed.index()))
         .collect();
     vetoed.sort();
-    if !vetoed.is_empty() {
+    if plan.veto_count > 0 {
         ctx.info(format!(
-            "kept {} duplicate pair(s) with incompatible attributes [{}]",
-            vetoed.len(),
-            vetoed.join(", ")
+            "kept {} duplicate pair(s) with incompatible attributes [{}] ({} detail(s) omitted)",
+            plan.veto_count,
+            vetoed.join(", "),
+            plan.veto_count - vetoed.len()
         ));
     }
 
@@ -384,6 +485,7 @@ fn describe_face(
         Some(boundary) => boundary,
         None => return Ok(None),
     };
+    check_limit("duplicate_face_holes", face.inner_wires().len(), MAX_HOLES)?;
     let mut holes = Vec::with_capacity(face.inner_wires().len());
     for &hole in face.inner_wires() {
         match describe_wire(topo, hole, (normal, plane_d), tolerance)? {
@@ -428,6 +530,11 @@ fn describe_wire(
     if wire.edges().is_empty() {
         return Ok(None);
     }
+    check_limit(
+        "duplicate_face_wire_segments",
+        wire.edges().len(),
+        MAX_WIRE_SEGMENTS,
+    )?;
     let mut segs = Vec::with_capacity(wire.edges().len());
     // Interior connectivity is validated joint by joint: every segment must
     // start where the previous one ended (within tolerance). The merge
@@ -741,19 +848,26 @@ fn plan_duplicate_removals(
     descriptors: &[FaceDescriptor],
     tolerance: f64,
     compatible: impl Fn(FaceId, FaceId) -> bool,
-) -> DuplicatePlan {
+    budget: &mut DuplicateBudget,
+) -> Result<DuplicatePlan, HealError> {
     let n = descriptors.len();
+    check_limit("duplicate_face_uses", n, MAX_FACE_USES)?;
+    for descriptor in descriptors {
+        check_limit("duplicate_face_holes", descriptor.holes.len(), MAX_HOLES)?;
+        budget.charge(1 + descriptor.holes.len().saturating_mul(64))?;
+    }
     if n < 2 {
-        return DuplicatePlan {
+        return Ok(DuplicatePlan {
             pairs: Vec::new(),
             vetoed: Vec::new(),
+            veto_count: 0,
             candidate_exams: 0,
             exact_comparisons: 0,
             fell_back_to_all_pairs: false,
-        };
+        });
     }
     if !tolerance.is_finite() || tolerance <= 0.0 {
-        return all_pairs_plan(descriptors, tolerance, true, &compatible);
+        return all_pairs_plan(descriptors, tolerance, true, &compatible, budget);
     }
 
     // Per-face bucket keys; faces without a conservative key fall back to
@@ -774,7 +888,7 @@ fn plan_duplicate_removals(
         rim_keys.push(rim_key);
     }
     if any_fallback && keys.iter().all(Option::is_none) {
-        return all_pairs_plan(descriptors, tolerance, true, &compatible);
+        return all_pairs_plan(descriptors, tolerance, true, &compatible, budget);
     }
 
     // Buckets grow in index order, so every bucket is ascending by construction.
@@ -794,6 +908,7 @@ fn plan_duplicate_removals(
     let mut removed: Vec<bool> = vec![false; n];
     let mut pairs: Vec<(FaceId, FaceId)> = Vec::new();
     let mut vetoed: Vec<(FaceId, FaceId)> = Vec::new();
+    let mut veto_count = 0usize;
     let mut candidate_exams = 0u64;
     let mut exact_comparisons = 0u64;
     let mut scratch: Vec<usize> = Vec::new();
@@ -802,6 +917,9 @@ fn plan_duplicate_removals(
         if removed[j] {
             continue;
         }
+        // Both halos together hold at most two copies of each earlier face;
+        // universal candidates add at most one. Charge before gathering/sorting.
+        budget.charge(1_458 + j.saturating_mul(3))?;
         scratch.clear();
         match &keys[j] {
             // Degenerate descriptor: every earlier face is a candidate.
@@ -817,16 +935,21 @@ fn plan_duplicate_removals(
                         scratch.push(i);
                     }
                 }
+                // At most 3 * MAX_FACE_USES entries; bound worst-case sort work
+                // before sorting, including a conservative comparison factor.
+                budget.charge(scratch.len().saturating_mul(64))?;
                 scratch.sort_unstable();
                 scratch.dedup();
             }
         }
         for &i in &scratch {
+            budget.charge(1)?;
             candidate_exams += 1;
             if removed[i] {
                 continue;
             }
             exact_comparisons += 1;
+            budget.charge(comparison_work(&descriptors[i], &descriptors[j]))?;
             if faces_are_duplicates(&descriptors[i], &descriptors[j], tolerance) {
                 let pair = (descriptors[i].face, descriptors[j].face);
                 if compatible(pair.0, pair.1) {
@@ -834,18 +957,20 @@ fn plan_duplicate_removals(
                     pairs.push(pair);
                     break;
                 }
-                vetoed.push(pair);
+                veto_count += 1;
+                budget.retain_veto(&mut vetoed, pair);
             }
         }
     }
 
-    DuplicatePlan {
+    Ok(DuplicatePlan {
         pairs,
         vetoed,
+        veto_count,
         candidate_exams,
         exact_comparisons,
         fell_back_to_all_pairs: false,
-    }
+    })
 }
 
 fn insert_bucket(index: &mut BucketIndex, key: &Bucket, face_index: usize) {
@@ -894,39 +1019,47 @@ fn all_pairs_plan(
     tolerance: f64,
     fell_back: bool,
     compatible: &impl Fn(FaceId, FaceId) -> bool,
-) -> DuplicatePlan {
+    budget: &mut DuplicateBudget,
+) -> Result<DuplicatePlan, HealError> {
     let n = descriptors.len();
+    check_limit("duplicate_face_uses", n, MAX_FACE_USES)?;
     let mut removed = vec![false; n];
     let mut pairs: Vec<(FaceId, FaceId)> = Vec::new();
     let mut vetoed: Vec<(FaceId, FaceId)> = Vec::new();
+    let mut veto_count = 0usize;
     let mut exact_comparisons = 0u64;
     for i in 0..n {
+        budget.charge(1)?;
         if removed[i] {
             continue;
         }
         for j in (i + 1)..n {
+            budget.charge(1)?;
             if removed[j] {
                 continue;
             }
             exact_comparisons += 1;
+            budget.charge(comparison_work(&descriptors[i], &descriptors[j]))?;
             if faces_are_duplicates(&descriptors[i], &descriptors[j], tolerance) {
                 let pair = (descriptors[i].face, descriptors[j].face);
                 if compatible(pair.0, pair.1) {
                     removed[j] = true;
                     pairs.push(pair);
                 } else {
-                    vetoed.push(pair);
+                    veto_count += 1;
+                    budget.retain_veto(&mut vetoed, pair);
                 }
             }
         }
     }
-    DuplicatePlan {
+    Ok(DuplicatePlan {
         pairs,
         vetoed,
+        veto_count,
         candidate_exams: exact_comparisons,
         exact_comparisons,
         fell_back_to_all_pairs: fell_back,
-    }
+    })
 }
 
 /// Conservative bucket key for one descriptor, or `None` when no safe key
@@ -991,6 +1124,31 @@ fn boundary_signature(descriptor: &FaceDescriptor) -> Signature {
     let mut hole_lens: Vec<usize> = descriptor.holes.iter().map(Vec::len).collect();
     hole_lens.sort_unstable();
     (descriptor.outer.len(), hole_lens)
+}
+
+/// Upper bound for cyclic segment checks, compatibility graph construction,
+/// and iterative augmenting-path scans. Charge before any predicate allocation
+/// or loop; saturating arithmetic refuses overflow as a resource limit.
+fn comparison_work(a: &FaceDescriptor, b: &FaceDescriptor) -> usize {
+    let outer = a.outer.len().saturating_mul(b.outer.len());
+    let segments_a = a
+        .holes
+        .iter()
+        .fold(0usize, |n, h| n.saturating_add(h.len()));
+    let segments_b = b
+        .holes
+        .iter()
+        .fold(0usize, |n, h| n.saturating_add(h.len()));
+    let holes = a.holes.len().max(b.holes.len());
+    1usize
+        .saturating_add(outer)
+        .saturating_add(segments_a.saturating_mul(segments_b))
+        .saturating_add(
+            holes
+                .saturating_mul(holes)
+                .saturating_mul(holes)
+                .saturating_mul(2),
+        )
 }
 
 /// Exact duplicate predicate — the final authority.
@@ -1090,40 +1248,64 @@ fn holes_correspond(a: &[Vec<BoundarySeg>], b: &[Vec<BoundarySeg>], tolerance: f
     if a.len() != b.len() {
         return false;
     }
-    // match_b[j] = index in `a` currently claiming hole `j` of `b`.
-    let mut match_b: Vec<Option<usize>> = vec![None; b.len()];
-    for i in 0..a.len() {
-        let mut seen = vec![false; b.len()];
-        if !augment_hole(i, a, b, tolerance, &mut seen, &mut match_b) {
+    let n = a.len();
+    // The descriptor preflight caps n; the planner charges the complete graph
+    // and augmenting search before entering this helper. Compare geometry once.
+    let compatible: Vec<bool> = a
+        .iter()
+        .flat_map(|hole_a| {
+            b.iter()
+                .map(move |hole_b| loops_coincide_with_same_winding(hole_a, hole_b, tolerance))
+        })
+        .collect();
+    let mut match_a: Vec<Option<usize>> = vec![None; n];
+    let mut match_b: Vec<Option<usize>> = vec![None; n];
+    let mut parent_b = vec![None; n];
+    let mut seen_a = vec![false; n];
+    let mut queue = Vec::with_capacity(n);
+    for start in 0..n {
+        parent_b.fill(None);
+        seen_a.fill(false);
+        queue.clear();
+        queue.push(start);
+        seen_a[start] = true;
+        let mut head = 0;
+        let mut free = None;
+        'search: while head < queue.len() {
+            let i = queue[head];
+            head += 1;
+            for j in 0..n {
+                if parent_b[j].is_some() || !compatible[i * n + j] {
+                    continue;
+                }
+                parent_b[j] = Some(i);
+                if let Some(previous) = match_b[j] {
+                    if !seen_a[previous] {
+                        seen_a[previous] = true;
+                        queue.push(previous);
+                    }
+                } else {
+                    free = Some(j);
+                    break 'search;
+                }
+            }
+        }
+        let Some(mut j) = free else {
             return false;
+        };
+        // Follow the discovered augmenting path backwards, without recursion.
+        while let Some(i) = parent_b[j] {
+            let previous = match_a[i];
+            match_a[i] = Some(j);
+            match_b[j] = Some(i);
+            if let Some(previous) = previous {
+                j = previous;
+            } else {
+                break;
+            }
         }
     }
     true
-}
-
-/// One DFS step of the hole bijection search.
-fn augment_hole(
-    i: usize,
-    a: &[Vec<BoundarySeg>],
-    b: &[Vec<BoundarySeg>],
-    tolerance: f64,
-    seen: &mut [bool],
-    match_b: &mut [Option<usize>],
-) -> bool {
-    for (j, hole_b) in b.iter().enumerate() {
-        if seen[j] {
-            continue;
-        }
-        if !loops_coincide_with_same_winding(&a[i], hole_b, tolerance) {
-            continue;
-        }
-        seen[j] = true;
-        if match_b[j].is_none_or(|prev| augment_hole(prev, a, b, tolerance, seen, match_b)) {
-            match_b[j] = Some(i);
-            return true;
-        }
-    }
-    false
 }
 
 fn mean_point(points: &[Point3]) -> Point3 {
@@ -1377,7 +1559,13 @@ mod tests {
         descriptors: &[FaceDescriptor],
         tolerance: f64,
     ) -> DuplicatePlan {
-        let plan = plan_duplicate_removals(descriptors, tolerance, |_, _| true);
+        let plan = plan_duplicate_removals(
+            descriptors,
+            tolerance,
+            |_, _| true,
+            &mut DuplicateBudget::default(),
+        )
+        .unwrap();
         let reference = reference_all_pairs(descriptors, tolerance);
         // Same decisions (survivor and removed per pair), up to emission
         // order: the plan streams `j`-ascending (pairs sorted by removed
@@ -1398,7 +1586,14 @@ mod tests {
             "plan pairs must stream in ascending removed-face order"
         );
         // The index may only skip exact evaluations, never change the outcome.
-        let dense = all_pairs_plan(descriptors, tolerance, false, &|_, _| true);
+        let dense = all_pairs_plan(
+            descriptors,
+            tolerance,
+            false,
+            &|_, _| true,
+            &mut DuplicateBudget::default(),
+        )
+        .unwrap();
         assert_eq!(dense.pairs, reference);
         assert!(
             plan.exact_comparisons <= dense.exact_comparisons.max(1),
@@ -1888,7 +2083,13 @@ mod tests {
         let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
         let descriptors = describe_shell(&topo, shell, 1e-7);
         for tol in [0.0, -1e-7, f64::NAN, f64::INFINITY] {
-            let plan = plan_duplicate_removals(&descriptors, tol, |_, _| true);
+            let plan = plan_duplicate_removals(
+                &descriptors,
+                tol,
+                |_, _| true,
+                &mut DuplicateBudget::default(),
+            )
+            .unwrap();
             assert!(plan.fell_back_to_all_pairs, "tol {tol}");
             assert_eq!(plan.pairs, reference_all_pairs(&descriptors, tol));
         }
@@ -1911,7 +2112,13 @@ mod tests {
         let b = add_quad(&mut topo, mk(0.0));
         let shell = topo.add_shell(Shell::new(vec![a, b]).unwrap());
         let descriptors = describe_shell(&topo, shell, 1e-7);
-        let plan = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
+        let plan = plan_duplicate_removals(
+            &descriptors,
+            1e-7,
+            |_, _| true,
+            &mut DuplicateBudget::default(),
+        )
+        .unwrap();
         assert!(plan.fell_back_to_all_pairs);
         assert_eq!(plan.pairs, vec![(a, b)]);
     }
@@ -2147,7 +2354,13 @@ mod tests {
                     .map(|d| bucket_key(d, 1e-7).unwrap())
                     .collect();
                 let start = Instant::now();
-                let plan = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
+                let plan = plan_duplicate_removals(
+                    &descriptors,
+                    1e-7,
+                    |_, _| true,
+                    &mut DuplicateBudget::default(),
+                )
+                .unwrap();
                 let elapsed = start.elapsed();
                 let reference = reference_all_pairs(&descriptors, 1e-7);
                 let mut planned = plan.pairs.clone();
@@ -2155,7 +2368,14 @@ mod tests {
                 planned.sort_by_key(|p| (p.0.index(), p.1.index()));
                 expected.sort_by_key(|p| (p.0.index(), p.1.index()));
                 assert_eq!(planned, expected, "plan must equal reference");
-                let dense = all_pairs_plan(&descriptors, 1e-7, false, &|_, _| true);
+                let dense = all_pairs_plan(
+                    &descriptors,
+                    1e-7,
+                    false,
+                    &|_, _| true,
+                    &mut DuplicateBudget::default(),
+                )
+                .unwrap();
                 eprintln!(
                     "{:>14} {:>6} {:>8} {:>10} {:>10} {:>10} {:>10.2}",
                     name,
@@ -2191,8 +2411,20 @@ mod tests {
         }
         let shell = topo.add_shell(Shell::new(faces).unwrap());
         let descriptors = describe_shell(&topo, shell, 1e-7);
-        let a = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
-        let b = plan_duplicate_removals(&descriptors, 1e-7, |_, _| true);
+        let a = plan_duplicate_removals(
+            &descriptors,
+            1e-7,
+            |_, _| true,
+            &mut DuplicateBudget::default(),
+        )
+        .unwrap();
+        let b = plan_duplicate_removals(
+            &descriptors,
+            1e-7,
+            |_, _| true,
+            &mut DuplicateBudget::default(),
+        )
+        .unwrap();
         assert_eq!(a.pairs, b.pairs);
         assert_eq!(a.candidate_exams, b.candidate_exams);
         assert_eq!(a.exact_comparisons, b.exact_comparisons);
@@ -3276,6 +3508,245 @@ mod tests {
             name: Some(name.to_string()),
             color: None,
         }
+    }
+
+    #[test]
+    fn duplicate_work_budget_checks_boundary_and_overflow() {
+        let mut budget = DuplicateBudget::default();
+        budget.charge(MAX_DUPLICATE_WORK).unwrap();
+        for extra in [1, usize::MAX] {
+            let error = budget.charge(extra).unwrap_err();
+            assert!(matches!(
+                error,
+                HealError::ResourceLimitExceeded {
+                    resource: "duplicate_face_work",
+                    limit: MAX_DUPLICATE_WORK,
+                    ..
+                }
+            ));
+            assert_eq!(budget.work, MAX_DUPLICATE_WORK);
+        }
+    }
+
+    #[test]
+    fn veto_diagnostics_retain_a_bounded_sample_and_total() {
+        let mut topo = Topology::new();
+        let faces: Vec<_> = (0..100).map(|_| add_quad(&mut topo, UNIT_OUTER)).collect();
+        let shell = topo.add_shell(Shell::new(faces.clone()).unwrap());
+        let descriptors = describe_shell(&topo, shell, 1e-7);
+        for fallback in [false, true] {
+            let mut budget = DuplicateBudget::default();
+            let plan = if fallback {
+                all_pairs_plan(&descriptors, 1e-7, true, &|_, _| false, &mut budget)
+            } else {
+                plan_duplicate_removals(&descriptors, 1e-7, |_, _| false, &mut budget)
+            }
+            .unwrap();
+            assert_eq!(plan.veto_count, 4_950);
+            assert_eq!(plan.vetoed.len(), MAX_VETO_DETAILS);
+            assert!(plan.pairs.is_empty());
+        }
+        for (i, &face) in faces.iter().enumerate() {
+            topo.set_face_attributes(face, named(&i.to_string()))
+                .unwrap();
+        }
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert!(ctx.reshape.is_empty());
+        let diagnostic = &ctx.messages[0].description;
+        assert!(diagnostic.contains("kept 4950 duplicate pair(s)"));
+        assert!(diagnostic.contains("4886 detail(s) omitted"));
+        assert!(diagnostic.len() < 4_096);
+    }
+
+    #[test]
+    fn dense_named_faces_refuse_before_quadratic_retention() {
+        let mut topo = Topology::new();
+        let source = add_quad(&mut topo, UNIT_OUTER);
+        let template = topo.face(source).unwrap().clone();
+        let faces: Vec<_> = (0..10_000)
+            .map(|i| {
+                let face = topo.add_face(template.clone());
+                topo.set_face_attributes(face, named(&i.to_string()))
+                    .unwrap();
+                face
+            })
+            .collect();
+        let shell = topo.add_shell(Shell::new(faces.clone()).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let mut ctx = HealContext::new();
+        let error = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap_err();
+        assert!(matches!(
+            error,
+            HealError::ResourceLimitExceeded {
+                resource: "duplicate_face_work",
+                ..
+            }
+        ));
+        assert_eq!(topo.shell(shell).unwrap().faces(), faces.as_slice());
+        assert!(ctx.reshape.is_empty());
+        assert!(ctx.messages.is_empty());
+    }
+
+    #[test]
+    fn fallback_checks_work_before_matching_and_retaining() {
+        let mut topo = Topology::new();
+        let faces: Vec<_> = (0..4).map(|_| add_quad(&mut topo, UNIT_OUTER)).collect();
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        let descriptors = describe_shell(&topo, shell, 1e-7);
+        for tolerance in [1e-7, 0.0] {
+            let mut budget = DuplicateBudget {
+                work: MAX_DUPLICATE_WORK,
+                ..DuplicateBudget::default()
+            };
+            let mut compatible_calls = 0;
+            let called = std::cell::Cell::new(0);
+            let error = plan_duplicate_removals(
+                &descriptors,
+                tolerance,
+                |_, _| {
+                    called.set(called.get() + 1);
+                    false
+                },
+                &mut budget,
+            )
+            .unwrap_err();
+            compatible_calls += called.get();
+            assert_eq!(compatible_calls, 0);
+            assert!(matches!(error, HealError::ResourceLimitExceeded { .. }));
+            assert_eq!(budget.veto_details, 0);
+        }
+    }
+
+    #[test]
+    fn repeated_holes_are_bounded_before_descriptor_allocation() {
+        let mut topo = Topology::new();
+        let source = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A]);
+        let template = topo.face(source).unwrap().clone();
+        for count in [MAX_HOLES, MAX_HOLES + 1, 2_000] {
+            let face = topo.add_face(Face::new(
+                template.outer_wire(),
+                vec![template.inner_wires()[0]; count],
+                template.surface().clone(),
+            ));
+            if count == MAX_HOLES {
+                let descriptor = describe_face(&topo, face, 1e-7).unwrap().unwrap();
+                assert!(faces_are_duplicates(&descriptor, &descriptor, 1e-7));
+            } else {
+                let error = describe_face(&topo, face, 1e-7).unwrap_err();
+                assert!(matches!(error, HealError::ResourceLimitExceeded {
+                    resource: "duplicate_face_holes", limit: MAX_HOLES, actual
+                } if actual == count));
+                let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+                let solid = topo.add_solid(Solid::new(shell, vec![]));
+                let before = format!("{:?}", topo.face(face).unwrap());
+                let error =
+                    crate::fix::fix_shape(&mut topo, solid, &duplicate_only_config()).unwrap_err();
+                assert!(matches!(error, HealError::ResourceLimitExceeded { .. }));
+                assert_eq!(before, format!("{:?}", topo.face(face).unwrap()));
+                assert_eq!(topo.shell(shell).unwrap().faces(), &[face]);
+            }
+        }
+    }
+
+    #[test]
+    fn resource_refusal_rolls_back_earlier_fixer_mutations() {
+        let mut topo = Topology::new();
+        let source = add_holed_quad(&mut topo, UNIT_OUTER, &[HOLE_A]);
+        let template = topo.face(source).unwrap().clone();
+        let face = topo.add_face(Face::new(
+            template.outer_wire(),
+            vec![template.inner_wires()[0]; MAX_HOLES + 1],
+            template.surface().clone(),
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        // Explicit SameParameter constructs missing pcurves before duplicate
+        // preflight. Prove the control writes them, then test native rollback.
+        let edge = topo.wire(template.outer_wire()).unwrap().edges()[0].edge();
+        let before = format!("{topo:?}");
+        let mut config = duplicate_only_config();
+        config.fix_same_parameter = super::super::FixMode::On;
+        let mut control = topo.clone();
+        super::super::face::fix_face(&mut control, face, &mut HealContext::new(), &config).unwrap();
+        assert!(control.has_pcurve(edge, face).unwrap());
+        let error = crate::fix::fix_shape(&mut topo, solid, &config).unwrap_err();
+        assert!(matches!(
+            error,
+            HealError::ResourceLimitExceeded {
+                resource: "duplicate_face_holes",
+                ..
+            }
+        ));
+        assert_eq!(before, format!("{topo:?}"));
+
+        let mut ctx = HealContext::new();
+        ctx.info("existing context".into());
+        let error =
+            super::super::solid::fix_solid(&mut topo, solid, &mut ctx, &config).unwrap_err();
+        assert!(matches!(error, HealError::ResourceLimitExceeded { .. }));
+        assert_eq!(before, format!("{topo:?}"));
+        assert!(ctx.reshape.is_empty());
+        assert_eq!(ctx.messages.len(), 1);
+        assert_eq!(ctx.messages[0].description, "existing context");
+
+        // The first pipeline step writes pcurves successfully; the next step
+        // refuses the hole count. Both native process entry points are atomic.
+        for history in [false, true] {
+            let mut process = crate::pipeline::process::HealProcess::new();
+            process.add_step("same_parameter");
+            process.add_step("fix_shape");
+            let error = if history {
+                process.execute_with_history(&mut topo, solid).unwrap_err()
+            } else {
+                process.execute(&mut topo, solid).unwrap_err()
+            };
+            assert!(matches!(error, HealError::ResourceLimitExceeded { .. }));
+            assert_eq!(before, format!("{topo:?}"));
+        }
+    }
+
+    #[test]
+    fn hole_matcher_rematches_without_recursion() {
+        let hole = |dx| {
+            vec![
+                BoundarySeg::Line {
+                    start: Point3::new(dx, 0.0, 0.0),
+                },
+                BoundarySeg::Line {
+                    start: Point3::new(1.0 + dx, 0.0, 0.0),
+                },
+                BoundarySeg::Line {
+                    start: Point3::new(dx, 1.0, 0.0),
+                },
+            ]
+        };
+        // First left hole matches both rights; second only the first. A greedy
+        // assignment fails, so a complete matcher must augment the first match.
+        assert!(holes_correspond(
+            &[hole(0.0), hole(-6e-8)],
+            &[hole(-3e-8), hole(6e-8)],
+            1e-7
+        ));
+        assert!(!holes_correspond(
+            &[hole(0.0), hole(1.0)],
+            &[hole(0.0), hole(0.0)],
+            1e-7
+        ));
+    }
+
+    #[test]
+    fn budgets_are_shared_across_shells() {
+        let mut topo = Topology::new();
+        let face = add_quad(&mut topo, UNIT_OUTER);
+        let outer = topo.add_shell(Shell::new(vec![face; MAX_FACE_USES / 2]).unwrap());
+        let inner = topo.add_shell(Shell::new(vec![face; MAX_FACE_USES / 2 + 1]).unwrap());
+        let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        let error = fix_duplicate_faces(&topo, solid, &mut HealContext::new()).unwrap_err();
+        assert!(matches!(error, HealError::ResourceLimitExceeded {
+            resource: "duplicate_face_uses", actual, ..
+        } if actual == MAX_FACE_USES + 1));
     }
 
     #[test]

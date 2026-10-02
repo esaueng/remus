@@ -39,6 +39,7 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::topology::Topology;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::IoError;
@@ -652,6 +653,8 @@ struct Builder<'a> {
     shell_map: HashMap<usize, usize>,
     solids: Vec<SerSolid>,
     solid_map: HashMap<usize, usize>,
+    limits: Option<ImportLimits>,
+    total_entities: usize,
 }
 
 impl<'a> Builder<'a> {
@@ -675,13 +678,35 @@ impl<'a> Builder<'a> {
             shell_map: HashMap::new(),
             solids: Vec::new(),
             solid_map: HashMap::new(),
+            limits: None,
+            total_entities: 0,
         }
+    }
+
+    fn reserve_entity(&mut self) -> Result<(), IoError> {
+        if let Some(limits) = self.limits {
+            self.total_entities =
+                self.total_entities
+                    .checked_add(1)
+                    .ok_or(IoError::LimitExceeded {
+                        resource: "arena total entities",
+                        limit: limits.max_model_entities,
+                        actual: usize::MAX,
+                    })?;
+            ensure_limit(
+                "arena total entities",
+                self.total_entities,
+                limits.max_model_entities,
+            )?;
+        }
+        Ok(())
     }
 
     fn intern_vertex(&mut self, id: remus_topology::vertex::VertexId) -> Result<usize, IoError> {
         if let Some(&local) = self.vertex_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let v = topo.vertex(id)?;
         let local = self.vertices.len();
@@ -697,6 +722,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.edge_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let e = topo.edge(id)?;
         let start_id = e.start();
@@ -723,6 +749,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.wire_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let w = topo.wire(id)?;
         let edge_uses = w.edges().to_vec();
@@ -751,6 +778,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.face_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         remus_topology::validation::validate_face_loops(topo, id).map_err(|error| {
             IoError::InvalidTopology {
@@ -806,6 +834,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.loop_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let boundary_loop = topo.face_loop(id)?;
         let coedge_ids = boundary_loop.coedges().to_vec();
@@ -824,6 +853,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.coedge_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let coedge = topo.coedge(id)?;
         let edge_id = coedge.edge();
@@ -861,6 +891,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.shell_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let s = topo.shell(id)?;
         let face_ids = s.faces().to_vec();
@@ -880,6 +911,7 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.solid_map.get(&id.index()) {
             return Ok(local);
         }
+        self.reserve_entity()?;
         let topo = self.topo;
         let solid = topo.solid(id)?;
         let outer_shell_id = solid.outer_shell();
@@ -983,6 +1015,14 @@ fn serialize_document_impl(
     limits: Option<ImportLimits>,
 ) -> Result<Vec<u8>, IoError> {
     let mut builder = Builder::new(topo);
+    builder.limits = limits;
+    if let Some(limits) = limits {
+        ensure_limit(
+            "arena solid roots",
+            solid_ids.len(),
+            limits.max_model_entities,
+        )?;
+    }
     let mut solid_roots = Vec::with_capacity(solid_ids.len());
     for &solid in solid_ids {
         solid_roots.push(builder.intern_solid(solid)?);
@@ -1069,7 +1109,11 @@ impl std::io::Write for LimitedJsonWriter {
     }
 }
 
-fn serialize_json_with_limit<T: serde::Serialize>(
+/// Encodes JSON while refusing before the output buffer exceeds its byte budget.
+///
+/// # Errors
+/// Returns [`IoError::LimitExceeded`] for oversized output or a serialization error.
+pub fn serialize_json_with_limit<T: serde::Serialize>(
     value: &T,
     limit: usize,
 ) -> Result<Vec<u8>, IoError> {
@@ -1114,6 +1158,18 @@ pub fn serialize_sheets(topo: &Topology, sheet_ids: &[ShellId]) -> Result<Vec<u8
     serialize_body_document(topo, &[], sheet_ids, &[])
 }
 
+/// Serializes sheet roots with pre-traversal entity and streamed byte budgets.
+///
+/// # Errors
+/// Returns the usual sheet codec errors or [`IoError::LimitExceeded`].
+pub fn serialize_sheets_with_limits(
+    topo: &Topology,
+    sheet_ids: &[ShellId],
+    limits: ImportLimits,
+) -> Result<Vec<u8>, IoError> {
+    serialize_body_document_impl(topo, &[], sheet_ids, &[], Some(limits))
+}
+
 /// Serializes one standalone wire root into a version 5 arena document.
 ///
 /// # Errors
@@ -1153,12 +1209,37 @@ pub fn serialize_body_document(
     sheet_ids: &[ShellId],
     compound_ids: &[CompoundId],
 ) -> Result<Vec<u8>, IoError> {
+    serialize_body_document_impl(topo, solid_ids, sheet_ids, compound_ids, None)
+}
+
+fn serialize_body_document_impl(
+    topo: &Topology,
+    solid_ids: &[SolidId],
+    sheet_ids: &[ShellId],
+    compound_ids: &[CompoundId],
+    limits: Option<ImportLimits>,
+) -> Result<Vec<u8>, IoError> {
     let mut builder = Builder::new(topo);
+    builder.limits = limits;
+    if let Some(limits) = limits {
+        ensure_limit(
+            "arena solid roots",
+            solid_ids.len(),
+            limits.max_model_entities,
+        )?;
+    }
     let mut solid_roots = Vec::with_capacity(solid_ids.len());
     for &solid in solid_ids {
         solid_roots.push(builder.intern_solid(solid)?);
     }
 
+    if let Some(limits) = limits {
+        ensure_limit(
+            "arena sheet roots",
+            sheet_ids.len(),
+            limits.max_model_entities,
+        )?;
+    }
     let mut sheet_roots = Vec::with_capacity(sheet_ids.len());
     for &sheet in sheet_ids {
         let actual = builder.topo.shell(sheet)?.body_class();
@@ -1205,9 +1286,13 @@ pub fn serialize_body_document(
         attributes,
     };
 
-    serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
-        reason: format!("arena serialization failed: {e}"),
-    })
+    if let Some(limits) = limits {
+        serialize_json_with_limit(&dump, limits.max_input_bytes)
+    } else {
+        serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
+            reason: format!("arena serialization failed: {e}"),
+        })
+    }
 }
 
 /// Serializes solid, sheet, wire, and compound roots into a version 5 arena
@@ -1585,11 +1670,114 @@ pub fn deserialize_document_with_limits(
     replay_document(document, topo)
 }
 
+// A journal has nested sequences whose restoration allocates, copies and sorts.
+// Count their encoded slots without materializing any vectors. Geometry is
+// skipped; its established table budgets remain independent of history size.
+struct JournalBudget {
+    used: usize,
+    limit: usize,
+    exceeded: bool,
+}
+
+struct JournalItems<'a>(&'a mut JournalBudget);
+
+impl<'de> DeserializeSeed<'de> for JournalItems<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for JournalItems<'_> {
+    type Value = ();
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("journal JSON")
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<(), A::Error> {
+        while sequence.next_element_seed(JournalItems(self.0))?.is_some() {
+            let next = self.0.used.checked_add(1);
+            self.0.used = next.unwrap_or(usize::MAX);
+            if next.is_none() || self.0.used > self.0.limit {
+                self.0.exceeded = true;
+                return Err(serde::de::Error::custom("journal item limit exceeded"));
+            }
+        }
+        Ok(())
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while map.next_key::<IgnoredAny>()?.is_some() {
+            map.next_value_seed(JournalItems(self.0))?;
+        }
+        Ok(())
+    }
+}
+
+struct JournalPreflight<'a>(&'a mut JournalBudget);
+impl<'de> Visitor<'de> for JournalPreflight<'_> {
+    type Value = ();
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("arena document object")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+            if key == "journal" {
+                map.next_value_seed(JournalItems(self.0))?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn check_encoded_journal(bytes: &[u8], limit: usize) -> Result<(), IoError> {
+    let mut budget = JournalBudget {
+        used: 0,
+        limit,
+        exceeded: false,
+    };
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let result =
+        serde::Deserializer::deserialize_map(&mut deserializer, JournalPreflight(&mut budget));
+    match result {
+        Err(_) if budget.exceeded => Err(IoError::LimitExceeded {
+            resource: "arena journal items",
+            limit,
+            actual: budget.used,
+        }),
+        Err(error) => Err(IoError::ParseError {
+            reason: format!("arena journal preflight failed: {error}"),
+        }),
+        Ok(()) => Ok(()),
+    }
+}
+
 fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, IoError> {
     ensure_input_size(bytes.len(), limits)?;
     let header: VersionHeader = serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
         reason: format!("arena deserialization failed: {e}"),
     })?;
+    if header.version != LEGACY_SINGLE_SOLID_VERSION {
+        check_encoded_journal(bytes, limits.max_model_entities)?;
+    }
     let document = match header.version {
         LEGACY_SINGLE_SOLID_VERSION => {
             let dump: SerializedSolidV1 =
@@ -2880,6 +3068,47 @@ mod tests {
     use remus_operations::primitives::{make_box, make_cylinder};
     use remus_operations::sew::make_sheet_body;
     use remus_topology::explorer::solid_faces;
+
+    #[test]
+    fn arena_journal_nested_arrays_obey_cumulative_budget_before_replay() {
+        for event in [
+            serde_json::json!({"event":"Generated","sources":vec![0;64]}),
+            serde_json::json!({"event":"Merged","from":vec![0;64]}),
+            serde_json::json!({"event":"Unresolved","candidates":vec![0;64]}),
+        ] {
+            let document = serde_json::json!({"version":2,"vertices":[],"edges":[],"wires":[],"faces":[],"shells":[],"solids":[],"solid_roots":[],"compounds":[],"pcurves":[],
+                "journal":{"next_op":2,"next_ordinal":1,"index":[{"ordinal":0,"kind":"face","local":null}],"entries":[{"op":1,"kind":"test","payload":"Evolution","construction":false,"scope":[],"events":[[0,event]]}]}});
+            let bytes = serde_json::to_vec(&document).unwrap();
+            let mut destination = Topology::new();
+            let limits = ImportLimits {
+                max_model_entities: 16,
+                ..ImportLimits::default()
+            };
+            let error =
+                deserialize_document_with_limits(&bytes, &mut destination, limits).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    IoError::LimitExceeded {
+                        resource: "arena journal items",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            assert!(destination.journal().is_empty());
+            deserialize_document_with_limits(
+                &bytes,
+                &mut destination,
+                ImportLimits {
+                    max_model_entities: 128,
+                    ..limits
+                },
+            )
+            .unwrap();
+            assert_eq!(destination.journal().snapshot().entries.len(), 1);
+        }
+    }
 
     fn single_edge_document(
         curve: SerEdgeCurve,

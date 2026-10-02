@@ -191,7 +191,7 @@ fn workspace_reuse_changing_dimensions_no_stale() {
     // Each solve must report its own dimensions and satisfy its own oracle.
     for (n, expect_eqs) in [(10_usize, 10_usize), (50, 50), (10, 10)] {
         let mut sys = build_independent_solved(n);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         assert_eq!(d.num_params, n);
         assert_eq!(d.num_equations, expect_eqs);
         let r = sys.solve(MAX_ITER, TOL).unwrap();
@@ -209,7 +209,7 @@ fn workspace_reuse_changing_dimensions_no_stale() {
     let mut sys = build_independent_solved(10);
     let r1 = sys.solve(MAX_ITER, TOL).unwrap();
     assert!(r1.converged);
-    assert_eq!(sys.dof().num_params, 10);
+    assert_eq!(sys.dof().unwrap().num_params, 10);
 
     // Grow: one more free pair (+2 params, +2 equations).
     let anchor = sys
@@ -229,7 +229,7 @@ fn workspace_reuse_changing_dimensions_no_stale() {
     sys.add_constraint(Constraint::Distance(anchor, free, 5.0))
         .unwrap();
     let fix = sys.add_constraint(Constraint::FixY(free, 4.0)).unwrap();
-    assert_eq!(sys.dof().num_params, 12);
+    assert_eq!(sys.dof().unwrap().num_params, 12);
     let r2 = sys.solve(MAX_ITER, TOL).unwrap();
     assert!(r2.converged);
     assert_pair_distances(&sys, 5.0, 1e-6);

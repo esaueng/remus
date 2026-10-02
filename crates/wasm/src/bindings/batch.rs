@@ -22,10 +22,7 @@ use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 
 use super::operations::{parse_variable_fillet_specs, validate_move_faces_topology_work};
-use crate::error::{
-    StructuredWasmError, WasmError, validate_face_pair_count, validate_work_count,
-    validate_work_product,
-};
+use crate::error::{StructuredWasmError, WasmError, validate_work_count, validate_work_product};
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
     wire_id_to_u32,
@@ -2509,14 +2506,6 @@ impl BrepKernel {
             "getOpposingPlanarFacePairs" => {
                 let s = get_u32(args, "solid")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_count = u32::try_from(
-                    remus_topology::explorer::solid_faces(self.topo(), solid_id)
-                        .map_err(crate::error::WasmError::from)
-                        .map_err(StructuredWasmError::from)?
-                        .len(),
-                )
-                .unwrap_or(u32::MAX);
-                validate_face_pair_count(face_count).map_err(StructuredWasmError::from)?;
                 let pairs = opposing_planar_face_pairs(self.topo(), solid_id, Tolerance::default())
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::Value::Array(
@@ -2720,6 +2709,10 @@ impl BrepKernel {
             }
             "defeature" => {
                 let s = get_u32(args, "solid")?;
+                if let Some(faces) = args["faces"].as_array() {
+                    super::operations::validate_defeature_face_count(faces.len())
+                        .map_err(StructuredWasmError::from)?;
+                }
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
@@ -2848,9 +2841,13 @@ impl BrepKernel {
                                 Some("approximationSamples"),
                             )
                         })?;
-                        validate_work_count(samples, "approximationSamples")
-                            .map_err(StructuredWasmError::from)?;
-                        Some(usize::try_from(samples).unwrap_or(usize::MAX))
+                        Some(
+                            super::operations::validate_offset_sample_grid(
+                                samples,
+                                "approximationSamples",
+                            )
+                            .map_err(StructuredWasmError::from)?,
+                        )
                     }
                 };
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
