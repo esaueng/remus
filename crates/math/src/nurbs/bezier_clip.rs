@@ -891,12 +891,13 @@ fn project_onto_window(side: ClipSide<'_>, p: Point3) -> (f64, f64) {
 }
 
 /// Check if two curve segments are coincident over the given parameter
-/// intervals. Samples points on curve A and checks their distance to
-/// curve B. If the maximum distance (approximate Hausdorff distance)
-/// is below tolerance, emits an overlap and returns `true`.
+/// intervals. Samples points on each window and measures their distance
+/// to the other window's curve. If the maximum distance (a sampled
+/// Hausdorff distance) is below tolerance and the curves agree to second
+/// order, emits an overlap and returns `true`.
 fn check_overlap(a: ClipSide<'_>, b: ClipSide<'_>, swapped: bool, out: &mut ClipOutput) -> bool {
     let tolerance = out.tolerance;
-    let (seg_a, seg_b) = (a.seg, b.seg);
+    let seg_a = a.seg;
     let (u_a_lo, u_a_hi, u_b_lo, u_b_hi) = (a.lo, a.hi, b.lo, b.hi);
     let span_a = u_a_hi - u_a_lo;
     let span_b = u_b_hi - u_b_lo;
@@ -912,36 +913,20 @@ fn check_overlap(a: ClipSide<'_>, b: ClipSide<'_>, swapped: bool, out: &mut Clip
         return false;
     }
 
-    // Sample points on A and find closest points on B (symmetric Hausdorff).
+    // Sampled symmetric Hausdorff distance: every sample of one window is
+    // projected onto the OTHER WINDOW'S CURVE. Measuring to the other
+    // window's samples instead charges coincident curves with different
+    // parameter speeds up to half a sample spacing, so a curved overlap
+    // only passed once subdivision had shrunk the windows below about
+    // 100 tolerances of arc, and came out as dozens of fragments and point hits.
     let mut max_dist = 0.0_f64;
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..=HAUSDORFF_SAMPLES {
-        let t_a = u_a_lo + (u_a_hi - u_a_lo) * (i as f64) / (HAUSDORFF_SAMPLES as f64);
-        let pa = seg_a.evaluate(t_a);
-
-        let mut best_dist = f64::MAX;
-        #[allow(clippy::cast_precision_loss)]
-        for j in 0..=HAUSDORFF_SAMPLES {
-            let t_b = u_b_lo + (u_b_hi - u_b_lo) * (j as f64) / (HAUSDORFF_SAMPLES as f64);
-            let pb = seg_b.evaluate(t_b);
-            best_dist = best_dist.min((pa - pb).length());
+    for (own, other) in [(a, b), (b, a)] {
+        for i in 0..=HAUSDORFF_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let u = own.at(i as f64 / HAUSDORFF_SAMPLES as f64);
+            let (_, dist) = project_onto_window(other, own.seg.evaluate(u));
+            max_dist = max_dist.max(dist);
         }
-        max_dist = max_dist.max(best_dist);
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..=HAUSDORFF_SAMPLES {
-        let t_b = u_b_lo + (u_b_hi - u_b_lo) * (i as f64) / (HAUSDORFF_SAMPLES as f64);
-        let pb = seg_b.evaluate(t_b);
-
-        let mut best_dist = f64::MAX;
-        #[allow(clippy::cast_precision_loss)]
-        for j in 0..=HAUSDORFF_SAMPLES {
-            let t_a = u_a_lo + (u_a_hi - u_a_lo) * (j as f64) / (HAUSDORFF_SAMPLES as f64);
-            let pa = seg_a.evaluate(t_a);
-            best_dist = best_dist.min((pb - pa).length());
-        }
-        max_dist = max_dist.max(best_dist);
     }
 
     if max_dist < tolerance * 10.0 && coincident_to_second_order(a, b, tolerance) {
