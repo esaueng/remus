@@ -288,7 +288,7 @@ fn run_once(
         }
         let ns = start.elapsed().as_nanos();
         let oracle = check_geometry(&sys, "drag", size);
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         emit(
             workload,
             size,
@@ -321,7 +321,7 @@ fn run_once(
         let r = black_box(sys.solve(max_iter, TOL)).expect("solve");
         let ns = start.elapsed().as_nanos();
         // Diagnostics for the report are measured outside the timer.
-        let d = sys.dof();
+        let d = sys.dof().unwrap();
         let classification = if r.converged {
             if d.dof > 0 {
                 "underConstrained"

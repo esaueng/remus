@@ -2381,7 +2381,6 @@ fn heal_cylinder_plane_band_surgical(
     solid: SolidId,
     band: &BandDescription,
 ) -> Result<Option<crate::defeature::DefeatureOutcome>, OperationsError> {
-    let tol = Tolerance::new();
     if band.faces.len() != 1 {
         return Ok(None);
     }
@@ -2418,11 +2417,68 @@ fn heal_cylinder_plane_band_surgical(
         return Ok(Some(outcome));
     }
 
-    let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
-    // Note: scope declines (`Ok(None)`) below leave these copied entities
-    // plus any partial splice products unreachable in the arena. That garbage
-    // is harmless: the positional fallback operates on the pristine original
-    // solid, and nothing published ever references the copies.
+    // A scope decline must not allocate even tombstones in the caller's
+    // arena: transaction rollback preserves those slots and their payloads.
+    // Isolate only this solid, then publish only an accepted exact result.
+    let mut work = Topology::new();
+    let input = crate::copy::copy_solid_between_with_entity_map(topo, &mut work, solid)?;
+    let Some(outcome) = heal_cylinder_plane_strip(&mut work, input, band)? else {
+        return Ok(None);
+    };
+    let output = crate::copy::copy_solid_between_with_entity_map(&work, topo, outcome.solid)?;
+    let mut face_map = HashMap::new();
+    for (source, result) in outcome.face_map {
+        let target = output
+            .face_map
+            .get(&result.index())
+            .copied()
+            .ok_or_else(|| reconstruction("accepted surgical face did not survive exact copy"))?;
+        face_map.insert(source, target);
+    }
+    let output_keys: HashMap<_, _> =
+        output
+            .edge_map
+            .into_iter()
+            .map(|(source, target)| (EntityKey::edge(source), EntityKey::edge(target.index())))
+            .chain(output.vertex_map.into_iter().map(|(source, target)| {
+                (EntityKey::vertex(source), EntityKey::vertex(target.index()))
+            }))
+            .collect();
+    let boundary_history = outcome
+        .boundary_history
+        .map(|history| {
+            history
+                .into_iter()
+                .map(|(source, target)| {
+                    let target = target
+                        .map(|target| {
+                            output_keys.get(&target).copied().ok_or_else(|| {
+                                reconstruction("surgical boundary history lost its result")
+                            })
+                        })
+                        .transpose()?;
+                    Ok((source, target))
+                })
+                .collect::<Result<_, OperationsError>>()
+        })
+        .transpose()?;
+    Ok(Some(crate::defeature::DefeatureOutcome {
+        solid: output.solid,
+        face_map,
+        boundary_history,
+    }))
+}
+
+/// Speculative strip construction. All scope declines and partial splice
+/// products remain in the disposable topology supplied by the caller.
+#[allow(clippy::too_many_lines)]
+fn heal_cylinder_plane_strip(
+    topo: &mut Topology,
+    copied_entities: crate::copy::CopiedSolidEntities,
+    band: &BandDescription,
+) -> Result<Option<crate::defeature::DefeatureOutcome>, OperationsError> {
+    let tol = Tolerance::new();
+    let band_source = band.faces[0];
     let copy = copied_entities.solid;
     let mut face_map_indices: HashMap<_, _> = copied_entities
         .face_map
@@ -5403,6 +5459,147 @@ mod tests {
         // raising the split-chain refusal.
         let fixture = chain_fixture(&[Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1e-4, 10.0)]);
         assert!(prove(&fixture).unwrap().is_none());
+    }
+
+    fn declined_surgical_fixture(offset: f64) -> (Topology, SolidId, FaceId, BandDescription) {
+        // A single spring tilted within the carrier's positional tolerance
+        // declines the generatrix proof without requiring a large fixture.
+        let (mut topo, solid) = crate::test_helpers::blended_box(&[0]);
+        let face = crate::test_helpers::cylinder_faces(&topo, solid)[0];
+        let band = describe_band(&topo, solid, face).unwrap();
+        let support = band.supports[0];
+        let spring = shared_edges(&topo, solid, support, face).unwrap()[0];
+        let vertex = topo.edge(spring).unwrap().end();
+        let FaceSurface::Cylinder(cylinder) = topo.face(face).unwrap().surface() else {
+            unreachable!();
+        };
+        let normal = topo
+            .face(support)
+            .unwrap()
+            .effective_plane_normal()
+            .unwrap();
+        let tangent = normal.cross(cylinder.axis()).normalize().unwrap();
+        let point = topo.vertex(vertex).unwrap().point();
+        topo.vertex_mut(vertex)
+            .unwrap()
+            .set_point(point + tangent * offset);
+        assert!(
+            prove_spring_chain(&topo, support, face, vec![spring])
+                .unwrap()
+                .is_none()
+        );
+        (topo, solid, face, band)
+    }
+
+    #[test]
+    fn declined_surgical_attempts_do_not_allocate_caller_slots() {
+        for offset in [-1e-4, 1e-4] {
+            let (mut topo, solid, _, band) = declined_surgical_fixture(offset);
+            let slots = topo.allocated_slot_count();
+            let ticks = topo.mutation_ticks();
+            let journal = format!("{:?}", topo.journal());
+            for _ in 0..3 {
+                assert!(
+                    heal_cylinder_plane_band_surgical(&mut topo, solid, &band)
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(topo.allocated_slot_count(), slots);
+                assert_eq!(topo.mutation_ticks(), ticks);
+                assert_eq!(format!("{:?}", topo.journal()), journal);
+            }
+        }
+    }
+
+    #[test]
+    fn declined_surgical_public_fallbacks_allocate_only_their_results() {
+        for fraction in [0.25, 0.75] {
+            for resize in [false, true] {
+                let (mut topo, solid) = crate::test_helpers::blended_box(&[0]);
+                let face = crate::test_helpers::cylinder_faces(&topo, solid)[0];
+                // Split one exact end arc without changing any geometry.
+                // The strip has three cross edges, outside surgical scope,
+                // but the positional fallback still reconstructs the box.
+                let cross = face_edges(&topo, face)
+                    .unwrap()
+                    .into_iter()
+                    .find(|edge| matches!(topo.edge(*edge).unwrap().curve(), EdgeCurve::Circle(_)))
+                    .unwrap();
+                let edge = topo.edge(cross).unwrap().clone();
+                let (start, end) = edge.strict_domain().unwrap();
+                let middle_parameter = start + (end - start) * fraction;
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    unreachable!()
+                };
+                let middle = topo.add_vertex(Vertex::new(
+                    circle.evaluate(middle_parameter),
+                    Tolerance::new().linear,
+                ));
+                let mut first = Edge::new(edge.start(), middle, edge.curve().clone());
+                first.set_trim(Some((start, middle_parameter)));
+                let mut second = Edge::new(middle, edge.end(), edge.curve().clone());
+                second.set_trim(Some((middle_parameter, end)));
+                let halves = [topo.add_edge(first), topo.add_edge(second)];
+                let mut wires = HashSet::new();
+                for face in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+                    wires.insert(topo.face(face).unwrap().outer_wire());
+                }
+                for wire in wires {
+                    let old = topo.wire(wire).unwrap();
+                    let mut sequence = Vec::new();
+                    for oriented in old.edges() {
+                        if oriented.edge() != cross {
+                            sequence.push(*oriented);
+                        } else if oriented.is_forward() {
+                            sequence.extend(halves.map(|edge| OrientedEdge::new(edge, true)));
+                        } else {
+                            sequence.extend(
+                                halves
+                                    .into_iter()
+                                    .rev()
+                                    .map(|edge| OrientedEdge::new(edge, false)),
+                            );
+                        }
+                    }
+                    topo.replace_boundary_wire(wire, Wire::new(sequence, old.is_closed()).unwrap())
+                        .unwrap();
+                }
+                let band = describe_band(&topo, solid, face).unwrap();
+                validate_exact_result(&topo, solid, "split end-arc input").unwrap();
+                let mut control = topo.clone();
+                let source_volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+                for _ in 0..3 {
+                    let before = topo.allocated_slot_count();
+                    let control_before = control.allocated_slot_count();
+                    let expected =
+                        crate::defeature::defeature_blend_band(&mut control, solid, &band.faces)
+                            .unwrap();
+                    let result = if resize {
+                        resize_blend(&mut topo, solid, face, 1.0, 0.0)
+                            .unwrap()
+                            .solid
+                    } else {
+                        crate::defeature::defeature(&mut topo, solid, &[face]).unwrap()
+                    };
+                    assert_eq!(
+                        topo.allocated_slot_count() - before,
+                        control.allocated_slot_count() - control_before
+                    );
+                    validate_exact_result(&topo, result, "fallback regression").unwrap();
+                    let actual_volume = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+                    let expected_volume =
+                        crate::measure::solid_volume(&control, expected.solid, 0.01).unwrap();
+                    assert!((actual_volume - expected_volume).abs() < 1e-9);
+                    assert!((actual_volume - 1000.0).abs() < 1e-6);
+                    assert_eq!(
+                        crate::measure::solid_volume(&topo, solid, 0.01)
+                            .unwrap()
+                            .to_bits(),
+                        source_volume.to_bits()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

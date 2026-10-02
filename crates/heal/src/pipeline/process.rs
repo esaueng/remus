@@ -85,24 +85,27 @@ impl HealProcess {
     /// # Errors
     ///
     /// Returns [`HealError`] if any operator fails or a step name is unknown.
+    /// The complete pipeline is rolled back on error, including resource refusal.
     pub fn execute(
         &self,
         topo: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(SolidId, Vec<FixResult>), HealError> {
-        let mut current = solid_id;
-        let mut results = Vec::with_capacity(self.steps.len());
-        let mut ctx = HealContext::new();
-        for step_name in &self.steps {
-            let op = self.registry.get(step_name).ok_or_else(|| {
-                HealError::InvalidConfig(format!("unknown operator: {step_name}"))
-            })?;
-            log::info!("heal pipeline: running '{step_name}'");
-            let (solid, report) = op.execute(topo, current, &mut ctx)?;
-            current = solid;
-            results.push(report);
-        }
-        Ok((current, results))
+        remus_topology::transaction::run_transacted(topo, |topo| {
+            let mut current = solid_id;
+            let mut results = Vec::with_capacity(self.steps.len());
+            let mut ctx = HealContext::new();
+            for step_name in &self.steps {
+                let op = self.registry.get(step_name).ok_or_else(|| {
+                    HealError::InvalidConfig(format!("unknown operator: {step_name}"))
+                })?;
+                log::info!("heal pipeline: running '{step_name}'");
+                let (solid, report) = op.execute(topo, current, &mut ctx)?;
+                current = solid;
+                results.push(report);
+            }
+            Ok((current, results))
+        })
     }
 
     /// Execute the pipeline while retaining its recorded replacement actions.
@@ -115,30 +118,32 @@ impl HealProcess {
         topo: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(SolidId, Vec<FixResult>, Vec<StepHistory>), HealError> {
-        let mut current = solid_id;
-        let mut results = Vec::with_capacity(self.steps.len());
-        let mut ctx = HealContext::new();
-        let mut history = Vec::with_capacity(self.steps.len());
+        remus_topology::transaction::run_transacted(topo, |topo| {
+            let mut current = solid_id;
+            let mut results = Vec::with_capacity(self.steps.len());
+            let mut ctx = HealContext::new();
+            let mut history = Vec::with_capacity(self.steps.len());
 
-        for step_name in &self.steps {
-            let op = self.registry.get(step_name).ok_or_else(|| {
-                HealError::InvalidConfig(format!("unknown operator: {step_name}"))
-            })?;
+            for step_name in &self.steps {
+                let op = self.registry.get(step_name).ok_or_else(|| {
+                    HealError::InvalidConfig(format!("unknown operator: {step_name}"))
+                })?;
 
-            log::info!("heal pipeline: running '{step_name}'");
-            let sources = entity_keys(topo, current)?;
-            let (new_solid, result, replacements) =
-                op.execute_with_history(topo, current, &mut ctx)?;
-            history.push(StepHistory {
-                sources,
-                result: entity_keys(topo, new_solid)?,
-                replacements,
-            });
-            results.push(result);
-            current = new_solid;
-        }
+                log::info!("heal pipeline: running '{step_name}'");
+                let sources = entity_keys(topo, current)?;
+                let (new_solid, result, replacements) =
+                    op.execute_with_history(topo, current, &mut ctx)?;
+                history.push(StepHistory {
+                    sources,
+                    result: entity_keys(topo, new_solid)?,
+                    replacements,
+                });
+                results.push(result);
+                current = new_solid;
+            }
 
-        Ok((current, results, history))
+            Ok((current, results, history))
+        })
     }
 }
 

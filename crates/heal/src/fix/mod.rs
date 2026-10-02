@@ -274,15 +274,18 @@ pub fn fix_shape_with_tolerance(
 ///
 /// # Errors
 ///
-/// Returns the same repair errors as [`fix_shape`].
+/// Returns the same repair errors as [`fix_shape`]. Every error restores the
+/// input topology, including resource refusal after an earlier fixer mutated it.
 pub fn fix_shape_with_history(
     topo: &mut Topology,
     solid_id: SolidId,
     config: &FixConfig,
     tolerance: Option<f64>,
 ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
-    let mut ctx = tolerance.map_or_else(HealContext::new, HealContext::with_tolerance);
-    let result = solid::fix_solid(topo, solid_id, &mut ctx, config)?;
-    let new_solid = ctx.reshape.apply(topo, solid_id)?;
-    Ok((new_solid, result, ctx.reshape))
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut ctx = tolerance.map_or_else(HealContext::new, HealContext::with_tolerance);
+        let result = solid::fix_solid(topo, solid_id, &mut ctx, config)?;
+        let new_solid = ctx.reshape.apply(topo, solid_id)?;
+        Ok((new_solid, result, ctx.reshape))
+    })
 }
