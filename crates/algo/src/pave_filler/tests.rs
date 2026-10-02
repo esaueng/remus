@@ -2339,3 +2339,65 @@ fn ff_seam_tangent_twins_keep_their_general_position_sections() {
         );
     }
 }
+
+/// B53 at the algo layer: the box edge y = 0, z = 1 grazes the wall of the
+/// cylinder (axis x = 1, y = -1, radius 1) at exactly (1, 0, 1), where an
+/// earlier phase already left an extra pave on that edge. That vertex lies on
+/// the wall and on the edge, so the grazing EF crossing must reuse it instead
+/// of minting a near-duplicate next to it.
+#[test]
+fn ef_grazing_contact_reuses_the_edges_own_on_wall_extra_pave() {
+    use crate::ds::{Interference, Pave};
+    let mut topo = Topology::default();
+    let a = make_box(&mut topo, [0.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+    let b = make_cylinder(&mut topo, 1.0, -1.0, -1.0, 1.0, 3.0);
+    let mut arena = GfaArena::new();
+    PaveFiller::new(&mut topo, a, b)
+        .init_pave_blocks(&mut arena)
+        .unwrap();
+    let on_line = |p: Point3| p.y().abs() < 1e-12 && (p.z() - 1.0).abs() < 1e-12;
+    let edge = remus_topology::explorer::solid_edges(&topo, a)
+        .unwrap()
+        .into_iter()
+        .find(|&e| {
+            let e = topo.edge(e).unwrap();
+            on_line(topo.vertex(e.start()).unwrap().point())
+                && on_line(topo.vertex(e.end()).unwrap().point())
+        })
+        .unwrap();
+    let contact = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+    let pb = arena.edge_pave_blocks[&edge][0];
+    let block = arena.pave_blocks.get_mut(pb).unwrap();
+    let t = f64::midpoint(block.start.parameter, block.end.parameter);
+    block.extra_paves.push(Pave::new(contact, t));
+    super::phase_ef::perform(
+        &mut topo,
+        a,
+        b,
+        remus_math::tolerance::Tolerance::default(),
+        &mut arena,
+    )
+    .unwrap();
+    let on_wall: Vec<_> = arena
+        .interference
+        .ef
+        .iter()
+        .filter_map(|i| match i {
+            Interference::EF {
+                edge: e,
+                face,
+                new_vertex,
+                ..
+            } if *e == edge
+                && matches!(
+                    topo.face(*face).unwrap().surface(),
+                    FaceSurface::Cylinder(_)
+                ) =>
+            {
+                Some(*new_vertex)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(on_wall, vec![Some(contact)]);
+}
