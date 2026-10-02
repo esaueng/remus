@@ -1194,7 +1194,13 @@ fn march_direction(
                 // Otherwise keep current step size.
             }
 
-            prev_tangent = cur_tangent;
+            // An exactly singular point (`n1 × n2 = 0`, e.g. a step landing on
+            // a crossing) has no first-order tangent: keep the incoming
+            // direction so the next singular step continues this branch
+            // instead of taking the first sorted null.
+            if cur_tangent.is_some() {
+                prev_tangent = cur_tangent;
+            }
 
             // Check boundary.
             let ref_state = [
