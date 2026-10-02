@@ -29,6 +29,7 @@
 //! length-valued in it (some are `PRODUCT`/`COLOUR_RGB` only) still imports,
 //! as zero solids.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::aabb::Aabb2;
@@ -2337,6 +2338,10 @@ struct StepBuilder<'a> {
     /// (bound lists, point aggregates, knot expansions) is measured against
     /// these before the buffer is sized.
     limits: ImportLimits,
+    generated_entities: Cell<usize>,
+    imported_name_bytes: Cell<usize>,
+    constructed_geometry_bytes: Cell<usize>,
+    constructed_geometry_items: Cell<usize>,
     /// Largest uncertainty explicitly declared by the STEP representation,
     /// converted to millimetres and floored at the kernel tolerance.
     model_tolerance_cap: f64,
@@ -2380,12 +2385,100 @@ impl<'a> StepBuilder<'a> {
             entities,
             units,
             limits,
+            generated_entities: Cell::new(0),
+            imported_name_bytes: Cell::new(0),
+            constructed_geometry_bytes: Cell::new(0),
+            constructed_geometry_items: Cell::new(0),
             model_tolerance_cap: Tolerance::new().linear,
             brep_tolerance_caps,
             vertex_cache: HashMap::new(),
             edge_cache: HashMap::new(),
             diagnostics: Vec::new(),
         })
+    }
+
+    fn reserve_budget(
+        counter: &Cell<usize>,
+        amount: usize,
+        resource: &'static str,
+        limit: usize,
+    ) -> Result<(), IoError> {
+        let actual = counter
+            .get()
+            .checked_add(amount)
+            .ok_or(IoError::LimitExceeded {
+                resource,
+                limit,
+                actual: usize::MAX,
+            })?;
+        ensure_limit(resource, actual, limit)?;
+        counter.set(actual);
+        Ok(())
+    }
+
+    fn reserve_entities(&self, amount: usize) -> Result<(), IoError> {
+        Self::reserve_budget(
+            &self.generated_entities,
+            amount,
+            "STEP generated arena entities",
+            self.limits.max_model_entities,
+        )
+    }
+
+    // Charge every construction, including temporary trim-authority carriers,
+    // before allocating owned control points/weights or expanding knot vectors.
+    // Reusing one STEP basis must not multiply memory or work without charge.
+    fn reserve_geometry(
+        &self,
+        points: usize,
+        point_bytes: usize,
+        knots: usize,
+        rows: usize,
+    ) -> Result<(), IoError> {
+        let overflow = || IoError::LimitExceeded {
+            resource: "STEP constructed geometry bytes",
+            limit: self.limits.max_input_bytes,
+            actual: usize::MAX,
+        };
+        let bytes = points
+            .checked_mul(point_bytes + std::mem::size_of::<f64>())
+            .and_then(|bytes| {
+                knots
+                    .checked_mul(std::mem::size_of::<f64>())
+                    .and_then(|knots| bytes.checked_add(knots))
+            })
+            .and_then(|bytes| {
+                rows.checked_mul(2 * std::mem::size_of::<Vec<f64>>())
+                    .and_then(|rows| bytes.checked_add(rows))
+            })
+            .ok_or_else(overflow)?;
+        let items = points.checked_add(knots).ok_or_else(overflow)?;
+        Self::reserve_budget(
+            &self.constructed_geometry_items,
+            items,
+            "STEP constructed geometry items",
+            self.limits.max_model_entities,
+        )?;
+        Self::reserve_budget(
+            &self.constructed_geometry_bytes,
+            bytes,
+            "STEP constructed geometry bytes",
+            self.limits.max_input_bytes,
+        )
+    }
+
+    fn imported_name(&self, attrs: &str) -> Result<Option<String>, IoError> {
+        let Some(literal) = leading_name_literal(attrs) else {
+            return Ok(None);
+        };
+        let decoded_bytes = literal.len() - literal.matches("''").count();
+        Self::reserve_budget(
+            &self.imported_name_bytes,
+            decoded_bytes,
+            "STEP imported name bytes",
+            self.limits.max_input_bytes,
+        )?;
+        Ok(Some(unescape_step_string(literal)))
     }
 
     fn build_all_solids(&mut self) -> Result<Vec<(u64, SolidId)>, IoError> {
@@ -2577,14 +2670,16 @@ impl<'a> StepBuilder<'a> {
             }
         }
 
+        self.reserve_entities(1)?;
         let solid_id = self.topo.add_solid(Solid::new(shell_id, inner_shells));
-        let name = if is_complex {
+        let name_attrs = if is_complex {
             find_exact_composite_component(&attrs, "REPRESENTATION_ITEM")
-                .and_then(leading_name)
-                .or_else(|| leading_name(manifold_attrs))
+                .filter(|attrs| leading_name_literal(attrs).is_some())
+                .unwrap_or(manifold_attrs)
         } else {
-            leading_name(&attrs)
+            &attrs
         };
+        let name = self.imported_name(name_attrs)?;
         if let Some(name) = name {
             let attributes = remus_topology::attributes::EntityAttributes {
                 name: Some(name),
@@ -2668,6 +2763,7 @@ impl<'a> StepBuilder<'a> {
         let shell = Shell::new(face_ids).map_err(|e| IoError::ParseError {
             reason: format!("failed to build shell from STEP: {e}"),
         })?;
+        self.reserve_entities(1)?;
         let shell_id = self.topo.add_shell(shell);
         Ok(shell_id)
     }
@@ -2732,6 +2828,7 @@ impl<'a> StepBuilder<'a> {
         flip: bool,
     ) -> Result<remus_topology::face::FaceId, IoError> {
         let attrs = self.get_entity(face_ref)?.attrs.clone();
+        let imported_name = self.imported_name(&attrs)?;
         let slots = split_attr_slots(&attrs);
         let surface_reversed =
             !required_logical_attribute("ADVANCED_FACE", face_ref, &slots, 3, "same_sense")?;
@@ -2899,13 +2996,26 @@ impl<'a> StepBuilder<'a> {
             .chain(inner_wires.iter().copied())
             .collect();
 
+        let mut face_entities = 1_usize;
+        for &wire in &boundary_wires {
+            let coedges = self.topo.wire(wire)?.edges().len();
+            face_entities = face_entities
+                .checked_add(1)
+                .and_then(|count| count.checked_add(coedges))
+                .ok_or(IoError::LimitExceeded {
+                    resource: "STEP generated arena entities",
+                    limit: self.limits.max_model_entities,
+                    actual: usize::MAX,
+                })?;
+        }
+        self.reserve_entities(face_entities)?;
         let face_id = if face_reversed {
             self.topo
                 .add_face(Face::new_reversed(outer, inner_wires, surface))
         } else {
             self.topo.add_face(Face::new(outer, inner_wires, surface))
         };
-        if let Some(name) = leading_name(&attrs) {
+        if let Some(name) = imported_name {
             let attributes = remus_topology::attributes::EntityAttributes {
                 name: Some(name),
                 ..Default::default()
@@ -3015,6 +3125,18 @@ impl<'a> StepBuilder<'a> {
             let start = self.topo.vertex(edge.start())?;
             let end = self.topo.vertex(edge.end())?;
             let vertex_tolerance = start.tolerance().max(end.tolerance());
+            if let EdgeCurve::NurbsCurve(nurbs) = edge.curve() {
+                // Reversal creates a carrier and the replacement clones its
+                // source edge before installing it. Charge both owned copies.
+                for _ in 0..2 {
+                    self.reserve_geometry(
+                        nurbs.control_points().len(),
+                        std::mem::size_of::<Point3>(),
+                        nurbs.knots().len(),
+                        0,
+                    )?;
+                }
+            }
             let replacement = reversed_closed_edge_with_authority(
                 face_ref,
                 edge,
@@ -3652,6 +3774,7 @@ impl<'a> StepBuilder<'a> {
             }
             seam.set_trim(Some((start, start + span)));
         }
+        self.reserve_entities(1)?;
         let seam_id = self.topo.add_edge(seam);
         let wire = Wire::new(
             vec![
@@ -3663,6 +3786,7 @@ impl<'a> StepBuilder<'a> {
             true,
         )
         .map_err(|error| reject(&format!("cannot construct the analytic band wire: {error}")))?;
+        self.reserve_entities(1)?;
         let wire_id = self.topo.add_wire(wire);
         let synthesized = PendingPcurveUse {
             edge_curve_ref: None,
@@ -4471,6 +4595,12 @@ impl<'a> StepBuilder<'a> {
                  sweeps a hyperboloid, which this kernel cannot represent)"
                 ),
             })?;
+        self.reserve_geometry(
+            generatrix.control_points().len().saturating_mul(9),
+            std::mem::size_of::<Point3>(),
+            generatrix.knots().len().saturating_add(12),
+            9,
+        )?;
         let surface =
             revolve_nurbs(&generatrix, axis_pt, axis).map_err(|e| IoError::ParseError {
                 reason: format!("SURFACE_OF_REVOLUTION #{surface_ref}: {e}"),
@@ -4534,6 +4664,12 @@ impl<'a> StepBuilder<'a> {
                  own extrusion direction, which sweeps no surface"
                 ),
             })?;
+        self.reserve_geometry(
+            generatrix.control_points().len().saturating_mul(2),
+            std::mem::size_of::<Point3>(),
+            generatrix.knots().len().saturating_add(4),
+            generatrix.control_points().len(),
+        )?;
         let surface =
             extrude_nurbs(&generatrix, direction * magnitude).map_err(|e| IoError::ParseError {
                 reason: format!("SURFACE_OF_LINEAR_EXTRUSION #{surface_ref}: {e}"),
@@ -4593,6 +4729,7 @@ impl<'a> StepBuilder<'a> {
         let wire = Wire::new(oriented_edges, true).map_err(|e| IoError::ParseError {
             reason: format!("failed to create wire from edge loop #{loop_ref}: {e}"),
         })?;
+        self.reserve_entities(1)?;
         let wire_id = self.topo.add_wire(wire);
         Ok((wire_id, pending))
     }
@@ -4887,6 +5024,14 @@ impl<'a> StepBuilder<'a> {
             anchors: raw_anchors,
         } = self.build_curve2d_at(item_refs[0], 0)?;
         let transform = self.pcurve_transform(surface_ref, face_id)?;
+        if let Curve2D::Nurbs(nurbs) = &raw_curve {
+            self.reserve_geometry(
+                nurbs.control_points().len(),
+                std::mem::size_of::<Point2>(),
+                nurbs.knots().len(),
+                0,
+            )?;
+        }
         let (curve, parameter_scale, parameter_shift) =
             transform_curve2d(raw_curve, transform, pcurve_ref)?;
         let declared_range = raw_range.map(|(start, end)| {
@@ -4932,6 +5077,14 @@ impl<'a> StepBuilder<'a> {
                 expected_start,
                 expected_end,
                 pcurve_ref,
+                |nurbs| {
+                    self.reserve_geometry(
+                        nurbs.control_points().len(),
+                        std::mem::size_of::<Point3>(),
+                        nurbs.knots().len(),
+                        0,
+                    )
+                },
             )?,
         };
         let pcurve = PCurve::new(curve, range.0, range.1);
@@ -5200,6 +5353,12 @@ impl<'a> StepBuilder<'a> {
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("2D B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
             })?;
+        self.reserve_geometry(
+            cp_refs.len(),
+            std::mem::size_of::<Point2>(),
+            expanded_knot_count(&multiplicities).unwrap_or(usize::MAX),
+            0,
+        )?;
         let control_points: Vec<Point2> = cp_refs
             .iter()
             .map(|&reference| self.build_cartesian_point2(reference))
@@ -5318,11 +5477,20 @@ impl<'a> StepBuilder<'a> {
                     declared.nurbs_parameters_reversed = !declared.nurbs_parameters_reversed;
                 }
             }
+            if let EdgeCurve::NurbsCurve(nurbs) = &curve {
+                self.reserve_geometry(
+                    nurbs.control_points().len(),
+                    std::mem::size_of::<Point3>(),
+                    nurbs.knots().len(),
+                    0,
+                )?;
+            }
             canonicalize_sense(curve)
         };
 
         let edge =
             self.import_edge_with_authority(ec_ref, start_vp, end_vp, curve, declared_curve_trim)?;
+        self.reserve_entities(1)?;
         let edge_id = self.topo.add_edge(edge);
 
         self.edge_cache.insert(ec_ref, edge_id);
@@ -6517,6 +6685,12 @@ impl<'a> StepBuilder<'a> {
             // A .CARTESIAN. trim states its ends as points, which are the
             // edge's own vertices; nothing further to apply.
             return Ok(EdgeCurve::NurbsCurve(if reverse {
+                self.reserve_geometry(
+                    nurbs.control_points().len(),
+                    std::mem::size_of::<Point3>(),
+                    nurbs.knots().len(),
+                    0,
+                )?;
                 nurbs.reversed()
             } else {
                 nurbs
@@ -6547,6 +6721,12 @@ impl<'a> StepBuilder<'a> {
             });
         }
         Ok(EdgeCurve::NurbsCurve(if reverse {
+            self.reserve_geometry(
+                nurbs.control_points().len(),
+                std::mem::size_of::<Point3>(),
+                nurbs.knots().len(),
+                0,
+            )?;
             nurbs.reversed()
         } else {
             nurbs
@@ -6600,6 +6780,12 @@ impl<'a> StepBuilder<'a> {
         // Coincident consecutive points would force a repeated interior knot,
         // which a degree-1 B-spline cannot carry. They are geometrically
         // nothing, so drop them rather than refuse the file.
+        self.reserve_geometry(
+            point_refs.len(),
+            std::mem::size_of::<Point3>(),
+            point_refs.len().saturating_add(2),
+            0,
+        )?;
         let mut points: Vec<Point3> = Vec::with_capacity(point_refs.len());
         for point_ref in point_refs {
             let point = self.build_cartesian_point(point_ref)?;
@@ -6659,6 +6845,12 @@ impl<'a> StepBuilder<'a> {
             reason: format!("B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
         })?;
         let (degree, cp_refs, mults, knot_vals) = parsed;
+        self.reserve_geometry(
+            cp_refs.len(),
+            std::mem::size_of::<Point3>(),
+            expanded_knot_count(&mults).unwrap_or(usize::MAX),
+            0,
+        )?;
 
         let mut control_points = Vec::with_capacity(cp_refs.len());
         for &cp_ref in &cp_refs {
@@ -6718,6 +6910,27 @@ impl<'a> StepBuilder<'a> {
             reason: format!("B_SPLINE_SURFACE #{surface_ref} could not parse attributes"),
         })?;
         let (degree_u, degree_v, cp_grid_refs, u_mults, v_mults, u_knots, v_knots) = parsed;
+        let columns = cp_grid_refs.first().map_or(0, Vec::len);
+        if columns == 0 || cp_grid_refs.iter().any(|row| row.len() != columns) {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "B_SPLINE_SURFACE #{surface_ref} requires a non-empty rectangular control-point grid"
+                ),
+            });
+        }
+        let points = cp_grid_refs
+            .iter()
+            .try_fold(0_usize, |sum, row| sum.checked_add(row.len()))
+            .unwrap_or(usize::MAX);
+        let knots = expanded_knot_count(&u_mults)
+            .and_then(|u| expanded_knot_count(&v_mults).and_then(|v| u.checked_add(v)))
+            .unwrap_or(usize::MAX);
+        self.reserve_geometry(
+            points,
+            std::mem::size_of::<Point3>(),
+            knots,
+            cp_grid_refs.len(),
+        )?;
 
         let mut cp_grid: Vec<Vec<Point3>> = Vec::new();
         for row_refs in &cp_grid_refs {
@@ -6771,6 +6984,7 @@ impl<'a> StepBuilder<'a> {
             required_reference_attribute("VERTEX_POINT", vp_ref, &slots, 1, "vertex_geometry")?;
 
         let point = self.build_cartesian_point(cp_ref)?;
+        self.reserve_entities(1)?;
         let vid = self
             .topo
             .add_vertex(Vertex::new(point, Tolerance::new().linear));
@@ -7807,6 +8021,7 @@ fn derive_pcurve_range(
     expected_start: Point2,
     expected_end: Point2,
     pcurve_ref: u64,
+    mut reserve_projection: impl FnMut(&NurbsCurve2D) -> Result<(), IoError>,
 ) -> Result<(f64, f64), IoError> {
     let edge_increases = if matches!(edge.curve(), EdgeCurve::Line) {
         true
@@ -7855,8 +8070,11 @@ fn derive_pcurve_range(
                     (domain.1, domain.0)
                 }
             } else {
+                reserve_projection(nurbs)?;
+                let start = project_nurbs2d(nurbs, expected_start, tolerance, pcurve_ref)?;
+                reserve_projection(nurbs)?;
                 (
-                    project_nurbs2d(nurbs, expected_start, tolerance, pcurve_ref)?,
+                    start,
                     project_nurbs2d(nurbs, expected_end, tolerance, pcurve_ref)?,
                 )
             }
@@ -9717,7 +9935,7 @@ fn exact_reference_list(list: &str) -> Result<Vec<u64>, String> {
 /// Extracts an entity's leading name string (`'name', ...`), unescaped;
 /// `None` when absent or empty. Names are attributes (Issue 14), imported
 /// so a round trip preserves them.
-fn leading_name(attrs: &str) -> Option<String> {
+fn leading_name_literal(attrs: &str) -> Option<&str> {
     let rest = attrs.trim_start().strip_prefix('\'')?;
     let bytes = rest.as_bytes();
     let mut i = 0;
@@ -9728,8 +9946,7 @@ fn leading_name(attrs: &str) -> Option<String> {
                 i += 2;
                 continue;
             }
-            let name = unescape_step_string(&rest[..i]);
-            return (!name.is_empty()).then_some(name);
+            return (i != 0).then_some(&rest[..i]);
         }
         i += 1;
     }
@@ -10395,6 +10612,12 @@ const MAX_EXPANDED_KNOTS: usize = 1 << 20;
 /// `[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]`.
 ///
 /// Returns `None` when the expansion would exceed [`MAX_EXPANDED_KNOTS`].
+fn expanded_knot_count(mults: &[u32]) -> Option<usize> {
+    mults
+        .iter()
+        .try_fold(0_usize, |sum, &mult| sum.checked_add(mult as usize))
+}
+
 fn expand_knots(mults: &[u32], vals: &[f64]) -> Option<Vec<f64>> {
     let total = mults.iter().try_fold(0usize, |acc, &m| {
         #[allow(clippy::cast_possible_truncation)]
@@ -10494,6 +10717,77 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    #[test]
+    fn step_repeated_face_names_obey_cumulative_byte_budget() {
+        use remus_operations::primitives::make_box;
+        let mut source = Topology::new();
+        let solid = make_box(&mut source, 1.0, 1.0, 1.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(&source, solid).unwrap()[0];
+        source
+            .set_face_attributes(
+                face,
+                remus_topology::attributes::EntityAttributes {
+                    name: Some("a'β".repeat(1024)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let plain = writer::write_step(&source, &[solid]).unwrap();
+        let shell_line = plain
+            .lines()
+            .find(|line| line.contains("CLOSED_SHELL("))
+            .unwrap();
+        let first = shell_line[shell_line.find(", (#").unwrap() + 3..]
+            .split(',')
+            .next()
+            .unwrap();
+        let repeated = std::iter::repeat_n(first, 20)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let shell = format!(
+            "{}{}));",
+            &shell_line[..shell_line.find(", (#").unwrap() + 3],
+            repeated
+        );
+        let attack = plain.replace(shell_line, &shell);
+        let limits = ImportLimits {
+            max_input_bytes: attack.len(),
+            ..ImportLimits::default()
+        };
+        let mut destination = Topology::new();
+        let error = read_step_with_limits(&attack, &mut destination, limits).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                IoError::LimitExceeded {
+                    resource: "STEP imported name bytes",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(destination.num_faces(), 0);
+        let roots = read_step_with_limits(
+            &plain,
+            &mut destination,
+            ImportLimits {
+                max_input_bytes: plain.len(),
+                ..ImportLimits::default()
+            },
+        )
+        .unwrap();
+        let faces = remus_topology::explorer::solid_faces(&destination, roots[0]).unwrap();
+        assert_eq!(
+            destination
+                .attributes()
+                .face(faces[0])
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("a'β".repeat(1024).as_str())
+        );
+    }
 
     #[test]
     fn validation_links_are_indexed_once_with_duplicate_counts() {
@@ -13343,6 +13637,30 @@ mod tests {
     }
 
     #[test]
+    fn bspline_surface_rejects_ragged_grid_before_lookup_or_allocation() {
+        let mut topology = Topology::new();
+        let entities = HashMap::new();
+        let builder = StepBuilder::new(
+            &mut topology,
+            &entities,
+            UnitScale {
+                length: 1.0,
+                angle: 1.0,
+            },
+            ImportLimits::default(),
+        )
+        .unwrap();
+        let attrs = "'', 1, 1, ((#10, #11), (#12)), .UNSPECIFIED., .F., .F., .F., (2, 2), (2, 2), (0.0, 1.0), (0.0, 1.0), .UNSPECIFIED.";
+        let error = builder.build_bspline_surface(42, attrs, false).unwrap_err();
+        assert!(
+            error.to_string().contains("non-empty rectangular"),
+            "{error}"
+        );
+        assert_eq!(builder.constructed_geometry_bytes.get(), 0);
+        assert_eq!(builder.constructed_geometry_items.get(), 0);
+    }
+
+    #[test]
     fn parse_bspline_surface_attrs_basic() {
         // Minimal B_SPLINE_SURFACE_WITH_KNOTS attribute string.
         let attrs = "'', 1, 1, ((#10, #11), (#12, #13)), .UNSPECIFIED., .F., .F., .F., \
@@ -14947,6 +15265,84 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 #4 = CARTESIAN_POINT('',(4.,0.,0.));\n\
 #5 = B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#4),\
 .UNSPECIFIED.,.F.,.F.,(4,4),(0.,4.),.UNSPECIFIED.);\n";
+
+    #[test]
+    fn step_shared_trimmed_carriers_obey_cumulative_construction_budget() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+            #6=TRIMMED_CURVE('',#5,(PARAMETER_VALUE(1.)),(PARAMETER_VALUE(3.)),.T.,.PARAMETER.);\n\
+            #7=CARTESIAN_POINT('',(0.90625,1.6875,0.));\n\
+            #8=CARTESIAN_POINT('',(3.09375,1.6875,0.));\n\
+            #9=VERTEX_POINT('',#7); #10=VERTEX_POINT('',#8);\n\
+            #11=EDGE_CURVE('',#9,#10,#6,.T.); #12=EDGE_CURVE('',#9,#10,#6,.T.);\n"
+        );
+        let text = format!("ISO-10303-21;DATA;{body}ENDSEC;END-ISO-10303-21;");
+        let entities = parse_step_entities(&text, ImportLimits::default()).unwrap();
+        // Two full 4-point/8-knot carriers per edge: authority then retention.
+        for limits in [
+            ImportLimits {
+                max_model_entities: 24,
+                ..ImportLimits::default()
+            },
+            ImportLimits {
+                max_input_bytes: 384,
+                ..ImportLimits::default()
+            },
+        ] {
+            let mut topo = Topology::new();
+            let mut builder = StepBuilder::new(
+                &mut topo,
+                &entities,
+                UnitScale {
+                    length: 1.0,
+                    angle: 1.0,
+                },
+                limits,
+            )
+            .unwrap();
+            let first = builder.build_edge_curve(11).unwrap();
+            assert_eq!(
+                first,
+                builder.build_edge_curve(11).unwrap(),
+                "cache hits do not charge another construction"
+            );
+            let error = builder.build_edge_curve(12).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    IoError::LimitExceeded {
+                        resource: "STEP constructed geometry bytes"
+                            | "STEP constructed geometry items",
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            let edge = builder.topo.edge(first).unwrap();
+            let EdgeCurve::NurbsCurve(carrier) = edge.curve() else {
+                panic!("exact carrier required")
+            };
+            assert_eq!(carrier.control_points().len(), 4);
+            assert_eq!(carrier.knots(), &[0., 0., 0., 0., 4., 4., 4., 4.]);
+            assert_eq!(edge.strict_domain().unwrap(), (1.0, 3.0));
+        }
+        let mut topo = Topology::new();
+        let mut builder = StepBuilder::new(
+            &mut topo,
+            &entities,
+            UnitScale {
+                length: 1.0,
+                angle: 1.0,
+            },
+            ImportLimits::default(),
+        )
+        .unwrap();
+        assert_ne!(
+            builder.build_edge_curve(11).unwrap(),
+            builder.build_edge_curve(12).unwrap()
+        );
+        assert_eq!(builder.topo.num_edges(), 2);
+    }
 
     #[test]
     fn trimmed_bspline_retains_basis_carrier_and_declared_span_authority() {

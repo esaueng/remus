@@ -2005,6 +2005,30 @@ fn pave_filler_n_accumulates_three_overlapping_boxes() {
 
 // ── End-to-end N-way fuse (store → pave_filler_n → build_fuse_n) ─────────
 
+#[test]
+fn n_way_vv_uses_one_total_pair_budget() {
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+    let b = make_box(&mut topo, [0.2, 0.2, 0.2], [1.2, 1.2, 1.2]);
+    let c = make_box(&mut topo, [0.4, 0.4, 0.4], [1.4, 1.4, 1.4]);
+    let mut arena = GfaArena::new();
+    let context = OperationContext::new()
+        .with_budgets(remus_math::context::WorkBudgets::new().with_vertex_pairs(191));
+    assert!(matches!(
+        crate::pave_filler::run_pave_filler_n_with_context(
+            &mut topo,
+            &[a, b, c],
+            &context,
+            &mut arena,
+        ),
+        Err(crate::error::AlgoError::ResourceLimitExceeded {
+            resource: "GFA vertex pairs",
+            limit: 191,
+            actual: 192,
+        })
+    ));
+}
+
 /// Count how many distinct edges of a solid are used by exactly two faces
 /// (manifold) vs otherwise, as a watertightness proxy.
 fn edge_face_share(topo: &Topology, solid: remus_topology::solid::SolidId) -> (usize, usize) {

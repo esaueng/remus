@@ -983,3 +983,66 @@ fn batch_trimmed_span_refuses_foreign_handle() {
         "refusal must name the bad handle, got: {message}"
     );
 }
+
+// Shared native query budgets must also surface through batch without changing state.
+#[test]
+fn batch_planar_pair_query_keeps_box_measurements() {
+    let (mut k, solid) = kernel_with_box();
+    let pairs = batch_ok(
+        &mut k,
+        "getOpposingPlanarFacePairs",
+        serde_json::json!({"solid": solid}),
+    );
+    let rows = pairs.as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        assert!((row["distance"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!((row["overlapArea"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn batch_planar_pair_query_rejects_many_holes_atomically() {
+    let (mut k, solid) = kernel_with_box();
+    let solid_id = k.resolve_solid(solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(k.topo(), solid_id).unwrap();
+    let face = faces[0];
+    let outer = k.topo().face(face).unwrap().outer_wire();
+    // A small reference-only fixture exceeds the default preparation cap;
+    // no exhausting polygons are constructed or evaluated in this test.
+    k.topo_mut()
+        .set_face_boundary_wires(face, outer, vec![outer; 16_384])
+        .unwrap();
+    let slots = k.topo().allocated_slot_count();
+    let operations = vec![op_name_args(
+        "getOpposingPlanarFacePairs",
+        serde_json::json!({"solid": solid}),
+    )];
+    let results: Vec<serde_json::Value> = serde_json::from_str(
+        &k.execute_batch_v2(&serde_json::Value::Array(operations.clone()).to_string()),
+    )
+    .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["error"]["code"], "invalid_argument");
+    assert!(
+        results[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("topology budget exceeded")
+    );
+    assert!(results[0].get("ok").is_none());
+    let legacy = batch_run(&mut k, &operations);
+    assert!(
+        legacy[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("topology budget exceeded")
+    );
+    assert!(legacy[0].get("ok").is_none());
+    assert_eq!(k.topo().allocated_slot_count(), slots);
+    assert_eq!(k.topo().face(face).unwrap().inner_wires().len(), 16_384);
+    assert_eq!(
+        remus_topology::explorer::solid_faces(k.topo(), solid_id).unwrap(),
+        faces
+    );
+}

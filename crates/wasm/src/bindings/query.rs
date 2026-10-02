@@ -12,9 +12,7 @@ use remus_operations::query::opposing_planar_face_pairs;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 
-use crate::error::{
-    WasmError, validate_face_pair_count, validate_finite, validate_positive, validate_work_count,
-};
+use crate::error::{WasmError, validate_finite, validate_positive, validate_work_count};
 use crate::handles::{
     edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, vertex_id_to_u32,
     wire_id_to_u32,
@@ -54,14 +52,11 @@ impl BrepKernel {
     ///
     /// # Errors
     ///
-    /// Returns an error if the solid handle or its topology is invalid.
+    /// Returns an error if the solid handle or its topology is invalid, or
+    /// the shared native face, topology, sampling, or work budget is exceeded.
     #[wasm_bindgen(js_name = "getOpposingPlanarFacePairs")]
     pub fn get_opposing_planar_face_pairs(&self, solid: u32) -> Result<String, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let face_count =
-            u32::try_from(remus_topology::explorer::solid_faces(&self.topo, solid_id)?.len())
-                .unwrap_or(u32::MAX);
-        validate_face_pair_count(face_count)?;
         let pairs = opposing_planar_face_pairs(&self.topo, solid_id, Tolerance::default())?;
         let records: Vec<_> = pairs
             .iter()

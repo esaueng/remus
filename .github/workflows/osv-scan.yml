@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   scan:
-    uses: esaueng/remus/.github/workflows/fleet-osv.yml@2fb4ddb1e5ef366cd8cc3cbe7133a4425c1a7e1a
+    uses: esaueng/remus/.github/workflows/fleet-osv.yml@2282d7008024d957de2c99fa4751617a4af5cdf8
     permissions:
       contents: read
       pull-requests: read
