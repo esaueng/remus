@@ -743,6 +743,9 @@ impl StampSet {
 }
 
 #[cfg(test)]
+mod mutation_oracle_tests;
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod grid_oracle_tests {
     use super::*;
