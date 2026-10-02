@@ -225,6 +225,27 @@ fn ring_walk_terminates_within_a_deadline() {
     assert_eq!(got, (Some(2), Some(2)));
 }
 
+/// Regression (found triaging B19 survivor `chaining.rs` 245:12): a
+/// threshold whose square overflows connects a pair only when the pair's
+/// squared distance stays finite, exactly as the all-pairs `d^2 < t^2`
+/// comparison does. Two finite points 1e200 apart have an infinite
+/// squared distance, so they stay apart at every such threshold. The
+/// clique shortcut used to join them, and the walk's scan (which can never
+/// select an infinitely distant point) then dropped the far point from the
+/// output altogether.
+#[test]
+fn overflowing_threshold_keeps_overflowing_pairs_apart() {
+    let points = [ip(0.0, 0.0, 0.0), ip(1e200, 0.0, 0.0), ip(1.0, 0.0, 0.0)];
+    // 2^1023 * 0.9 takes the cell path; 1.5e308 and infinity take the
+    // overflow shortcut. All three must agree with the comparison.
+    for threshold in [0.9 * 2.0f64.powi(1023), 1.5e308, f64::INFINITY] {
+        let chains = chain_intersection_points(&points, threshold);
+        let sizes: Vec<usize> = chains.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![2, 1], "threshold {threshold:e}");
+        assert_eq!(chains[1][0].point.x(), 1e200, "threshold {threshold:e}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // chain_intersection_points: adjacency on both the scan and the grid path
 // ---------------------------------------------------------------------------
