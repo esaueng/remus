@@ -131,6 +131,7 @@ Quick reference — find the right file for any task:
 | Analytic surfaces (Cylinder, Cone, Sphere, Torus) | `surfaces.rs` |
 | Exact swept-surface carriers (revolution, linear extrusion) | `surfaces/swept.rs` |
 | Surface-surface intersection | `nurbs/intersection/` (mod, surface_marching, surface_seeding, curve_surface, plane, line, chaining, tests) |
+| Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
