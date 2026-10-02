@@ -123,6 +123,7 @@ Quick reference — find the right file for any task:
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
+| Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
 | Curve/surface fitting (LSPIA) | `nurbs/fitting.rs`, `nurbs/surface_fitting.rs` |
 | Point projection onto curves | `nurbs/projection.rs` |
 | Self-intersection detection | `nurbs/self_intersection.rs` |
@@ -131,6 +132,7 @@ Quick reference — find the right file for any task:
 | Analytic surfaces (Cylinder, Cone, Sphere, Torus) | `surfaces.rs` |
 | Exact swept-surface carriers (revolution, linear extrusion) | `surfaces/swept.rs` |
 | Surface-surface intersection | `nurbs/intersection/` (mod, surface_marching, surface_seeding, curve_surface, plane, line, chaining, tests) |
+| Hand-placed oracles for intersection-point chaining: grid walk, adjacency (tests) | `nurbs/intersection/chaining/mutation_oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |

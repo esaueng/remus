@@ -564,6 +564,49 @@ const HAUSDORFF_SAMPLES: usize = 5;
 /// and does not widen what counts as an intersection.
 const CLIP_NOISE_PAD: f64 = 1e-12;
 
+#[cfg(test)]
+thread_local! {
+    /// Calls of [`bezier_clip_recurse`] on this thread. Test-only: the
+    /// clip-or-subdivide strategy rarely changes WHICH contacts are found,
+    /// only how much work finding them takes, so its oracles count calls.
+    static RECURSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Depths of the active [`bezier_clip_recurse`] frames on this thread.
+    static RECURSE_DEPTHS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test-only frame guard: counts the call and checks that `depth` is the
+/// recursion level (one more than the caller's), the invariant that makes
+/// `MAX_DEPTH` and the depth-gated overlap checks mean what they say.
+#[cfg(test)]
+struct RecurseFrame;
+
+#[cfg(test)]
+impl RecurseFrame {
+    fn enter(depth: usize) -> Self {
+        RECURSE_CALLS.with(|c| c.set(c.get() + 1));
+        RECURSE_DEPTHS.with(|d| {
+            let mut d = d.borrow_mut();
+            let level = d.last().map_or(0, |parent| parent + 1);
+            assert_eq!(
+                depth, level,
+                "bezier_clip_recurse depth is not the recursion level"
+            );
+            d.push(depth);
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for RecurseFrame {
+    fn drop(&mut self) {
+        RECURSE_DEPTHS.with(|d| {
+            d.borrow_mut().pop();
+        });
+    }
+}
+
 /// Recursive Bezier clipping core.
 ///
 /// `swapped` records whether `a` is the second input curve, so hits and
@@ -577,6 +620,8 @@ fn bezier_clip_recurse(
     depth: usize,
     out: &mut ClipOutput,
 ) {
+    #[cfg(test)]
+    let _frame = RecurseFrame::enter(depth);
     let tolerance = out.tolerance;
     let (Some(sub_a), Some(sub_b)) = (SubSegment::new(a), SubSegment::new(b)) else {
         return;
@@ -1104,6 +1149,9 @@ fn merge_overlaps(overlaps: &mut Vec<CurveCurveOverlap>, curve1: &NurbsCurve, to
 
     *overlaps = merged;
 }
+
+#[cfg(test)]
+mod mutation_oracle_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
