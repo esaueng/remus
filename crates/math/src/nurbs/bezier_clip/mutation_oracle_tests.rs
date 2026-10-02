@@ -495,6 +495,10 @@ fn newton_refine_keeps_the_start_on_parallel_tangents() {
     let hit = newton_refine(&a, &b, 0.3, 0.3, 0.2).expect("within");
     assert_eq!((hit.u1, hit.u2), (0.3, 0.3));
     assert!(newton_refine(&a, &b, 0.3, 0.3, 0.05).is_none());
+    // A collapsed curve has no tangent at all (j11 = 0): no step either.
+    let dot = line(p(1.0, 0.1, 0.0), p(1.0, 0.1, 0.0));
+    let hit = newton_refine(&dot, &a, 0.5, 0.2, 0.25).expect("within");
+    assert_eq!((hit.u1, hit.u2), (0.5, 0.2));
 }
 
 /// Curved crossing: the polish reaches the model-scale floating-point
