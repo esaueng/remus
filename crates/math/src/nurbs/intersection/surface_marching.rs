@@ -314,78 +314,24 @@ fn null_directions(a: f64, b: f64, d: f64, e1: Vec3, e2: Vec3, norm: f64, det: f
     }
     let guard = BRANCH_REL * norm * norm;
     if det < -guard {
-        // Indefinite: two distinct null directions from the quadratic.
-        // Solve stably: if |a| >= |d|, solve for r = beta/alpha, else for
-        // r = alpha/beta, so the leading coefficient is the larger diagonal.
+        // Indefinite: two distinct null directions. With
+        // `root = -(b + sign(b)·sqrt(b² - ad))`, which never cancels, the roots
+        // of `a + 2b·r + d·r² = 0` in `r = beta/alpha` are `a/root` and `root/d`, so
+        // the nulls are `(alpha, beta) = (root, a)` and `(d, root)`: no division,
+        // no zero-diagonal special case, and both vectors are non-zero since
+        // `|root| >= sqrt(disc) > 0`. Dividing by a tiny diagonal instead (the
+        // old solve) lost `-b + sqrt(disc)` to cancellation and returned a
+        // non-null direction for `[[1, 1], [1, 1e-20]]`.
+        let disc = b * b - a * d;
+        if disc <= 0.0 {
+            return Vec::new();
+        }
+        let sq = disc.sqrt();
+        let root = if b >= 0.0 { -(b + sq) } else { sq - b };
         let mut dirs = Vec::with_capacity(2);
-        if a.abs() >= d.abs() {
-            // a r^2? No: a + 2b r + d r^2 = 0 with r = beta/alpha.
-            let disc = b * b - a * d;
-            if disc <= 0.0 {
-                return Vec::new();
-            }
-            let sq = disc.sqrt();
-            for num in [(-b + sq), (-b - sq)] {
-                let den = d;
-                let (alpha, beta) = if den.abs() > 1e-300 {
-                    (den, num)
-                } else {
-                    // d = 0 (e.g. saddle [[0, c],[c, 0]]): roots are
-                    // alpha = 0 and beta = 0 via the swapped solve below;
-                    // this arm only runs when |a| >= |d| = 0, i.e. a != 0.
-                    (1.0, 0.0)
-                };
-                let t = (e1 * alpha + e2 * beta).normalize();
-                if let Ok(t) = t {
-                    dirs.push(t);
-                }
-            }
-            // Handle the d = 0 sub-case explicitly: a alpha^2 + 2b alpha beta
-            // = alpha (a alpha + 2b beta) = 0 gives alpha = 0 and
-            // a alpha + 2b beta = 0. The generic formula above divides by d.
-            // Triggers on d ~= 0 with b != 0 (including the pure saddle
-            // a = d = 0, whose nulls are the two axes).
-            if d.abs() <= 1e-300 && b.abs() > 1e-300 {
-                dirs.clear();
-                if let Ok(t1) = (e1 * 0.0 + e2 * 1.0).normalize() {
-                    dirs.push(t1);
-                }
-                // alpha = -2b, beta = a (from a alpha + 2b beta = 0 with
-                // beta = a): direction (-2b, a); for a = 0 this is the
-                // alpha axis.
-                if let Ok(t2) = (e1 * (-2.0 * b) + e2 * a).normalize() {
-                    dirs.push(t2);
-                }
-            }
-        } else {
-            // d + 2b r + a r^2 = 0 with r = alpha/beta.
-            let disc = b * b - a * d;
-            if disc <= 0.0 {
-                return Vec::new();
-            }
-            let sq = disc.sqrt();
-            for num in [(-b + sq), (-b - sq)] {
-                let den = a;
-                let (alpha, beta) = if den.abs() > 1e-300 {
-                    (num, den)
-                } else {
-                    (0.0, 1.0)
-                };
-                let t = (e1 * alpha + e2 * beta).normalize();
-                if let Ok(t) = t {
-                    dirs.push(t);
-                }
-            }
-            // Symmetric a = 0 sub-case: beta (d beta + 2b alpha) = 0 gives
-            // beta = 0 and d beta + 2b alpha = 0 (including a = d = 0).
-            if a.abs() <= 1e-300 && b.abs() > 1e-300 {
-                dirs.clear();
-                if let Ok(t1) = (e1 * 1.0 + e2 * 0.0).normalize() {
-                    dirs.push(t1);
-                }
-                if let Ok(t2) = (e1 * d + e2 * (-2.0 * b)).normalize() {
-                    dirs.push(t2);
-                }
+        for (alpha, beta) in [(root, a), (d, root)] {
+            if let Ok(t) = (e1 * alpha + e2 * beta).normalize() {
+                dirs.push(t);
             }
         }
         // Deterministic order: sort by (x, y, z) so swapped parameters and
