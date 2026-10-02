@@ -1038,3 +1038,85 @@ fn march_landing_exactly_on_a_crossing_keeps_its_branch() {
         "trace must span the line: {bottom}..{top}"
     );
 }
+
+/// A one-point trace has no polyline tangent, so the branch scan falls back
+/// to `±(n1 × n2)`. Half of `z = 0.001·x·y` (`y ∈ [0, 1]`, crossing on the
+/// `v = 0` edge) against `z = 0`: marching toward the edge clamps at the
+/// 0.1% margin and stops after one point, a near-crossing at `y = 0.001`.
+/// The fallback is `±y` there, so the transverse branch is the `x` line on
+/// both sides and nothing is seeded back along `x = 0`. The quarter-turned
+/// copy puts the same geometry on `z` so every component of the fallback is
+/// exercised.
+#[test]
+fn one_point_trace_scans_with_the_normal_cross_fallback() {
+    let c = 0.001;
+    let tol = 1e-7;
+    for rotated in [false, true] {
+        let place: fn(Point3) -> Point3 = if rotated { rot90x } else { identity };
+        let half = bilinear(
+            [
+                [
+                    place(Point3::new(-1.0, 0.0, 0.0)),
+                    place(Point3::new(-1.0, 1.0, -c)),
+                ],
+                [
+                    place(Point3::new(1.0, 0.0, 0.0)),
+                    place(Point3::new(1.0, 1.0, c)),
+                ],
+            ],
+            (0.0, 1.0),
+            (0.0, 1.0),
+        );
+        let flat = bilinear(
+            [
+                [
+                    place(Point3::new(-1.0, -1.0, 0.0)),
+                    place(Point3::new(-1.0, 1.0, 0.0)),
+                ],
+                [
+                    place(Point3::new(1.0, -1.0, 0.0)),
+                    place(Point3::new(1.0, 1.0, 0.0)),
+                ],
+            ],
+            (0.0, 1.0),
+            (0.0, 1.0),
+        );
+        let seed = refine_ssi_point(&half, &flat, 0.5, 0.02, 0.5, 0.51, tol).unwrap();
+        let mut one_point = 0;
+        for forward in [true, false] {
+            let (traced, branches) = march_direction_with_branches(
+                &half,
+                &flat,
+                &seed,
+                forward,
+                0.05,
+                tol,
+                &OperationContext::new(),
+                &mut SsiScratch::new(),
+            )
+            .unwrap();
+            if traced.len() != 1 {
+                continue;
+            }
+            one_point += 1;
+            assert_eq!(branches.len(), 2, "{branches:?}");
+            for b in &branches {
+                // Back in the unrotated frame: x is the transverse line.
+                let local = if rotated {
+                    Point3::new(b.point.x(), b.point.z(), -b.point.y())
+                } else {
+                    b.point
+                };
+                assert!(close(local.x().abs(), 0.05, 1e-9), "{local:?}");
+                assert!(local.y().abs() < 2e-3, "{local:?}");
+                assert!((half.evaluate(b.param1.0, b.param1.1) - b.point).length() <= tol);
+                assert!((flat.evaluate(b.param2.0, b.param2.1) - b.point).length() <= tol);
+            }
+            assert!(
+                branches[0].point.x() * branches[1].point.x() < 0.0,
+                "{branches:?}"
+            );
+        }
+        assert_eq!(one_point, 1, "fixture must stop after one point once");
+    }
+}
