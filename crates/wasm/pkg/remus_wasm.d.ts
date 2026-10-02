@@ -1594,6 +1594,21 @@ export class BrepKernel {
      */
     extrudeDetailed(face: number, dir_x: number, dir_y: number, dir_z: number, distance: number): SolidOperationDetailedResult;
     /**
+     * Extrusion journaled as one construction-derived face, edge and vertex
+     * evolution entry (kind `extrude`).
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+     * result face, edge and vertex as `modified` or `generated` (both caps
+     * `modified` from the profile face, every side wall `generated` from
+     * it, shared boundary entities `modified` into themselves, translated
+     * copies `modified` from their source, longitudinal edges `generated`
+     * from the profile face), plus a `completeness` report (`accounted`,
+     * `resolved`, and per-kind `omitted`/`phantom`/`unresolved` lists)
+     * checked against the actual result. Nothing is deleted; the qualified
+     * profile classes leave nothing unresolved.
+     */
+    extrudeJournaled(face: number, dir_x: number, dir_y: number, dir_z: number, distance: number): string;
+    /**
      * Compute the area of a single face.
      *
      * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
@@ -2354,9 +2369,14 @@ export class BrepKernel {
      */
     getVertexPosition(vertex: number): Float64Array;
     /**
-     * Get the edge handles of a wire.
+     * Get the edge handles of a wire in wire traversal order.
      *
-     * Returns an array of unique edge handles (`u32[]`).
+     * Returns one entry per use in stored order (`u32[]`). When edge handles
+     * are distinct, consecutive entries connect head-to-tail in their
+     * `isEdgeForwardInWire` directions, and the last closes back on the
+     * first on a closed wire. A seam edge used twice appears twice
+     * (cylinder lateral). Its per-use directions cannot be recovered from
+     * `isEdgeForwardInWire`, which reports only the first use.
      *
      * # Errors
      *
@@ -2514,6 +2534,10 @@ export class BrepKernel {
      * Check if an edge is forward-oriented in a given wire.
      *
      * Returns `true` if the edge is forward in the wire, `false` if reversed.
+     * Reports the FIRST use of `edge` in the wire: an edge used twice in one
+     * wire (a seam edge on a cylinder lateral, forward then reversed) reads
+     * as its first use for both occurrences, so the second use is ambiguous
+     * through this query. Planar faces have no seams.
      */
     isEdgeForwardInWire(edge: number, wire: number): boolean;
     /**

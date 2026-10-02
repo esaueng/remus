@@ -741,3 +741,92 @@ impl StampSet {
         self.values[i]
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod grid_oracle_tests {
+    use super::*;
+    use crate::vec::Point3;
+
+    #[test]
+    fn cell_keys_are_hand_computed_quotients() {
+        // width 0.5 (power of two): point/width exact, floor is the true cell.
+        // (1.5/0.5=3, -0.5/0.5=-1, 3.25/0.5=6.5→6).
+        assert_eq!(
+            cell_key(Point3::new(1.5, -0.5, 3.25), 0.5),
+            Some((3, -1, 6))
+        );
+        // Negative exact quotient: -1.0/0.5=-2 exactly.
+        assert_eq!(cell_key(Point3::new(-1.0, 0.0, 0.0), 0.5), Some((-2, 0, 0)));
+        // Origin maps to the origin cell, not (1,1,1).
+        assert_eq!(cell_key(Point3::new(0.0, 0.0, 0.0), 0.5), Some((0, 0, 0)));
+        // A far cell distinguishes the constant mutant: (10.0,20.0,30.0)/0.5=(20,40,60).
+        assert_eq!(
+            cell_key(Point3::new(10.0, 20.0, 30.0), 0.5),
+            Some((20, 40, 60))
+        );
+        // Non-finite coordinates never connect.
+        assert_eq!(cell_key(Point3::new(f64::NAN, 0.0, 0.0), 0.5), None);
+        assert_eq!(cell_key(Point3::new(f64::INFINITY, 0.0, 0.0), 0.5), None);
+    }
+
+    #[test]
+    fn ring_zero_is_the_home_cell_alone() {
+        let cells = ChainGrid::ring_cells((5, -3, 7), 0);
+        assert_eq!(cells, vec![(5, -3, 7)]);
+    }
+
+    #[test]
+    fn ring_one_has_26_cells_at_chebyshev_distance_one() {
+        let cells = ChainGrid::ring_cells((0, 0, 0), 1);
+        // 3^3 - 1^3 = 26.
+        assert_eq!(cells.len(), 26);
+        for c in &cells {
+            let d = (c.0.abs()).max(c.1.abs()).max(c.2.abs());
+            assert_eq!(d, 1, "cell {c:?} not at distance 1");
+        }
+        // Hand-picked members: face, edge, and corner of the shell.
+        assert!(cells.contains(&(1, 0, 0)));
+        assert!(cells.contains(&(-1, 1, 0)));
+        assert!(cells.contains(&(1, 1, 1)));
+        // Home itself is not on its own ring.
+        assert!(!cells.contains(&(0, 0, 0)));
+    }
+
+    #[test]
+    fn ring_two_has_98_cells() {
+        // 5^3 - 3^3 = 125 - 27 = 98.
+        let cells = ChainGrid::ring_cells((0, 0, 0), 2);
+        assert_eq!(cells.len(), 98);
+        for c in &cells {
+            let d = (c.0.abs()).max(c.1.abs()).max(c.2.abs());
+            assert_eq!(d, 2, "cell {c:?} not at distance 2");
+        }
+    }
+
+    #[test]
+    fn neighborhood_is_27_distinct_cells() {
+        let (keys, count) = ChainGrid::neighborhood((0, 0, 0));
+        assert_eq!(count, 27);
+        assert!(keys[..count].contains(&(0, 0, 0)));
+        assert!(keys[..count].contains(&(1, 1, 1)));
+        assert!(keys[..count].contains(&(-1, -1, -1)));
+        let mut seen = std::collections::HashSet::new();
+        for k in &keys[..count] {
+            assert!(seen.insert(*k), "duplicate cell {k:?}");
+        }
+    }
+
+    #[test]
+    fn stamp_epochs_advance_and_retire() {
+        let mut stamps = StampSet::new(4);
+        let e1 = stamps.next_epoch();
+        let e2 = stamps.next_epoch();
+        // Epochs advance by one: the constant-1 mutant returns 1 twice.
+        assert_eq!((e1, e2), (1, 2));
+        stamps.mark(0, e1, 7);
+        assert!(stamps.is_marked(0, e1));
+        assert!(!stamps.is_marked(0, e2));
+        assert_eq!(stamps.value(0, e1), 7);
+    }
+}

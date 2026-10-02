@@ -1160,18 +1160,94 @@ fn fillet_group(
     })
 }
 
-/// Which of `edges` no longer name a manifold edge of `solid`.
-fn stale_edges(
+type FeatureSeedGeometry =
+    std::collections::HashMap<usize, (remus_math::vec::Point3, remus_math::vec::Point3, u8)>;
+
+fn remap_feature_group(
     topo: &Topology,
-    solid: SolidId,
-    edges: &[EdgeId],
+    current: SolidId,
+    group: &[EdgeId],
+    seed_geom: &FeatureSeedGeometry,
 ) -> Result<Vec<EdgeId>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
-    Ok(edges
+    let tol = remus_math::tolerance::Tolerance::new();
+    let adjacency = topo.build_adjacency(current)?;
+    let live = |eid: EdgeId| adjacency.faces_for_edge(eid).len() == 2;
+    let mut remapped = Vec::with_capacity(group.len());
+    let mut unresolvable = Vec::new();
+    for &eid in group {
+        if live(eid) {
+            remapped.push(eid);
+            continue;
+        }
+        let Some((s, e, tag)) = seed_geom.get(&eid.index()) else {
+            unresolvable.push(eid);
+            continue;
+        };
+        // Endpoints certify a line segment; they cannot certify a curved span.
+        if *tag != 0 {
+            unresolvable.push(eid);
+            continue;
+        }
+        let mut candidates = Vec::new();
+        for ceid in remus_topology::explorer::solid_edges(topo, current)? {
+            if !live(ceid) {
+                continue;
+            }
+            let Ok(edge) = topo.edge(ceid) else {
+                continue;
+            };
+            let edge_tag = match edge.curve() {
+                EdgeCurve::Line => 0,
+                EdgeCurve::Circle(_) => 1,
+                EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::NurbsCurve(_) => 2,
+            };
+            if edge_tag != *tag {
+                continue;
+            }
+            let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                continue;
+            };
+            let (a, b) = (a.point(), b.point());
+            let same = |p: remus_math::vec::Point3, q: remus_math::vec::Point3| {
+                (p - q).length() <= tol.linear * 100.0
+            };
+            if (same(a, *s) && same(b, *e)) || (same(a, *e) && same(b, *s)) {
+                candidates.push(ceid);
+            }
+        }
+        if candidates.len() == 1 {
+            remapped.push(candidates[0]);
+        } else {
+            unresolvable.push(eid);
+        }
+    }
+    if !unresolvable.is_empty() {
+        return Err(OperationsError::Blend(BlendError::EdgesNotBlended {
+            edges: unresolvable,
+            reason: "an earlier feature in the same selection rebuilt the faces \
+                     carrying these edges, so they no longer name anything to blend"
+                .into(),
+        }));
+    }
+    let mut counts = std::collections::HashMap::new();
+    for mapped in &remapped {
+        *counts.entry(mapped.index()).or_insert(0_usize) += 1;
+    }
+    let colliding: Vec<_> = group
         .iter()
-        .copied()
-        .filter(|&e| adjacency.faces_for_edge(e).len() != 2)
-        .collect())
+        .zip(&remapped)
+        .filter_map(|(&seed, mapped)| (counts[&mapped.index()] > 1).then_some(seed))
+        .collect();
+    if !colliding.is_empty() {
+        return Err(OperationsError::Blend(BlendError::EdgesNotBlended {
+            edges: colliding,
+            reason: "multiple selected edges resolve to the same rebuilt edge".into(),
+        }));
+    }
+    Ok(remapped)
 }
 
 /// Fillet a selection that splits into features which cannot reach each other,
@@ -1185,12 +1261,16 @@ fn stale_edges(
 /// cap it rebuilds, so a bore rim that has not been blended yet loses its edge
 /// identity when the cap above it is rebuilt; the rim assembler, by contrast,
 /// carries the cap's other loops through verbatim, so straight edges named for
-/// a later feature survive it. Features the planar path cannot take therefore
-/// go first.
+/// a later feature survive it — and any that do not re-resolve by position
+/// (see `remap_feature_group`). Features the planar path cannot take therefore
+/// go first, and refusals name the caller's edges.
 ///
-/// The identity assumption is checked rather than trusted: a feature whose
-/// edges did not survive an earlier one is reported as
-/// [`BlendError::EdgesNotBlended`] naming them, never dropped. Failure anywhere
+/// The identity assumption is checked rather than trusted, then repaired:
+/// a feature whose edges did not survive an earlier one is re-resolved by
+/// position (unique straight-segment match) against the current
+/// solid, because rebuilds re-mint edges at identical positions. Only an
+/// edge with no unique live counterpart is reported as
+/// [`BlendError::EdgesNotBlended`] naming it, never dropped. Failure anywhere
 /// aborts the whole call, and the caller's `transactional` wrapper puts the
 /// input back exactly as it was.
 fn fillet_by_feature(
@@ -1200,25 +1280,66 @@ fn fillet_by_feature(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let mut ordered: Vec<(bool, &[EdgeId])> = Vec::with_capacity(groups.len());
+    // Seed geometry for position remapping: rebuilt edges keep identical
+    // positions; only straight segments can be certified from endpoints.
+    let mut seed_geom: std::collections::HashMap<
+        usize,
+        (remus_math::vec::Point3, remus_math::vec::Point3, u8),
+    > = std::collections::HashMap::new();
+    for &eid in edges {
+        let Ok(edge) = topo.edge(eid) else {
+            continue;
+        };
+        let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            continue;
+        };
+        let tag = match edge.curve() {
+            EdgeCurve::Line => 0,
+            EdgeCurve::Circle(_) => 1,
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => 2,
+        };
+        seed_geom.insert(eid.index(), (a.point(), b.point(), tag));
+    }
+    // Merge all planar-line groups into one when non-planar groups exist:
+    // the rolling-ball rebuild closes multi-corner planar selections
+    // (notch/mirror torus patches, balls) in a single call, while piecemeal
+    // planar features re-break analytic sharing across steps (re-minted
+    // spans that no tolerance can merge). Non-planar groups (rims, curved
+    // spines) keep their own engine each. All-planar selections keep today's
+    // piecemeal behavior (the merged set is the whole selection, which
+    // already failed above).
+    let mut planar_merged: Vec<EdgeId> = Vec::new();
+    let mut rest: Vec<&[EdgeId]> = Vec::new();
     for group in groups {
-        ordered.push((is_planar_line_blend(topo, solid, group)?, group.as_slice()));
+        if is_planar_line_blend(topo, solid, group)? {
+            planar_merged.extend(group.iter().copied());
+        } else {
+            rest.push(group.as_slice());
+        }
+    }
+    let owned_merged;
+    let groups: Vec<&[EdgeId]> = if planar_merged.is_empty() || rest.is_empty() {
+        groups.iter().map(Vec::as_slice).collect()
+    } else {
+        owned_merged = planar_merged;
+        std::iter::once(owned_merged.as_slice())
+            .chain(rest)
+            .collect()
+    };
+    let mut ordered: Vec<(bool, &[EdgeId])> = Vec::with_capacity(groups.len());
+    for &group in &groups {
+        ordered.push((is_planar_line_blend(topo, solid, group)?, group));
     }
     ordered.sort_by_key(|&(planar, _)| planar);
 
     let mut current = solid;
     let mut engine: Option<BlendEngine> = None;
-    for (_, group) in ordered {
-        let stale = stale_edges(topo, current, group)?;
-        if !stale.is_empty() {
-            return Err(OperationsError::Blend(BlendError::EdgesNotBlended {
-                edges: stale,
-                reason: "an earlier feature in the same selection rebuilt the faces \
-                         carrying these edges, so they no longer name anything to blend"
-                    .into(),
-            }));
-        }
-        let step = fillet_group(topo, current, group, radius)?;
+    for (_, group) in &ordered {
+        let group = remap_feature_group(topo, current, group, &seed_geom)?;
+        let step = fillet_group(topo, current, &group, radius)?;
         engine = Some(match engine {
             Some(seen) if seen != step.engine => BlendEngine::Mixed,
             Some(seen) => seen,
@@ -1720,6 +1841,86 @@ mod tests {
     use remus_topology::vertex::Vertex;
 
     use super::*;
+
+    #[test]
+    fn feature_remap_refuses_a_different_circle_with_the_same_endpoint() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 3.0, 10.0).unwrap();
+        let rim = remus_topology::explorer::solid_edges(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&id| {
+                let edge = topo.edge(id).unwrap();
+                matches!(edge.curve(), EdgeCurve::Circle(_)) && edge.start() == edge.end()
+            })
+            .unwrap();
+        let vertex = topo.edge(rim).unwrap().start();
+        let point = topo.vertex(vertex).unwrap().point();
+        let curve = remus_math::curves::Circle3D::new(
+            point - remus_math::vec::Vec3::new(6.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+        )
+        .unwrap();
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(curve));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let stale = topo.add_edge(edge);
+        let seeds = FeatureSeedGeometry::from([(stale.index(), (point, point, 1))]);
+
+        let error = remap_feature_group(&topo, solid, &[stale], &seeds).unwrap_err();
+        assert!(matches!(
+            error,
+            OperationsError::Blend(BlendError::EdgesNotBlended { edges, .. })
+                if edges == vec![stale]
+        ));
+        assert_eq!(
+            remap_feature_group(&topo, solid, &[rim], &seeds).unwrap(),
+            vec![rim]
+        );
+    }
+
+    #[test]
+    fn feature_remap_accepts_a_unique_rebuilt_line() {
+        let mut topo = Topology::new();
+        let original = crate::primitives::make_box(&mut topo, 4.0, 5.0, 6.0).unwrap();
+        let current = crate::copy::copy_solid(&mut topo, original).unwrap();
+        let stale = remus_topology::explorer::solid_edges(&topo, original).unwrap()[0];
+        let edge = topo.edge(stale).unwrap();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        let seeds = FeatureSeedGeometry::from([(stale.index(), (start, end, 0))]);
+
+        let remapped = remap_feature_group(&topo, current, &[stale], &seeds).unwrap();
+        assert_eq!(remapped.len(), 1);
+        assert_ne!(remapped[0], stale);
+        assert!(
+            remus_topology::explorer::solid_edges(&topo, current)
+                .unwrap()
+                .contains(&remapped[0])
+        );
+    }
+
+    #[test]
+    fn feature_remap_refuses_two_seeds_claiming_one_rebuilt_line() {
+        let mut topo = Topology::new();
+        let original = crate::primitives::make_box(&mut topo, 4.0, 5.0, 6.0).unwrap();
+        let current = crate::copy::copy_solid(&mut topo, original).unwrap();
+        let first = remus_topology::explorer::solid_edges(&topo, original).unwrap()[0];
+        let edge = topo.edge(first).unwrap().clone();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        let second = topo.add_edge(edge);
+        let seeds = FeatureSeedGeometry::from([
+            (first.index(), (start, end, 0)),
+            (second.index(), (start, end, 0)),
+        ]);
+        let error = remap_feature_group(&topo, current, &[first, second], &seeds).unwrap_err();
+        assert!(matches!(
+            error,
+            OperationsError::Blend(BlendError::EdgesNotBlended { edges, .. })
+                if edges == vec![first, second]
+        ));
+    }
 
     #[test]
     fn analytic_result_uses_one_material_guard_attempt() {

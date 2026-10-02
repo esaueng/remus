@@ -671,6 +671,35 @@ impl BrepKernel {
         }))
     }
 
+    fn extrude_journaled_json(
+        &mut self,
+        face: u32,
+        direction: [f64; 3],
+        distance: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        validate_finite(direction[0], "dir_x").map_err(StructuredWasmError::from)?;
+        validate_finite(direction[1], "dir_y").map_err(StructuredWasmError::from)?;
+        validate_finite(direction[2], "dir_z").map_err(StructuredWasmError::from)?;
+        validate_finite(distance, "distance").map_err(StructuredWasmError::from)?;
+        let face_id = self.resolve_face(face).map_err(StructuredWasmError::from)?;
+        let journaled = journal_ops::extrude_journaled(
+            self.topo_mut(),
+            face_id,
+            remus_math::vec::Vec3::new(direction[0], direction[1], direction[2]),
+            distance,
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(journaled.solid),
+            "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+            "evolution": entity_history_json(
+                &journaled.map,
+                &journaled.boundary,
+                &journaled.completeness,
+            ),
+        }))
+    }
+
     fn journal_summary_json(&self) -> serde_json::Value {
         let entries: Vec<serde_json::Value> = self
             .topo()
@@ -833,6 +862,31 @@ impl BrepKernel {
                 get_f64(args, "distance")
                     .and_then(|distance| self.offset_journaled_json(solid, distance))
             }),
+            // Direction/distance defaults match the legacy `extrude` batch
+            // arm; the shared body adds the direct method's finite-value
+            // checks, so a non-finite batch argument refuses as
+            // `invalid_argument` where the legacy arm forwards it.
+            "extrudeJournaled" => (|| {
+                let face = get_u32(args, "face")?;
+                let direction = ["dx", "dy", "dz"]
+                    .iter()
+                    .zip([0.0, 0.0, 1.0])
+                    .map(|(key, default)| {
+                        args.get(key)
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(default)
+                    })
+                    .collect::<Vec<_>>();
+                let distance = args
+                    .get("distance")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(1.0);
+                self.extrude_journaled_json(
+                    face,
+                    [direction[0], direction[1], direction[2]],
+                    distance,
+                )
+            })(),
             "journalSummary" => Ok(self.journal_summary_json()),
             _ => return None,
         };
@@ -1122,6 +1176,32 @@ impl BrepKernel {
     pub fn offset_journaled_js(&mut self, solid: u32, distance: f64) -> Result<String, JsError> {
         validate_finite(distance, "distance")?;
         self.offset_journaled_json(solid, distance)
+            .map(|v| v.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Extrusion journaled as one construction-derived face, edge and vertex
+    /// evolution entry (kind `extrude`).
+    ///
+    /// Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+    /// result face, edge and vertex as `modified` or `generated` (both caps
+    /// `modified` from the profile face, every side wall `generated` from
+    /// it, shared boundary entities `modified` into themselves, translated
+    /// copies `modified` from their source, longitudinal edges `generated`
+    /// from the profile face), plus a `completeness` report (`accounted`,
+    /// `resolved`, and per-kind `omitted`/`phantom`/`unresolved` lists)
+    /// checked against the actual result. Nothing is deleted; the qualified
+    /// profile classes leave nothing unresolved.
+    #[wasm_bindgen(js_name = "extrudeJournaled")]
+    pub fn extrude_journaled_js(
+        &mut self,
+        face: u32,
+        dir_x: f64,
+        dir_y: f64,
+        dir_z: f64,
+        distance: f64,
+    ) -> Result<String, JsError> {
+        self.extrude_journaled_json(face, [dir_x, dir_y, dir_z], distance)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
     }
@@ -2458,6 +2538,182 @@ mod evolution_contract_tests {
         assert_eq!(batch_entry["kind"], "offset");
         assert_eq!(batch_entry["type"], "evolution");
         assert_eq!(batch_entry["detail"]["events"], 6 + 12 + 8);
+    }
+
+    /// B18: one journaled extrusion carries total face/edge/vertex history
+    /// with direct/batch parity. The expected roles below are built from
+    /// the fixture (a rectangle profile) and live-topology queries — not
+    /// from the implementation's own maps: both caps modified from the
+    /// profile, every side generated from it, shared boundary entities
+    /// modified into themselves, translated copies modified from their
+    /// source, longitudinal edges generated from the profile.
+    #[test]
+    fn extrude_journaled_has_direct_batch_parity_census_and_rollback() {
+        use remus_operations::journal_ops;
+
+        let mut direct = BrepKernel::new();
+        let face = direct.make_rectangle(4.0, 2.0).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(
+            &direct
+                .extrude_journaled_js(face, 0.0, 0.0, 1.0, 3.0)
+                .unwrap(),
+        )
+        .unwrap();
+        let result = u32::try_from(payload["solid"].as_u64().unwrap()).unwrap();
+        assert!((direct.volume(result, 0.01).unwrap() - 24.0).abs() < 1e-9);
+        let evolution = &payload["evolution"];
+        assert_eq!(evolution["origin"], "construction");
+        let completeness = &evolution["completeness"];
+        assert_eq!(completeness["accounted"], true);
+        assert_eq!(completeness["resolved"], true);
+        for kind in ["faces", "edges", "vertices"] {
+            assert_eq!(completeness[kind]["omitted"], serde_json::json!([]));
+            assert_eq!(completeness[kind]["phantom"], serde_json::json!([]));
+            assert_eq!(completeness[kind]["unresolved"], serde_json::json!([]));
+        }
+        // Face roles: two modified caps, four generated sides.
+        let faces = evolution["faces"].as_array().unwrap();
+        assert_eq!(faces.len(), 6);
+        let (modified, generated): (Vec<_>, Vec<_>) =
+            faces.iter().partition(|face| face["event"] == "modified");
+        assert_eq!(modified.len(), 2);
+        assert_eq!(generated.len(), 4);
+        for face in &modified {
+            assert_eq!(face["from"], 0);
+        }
+        for face in &generated {
+            assert_eq!(face["faces"], serde_json::json!([0]));
+        }
+        // Edge roles against the live topology: shared profile edges
+        // modified into themselves, translated copies modified from a
+        // profile edge, longitudinal edges generated from the profile.
+        let profile_edges: std::collections::BTreeSet<u64> =
+            journal_ops::profile_entity_keys(direct.topo(), direct.resolve_face(face).unwrap())
+                .unwrap()
+                .into_iter()
+                .filter(|key| key.kind == remus_topology::journal::EntityKind::Edge)
+                .map(|key| u64::try_from(key.index).unwrap())
+                .collect();
+        let result_edges: Vec<u64> = direct
+            .get_solid_edges(result)
+            .unwrap()
+            .into_iter()
+            .map(u64::from)
+            .collect();
+        assert_eq!(result_edges.len(), 12);
+        let edges = evolution["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 12);
+        let mut kinds = std::collections::BTreeMap::new();
+        for edge in edges {
+            let id = edge["edge"].as_u64().unwrap();
+            assert!(
+                result_edges.contains(&id),
+                "claimed edge {id} must be live on the result"
+            );
+            *kinds
+                .entry(edge["event"].as_str().unwrap().to_string())
+                .or_default() += 1;
+            match edge["event"].as_str().unwrap() {
+                "modified" => {
+                    let from = edge["from"].as_u64().unwrap();
+                    assert!(
+                        profile_edges.contains(&from),
+                        "translated edge {id} must name a profile source"
+                    );
+                    if id != from {
+                        assert!(
+                            !profile_edges.contains(&id),
+                            "translated copy {id} must be a new entity"
+                        );
+                    }
+                }
+                "generated" => {
+                    assert_eq!(edge["faces"], serde_json::json!([0]));
+                }
+                other => panic!("unexpected edge event {other}"),
+            }
+        }
+        assert_eq!(kinds.get("modified"), Some(&8));
+        assert_eq!(kinds.get("generated"), Some(&4));
+        // Vertex roles: shared corners modified into themselves, copies
+        // modified from their source.
+        let vertices = evolution["vertices"].as_array().unwrap();
+        assert_eq!(vertices.len(), 8);
+        for vertex in vertices {
+            assert_eq!(vertex["event"], "modified");
+        }
+        let summary: serde_json::Value = serde_json::from_str(&direct.journal_summary()).unwrap();
+        let entry = summary.as_array().unwrap().last().unwrap();
+        assert_eq!(entry["kind"], "extrude");
+        assert_eq!(entry["type"], "evolution");
+        assert_eq!(entry["detail"]["origin"], "construction");
+        assert_eq!(entry["detail"]["events"], 6 + 12 + 8);
+
+        // The same payload through both batch contracts on twin kernels.
+        for v2 in [false, true] {
+            let mut batch = BrepKernel::new();
+            let batch_face = batch.make_rectangle(4.0, 2.0).unwrap();
+            assert_eq!(batch_face, face);
+            let ops = serde_json::json!([
+                {"op": "extrudeJournaled", "args": {"face": face, "dx": 0.0, "dy": 0.0, "dz": 1.0, "distance": 3.0}},
+            ]);
+            let response = if v2 {
+                batch.execute_batch_v2(&ops.to_string())
+            } else {
+                batch.execute_batch(&ops.to_string())
+            };
+            let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(
+                &parsed[0]["ok"], &payload,
+                "extrudeJournaled batch parity (v2={v2})"
+            );
+            let batch_solid = u32::try_from(parsed[0]["ok"]["solid"].as_u64().unwrap()).unwrap();
+            assert!((batch.volume(batch_solid, 0.01).unwrap() - 24.0).abs() < 1e-9);
+        }
+
+        // Refusals roll back and read identically on every envelope: zero
+        // distance refuses with no journal entry and live counts unchanged.
+        let before_summary = direct.journal_summary();
+        let before_counts = (
+            direct.topo().num_vertices(),
+            direct.topo().num_edges(),
+            direct.topo().num_faces(),
+            direct.topo().num_solids(),
+        );
+        let direct_error = direct
+            .extrude_journaled_json(face, [0.0, 0.0, 1.0], 0.0)
+            .unwrap_err();
+        assert!(
+            direct_error.message().contains("zero"),
+            "zero distance must refuse: {}",
+            direct_error.message()
+        );
+        assert_eq!(direct.journal_summary(), before_summary);
+        assert_eq!(
+            (
+                direct.topo().num_vertices(),
+                direct.topo().num_edges(),
+                direct.topo().num_faces(),
+                direct.topo().num_solids(),
+            ),
+            before_counts
+        );
+        for v2 in [false, true] {
+            let ops = serde_json::json!([
+                {"op": "extrudeJournaled", "args": {"face": face, "dx": 0.0, "dy": 0.0, "dz": 1.0, "distance": 0.0}},
+            ]);
+            let response = if v2 {
+                direct.execute_batch_v2(&ops.to_string())
+            } else {
+                direct.execute_batch(&ops.to_string())
+            };
+            let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert!(
+                parsed[0].get("error").is_some(),
+                "refused batch extrusion must error (v2={v2}): {parsed}"
+            );
+            assert_eq!(direct.journal_summary(), before_summary);
+        }
     }
 
     /// B18: a torus offset's two seams share one face-use multiset, so

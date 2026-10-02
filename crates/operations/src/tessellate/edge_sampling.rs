@@ -316,6 +316,48 @@ pub(super) fn sample_edge(
     angular_tol: f64,
     circle_floor: bool,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
+    sample_edge_with_params(topo, edge, deflection, angular_tol, circle_floor)
+        .map(|(points, _)| points)
+}
+
+/// Uniform parameter steps over `[t0, t1]` for `n` samples.
+///
+/// Shared by the sampler and the boundary plan's density-synchronization
+/// stages so resampled chains carry the same authoritative parameters the
+/// sampler would have produced directly.
+pub(super) fn uniform_edge_params(t0: f64, t1: f64, n: usize) -> Vec<Option<f64>> {
+    (0..n)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64 / (n.max(2) - 1) as f64;
+            Some((t1 - t0).mul_add(f, t0))
+        })
+        .collect()
+}
+
+/// Sample an edge curve with authoritative parameters retained per sample.
+///
+/// Returns the 3D polyline (identical to [`sample_edge`]) plus the curve
+/// parameter of each sample, parallel to the points. Lines report arclength
+/// from the start vertex (`0.0` to length, matching [`edge_param_span`]);
+/// curved edges report their stored authoritative parameter, including the
+/// wrapped full-period walk of a closed NURBS edge. Endpoint samples carry
+/// the domain ends even though their positions are overwritten with the
+/// exact vertex positions. The shared-boundary plan (PERF-D03) retains these
+/// so every incident face can observe the same subdivision with its curve
+/// identity intact; geometrically inserted refinements (seam crossings,
+/// contact subdivisions, CDT Steiner points) carry `None`.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`sample_edge`].
+pub(super) fn sample_edge_with_params(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    deflection: f64,
+    angular_tol: f64,
+    circle_floor: bool,
+) -> Result<(Vec<Point3>, Vec<Option<f64>>), crate::OperationsError> {
     use remus_geometry::sampling::sample_uniform;
     use remus_topology::edge::EdgeCurve;
 
@@ -403,6 +445,60 @@ pub(super) fn sample_edge(
         }
     };
 
+    // Authoritative parameters parallel to the polyline, derived from the
+    // same spans the points above were sampled over. Endpoint positions are
+    // overwritten with exact vertices below; their parameters stay pinned to
+    // the domain ends.
+    let mut params: Vec<Option<f64>> = match edge.curve() {
+        EdgeCurve::Line => {
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let length = (ep - sp).length();
+            vec![Some(0.0), Some(length)]
+        }
+        EdgeCurve::Circle(_) => {
+            let (t_start, t_end) = circle_param_range(edge)?;
+            uniform_edge_params(t_start, t_end, points.len())
+        }
+        EdgeCurve::Ellipse(_) => {
+            let (t_start, t_end) = edge_param_span(topo, edge)?;
+            uniform_edge_params(t_start, t_end, points.len())
+        }
+        EdgeCurve::Hyperbola(_) => {
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "hyperbola sampling")?;
+            uniform_edge_params(t0, t1, points.len())
+        }
+        EdgeCurve::Parabola(_) => {
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "parabola sampling")?;
+            uniform_edge_params(t0, t1, points.len())
+        }
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "NURBS sampling")?;
+            let (u0, u1) = nurbs.domain();
+            let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
+            if !is_subspan && edge.is_closed() {
+                let sp = topo.vertex(edge.start())?.point();
+                let width = u1 - u0;
+                let t_v = remus_math::nurbs::projection::project_point_to_curve(nurbs, sp, 1e-9)
+                    .map(|proj| proj.parameter)
+                    .unwrap_or(t0);
+                (0..points.len())
+                    .map(|i| {
+                        #[allow(clippy::cast_precision_loss)]
+                        let offset = width * (i as f64) / ((points.len() - 1).max(1) as f64);
+                        Some(u0 + (t_v - u0 + offset).rem_euclid(width.max(1e-300)))
+                    })
+                    .collect()
+            } else {
+                let mut ps = uniform_edge_params(t0, t1, points.len());
+                if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs).unwrap_or(false) {
+                    ps.reverse();
+                }
+                ps
+            }
+        }
+    };
+
     if !matches!(edge.curve(), EdgeCurve::Line) {
         if let Some(first) = points.first_mut() {
             *first = topo.vertex(edge.start())?.point();
@@ -411,8 +507,13 @@ pub(super) fn sample_edge(
             *last = topo.vertex(edge.end())?.point();
         }
     }
+    debug_assert_eq!(points.len(), params.len());
+    params.truncate(points.len());
+    while params.len() < points.len() {
+        params.push(None);
+    }
 
-    Ok(points)
+    Ok((points, params))
 }
 
 /// Whether an open NURBS edge's stored curve runs from the edge's END vertex
