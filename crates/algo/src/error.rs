@@ -11,6 +11,17 @@ pub enum AlgoError {
     #[error("math error: {0}")]
     Math(#[from] remus_math::MathError),
 
+    /// A deterministic operation work budget would be exceeded.
+    #[error("{resource} needs {actual} work items; limit is {limit}")]
+    ResourceLimitExceeded {
+        /// Stable name of the bounded resource.
+        resource: &'static str,
+        /// Maximum permitted work items.
+        limit: usize,
+        /// Required work items, saturated on arithmetic overflow.
+        actual: usize,
+    },
+
     /// Intersection computation failed.
     #[error("intersection failed: {0}")]
     IntersectionFailed(String),
@@ -110,6 +121,18 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
             // of which layer reports it.
             Self::Topology(inner) => inner.diagnostic(),
             Self::Math(inner) => inner.diagnostic(),
+            Self::ResourceLimitExceeded {
+                resource,
+                limit,
+                actual,
+            } => Diagnostic::new(
+                FailureCategory::ResourceLimit,
+                "resource_limit_exceeded",
+                self.to_string(),
+            )
+            .with_detail("resource", *resource)
+            .with_detail("limit", *limit)
+            .with_detail("actual", *actual),
             // Transitional broad codes: these variants carry only prose, so
             // they classify as `internal` until typed context exists
             // (registry rules in `remus_math::diagnostic`).
@@ -185,6 +208,15 @@ mod diagnostic_registry_tests {
 
     #[test]
     fn algo_error_registry_is_pinned() {
+        let d = AlgoError::ResourceLimitExceeded {
+            resource: "GFA vertex pairs",
+            limit: 255,
+            actual: 256,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::ResourceLimit);
+        assert_eq!(d.code(), "resource_limit_exceeded");
+
         let d = AlgoError::UnsupportedCurve {
             variant: "hyperbola",
         }

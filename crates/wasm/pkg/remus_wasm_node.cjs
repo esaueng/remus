@@ -3394,7 +3394,8 @@ class BrepKernel {
      *
      * # Errors
      *
-     * Returns an error if the solid handle or its topology is invalid.
+     * Returns an error if the solid handle or its topology is invalid, or
+     * the shared native face, topology, sampling, or work budget is exceeded.
      * @param {number} solid
      * @returns {string}
      */

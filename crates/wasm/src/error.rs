@@ -36,6 +36,10 @@ pub enum WasmError {
         reason: String,
     },
 
+    /// An error from a constraint solve or rank analysis.
+    #[error(transparent)]
+    Sketch(#[from] remus_sketch::SketchError),
+
     /// An error from a modeling operation.
     #[error(transparent)]
     Operations(#[from] remus_operations::OperationsError),
@@ -352,6 +356,14 @@ impl From<WasmError> for StructuredWasmError {
             WasmError::Topology(error) => Self::from(error),
             WasmError::Math(error) => Self::from(error),
             WasmError::Check(error) => Self::from(error),
+            WasmError::Sketch(error) => match error {
+                remus_sketch::SketchError::ResourceLimitExceeded {
+                    resource,
+                    limit,
+                    actual,
+                } => Self::resource_limit(message, resource, limit, actual),
+                _ => Self::invalid_argument(message, None),
+            },
         }
     }
 }
@@ -449,6 +461,11 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 Self::invalid_argument(message, None)
             }
             remus_operations::OperationsError::Topology(error) => Self::from(error),
+            remus_operations::OperationsError::Heal(error) => {
+                let mut structured = Self::from(error);
+                structured.message = message;
+                structured
+            }
             remus_operations::OperationsError::Math(error) => Self::from(error),
             remus_operations::OperationsError::Algo(remus_algo::error::AlgoError::Math(error)) => {
                 Self::from(error)
@@ -730,12 +747,29 @@ impl From<remus_geometry::error::GeomError> for StructuredWasmError {
 
 impl From<remus_heal::HealError> for StructuredWasmError {
     fn from(error: remus_heal::HealError) -> Self {
-        Self::operation_failed(error.to_string())
+        let message = error.to_string();
+        match error {
+            remus_heal::HealError::ResourceLimitExceeded {
+                resource,
+                limit,
+                actual,
+            } => Self::resource_limit(message, resource, limit, actual),
+            _ => Self::operation_failed(message),
+        }
     }
 }
 
 impl From<remus_algo::error::AlgoError> for StructuredWasmError {
     fn from(error: remus_algo::error::AlgoError) -> Self {
+        if let remus_algo::error::AlgoError::ResourceLimitExceeded {
+            resource,
+            limit,
+            actual,
+        } = &error
+        {
+            return Self::resource_limit(error.to_string(), resource, *limit, *actual)
+                .with_kernel_diagnostic(&error);
+        }
         let diagnostic = error.diagnostic();
         let mut structured = Self::operation_failed(error.to_string());
         structured.category = diagnostic.category().as_str();
@@ -928,6 +962,67 @@ mod work_limit_tests {
         validate_face_pair_count, validate_move_faces_work, validate_work_count,
         validate_work_product,
     };
+
+    #[test]
+    fn healing_resource_refusal_preserves_classification() {
+        let refusal = || remus_heal::HealError::ResourceLimitExceeded {
+            resource: "duplicate_face_work",
+            limit: 50_000_000,
+            actual: 50_000_001,
+        };
+        for structured in [
+            super::StructuredWasmError::from(refusal()),
+            super::StructuredWasmError::from(remus_operations::OperationsError::Heal(refusal())),
+        ] {
+            assert_eq!(structured.code, WasmErrorCode::ResourceLimitExceeded);
+            assert_eq!(
+                structured.category,
+                remus_math::diagnostic::FailureCategory::ResourceLimit.as_str()
+            );
+            assert_eq!(structured.details["resource"], "duplicate_face_work");
+            assert_eq!(structured.details["limit"], 50_000_000);
+            assert_eq!(structured.details["actual"], 50_000_001);
+        }
+    }
+
+    #[test]
+    fn ordinary_healing_errors_keep_the_wrapped_message() {
+        let error = remus_operations::OperationsError::Heal(remus_heal::HealError::FixFailed(
+            "unsupported carrier".into(),
+        ));
+        let message = error.to_string();
+        let structured = super::StructuredWasmError::from(error);
+        assert_eq!(structured.code, WasmErrorCode::OperationFailed);
+        assert_eq!(structured.message, message);
+    }
+
+    #[test]
+    fn gfa_work_refusal_preserves_resource_details_through_operations() {
+        let error = remus_operations::OperationsError::Algo(
+            remus_algo::error::AlgoError::ResourceLimitExceeded {
+                resource: "GFA vertex pairs",
+                limit: 255,
+                actual: 256,
+            },
+        );
+        let structured = super::StructuredWasmError::from(error);
+        assert_eq!(structured.code, WasmErrorCode::ResourceLimitExceeded);
+        assert_eq!(structured.category, "resource_limit");
+        assert_eq!(structured.details["resource"], "GFA vertex pairs");
+        assert_eq!(structured.details["limit"], 255);
+        assert_eq!(structured.details["actual"], 256);
+        assert_eq!(structured.details["kernelCode"], "resource_limit_exceeded");
+        let (code, category, details) = structured.into_direct_parts();
+        assert_eq!(code, "resource_limit_exceeded");
+        assert_eq!(category, "resource_limit");
+        assert_eq!(details["actual"], 256);
+
+        let control = super::StructuredWasmError::from(
+            remus_algo::error::AlgoError::AssemblyFailed("no faces selected".into()),
+        );
+        assert_eq!(control.code, WasmErrorCode::OperationFailed);
+        assert_eq!(control.details["kernelCode"], "assembly_failed");
+    }
 
     #[test]
     fn direct_fallback_codes_match_batch_v2_serialization() {

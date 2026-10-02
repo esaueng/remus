@@ -579,12 +579,10 @@ impl BrepKernel {
         }
         let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let sk = self.gcs_sketch_mut(sketch)?;
-        let result =
-            sk.sys
-                .solve(max_iterations, tolerance)
-                .map_err(|e| WasmError::InvalidInput {
-                    reason: format!("solve: {e}"),
-                })?;
+        let result = sk
+            .sys
+            .solve(max_iterations, tolerance)
+            .map_err(WasmError::from)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(crate::types::GcsSolveResult {
             converged: result.converged,
@@ -623,9 +621,7 @@ impl BrepKernel {
         let diag = sk
             .sys
             .solve_detailed(max_iterations, tolerance)
-            .map_err(|e| WasmError::InvalidInput {
-                reason: format!("solveDetailed: {e}"),
-            })?;
+            .map_err(WasmError::from)?;
 
         // Only caller-added constraints get a handle. Internal ones are
         // summarised separately by `internal_max_residual`, never mapped onto
@@ -667,7 +663,7 @@ impl BrepKernel {
         sketch: u32,
     ) -> Result<crate::types::GcsDofResult, WasmError> {
         let sk = self.gcs_sketch_mut(sketch)?;
-        let dof = sk.sys.dof();
+        let dof = sk.sys.dof()?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(crate::types::GcsDofResult {
             dof: dof.dof as u32,
@@ -915,6 +911,57 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use crate::kernel::BrepKernel;
+
+    #[test]
+    fn gcs_dense_budget_direct_and_batch_refuse_atomically() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        k.gcs_sketches[s as usize].sys =
+            remus_sketch::GcsSystem::with_limits(remus_sketch::GcsLimits {
+                max_dense_bytes: 1,
+                ..remus_sketch::GcsLimits::default()
+            });
+        let p = k.gcs_add_point_impl(s, 7.0, 9.0, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        for error in [
+            k.gcs_solve_impl(s, 0, 1e-10).unwrap_err(),
+            k.gcs_solve_detailed_impl(s, 100, 1e-10).unwrap_err(),
+            k.gcs_dof_impl(s).unwrap_err(),
+        ] {
+            assert!(matches!(
+                error,
+                crate::error::WasmError::Sketch(
+                    remus_sketch::SketchError::ResourceLimitExceeded { .. }
+                )
+            ));
+        }
+        let batch = serde_json::json!([
+            {"op":"gcsSolve", "args":{"sketch":s,"maxIterations":0,"tolerance":1e-10}},
+            {"op":"gcsSolveDetailed", "args":{"sketch":s,"maxIterations":100,"tolerance":1e-10}},
+            {"op":"gcsDof", "args":{"sketch":s}}
+        ])
+        .to_string();
+        let legacy: serde_json::Value = serde_json::from_str(&k.execute_batch(&batch)).unwrap();
+        for result in legacy.as_array().unwrap() {
+            assert!(
+                result["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("GCS resource limit exceeded")
+            );
+        }
+        let response: serde_json::Value =
+            serde_json::from_str(&k.execute_batch_v2(&batch)).unwrap();
+        for result in response.as_array().unwrap() {
+            assert_eq!(result["error"]["code"], "resource_limit_exceeded");
+            assert_eq!(result["error"]["details"]["resource"], "gcs_dense_bytes");
+        }
+        assert_eq!(
+            k.gcs_point_position_impl(s, p).unwrap().map(f64::to_bits),
+            [7.0_f64.to_bits(), 9.0_f64.to_bits()]
+        );
+    }
 
     /// Point-free line–circle tangency: the line's endpoints move until the
     /// center's distance to the line equals the radius, with no shared

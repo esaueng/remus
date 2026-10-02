@@ -117,7 +117,15 @@ impl<'a> PaveFiller<'a> {
         self.init_pave_blocks(arena)?;
 
         self.context.check_cancelled()?;
-        phase_vv::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        let mut vertex_pairs = phase_vv::VertexPairBudget::new(self.context.budgets.vertex_pairs);
+        phase_vv::perform_with_context(
+            self.topo,
+            self.solid_a,
+            self.solid_b,
+            &self.context,
+            arena,
+            &mut vertex_pairs,
+        )?;
         // VV is the only phase that registers same-domain vertices, and
         // `edge_pave_blocks` is fixed at init — so the pave-vertex coincidence
         // index is stable for the remaining phases. Build it once here instead
@@ -306,9 +314,17 @@ pub fn run_pave_filler_n_with_context(
     init_pave_blocks_n(topo, sources, arena)?;
     let pairs = source_pairs(sources);
 
+    let mut vertex_pairs = phase_vv::VertexPairBudget::new(context.budgets.vertex_pairs);
     for &(i, j) in &pairs {
         context.check_cancelled()?;
-        phase_vv::perform(topo, sources[i], sources[j], tol, arena)?;
+        phase_vv::perform_with_context(
+            topo,
+            sources[i],
+            sources[j],
+            context,
+            arena,
+            &mut vertex_pairs,
+        )?;
     }
     // VV is the only phase that registers same-domain vertices and the edge
     // pave blocks are fixed at init, so the coincidence index is stable for the

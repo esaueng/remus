@@ -46,6 +46,7 @@ pub struct GcsSystem {
     param_index: HashMap<ParamRef, usize>,
     /// Whether the param map needs rebuilding.
     dirty: bool,
+    limits: GcsLimits,
 }
 
 impl Clone for GcsSystem {
@@ -61,6 +62,7 @@ impl Clone for GcsSystem {
             param_map: self.param_map.clone(),
             param_index: self.param_index.clone(),
             dirty: self.dirty,
+            limits: self.limits,
         }
     }
 }
@@ -68,6 +70,71 @@ impl Clone for GcsSystem {
 impl Default for GcsSystem {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Resource policy for dense solves and rank analysis, including sparse fallback.
+///
+/// Budgets reserve all independent blocks and the solver/QR copies before any
+/// numeric work or geometry publication. Large sparse systems also need to fit
+/// their possible dense fallback; exceeding a budget refuses the whole call.
+#[derive(Debug, Clone, Copy)]
+pub struct GcsLimits {
+    /// Dense matrices and conservative linear scratch, in bytes.
+    pub max_dense_bytes: usize,
+    /// Sum of `rows * columns * min(rows, columns)` across blocks, per QR pass.
+    pub max_dense_qr_work: usize,
+}
+
+impl Default for GcsLimits {
+    fn default() -> Self {
+        Self {
+            max_dense_bytes: 32 * 1024 * 1024,
+            max_dense_qr_work: 1_000_000_000,
+        }
+    }
+}
+
+impl GcsLimits {
+    fn check_dimensions(
+        &self,
+        dimensions: impl IntoIterator<Item = (usize, usize)>,
+    ) -> Result<(), SketchError> {
+        let mut cells = Some(0_usize);
+        let mut linear = Some(0_usize);
+        let mut work = Some(0_usize);
+        for (m, n) in dimensions {
+            let mn = m.checked_mul(n);
+            cells = cells.and_then(|sum| mn.and_then(|v| sum.checked_add(v)));
+            linear = linear.and_then(|sum| m.checked_add(n).and_then(|v| sum.checked_add(v)));
+            work = work.and_then(|sum| {
+                mn.and_then(|v| v.checked_mul(m.min(n)))
+                    .and_then(|v| sum.checked_add(v))
+            });
+        }
+        // Three matrix copies cover DOF's original, factorization clone and
+        // owned QR result. Sixteen vectors cover DogLeg/QR and capture scratch.
+        let bytes = cells
+            .and_then(|v| v.checked_mul(3))
+            .and_then(|v| {
+                linear
+                    .and_then(|l| l.checked_mul(16))
+                    .and_then(|l| v.checked_add(l))
+            })
+            .and_then(|v| v.checked_mul(size_of::<f64>()));
+        for (resource, actual, limit) in [
+            ("gcs_dense_bytes", bytes, self.max_dense_bytes),
+            ("gcs_dense_qr_work", work, self.max_dense_qr_work),
+        ] {
+            if actual.is_none_or(|actual| actual > limit) {
+                return Err(SketchError::ResourceLimitExceeded {
+                    resource,
+                    limit,
+                    actual: actual.unwrap_or(usize::MAX),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -115,7 +182,40 @@ impl GcsSystem {
             param_map: Vec::new(),
             param_index: HashMap::new(),
             dirty: false,
+            limits: GcsLimits::default(),
         }
+    }
+
+    /// Create a system with an explicit resource budget.
+    #[must_use]
+    pub fn with_limits(limits: GcsLimits) -> Self {
+        Self {
+            limits,
+            ..Self::new()
+        }
+    }
+
+    fn num_equations_checked(&self) -> Result<usize, SketchError> {
+        self.constraints
+            .iter()
+            .try_fold(0_usize, |sum, (_, entry)| {
+                sum.checked_add(residual_count(&entry.constraint)).ok_or(
+                    SketchError::ResourceLimitExceeded {
+                        resource: "gcs_equations",
+                        limit: usize::MAX,
+                        actual: usize::MAX,
+                    },
+                )
+            })
+    }
+
+    fn check_decomposition(&self, decomp: &Decomposition) -> Result<(), SketchError> {
+        self.limits.check_dimensions(
+            decomp
+                .components
+                .iter()
+                .map(|comp| (comp.num_equations(), comp.params.len())),
+        )
     }
 
     /// Add a point. Returns its handle.
@@ -490,10 +590,8 @@ impl GcsSystem {
     ///
     /// # Errors
     ///
-    /// Returns `SketchError` if the system parameters are in an invalid state.
-    /// The `Result` wrapper is retained for future error paths (e.g. singular
-    /// Jacobian detection).
-    #[allow(clippy::unnecessary_wraps)]
+    /// Returns `SketchError::ResourceLimitExceeded` before allocating solver
+    /// matrices or changing entity values when the system exceeds its budget.
     pub fn solve(
         &mut self,
         max_iterations: usize,
@@ -510,8 +608,7 @@ impl GcsSystem {
     /// plain solves skip that capture and its allocations. Nothing is
     /// retained on the system.
     ///
-    /// The `Result` wrapper is retained for future error paths, matching
-    /// [`solve`](Self::solve).
+    /// Resource refusal follows [`solve`](Self::solve).
     #[allow(clippy::unnecessary_wraps)]
     fn solve_impl(
         &mut self,
@@ -522,13 +619,10 @@ impl GcsSystem {
         self.rebuild_if_dirty();
 
         let n = self.param_map.len();
-        let m: usize = self
-            .constraints
-            .iter()
-            .map(|(_, e)| residual_count(&e.constraint))
-            .sum();
+        let m = self.num_equations_checked()?;
 
         if n == 0 {
+            self.limits.check_dimensions([(m, n)])?;
             // No free params — just check residuals. NaN propagates via
             // `max_abs_residual` so a poisoned value can never read as
             // converged (see the solver's fold for why a plain max is wrong).
@@ -573,6 +667,7 @@ impl GcsSystem {
         tolerance: f64,
         capture_final: bool,
     ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        self.check_decomposition(decomp)?;
         if self.param_map.is_empty() {
             // Keep the no-free-parameter residual check (including empty systems)
             // identical for plain and detailed solves at every tolerance.
@@ -590,8 +685,7 @@ impl GcsSystem {
     /// only factored out so the component dispatcher can select it for fully
     /// connected systems.
     ///
-    /// The `Result` wrapper is retained for future error paths, matching
-    /// [`solve`](Self::solve).
+    /// Resource refusal follows [`solve`](Self::solve).
     #[allow(clippy::too_many_lines, clippy::unnecessary_wraps)]
     fn solve_dense(
         &mut self,
@@ -600,11 +694,7 @@ impl GcsSystem {
         capture_final: bool,
     ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
         let n = self.param_map.len();
-        let m: usize = self
-            .constraints
-            .iter()
-            .map(|(_, e)| residual_count(&e.constraint))
-            .sum();
+        let m = self.num_equations_checked()?;
 
         let constraints: Vec<Constraint> = self
             .constraints
@@ -670,6 +760,7 @@ impl GcsSystem {
         tolerance: f64,
         capture_final: bool,
     ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        self.limits.check_dimensions([(m, n)])?;
         let mut params = self.extract_params();
         let mut snap_r = EntitySnapshot {
             points: HashMap::with_capacity(self.points.len()),
@@ -890,8 +981,7 @@ impl GcsSystem {
     /// the same residual check as the `n == 0` fast path; the free group
     /// mirrors the solver's empty-system exit.
     ///
-    /// The `Result` wrapper is retained for future error paths, matching
-    /// [`solve`](Self::solve).
+    /// Resource refusal follows [`solve`](Self::solve).
     #[allow(clippy::unnecessary_wraps)]
     fn solve_component(
         &self,
@@ -1147,7 +1237,7 @@ impl GcsSystem {
             }
             let entities = component_entities(&comp.constraints, self);
             let snap = subset_snapshot(&entities);
-            let mut jac = vec![0.0; m_c.saturating_mul(n_c)];
+            let mut jac = vec![0.0; m_c * n_c];
             let mut row = 0_usize;
             {
                 let mut jw = JacobianWriter {
@@ -1229,8 +1319,10 @@ impl GcsSystem {
         self.rebuild_if_dirty();
 
         // Snapshot for rollback before anything is mutated.
-        let before = self.extract_params();
+        self.num_equations_checked()?;
         let decomp = decompose(self);
+        self.check_decomposition(&decomp)?;
+        let before = self.extract_params();
 
         let (result, eval, stats) =
             self.solve_with_decomposition(&decomp, max_iterations, tolerance, true)?;
@@ -1246,23 +1338,19 @@ impl GcsSystem {
         // would instead report the untouched starting geometry, where every
         // constraint — satisfiable or not — still reads large.
         let n = self.param_map.len();
-        let m: usize = self
-            .constraints
-            .iter()
-            .map(|(_, e)| residual_count(&e.constraint))
-            .sum();
+        let m = self.num_equations_checked()?;
 
         let (analysis, residuals, internal_max_residual) = if n == 0 || m == 0 {
             // Degenerate dimensions have no Jacobian to share: measure
             // everything fresh, exactly as before.
             counts.fallback_residual_passes += 1;
-            let analysis = self.dof();
+            let analysis = self.dof()?;
             let (residuals, internal_max) = self.constraint_residuals();
             (analysis, residuals, internal_max)
         } else if decomp.is_single_connected() {
-            self.analyze_dense_shared(eval.as_ref(), m, n, &mut counts)
+            self.analyze_dense_shared(eval.as_ref(), m, n, &mut counts)?
         } else {
-            self.analyze_components_shared(&decomp, eval.as_ref(), &mut counts)
+            self.analyze_components_shared(&decomp, eval.as_ref(), &mut counts)?
         };
 
         let rolled_back = !result.converged;
@@ -1316,7 +1404,7 @@ impl GcsSystem {
         m: usize,
         n: usize,
         counts: &mut DetailedCounts,
-    ) -> (DofAnalysis, Vec<ConstraintResidual>, f64) {
+    ) -> Result<(DofAnalysis, Vec<ConstraintResidual>, f64), SketchError> {
         if let Some(eval) = eval.filter(|eval| self.eval_matches(eval, m, n)) {
             // PERF-S04: sparse rank first for large banded full-rank systems.
             // One sparse assembly plus one sparse factorization replaces the
@@ -1325,11 +1413,11 @@ impl GcsSystem {
             if let Some(analysis) = self.sparse_rank_if_full(m, n, counts) {
                 if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
                     counts.shared_residuals_used = true;
-                    return (analysis, residuals, internal_max);
+                    return Ok((analysis, residuals, internal_max));
                 }
                 counts.fallback_residual_passes += 1;
                 let (residuals, internal_max) = self.constraint_residuals();
-                return (analysis, residuals, internal_max);
+                return Ok((analysis, residuals, internal_max));
             }
             // Shared path: one snapshot backs the fresh Jacobian the rank
             // needs; per-constraint residuals slice the verified final
@@ -1341,7 +1429,7 @@ impl GcsSystem {
             counts.analysis_qr_factorizations += 1;
             if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
                 counts.shared_residuals_used = true;
-                return (analysis, residuals, internal_max);
+                return Ok((analysis, residuals, internal_max));
             }
             // Defensive length mismatch: same fresh fallback.
             // Unreachable — the solver emits exactly one entry per
@@ -1349,16 +1437,16 @@ impl GcsSystem {
             // repeated evaluation.
             counts.fallback_residual_passes += 1;
             let (residuals, internal_max) = self.constraint_residuals();
-            (analysis, residuals, internal_max)
+            Ok((analysis, residuals, internal_max))
         } else {
             // Identity mismatch means the capture is not this state: measure
             // everything fresh (identical results, one extra residual pass).
             // Unreachable in production — capture and measurement bracket no
             // mutation — but proven by tests.
             counts.fallback_residual_passes += 1;
-            let analysis = self.dof();
+            let analysis = self.dof()?;
             let (residuals, internal_max) = self.constraint_residuals();
-            (analysis, residuals, internal_max)
+            Ok((analysis, residuals, internal_max))
         }
     }
 
@@ -1375,7 +1463,7 @@ impl GcsSystem {
         decomp: &Decomposition,
         eval: Option<&FinalEvaluation>,
         counts: &mut DetailedCounts,
-    ) -> (DofAnalysis, Vec<ConstraintResidual>, f64) {
+    ) -> Result<(DofAnalysis, Vec<ConstraintResidual>, f64), SketchError> {
         let blocks = self.component_jacobians(decomp);
         let normal_blocks = blocks
             .iter()
@@ -1390,16 +1478,16 @@ impl GcsSystem {
         {
             if let Some((residuals, internal_max)) = self.derive_shared_residuals(eval) {
                 counts.shared_residuals_used = true;
-                return (analysis, residuals, internal_max);
+                return Ok((analysis, residuals, internal_max));
             }
             counts.fallback_residual_passes += 1;
             let (residuals, internal_max) = self.constraint_residuals();
-            (analysis, residuals, internal_max)
+            Ok((analysis, residuals, internal_max))
         } else {
             counts.fallback_residual_passes += 1;
-            let analysis = self.dof();
+            let analysis = self.dof()?;
             let (residuals, internal_max) = self.constraint_residuals();
-            (analysis, residuals, internal_max)
+            Ok((analysis, residuals, internal_max))
         }
     }
 
@@ -1499,38 +1587,42 @@ impl GcsSystem {
     }
 
     /// Analyze degrees of freedom in the current system.
-    pub fn dof(&mut self) -> DofAnalysis {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResourceLimitExceeded` before dense allocation when the system
+    /// exceeds its budget. This API now returns `Result` so refusal cannot be
+    /// mistaken for a valid rank or zero DOF; native callers must handle it.
+    pub fn dof(&mut self) -> Result<DofAnalysis, SketchError> {
         self.rebuild_if_dirty();
 
         let n = self.param_map.len();
-        let m: usize = self
-            .constraints
-            .iter()
-            .map(|(_, e)| residual_count(&e.constraint))
-            .sum();
+        let m = self.num_equations_checked()?;
 
         if n == 0 || m == 0 {
-            return DofAnalysis {
+            self.limits.check_dimensions([(m, n)])?;
+            return Ok(DofAnalysis {
                 dof: n,
                 rank: 0,
                 num_params: n,
                 num_equations: m,
-            };
+            });
         }
 
         let decomp = decompose(self);
+        self.check_decomposition(&decomp)?;
         if decomp.is_single_connected() {
             if let Some(analysis) = self.sparse_rank_if_full(m, n, &mut DetailedCounts::default()) {
                 // `dof()` has no counts to report; sparse success means full
                 // column rank (rank == n) under the global policy.
-                return analysis;
+                return Ok(analysis);
             }
             let snap = self.build_snapshot();
             let jac = self.jacobian_for_snapshot(&snap, m, n);
-            dof::analyze(&jac, m, n)
+            Ok(dof::analyze(&jac, m, n))
         } else {
             let blocks = self.component_jacobians(&decomp);
-            dof::analyze_blocks(&blocks, n, m)
+            Ok(dof::analyze_blocks(&blocks, n, m))
         }
     }
 
@@ -1600,7 +1692,7 @@ impl GcsSystem {
     /// reuses a factorization: the caller factorizes the returned matrix at
     /// the state it was evaluated at.
     fn jacobian_for_snapshot(&self, snap: &EntitySnapshot, m: usize, n: usize) -> Vec<f64> {
-        let mut jac = vec![0.0; m.saturating_mul(n)];
+        let mut jac = vec![0.0; m * n];
         let mut row = 0;
         {
             let mut jw = JacobianWriter {
