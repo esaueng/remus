@@ -1096,3 +1096,66 @@ pub struct CancellableBooleanResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<BooleanQualityResult>,
 }
+
+/// Per-edge convexity verdict for `edgeConvexity`.
+///
+/// The `relation` retires the consumer adapter's `radialSense` inference
+/// and its `'convex'` fallback: it is the kernel's own quadrant-probe
+/// verdict, and `unknown` never guesses. `dihedralAngle` is the signed angle
+/// between the two effective outward normals in radians — positive for
+/// convex, negative for concave, near zero for tangent — and `null` when
+/// the relation is `unknown` or the angle is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeConvexityRelation {
+    /// The edge rounds off material.
+    Convex,
+    /// The edge is re-entrant.
+    Concave,
+    /// The faces meet with aligned outward normals.
+    Tangent,
+    /// Self-seam, non-manifold, degenerate, or over-probed: no verdict.
+    Unknown,
+}
+
+/// Typed result for `edgeConvexity`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EdgeConvexityResult {
+    /// Convex, concave, tangent, or unknown (never a guess).
+    pub relation: EdgeConvexityRelation,
+    /// Signed normal angle in radians, or `null` for unknown edges.
+    pub dihedral_angle: Option<f64>,
+}
+
+/// One row of `solidEdgeRelations`: the edge handle plus its convexity.
+///
+/// Ship the bulk binding and tell the consumer to use it: a per-edge loop
+/// over `edgeConvexity` on a 2 000-edge import rebuilds adjacency per call
+/// (the quadratic trap), while this call builds it once.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EdgeRelationRow {
+    /// Edge handle (`u32` arena index).
+    pub edge: u32,
+    /// Convex, concave, tangent, or unknown (never a guess).
+    pub relation: EdgeConvexityRelation,
+    /// Signed normal angle in radians, or `null` for unknown edges.
+    pub dihedral_angle: Option<f64>,
+}
+
+/// Material side for `faceMaterialSense`: `"outward"` (boss-like) or
+/// `"inward"` (bore- or pocket-like).
+///
+/// A different question from edge convexity: a bore's top rim is convex
+/// while its wall is inward. Report both; never collapse them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(rename_all = "lowercase")]
+pub enum FaceMaterialSense {
+    /// Boss-like wall: effective outward normal points away from the axis
+    /// or centre.
+    Outward,
+    /// Bore- or pocket-like wall: effective outward normal points toward
+    /// the axis or centre.
+    Inward,
+}
