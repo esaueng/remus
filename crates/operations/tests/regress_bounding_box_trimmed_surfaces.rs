@@ -25,14 +25,17 @@
 
 use std::f64::consts::TAU;
 
+use remus_math::mat::Mat4;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::{CylindricalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure;
 use remus_operations::primitives;
 use remus_operations::revolve::revolve;
+use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
-use remus_topology::builder::{make_circle_edge, make_face_from_wire};
+use remus_topology::builder::{make_circle_edge, make_face_from_wire, make_polygon_wire};
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::shell::Shell;
@@ -422,4 +425,66 @@ fn a_nurbs_surface_that_closes_on_itself_keeps_its_full_extent_there() {
         "the non-periodic direction still trims: patch reaches z = 5 of 20, got {}",
         bb.max.z()
     );
+}
+
+/// OpenZCAD production QA CAD-02: a Ø30 × 12 cylinder intersected with a
+/// 20 mm cube at (10, 5, −4). The result's curved face is a sliver of the
+/// cylinder; a full circle at each of its vertex slices reported the whole
+/// cylinder, 30 × 30 × 12, for a 4.14 × 6.18 × 12 result.
+#[test]
+fn a_partial_cylinder_face_is_bounded_by_its_arc_not_the_cylinder() {
+    let mut topo = Topology::new();
+    let cylinder = primitives::make_cylinder(&mut topo, 15.0, 12.0).unwrap();
+    let cube = primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    transform_solid(&mut topo, cube, &Mat4::translation(10.0, 5.0, -4.0)).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Intersect, cylinder, cube).unwrap();
+    // The circle crosses y = 5 at x = √(15² − 5²) and x = 10 at y = √(15² − 10²).
+    assert_box(
+        &topo,
+        result,
+        [10.0, 5.0, 0.0],
+        [200.0_f64.sqrt(), 125.0_f64.sqrt(), 12.0],
+    );
+}
+
+/// The same for a cone: a quarter of a frustum, revolved through 90°, keeps a
+/// quarter's box. Its outer face is a conical patch and its inner one a
+/// cylindrical patch, both trimmed by the two radial caps.
+#[test]
+fn a_partial_cone_face_is_bounded_by_its_arc_not_the_cone() {
+    let mut topo = Topology::new();
+    // In the XZ plane: base radius 10 on z = 0, top radius 5 at z = 10, and a
+    // radius-2 bore.
+    let profile = make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(5.0, 0.0, 10.0),
+            Point3::new(2.0, 0.0, 10.0),
+        ],
+        TOL,
+    )
+    .unwrap();
+    let face = make_face_from_wire(&mut topo, profile).unwrap();
+    let quarter = revolve(
+        &mut topo,
+        face,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        std::f64::consts::FRAC_PI_2,
+    )
+    .unwrap();
+    assert_box(&topo, quarter, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+}
+
+/// A whole cylinder's and a whole cone's sides wrap their surfaces; their
+/// boxes are the full rings, as before.
+#[test]
+fn whole_cylinders_and_cones_still_get_their_whole_rings() {
+    let mut topo = Topology::new();
+    let cylinder = primitives::make_cylinder(&mut topo, 15.0, 12.0).unwrap();
+    assert_box(&topo, cylinder, [-15.0, -15.0, 0.0], [15.0, 15.0, 12.0]);
+    let cone = primitives::make_cone(&mut topo, 10.0, 5.0, 10.0).unwrap();
+    assert_box(&topo, cone, [-10.0, -10.0, 0.0], [10.0, 10.0, 10.0]);
 }
