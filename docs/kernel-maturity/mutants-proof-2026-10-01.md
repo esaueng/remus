@@ -51,9 +51,11 @@ those survivors).
   (`mutants-{algo-ff,tessellate,geometry,topology,check,blend-reconstruction}-2026-09-*.md`,
   PRs #664/#667/#681) or lie outside the M2 file set; they are not retriaged
   here and remain owned by their rows.
-- Line numbers below are the CI run's (head `763ad346`). Line drift to current
-  `main` (`3b24fd4c`) is normal; every survivor was confirmed by function name
-  at `main` before triage.
+- Line numbers below are the CI run's (head `763ad346`). Line drift to
+  current code is normal (production files identical to `origin/main` except
+  noted below); every survivor was confirmed by function name at `main`
+  before triage, and re-run matching is by file, function, and mutation, not
+  by line number.
 
 ## Method
 
@@ -92,18 +94,21 @@ those survivors).
   `.cargo/mutants.toml`); scope confirmed with
   `scripts/test-mutants-scope.py` before quoting any count (CDT scope,
   exclusions, and verdict/planner tests pass). The `operations` scopes
-  (`fillet/mod`, `resize_blend`, `tessellate/solid`, `tessellate/nonplanar`,
-  1,580 listed) and the unexamined-only functions were not reached in the
-  6-hour box; their mutants sit under Not yet examined.
-- Verdicts: (a) killed by a new test; (F3) needs review — the mutant was not
-  killed by a one-line closed form, or it lives in `bezier_clip.rs` or
-  `surface_marching.rs` (which go to the table regardless per the assignment).
+  (2,019 listed across `fillet/mod`, `resize_blend`, `tessellate/solid`,
+  and `tessellate/nonplanar`; `shell_op` unscoped) were not completed in the
+  6-hour box (a `fillet/mod` run was launched but yielded no outcomes before
+  the box ended), nor were the unexamined-only functions; their mutants sit
+  under Not yet examined.
+- Verdicts: caught on re-run (ran and caught on current code); (F3) needs
+  review — the mutant ran and survived (MISSED or TIMEOUT) on current code.
+  `bezier_clip.rs` and `surface_marching.rs` ran-and-survived mutants stay in
+  the table without kill attempts, as assigned.
   A test that accepts `None` or "any direction" kills nothing and was not
   written. If a mutant had exposed what looked like a real defect, the failing
   test would be filed with `#[ignore = "open: …"]` and listed first; no such
   defect was found.
-- `bezier_clip.rs` (232) and `surface_marching.rs` (310) survivors are all
-  (F3) by assignment, without kill attempts.
+- `bezier_clip.rs` (168 ran and survived) and `surface_marching.rs` (168 ran
+  and survived) stay in F3 by assignment, without kill attempts.
 
 ## New tests and their oracles
 
