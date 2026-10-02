@@ -117,7 +117,7 @@ impl FallbackPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WorkBudgets {
-    /// Maximum vertex-vertex comparisons across all overlapping source
+    /// Maximum candidate vertex-vertex comparisons across all overlapping source
     /// pairs in one GFA pave-filling pass. Default: 1,000,000.
     pub vertex_pairs: usize,
     /// Maximum marching steps per traced direction of one intersection
