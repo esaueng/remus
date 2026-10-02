@@ -262,6 +262,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **`log::debug!` inside `fill_images_faces.rs` does not emit** (cause
   undiagnosed): log-based probes there read as a false zero; use an env-gated
   `eprintln!` and do not commit it.
+- **Re-extracting an older commit over a tree with newer build artifacts makes cargo silently skip rebuilding dependencies** (commit-time mtimes read older than the artifacts, so a whole bisection round re-ran the wrong code) — verify attribution runs with cold builds in fresh dirs, never overwrite-extracts (M6 gauntlet census, 2026-10-02).
 - **Check capture-directory mtimes before replaying mixed capture dirs;** a
   stale pre-fix operand cost one full iteration.
 - **The reference kernel's snapshot pins are kernel-specific.** Triangle
