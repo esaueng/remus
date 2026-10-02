@@ -1539,3 +1539,6 @@ pub(super) fn near_existing_segment(
     }
     false
 }
+
+#[cfg(test)]
+mod oracle_tests;
