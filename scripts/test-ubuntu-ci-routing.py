@@ -139,7 +139,22 @@ class UbuntuRoutingTests(unittest.TestCase):
     def test_osv_keeps_base_comparison_and_blocking_reports(self):
         text = (WORKFLOWS / "fleet-osv.yml").read_text()
         self.assertIn("github.event.pull_request.base.sha", text)
-        self.assertIn("--old=old-results.json", text)
+        checkout = text.index('git checkout --force --detach "$GITHUB_SHA"')
+        base_output = text.index("--output=/github/temp/old-results.json")
+        head_output = text.index("--output=/github/temp/new-results.json")
+        report_old = text.index("--old=/github/temp/old-results.json")
+        self.assertIn('--volume "$RUNNER_TEMP:/github/temp"', text)
+        self.assertIn("${{ runner.temp }}/old-results.json", text)
+        self.assertLess(base_output, checkout)
+        self.assertLess(checkout, head_output)
+        self.assertLess(head_output, report_old)
+        self.assertIn("--new=/github/temp/new-results.json", text)
+        self.assertNotIn("--output=old-results.json", text)
+        self.assertNotIn("--output=new-results.json", text)
+        main_report = text.split("      - name: Report main vulnerabilities", 1)[1].split("      - name:", 1)[0]
+        self.assertNotIn("--old=", main_report)
+        self.assertIn("--new=/github/temp/new-results.json", main_report)
+        self.assertIn("if: github.event_name != 'pull_request'", text)
         self.assertEqual(text.count("--fail-on-vuln=true"), 2)
         self.assertIn("github/codeql-action/upload-sarif@", text)
         for name in ("Report new PR vulnerabilities", "Report main vulnerabilities"):
