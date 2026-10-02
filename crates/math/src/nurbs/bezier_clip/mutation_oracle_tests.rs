@@ -245,6 +245,11 @@ fn fat_line_normal_refuses_an_overflowing_offset() {
     ]);
     let b = sub(vec![p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)]);
     assert!(fat_line_normal(&a, &b).is_none());
+    // An offset with finite coordinates whose LENGTH overflows (1e308 on
+    // two axes): the normal is finite but cannot be normalised.
+    let a = sub(vec![p(0.0, 0.0, 0.0), p(0.0, 0.0, 1.0)]);
+    let b = sub(vec![p(1e308, 1e308, 0.0), p(0.0, 0.0, 0.5)]);
+    assert!(fat_line_normal(&a, &b).is_none());
     // A window collapsed to one point has no chord either.
     let dot = sub(vec![p(2.0, 2.0, 2.0), p(2.0, 2.0, 2.0)]);
     assert!(fat_line_normal(&dot, &dot).is_none());
@@ -1090,16 +1095,41 @@ fn check_overlap_bounds_are_strict() {
     assert!(run(&len(0.25), 1.0, &len(4.0), 0.0625, 0.01));
     // span_b == 100 tol.
     assert!(run(&len(4.0), 0.0625, &len(0.25), 1.0, 0.01));
-    // Parallel lines exactly 0.01 = 10 tol apart are not coincident.
+    // Parallel lines ~0.01 apart: with the tolerance chosen so that
+    // 10 tol equals the sampled Hausdorff distance exactly (each sample
+    // projected onto the other window, as the test defines it), the pair
+    // is refused; one ulp more tolerance accepts it.
     let a = line(p(0.0, 0.0, 0.0), p(4.0, 0.0, 0.0));
     let b = line(p(0.0, 0.01, 0.0), p(4.0, 0.01, 0.0));
-    let mut o = out(0.001);
-    assert!(!check_overlap(
-        ClipSide::new(&a, 0.2, 0.6),
-        ClipSide::new(&b, 0.2, 0.6),
-        false,
-        &mut o
-    ));
+    let (sa, sb) = (ClipSide::new(&a, 0.2, 0.6), ClipSide::new(&b, 0.2, 0.6));
+    let mut hausdorff = 0.0_f64;
+    for (own, other) in [(sa, sb), (sb, sa)] {
+        for i in 0..=HAUSDORFF_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let u = own.at(i as f64 / HAUSDORFF_SAMPLES as f64);
+            hausdorff = hausdorff.max(project_onto_window(other, own.seg.evaluate(u)).1);
+        }
+    }
+    assert!(close(hausdorff, 0.01, 1e-15));
+    let mut tol = hausdorff / 10.0;
+    for _ in 0..8 {
+        if tol * 10.0 < hausdorff {
+            tol = tol.next_up();
+        } else if tol * 10.0 > hausdorff {
+            tol = tol.next_down();
+        }
+    }
+    assert_eq!(tol * 10.0, hausdorff);
+    assert!(!check_overlap(sa, sb, false, &mut out(tol)));
+    let mut above = tol.next_up();
+    for _ in 0..8 {
+        if above * 10.0 > hausdorff {
+            break;
+        }
+        above = above.next_up();
+    }
+    assert!(above * 10.0 > hausdorff);
+    assert!(check_overlap(sa, sb, false, &mut out(above)));
 }
 
 /// The Hausdorff samples cover the window interior, not just its ends.
