@@ -209,9 +209,9 @@ pub(super) fn estimate_chain_threshold(points: &[IntersectionPoint]) -> f64 {
 ///   tolerance that covers distance rounding with wide margin); ties can
 ///   never hide past the stop ring. A ring cap falls back to the full scan
 ///   for that step, so no input can silently take a different path.
-/// - Degenerate thresholds keep their comparison outcome without enumerating
-///   pairs: NaN/zero connect nothing, an infinite threshold connects every
-///   finite-distance pair.
+/// - Degenerate thresholds keep their comparison outcome without a grid:
+///   NaN/zero connect nothing, an infinite (or square-overflowing)
+///   threshold connects every pair whose squared distance is finite.
 #[must_use]
 pub fn chain_intersection_points(
     points: &[IntersectionPoint],
@@ -230,9 +230,9 @@ pub fn chain_intersection_points(
         return points.iter().map(|p| vec![*p]).collect();
     }
     if !cell.is_finite() {
-        // Infinite threshold: every finite-distance pair connects. Points
-        // with a non-finite coordinate never connect (their pairwise
-        // distances are NaN or infinite, never `< inf`).
+        // Infinite threshold: every pair with a finite squared distance
+        // connects. Points with a non-finite coordinate, and finite points
+        // whose squared distance overflows, never do (`d² < inf` is false).
         return chain_with_clique(points);
     }
     // Smallest power of two >= cell, built from exponent bits (exact, no
@@ -318,28 +318,22 @@ pub fn chain_intersection_points(
     chain_from_adjacency(points, &adj, Some(&grid))
 }
 
-/// Chain when the threshold connects every finite-distance pair.
+/// Chain when the squared threshold is infinite.
 ///
-/// Used for infinite (or square-overflowing) thresholds. Finite-coordinate
-/// points form cliques in breadth-first discovery order; non-finite points
-/// stay isolated. The walk runs the full scan: rings are meaningless without
-/// a finite cell width.
+/// Used for infinite (or square-overflowing) thresholds: the all-pairs test
+/// `d² < threshold²` becomes `d² < inf`, so a pair connects exactly when its
+/// squared distance is finite. Testing coordinate finiteness instead would
+/// join finite points whose squared distance overflows, which the
+/// comparison (and the walk's scan, which can never select them) does not.
+/// The walk runs the full scan: rings are meaningless without a finite
+/// cell width.
 fn chain_with_clique(points: &[IntersectionPoint]) -> Vec<Vec<IntersectionPoint>> {
     let n = points.len();
-    let finite: Vec<bool> = points
-        .iter()
-        .map(|p| {
-            let q = p.point;
-            q.x().is_finite() && q.y().is_finite() && q.z().is_finite()
-        })
-        .collect();
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     for i in 0..n {
-        if !finite[i] {
-            continue;
-        }
         for j in (i + 1)..n {
-            if finite[j] {
+            let d = points[i].point - points[j].point;
+            if d.x().mul_add(d.x(), d.y().mul_add(d.y(), d.z() * d.z())) < f64::INFINITY {
                 adj[i].push(j);
                 adj[j].push(i);
             }
