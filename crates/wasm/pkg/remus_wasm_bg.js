@@ -1920,6 +1920,44 @@ export class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Extrusion journaled as one construction-derived face, edge and vertex
+     * evolution entry (kind `extrude`).
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+     * result face, edge and vertex as `modified` or `generated` (both caps
+     * `modified` from the profile face, every side wall `generated` from
+     * it, shared boundary entities `modified` into themselves, translated
+     * copies `modified` from their source, longitudinal edges `generated`
+     * from the profile face), plus a `completeness` report (`accounted`,
+     * `resolved`, and per-kind `omitted`/`phantom`/`unresolved` lists)
+     * checked against the actual result. Nothing is deleted; the qualified
+     * profile classes leave nothing unresolved.
+     * @param {number} face
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} distance
+     * @returns {string}
+     */
+    extrudeJournaled(face, dir_x, dir_y, dir_z, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_extrudeJournaled(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Compute the area of a single face.
      *
      * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
@@ -3565,9 +3603,14 @@ export class BrepKernel {
         return v1;
     }
     /**
-     * Get the edge handles of a wire.
+     * Get the edge handles of a wire in wire traversal order.
      *
-     * Returns an array of unique edge handles (`u32[]`).
+     * Returns one entry per use in stored order (`u32[]`). When edge handles
+     * are distinct, consecutive entries connect head-to-tail in their
+     * `isEdgeForwardInWire` directions, and the last closes back on the
+     * first on a closed wire. A seam edge used twice appears twice
+     * (cylinder lateral). Its per-use directions cannot be recovered from
+     * `isEdgeForwardInWire`, which reports only the first use.
      *
      * # Errors
      *
@@ -3967,6 +4010,10 @@ export class BrepKernel {
      * Check if an edge is forward-oriented in a given wire.
      *
      * Returns `true` if the edge is forward in the wire, `false` if reversed.
+     * Reports the FIRST use of `edge` in the wire: an edge used twice in one
+     * wire (a seam edge on a cylinder lateral, forward then reversed) reads
+     * as its first use for both occurrences, so the second use is ambiguous
+     * through this query. Planar faces have no seams.
      * @param {number} edge
      * @param {number} wire
      * @returns {boolean}

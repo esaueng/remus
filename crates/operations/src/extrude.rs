@@ -24,13 +24,31 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::dot_normal_point;
 
-/// Data from extruding a single inner wire, needed for creating side faces.
-struct InnerWireData {
+/// One processed profile wire: the (possibly split) construction inputs and
+/// outputs with their source identities.
+///
+/// `edge_ids`, `top_edge_ids` and `vertical_edge_ids` are parallel to
+/// `oriented` (post-split positions). `source_edges` names the pre-split
+/// profile edge each position came from — itself for passed-through edges,
+/// the closed edge for chord-split pieces. `original_verts` are the raw
+/// wire's corner vertices before splitting; a bottom vertex is shared with
+/// the profile exactly when its id is in this set (id comparison, never
+/// coordinates), otherwise it is a split-new vertex.
+pub(crate) struct ExtrudedWire {
     positions: Vec<Point3>,
     oriented: Vec<OrientedEdge>,
     edge_ids: Vec<EdgeId>,
+    /// Oriented-start vertices: the shared profile corners, except on
+    /// chord-split wires where every position but the seam reuses the
+    /// profile's start vertex and the rest are split-new.
+    verts: Vec<VertexId>,
+    top_verts: Vec<VertexId>,
     top_edge_ids: Vec<EdgeId>,
     vertical_edge_ids: Vec<EdgeId>,
+    /// Pre-split profile edge each post-split position came from.
+    source_edges: Vec<EdgeId>,
+    /// Profile corner vertices before splitting (oriented starts of the raw wire).
+    original_verts: Vec<VertexId>,
 }
 
 /// Split closed single-edge wires (e.g. a full circle represented as one
@@ -70,6 +88,25 @@ pub(crate) fn maybe_split_closed_wire_with(
     deflection: f64,
     pass_through_circles: bool,
 ) -> Result<Vec<OrientedEdge>, crate::OperationsError> {
+    maybe_split_closed_wire_with_sources(topo, oriented, tol, deflection, pass_through_circles)
+        .map(|split| split.into_iter().map(|(edge, _)| edge).collect())
+}
+
+/// [`maybe_split_closed_wire_with`], additionally reporting the pre-split
+/// profile edge each returned edge came from.
+///
+/// A passed-through edge reports itself; each chord-split piece reports the
+/// closed edge it was cut from. The extrusion history builder uses this —
+/// and nothing else — to attribute split pieces to their source edge, so a
+/// closed profile's subdivision never depends on allocation order or
+/// coordinate matching.
+pub(crate) fn maybe_split_closed_wire_with_sources(
+    topo: &mut Topology,
+    oriented: &[OrientedEdge],
+    tol: f64,
+    deflection: f64,
+    pass_through_circles: bool,
+) -> Result<Vec<(OrientedEdge, EdgeId)>, crate::OperationsError> {
     let mut result = Vec::with_capacity(oriented.len() * 4);
     for oe in oriented {
         let edge = topo.edge(oe.edge())?;
@@ -79,10 +116,10 @@ pub(crate) fn maybe_split_closed_wire_with(
             let n = closed_edge_segments(edge.curve(), deflection);
             let split_edges = split_closed_edge(topo, oe.edge(), n, tol)?;
             for se in split_edges {
-                result.push(OrientedEdge::new(se, oe.is_forward()));
+                result.push((OrientedEdge::new(se, oe.is_forward()), oe.edge()));
             }
         } else {
-            result.push(*oe);
+            result.push((*oe, oe.edge()));
         }
     }
     Ok(result)
@@ -392,26 +429,14 @@ fn certify_curve_authority(
 
 /// Extract vertices, create offset (top) vertices and edges for a wire.
 ///
-/// Returns: `(input_verts, input_positions, input_oriented, input_edge_ids,
-///            top_verts, top_edge_ids, vertical_edge_ids)`
-#[allow(clippy::type_complexity)]
+/// Returns the processed wire with per-position source identities for the
+/// extrusion history builder.
 fn extrude_wire_vertices_with(
     topo: &mut Topology,
     wire_id: WireId,
     offset: Vec3,
     pass_through_circles: bool,
-) -> Result<
-    (
-        Vec<VertexId>,
-        Vec<Point3>,
-        Vec<OrientedEdge>,
-        Vec<EdgeId>,
-        Vec<VertexId>,
-        Vec<EdgeId>,
-        Vec<EdgeId>,
-    ),
-    crate::OperationsError,
-> {
+) -> Result<ExtrudedWire, crate::OperationsError> {
     let tol = Tolerance::new();
     let wire = topo.wire(wire_id)?;
     let original_oriented: Vec<_> = wire.edges().to_vec();
@@ -422,13 +447,24 @@ fn extrude_wire_vertices_with(
     // through unsplit when the caller can build analytic side faces: the outer
     // wire always does, and a single-circle inner (hole) wire does too (one
     // exact cylinder wall — see `inner_wire_is_single_circle`).
-    let oriented = maybe_split_closed_wire_with(
+    let split = maybe_split_closed_wire_with_sources(
         topo,
         &original_oriented,
         tol.linear,
         DEFAULT_DEFLECTION,
         pass_through_circles,
     )?;
+    let mut oriented = Vec::with_capacity(split.len());
+    let mut source_edges = Vec::with_capacity(split.len());
+    for (edge, source) in split {
+        oriented.push(edge);
+        source_edges.push(source);
+    }
+    let mut original_verts = Vec::with_capacity(original_oriented.len());
+    for oe in &original_oriented {
+        let edge = topo.edge(oe.edge())?;
+        original_verts.push(oe.oriented_start(edge));
+    }
 
     let mut verts: Vec<VertexId> = Vec::with_capacity(oriented.len());
     for oe in &oriented {
@@ -531,15 +567,17 @@ fn extrude_wire_vertices_with(
         vertical_edge_ids.push(vert_edge);
     }
 
-    Ok((
-        verts,
+    Ok(ExtrudedWire {
         positions,
         oriented,
         edge_ids,
+        verts,
         top_verts,
         top_edge_ids,
         vertical_edge_ids,
-    ))
+        source_edges,
+        original_verts,
+    })
 }
 
 /// Build the appropriate `FaceSurface` for a side face created by extruding
@@ -1009,8 +1047,40 @@ pub fn extrude(
     distance: f64,
 ) -> Result<SolidId, crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
-        extrude_impl(topo, face, direction, distance)
+        extrude_impl(topo, face, direction, distance).map(|(solid, _)| solid)
     })
+}
+
+/// The construction record of one extrusion: every result face, edge and
+/// vertex traced to the profile entity it was built from.
+///
+/// The legacy [`extrude`] path builds this record and drops it, so both
+/// routes share one allocation order and one geometry. The history routes
+/// ([`extrude_with_entity_evolution`], `extrude_journaled`) translate it
+/// into face and boundary claims without re-running or re-matching anything.
+pub(crate) struct ExtrudeConstruction {
+    /// The input profile face (survives the operation).
+    pub(crate) profile: FaceId,
+    /// Bottom cap: reversed profile at the input plane, sharing the
+    /// profile's (possibly split) boundary edges.
+    pub(crate) bottom: FaceId,
+    /// Top cap: translated copy at the swept plane.
+    pub(crate) top: FaceId,
+    /// The processed outer wire with per-position source identities.
+    pub(crate) outer: ExtrudedWire,
+    /// Outer side faces, parallel to the outer wire's post-split positions.
+    pub(crate) outer_sides: Vec<FaceId>,
+    /// One entry per hole wire: the processed wire and its side faces
+    /// (parallel to that wire's post-split positions).
+    pub(crate) holes: Vec<ExtrudedHole>,
+}
+
+/// One processed hole wire and the side faces built from it.
+pub(crate) struct ExtrudedHole {
+    /// The processed hole wire with per-position source identities.
+    pub(crate) inner: ExtrudedWire,
+    /// Hole-wall side faces, parallel to the wire's post-split positions.
+    pub(crate) sides: Vec<FaceId>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1019,7 +1089,7 @@ fn extrude_impl(
     face: FaceId,
     direction: Vec3,
     distance: f64,
-) -> Result<SolidId, crate::OperationsError> {
+) -> Result<(SolidId, ExtrudeConstruction), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if tol.approx_eq(direction.length_squared(), 0.0) {
@@ -1052,28 +1122,25 @@ fn extrude_impl(
         direction.z() * distance,
     );
 
-    let (
-        input_verts,
-        input_positions,
-        input_oriented,
-        input_edge_ids,
-        _top_verts,
-        top_edge_ids,
-        vertical_edge_ids,
-    ) = extrude_wire_vertices_with(
+    let outer = extrude_wire_vertices_with(
         topo,
         input_wire_id,
         offset,
         /*pass_through_circles=*/ true,
     )?;
-    let n = input_verts.len();
+    let input_positions = &outer.positions;
+    let input_oriented = &outer.oriented;
+    let input_edge_ids = &outer.edge_ids;
+    let top_edge_ids = &outer.top_edge_ids;
+    let vertical_edge_ids = &outer.vertical_edge_ids;
+    let n = outer.oriented.len();
 
     // Detect CW-wound outer wire (e.g. from brepjs polygon approximations).
     // CW winding makes `edge_dir.cross(offset)` point inward instead of outward;
     // the side-face surface builder uses this to flip side normals. Sample
     // along the edges (not just vertices) so a two-edge arc+line loop, whose
     // two endpoints alone give zero signed area, still winds correctly.
-    let outer_winding_pts = winding_sample_points(topo, &input_oriented)?;
+    let outer_winding_pts = winding_sample_points(topo, input_oriented)?;
     let outer_is_cw = crate::winding::is_cw_winding(&outer_winding_pts, &offset);
 
     // Orient the cap-deriving normal by the extrusion direction, NOT the wire
@@ -1114,18 +1181,10 @@ fn extrude_impl(
     let mut bottom_inner_wire_ids = Vec::with_capacity(inner_wire_ids.len());
     let mut top_inner_wire_ids = Vec::with_capacity(inner_wire_ids.len());
 
-    let mut inner_wire_data: Vec<InnerWireData> = Vec::new();
+    let mut inner_wire_data: Vec<ExtrudedWire> = Vec::new();
 
     for &iw_id in &inner_wire_ids {
-        let (
-            _iw_verts,
-            iw_positions,
-            iw_oriented,
-            iw_edge_ids,
-            _iw_top_verts,
-            iw_top_edge_ids,
-            iw_vert_edge_ids,
-        ) = extrude_wire_vertices_with(
+        let inner = extrude_wire_vertices_with(
             topo,
             iw_id,
             offset,
@@ -1133,7 +1192,8 @@ fn extrude_impl(
         )?;
 
         // Bottom inner wire: reversed winding (same as outer wire reversal).
-        let reversed_inner_edges: Vec<OrientedEdge> = iw_oriented
+        let reversed_inner_edges: Vec<OrientedEdge> = inner
+            .oriented
             .iter()
             .rev()
             .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
@@ -1143,7 +1203,8 @@ fn extrude_impl(
         bottom_inner_wire_ids.push(topo.add_wire(bottom_inner_wire));
 
         // Top inner wire: same winding as bottom inner (reversed from original).
-        let top_inner_edges: Vec<OrientedEdge> = iw_top_edge_ids
+        let top_inner_edges: Vec<OrientedEdge> = inner
+            .top_edge_ids
             .iter()
             .map(|&eid| OrientedEdge::new(eid, true))
             .collect();
@@ -1151,13 +1212,7 @@ fn extrude_impl(
             Wire::new(top_inner_edges, true).map_err(crate::OperationsError::Topology)?;
         top_inner_wire_ids.push(topo.add_wire(top_inner_wire));
 
-        inner_wire_data.push(InnerWireData {
-            positions: iw_positions,
-            oriented: iw_oriented,
-            edge_ids: iw_edge_ids,
-            top_edge_ids: iw_top_edge_ids,
-            vertical_edge_ids: iw_vert_edge_ids,
-        });
+        inner_wire_data.push(inner);
     }
 
     let bottom_surface = match &input_surface {
@@ -1179,6 +1234,7 @@ fn extrude_impl(
     ));
     all_faces.push(bottom_face);
 
+    let mut outer_sides = Vec::with_capacity(n);
     for i in 0..n {
         let next = (i + 1) % n;
 
@@ -1225,10 +1281,14 @@ fn extrude_impl(
             topo.add_face(Face::new(side_wire_id, vec![], surface))
         };
         all_faces.push(side_face);
+        outer_sides.push(side_face);
     }
 
     // --- Inner wire side faces ---
-    for iwd in &inner_wire_data {
+    let mut holes = Vec::with_capacity(inner_wire_data.len());
+    for iwd in inner_wire_data {
+        let iw_n = iwd.positions.len();
+        let mut hole_sides = Vec::with_capacity(iw_n);
         let iw_n = iwd.positions.len();
 
         // Detect inner wire winding direction relative to the face normal.
@@ -1298,7 +1358,12 @@ fn extrude_impl(
                 topo.add_face(Face::new(side_wire_id, vec![], surface))
             };
             all_faces.push(side_face);
+            hole_sides.push(side_face);
         }
+        holes.push(ExtrudedHole {
+            inner: iwd,
+            sides: hole_sides,
+        });
     }
 
     // --- Top face ---
@@ -1352,7 +1417,139 @@ fn extrude_impl(
     let shell_id = topo.add_shell(shell);
     let solid = topo.add_solid(Solid::new(shell_id, vec![]));
 
-    Ok(solid)
+    Ok((
+        solid,
+        ExtrudeConstruction {
+            profile: face,
+            bottom: bottom_face,
+            top: top_face,
+            outer,
+            outer_sides,
+            holes,
+        },
+    ))
+}
+
+/// An extrusion with result-aware face, edge and vertex history (B18).
+#[derive(Debug, Clone)]
+pub struct ExtrudeEntityEvolution {
+    /// The extruded solid.
+    pub solid: SolidId,
+    /// Construction-derived face map: the profile carried into both caps
+    /// (`modified`, a one-to-two split) and every side wall generated from
+    /// it.
+    pub faces: crate::evolution::EvolutionMap,
+    /// Edge and vertex claims from the construction record.
+    pub boundary: crate::boundary_evolution::BoundaryEvolution,
+    /// `faces` and `boundary` compared against every result entity.
+    pub completeness: crate::boundary_evolution::EntityCompletenessReport,
+}
+
+/// Extrude a profile face and return construction-derived face, edge and
+/// vertex history, checked against the actual result entity sets.
+///
+/// The geometry is exactly [`extrude`]'s: both routes share one builder and
+/// one allocation order, so the legacy route's volumes, censuses and STEP
+/// bytes are unchanged. Every claim below comes from the builder's own
+/// source identities recorded while allocating — never from allocation
+/// order, traversal order, or coordinate matching:
+///
+/// - bottom and top caps are `modified` pieces of the profile face (a
+///   one-to-two split: the bottom shares the profile plane and boundary,
+///   the top is its translated copy);
+/// - every side wall is `generated` from the profile face;
+/// - a shared bottom edge or vertex (the same arena entity the profile
+///   uses) is `modified` from itself; a chord-split piece is `modified`
+///   from the closed edge it was cut from;
+/// - a top edge or vertex is `modified` from the bottom edge or vertex it
+///   was translated from;
+/// - a longitudinal (vertical) edge, or a split-new bottom vertex, is new
+///   geometry `generated` from the profile face.
+///
+/// # Errors
+///
+/// Returns the errors of [`extrude`], or
+/// [`crate::OperationsError::InvalidInput`] if the history fails to account for
+/// every result face, edge and vertex. Any failure rolls the topology back.
+pub fn extrude_with_entity_evolution(
+    topo: &mut Topology,
+    face: FaceId,
+    direction: Vec3,
+    distance: f64,
+) -> Result<ExtrudeEntityEvolution, crate::OperationsError> {
+    use std::collections::BTreeSet;
+
+    use crate::boundary_evolution::{
+        BoundaryEvent, BoundaryEvolution, completeness_for_result_solids, require_accounted,
+    };
+    use crate::evolution::EvolutionMap;
+
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let (solid, construction) = extrude_impl(topo, face, direction, distance)?;
+        let profile = construction.profile.index();
+        let mut faces = EvolutionMap::exact();
+        faces.add_modified(profile, construction.bottom.index());
+        faces.add_modified(profile, construction.top.index());
+        let mut boundary = BoundaryEvolution::default();
+        let mut record_wire = |wire: &ExtrudedWire, sides: &[FaceId]| {
+            for &side in sides {
+                faces.add_generated(profile, side.index());
+            }
+            let original: BTreeSet<usize> = wire
+                .original_verts
+                .iter()
+                .map(|vert| vert.index())
+                .collect();
+            for i in 0..wire.edge_ids.len() {
+                let bottom = wire.edge_ids[i].index();
+                boundary.edges.insert(
+                    bottom,
+                    BoundaryEvent::Modified {
+                        from: wire.source_edges[i].index(),
+                    },
+                );
+                boundary.edges.insert(
+                    wire.top_edge_ids[i].index(),
+                    BoundaryEvent::Modified { from: bottom },
+                );
+                boundary.edges.insert(
+                    wire.vertical_edge_ids[i].index(),
+                    BoundaryEvent::Generated {
+                        faces: vec![profile],
+                    },
+                );
+                let bottom_vert = wire.verts[i].index();
+                if original.contains(&bottom_vert) {
+                    boundary
+                        .vertices
+                        .insert(bottom_vert, BoundaryEvent::Modified { from: bottom_vert });
+                } else {
+                    boundary.vertices.insert(
+                        bottom_vert,
+                        BoundaryEvent::Generated {
+                            faces: vec![profile],
+                        },
+                    );
+                }
+                boundary.vertices.insert(
+                    wire.top_verts[i].index(),
+                    BoundaryEvent::Modified { from: bottom_vert },
+                );
+            }
+        };
+        record_wire(&construction.outer, &construction.outer_sides);
+        for hole in &construction.holes {
+            record_wire(&hole.inner, &hole.sides);
+        }
+        let completeness = completeness_for_result_solids(topo, &faces, &boundary, &[solid])?;
+        require_accounted("extrude", &completeness)?;
+        Ok(ExtrudeEntityEvolution {
+            solid,
+            faces,
+            boundary,
+            completeness,
+        })
+    })
 }
 
 /// Exact rational-Bezier NURBS for an unbounded conic arc over `[t0, t1]`.

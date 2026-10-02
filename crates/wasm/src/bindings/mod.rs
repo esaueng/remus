@@ -55,3 +55,5 @@ mod sequential_fillet_tests;
 
 #[cfg(test)]
 mod transaction_tests;
+#[cfg(test)]
+mod wire_traversal_contract_tests;
