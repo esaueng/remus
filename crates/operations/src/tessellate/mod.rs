@@ -19,6 +19,7 @@
     clippy::map_unwrap_or
 )]
 
+pub(crate) mod boundary_plan;
 pub(crate) mod edge_sampling;
 mod face;
 mod mesh_ops;

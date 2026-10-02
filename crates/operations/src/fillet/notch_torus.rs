@@ -22,8 +22,9 @@
 //! ```
 //!
 //! All computation here is pure (positions, frames, circles); topology
-//! assembly consumes the results. Only the concave-singleton,
-//! 90-degree-rectangular family is qualified; anything else returns `None`
+//! assembly consumes the results. Only the concave-singleton notch and
+//! convex-singleton rib-base 90-degree-rectangular families are qualified;
+//! anything else returns `None`
 //! and the caller keeps its typed refusal.
 
 use remus_math::curves::Circle3D;
@@ -33,16 +34,58 @@ use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 
 /// Qualified notch frame: cap outward normal plus the two wall outward
-/// normals (pairwise perpendicular). The concave edge's supports are always
-/// the two walls here (concave-singleton family).
+/// normals (pairwise perpendicular). The singleton edge's supports are
+/// the two walls in both qualified families.
 #[derive(Debug, Clone, Copy)]
 pub struct NotchFrame {
     /// Cap-face outward normal (unit).
     pub cap_outward: Vec3,
-    /// First wall outward normal (unit): carries the first convex edge.
+    /// First wall outward normal (unit): carries the first majority-side edge.
     pub wall_a: Vec3,
-    /// Second wall outward normal (unit): carries the second convex edge.
+    /// Second wall outward normal (unit): carries the second majority-side edge.
     pub wall_b: Vec3,
+}
+
+/// A support plane: outward unit normal plus the offset `n·p`, shared by
+/// coplanar faces from fuses (a lip and its plate meet flush, so one
+/// logical plane arrives as two face indices).
+#[derive(Debug, Clone, Copy)]
+pub struct SupportPlane {
+    /// Outward unit normal.
+    pub normal: Vec3,
+    /// Plane offset `n·p`.
+    pub d: f64,
+}
+
+/// Resolve an edge's two support faces to planes. Returns `None` when a
+/// normal or offset is missing (the caller keeps its typed refusal).
+fn support_planes(
+    faces: &[usize; 2],
+    outward: &DetHashMap<usize, Vec3>,
+    offsets: &DetHashMap<usize, f64>,
+) -> Option<[SupportPlane; 2]> {
+    let mut planes = Vec::with_capacity(2);
+    for f in faces {
+        planes.push(SupportPlane {
+            normal: outward.get(f).copied()?,
+            d: offsets.get(f).copied()?,
+        });
+    }
+    Some([planes[0], planes[1]])
+}
+
+/// Whether two support entries are the same logical plane: same outward
+/// direction (angular tolerance) and same finite offset (linear tolerance).
+pub fn same_plane(a: SupportPlane, b: SupportPlane, tol: Tolerance) -> bool {
+    a.d.is_finite()
+        && b.d.is_finite()
+        && (a.normal.dot(b.normal) - 1.0).abs() <= tol.angular
+        && (a.d - b.d).abs() <= tol.linear
+}
+
+/// Whether either of an edge's support planes matches the given plane.
+fn edge_has_plane(planes: &[SupportPlane; 2], plane: SupportPlane, tol: Tolerance) -> bool {
+    same_plane(planes[0], plane, tol) || same_plane(planes[1], plane, tol)
 }
 
 /// Qualify a mixed-side vertex as a 90-degree rectangular notch with a
@@ -50,16 +93,19 @@ pub struct NotchFrame {
 ///
 /// Inputs are per selected incident edge (exactly three): `edge_faces[k]`
 /// the two support faces of edge `k` (as arena indices), `outward` maps a
-/// support-face index to its outward unit normal, and `convex[k]` marks
-/// convex edges. Returns the frame (cap = the face incident to both convex
-/// edges; walls = the faces incident to the concave edge, each paired with
-/// its convex edge) plus the concave edge index, when exactly one edge is
-/// concave, exactly three distinct support planes appear, and the three
-/// planes are pairwise perpendicular. Otherwise returns `None` and the
-/// caller keeps its typed refusal.
+/// support-face index to its outward unit normal, `offsets` maps it to the
+/// plane offset `n·p`, and `convex[k]` marks convex edges. Faces sharing
+/// one logical plane (coplanar fuse splits) pair by plane, not by index.
+/// Returns the frame (cap = the plane incident to both convex edges; walls
+/// = the planes incident to the concave edge, each paired with its convex
+/// edge) plus the concave edge index, when exactly one edge is concave,
+/// exactly three distinct support planes appear, and the three planes are
+/// pairwise perpendicular. Otherwise returns `None` and the caller keeps
+/// its typed refusal.
 pub fn qualify_notch(
     edge_faces: &[[usize; 2]],
     outward: &DetHashMap<usize, Vec3>,
+    offsets: &DetHashMap<usize, f64>,
     convex: [bool; 3],
     tol: Tolerance,
 ) -> Option<(NotchFrame, usize)> {
@@ -76,40 +122,32 @@ pub fn qualify_notch(
         .filter_map(|(i, c)| c.then_some(i))
         .collect();
     let (ca, cb) = (convex_idx[0], convex_idx[1]);
-    // Cap: incident to both convex edges, not to the concave edge.
-    let cap = edge_faces[ca]
-        .iter()
-        .find(|f| edge_faces[cb].contains(f) && !edge_faces[concave_idx].contains(f))
-        .copied()?;
-    // Walls: the concave edge's faces, each paired with its convex edge.
-    let (wa, wb) = (edge_faces[concave_idx][0], edge_faces[concave_idx][1]);
-    if wa == wb {
+    let pa = support_planes(&edge_faces[ca], outward, offsets)?;
+    let pb = support_planes(&edge_faces[cb], outward, offsets)?;
+    let pc = support_planes(&edge_faces[concave_idx], outward, offsets)?;
+    // The concave edge's supports must be two distinct planes.
+    if same_plane(pc[0], pc[1], tol) {
         return None;
     }
-    let (wall_a, wall_b) = if edge_faces[ca].contains(&wa) && edge_faces[cb].contains(&wb) {
-        (wa, wb)
-    } else if edge_faces[ca].contains(&wb) && edge_faces[cb].contains(&wa) {
-        (wb, wa)
+    // Cap: a plane of a convex edge shared with the other convex edge,
+    // absent from the concave edge.
+    let cap = pa
+        .iter()
+        .find(|p| edge_has_plane(&pb, **p, tol) && !edge_has_plane(&pc, **p, tol))
+        .copied()?;
+    // Walls: the concave edge's planes, each paired with its convex edge.
+    let (wall_a, wall_b) = if edge_has_plane(&pa, pc[0], tol) && edge_has_plane(&pb, pc[1], tol) {
+        (pc[0], pc[1])
+    } else if edge_has_plane(&pa, pc[1], tol) && edge_has_plane(&pb, pc[0], tol) {
+        (pc[1], pc[0])
     } else {
         return None;
     };
     // Exactly three distinct support planes overall.
-    let mut distinct = vec![cap];
-    for f in [wall_a, wall_b] {
-        if !distinct.contains(&f) {
-            distinct.push(f);
-        }
-    }
-    if distinct.len() != 3 {
+    if same_plane(cap, wall_a, tol) || same_plane(cap, wall_b, tol) {
         return None;
     }
-    let (Some(cap_n), Some(na), Some(nb)) = (
-        outward.get(&cap).copied(),
-        outward.get(&wall_a).copied(),
-        outward.get(&wall_b).copied(),
-    ) else {
-        return None;
-    };
+    let (cap_n, na, nb) = (cap.normal, wall_a.normal, wall_b.normal);
     for (x, y) in [(cap_n, na), (cap_n, nb), (na, nb)] {
         if x.dot(y).abs() > tol.angular {
             return None;
@@ -122,6 +160,76 @@ pub fn qualify_notch(
             wall_b: nb,
         },
         concave_idx,
+    ))
+}
+
+/// Qualify a mixed-side vertex as a 90-degree rectangular rib-base with a
+/// convex singleton.
+///
+/// Mirror of [`qualify_notch`]: exactly one edge is convex (the singleton,
+/// e.g. a rib's vertical edge), the other two concave. The cap is the face
+/// shared by both concave edges and absent from the singleton's pair; the
+/// walls are the singleton's faces, each paired with its concave edge.
+/// Returns the frame plus the singleton (convex) edge index. The
+/// concave-singleton pattern is refused here (it belongs to
+/// [`qualify_notch`]); the two families are disjoint by construction.
+pub fn qualify_convex_singleton(
+    edge_faces: &[[usize; 2]],
+    outward: &DetHashMap<usize, Vec3>,
+    offsets: &DetHashMap<usize, f64>,
+    convex: [bool; 3],
+    tol: Tolerance,
+) -> Option<(NotchFrame, usize)> {
+    if edge_faces.len() != 3 {
+        return None;
+    }
+    if convex.iter().filter(|c| **c).count() != 1 {
+        return None;
+    }
+    let singleton_idx = convex.iter().position(|c| *c)?;
+    let concave_idx: Vec<usize> = convex
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| (!c).then_some(i))
+        .collect();
+    let (ca, cb) = (concave_idx[0], concave_idx[1]);
+    let pa = support_planes(&edge_faces[ca], outward, offsets)?;
+    let pb = support_planes(&edge_faces[cb], outward, offsets)?;
+    let ps = support_planes(&edge_faces[singleton_idx], outward, offsets)?;
+    // The singleton's supports must be two distinct planes.
+    if same_plane(ps[0], ps[1], tol) {
+        return None;
+    }
+    // Cap: a plane shared by both concave edges, absent from the singleton.
+    let cap = pa
+        .iter()
+        .find(|p| edge_has_plane(&pb, **p, tol) && !edge_has_plane(&ps, **p, tol))
+        .copied()?;
+    // Walls: the singleton's planes, each paired with its concave edge.
+    let (wall_a, wall_b) = if edge_has_plane(&pa, ps[0], tol) && edge_has_plane(&pb, ps[1], tol) {
+        (ps[0], ps[1])
+    } else if edge_has_plane(&pa, ps[1], tol) && edge_has_plane(&pb, ps[0], tol) {
+        (ps[1], ps[0])
+    } else {
+        return None;
+    };
+    // Exactly three distinct support planes overall.
+    if same_plane(cap, wall_a, tol) || same_plane(cap, wall_b, tol) {
+        return None;
+    }
+    let (cap_n, na, nb) = (cap.normal, wall_a.normal, wall_b.normal);
+    for (x, y) in [(cap_n, na), (cap_n, nb), (na, nb)] {
+        if x.dot(y).abs() > tol.angular {
+            return None;
+        }
+    }
+    Some((
+        NotchFrame {
+            cap_outward: cap_n,
+            wall_a: na,
+            wall_b: nb,
+        },
+        singleton_idx,
     ))
 }
 
@@ -144,39 +252,53 @@ pub struct NotchTorus {
     pub radius: f64,
     /// Frame used (cap + walls).
     pub frame: NotchFrame,
+    /// Convex-singleton mirror (rib base): ring center, stations, and seam
+    /// centers flip side with the ring (see [`notch_torus`]); the emitted
+    /// loop is oriented CCW about the parametric normal and the assembled
+    /// face marked reversed (the outward is negated there). False for the
+    /// concave-singleton notch.
+    pub mirror: bool,
 }
 
 /// Solve the torus corner at `vertex` with fillet radius `radius`.
 ///
-/// `dir_convex_a` / `dir_convex_b` are the unit edge directions from the
-/// vertex along the two convex edges; the concave edge direction is implied
-/// (cap-inward). Returns `None` for non-positive radius or degenerate input.
+/// `dir_pair_a` / `dir_pair_b` are the unit edge directions from the vertex
+/// along the two same-side edges (the convex pair for a notch, the concave
+/// pair for a rib mirror); the singleton direction is implied. With
+/// `mirror = false` the ring sits in the void (`C2 = V + R(wa+wb) - R·cap`,
+/// concave singleton); with `mirror = true` both center terms flip
+/// (`C2 = V - R(wa+wb) + R·cap`, convex singleton) and the patch keeps the
+/// opposite tube side. Returns `None` for non-positive radius or degenerate
+/// input.
 #[allow(clippy::too_many_arguments)]
 pub fn notch_torus(
     frame: NotchFrame,
     vertex: Point3,
-    dir_convex_a: Vec3,
-    dir_convex_b: Vec3,
+    dir_pair_a: Vec3,
+    dir_pair_b: Vec3,
     radius: f64,
+    mirror: bool,
     tol: Tolerance,
 ) -> Option<NotchTorus> {
     if radius <= tol.linear {
         return None;
     }
-    // Ring center: one radius into the void along each wall outward plus one
-    // radius off the cap along its outward normal.
-    let ring_center = vertex + (frame.wall_a + frame.wall_b) * radius - frame.cap_outward * radius;
+    let s = if mirror { -1.0 } else { 1.0 };
+    // Ring center: one radius along each wall outward plus one radius off
+    // the cap (signs flip together for the mirror).
+    let ring_center =
+        vertex + (frame.wall_a + frame.wall_b) * (s * radius) - frame.cap_outward * (s * radius);
     let torus =
         ToroidalSurface::with_axis(ring_center, 2.0 * radius, radius, frame.cap_outward).ok()?;
-    // Contact crossings: each convex stripe's wall-contact meets the concave
-    // stripe's wall-contact one radius along the convex edge from the vertex
-    // and one radius off the cap.
-    let m1 = vertex + dir_convex_a * radius - frame.cap_outward * radius;
-    let m2 = vertex + dir_convex_b * radius - frame.cap_outward * radius;
-    // Station/cap-contact points: one radius along the convex edge and one
+    // Contact crossings: each pair stripe's wall-contact meets the
+    // singleton's wall-contact one radius along the pair edge from the
+    // vertex and one radius off the cap.
+    let m1 = vertex + dir_pair_a * radius - frame.cap_outward * (s * radius);
+    let m2 = vertex + dir_pair_b * radius - frame.cap_outward * (s * radius);
+    // Station/cap-contact points: one radius along the pair edge and one
     // radius off the wall into the material.
-    let b1 = vertex + dir_convex_a * radius - frame.wall_a * radius;
-    let b2 = vertex + dir_convex_b * radius - frame.wall_b * radius;
+    let b1 = vertex + dir_pair_a * radius - frame.wall_a * (s * radius);
+    let b2 = vertex + dir_pair_b * radius - frame.wall_b * (s * radius);
     Some(NotchTorus {
         ring_center,
         torus,
@@ -186,6 +308,7 @@ pub fn notch_torus(
         b2,
         radius,
         frame,
+        mirror,
     })
 }
 
@@ -258,33 +381,106 @@ pub fn oriented_seam(
     let flipped = Circle3D::new(circle.center(), -circle.normal(), circle.radius()).ok()?;
     normalize_ccw(&flipped).map(|trim| (flipped, trim))
 }
-/// The four patch-loop seam arcs in loop order M1 -> B1 -> B2 -> M2 -> M1:
-/// convex-A station quarter, cap tangency quarter, convex-B station
-/// quarter, concave station quarter. Each arc is stored in loop-traversal
-/// direction. Returns `None` if any arc degenerates.
+/// Split points where a cap-tangency arc must break at coplanar seams.
+///
+/// `circle`/`trim` is the tangency arc (`trim` a CCW span under pi, as
+/// returned by [`oriented_seam`]); `segments` are straight cap-plane seam
+/// segments as `(start, end)` pairs. Returns the circle/segment
+/// intersections strictly inside both the segments and the arc span,
+/// sorted along the arc and deduplicated.
+///
+/// A tangency arc crossing a coplanar face boundary (a lip fused flush
+/// with its plate splits the cap plane in two) must split there, or
+/// neither cap face can adopt its half and the shell stays open. Pure
+/// geometry for the torus emission; uncrossed arcs return empty and the
+/// caller keeps its single span.
+pub fn split_tangency_span(
+    circle: &Circle3D,
+    trim: (f64, f64),
+    segments: &[(Point3, Point3)],
+    tol: Tolerance,
+) -> Vec<Point3> {
+    let (t0, t1) = trim;
+    let span = t1 - t0;
+    if !(span > 0.0 && span < std::f64::consts::PI) {
+        return Vec::new();
+    }
+    let center = circle.center();
+    let radius = circle.radius();
+    if radius <= tol.linear {
+        return Vec::new();
+    }
+    let mut hits: Vec<(f64, Point3)> = Vec::new();
+    for &(p0, p1) in segments {
+        let d = p1 - p0;
+        let len_sq = d.dot(d);
+        if len_sq <= tol.linear * tol.linear {
+            continue;
+        }
+        // |P0 + t·D − C|² = r².
+        let oc = p0 - center;
+        let a = len_sq;
+        let b = 2.0 * d.dot(oc);
+        let c = oc.dot(oc) - radius * radius;
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            continue;
+        }
+        let root = disc.sqrt();
+        for t in [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)] {
+            // Strictly interior: endpoints are already loop vertices, and
+            // grazing the seam end keeps the single span.
+            let margin = tol.linear / len_sq.sqrt();
+            if t <= margin || t >= 1.0 - margin {
+                continue;
+            }
+            let q = p0 + d * t;
+            let rel = (circle.project(q) - t0).rem_euclid(std::f64::consts::TAU);
+            if rel < tol.linear / radius || rel > span - tol.linear / radius {
+                continue;
+            }
+            hits.push((rel, q));
+        }
+    }
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<Point3> = Vec::new();
+    for (_, q) in hits {
+        if out.iter().all(|p: &Point3| (*p - q).length() > tol.linear) {
+            out.push(q);
+        }
+    }
+    out
+}
+/// pair-A station quarter, cap tangency quarter, pair-B station quarter,
+/// singleton station quarter. Each arc is stored in loop-traversal
+/// direction. Returns `None` if any arc degenerates. `mirror` selects the
+/// rib-base side (station-circle centers and tangency foot flip with the
+/// ring); the loop topology and helpers are shared.
 pub fn seam_arcs(
     corner: &NotchTorus,
-    dir_convex_a: Vec3,
-    dir_convex_b: Vec3,
-    dir_concave: Vec3,
+    dir_pair_a: Vec3,
+    dir_pair_b: Vec3,
+    dir_singleton: Vec3,
+    mirror: bool,
     tol: Tolerance,
 ) -> Option<[SeamArc; 4]> {
     let r = corner.radius;
     if r <= tol.linear {
         return None;
     }
-    // T1 station circle: plane perpendicular to the convex-A edge at the
+    let s = if mirror { -1.0 } else { 1.0 };
+    // T1 station circle: plane perpendicular to the pair-A edge at the
     // station, centered on the stripe axis (M1 pulled one radius off wall A).
-    let t1_center = corner.m1 - corner.frame.wall_a * r;
+    let t1_center = corner.m1 - corner.frame.wall_a * (s * r);
     // T2 station circle: mirror on wall B.
-    let t2_center = corner.m2 - corner.frame.wall_b * r;
+    let t2_center = corner.m2 - corner.frame.wall_b * (s * r);
     // T3 station circle: cap-parallel plane through the ring center.
     let t3_center = corner.ring_center;
     // Cap tangency circle: cap plane through the ring-center foot, radius 2R.
-    let foot = corner.ring_center + corner.frame.cap_outward * r;
-    let s1 = seam_arc(t1_center, dir_convex_a, r, corner.m1, corner.b1, tol)?;
-    let s2 = seam_arc(t2_center, dir_convex_b, r, corner.b2, corner.m2, tol)?;
-    let s3 = seam_arc(t3_center, dir_concave, r, corner.m2, corner.m1, tol)?;
+    let foot = corner.ring_center + corner.frame.cap_outward * (s * r);
+    let s1 = seam_arc(t1_center, dir_pair_a, r, corner.m1, corner.b1, tol)?;
+    let s2 = seam_arc(t2_center, dir_pair_b, r, corner.b2, corner.m2, tol)?;
+    let s3 = seam_arc(t3_center, dir_singleton, r, corner.m2, corner.m1, tol)?;
     let s4 = seam_arc(
         foot,
         corner.frame.cap_outward,
@@ -302,22 +498,56 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn support_plane_tolerance_does_not_grow_with_translation() {
+        let (mut faces, mut outward, mut offsets, convex) = bracket_input();
+        outward.insert(3, outward[&0]);
+        faces[1][0] = 3;
+        for translation in [0.0, 1e6, 1e9] {
+            offsets.insert(0, translation);
+            offsets.insert(3, translation);
+            assert!(qualify_notch(&faces, &outward, &offsets, convex, Tolerance::new()).is_some());
+            offsets.insert(3, translation + 0.01);
+            assert!(qualify_notch(&faces, &outward, &offsets, convex, Tolerance::new()).is_none());
+        }
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            offsets.insert(3, offset);
+            assert!(qualify_notch(&faces, &outward, &offsets, convex, Tolerance::new()).is_none());
+        }
+    }
+
     /// Bottom notch vertex of the L-bracket, R=1: cap B (face 0), walls S1
     /// (face 1) and S2 (face 2); edges: e1 (B,S1) convex +X, e2 (B,S2)
     /// convex +Y, e3 (S1,S2) concave +Z.
-    fn bracket_input() -> ([[usize; 2]; 3], DetHashMap<usize, Vec3>, [bool; 3]) {
+    #[allow(clippy::type_complexity)]
+    fn bracket_input() -> (
+        [[usize; 2]; 3],
+        DetHashMap<usize, Vec3>,
+        DetHashMap<usize, f64>,
+        [bool; 3],
+    ) {
         let mut outward = DetHashMap::default();
         outward.insert(0, Vec3::new(0.0, 0.0, -1.0));
         outward.insert(1, Vec3::new(0.0, 1.0, 0.0));
         outward.insert(2, Vec3::new(1.0, 0.0, 0.0));
-        ([[0, 1], [0, 2], [1, 2]], outward, [true, true, false])
+        // Offsets n.V for V=(8,8,0).
+        let mut offsets = DetHashMap::default();
+        offsets.insert(0, 0.0);
+        offsets.insert(1, 8.0);
+        offsets.insert(2, 8.0);
+        (
+            [[0, 1], [0, 2], [1, 2]],
+            outward,
+            offsets,
+            [true, true, false],
+        )
     }
 
     #[test]
     fn ring_and_stations_match_reference() {
         let tol = Tolerance::new();
-        let (faces, outward, convex) = bracket_input();
-        let (frame, concave_idx) = qualify_notch(&faces, &outward, convex, tol).unwrap();
+        let (faces, outward, offsets, convex) = bracket_input();
+        let (frame, concave_idx) = qualify_notch(&faces, &outward, &offsets, convex, tol).unwrap();
         assert_eq!(concave_idx, 2);
         let nt = notch_torus(
             frame,
@@ -325,6 +555,7 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             1.0,
+            false,
             tol,
         )
         .unwrap();
@@ -344,14 +575,15 @@ mod tests {
     #[test]
     fn seams_are_exact_quarter_circles() {
         let tol = Tolerance::new();
-        let (faces, outward, convex) = bracket_input();
-        let (frame, _) = qualify_notch(&faces, &outward, convex, tol).unwrap();
+        let (faces, outward, offsets, convex) = bracket_input();
+        let (frame, _) = qualify_notch(&faces, &outward, &offsets, convex, tol).unwrap();
         let nt = notch_torus(
             frame,
             Point3::new(8.0, 8.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             1.0,
+            false,
             tol,
         )
         .unwrap();
@@ -360,6 +592,7 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
+            false,
             tol,
         )
         .unwrap();
@@ -376,14 +609,15 @@ mod tests {
     #[test]
     fn seams_are_g1_tangent_to_stripes_and_supports() {
         let tol = Tolerance::new();
-        let (faces, outward, convex) = bracket_input();
-        let (frame, _) = qualify_notch(&faces, &outward, convex, tol).unwrap();
+        let (faces, outward, offsets, convex) = bracket_input();
+        let (frame, _) = qualify_notch(&faces, &outward, &offsets, convex, tol).unwrap();
         let nt = notch_torus(
             frame,
             Point3::new(8.0, 8.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             1.0,
+            false,
             tol,
         )
         .unwrap();
@@ -406,14 +640,15 @@ mod tests {
     #[test]
     fn oriented_seams_span_quarters() {
         let tol = Tolerance::new();
-        let (faces, outward, convex) = bracket_input();
-        let (frame, _) = qualify_notch(&faces, &outward, convex, tol).unwrap();
+        let (faces, outward, offsets, convex) = bracket_input();
+        let (frame, _) = qualify_notch(&faces, &outward, &offsets, convex, tol).unwrap();
         let nt = notch_torus(
             frame,
             Point3::new(8.0, 8.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             1.0,
+            false,
             tol,
         )
         .unwrap();
@@ -422,6 +657,7 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
+            false,
             tol,
         )
         .unwrap();
@@ -447,24 +683,236 @@ mod tests {
     #[test]
     fn qualify_accepts_concave_singleton_rectangular_only() {
         let tol = Tolerance::new();
-        let (faces, outward, _) = bracket_input();
+        let (faces, outward, offsets, _) = bracket_input();
         // Concave singleton (e3) qualifies, whichever edge is concave.
-        assert!(qualify_notch(&faces, &outward, [true, true, false], tol).is_some());
-        assert!(qualify_notch(&faces, &outward, [false, true, true], tol).is_some());
-        assert!(qualify_notch(&faces, &outward, [true, false, true], tol).is_some());
-        // All-convex, all-concave, two-concave (convex singleton / spike):
-        // refused (later families).
-        assert!(qualify_notch(&faces, &outward, [true, true, true], tol).is_none());
-        assert!(qualify_notch(&faces, &outward, [false, false, false], tol).is_none());
-        assert!(qualify_notch(&faces, &outward, [true, false, false], tol).is_none());
+        assert!(qualify_notch(&faces, &outward, &offsets, [true, true, false], tol).is_some());
+        assert!(qualify_notch(&faces, &outward, &offsets, [false, true, true], tol).is_some());
+        assert!(qualify_notch(&faces, &outward, &offsets, [true, false, true], tol).is_some());
+        // All-convex, all-concave, two-concave (convex singleton): refused
+        // here — the convex singleton is the mirror family's pattern (see
+        // qualify_convex_singleton); the two families are disjoint.
+        assert!(qualify_notch(&faces, &outward, &offsets, [true, true, true], tol).is_none());
+        assert!(qualify_notch(&faces, &outward, &offsets, [false, false, false], tol).is_none());
+        assert!(qualify_notch(&faces, &outward, &offsets, [true, false, false], tol).is_none());
+        // The notch pattern itself is refused by the mirror qualifier.
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [true, true, false], tol)
+                .is_none()
+        );
         // Wrong edge count: refused.
-        assert!(qualify_notch(&faces[..2], &outward, [true, true, false], tol).is_none());
+        assert!(qualify_notch(&faces[..2], &outward, &offsets, [true, true, false], tol).is_none());
         // Oblique walls: refused.
         let mut oblique = outward.clone();
         oblique.insert(2, Vec3::new(1.0, 1.0, 0.0).normalize().unwrap());
-        assert!(qualify_notch(&faces, &oblique, [true, true, false], tol).is_none());
+        assert!(qualify_notch(&faces, &oblique, &offsets, [true, true, false], tol).is_none());
         // Shared-face degeneracy (all edges on two faces): refused.
         let degenerate = [[0usize, 1], [0, 1], [0, 1]];
-        assert!(qualify_notch(&degenerate, &outward, [true, true, false], tol).is_none());
+        assert!(qualify_notch(&degenerate, &outward, &offsets, [true, true, false], tol).is_none());
+        // Coplanar fuse split: the cap arrives as two faces (0 and 3) on
+        // one logical plane — still qualifies with the same frame.
+        let mut outward_split = outward;
+        outward_split.insert(3, Vec3::new(0.0, 0.0, -1.0));
+        let mut offsets_split = offsets;
+        offsets_split.insert(3, 0.0);
+        let split_faces = [[0usize, 1], [3, 2], [1, 2]];
+        let (split_frame, _) = qualify_notch(
+            &split_faces,
+            &outward_split,
+            &offsets_split,
+            [true, true, false],
+            tol,
+        )
+        .unwrap();
+        assert!((split_frame.cap_outward - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-9);
+        // Parallel-but-offset splits are distinct planes: refused.
+        let mut offsets_shifted = offsets_split.clone();
+        offsets_shifted.insert(3, 5.0);
+        assert!(
+            qualify_notch(
+                &split_faces,
+                &outward_split,
+                &offsets_shifted,
+                [true, true, false],
+                tol
+            )
+            .is_none()
+        );
+    }
+
+    /// Rib-base vertex V=(12,10,6), R=1: cap P (face 0, z=6), wall A
+    /// (face 1, x=12), wall B (face 2, y=10); edges: a (P,A) concave +Y,
+    /// b (P,B) concave +X, c (A,B) convex +Z (the singleton).
+    #[allow(clippy::type_complexity)]
+    fn rib_input() -> (
+        [[usize; 2]; 3],
+        DetHashMap<usize, Vec3>,
+        DetHashMap<usize, f64>,
+        [bool; 3],
+    ) {
+        let mut outward = DetHashMap::default();
+        outward.insert(0, Vec3::new(0.0, 0.0, 1.0));
+        outward.insert(1, Vec3::new(-1.0, 0.0, 0.0));
+        outward.insert(2, Vec3::new(0.0, -1.0, 0.0));
+        // Offsets n.V for V=(12,10,6).
+        let mut offsets = DetHashMap::default();
+        offsets.insert(0, 6.0);
+        offsets.insert(1, -12.0);
+        offsets.insert(2, -10.0);
+        (
+            [[0, 1], [0, 2], [1, 2]],
+            outward,
+            offsets,
+            [false, false, true],
+        )
+    }
+
+    #[test]
+    fn qualify_accepts_convex_singleton_rectangular_only() {
+        let tol = Tolerance::new();
+        let (faces, outward, offsets, _) = rib_input();
+        // Convex singleton qualifies, whichever edge is convex.
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [false, false, true], tol)
+                .is_some()
+        );
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [true, false, false], tol)
+                .is_some()
+        );
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [false, true, false], tol)
+                .is_some()
+        );
+        // All-convex, all-concave, two-convex (concave singleton): refused
+        // here — the concave singleton belongs to qualify_notch.
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [true, true, true], tol).is_none()
+        );
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [false, false, false], tol)
+                .is_none()
+        );
+        assert!(
+            qualify_convex_singleton(&faces, &outward, &offsets, [false, true, true], tol)
+                .is_none()
+        );
+        // Wrong edge count: refused.
+        assert!(
+            qualify_convex_singleton(&faces[..2], &outward, &offsets, [false, false, true], tol)
+                .is_none()
+        );
+        // Oblique walls: refused.
+        let mut oblique = outward.clone();
+        oblique.insert(2, Vec3::new(1.0, 1.0, 0.0).normalize().unwrap());
+        assert!(
+            qualify_convex_singleton(&faces, &oblique, &offsets, [false, false, true], tol)
+                .is_none()
+        );
+        // Shared-face degeneracy (all edges on two faces): refused.
+        let degenerate = [[0usize, 1], [0, 1], [0, 1]];
+        assert!(
+            qualify_convex_singleton(&degenerate, &outward, &offsets, [false, false, true], tol)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mirror_ring_and_stations_match_reference() {
+        let tol = Tolerance::new();
+        let (faces, outward, offsets, convex) = rib_input();
+        let (frame, singleton_idx) =
+            qualify_convex_singleton(&faces, &outward, &offsets, convex, tol).unwrap();
+        assert_eq!(singleton_idx, 2);
+        let nt = notch_torus(
+            frame,
+            Point3::new(12.0, 10.0, 6.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+            true,
+            tol,
+        )
+        .unwrap();
+        assert!(nt.mirror);
+        // Independent-reference pins: C2'=(13,11,7), major 2, tube 1.
+        for (got, want) in [
+            (nt.ring_center, Point3::new(13.0, 11.0, 7.0)),
+            (nt.m1, Point3::new(12.0, 11.0, 7.0)),
+            (nt.m2, Point3::new(13.0, 10.0, 7.0)),
+            (nt.b1, Point3::new(11.0, 11.0, 6.0)),
+            (nt.b2, Point3::new(13.0, 9.0, 6.0)),
+        ] {
+            assert!((got - want).length() < 1e-9, "got {got:?}, want {want:?}");
+        }
+        assert!((nt.torus.major_radius() - 2.0).abs() < 1e-12);
+        assert!((nt.torus.minor_radius() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tangency_split_finds_coplanar_seam_crossing() {
+        let tol = Tolerance::new();
+        // Lip S4': foot (0,41,7), r=2, B1=(0,41,5) -> B2=(0,43,7).
+        let circle =
+            Circle3D::new(Point3::new(0.0, 41.0, 7.0), Vec3::new(-1.0, 0.0, 0.0), 2.0).unwrap();
+        let b1 = Point3::new(0.0, 41.0, 5.0);
+        let b2 = Point3::new(0.0, 43.0, 7.0);
+        let (arc, trim) = oriented_seam(&circle, b1, b2).unwrap();
+        // Coplanar seam (plate-west/lip-west boundary) through the disk.
+        let seam = [(Point3::new(0.0, 42.0, 6.0), Point3::new(0.0, 50.0, 6.0))];
+        let qs = split_tangency_span(&arc, trim, &seam, tol);
+        assert_eq!(qs.len(), 1, "one crossing expected, got {qs:?}");
+        let want = Point3::new(0.0, 41.0 + 3.0_f64.sqrt(), 6.0);
+        assert!(
+            (qs[0] - want).length() < 1e-9,
+            "Q must be the arc/seam crossing, got {:?}",
+            qs[0]
+        );
+        // A seam missing the disk splits nothing.
+        let far = [(Point3::new(0.0, 60.0, 6.0), Point3::new(0.0, 70.0, 6.0))];
+        assert!(split_tangency_span(&arc, trim, &far, tol).is_empty());
+        // A segment ending at the arc endpoint keeps the single span.
+        let touch = [(Point3::new(0.0, 41.0, 5.0), Point3::new(0.0, 41.0, 0.0))];
+        assert!(split_tangency_span(&arc, trim, &touch, tol).is_empty());
+    }
+
+    #[test]
+    fn mirror_seams_are_exact_quarter_circles() {
+        let tol = Tolerance::new();
+        let (faces, outward, offsets, convex) = rib_input();
+        let (frame, _) = qualify_convex_singleton(&faces, &outward, &offsets, convex, tol).unwrap();
+        let nt = notch_torus(
+            frame,
+            Point3::new(12.0, 10.0, 6.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+            true,
+            tol,
+        )
+        .unwrap();
+        let [s1, _, s3, s4] = seam_arcs(
+            &nt,
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            true,
+            tol,
+        )
+        .unwrap();
+        // T1 station: center (11,11,7), axis +Y, M1'->B1'.
+        assert!((s1.circle.center() - Point3::new(11.0, 11.0, 7.0)).length() < 1e-9);
+        // T3 station: center (13,11,7), axis +Z (the convex singleton).
+        assert!((s3.circle.center() - Point3::new(13.0, 11.0, 7.0)).length() < 1e-9);
+        // Tangency: center (13,11,6), radius 2, B1'->B2'.
+        assert!((s4.circle.center() - Point3::new(13.0, 11.0, 6.0)).length() < 1e-9);
+        assert!((s4.circle.radius() - 2.0).abs() < 1e-12);
+        // Every seam is a quarter turn (the volume route's patch signature).
+        for s in [&s1, &s3, &s4] {
+            let (_, (t0, t1)) = oriented_seam(&s.circle, s.start, s.end).unwrap();
+            assert!(
+                (t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+                "mirror seams must span pi/2"
+            );
+        }
     }
 }

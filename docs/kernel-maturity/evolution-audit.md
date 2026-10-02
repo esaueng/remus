@@ -43,7 +43,8 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Grid pattern | Total F/E/V construction lineage for the journaled grid path (native-only): original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, placement, validation and overlap policy unchanged | `crates/operations/tests/regress_grid_pattern_evolution_fev.rs` (census 1x1/1xN/Nx1/multi, box/cylinder/hollow-box at 1e-3/1/1e3, touching/disjoint, consistent body+direction transform, translated row/column geometry, original-only naming, arena round-trip/restore/subsequent edit, typed refusals with rollback and stale-slot growth); `crates/operations/src/pattern.rs` `grid_pattern_with_entity_history`, `journal_ops.rs` `grid_pattern_journaled` | Browser exposure (direct/batch WASM) remains a separate integration task; broader blend/shell/split E/V beyond their faces-only scope |
 | Default V2 offset | F/E/V: one-to-one construction face map, plus edge/vertex claims induced from it by exact incidence and checked against the actual result sets; shared incidence stays typed unresolved | `crates/operations/tests/qualify_offset_entity_evolution.rs`; `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution`; WASM `offset_journaled_typed_unresolved_survives_every_envelope` | Torus seams and sphere equator rings need engine-level edge records; arc-joint and self-intersection-removal provenance; curved offsets refuse from 100 units (B55) |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
-| Extrude / revolve / sweep / loft / section | No family-wide total journal coverage established by this audit | Construction modules in `crates/operations/src/` | Construction attribution for caps, side faces and boundary entities; one family per slice |
+| Extrude | Total F/E/V construction lineage for the journaled extrusion path: both caps Modified from the profile face, every side wall Generated from it, shared/split/translated boundary entities Modified from source, longitudinal edges and split-new vertices Generated from the profile; zero Deleted/Unresolved on the qualified classes, Construction origin; legacy signature, geometry and material results unchanged | `crates/operations/tests/regress_extrusion_evolution_fev.rs` (profile-class censuses with independent oracles, dropped/phantom checker proofs, split naming, edit/arena/checkpoint evidence, atomic refusals, legacy STEP parity); WASM `extrude_journaled_has_direct_batch_parity_census_and_rollback`; `crates/operations/src/extrude.rs` `ExtrudeConstruction`/`extrude_with_entity_evolution`, `journal_ops.rs` `extrude_journaled` | Revolve/sweep/loft history remains open |
+| Revolve / sweep / loft / section | No family-wide total journal coverage established by this audit | Construction modules in `crates/operations/src/` | Construction attribution for caps, side faces and boundary entities; one family per slice |
 
 `record_barrier_over_solid` has no production operation-wrapper callers in
 this baseline. Its production caller is the explicit WASM naming barrier
@@ -206,6 +207,89 @@ identically, so this change did not cause it. It is pinned as bridge row
 B55 by the ignored ready-repro in
 `crates/offset/tests/regress_curved_offset_scale.rs`.
 
+## Extrusion boundary history (B18, 2026-09-30)
+
+This slice closes the extrusion family: every result face, edge and vertex
+is attributed from the builder's own construction record, and the claim is
+checked against the actual result entity sets. Extrusion geometry is
+unchanged — both routes share one builder and one allocation order.
+
+The public producers and consumers traced for this family are these:
+
+- **Native producers.** `extrude` (signatures and behavior preserved; it
+  builds the construction record and drops it) and the new
+  `extrude_with_entity_evolution`.
+- **Native journal wrappers.** `extrude_journaled` (kind `extrude`),
+  returning the shared `JournaledEntityOp`; the native facade adds
+  `Model::extrude_journaled`.
+- **WASM.** Additive `extrudeJournaled` on the direct binding,
+  `executeBatch` and `executeBatchV2`, with the shared `evolution` field
+  (every event, typed reasons, completeness report). The legacy `extrude`
+  and `extrudeDetailed` contracts are unchanged.
+
+Unlike the offset family — whose boundary claims are induced from an exact
+face map by incidence — extrusion records construction provenance while
+allocating. `extrude_impl` returns an `ExtrudeConstruction` with per-wire,
+per-position source identities (pre-split profile edge, shared-or-split-new
+bottom vertex by id-set membership, translated top edge/vertex, longitudinal
+edge), and `extrude_with_entity_evolution` translates it without re-running
+or re-matching anything:
+
+| Result entity | Claim |
+|---|---|
+| Bottom and top caps | `Modified` from the profile face (a one-to-two split) |
+| Every side wall | `Generated` from the profile face |
+| Shared bottom edge/vertex (same arena entity as the profile) | `Modified` from itself |
+| Chord-split piece | `Modified` from the closed edge it was cut from |
+| Translated top edge/vertex | `Modified` from the bottom edge/vertex it was copied from |
+| Longitudinal edge, split-new bottom vertex | `Generated` from the profile face |
+
+No coordinate, tolerance or geometric proximity is consulted by the
+producer. `EntityCompletenessReport` extends the same gate as the offset
+slice: the producer refuses, and rolls back, any history that omits a
+result entity or claims one outside the result. Nothing is deleted and no
+qualified class leaves anything unresolved.
+
+Evidence is in `crates/operations/tests/regress_extrusion_evolution_fev.rs`:
+
+- **Qualified classes.** Polygons (square at 1e-3/1/1e3 both directions,
+  triangle, CW and reversed winding), holed profiles (square hole, exact
+  single-wall circle hole, chord-split non-conic hole), circles and
+  full-turn ellipses (exact π·r²·h and census-checked), supported conics
+  (half-disc forward/reversed, half-ellipse forward/reversed, parabolic
+  segment against its Archimedean closed form), NURBS profiles (NURBS cap
+  surface, interpolated arc), and the bounded supported closed-edge
+  splitting cases (outer loop and hole, every piece `Modified` from the
+  loop edge, exactly the seam vertex shared). Each runs the total-history
+  census plus an independent geometric oracle per claim (caps by plane
+  coincidence in either orientation, shared entities by pre-extrusion id
+  sets, translated copies by offset-shifted proximity, split pieces by
+  on-curve evaluation).
+- **Incomplete records.** A dropped face, edge or vertex record and a
+  phantom claim per kind are each reported and refused.
+- **Typed unresolved.** Production extrusion resolves everything, so the
+  witness path is proven synthetically: an explicit `ambiguous_incidence`
+  record counts as accounted but blocks `resolved`, and stays visible in
+  `BoundaryEvolution::unresolved`. No profile class needed a production
+  unresolved witness.
+- **Split lineage.** Profile face, edge and vertex references chase to
+  `BoundMany` over their bottom and top pieces with `Construction`
+  provenance; the entry's own output anchors bind every result entity.
+- **Persistence.** References survive a subsequent `move_faces_journaled`
+  edit, an arena round trip into a decoy-seeded session (ordinal chase
+  needs no live profile face), and fail typed across a checkpoint restore
+  that truncates the entry.
+- **Geometry and refusal.** The history path is STEP-identical to the
+  legacy route on every qualified class, with matching volume and census.
+  Mid-build (malformed hole seam), pre-build (zero direction/distance) and
+  foreign-handle refusals roll back topology, attributes, journal and
+  references together, publish no entry, and leave the next success clean.
+
+The WASM contract `extrude_journaled_has_direct_batch_parity_census_and_rollback`
+checks the rectangle fixture's exact event roles through the direct
+binding, `executeBatch` and `executeBatchV2`, with identical payloads and
+a typed atomic refusal on every envelope.
+
 ## Hosted proof snapshot
 
 These are historical run results, not proof of the next PR's head. Refresh
@@ -251,18 +335,19 @@ This slice neither bypasses the failing test nor changes CI routing.
    complete merge/deletion history. Extend multi-face regions and curved supports
    only with construction boundary correspondence.
 3. Extend one B18 family at a time. **Done: default V2 offset F/E/V
-   (2026-09-25, above). Done: journaled linear-pattern F/E/V (this slice,
-   above). Done: journaled circular-pattern F/E/V (this slice, above). Done:
-   journaled grid-pattern F/E/V, native-only (this slice, above).**
-   Remaining, in order: shell boundary maps
-   (`shell_op` rebuilds both skins and rims from polygon specs, so it needs
-   its own spec-to-edge records), split/section boundaries, then sweep-family
-   cap attribution. Face-only entries that still sever edge and vertex
-   references are fillet/chamfer creation, shell and
-   plane split. Offset residuals are torus seams and sphere equator rings, which
-   need edge records from the offset engine's intersection phase, plus
-   arc-joint and self-intersection-removal provenance. Preserve explicit
-   unresolved records outside each qualified domain.
+    (2026-09-25, above). Done: journaled linear-pattern F/E/V (this slice,
+    above). Done: journaled circular-pattern F/E/V (this slice, above). Done:
+    journaled grid-pattern F/E/V, native-only (this slice, above). Done:
+    extrusion F/E/V (2026-09-30, above).**
+    Remaining, in order: shell boundary maps
+    (`shell_op` rebuilds both skins and rims from polygon specs, so it needs
+    its own spec-to-edge records), split/section boundaries, then
+    revolve/sweep/loft cap attribution. Face-only entries that still sever edge and vertex
+    references are fillet/chamfer creation and
+    plane split. Offset residuals are torus seams and sphere equator rings, which
+    need edge records from the offset engine's intersection phase, plus
+    arc-joint and self-intersection-removal provenance. Preserve explicit
+    unresolved records outside each qualified domain.
 4. Run 2.4d's merged quadric integration matrix and reconcile its existing
    exit gate before attempting broader arrangements. Continue the 2.6/2.7
    named scale and tangency gaps separately.

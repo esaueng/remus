@@ -1782,6 +1782,16 @@
       "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
     },
     {
+      "js": "extrudeJournaled",
+      "rust": "extrude_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
       "js": "offsetSolid",
       "rust": "offset_solid",
       "file": "bindings/operations.rs",

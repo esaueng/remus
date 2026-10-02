@@ -719,3 +719,27 @@ fn bernstein_residual_bounds_include_interior_deviation_and_weight_scaling() {
         assert!((actual.evaluate(t) - other.evaluate(t)).length() <= bound);
     }
 }
+
+#[test]
+fn fraction_is_the_hand_computed_affine_coordinate() {
+    // (0.75-0.5)/(1.0-0.5) = 0.5 exactly.
+    near(fraction(0.75, (0.5, 1.0)).unwrap(), 0.5);
+    // Endpoints map to 0 and 1, not to the constant mutants.
+    near(fraction(0.5, (0.5, 1.0)).unwrap(), 0.0);
+    near(fraction(1.0, (0.5, 1.0)).unwrap(), 1.0);
+    // A quarter point: (0.0-(-1.0))/(1.0-(-1.0)) = 0.5.
+    near(fraction(0.0, (-1.0, 1.0)).unwrap(), 0.5);
+    // Outside the domain refuses; the || mutant would admit one side.
+    assert!(fraction(0.49, (0.5, 1.0)).is_err());
+    assert!(fraction(1.01, (0.5, 1.0)).is_err());
+    assert!(fraction(0.75, (1.0, 0.5)).is_err());
+}
+
+#[test]
+fn same_is_exact_equality_and_finite_rejects_non_finite() {
+    assert!(same(1.0, 1.0));
+    assert!(!same(1.0, 1.0 + 1e-12));
+    assert!(finite(1.0).is_ok());
+    assert!(finite(f64::NAN).is_err());
+    assert!(finite(f64::INFINITY).is_err());
+}

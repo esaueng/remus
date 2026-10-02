@@ -300,6 +300,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "replaceSurfaceJournaled"
         | "moveFacesJournaled"
         | "offsetJournaled"
+        | "extrudeJournaled"
         | "makeCylinder"
         | "makeSphere"
         | "makeCone"
