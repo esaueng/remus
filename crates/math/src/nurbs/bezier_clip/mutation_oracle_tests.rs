@@ -863,6 +863,52 @@ fn tolerance_contact_starts_at_the_closest_sample() {
 }
 
 // ---------------------------------------------------------------------------
+// bezier_clip_recurse: end-to-end closed forms that pin the recursion's
+// depth bookkeeping and overlap routing
+// ---------------------------------------------------------------------------
+
+fn on_circle(c: Point3, r: f64, deg: f64) -> Point3 {
+    let a = deg.to_radians();
+    p(c.x() + r * a.cos(), c.y() + r * a.sin(), 0.0)
+}
+
+/// Regression (found triaging B19 bezier-clip survivors): two arcs of one
+/// circle sharing 40..80 degrees, at three scales. Curved windows never
+/// clip effectively against each other and never look straight, so only
+/// the deep (depth >= 8) aligned-overlap route reports the shared stretch:
+/// one overlap whose ends evaluate to the 40- and 80-degree points on both
+/// curves, and no point hits. The overlap test used to measure each
+/// sample's distance to the other window's SAMPLES; the two arcs run at
+/// different parameter speeds over the shared stretch, so it passed only
+/// on windows below ~100 tolerances and returned 49 overlap fragments and
+/// 55 point hits at scale 1.
+#[test]
+fn coincident_arcs_report_one_overlap_with_closed_form_ends() {
+    for scale in [1e-3, 1.0, 1e3] {
+        let c = p(0.5 * scale, -0.25 * scale, 0.0);
+        let r = 2.0 * scale;
+        let a = arc(c, r, 0.0_f64.to_radians(), 80.0_f64.to_radians());
+        let b = arc(c, r, 40.0_f64.to_radians(), 120.0_f64.to_radians());
+        let tol = 1e-7 * scale;
+        let res = curve_curve_intersect_full(&a, &b, tol).expect("intersect");
+        assert!(
+            res.hits.is_empty(),
+            "scale {scale}: {} hits, {} overlaps",
+            res.hits.len(),
+            res.overlaps.len()
+        );
+        assert_eq!(res.overlaps.len(), 1, "scale {scale}: {:?}", res.overlaps);
+        let o = res.overlaps[0];
+        let (p40, p80) = (on_circle(c, r, 40.0), on_circle(c, r, 80.0));
+        let near = |q: Point3, w: Point3| (q - w).length() <= 10.0 * tol;
+        assert!(near(a.evaluate(o.u1_start), p40), "scale {scale}: {o:?}");
+        assert!(near(a.evaluate(o.u1_end), p80), "scale {scale}: {o:?}");
+        assert!(near(b.evaluate(o.u2_start), p40), "scale {scale}: {o:?}");
+        assert!(near(b.evaluate(o.u2_end), p80), "scale {scale}: {o:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // bezier_clip_recurse: hand-derived work counts
 // ---------------------------------------------------------------------------
 
