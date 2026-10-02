@@ -281,6 +281,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Since PERF-D03 (#922) a tessellation stream identifies geometry, not a kernel call:** the same body built from different arena handles meshes byte-identically, so a consumer spy that matches streams to count tessellations double-counts the evolution probe's copy — count per solid handle and deflection (F4, OpenZCAD#522).
 - **cargo-mutants `--file` is ignored under the committed `.cargo/mutants.toml`;** scope a file with `-F` (regex on the mutant name) or drop to `--no-config` for the listing, and verify with `scripts/test-mutants-scope.py` before quoting a count (M2 proof tranche, 2026-10-01).
 - **An unexamined tail is a plan problem, not a verdict:** a sharded mutation run that times out reports its remainder as unexamined — carry that tail into the next in-diff set or a catch-up shard matrix instead of quoting the reachable prefix (M2 proof tranche, 84 unexamined in one shard, 2026-10-01).
+- **A gate inside a chain of interval checks shows only when every later check stays decided:** the curved clip's event-order mutants survived because the midpoint, material-sample and native-range checks refused the same near-coincident input; model the chain in a few lines to find a chart (subnormal or 2^60-wide) where only the targeted gate decides, and reach constructor-pre-empted gates through deserialized NURBS (B19 F3c, `crates/algo/src/pave_filler/curved_section_clip/tests.rs`).
 
 ## Subsystem trap notes
 
