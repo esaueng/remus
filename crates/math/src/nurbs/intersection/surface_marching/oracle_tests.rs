@@ -516,14 +516,19 @@ fn indefinite_classification_is_scale_invariant() {
 }
 
 /// Definite forms and `Q = 0` have no null direction; neither does a definite
-/// form whose Frobenius norm overflows (`a = 1e200`, `d = 1e-200`).
+/// form whose Frobenius norm overflows although `det` and every entry (and
+/// every candidate eigenvector) stay finite: `(1.2, 0.5, 0.3)·1e154` has
+/// `||Q||² ≈ 1.94e308 > f64::MAX` and `det = 1.1e307 > 0`.
 #[test]
 fn definite_zero_and_non_finite_forms_have_no_null() {
     let (e1, e2) = xy_frame();
     assert!(nulls(1.0, 0.0, 2.0, e1, e2).is_empty());
     assert!(nulls(-1.0, 0.5, -2.0, e1, e2).is_empty());
     assert!(nulls(0.0, 0.0, 0.0, e1, e2).is_empty());
-    assert!(nulls(1e200, 0.0, 1e-200, e1, e2).is_empty());
+    let (a, b, d): (f64, f64, f64) = (1.2e154, 0.5e154, 0.3e154);
+    assert!((a * a + 2.0 * b * b + d * d).is_infinite() && (a * d - b * b).is_finite());
+    assert!((e1 * -b + e2 * a).normalize().is_ok());
+    assert!(nulls(a, b, d, e1, e2).is_empty());
 }
 
 /// A parabolic form has its zero eigenvector as the single ruling. The cases
