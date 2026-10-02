@@ -422,10 +422,17 @@ fn build_polygon_wire(
 /// Materialise a [`FaceSpec::Existing`]: copy the source face's surface,
 /// orientation, and inner wires, taking the outer wire either verbatim or
 /// from a replacement polygon.
+///
+/// `inner_override` rebuilds listed inner loops from positions instead of
+/// copying them: parallel to the source face's inner wires, `None` copies
+/// that loop verbatim and `Some` rebuilds it. Empty means all verbatim. A
+/// length mismatch with the source's inner wires is a caller bug and
+/// refused.
 fn clone_existing_face(
     topo: &mut Topology,
     source: FaceId,
     outer: Option<&[Point3]>,
+    inner_override: &[Option<Vec<Point3>>],
     maps: &mut CopyMaps<'_>,
 ) -> Result<FaceId, crate::OperationsError> {
     let (surface, reversed, source_outer, source_inner) = {
@@ -441,9 +448,28 @@ fn clone_existing_face(
         Some(positions) if positions.len() >= 3 => build_polygon_wire(topo, positions, maps)?,
         _ => copy_wire(topo, source_outer, maps)?,
     };
+    if !inner_override.is_empty() && inner_override.len() != source_inner.len() {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason: "existing-face inner override does not match the source holes".into(),
+        });
+    }
     let mut inner_wires = Vec::with_capacity(source_inner.len());
-    for wid in source_inner {
-        inner_wires.push(copy_wire(topo, wid, maps)?);
+    for (k, wid) in source_inner.iter().enumerate() {
+        match inner_override.get(k).and_then(|o| o.as_ref()) {
+            Some(positions) if positions.len() >= 3 => {
+                inner_wires.push(build_polygon_wire(topo, positions, maps)?);
+            }
+            Some(_) => {
+                return Err(crate::OperationsError::Unsupported {
+                    operation: "assemble_solid_mixed",
+                    reason: "existing-face inner rebuild has too few vertices".into(),
+                });
+            }
+            None => {
+                inner_wires.push(copy_wire(topo, *wid, maps)?);
+            }
+        }
     }
     Ok(if reversed {
         topo.add_face(Face::new_reversed(outer_wire, inner_wires, surface))
@@ -599,10 +625,11 @@ fn assemble_solid_mixed_traced(
     // faces they must share vertices with.
     let mut existing_points: Vec<Point3> = Vec::new();
     for spec in face_specs {
-        let FaceSpec::Existing { face, .. } = spec else {
-            continue;
+        let face = match spec {
+            FaceSpec::Existing { face, .. } | FaceSpec::ExistingTrimmedInners { face, .. } => *face,
+            _ => continue,
         };
-        let f = topo.face(*face)?;
+        let f = topo.face(face)?;
         for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
             for oe in topo.wire(wid)?.edges() {
                 let e = topo.edge(oe.edge())?;
@@ -668,7 +695,13 @@ fn assemble_solid_mixed_traced(
     //    into a chamfer wherever it meets a holed cap. Their inner wires are
     //    still copied verbatim, from the same memo as pass 1.
     // 4. Everything else, sharing whatever the earlier passes published.
-    let verbatim = |s: &FaceSpec| matches!(s, FaceSpec::Existing { outer: None, .. });
+    let verbatim = |s: &FaceSpec| {
+        matches!(
+            s,
+            FaceSpec::Existing { outer: None, .. }
+                | FaceSpec::ExistingTrimmedInners { outer: None, .. }
+        )
+    };
     let arc_minting = |s: &FaceSpec| {
         matches!(
             s,
@@ -681,7 +714,13 @@ fn assemble_solid_mixed_traced(
             }
         ) && torus_has_full_override_coverage(s.vertices(), boundary_curves, tol)
     };
-    let rebuilt_outer = |s: &FaceSpec| matches!(s, FaceSpec::Existing { outer: Some(_), .. });
+    let rebuilt_outer = |s: &FaceSpec| {
+        matches!(
+            s,
+            FaceSpec::Existing { outer: Some(_), .. }
+                | FaceSpec::ExistingTrimmedInners { outer: Some(_), .. }
+        )
+    };
     let mut ordered_indices = Vec::with_capacity(face_specs.len());
     ordered_indices.extend(
         face_specs
@@ -716,7 +755,20 @@ fn assemble_solid_mixed_traced(
                     resolution,
                     tol,
                 };
-                let new_face = clone_existing_face(topo, *face, outer.as_deref(), &mut maps)?;
+                let new_face = clone_existing_face(topo, *face, outer.as_deref(), &[], &mut maps)?;
+                face_ids.push(new_face);
+                face_spec_indices.push(spec_index);
+            }
+            FaceSpec::ExistingTrimmedInners { face, outer, inner } => {
+                let mut maps = CopyMaps {
+                    vertex_map: &mut vertex_map,
+                    edge_map: &mut edge_map,
+                    edge_copies: &mut edge_copies,
+                    resolution,
+                    tol,
+                };
+                let new_face =
+                    clone_existing_face(topo, *face, outer.as_deref(), inner, &mut maps)?;
                 face_ids.push(new_face);
                 face_spec_indices.push(spec_index);
             }
@@ -1093,7 +1145,8 @@ fn assemble_solid_mixed_traced(
                     } => (vertices.clone(), surface.clone(), *reversed),
                     FaceSpec::CylindricalFace { .. }
                     | FaceSpec::SphereCapFace { .. }
-                    | FaceSpec::Existing { .. } => {
+                    | FaceSpec::Existing { .. }
+                    | FaceSpec::ExistingTrimmedInners { .. } => {
                         // Filtered out of `cylindrical_first` above.
                         continue;
                     }
@@ -1287,6 +1340,34 @@ fn assemble_solid_mixed_traced(
         vertices_by_spec,
         boundary_edges,
     })
+}
+
+/// Whether a candidate split vertex lies on a boundary edge's curve, not
+/// merely on its chord.
+///
+/// The collinearity search above projects onto the endpoint chord, which
+/// coincides with the curve only for lines. A vertex exactly on the chord
+/// of a tangency arc — the notch vertex under its cap-tangency circle is
+/// the midpoint of that chord by construction — would otherwise kink the
+/// arc off-surface. Circles additionally require radial agreement; every
+/// other curve keeps the existing chord-only behavior.
+fn split_vertex_on_curve(topo: &Topology, eid: EdgeId, pos: Point3, tol: Tolerance) -> bool {
+    let Ok(edge) = topo.edge(eid) else {
+        return false;
+    };
+    match edge.curve() {
+        EdgeCurve::Line => true,
+        EdgeCurve::Circle(c) => {
+            let dx = pos.x() - c.center().x();
+            let dy = pos.y() - c.center().y();
+            let dz = pos.z() - c.center().z();
+            ((dx * dx + dy * dy + dz * dz).sqrt() - c.radius()).abs() <= tol.linear
+        }
+        EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_)
+        | EdgeCurve::NurbsCurve(_) => true,
+    }
 }
 
 /// Resolve non-manifold edges using manifold pairing.
@@ -1904,7 +1985,9 @@ pub(super) fn refine_boundary_edges(
                                 + (pos.y() - proj_y).powi(2)
                                 + (pos.z() - proj_z).powi(2);
 
-                            if dist_sq < tol.linear * tol.linear {
+                            if dist_sq < tol.linear * tol.linear
+                                && split_vertex_on_curve(topo, eid, pos, tol)
+                            {
                                 intermediates.push((t, vid));
                             }
                         }

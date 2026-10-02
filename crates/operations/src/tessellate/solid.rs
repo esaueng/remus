@@ -10,7 +10,12 @@ use remus_topology::solid::SolidId;
 use remus_topology::{BodyClass, BodyId};
 
 use super::TriangleMesh;
-use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_deviation_a};
+#[cfg(not(target_arch = "wasm32"))]
+use super::boundary_plan::SampledEdge;
+use super::boundary_plan::{BoundaryPlan, BoundaryRefinementRequest, SampleChains, SampleParams};
+use super::edge_sampling::{
+    circle_param_range, sample_edge, sample_edge_with_params, segments_for_chord_deviation_a,
+};
 use super::mesh_ops::{
     dedupe_coincident_triangles, fill_sub_deflection_triangular_gaps, weld_boundary_vertices,
 };
@@ -23,9 +28,9 @@ use super::nonplanar::{
 };
 use super::nurbs::{compute_angular_range, compute_v_param_range};
 use super::planar::{
-    cdt_triangulate_simple, collect_wire_global_vertices, project_by_normal,
-    remove_closing_duplicate_global, remove_closing_duplicate_ids, run_planar_cdt,
-    tessellate_planar_shared_with_holes, unproject_point,
+    cdt_triangulate_simple, project_by_normal, remove_closing_duplicate_global,
+    remove_closing_duplicate_ids, run_planar_cdt, tessellate_planar_shared_with_holes,
+    unproject_point,
 };
 use super::{MERGE_GRID, point_merge_key};
 
@@ -412,10 +417,18 @@ fn tessellate_faces_core(
     // insertion-order hashing.
     let mut edge_indices: Vec<usize> = edge_face_map.keys().copied().collect();
     edge_indices.sort_unstable();
+    // Stage A1 (PERF-D03): sample every shared edge once, retaining the
+    // authoritative curve parameter per sample. Parallel and serial paths
+    // must agree exactly: results are collected then inserted into fresh
+    // maps in sorted edge order, so global identities never depend on
+    // thread scheduling. The `circle_floor` policy travels with the plan
+    // (display vs boolean callers keep their distinct densities).
     #[cfg(not(target_arch = "wasm32"))]
-    let mut edge_points: DetHashMap<usize, Vec<Point3>> = if edge_indices.len() >= 32 {
+    let (mut edge_points, mut edge_params): (SampleChains, SampleParams) = if edge_indices.len()
+        >= 32
+    {
         use rayon::prelude::*;
-        let results: Vec<Result<(usize, Vec<Point3>), crate::OperationsError>> = edge_indices
+        let results: Vec<Result<SampledEdge, crate::OperationsError>> = edge_indices
             .par_iter()
             .filter_map(|&edge_idx| {
                 let edge_id = topo.edge_id_from_index(edge_idx)?;
@@ -424,45 +437,65 @@ fn tessellate_faces_core(
                     Err(e) => return Some(Err(crate::OperationsError::Topology(e))),
                 };
                 Some(
-                    sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)
-                        .map(|pts| (edge_idx, pts)),
+                    sample_edge_with_params(topo, edge_data, deflection, angular_tol, circle_floor)
+                        .map(|(pts, params)| (edge_idx, pts, params)),
                 )
             })
             .collect();
-        let mut map = DetHashMap::default();
+        let mut points_map = DetHashMap::default();
+        let mut params_map = DetHashMap::default();
         for r in results {
-            let (idx, pts) = r?;
-            map.insert(idx, pts);
+            let (idx, pts, params) = r?;
+            points_map.insert(idx, pts);
+            params_map.insert(idx, params);
         }
-        map
+        (points_map, params_map)
     } else {
-        let mut map = DetHashMap::default();
+        let mut points_map = DetHashMap::default();
+        let mut params_map = DetHashMap::default();
         for &edge_idx in &edge_indices {
             if let Some(edge_id) = topo.edge_id_from_index(edge_idx)
                 && let Ok(edge_data) = topo.edge(edge_id)
             {
-                let points = sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
-                map.insert(edge_idx, points);
+                let (points, params) = sample_edge_with_params(
+                    topo,
+                    edge_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                )?;
+                points_map.insert(edge_idx, points);
+                params_map.insert(edge_idx, params);
             }
         }
-        map
+        (points_map, params_map)
     };
     #[cfg(target_arch = "wasm32")]
-    let mut edge_points: DetHashMap<usize, Vec<Point3>> = {
-        let mut map = DetHashMap::default();
+    let (mut edge_points, mut edge_params): (SampleChains, SampleParams) = {
+        let mut points_map = DetHashMap::default();
+        let mut params_map = DetHashMap::default();
         for &edge_idx in &edge_indices {
             if let Some(edge_id) = topo.edge_id_from_index(edge_idx)
                 && let Ok(edge_data) = topo.edge(edge_id)
             {
-                let points = sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
-                map.insert(edge_idx, points);
+                let (points, params) = sample_edge_with_params(
+                    topo,
+                    edge_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                )?;
+                points_map.insert(edge_idx, points);
+                params_map.insert(edge_idx, params);
             }
         }
-        map
+        (points_map, params_map)
     };
 
-    // Synchronize circle edge samples with face grid density so a face's rim
-    // points line up with its own analytic grid columns.
+    // Stage A2 (PERF-D03): synchronize circle edge samples with face grid
+    // density so a face's rim points line up with its own analytic grid
+    // columns. Resampled chains keep authoritative uniform parameters, so
+    // the plan still knows each sample's curve identity.
     //
     // Only faces that will be gridded take part. A cylinder wall with an
     // inner wire is tessellated by `tessellate_cylinder_with_holes`, which
@@ -471,7 +504,12 @@ fn tessellate_faces_core(
     // faces off the wall's own polyline: a boss's section arcs went from 7 to
     // 64 points on the caps while the wall kept 7, and the fused shell
     // tessellated open along the whole hole rim.
+    // Pre-plan stage counters: booked into the plan metrics at stage A5.
+    let mut circle_sync_upsampled: usize = 0;
+    let mut torus_densified: usize = 0;
+    let mut seam_splits: usize = 0;
     {
+        use super::edge_sampling::uniform_edge_params;
         for &face_id in all_faces {
             let face_data = topo.face(face_id)?;
             if matches!(
@@ -543,14 +581,20 @@ fn tessellate_faces_core(
                             *last = topo.vertex(edge_data.end())?.point();
                         }
                         edge_points.insert(edge_idx, new_pts);
+                        edge_params.insert(
+                            edge_idx,
+                            uniform_edge_params(t_start, t_end, expected_count),
+                        );
+                        circle_sync_upsampled += 1;
                     }
                 }
             }
         }
     }
 
-    // Densify torus two-rim band rims to the band mesher's own wrap density
-    // so the shared pool and the interior rows agree by construction.
+    // Stage A3 (PERF-D03): densify torus two-rim band rims to the band
+    // mesher's own wrap density so the shared pool and the interior rows
+    // agree by construction.
     //
     // `tessellate_torus_two_rim_band` sizes its interior rows with the
     // curvature floor (`R + r` over a full turn) while the shared pool
@@ -652,20 +696,27 @@ fn tessellate_faces_core(
                         last.clone_from(&topo.vertex(edge_data.end())?.point());
                     }
                     edge_points.insert(edge_idx, new_pts);
+                    edge_params.insert(
+                        edge_idx,
+                        super::edge_sampling::uniform_edge_params(t_start, t_end, expected),
+                    );
+                    torus_densified += 1;
                 }
             }
         }
     }
 
-    // A holed periodic wall (cylinder with inner wires) is meshed in its
-    // developed chart; a hole loop crossing the chart's seam meridian gets cut
-    // there, which fabricates a boundary vertex ON the seam that no shared
-    // edge sample carries. The face sharing that hole edge (e.g. the bore
+    // Stage A4 (PERF-D03): pre-split holed periodic wall inner-wire
+    // polylines at their seam-meridian crossings. A hole loop crossing the
+    // chart's seam meridian gets cut there by the developed-chart mesher,
+    // which fabricates a boundary vertex ON the seam that no shared edge
+    // sample carries. The face sharing that hole edge (e.g. the bore
     // wall) stitches the shared polyline directly and skips the fabricated
-    // point, leaving a micro-triangle hole at the seam. Pre-split every
-    // inner-wire polyline of such a wall at its seam-meridian crossings so
-    // both consumers see the same vertex (the chart mesher's own crossing
-    // then welds to it via the 1e-6 boundary snap).
+    // point, leaving a micro-triangle hole at the seam. Pre-splitting every
+    // inner-wire polyline of such a wall at its crossings gives both
+    // consumers the same vertex (the chart mesher's own crossing then welds
+    // to it via the 1e-6 boundary snap). Inserted crossings are geometric
+    // (chart interpolation), so their retained curve parameters are unknown.
     {
         let refine_tol = remus_math::tolerance::Tolerance::new().linear * 10.0;
         // Keep the pool immutable while discovering crossings.  A malformed
@@ -804,29 +855,48 @@ fn tessellate_faces_core(
             for &(at, _, point) in insertions.iter().rev() {
                 pts.insert(at, point);
             }
+            // Geometrically inserted crossings carry no curve parameter; the
+            // params chain mirrors the points chain one-for-one so sample
+            // identities stay aligned.
+            let params = edge_params.entry(edge_idx).or_default();
+            while params.len() < pts.len().saturating_sub(insertions.len()) {
+                params.push(None);
+            }
+            params.reserve(insertions.len());
+            seam_splits += insertions.len();
+            for &(at, _, _) in insertions.iter().rev() {
+                params.insert(at.min(params.len()), None);
+            }
+            debug_assert_eq!(pts.len(), params.len());
         }
     }
 
-    let mut merged = TriangleMesh::default();
-    let mut point_to_global: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();
-    let mut edge_global_indices: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
+    // Stage A5 (PERF-D03): freeze the sampled chains into the explicit
+    // boundary plan. From here on every stage reads sample geometry,
+    // authority, and identities from `plan` — never from ad-hoc locals — so
+    // the display-vs-boolean policy (`circle_floor`), authoritative domains,
+    // and per-sample parameters travel with the data they govern.
+    // Pre-plan stage work (A2–A4 ran before the plan existed) is booked
+    // into the metrics here so the accounting covers the whole pipeline.
+    let mut plan = BoundaryPlan::from_samples(
+        topo,
+        edge_points,
+        edge_params,
+        deflection,
+        angular_tol,
+        circle_floor,
+    );
+    plan.metrics.circle_sync_upsampled = circle_sync_upsampled;
+    plan.metrics.torus_densified = torus_densified;
+    plan.metrics.seam_splits = seam_splits;
 
-    for (&edge_idx, points) in &edge_points {
-        let mut global_ids = Vec::with_capacity(points.len());
-        for &pt in points {
-            let key = point_merge_key(pt, MERGE_GRID);
-            let idx = point_to_global.entry(key).or_insert_with(|| {
-                #[allow(clippy::cast_possible_truncation)]
-                let idx = merged.positions.len() as u32;
-                merged.positions.push(pt);
-                merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
-                idx
-            });
-            global_ids.push(*idx);
-        }
-        edge_global_indices.insert(edge_idx, global_ids);
-    }
-
+    // Stage A6 (PERF-D03): planar contact refinement. A straight boundary
+    // edge that a neighbouring curved trim touches tangentially must share
+    // that subdivision with every incident face, or the planar CDT spans
+    // the contact in one constraint while the neighbour stops on it (a
+    // T-junction crack). Circle refinements likewise merge pool positions
+    // lying on the circle into the shared chain. Operates on the plan's
+    // chains and merged pool; counts feed the plan metrics.
     {
         let tol_linear = remus_math::tolerance::Tolerance::new().linear;
         let refine_tol = tol_linear * 10.0;
@@ -850,13 +920,8 @@ fn tessellate_faces_core(
                     if matches!(edge.curve(), EdgeCurve::Line) {
                         lines.push(index);
                     } else if matches!(edge.curve(), EdgeCurve::Circle(_)) {
-                        curved_samples.extend(
-                            edge_global_indices
-                                .get(&index)
-                                .into_iter()
-                                .flatten()
-                                .copied(),
-                        );
+                        curved_samples
+                            .extend(plan.edge_chains.get(&index).into_iter().flatten().copied());
                     }
                 }
             }
@@ -888,7 +953,7 @@ fn tessellate_faces_core(
                     continue;
                 }
                 for &gid in &curved_samples {
-                    let point = merged.positions[gid as usize];
+                    let point = plan.merged.positions[gid as usize];
                     let t = (point - start).dot(direction) / length_squared;
                     if t > 0.0
                         && t < 1.0
@@ -919,20 +984,21 @@ fn tessellate_faces_core(
                 let length_squared = direction.length_squared();
                 let boundary_tol = 1e-10;
                 if length_squared > boundary_tol * boundary_tol {
-                    let mut samples: Vec<(f64, u32)> = edge_global_indices
+                    let mut samples: Vec<(f64, u32)> = plan
+                        .edge_chains
                         .get(&edge_idx)
                         .into_iter()
                         .flatten()
                         .map(|&gid| {
                             (
-                                (merged.positions[gid as usize] - start).dot(direction)
+                                (plan.merged.positions[gid as usize] - start).dot(direction)
                                     / length_squared,
                                 gid,
                             )
                         })
                         .collect();
                     for &gid in candidates {
-                        let point = merged.positions[gid as usize];
+                        let point = plan.merged.positions[gid as usize];
                         let t = (point - start).dot(direction) / length_squared;
                         if t > 0.0
                             && t < 1.0
@@ -943,8 +1009,9 @@ fn tessellate_faces_core(
                     }
                     samples.sort_by(|a, b| a.0.total_cmp(&b.0));
                     samples.dedup_by_key(|sample| sample.1);
-                    edge_global_indices
+                    plan.edge_chains
                         .insert(edge_idx, samples.into_iter().map(|(_, gid)| gid).collect());
+                    plan.metrics.contact_lines_refined += 1;
                 }
                 continue;
             }
@@ -961,18 +1028,29 @@ fn tessellate_faces_core(
             let start_pos = start_vtx.point();
             let end_pos = end_vtx.point();
 
-            let (t_min, t_max) =
-                crate::authoritative_edge_domain(edge_data, "body edge refinement")?;
-            let is_closed = edge_data.start() == edge_data.end();
+            // Authoritative domain and closed flag come from the plan, which
+            // retained them at sample time — the refinement never re-derives
+            // trim authority from endpoints. Edges the plan never sampled
+            // (no authority) fall back to a direct query; lines never reach
+            // this arm, so a missing domain there skips the edge.
+            let (t_min, t_max, is_closed) = if let Some(authority) = plan.authorities.get(&edge_idx)
+            {
+                let Some(domain) = authority.domain else {
+                    continue;
+                };
+                (domain.0, domain.1, authority.is_closed)
+            } else {
+                let (domain_min, domain_max) =
+                    crate::authoritative_edge_domain(edge_data, "body edge refinement")?;
+                (domain_min, domain_max, edge_data.start() == edge_data.end())
+            };
 
-            let existing_gids_vec: Vec<u32> = edge_global_indices
-                .get(&edge_idx)
-                .cloned()
-                .unwrap_or_default();
+            let existing_gids_vec: Vec<u32> =
+                plan.edge_chains.get(&edge_idx).cloned().unwrap_or_default();
             let existing_gids: DetHashSet<u32> = existing_gids_vec.iter().copied().collect();
 
             let mut insertions: Vec<(f64, u32)> = Vec::new();
-            for (gid, pos) in merged.positions.iter().enumerate() {
+            for (gid, pos) in plan.merged.positions.iter().enumerate() {
                 #[allow(clippy::cast_possible_truncation)]
                 let gid32 = gid as u32;
                 if existing_gids.contains(&gid32) {
@@ -1012,17 +1090,18 @@ fn tessellate_faces_core(
             let mut all_with_t: Vec<(f64, u32)> = existing_gids_vec
                 .iter()
                 .map(|&gid| {
-                    let pos = merged.positions[gid as usize];
+                    let pos = plan.merged.positions[gid as usize];
                     (circle.project(pos), gid)
                 })
                 .collect();
+            plan.metrics.contact_circle_insertions += insertions.len();
             all_with_t.extend(insertions);
             all_with_t.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut seen_gids = DetHashSet::default();
             all_with_t.retain(|(_, gid)| seen_gids.insert(*gid));
 
             let refined: Vec<u32> = all_with_t.into_iter().map(|(_, gid)| gid).collect();
-            edge_global_indices.insert(edge_idx, refined);
+            plan.edge_chains.insert(edge_idx, refined);
         }
     }
 
@@ -1043,10 +1122,29 @@ fn tessellate_faces_core(
     }
     #[allow(clippy::items_after_statements)]
     type CdtResult = Result<super::planar::PlanarCdtOutput, crate::OperationsError>;
+    /// A staged holed-planar triangulation: triangles plus the 3D/global
+    /// data to emit them after the reconcile (stage C, part 3).
+    #[allow(clippy::items_after_statements)]
+    struct StagedCdt {
+        face_index: u32,
+        tris: Vec<(usize, usize, usize)>,
+        n_input: usize,
+        all_positions: Vec<Point3>,
+        all_global_ids: Vec<Option<u32>>,
+        steiner_positions: Vec<Point3>,
+        steiner_gids: Vec<u32>,
+        normal: Vec3,
+        is_reversed: bool,
+    }
 
     let mut cdt_jobs: Vec<CdtJob> = Vec::new();
     let mut other_face_indices: Vec<usize> = Vec::new();
 
+    // Stage B (PERF-D03): local triangulation. Holed-planar faces snapshot
+    // the plan's chains into independent CDT jobs; every other face waits
+    // for stage C. Job construction only reads the plan — collecting a job
+    // never mutates shared state, which is what makes the jobs safe to run
+    // in parallel (native) or sequentially (WASM) with identical results.
     for (fi, &face_id) in all_faces.iter().enumerate() {
         let face_data = topo.face(face_id)?;
         let has_inner = !face_data.inner_wires().is_empty();
@@ -1058,13 +1156,12 @@ fn tessellate_faces_core(
             let wire = topo.wire(face_data.outer_wire())?;
             let tol = 1e-10;
 
-            let (mut all_positions, mut all_global_ids) =
-                collect_wire_global_vertices(wire, &edge_global_indices, &merged.positions, tol);
+            let (mut all_positions, mut all_global_ids) = plan.collect_wire_vertices(wire, tol);
 
             remove_closing_duplicate_global(
                 &mut all_positions,
                 &mut all_global_ids,
-                &merged.positions,
+                &plan.merged.positions,
                 tol,
             );
             let outer_count = all_positions.len();
@@ -1073,8 +1170,7 @@ fn tessellate_faces_core(
             for &iw_id in face_data.inner_wires() {
                 let iw = topo.wire(iw_id)?;
                 let start = all_positions.len();
-                let (inner_pos, inner_gids) =
-                    collect_wire_global_vertices(iw, &edge_global_indices, &merged.positions, tol);
+                let (inner_pos, inner_gids) = plan.collect_wire_vertices(iw, tol);
                 let mut inner_flat_ids: Vec<u32> = Vec::with_capacity(inner_gids.len());
                 let mut next_sentinel = u32::MAX;
                 for (pos, gid_opt) in inner_pos.into_iter().zip(inner_gids) {
@@ -1089,7 +1185,7 @@ fn tessellate_faces_core(
                     all_global_ids.push(Some(gid));
                 }
                 if inner_flat_ids.len() > 2 {
-                    remove_closing_duplicate_ids(&mut inner_flat_ids, &merged.positions, tol);
+                    remove_closing_duplicate_ids(&mut inner_flat_ids, &plan.merged.positions, tol);
                     let expected_end = start + inner_flat_ids.len();
                     all_positions.truncate(expected_end);
                     all_global_ids.truncate(expected_end);
@@ -1141,38 +1237,33 @@ fn tessellate_faces_core(
     // Where the planar CDT jobs' triangles start, so a job whose boundary
     // segment another job Steiner-split can be repaired after all of them
     // have emitted (see `split_triangles_spanning_boundary_splits`).
-    let cdt_index_start = merged.indices.len();
+    let cdt_index_start = plan.merged.indices.len();
     let cdt_face_start = tri_faces.as_ref().map_or(0, Vec::len);
-    // Steiner points each job's constraint recovery put ON a boundary
-    // segment, keyed by the segment's undirected global pair `(lo, hi)`,
-    // with the parameter measured from `lo` towards `hi`.
-    let mut boundary_splits: DetHashMap<(u32, u32), Vec<(f64, u32)>> = DetHashMap::default();
 
-    for (job, result) in cdt_jobs.iter().zip(cdt_results) {
+    // Stage C, part 1 (PERF-D03): stage local triangulation. Each job's
+    // triangles wait while its boundary-refinement requests are collected
+    // as data. Nothing here mutates the shared chains, so staging is
+    // independent of job completion order; Steiner lifting keeps face order
+    // (first writer of a merge-grid cell wins, as in the pool build).
+    let mut staged: Vec<StagedCdt> = Vec::with_capacity(cdt_jobs.len());
+    let mut refinement_requests: Vec<BoundaryRefinementRequest> = Vec::new();
+
+    for (job, result) in cdt_jobs.into_iter().zip(cdt_results) {
         let (tris, steiner) = result?;
 
-        // Lift constraint-recovery Steiner points to 3D and give them global
-        // vertices. A Steiner point that lies ON a shared boundary edge is
-        // additionally spliced into that edge's shared sample chain so the
-        // NEIGHBOUR faces (tessellated after the CDT jobs) pick it up —
-        // without this the neighbour spans the original segment in one piece
-        // and the mesh cracks at a T-junction.
+        // Lift constraint-recovery Steiner points to 3D global vertices. A
+        // Steiner point that lies ON a shared boundary edge becomes a
+        // refinement REQUEST on that edge's shared sample chain (reconciled
+        // below) so the NEIGHBOUR faces pick it up — without this the
+        // neighbour spans the original segment in one piece and the mesh
+        // cracks at a T-junction. Requests are data: the chains are
+        // untouched until every job has been staged.
         let n_input = job.all_positions.len();
         let mut steiner_positions: Vec<Point3> = Vec::with_capacity(steiner.len());
-        let mut steiner_gids: Vec<u32> = Vec::with_capacity(steiner.len());
         for p2d in &steiner {
-            let p3d = unproject_point(*p2d, job.normal, &job.all_positions[0]);
-            let key = point_merge_key(p3d, MERGE_GRID);
-            let gid = *point_to_global.entry(key).or_insert_with(|| {
-                #[allow(clippy::cast_possible_truncation)]
-                let idx = merged.positions.len() as u32;
-                merged.positions.push(p3d);
-                merged.normals.push(job.normal);
-                idx
-            });
-            steiner_positions.push(p3d);
-            steiner_gids.push(gid);
+            steiner_positions.push(unproject_point(*p2d, job.normal, &job.all_positions[0]));
         }
+        let steiner_gids = plan.lift_steiner_points(steiner_positions.clone(), job.normal);
         if !steiner.is_empty() {
             let ring_segments: Vec<(usize, usize)> = (0..job.outer_count)
                 .map(|i| (i, (i + 1) % job.outer_count))
@@ -1211,126 +1302,148 @@ fn tessellate_faces_core(
                 let (Some(gi), Some(gj)) = (job.all_global_ids[i], job.all_global_ids[j]) else {
                     continue;
                 };
-                if gi != gj {
-                    let (key, flip) = if gi < gj {
-                        ((gi, gj), false)
-                    } else {
-                        ((gj, gi), true)
-                    };
-                    boundary_splits.entry(key).or_default().extend(
-                        run.iter()
-                            .map(|&(t, gid)| (if flip { 1.0 - t } else { t }, gid)),
-                    );
+                if gi == gj {
+                    continue;
                 }
-                'chains: for chain in edge_global_indices.values_mut() {
-                    for p in 0..chain.len().saturating_sub(1) {
-                        if chain[p] == gi && chain[p + 1] == gj {
-                            for (k, &(_, gid)) in run.iter().enumerate() {
-                                chain.insert(p + 1 + k, gid);
-                            }
-                            break 'chains;
-                        }
-                        if chain[p] == gj && chain[p + 1] == gi {
-                            for (k, &(_, gid)) in run.iter().rev().enumerate() {
-                                chain.insert(p + 1 + k, gid);
-                            }
-                            break 'chains;
-                        }
-                    }
-                }
+                refinement_requests.push(BoundaryRefinementRequest::new(
+                    job.face_index,
+                    gi,
+                    gj,
+                    &run,
+                    false,
+                ));
             }
         }
 
+        staged.push(StagedCdt {
+            face_index: job.face_index,
+            tris,
+            n_input,
+            all_positions: job.all_positions,
+            all_global_ids: job.all_global_ids,
+            steiner_positions,
+            steiner_gids,
+            normal: job.normal,
+            is_reversed: job.is_reversed,
+        });
+    }
+
+    // Stage C, part 2 (PERF-D03): reconcile. Merged runs splice each shared
+    // segment exactly once, in sorted segment order, so every incident face
+    // observes the same final subdivision regardless of job order. Bounded:
+    // excess fails closed with no partial mesh.
+    let boundary_splits = plan.reconcile(refinement_requests)?;
+    // Structural self-check: tolerances, policy, points/params/chains, and
+    // per-edge authorities agree with the topology. Debug-only; zero
+    // release cost.
+    debug_assert!(plan.validate_structure(topo).is_ok());
+
+    // Stage C, part 3 (PERF-D03): deterministic assembly of the staged
+    // holed-planar triangulations, in face-set order. Staged jobs keep the
+    // order they were collected in (face-set order), so emission — and the
+    // parallel `tri_faces` attribution — is identical on every run, thread
+    // count, and platform.
+    for staged_job in &staged {
         let pos_of = |i: usize| -> Point3 {
-            if i < n_input {
-                job.all_positions[i]
+            if i < staged_job.n_input {
+                staged_job.all_positions[i]
             } else {
-                steiner_positions[i - n_input]
+                staged_job.steiner_positions[i - staged_job.n_input]
             }
         };
         let gid_of = |i: usize| -> u32 {
-            if i < n_input {
-                job.all_global_ids[i].unwrap_or(0)
+            if i < staged_job.n_input {
+                staged_job.all_global_ids[i].unwrap_or(0)
             } else {
-                steiner_gids[i - n_input]
+                staged_job.steiner_gids[i - staged_job.n_input]
             }
         };
 
-        let needs_flip = if let Some(&(i0, i1, i2)) = tris.first() {
+        let needs_flip = if let Some(&(i0, i1, i2)) = staged_job.tris.first() {
             let p0 = pos_of(i0);
             let p1 = pos_of(i1);
             let p2 = pos_of(i2);
             let a = p1 - p0;
             let b = p2 - p0;
-            let winding_matches = a.cross(b).dot(job.normal) > 0.0;
-            winding_matches == job.is_reversed
+            let winding_matches = a.cross(b).dot(staged_job.normal) > 0.0;
+            winding_matches == staged_job.is_reversed
         } else {
             false
         };
 
-        for &(i0, i1, i2) in &tris {
+        for &(i0, i1, i2) in &staged_job.tris {
             let g0 = gid_of(i0);
             let g1 = gid_of(i1);
             let g2 = gid_of(i2);
             if let Some(tf) = tri_faces.as_mut() {
-                tf.push(job.face_index);
+                tf.push(staged_job.face_index);
             }
             if needs_flip {
-                merged.indices.push(g0);
-                merged.indices.push(g2);
-                merged.indices.push(g1);
+                plan.merged.indices.push(g0);
+                plan.merged.indices.push(g2);
+                plan.merged.indices.push(g1);
             } else {
-                merged.indices.push(g0);
-                merged.indices.push(g1);
-                merged.indices.push(g2);
+                plan.merged.indices.push(g0);
+                plan.merged.indices.push(g1);
+                plan.merged.indices.push(g2);
             }
         }
     }
 
-    // The chain splice above reaches only the faces tessellated AFTER the
-    // CDT jobs. Every job was triangulated up front, so a neighbour that is
-    // itself a holed plane still spans the split segment in one triangle:
-    // a T-junction crack along the shared edge (a countersunk bracket's
-    // floor cap Steiner-split its edge with the arm face that carries an
-    // emboss hole, leaving three open mesh edges). Split those triangles at
-    // the recorded Steiner points so both sides share every vertex.
+    // The reconcile above reaches only the faces tessellated AFTER the
+    // CDT jobs. Every staged job was triangulated up front, so a neighbour
+    // that is itself a holed plane still spans the split segment in one
+    // triangle: a T-junction crack along the shared edge (a countersunk
+    // bracket's floor cap Steiner-split its edge with the arm face that
+    // carries an emboss hole, leaving three open mesh edges). Split those
+    // triangles at the recorded Steiner points so both sides share every
+    // vertex. This is the proven repair route: bounded by the chain lengths
+    // (see the budget inside), never an open-ended fixed-point loop.
     if !boundary_splits.is_empty() {
         split_triangles_spanning_boundary_splits(
-            &mut merged.indices,
+            &mut plan.merged.indices,
             cdt_index_start,
             tri_faces.as_mut().map(|tf| (tf, cdt_face_start)),
             boundary_splits,
         );
     }
 
+    // Stage D (PERF-D03): every remaining face triangulates directly
+    // against the final reconciled chains, so neighbours of a Steiner-split
+    // segment pick up the same vertices the repair above gave the staged
+    // jobs. Tolerances and the display-vs-boolean policy are read from the
+    // plan (single source of truth — they match the locals by
+    // construction). Curved families keep their established
+    // structured/CDT/snap dispatch and fallback behaviour; only the plan
+    // they read from is now explicit.
     for &fi in &other_face_indices {
-        let allow_latitude_cap =
-            !circle_floor && has_trimmed_same_sphere_neighbor(topo, all_faces[fi], &edge_face_map)?;
+        let allow_latitude_cap = !plan.policy.circle_floor
+            && has_trimmed_same_sphere_neighbor(topo, all_faces[fi], &edge_face_map)?;
         tessellate_face_with_shared_edges(
             topo,
             all_faces[fi],
-            deflection,
-            angular_tol,
-            circle_floor,
+            plan.deflection,
+            plan.angular_tol,
+            plan.policy.circle_floor,
             allow_latitude_cap,
-            &edge_global_indices,
-            &mut merged,
-            &mut point_to_global,
+            &plan.edge_chains,
+            &mut plan.merged,
+            &mut plan.point_to_global,
         )?;
         // Attribute every triangle appended by this face so `tri_faces` stays
         // parallel to the triangle list.
         if let Some(tf) = tri_faces.as_mut() {
             #[allow(clippy::cast_possible_truncation)]
-            tf.resize(merged.indices.len() / 3, fi as u32);
+            tf.resize(plan.merged.indices.len() / 3, fi as u32);
         }
     }
 
-    let n_verts = merged.positions.len();
-    let tri_count = merged.indices.len() / 3;
+    let n_verts = plan.merged.positions.len();
+    let tri_count = plan.merged.indices.len() / 3;
 
     let mut needs_normal = vec![false; n_verts];
     for i in 0..n_verts {
-        let n = &merged.normals[i];
+        let n = &plan.merged.normals[i];
         if n.x().abs() < 1e-30 && n.y().abs() < 1e-30 && n.z().abs() < 1e-30 {
             needs_normal[i] = true;
         }
@@ -1338,7 +1451,7 @@ fn tessellate_faces_core(
 
     {
         let mut vertex_faces: DetHashMap<usize, DetHashSet<FaceId>> = DetHashMap::default();
-        for (&edge_idx, global_ids) in &edge_global_indices {
+        for (&edge_idx, global_ids) in &plan.edge_chains {
             if let Some(face_ids) = edge_face_map.get(&edge_idx) {
                 for &gid in global_ids {
                     let gi = gid as usize;
@@ -1357,7 +1470,7 @@ fn tessellate_faces_core(
             if !needs_normal[i] {
                 continue;
             }
-            let pos = merged.positions[i];
+            let pos = plan.merged.positions[i];
             let mut normal_sum = Vec3::new(0.0, 0.0, 0.0);
             let mut count = 0_u32;
             if let Some(faces) = vertex_faces.get(&i) {
@@ -1377,7 +1490,7 @@ fn tessellate_faces_core(
                 }
             }
             if count > 0 {
-                merged.normals[i] = normal_sum.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                plan.merged.normals[i] = normal_sum.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
             } else {
                 fallback_needed[i] = true;
             }
@@ -1386,11 +1499,11 @@ fn tessellate_faces_core(
         if fallback_needed.iter().any(|&f| f) {
             let mut accum: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); n_verts];
             for t in 0..tri_count {
-                let i0 = merged.indices[t * 3] as usize;
-                let i1 = merged.indices[t * 3 + 1] as usize;
-                let i2 = merged.indices[t * 3 + 2] as usize;
-                let a = merged.positions[i1] - merged.positions[i0];
-                let b = merged.positions[i2] - merged.positions[i0];
+                let i0 = plan.merged.indices[t * 3] as usize;
+                let i1 = plan.merged.indices[t * 3 + 1] as usize;
+                let i2 = plan.merged.indices[t * 3 + 2] as usize;
+                let a = plan.merged.positions[i1] - plan.merged.positions[i0];
+                let b = plan.merged.positions[i2] - plan.merged.positions[i0];
                 let face_normal = a.cross(b);
                 if fallback_needed.get(i0).copied().unwrap_or(false) {
                     accum[i0] += face_normal;
@@ -1404,26 +1517,27 @@ fn tessellate_faces_core(
             }
             for i in 0..n_verts {
                 if fallback_needed[i] {
-                    merged.normals[i] = accum[i].normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                    plan.merged.normals[i] =
+                        accum[i].normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
                 }
             }
         }
     }
 
     if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
-        weld_boundary_vertices(&mut merged, deflection, tri_faces.as_mut());
+        weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
     }
 
     // Drop coincident/cancelling triangles left by booleans that
     // produced overlapping coplanar faces (issue #696). Keyed on quantized
     // positions so position-coincident triangles with distinct vertex IDs
     // are still caught.
-    dedupe_coincident_triangles(&mut merged, tri_faces.as_mut());
+    dedupe_coincident_triangles(&mut plan.merged, tri_faces.as_mut());
     if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
-        fill_sub_deflection_triangular_gaps(&mut merged, deflection, tri_faces.as_mut());
+        fill_sub_deflection_triangular_gaps(&mut plan.merged, plan.deflection, tri_faces.as_mut());
     }
 
-    Ok((merged, tri_faces, all_faces.len()))
+    Ok((plan.merged, tri_faces, all_faces.len()))
 }
 
 /// Split every triangle in `indices[start..]` whose edge spans a boundary
@@ -2003,4 +2117,205 @@ pub(super) fn tessellate_face_with_shared_edges(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod boundary_plan_pipeline_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::super::edge_sampling::{circle_param_range, sample_edge, sample_edge_with_params};
+    use super::*;
+    use remus_topology::Topology;
+
+    /// Drilled-box fixture: top and bottom holed planes (two CDT jobs) plus
+    /// a cylindrical wall, exercising the stage B/C path at pipeline level.
+    fn drilled_box() -> (Topology, remus_topology::solid::SolidId) {
+        use remus_math::mat::Mat4;
+
+        let mut topo = Topology::new();
+        let box_s = crate::primitives::make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
+        crate::transform::transform_solid(&mut topo, cyl, &Mat4::translation(10.0, 10.0, -5.0))
+            .unwrap();
+        let result =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, box_s, cyl).unwrap();
+        (topo, result)
+    }
+
+    /// Canonical triangle multiset for cross-order comparison: sorted vertex
+    /// positions per triangle, then sorted triangles under a TOTAL
+    /// lexicographic order over all nine coordinates. Positions are computed
+    /// per job independently of face order, so equality is exact. (A partial
+    /// comparator leaves ties in emission order and falsely reports
+    /// differences.)
+    fn canonical_triangles(mesh: &TriangleMesh) -> Vec<[[f64; 3]; 3]> {
+        fn cmp_verts(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> std::cmp::Ordering {
+            for (ra, rb) in a.iter().zip(b.iter()) {
+                for (x, y) in ra.iter().zip(rb.iter()) {
+                    let ord = x.total_cmp(y);
+                    if ord != std::cmp::Ordering::Equal {
+                        return ord;
+                    }
+                }
+            }
+            std::cmp::Ordering::Equal
+        }
+        let mut tris: Vec<[[f64; 3]; 3]> = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|t| {
+                let mut verts = [t[0], t[1], t[2]].map(|i| {
+                    let p = mesh.positions[i as usize];
+                    [p.x(), p.y(), p.z()]
+                });
+                verts.sort_by(|a, b| {
+                    a[0].total_cmp(&b[0])
+                        .then_with(|| a[1].total_cmp(&b[1]))
+                        .then_with(|| a[2].total_cmp(&b[2]))
+                });
+                verts
+            })
+            .collect();
+        tris.sort_by(cmp_verts);
+        tris
+    }
+
+    #[test]
+    fn faces_core_is_stable_under_face_order_permutation() {
+        use remus_topology::face::FaceId;
+
+        let (topo, solid) = drilled_box();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert!(
+            faces.len() >= 3,
+            "fixture needs several faces, got {}",
+            faces.len()
+        );
+        let deflection = 0.1;
+        let angular = remus_math::chord::DEFAULT_ANGULAR_TOL;
+
+        let mut orders: Vec<Vec<FaceId>> = vec![faces.clone()];
+        let mut reversed = faces.clone();
+        reversed.reverse();
+        orders.push(reversed);
+        let mut rotated = faces.clone();
+        rotated.rotate_left(faces.len() / 2 + 1);
+        orders.push(rotated);
+        let mut by_index_desc = faces;
+        by_index_desc.sort_by_key(|f| std::cmp::Reverse(f.index()));
+        orders.push(by_index_desc);
+
+        let mut references: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+        for order in &orders {
+            let (mesh, _, _) = tessellate_faces_core(
+                &topo,
+                order,
+                deflection,
+                angular,
+                MeshBoundaryMode::ClosedSolid,
+                false,
+                false,
+            )
+            .unwrap();
+            let bd = super::super::mesh_ops::boundary_edge_count(&mesh);
+            let nm = super::super::mesh_ops::non_manifold_edge_count(&mesh);
+            assert_eq!(
+                (bd, nm),
+                (0, 0),
+                "permuted face order must stay watertight, got bd={bd} nm={nm}"
+            );
+            references.push(canonical_triangles(&mesh));
+        }
+        for (i, candidate) in references.iter().enumerate().skip(1) {
+            assert_eq!(
+                candidate, &references[0],
+                "face order permutation {i} changed the triangle multiset"
+            );
+        }
+    }
+
+    #[test]
+    fn faces_core_repeated_runs_are_byte_identical() {
+        let (topo, solid) = drilled_box();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let deflection = 0.1;
+        let angular = remus_math::chord::DEFAULT_ANGULAR_TOL;
+
+        let (first, _, _) = tessellate_faces_core(
+            &topo,
+            &faces,
+            deflection,
+            angular,
+            MeshBoundaryMode::ClosedSolid,
+            false,
+            false,
+        )
+        .unwrap();
+        let (second, _, _) = tessellate_faces_core(
+            &topo,
+            &faces,
+            deflection,
+            angular,
+            MeshBoundaryMode::ClosedSolid,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            first.indices, second.indices,
+            "triangle emission order drifted"
+        );
+        assert_eq!(
+            first.positions.len(),
+            second.positions.len(),
+            "vertex pool size drifted"
+        );
+        for (a, b) in first.positions.iter().zip(second.positions.iter()) {
+            assert_eq!((a.x(), a.y(), a.z()), (b.x(), b.y(), b.z()));
+        }
+    }
+
+    #[test]
+    fn edge_sampling_with_params_preserves_points() {
+        use remus_topology::edge::EdgeCurve;
+
+        let mut topo = Topology::new();
+        let box_s = crate::primitives::make_box(&mut topo, 4.0, 5.0, 6.0).unwrap();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 2.0, 8.0).unwrap();
+        let sphere = crate::primitives::make_sphere(&mut topo, 3.0, 24).unwrap();
+        let torus = crate::primitives::make_torus(&mut topo, 5.0, 1.0, 48).unwrap();
+        let (drilled_topo, drilled) = drilled_box();
+
+        let jobs: Vec<(&Topology, remus_topology::solid::SolidId)> = vec![
+            (&topo, box_s),
+            (&topo, cyl),
+            (&topo, sphere),
+            (&topo, torus),
+            (&drilled_topo, drilled),
+        ];
+
+        for (topo, solid) in jobs {
+            let edges = remus_topology::explorer::solid_edges(topo, solid).unwrap();
+            assert!(!edges.is_empty());
+            for &edge_id in &edges {
+                let edge = topo.edge(edge_id).unwrap();
+                let plain = sample_edge(topo, edge, 0.1, 0.5, false).unwrap();
+                let (with_points, params) =
+                    sample_edge_with_params(topo, edge, 0.1, 0.5, false).unwrap();
+                assert_eq!(plain.len(), with_points.len());
+                for (a, b) in plain.iter().zip(with_points.iter()) {
+                    assert_eq!((a.x(), a.y(), a.z()), (b.x(), b.y(), b.z()));
+                }
+                assert_eq!(params.len(), with_points.len());
+                // Endpoint parameters stay pinned to the authoritative
+                // domain ends on curved edges.
+                if let EdgeCurve::Circle(_) = edge.curve() {
+                    let (t0, t1) = circle_param_range(edge).unwrap();
+                    assert_eq!(params.first().copied().flatten(), Some(t0));
+                    assert_eq!(params.last().copied().flatten(), Some(t1));
+                }
+            }
+        }
+    }
 }

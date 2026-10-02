@@ -8,7 +8,7 @@ use remus_math::nurbs::NurbsCurve;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::BlendResult;
 use remus_operations::boolean::{BooleanOp, BooleanOutcome};
-use remus_operations::journal_ops::{JournaledBlend, JournaledBoolean};
+use remus_operations::journal_ops::{JournaledBlend, JournaledBoolean, JournaledEntityOp};
 use remus_operations::tessellate::TriangleMesh;
 use remus_operations::validate::{ValidationOptions, ValidationReport};
 use remus_topology::journal::Journal;
@@ -373,6 +373,32 @@ impl Model {
         distance: f64,
     ) -> Result<SolidId, OperationsError> {
         remus_operations::extrude::extrude(&mut self.topology, face, direction, distance)
+    }
+
+    /// Extrudes a profile face and records construction-derived evolution.
+    ///
+    /// This is the persistent-naming path for the construction family: both
+    /// caps journal as `modified` pieces of the profile face, every side
+    /// wall as `generated` from it, and every result edge and vertex carries
+    /// its construction source — never a coordinate guess.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] if the extrusion, its completeness check,
+    /// or the journal record fails. A refusal leaves both topology and
+    /// journal unchanged.
+    pub fn extrude_journaled(
+        &mut self,
+        face: FaceId,
+        direction: Vec3,
+        distance: f64,
+    ) -> Result<JournaledEntityOp, OperationsError> {
+        remus_operations::journal_ops::extrude_journaled(
+            &mut self.topology,
+            face,
+            direction,
+            distance,
+        )
     }
 
     /// Revolves a profile face around an axis.
