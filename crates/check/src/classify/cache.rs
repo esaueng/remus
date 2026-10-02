@@ -4,7 +4,7 @@
 //! substrate: the same face list, conservative bounds with their shared BVH,
 //! and per-face trim polygons, but owned (never borrowed) and keyed by
 //! whole-topology [`remus_topology::CacheIdentity`], the queried solid, and
-//! all numerical query options.
+//! preparation-affecting options.
 //!
 //! # Identity contract (summary)
 //!
@@ -41,20 +41,19 @@
 //! the topology has not changed since preparation. No reference into topology
 //! storage is retained across calls.
 //!
-//! Preparation itself is tolerance-independent (bounds and trims do not take
-//! a tolerance), but the key conservatively includes `tolerance` and
-//! `max_recovery_attempts` so a future tolerance-dependent preparation cannot
-//! alias across options. Different options for the same solid therefore hold
-//! duplicate preparations; the bound below keeps that duplication finite.
+//! Preparation is tolerance-independent: bounds and trims do not take a
+//! tolerance. The tolerance is applied by each classification query, so it is
+//! deliberately absent from the preparation key. Recovery attempts also do
+//! not change prepared data, but remain in the key to preserve the existing
+//! option-specific cache behavior.
 //!
 //! # Bounds
 //!
-//! The cache holds at most `capacity` preparations (default 16 solids).
-//! Eviction is deterministic FIFO over insertion order: the oldest entry
-//! leaves first, with no hash-order dependence. Whole-topology invalidation
-//! is lazy: entries whose generation no longer matches the querying topology
-//! miss, and stale generations for the same lineage are dropped on the next
-//! lookup so rolled-back states cannot retain dead preparations.
+//! The cache holds at most `capacity` preparations (default 16) and at most
+//! `DEFAULT_CACHE_BYTE_BUDGET` estimated retained bytes. An entry larger than
+//! the whole budget is used for the current query but not retained. Eviction
+//! is deterministic FIFO over insertion order. Stale generations for the
+//! querying lineage are dropped after a replacement preparation is admitted.
 
 use remus_math::aabb::Aabb3;
 use remus_math::bvh::Bvh;
@@ -69,6 +68,9 @@ use crate::CheckError;
 /// Default bound on retained preparations (solids).
 pub const DEFAULT_CACHE_CAPACITY: usize = 16;
 
+/// Default aggregate bound on estimated retained preparation storage.
+pub const DEFAULT_CACHE_BYTE_BUDGET: usize = 32 * 1024 * 1024;
+
 /// One retained preparation: the same derived data
 /// [`super::PreparedSolid`] holds, but owned.
 #[derive(Debug, Clone)]
@@ -76,12 +78,16 @@ struct CacheEntry {
     lineage: u64,
     generation: u64,
     solid_index: usize,
-    tolerance_bits: u64,
     max_recovery: usize,
     faces: Vec<FaceId>,
     bvh: Bvh,
     trims: Vec<Option<super::boundary::FaceTrimData>>,
     retained_bytes: usize,
+}
+
+enum CacheLookup {
+    Retained(usize),
+    Uncached(CacheEntry),
 }
 
 /// Deterministic cache statistics.
@@ -113,6 +119,7 @@ pub struct CacheStats {
 #[derive(Debug, Clone)]
 pub struct ClassificationCache {
     capacity: usize,
+    byte_budget: usize,
     entries: Vec<CacheEntry>,
     hits: u64,
     misses: u64,
@@ -139,8 +146,19 @@ impl ClassificationCache {
     /// storing. Eviction order is deterministic FIFO regardless of capacity.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_and_byte_budget(capacity, DEFAULT_CACHE_BYTE_BUDGET)
+    }
+
+    /// An empty cache bounded by both preparation count and estimated bytes.
+    ///
+    /// Preparations larger than `byte_budget` are used for the current query
+    /// without being retained. Existing entries are not evicted for such a
+    /// preparation.
+    #[must_use]
+    pub fn with_capacity_and_byte_budget(capacity: usize, byte_budget: usize) -> Self {
         Self {
             capacity,
+            byte_budget,
             entries: Vec::new(),
             hits: 0,
             misses: 0,
@@ -153,6 +171,12 @@ impl ClassificationCache {
     #[must_use]
     pub const fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Aggregate bound on estimated retained preparation storage.
+    #[must_use]
+    pub const fn byte_budget(&self) -> usize {
+        self.byte_budget
     }
 
     /// Preparations currently retained.
@@ -186,11 +210,13 @@ impl ClassificationCache {
         }
     }
 
-    /// Estimated retained derived bytes (owned faces, bounds, BVH nodes,
-    /// and trim points; not allocator overhead or RSS).
+    /// Estimated retained owned-vector storage, including capacity slack,
+    /// and entry metadata; not allocator overhead or process RSS.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        self.entries.iter().map(|entry| entry.retained_bytes).sum()
+        self.entries.iter().fold(0usize, |sum, entry| {
+            sum.saturating_add(entry.retained_bytes)
+        })
     }
 
     /// Hit rate over all lookups (`hits / (hits + misses)`), or `None`
@@ -220,19 +246,31 @@ impl ClassificationCache {
         point: Point3,
         options: &ClassifyOptions,
     ) -> Result<PointClassification, CheckError> {
-        if topo.is_cache_poisoned() || self.capacity == 0 {
+        if topo.is_cache_poisoned() || self.capacity == 0 || self.byte_budget == 0 {
             self.misses = self.misses.saturating_add(1);
             return super::classify_point(topo, solid, point, options);
         }
-        let index = self.entry_index_or_rebuild(topo, solid, options)?;
-        let entry = &self.entries[index];
-        let source = CachedSource {
-            topo,
-            faces: &entry.faces,
-            bvh: &entry.bvh,
-            trims: &entry.trims,
-        };
-        super::classify_point_with_source(&source, point, options)
+        match self.entry_index_or_rebuild(topo, solid, options)? {
+            CacheLookup::Retained(index) => {
+                let entry = &self.entries[index];
+                let source = CachedSource {
+                    topo,
+                    faces: &entry.faces,
+                    bvh: &entry.bvh,
+                    trims: &entry.trims,
+                };
+                super::classify_point_with_source(&source, point, options)
+            }
+            CacheLookup::Uncached(entry) => {
+                let source = CachedSource {
+                    topo,
+                    faces: &entry.faces,
+                    bvh: &entry.bvh,
+                    trims: &entry.trims,
+                };
+                super::classify_point_with_source(&source, point, options)
+            }
+        }
     }
 
     /// Classify many points, amortizing one lookup over the batch.
@@ -253,53 +291,66 @@ impl ClassificationCache {
         points: &[Point3],
         options: &ClassifyOptions,
     ) -> Result<Vec<PointClassification>, CheckError> {
-        if topo.is_cache_poisoned() || self.capacity == 0 {
+        if topo.is_cache_poisoned() || self.capacity == 0 || self.byte_budget == 0 {
             self.misses = self.misses.saturating_add(1);
             let prepared = super::PreparedSolid::prepare(topo, solid)?;
             return prepared.classify_points(points, options);
         }
-        let index = self.entry_index_or_rebuild(topo, solid, options)?;
-        let entry = &self.entries[index];
-        let source = CachedSource {
-            topo,
-            faces: &entry.faces,
-            bvh: &entry.bvh,
-            trims: &entry.trims,
-        };
-        points
-            .iter()
-            .map(|&point| super::classify_point_with_source(&source, point, options))
-            .collect()
+        match self.entry_index_or_rebuild(topo, solid, options)? {
+            CacheLookup::Retained(index) => {
+                let entry = &self.entries[index];
+                let source = CachedSource {
+                    topo,
+                    faces: &entry.faces,
+                    bvh: &entry.bvh,
+                    trims: &entry.trims,
+                };
+                points
+                    .iter()
+                    .map(|&point| super::classify_point_with_source(&source, point, options))
+                    .collect()
+            }
+            CacheLookup::Uncached(entry) => {
+                let source = CachedSource {
+                    topo,
+                    faces: &entry.faces,
+                    bvh: &entry.bvh,
+                    trims: &entry.trims,
+                };
+                points
+                    .iter()
+                    .map(|&point| super::classify_point_with_source(&source, point, options))
+                    .collect()
+            }
+        }
     }
 
     /// Finds a live entry or rebuilds it, returning its index.
     ///
-    /// Drops stale generations for the querying lineage before searching so
-    /// rolled-back states cannot accumulate dead preparations. Callers handle
-    /// poisoned and zero-capacity cases before reaching here. Invalid solids
-    /// error without storing.
+    /// Drops stale generations for the querying lineage after successful
+    /// admission. Callers handle poisoned and zero-capacity cases before
+    /// reaching here. Invalid solids error without storing. An oversized
+    /// preparation is returned as an uncached candidate so the current query
+    /// can use it without mutating the existing cache.
     fn entry_index_or_rebuild(
         &mut self,
         topo: &Topology,
         solid: SolidId,
         options: &ClassifyOptions,
-    ) -> Result<usize, CheckError> {
+    ) -> Result<CacheLookup, CheckError> {
         let identity = topo.cache_identity();
         // Validate the handle first so malformed topology preserves the
         // one-shot error instead of a cache verdict.
         let _ = topo.solid(solid)?;
 
-        self.drop_stale_for_lineage(identity.lineage, identity.generation);
-        let tolerance_bits = options.tolerance.to_bits();
         if let Some(index) = self.entries.iter().position(|entry| {
             entry.lineage == identity.lineage
                 && entry.generation == identity.generation
                 && entry.solid_index == solid.index()
-                && entry.tolerance_bits == tolerance_bits
                 && entry.max_recovery == options.max_recovery_attempts
         }) {
             self.hits = self.hits.saturating_add(1);
-            return Ok(index);
+            return Ok(CacheLookup::Retained(index));
         }
         self.misses = self.misses.saturating_add(1);
         // Build exactly what `PreparedSolid::prepare` builds, owning every
@@ -318,26 +369,40 @@ impl ClassificationCache {
         let bvh = Bvh::build(&face_aabbs);
         crate::perf::bump_classify_bvh_build();
 
-        let retained_bytes = estimate_retained_bytes(&faces, &face_aabbs, &bvh, &trims);
-        // FIFO: evict the oldest insertion when full. Deterministic; no
-        // hash-order dependence.
-        if self.entries.len() >= self.capacity {
-            self.entries.remove(0);
-            self.evictions = self.evictions.saturating_add(1);
-        }
-        self.entries.push(CacheEntry {
+        let retained_bytes = estimate_retained_bytes(
+            &face_aabbs,
+            &bvh,
+            &trims,
+            faces.capacity(),
+            trims.capacity(),
+        );
+        let entry = CacheEntry {
             lineage: identity.lineage,
             generation: identity.generation,
             solid_index: solid.index(),
-            tolerance_bits,
             max_recovery: options.max_recovery_attempts,
             faces,
             bvh,
             trims,
             retained_bytes,
-        });
+        };
+        // Check admission before stale cleanup or FIFO eviction, so a single
+        // oversized preparation cannot disturb useful cached entries.
+        if retained_bytes > self.byte_budget {
+            return Ok(CacheLookup::Uncached(entry));
+        }
+        self.drop_stale_for_lineage(identity.lineage, identity.generation);
+        // FIFO: evict the oldest insertion until both bounds are satisfied.
+        // Deterministic; no hash-order dependence.
+        while self.entries.len() >= self.capacity
+            || self.retained_bytes().saturating_add(retained_bytes) > self.byte_budget
+        {
+            self.entries.remove(0);
+            self.evictions = self.evictions.saturating_add(1);
+        }
+        self.entries.push(entry);
         self.rebuilds = self.rebuilds.saturating_add(1);
-        Ok(self.entries.len() - 1)
+        Ok(CacheLookup::Retained(self.entries.len() - 1))
     }
 
     /// Drops entries for `lineage` whose generation is stale.
@@ -408,36 +473,44 @@ impl ClassifySource for CachedSource<'_> {
 
 /// Estimated retained bytes for one preparation.
 ///
-/// Sums owned face handles, bound pairs, BVH nodes (two per bound, the
-/// construction upper bound), and trim points. Deterministic; not RSS.
+/// Bounds owned vectors by their allocated capacities, including per-face
+/// trim slots and nested polygon buffers. BVH storage uses its documented
+/// two-nodes-per-bound construction cap. This is deterministic and excludes
+/// allocator metadata, cache-container slack, and process RSS.
 fn estimate_retained_bytes(
-    faces: &[FaceId],
     face_aabbs: &[(usize, Aabb3)],
     bvh: &Bvh,
     trims: &[Option<super::boundary::FaceTrimData>],
+    faces_capacity: usize,
+    trims_capacity: usize,
 ) -> usize {
     use std::mem::size_of;
-    let _ = bvh;
-    let faces_bytes = faces.len().saturating_mul(size_of::<FaceId>());
-    let bounds_bytes = face_aabbs
-        .len()
-        .saturating_mul(size_of::<usize>().saturating_add(size_of::<Aabb3>()));
+    let faces_bytes = faces_capacity.saturating_mul(size_of::<FaceId>());
     // `Bvh` is a flat `Vec<BvhNode>`; its length is private, so bound by the
     // construction cap (at most two nodes per bound) times the node size.
     let bvh_bytes = face_aabbs
         .len()
         .saturating_mul(2)
         .saturating_mul(size_of::<Aabb3>().saturating_add(3 * size_of::<usize>()));
-    let mut trim_bytes = 0usize;
+    let mut trim_bytes =
+        trims_capacity.saturating_mul(size_of::<Option<super::boundary::FaceTrimData>>());
     for data in trims.iter().flatten() {
         trim_bytes =
-            trim_bytes.saturating_add(data.outer.len().saturating_mul(size_of::<Point3>()));
+            trim_bytes.saturating_add(data.outer.capacity().saturating_mul(size_of::<Point3>()));
+        trim_bytes = trim_bytes.saturating_add(
+            data.holes
+                .capacity()
+                .saturating_mul(size_of::<Vec<Point3>>()),
+        );
         for hole in &data.holes {
-            trim_bytes = trim_bytes.saturating_add(hole.len().saturating_mul(size_of::<Point3>()));
+            trim_bytes =
+                trim_bytes.saturating_add(hole.capacity().saturating_mul(size_of::<Point3>()));
         }
     }
-    faces_bytes
-        .saturating_add(bounds_bytes)
+    let entry_bytes = size_of::<CacheEntry>();
+    let _ = bvh;
+    entry_bytes
+        .saturating_add(faces_bytes)
         .saturating_add(bvh_bytes)
         .saturating_add(trim_bytes)
 }
@@ -951,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn numerical_options_are_part_of_the_key() {
+    fn tolerance_is_applied_per_query_while_preparation_is_reused() {
         let mut topo = Topology::new();
         let solid = make_unit_cube_manifold(&mut topo);
         // 5e-7 above the z=0 cap: boundary at 1e-6, interior at 1e-9.
@@ -978,8 +1051,9 @@ mod tests {
             cache.classify_point(&topo, solid, point, &tight).unwrap(),
             super::super::classify_point(&topo, solid, point, &tight).unwrap()
         );
-        // Conservative keying holds duplicate preparations.
-        assert_eq!(cache.stats().len, 2);
+        // Tolerance changes the classification boundary, not prepared data.
+        assert_eq!(cache.stats().len, 1);
+        assert_eq!(cache.stats().hits, 2);
 
         let other_recovery = ClassifyOptions {
             max_recovery_attempts: 3,
@@ -991,7 +1065,7 @@ mod tests {
                 .unwrap(),
             super::super::classify_point(&topo, solid, point, &other_recovery).unwrap()
         );
-        assert_eq!(cache.stats().len, 3);
+        assert_eq!(cache.stats().len, 2);
     }
 
     #[test]
@@ -1039,5 +1113,94 @@ mod tests {
         cache2.classify_point(&topo, a, point, &options).unwrap();
         cache2.classify_point(&topo, b, point, &options).unwrap();
         assert_eq!(cache2.retained_bytes(), bytes_two);
+    }
+
+    #[test]
+    fn byte_budget_declines_oversized_preparation_without_retention() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let options = ClassifyOptions::default();
+        let point = Point3::new(0.5, 0.5, 0.5);
+        let mut reference = ClassificationCache::with_capacity(1);
+        reference
+            .classify_point(&topo, solid, point, &options)
+            .unwrap();
+        let one_cube_bytes = reference.retained_bytes();
+
+        let mut cache = ClassificationCache::with_capacity_and_byte_budget(4, one_cube_bytes - 1);
+        for _ in 0..2 {
+            assert_eq!(
+                cache.classify_point(&topo, solid, point, &options).unwrap(),
+                super::super::classify_point(&topo, solid, point, &options).unwrap()
+            );
+        }
+        assert_eq!(cache.stats().len, 0);
+        assert_eq!(cache.stats().evictions, 0);
+        assert_eq!(cache.stats().rebuilds, 0);
+        assert_eq!(cache.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn byte_budget_evicts_fifo_and_keeps_aggregate_within_limit() {
+        let mut topo = Topology::new();
+        let a = make_unit_cube_manifold(&mut topo);
+        let b = make_unit_cube_manifold(&mut topo);
+        let c = make_unit_cube_manifold(&mut topo);
+        let options = ClassifyOptions::default();
+        let point = Point3::new(0.5, 0.5, 0.5);
+        let mut reference = ClassificationCache::with_capacity(1);
+        reference.classify_point(&topo, a, point, &options).unwrap();
+        let one_cube_bytes = reference.retained_bytes();
+
+        let mut cache = ClassificationCache::with_capacity_and_byte_budget(4, one_cube_bytes * 2);
+        for solid in [a, b, c] {
+            assert_eq!(
+                cache.classify_point(&topo, solid, point, &options).unwrap(),
+                super::super::classify_point(&topo, solid, point, &options).unwrap()
+            );
+            assert!(cache.retained_bytes() <= cache.byte_budget());
+        }
+        assert_eq!(cache.stats().len, 2);
+        assert_eq!(cache.stats().evictions, 1);
+        assert_eq!(cache.retained_bytes(), one_cube_bytes * 2);
+    }
+
+    #[cfg(feature = "perf-counters")]
+    #[test]
+    fn uncached_paths_reuse_or_skip_cache_preparation_work() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let options = ClassifyOptions::default();
+        let point = Point3::new(0.5, 0.5, 0.5);
+
+        crate::perf::reset();
+        let mut oversized = ClassificationCache::with_capacity_and_byte_budget(4, 1);
+        let result = oversized
+            .classify_point(&topo, solid, point, &options)
+            .unwrap();
+        let oversized_work = crate::perf::snapshot();
+        assert_eq!(
+            result,
+            super::super::classify_point(&topo, solid, point, &options).unwrap()
+        );
+        assert_eq!(oversized.stats().len, 0);
+        assert_eq!(oversized_work.bvh_builds, 1);
+        assert_eq!(oversized_work.face_aabb_evals, 6);
+        assert_eq!(oversized_work.trim_builds, 6);
+
+        crate::perf::reset();
+        let mut disabled = ClassificationCache::with_capacity_and_byte_budget(4, 0);
+        let result = disabled
+            .classify_points(&topo, solid, &[point], &options)
+            .unwrap();
+        let disabled_work = crate::perf::snapshot();
+        assert_eq!(
+            result,
+            vec![super::super::classify_point(&topo, solid, point, &options).unwrap()]
+        );
+        assert_eq!(disabled.stats().len, 0);
+        assert_eq!(disabled_work.bvh_builds, 1);
+        assert_eq!(disabled_work.face_aabb_evals, 6);
+        assert_eq!(disabled_work.trim_builds, 6);
     }
 }

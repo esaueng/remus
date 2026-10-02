@@ -345,22 +345,22 @@ fn dof_analysis() {
         .expect("test coordinates are finite");
 
     // Free point: 2 DOF
-    let dof = sys.dof();
+    let dof = sys.dof().unwrap();
     assert_eq!(dof.dof, 2);
 
     // Fix X: 1 DOF
     let cx = sys.add_constraint(Constraint::FixX(p, 0.0)).unwrap();
-    let dof = sys.dof();
+    let dof = sys.dof().unwrap();
     assert_eq!(dof.dof, 1);
 
     // Fix Y: 0 DOF
     sys.add_constraint(Constraint::FixY(p, 0.0)).unwrap();
-    let dof = sys.dof();
+    let dof = sys.dof().unwrap();
     assert_eq!(dof.dof, 0);
 
     // Remove FixX: back to 1 DOF
     sys.remove_constraint(cx).unwrap();
-    let dof = sys.dof();
+    let dof = sys.dof().unwrap();
     assert_eq!(dof.dof, 1);
 }
 
@@ -1846,7 +1846,7 @@ fn dense_detailed(sys: &mut GcsSystem, max_iterations: usize, tolerance: f64) ->
         .map(|(_, e)| super::super::constraint::residual_count(&e.constraint))
         .sum();
     let analysis = if n == 0 || m == 0 {
-        sys.dof()
+        sys.dof().unwrap()
     } else {
         let snap = sys.build_snapshot();
         let jac = sys.jacobian_for_snapshot(&snap, m, n);
@@ -2358,7 +2358,7 @@ fn ellipse_free_dof_counts() {
         })
         .unwrap();
     sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
-    let dof = sys.dof();
+    let dof = sys.dof().unwrap();
     assert_eq!(
         (dof.dof, dof.rank, dof.num_params, dof.num_equations),
         (5, 0, 5, 0)
@@ -2373,7 +2373,7 @@ fn ellipse_free_dof_counts() {
         })
         .unwrap();
     let e = sys.add_ellipse(c, 3.0, 2.0, 0.0).unwrap();
-    let dof = sys.dof();
+    let dof = sys.dof().unwrap();
     assert_eq!((dof.dof, dof.num_params, dof.num_equations), (3, 3, 0));
     sys.add_constraint(Constraint::EllipseAxisA(e, 3.0))
         .unwrap();
@@ -2796,4 +2796,188 @@ fn ellipse_drag_sequence_between_solves() {
             pt.x
         );
     }
+}
+
+// The supported equal-circle chain is underdetermined and must fall back to
+// dense storage. A small configurable budget proves refusal without exhausting
+// memory; the same fixture under normal limits proves its rank and solve result.
+fn budget_circle_chain(limits: GcsLimits, count: usize) -> GcsSystem {
+    let mut sys = GcsSystem::with_limits(limits);
+    let mut previous = None;
+    for i in 0..count {
+        let center = sys
+            .add_point(PointData {
+                x: 3.0 * i as f64,
+                y: 0.0,
+                fixed: false,
+            })
+            .unwrap();
+        let circle = sys.add_circle(center, 2.0 + i as f64 / 100.0).unwrap();
+        if let Some(prev) = previous {
+            sys.add_constraint(Constraint::EqualRadiusCircleCircle(prev, circle))
+                .unwrap();
+        }
+        previous = Some(circle);
+    }
+    sys
+}
+
+fn assert_resource_refusal<T: std::fmt::Debug>(result: Result<T, SketchError>, resource: &str) {
+    assert!(
+        matches!(result, Err(SketchError::ResourceLimitExceeded { resource: got, .. }) if got == resource)
+    );
+}
+
+#[test]
+fn dense_budget_checked_arithmetic_and_boundary() {
+    let limits = GcsLimits {
+        max_dense_bytes: 1120,
+        max_dense_qr_work: 24,
+    };
+    // 3*(2*3 + 2*3) +16*(2+3 +2+3) doubles = 1568 bytes.
+    assert_resource_refusal(limits.check_dimensions([(2, 3), (2, 3)]), "gcs_dense_bytes");
+    assert!(limits.check_dimensions([(2, 3)]).is_ok());
+    assert_resource_refusal(
+        limits.check_dimensions([(usize::MAX, 2)]),
+        "gcs_dense_bytes",
+    );
+    assert_resource_refusal(
+        limits.check_dimensions([(usize::MAX, 0), (1, 0)]),
+        "gcs_dense_bytes",
+    );
+    let exact = GcsLimits {
+        max_dense_bytes: 784,
+        max_dense_qr_work: 12,
+    };
+    assert!(exact.check_dimensions([(2, 3)]).is_ok());
+    assert_resource_refusal(
+        GcsLimits {
+            max_dense_bytes: 783,
+            ..exact
+        }
+        .check_dimensions([(2, 3)]),
+        "gcs_dense_bytes",
+    );
+    assert_resource_refusal(
+        GcsLimits {
+            max_dense_qr_work: 11,
+            ..exact
+        }
+        .check_dimensions([(2, 3)]),
+        "gcs_dense_qr_work",
+    );
+}
+
+#[test]
+fn dense_budget_circle_chain_refuses_all_entries_atomically() {
+    let mut sys = budget_circle_chain(
+        GcsLimits {
+            max_dense_bytes: 4096,
+            ..GcsLimits::default()
+        },
+        130,
+    );
+    let before = format!("{:?}", sys);
+    for _ in 0..2 {
+        assert_resource_refusal(sys.solve(0, TOL), "gcs_dense_bytes");
+        assert_resource_refusal(sys.solve(100, TOL), "gcs_dense_bytes");
+        assert_resource_refusal(sys.solve_detailed(100, TOL), "gcs_dense_bytes");
+        assert_resource_refusal(sys.dof(), "gcs_dense_bytes");
+    }
+    // The parameter cache is allowed to rebuild; all live entities, constraints
+    // and their handles remain identical.
+    sys.dirty = true;
+    sys.param_map.clear();
+    sys.param_index.clear();
+    assert_eq!(format!("{:?}", sys), before);
+    let mut control = budget_circle_chain(GcsLimits::default(), 130);
+    let initial = control.dof().unwrap();
+    assert_eq!(
+        (
+            initial.num_params,
+            initial.num_equations,
+            initial.rank,
+            initial.dof
+        ),
+        (390, 129, 129, 261)
+    );
+    assert!(control.solve(100, TOL).unwrap().converged);
+    assert!(control.solve_detailed(100, TOL).unwrap().converged);
+    assert_eq!(control.dof().unwrap().rank, 129);
+}
+
+#[test]
+fn dense_budget_aggregates_components_and_refuses_before_publication() {
+    let mut sys = GcsSystem::with_limits(GcsLimits {
+        max_dense_bytes: 600,
+        ..GcsLimits::default()
+    });
+    let p = sys
+        .add_point(PointData {
+            x: 7.0,
+            y: 9.0,
+            fixed: false,
+        })
+        .unwrap();
+    sys.add_constraint(Constraint::FixX(p, 2.0)).unwrap();
+    sys.add_constraint(Constraint::FixY(p, 3.0)).unwrap();
+    // Two independent scalar components each fit (280 bytes), aggregate 560.
+    assert!(sys.solve(100, TOL).unwrap().converged);
+    sys.point_mut(p).unwrap().x = 8.0;
+    let q = sys
+        .add_point(PointData {
+            x: 4.0,
+            y: 5.0,
+            fixed: false,
+        })
+        .unwrap();
+    sys.add_constraint(Constraint::FixX(q, 1.0)).unwrap();
+    assert_resource_refusal(sys.solve_detailed(100, TOL), "gcs_dense_bytes");
+    assert_eq!(sys.point(p).unwrap().x.to_bits(), 8.0_f64.to_bits());
+    assert_eq!(sys.point(q).unwrap().x.to_bits(), 4.0_f64.to_bits());
+    assert_eq!(sys.constraint_count(), 3);
+}
+
+#[test]
+fn dense_budget_ellipse_chain_and_sparse_rank_miss_refuse() {
+    let mut sys = GcsSystem::with_limits(GcsLimits {
+        max_dense_bytes: 1024,
+        ..GcsLimits::default()
+    });
+    let mut previous = None;
+    for i in 0..5 {
+        let center = sys
+            .add_point(PointData {
+                x: i as f64,
+                y: 0.0,
+                fixed: true,
+            })
+            .unwrap();
+        let ellipse = sys.add_ellipse(center, 4.0 + i as f64, 2.0, 0.1).unwrap();
+        if let Some(prev) = previous {
+            sys.add_constraint(Constraint::EqualEllipseRadii(prev, ellipse))
+                .unwrap();
+        }
+        previous = Some(ellipse);
+    }
+    let last = previous.unwrap();
+    assert_resource_refusal(sys.solve(0, TOL), "gcs_dense_bytes");
+    assert_resource_refusal(sys.dof(), "gcs_dense_bytes");
+    assert_eq!(sys.ellipse(last).unwrap().a.to_bits(), 8.0_f64.to_bits());
+    let mut rank_miss = budget_circle_chain(
+        GcsLimits {
+            max_dense_bytes: 4096,
+            ..GcsLimits::default()
+        },
+        130,
+    );
+    // Add redundant rows so m >= n: sparse's structural entry condition can
+    // pass, but numerical full rank cannot. Preflight still reserves fallback.
+    let first = rank_miss.circles.iter().next().unwrap().0;
+    for _ in 0..4 {
+        rank_miss
+            .add_constraint(Constraint::CircleRadius(first, 2.0))
+            .unwrap();
+    }
+    assert_resource_refusal(rank_miss.solve_detailed(0, TOL), "gcs_dense_bytes");
 }

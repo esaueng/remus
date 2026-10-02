@@ -16,6 +16,23 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::OperationsError;
 
+// Bound both curvature evaluation and the adaptively refined refit grid.
+const MAX_OFFSET_SAMPLE_GRID_ITEMS: usize = 10_000;
+
+fn validate_offset_grid(rows: usize, columns: usize) -> Result<(), OperationsError> {
+    if rows
+        .checked_mul(columns)
+        .is_none_or(|work| work > MAX_OFFSET_SAMPLE_GRID_ITEMS)
+    {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "offset sample grid must be at most {MAX_OFFSET_SAMPLE_GRID_ITEMS} points, got {rows} x {columns}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Create a new face that is offset from `face_id` by `distance` along
 /// the outward surface normal.
 ///
@@ -93,7 +110,8 @@ pub struct FaceOffsetOutcome {
 /// # Errors
 ///
 /// Returns the same errors as [`offset_face`], plus the exact-only refusal
-/// for a NURBS face under `None`.
+/// for a NURBS face under `None`, and an invalid-input refusal if either
+/// the coarse or refined NURBS sample grid exceeds 10,000 points.
 pub fn offset_face_with_quality(
     topo: &mut Topology,
     face_id: FaceId,
@@ -218,6 +236,7 @@ fn offset_nurbs_face(
     samples: usize,
 ) -> Result<FaceId, OperationsError> {
     let n = samples.max(4);
+    validate_offset_grid(n, n)?;
     let tol = Tolerance::new();
 
     let coarse = n.max(4);
@@ -316,6 +335,7 @@ fn offset_nurbs_face(
 
     let nu = u_params.len();
     let nv = v_params.len();
+    validate_offset_grid(nu, nv)?;
     let mut offset_grid: Vec<Vec<Point3>> = Vec::with_capacity(nu);
 
     for &u in &u_params {
@@ -1305,6 +1325,66 @@ mod tests {
             matches!(off_face.surface(), FaceSurface::Nurbs(_)),
             "expected NURBS surface after NURBS offset"
         );
+    }
+
+    #[test]
+    fn nurbs_offset_rejects_excessive_grid_before_mutation() {
+        let mut topo = Topology::new();
+        let face = make_flat_nurbs_face(&mut topo, 0.0);
+        let before = (topo.num_vertices(), topo.num_edges(), topo.num_faces());
+        for samples in [101, 10_000, usize::MAX] {
+            let error = offset_face_with_quality(&mut topo, face, 0.5, Some(samples)).unwrap_err();
+            assert!(error.to_string().contains("sample grid"), "{error}");
+            assert_eq!(
+                (topo.num_vertices(), topo.num_edges(), topo.num_faces()),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn nurbs_offset_bounds_the_actual_refined_grid() {
+        let mut topo = Topology::new();
+        let face = make_flat_nurbs_face(&mut topo, 0.0);
+        let original = topo.face(face).unwrap().clone();
+        // A nearly uniform, gently curved patch refines each interval with
+        // three extra points: 26 coarse rows become 101 refined rows.
+        let points: Vec<Vec<_>> = (0..3)
+            .map(|i| {
+                (0..3)
+                    .map(|j| {
+                        let u = f64::from(i) / 2.0;
+                        let v = f64::from(j) / 2.0;
+                        Point3::new(u, v, 0.001 * (u * u + v * v))
+                    })
+                    .collect()
+            })
+            .collect();
+        let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let surface = remus_math::nurbs::NurbsSurface::new(
+            2,
+            2,
+            knots.clone(),
+            knots,
+            points,
+            vec![vec![1.0; 3]; 3],
+        )
+        .unwrap();
+        let curved = topo.add_face(remus_topology::face::Face::new(
+            original.outer_wire(),
+            vec![],
+            FaceSurface::Nurbs(surface),
+        ));
+        let before = (topo.num_vertices(), topo.num_edges(), topo.num_faces());
+        let error = offset_face_with_quality(&mut topo, curved, 0.5, Some(26)).unwrap_err();
+        assert!(error.to_string().contains("101 x 101"), "{error}");
+        assert_eq!(
+            (topo.num_vertices(), topo.num_edges(), topo.num_faces()),
+            before
+        );
+        assert!(validate_offset_grid(100, 100).is_ok());
+        assert!(validate_offset_grid(101, 100).is_err());
+        assert!(validate_offset_grid(usize::MAX, usize::MAX).is_err());
     }
 
     #[test]
