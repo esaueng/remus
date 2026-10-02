@@ -331,3 +331,13 @@ fn grid_width_covers_a_threshold_just_above_a_power_of_two() {
     assert_eq!(chains[0].len(), 2);
     assert!(chains[1..].iter().all(|c| c.len() == 1));
 }
+
+/// A subnormal threshold (cell width from the subnormal exponent branch)
+/// squares to zero, so no pair connects, even two coincident points.
+#[test]
+fn subnormal_threshold_connects_nothing() {
+    let points = [ip(0.0, 0.0, 0.0), ip(0.0, 0.0, 0.0), ip(1e-311, 0.0, 0.0)];
+    let chains = chain_intersection_points(&points, 1e-310);
+    assert_eq!(chains.len(), 3);
+    assert!(chains.iter().all(|c| c.len() == 1));
+}
