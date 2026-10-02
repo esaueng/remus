@@ -242,7 +242,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "solidEdgeRelations"
         | "faceMaterialSense"
         | "wireLength"
-        | "volume" => Some(BatchOpKind::ReadOnly),
+        | "volume"
+        | "projectCurvesOntoSketchPlane" => Some(BatchOpKind::ReadOnly),
         // Serialized-reference ops: the reference codec is always linked, so
         // these dispatch in every build (the `io` feature gates formats only).
         "makeOperationOutputRef"
@@ -401,7 +402,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "makePlanarFaceFromWire"
         | "makeFaceFromWires"
         | "makeSheetBody"
-        | "addHolesToFace" => Some(BatchOpKind::Mutating),
+        | "addHolesToFace"
+        | "projectCurveOntoFace"
+        | "projectCurvesOntoSolid" => Some(BatchOpKind::Mutating),
         _ => None,
     }
 }
@@ -3358,6 +3361,7 @@ impl BrepKernel {
                 .dispatch_naming_op(other, args)
                 .or_else(|| self.dispatch_evolution_op(other, args))
                 .or_else(|| self.dispatch_gcs_op(other, args))
+                .or_else(|| self.dispatch_project_curve_op(other, args))
                 .unwrap_or_else(|| Err(StructuredWasmError::unknown_operation(other))),
         }
     }
