@@ -148,7 +148,7 @@ pub enum FaceSpec {
         /// Inner wires are always copied verbatim.
         outer: Option<Vec<Point3>>,
     },
-    /// An [`Existing`] face whose blend-adjacent inner loops are rebuilt
+    /// An [`Self::Existing`] face whose blend-adjacent inner loops are rebuilt
     /// from positions while untouched loops copy verbatim.
     ///
     /// A rib standing in its plate cap leaves a footprint hole whose
