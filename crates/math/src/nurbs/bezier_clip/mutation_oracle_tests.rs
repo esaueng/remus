@@ -1161,3 +1161,74 @@ fn project_onto_window_keeps_the_first_of_equidistant_samples() {
     assert_eq!(u, 0.0);
     assert!(close(d, 101.0_f64.sqrt(), 1e-14), "{d}");
 }
+
+/// A clip that keeps exactly 60% of the window is not a good clip (the
+/// test is `width < CLIP_THRESHOLD`). The parabola (2t, 2t(1 - t)) has the
+/// fat line 0 <= y <= 1 (plus the rounding pad); the segment x = 0.7 from
+/// y = -0.3 upward is tuned (by stepping its top end one ulp at a time) so
+/// that the computed clip width is exactly 0.6 (the bottom end steps
+/// down by 1e-4 until such a top exists). Then call 0 goes on to
+/// clip the parabola against the segment (to t = 0.35), call 1 clips the
+/// segment against that sliver, and call 2 emits: three calls. Treating
+/// the 0.6 clip as good recurses on the segment first and takes four.
+#[test]
+fn clip_keeping_exactly_sixty_percent_is_not_a_good_clip() {
+    let a = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![p(0.0, 0.0, 0.0), p(1.0, 1.0, 0.0), p(2.0, 0.0, 0.0)],
+        vec![1.0; 3],
+    )
+    .expect("parabola");
+    let sub_a = SubSegment::new(ClipSide::new(&a, 0.0, 1.0)).expect("window");
+    let width = |bottom: f64, top: f64| {
+        let b = line(p(0.7, bottom, 0.0), p(0.7, top, 0.0));
+        let sub_b = SubSegment::new(ClipSide::new(&b, 0.0, 1.0)).expect("window");
+        let pad = CLIP_NOISE_PAD * sub_a.magnitude().max(sub_b.magnitude());
+        match clip_to_fat_line(&sub_a, &sub_b, pad) {
+            Clip::Interval(t0, t1) => t1 - t0,
+            Clip::Empty => f64::NAN,
+        }
+    };
+    let mut found = None;
+    'search: for k in 0..512 {
+        let bottom = f64::from(k).mul_add(-1e-4, -0.3);
+        // Pad: 1e-12 of the magnitude 2 on each side of the unit slab.
+        let mut top = bottom + 4.0f64.mul_add(CLIP_NOISE_PAD, 1.0) / CLIP_THRESHOLD;
+        for _ in 0..64 {
+            let w = width(bottom, top);
+            if w == CLIP_THRESHOLD {
+                found = Some(line(p(0.7, bottom, 0.0), p(0.7, top, 0.0)));
+                break 'search;
+            }
+            top = if w > CLIP_THRESHOLD {
+                top.next_up()
+            } else {
+                top.next_down()
+            };
+        }
+    }
+    let b = found.expect("a segment whose clip keeps exactly 60%");
+    let (r, calls) = recurse_calls(|| curve_curve_intersect_full(&a, &b, 1e-8).expect("ok"));
+    assert_eq!(calls, 3);
+    assert_eq!(r.hits.len(), 1, "{:?}", r.hits);
+    assert!(
+        (r.hits[0].point - p(0.7, 0.455, 0.0)).length() < 1e-14,
+        "{:?}",
+        r.hits
+    );
+}
+
+/// Equal-gap duplicates keep the first in parameter order: hits at
+/// u1 = 1/4 -+ 2^-9 on the line pair of the merge test are 4 * 2^-9 off
+/// the crossing either way.
+#[test]
+fn merge_duplicate_hits_keeps_the_first_of_equal_gaps() {
+    let c1 = line(p(0.0, 0.0, 0.0), p(4.0, 0.0, 0.0));
+    let c2 = line(p(1.0, -1.0, 0.0), p(1.0, 3.0, 0.0));
+    let d = 2.0f64.powi(-9);
+    let mut hits = vec![hit_on(&c1, 0.25 + d, 0.25), hit_on(&c1, 0.25 - d, 0.25)];
+    merge_duplicate_hits(&mut hits, &c1, &c2, 0.05);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].u1, 0.25 - d);
+}
