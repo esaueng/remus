@@ -1010,12 +1010,9 @@ fn batch_planar_pair_query_rejects_many_holes_atomically() {
     let outer = k.topo().face(face).unwrap().outer_wire();
     // A small reference-only fixture exceeds the default preparation cap;
     // no exhausting polygons are constructed or evaluated in this test.
-    #[allow(deprecated)]
     k.topo_mut()
-        .face_mut(face)
-        .unwrap()
-        .inner_wires_mut()
-        .extend(vec![outer; 16_384]);
+        .set_face_boundary_wires(face, outer, vec![outer; 16_384])
+        .unwrap();
     let slots = k.topo().allocated_slot_count();
     let operations = vec![op_name_args(
         "getOpposingPlanarFacePairs",
