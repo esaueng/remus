@@ -1015,7 +1015,9 @@ fn an_inexact_source_end_coincidence_is_not_a_shared_end() {
     // A chart edge whose fraction rounds to exactly 0 or 1 while its enclosure
     // does not, beside the partner's exact end use: 2^-1074 / 4 underflows to
     // 0, and (896 + 2^60) / (1024 + 2^60) rounds to 1 (896 + 2^60 ties to the
-    // even 1024 + 2^60). Swapping the faces swaps the pair order.
+    // even 1024 + 2^60). Swapping the faces swaps the pair order. The section
+    // is re-knotted over (0, 1) so a subnormal source window stays nonempty
+    // in its native parameter and only the event-order proof can refuse.
     let near_zero = (
         (0.0, 4.0),
         [f64::from_bits(1), f64::MIN_POSITIVE, -1.0, 1.0],
@@ -1036,7 +1038,14 @@ fn an_inexact_source_end_coincidence_is_not_a_shared_end() {
                     (full, rect, [(0.0, 1.0), domain])
                 };
                 let (topo, traces, section) = chart_fixture(&[a], &[b], d);
-                clip(&topo, traces, &section)
+                let unit = NurbsCurve::new(
+                    2,
+                    knots(2, (0.0, 1.0)),
+                    section.control_points().to_vec(),
+                    section.weights().to_vec(),
+                )
+                .unwrap();
+                clip(&topo, traces, &unit)
             };
             assert!(
                 matches!(pair(coincident), Err(ClipError::AmbiguousBoundary)),
