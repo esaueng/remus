@@ -2111,6 +2111,7 @@ dependencies = [
  "remus-check",
  "remus-math",
  "remus-topology",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 

@@ -143,17 +143,32 @@ fn fixture_edge(s: &NurbsSurface, a: Point2, b: Point2, reverse: bool) -> EdgeCu
     )
 }
 fn face(topo: &mut Topology, s: NurbsSurface, rects: &[[f64; 4]], reverse: bool) -> FaceId {
+    let domain = s.domain_u();
+    let u = |x| domain.0 + (domain.1 - domain.0) * x;
+    let chart: Vec<_> = rects
+        .iter()
+        .map(|&[x0, x1, y0, y1]| [u(x0), u(x1), y0, y1])
+        .collect();
+    face_in_chart(topo, s, &chart, reverse, true)
+}
+/// `face` with rectangle corners in the surface's native u chart; `closed`
+/// is the wire's closure flag, which the loop inherits.
+fn face_in_chart(
+    topo: &mut Topology,
+    s: NurbsSurface,
+    rects: &[[f64; 4]],
+    reverse: bool,
+    closed: bool,
+) -> FaceId {
     let mut wires = Vec::new();
     let mut pcurves = Vec::new();
-    let domain = s.domain_u();
     for (r, rect) in rects.iter().enumerate() {
-        let [x0, x1, y0, y1] = *rect;
-        let u = |x| domain.0 + (domain.1 - domain.0) * x;
+        let [u0, u1, y0, y1] = *rect;
         let mut points = [
-            Point2::new(u(x0), y0),
-            Point2::new(u(x1), y0),
-            Point2::new(u(x1), y1),
-            Point2::new(u(x0), y1),
+            Point2::new(u0, y0),
+            Point2::new(u1, y0),
+            Point2::new(u1, y1),
+            Point2::new(u0, y1),
         ];
         if r > 0 {
             points.reverse();
@@ -178,17 +193,22 @@ fn face(topo: &mut Topology, s: NurbsSurface, rects: &[[f64; 4]], reverse: bool)
             }
             let id = topo.add_edge(edge);
             edges.push(OrientedEdge::new(id, !rev));
+            // Axis sides: |dx| + |dy| is the exact length, and the unit
+            // direction survives subnormal sides whose d·d underflows.
+            let d = b - a;
+            let length = d.x().abs() + d.y().abs();
+            let direction = Vec2::new(d.x() / length, d.y() / length);
             pcurves.push((
                 id,
                 !rev,
                 PCurve::new(
-                    Curve2D::Line(Line2D::new(a, b - a).unwrap()),
+                    Curve2D::Line(Line2D::new(a, direction).unwrap()),
                     0.0,
-                    (b - a).length(),
+                    length,
                 ),
             ));
         }
-        wires.push(topo.add_wire(Wire::new(edges, true).unwrap()));
+        wires.push(topo.add_wire(Wire::new(edges, closed).unwrap()));
     }
     let id = topo.add_face(Face::new(
         wires[0],
@@ -217,6 +237,27 @@ pub(in crate::pave_filler) fn fixture(
             surfaces[j].clone(),
             if j == 0 { a } else { b },
             reverse,
+        ),
+        v: 0.0,
+    });
+    (topo, traces, section)
+}
+/// `fixture` with polynomial geometry, rectangles in each face's native u
+/// chart, and the given chart domains.
+fn chart_fixture(
+    a: &[[f64; 4]],
+    b: &[[f64; 4]],
+    domains: [(f64, f64); 2],
+) -> (Topology, [FaceTrace; 2], NurbsCurve) {
+    let (section, surfaces) = section_and_surfaces(false, 1.0, false, domains);
+    let mut topo = Topology::new();
+    let traces = std::array::from_fn(|j| FaceTrace {
+        face: face_in_chart(
+            &mut topo,
+            surfaces[j].clone(),
+            if j == 0 { a } else { b },
+            false,
+            true,
         ),
         v: 0.0,
     });
@@ -742,4 +783,690 @@ fn same_is_exact_equality_and_finite_rejects_non_finite() {
     assert!(finite(1.0).is_ok());
     assert!(finite(f64::NAN).is_err());
     assert!(finite(f64::INFINITY).is_err());
+}
+
+// Mutation oracles (B19 F3c). Each input trips exactly one clause of one gate;
+// the expected verdict is the gate's documented refusal or a hand-computed
+// value, never a re-run of the code under test.
+
+fn outer_coedges(topo: &Topology, face: FaceId) -> Vec<CoedgeId> {
+    topo.face_loop(topo.loops_of_face(face).unwrap()[0])
+        .unwrap()
+        .coedges()
+        .to_vec()
+}
+fn chart_line(topo: &Topology, cid: CoedgeId) -> (Line2D, [f64; 2]) {
+    let pc = topo.coedge(cid).unwrap().pcurve().unwrap();
+    let Curve2D::Line(line) = pc.curve() else {
+        panic!("fixture pcurves are lines")
+    };
+    (line.clone(), [pc.t_start(), pc.t_end()])
+}
+/// The first outer-loop coedge of `face` whose chart line is vertical
+/// (`vertical`) or horizontal.
+fn side(topo: &Topology, face: FaceId, vertical: bool) -> CoedgeId {
+    outer_coedges(topo, face)
+        .into_iter()
+        .find(|&cid| same(chart_line(topo, cid).0.direction().x(), 0.0) == vertical)
+        .unwrap()
+}
+fn set_chart(topo: &mut Topology, cid: CoedgeId, origin: Point2, direction: Vec2, range: [f64; 2]) {
+    topo.set_coedge_pcurve(
+        cid,
+        PCurve::new(
+            Curve2D::Line(Line2D::new(origin, direction).unwrap()),
+            range[0],
+            range[1],
+        ),
+    )
+    .unwrap();
+}
+fn plain(a: &[[f64; 4]], b: &[[f64; 4]]) -> (Topology, [FaceTrace; 2], NurbsCurve) {
+    fixture(a, b, false, 1.0, false, false, [(0.0, 1.0); 2])
+}
+fn clip(topo: &Topology, traces: [FaceTrace; 2], section: &NurbsCurve) -> Result<ClippedSection> {
+    clip_section(topo, traces, section, &OperationContext::new())
+}
+
+#[test]
+fn exact_sum_is_true_exactly_when_the_float_sum_rounds_nothing() {
+    assert!(exact_sum(1.0, 0.5));
+    assert!(exact_sum(-2.0, 3.0));
+    assert!(exact_sum(0.375, 0.25));
+    // 1 + 2^-60 rounds to 1, whichever operand is the larger.
+    let tiny = 2_f64.powi(-60);
+    assert!(!exact_sum(1.0, tiny));
+    assert!(!exact_sum(tiny, 1.0));
+    // 0.1 + 0.2 rounds to 0.30000000000000004.
+    assert!(!exact_sum(0.1, 0.2));
+}
+
+#[test]
+fn bezier_accepts_exactly_one_clamped_span_of_degree_one_to_three() {
+    assert!(bezier(&knots(2, (0.0, 1.0)), 2, 3).is_ok());
+    assert!(bezier(&knots(1, (-4.0, 2.0)), 1, 2).is_ok());
+    assert!(bezier(&knots(3, (0.0, 1.0)), 3, 4).is_ok());
+    let refused = |k: &[f64], degree, count| {
+        matches!(bezier(k, degree, count), Err(ClipError::UnsupportedDomain))
+    };
+    // Degree 4 with a consistent count and clamped knots.
+    assert!(refused(&knots(4, (0.0, 1.0)), 4, 5));
+    // Count one more than degree + 1, knots consistent with the degree.
+    assert!(refused(&knots(2, (0.0, 1.0)), 2, 4));
+    // A decreasing span: clamped on both sides, finite width.
+    assert!(refused(&[1.0, 1.0, 1.0, 0.0, 0.0, 0.0], 2, 3));
+    // Finite ends whose width overflows: -1e308 .. 1e308.
+    assert!(refused(&knots(2, (-1e308, 1e308)), 2, 3));
+    // An interior knot in the low clamp, then in the high clamp.
+    assert!(refused(&[0.0, 0.5, 1.0, 1.0], 1, 2));
+    assert!(refused(&[0.0, 0.0, 0.5, 1.0], 1, 2));
+}
+
+#[test]
+fn check_residual_accepts_a_bound_equal_to_the_tolerance_and_refuses_above() {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let a = bernstein::homogeneous(&[origin], &[1.0], origin);
+    let b = bernstein::homogeneous(&[Point3::new(3.0, 4.0, 0.0)], &[1.0], origin);
+    let bound = bernstein::residual(&a, &b);
+    // The certificate encloses the 3-4-5 distance, a few ulps outward.
+    assert!((5.0..=5.0 * (1.0 + 1e-14)).contains(&bound));
+    assert_eq!(check_residual(&a, &b, bound).unwrap(), bound);
+    assert!(matches!(
+        check_residual(&a, &b, bound.next_down()),
+        Err(ClipError::Residual { .. })
+    ));
+}
+
+#[test]
+fn work_budget_admits_exactly_its_segment_count() {
+    // One start unit, then four per loop: two one-loop faces peak at 8.
+    let (topo, traces, section) = plain(&[FULL], &[FULL]);
+    let at = |n| OperationContext::new().with_budgets(WorkBudgets::new().with_segments(n));
+    assert!(clip_section(&topo, traces, &section, &at(8)).is_ok());
+    assert!(matches!(
+        clip_section(&topo, traces, &section, &at(7)),
+        Err(ClipError::WorkBudgetExceeded)
+    ));
+}
+
+#[test]
+fn nonpositive_or_nonfinite_tolerance_is_invalid_input() {
+    let (topo, traces, section) = plain(&[FULL], &[FULL]);
+    for linear in [0.0, -1e-7, f64::NAN, f64::INFINITY] {
+        let context = OperationContext::new().with_tolerance(Tolerance {
+            linear,
+            ..Tolerance::default()
+        });
+        assert!(
+            matches!(
+                clip_section(&topo, traces, &section, &context),
+                Err(ClipError::InvalidInput)
+            ),
+            "tolerance {linear}"
+        );
+    }
+}
+
+#[test]
+fn trims_wholly_above_or_below_the_trace_contribute_no_events() {
+    // Only the partner's two full-width crossings remain.
+    for rect in [[0.125, 0.875, 0.5, 1.0], [0.125, 0.875, -1.0, -0.5]] {
+        let (_, traces, _, clip) = run(&[rect], &[FULL]);
+        assert_intervals(&clip, &[]);
+        assert_eq!(clip.events.len(), 2, "{rect:?}");
+        assert!(clip.events.iter().all(|e| e.face == traces[1].face));
+    }
+    // A hole off the trace leaves only the four outer crossings.
+    for hole in [[0.25, 0.75, 0.5, 1.0], [0.25, 0.75, -1.0, -0.5]] {
+        let clip = run(&[FULL, hole], &[FULL]).3;
+        assert_intervals(&clip, &[[0.0, 1.0]]);
+        assert_eq!(clip.events.len(), 4, "{hole:?}");
+    }
+}
+
+#[test]
+fn nurbs_side_edges_map_the_trace_through_their_own_trim() {
+    let (mut topo, traces, section) = plain(&[[0.125, 0.875, -1.0, 1.0]], &[FULL]);
+    for face in traces.map(|t| t.face) {
+        for cid in outer_coedges(&topo, face) {
+            if !same(chart_line(&topo, cid).0.direction().x(), 0.0) {
+                continue;
+            }
+            let eid = topo.coedge(cid).unwrap().edge();
+            let edge = topo.edge(eid).unwrap();
+            let ends = vec![
+                topo.vertex(edge.start()).unwrap().point(),
+                topo.vertex(edge.end()).unwrap().point(),
+            ];
+            let line = NurbsCurve::new(1, knots(1, (7.0, 11.0)), ends, vec![1.0; 2]).unwrap();
+            let edge = topo.edge_mut(eid).unwrap();
+            edge.set_curve(EdgeCurve::NurbsCurve(line));
+            edge.set_trim(Some((7.0, 11.0)));
+        }
+    }
+    let clipped = clip(&topo, traces, &section).unwrap();
+    assert_intervals(&clipped, &[[0.125, 0.875]]);
+    assert_eq!(clipped.events.len(), 4);
+    for e in &clipped.events {
+        // v = 0 halves every side, so the event sits at the trim midpoint 9.
+        near(e.edge_parameter, 9.0);
+        assert!(e.boundary_residual <= 1e-12);
+    }
+}
+
+#[test]
+fn coincident_interior_events_on_one_chart_are_one_proven_cut() {
+    let clip = run(&[[0.125, 0.875, -1.0, 1.0]], &[[0.125, 0.875, -1.5, 1.5]]).3;
+    assert_intervals(&clip, &[[0.125, 0.875]]);
+    assert_eq!(clip.events.len(), 4);
+    assert_eq!(clip.intervals[0].endpoints[0].len(), 2);
+    assert_eq!(clip.intervals[0].endpoints[1].len(), 2);
+}
+
+#[test]
+fn full_source_ends_on_foreign_charts_keep_both_uses() {
+    let (topo, traces, section) = fixture(
+        &[FULL],
+        &[FULL],
+        false,
+        1.0,
+        false,
+        false,
+        [(0.0, 1.0), (-1.0, 1.0)],
+    );
+    let clip = clip(&topo, traces, &section).unwrap();
+    assert_intervals(&clip, &[[0.0, 1.0]]);
+    assert_eq!(clip.intervals[0].endpoints[0].len(), 2);
+    assert_eq!(clip.intervals[0].endpoints[1].len(), 2);
+}
+
+#[test]
+fn overlapping_events_need_a_shared_chart_coordinate_or_source_end() {
+    // 0.5 and 0.5 + 2^-50 (8 ulps): the outward fraction intervals overlap,
+    // yet the cuts and every material sample stay separable, so only the
+    // event-order proof can refuse.
+    let (topo, traces, section) = plain(
+        &[[0.5, 0.875, -1.0, 1.0]],
+        &[[0.5 + 2_f64.powi(-50), 1.0, -1.5, 1.5]],
+    );
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::AmbiguousBoundary)
+    ));
+    // Equal fractions 1/8 on charts (0, 1) and (-1, 1): chart u 0.125 vs
+    // -0.75, the domains share only their upper end.
+    let (topo, traces, section) = fixture(
+        &[[0.125, 0.875, -1.0, 1.0]],
+        &[[0.125, 1.0, -1.5, 1.5]],
+        false,
+        1.0,
+        false,
+        false,
+        [(0.0, 1.0), (-1.0, 1.0)],
+    );
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::AmbiguousBoundary)
+    ));
+}
+
+#[test]
+fn an_inexact_source_end_coincidence_is_not_a_shared_end() {
+    // A chart edge whose fraction rounds to exactly 0 or 1 while its enclosure
+    // does not, beside the partner's exact end use: 2^-1074 / 4 underflows to
+    // 0, and (896 + 2^60) / (1024 + 2^60) rounds to 1 (896 + 2^60 ties to the
+    // even 1024 + 2^60). Swapping the faces swaps the pair order.
+    let near_zero = (
+        (0.0, 4.0),
+        [f64::from_bits(1), f64::MIN_POSITIVE, -1.0, 1.0],
+        [0.5, 1.0, -1.0, 1.0],
+    );
+    let near_one = (
+        (-(2_f64.powi(60)), 1024.0),
+        [-(2_f64.powi(59)), 896.0, -1.0, 1.0],
+        [-(2_f64.powi(59)), -(2_f64.powi(58)), -1.0, 1.0],
+    );
+    let full = [0.0, 1.0, -1.5, 1.5];
+    for (domain, coincident, control) in [near_zero, near_one] {
+        for swap in [false, true] {
+            let pair = |rect: [f64; 4]| {
+                let (a, b, d) = if swap {
+                    (rect, full, [domain, (0.0, 1.0)])
+                } else {
+                    (full, rect, [(0.0, 1.0), domain])
+                };
+                let (topo, traces, section) = chart_fixture(&[a], &[b], d);
+                clip(&topo, traces, &section)
+            };
+            assert!(
+                matches!(pair(coincident), Err(ClipError::AmbiguousBoundary)),
+                "{domain:?} swap={swap}"
+            );
+            // The same chart without the coincidence clips.
+            assert_eq!(
+                pair(control).unwrap().intervals.len(),
+                1,
+                "{domain:?} swap={swap}"
+            );
+        }
+    }
+}
+
+#[test]
+fn adjacent_cuts_without_a_representable_midpoint_refuse() {
+    // Chart (0, 1024) edge at 2^-1064: its fraction 2^-1074 is the smallest
+    // subnormal, so the window (0, 2^-1074) has no midpoint, while its chart
+    // sample at u = 0 is clear of every rectangle.
+    let (topo, traces, section) = chart_fixture(
+        &[[f64::from_bits(1 << 10), f64::MIN_POSITIVE, -1.0, 1.0]],
+        &[[0.25, 0.75, -1.5, 1.5]],
+        [(0.0, 1024.0), (0.0, 1.0)],
+    );
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::AmbiguousBoundary)
+    ));
+}
+
+#[test]
+fn rectangle_membership_is_ambiguous_exactly_when_the_interval_touches_a_side() {
+    let (topo, traces, section) = plain(&[FULL], &[FULL]);
+    let origin = section.control_points()[0];
+    let patch = patch(&topo, traces[0], origin).unwrap();
+    let loops = rectangles(
+        &topo,
+        traces[0],
+        &patch,
+        origin,
+        &OperationContext::new(),
+        &mut 0,
+    )
+    .unwrap();
+    assert_eq!(loops[0].bounds, [0.0, 1.0, -1.5, 1.5]);
+    let u = |lo, hi| bernstein::I { lo, hi };
+    assert!(inside(&loops, u(0.25, 0.75), 0.0).unwrap());
+    assert!(!inside(&loops, u(-1.0, -0.5), 0.0).unwrap());
+    assert!(!inside(&loops, u(1.5, 2.0), 0.0).unwrap());
+    assert!(!inside(&loops, u(0.25, 0.75), 1.5).unwrap());
+    for (lo, hi) in [(-1.0, 0.0), (1.0, 2.0), (-0.5, 0.5), (0.5, 1.5)] {
+        assert!(
+            matches!(
+                inside(&loops, u(lo, hi), 0.0),
+                Err(ClipError::AmbiguousBoundary)
+            ),
+            "[{lo}, {hi}]"
+        );
+    }
+}
+
+#[test]
+fn a_loop_that_is_not_four_closed_uses_is_an_invalid_boundary() {
+    let (section, surfaces) = section_and_surfaces(false, 1.0, false, [(0.0, 1.0); 2]);
+    // A closed triangle: the diagonal is not an axis chart, but the use
+    // count refuses first.
+    let mut topo = Topology::new();
+    let s = surfaces[0].clone();
+    let corners = [
+        Point2::new(0.125, -1.0),
+        Point2::new(0.875, -1.0),
+        Point2::new(0.875, 1.0),
+    ];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|p| topo.add_vertex(Vertex::new(s.evaluate(p.x(), p.y()), 1e-7)))
+        .collect();
+    let mut edges = Vec::new();
+    let mut pcurves = Vec::new();
+    for i in 0..3 {
+        let (a, b) = (corners[i], corners[(i + 1) % 3]);
+        let curve = if same(a.y(), b.y()) {
+            fixture_edge(&s, a, b, false)
+        } else {
+            EdgeCurve::Line
+        };
+        let mut edge = Edge::new(vertices[i], vertices[(i + 1) % 3], curve);
+        if matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+            edge.set_trim(Some((7.0, 11.0)));
+        }
+        let id = topo.add_edge(edge);
+        edges.push(OrientedEdge::new(id, true));
+        let line = Line2D::new(a, b - a).unwrap();
+        pcurves.push((id, PCurve::new(Curve2D::Line(line), 0.0, (b - a).length())));
+    }
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let triangle = topo.add_face(Face::new(wire, vec![], FaceSurface::Nurbs(s)));
+    for (edge, pc) in pcurves {
+        topo.set_pcurve_oriented(edge, triangle, true, pc).unwrap();
+    }
+    let full = face(&mut topo, surfaces[1].clone(), &[FULL], false);
+    let traces = [
+        FaceTrace {
+            face: triangle,
+            v: 0.0,
+        },
+        FaceTrace { face: full, v: 0.0 },
+    ];
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::InvalidBoundary)
+    ));
+    // An open four-use loop.
+    let mut topo = Topology::new();
+    let open = face_in_chart(&mut topo, surfaces[0].clone(), &[FULL], false, false);
+    let full = face(&mut topo, surfaces[1].clone(), &[FULL], false);
+    assert!(
+        !topo
+            .face_loop(topo.loops_of_face(open).unwrap()[0])
+            .unwrap()
+            .is_closed()
+    );
+    let traces = [
+        FaceTrace { face: open, v: 0.0 },
+        FaceTrace { face: full, v: 0.0 },
+    ];
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::InvalidBoundary)
+    ));
+}
+
+#[test]
+fn boundary_charts_must_be_exact_axis_lines_from_parameter_zero() {
+    let rect = [0.375, 0.625, -0.125, 0.125];
+    let (topo, traces, section) = plain(&[rect], &[FULL]);
+    assert_intervals(&clip(&topo, traces, &section).unwrap(), &[[0.375, 0.625]]);
+    let refused = |edit: &dyn Fn(&mut Topology, FaceId)| {
+        let (mut topo, traces, section) = plain(&[rect], &[FULL]);
+        edit(&mut topo, traces[0].face);
+        matches!(
+            clip(&topo, traces, &section),
+            Err(ClipError::UnsupportedDomain)
+        )
+    };
+    // The same segment parameterized over [1, 1 + length].
+    assert!(refused(&|topo, f| {
+        let cid = side(topo, f, true);
+        let (line, range) = chart_line(topo, cid);
+        let d = line.direction();
+        set_chart(topo, cid, line.origin() - d, d, [1.0, 1.0 + range[1]]);
+    }));
+    // Directions one subnormal off the axis: (2^-1074, +-1) and (+-1, 2^-1074).
+    // Over these quarter-unit sides the off-axis step rounds to zero.
+    for vertical in [true, false] {
+        assert!(refused(&|topo, f| {
+            let cid = side(topo, f, vertical);
+            let (line, range) = chart_line(topo, cid);
+            let d = line.direction();
+            let tilt = f64::from_bits(1);
+            let d = if vertical {
+                Vec2::new(tilt, d.y())
+            } else {
+                Vec2::new(d.x(), tilt)
+            };
+            set_chart(topo, cid, line.origin(), d, range);
+        }));
+    }
+    // An axis line whose end is an inexact sum: 0.1 + 0.2.
+    assert!(refused(&|topo, f| {
+        let cid = side(topo, f, false);
+        let (line, _) = chart_line(topo, cid);
+        set_chart(
+            topo,
+            cid,
+            Point2::new(0.1, line.origin().y()),
+            Vec2::new(1.0, 0.0),
+            [0.0, 0.2],
+        );
+    }));
+}
+
+#[test]
+fn a_chart_corner_one_ulp_off_its_neighbour_is_an_invalid_boundary() {
+    // The shifted side still certifies against its 3D edge (the shift is
+    // 1e-16); only exact corner connectivity can refuse it.
+    let (mut topo, traces, section) = plain(&[[0.125, 0.875, -1.0, 1.0]], &[FULL]);
+    let cid = side(&topo, traces[0].face, true);
+    let (line, range) = chart_line(&topo, cid);
+    let o = line.origin();
+    set_chart(
+        &mut topo,
+        cid,
+        Point2::new(o.x().next_up(), o.y()),
+        line.direction(),
+        range,
+    );
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::InvalidBoundary)
+    ));
+}
+
+#[test]
+fn a_hole_touching_any_outer_side_is_an_invalid_boundary() {
+    assert_intervals(
+        &run(&[FULL, [0.25, 0.75, -0.5, 0.5]], &[FULL]).3,
+        &[[0.0, 0.25], [0.75, 1.0]],
+    );
+    for hole in [
+        [0.0, 0.5, -0.5, 0.5],
+        [0.5, 1.0, -0.5, 0.5],
+        [0.25, 0.75, -1.5, 0.5],
+        [0.25, 0.75, -0.5, 1.5],
+    ] {
+        let (topo, traces, section) = plain(&[FULL, hole], &[FULL]);
+        assert!(
+            matches!(
+                clip(&topo, traces, &section),
+                Err(ClipError::InvalidBoundary)
+            ),
+            "{hole:?}"
+        );
+    }
+}
+
+#[test]
+fn a_patch_reported_periodic_in_u_refuses_although_regular() {
+    // Section points scaled by 1e-8: the first and last control rows lie
+    // 1.4e-8 apart, under `is_periodic_u`'s absolute 1e-7, while the rows
+    // stay a unit apart in v.
+    let k = 1e-8;
+    let points = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.5 * k, 0.0, 0.0),
+        Point3::new(k, 0.0, k),
+    ];
+    let section =
+        NurbsCurve::new(2, knots(2, (-8.0, 24.0)), points.to_vec(), vec![1.0; 3]).unwrap();
+    let surfaces: [NurbsSurface; 2] = std::array::from_fn(|j| {
+        let d = if j == 0 {
+            Vec3::new(0.0, 1.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 1.0)
+        };
+        NurbsSurface::new(
+            2,
+            1,
+            knots(2, (0.0, 1.0)),
+            knots(1, (-2.0, 2.0)),
+            points
+                .iter()
+                .map(|p| vec![*p - d * 0.5, *p + d * 0.5])
+                .collect(),
+            vec![vec![1.0; 2]; 3],
+        )
+        .unwrap()
+    });
+    assert!(surfaces[0].is_periodic_u() && !surfaces[0].is_periodic_v());
+    let mut topo = Topology::new();
+    let traces = std::array::from_fn(|j| FaceTrace {
+        face: face(&mut topo, surfaces[j].clone(), &[FULL], false),
+        v: 0.0,
+    });
+    assert!(matches!(
+        clip(&topo, traces, &section),
+        Err(ClipError::UnsupportedDomain)
+    ));
+}
+
+fn edited_curve(c: &NurbsCurve, edit: &dyn Fn(&mut serde_json::Value)) -> NurbsCurve {
+    let mut value = serde_json::to_value(c).unwrap();
+    edit(&mut value);
+    serde_json::from_value(value).unwrap()
+}
+fn edited_surface(s: &NurbsSurface, edit: &dyn Fn(&mut serde_json::Value)) -> NurbsSurface {
+    let mut value = serde_json::to_value(s).unwrap();
+    edit(&mut value);
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn unvalidated_section_weights_are_invalid_input() {
+    // The validating constructor refuses these; a deserialized curve can
+    // still carry them.
+    let (topo, traces, section) = plain(&[FULL], &[FULL]);
+    let edits: [&dyn Fn(&mut serde_json::Value); 3] = [
+        &|v| v["weights"][1] = serde_json::json!(0.0),
+        &|v| v["weights"][1] = serde_json::json!(-1.0),
+        &|v| {
+            v["weights"].as_array_mut().unwrap().pop();
+        },
+    ];
+    for edit in edits {
+        let bad = edited_curve(&section, edit);
+        assert!(matches!(
+            clip(&topo, traces, &bad),
+            Err(ClipError::InvalidInput)
+        ));
+    }
+}
+
+#[test]
+fn unvalidated_patch_grids_are_invalid_input() {
+    let edits: [&dyn Fn(&mut serde_json::Value); 3] = [
+        // A zero-weight row.
+        &|v| v["weights"][1] = serde_json::json!([0.0, 0.0]),
+        // Weight rows of three beside control rows of two.
+        &|v| {
+            for row in v["weights"].as_array_mut().unwrap() {
+                row.as_array_mut().unwrap().push(serde_json::json!(1.0));
+            }
+        },
+        // Control rows of three beside weight rows of two.
+        &|v| {
+            for row in v["control_points"].as_array_mut().unwrap() {
+                let last = row[1].clone();
+                row.as_array_mut().unwrap().push(last);
+            }
+        },
+    ];
+    for edit in edits {
+        let (mut topo, traces, section) = plain(&[FULL], &[FULL]);
+        let FaceSurface::Nurbs(s) = topo.face(traces[0].face).unwrap().surface().clone() else {
+            panic!()
+        };
+        let bad = edited_surface(&s, edit);
+        topo.face_mut(traces[0].face)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(bad));
+        assert!(matches!(
+            clip(&topo, traces, &section),
+            Err(ClipError::InvalidInput)
+        ));
+    }
+}
+
+#[test]
+fn interval_division_follows_the_divisor_sign() {
+    let encloses = |x: bernstein::I, lo: f64, hi: f64| {
+        x.lo <= lo && x.hi >= hi && x.lo >= lo - 1e-15 && x.hi <= hi + 1e-15
+    };
+    let one = bernstein::I::exact(1.0);
+    // 1 / [-2, -1] = [-1, -0.5]; 1 / [1, 2] = [0.5, 1].
+    assert!(encloses(
+        one.div(bernstein::I { lo: -2.0, hi: -1.0 }),
+        -1.0,
+        -0.5
+    ));
+    assert!(encloses(
+        one.div(bernstein::I { lo: 1.0, hi: 2.0 }),
+        0.5,
+        1.0
+    ));
+    // A divisor touching or straddling zero has no finite quotient.
+    for (lo, hi) in [(-1.0, 1.0), (0.0, 1.0), (-1.0, 0.0)] {
+        let q = one.div(bernstein::I { lo, hi });
+        assert!(q.lo == f64::NEG_INFINITY && q.hi == f64::INFINITY);
+    }
+}
+
+fn encloses_all(p: &[bernstein::I], want: &[f64]) -> bool {
+    p.len() == want.len()
+        && p.iter()
+            .zip(want)
+            .all(|(x, w)| x.lo <= *w && x.hi >= *w && x.hi - x.lo < 1e-12)
+}
+
+#[test]
+fn bernstein_product_uses_binomial_degree_elevation() {
+    let c = |v: &[f64]| {
+        v.iter()
+            .map(|x| bernstein::I::exact(*x))
+            .collect::<Vec<_>>()
+    };
+    // 1 * 1 = 1 at every elevated degree.
+    assert!(encloses_all(
+        &bernstein::product(&c(&[1.0; 2]), &c(&[1.0; 2])),
+        &[1.0; 3]
+    ));
+    assert!(encloses_all(
+        &bernstein::product(&c(&[1.0; 3]), &c(&[1.0; 2])),
+        &[1.0; 4]
+    ));
+    // (1 - t) * t = [0, 1/2, 0]; t * t = [0, 0, 1].
+    assert!(encloses_all(
+        &bernstein::product(&c(&[1.0, 0.0]), &c(&[0.0, 1.0])),
+        &[0.0, 0.5, 0.0]
+    ));
+    assert!(encloses_all(
+        &bernstein::product(&c(&[0.0, 1.0]), &c(&[0.0, 1.0])),
+        &[0.0, 0.0, 1.0]
+    ));
+}
+
+#[test]
+fn ruled_normals_are_the_hodograph_cross_the_ruling() {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let ruling: bernstein::V = [0.0, 3.0, 0.0].map(|x| vec![bernstein::I::exact(x)]);
+    // Line 0 -> (2,0,0): x' = 2, so the normal is (2,0,0) x (0,3,0) = (0,0,6)
+    // at both degree-1 coefficients.
+    let h = bernstein::homogeneous(&[origin, Point3::new(2.0, 0.0, 0.0)], &[1.0; 2], origin);
+    let n = bernstein::normals(&h, &ruling);
+    assert!(encloses_all(&n[0], &[0.0; 2]));
+    assert!(encloses_all(&n[1], &[0.0; 2]));
+    assert!(encloses_all(&n[2], &[6.0; 2]));
+    // x = 2t^2 (controls 0, 0, 2): x' = 4t, elevated against the unit weight
+    // to degree 3 as [0, 4/3, 8/3, 4]; times the ruling's 3: [0, 4, 8, 12].
+    let h = bernstein::homogeneous(
+        &[origin, origin, Point3::new(2.0, 0.0, 0.0)],
+        &[1.0; 3],
+        origin,
+    );
+    let n = bernstein::normals(&h, &ruling);
+    assert!(encloses_all(&n[2], &[0.0, 4.0, 8.0, 12.0]));
+}
+
+#[test]
+fn residual_has_no_certificate_when_a_weight_enclosure_reaches_zero() {
+    let point = |w: f64| -> bernstein::H {
+        [
+            vec![bernstein::I::exact(0.0)],
+            vec![bernstein::I::exact(0.0)],
+            vec![bernstein::I::exact(0.0)],
+            vec![bernstein::I::exact(w)],
+        ]
+    };
+    assert!(bernstein::residual(&point(1.0), &point(1.0)) < 1e-150);
+    for w in [0.0, -1.0] {
+        assert_eq!(bernstein::residual(&point(1.0), &point(w)), f64::INFINITY);
+    }
 }
