@@ -186,19 +186,17 @@ fn expand_aabb_for_face(
             aabb_include(aabb, hi);
         }
 
-        // Cylinder: expand radially at each face vertex's axis projection.
-        // Unlike the old approach that used AABB corners (which over-expands
-        // for fillet cylinders), this uses the face's own vertices to
-        // constrain the expansion to the actual face extent.
+        // Cylinder and cone: analytic expansion over the arc the face spans,
+        // like the sphere and torus above. A full circle at every vertex's
+        // axial slice bounded the whole surface's ring, so a partial face — an
+        // intersection, a D-flat, an arc a cut leaves — reported the cylinder
+        // it was cut from (OpenZCAD production QA CAD-02: 30 × 30 × 12 mm for
+        // a 4.14 × 6.18 × 12 mm intersection).
         FaceSurface::Cylinder(c) => {
-            expand_cylinder_at_vertices(topo, aabb, face_id, c);
+            expand_cylinder_patch(topo, aabb, face_id, c);
         }
-
-        // Cone: expand radially at each face vertex (the radius varies per
-        // axial position). Uses the vertex's own distance-from-axis as the
-        // local radius, then projects to a full circle at that axial slice.
         FaceSurface::Cone(c) => {
-            expand_cone_at_vertices(topo, aabb, face_id, c);
+            expand_cone_patch(topo, aabb, face_id, c);
         }
 
         // NURBS: grid-sample the surface over the region the face is trimmed
@@ -856,108 +854,101 @@ fn sample_face_wire_midpoints(
     has_curved
 }
 
-/// Expand AABB for a cylinder face by projecting each vertex onto the
-/// cylinder axis and adding the full radial extent at that axial position.
-fn expand_cylinder_at_vertices(
+/// The angular span and axial range a cylindrical or conical face occupies,
+/// from samples of its boundary: `u` as [`compute_angular_range`] recovers it
+/// (the full period whenever the boundary does not bound it), `v` the sampled
+/// extremes.
+///
+/// A face with an inner loop keeps the full period, as for the torus: those
+/// samples bound holes, and could describe the complement of the face.
+fn ruled_patch_domain(
+    topo: &Topology,
+    face_id: FaceId,
+    project: impl Fn(Point3) -> (f64, f64),
+) -> Option<PatchDomain> {
+    let holed = topo
+        .face(face_id)
+        .is_ok_and(|face| !face.inner_wires().is_empty());
+    let pts = face_boundary_samples(topo, face_id, TRIM_SAMPLES_PER_EDGE);
+    if pts.is_empty() {
+        return None;
+    }
+    let mut us = Vec::with_capacity(pts.len());
+    let mut v = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in &pts {
+        let (pu, pv) = project(*p);
+        us.push(pu);
+        v = (v.0.min(pv), v.1.max(pv));
+    }
+    let u = if holed {
+        (0.0, TAU)
+    } else {
+        compute_angular_range(&mut us)
+    };
+    Some(PatchDomain { u, v })
+}
+
+/// Expand an AABB for a cylinder face over the arc and height it spans.
+///
+/// For a fixed angle a cylinder point is affine in its axial parameter, so
+/// the box of the patch is exactly the union of the arc's box at its two end
+/// slices: the ring patch box with no minor radius, at each.
+fn expand_cylinder_patch(
     topo: &Topology,
     aabb: &mut Aabb3,
-    face_id: remus_topology::face::FaceId,
+    face_id: FaceId,
     cyl: &remus_math::surfaces::CylindricalSurface,
 ) {
-    let Ok(face) = topo.face(face_id) else {
+    let Some(domain) = ruled_patch_domain(topo, face_id, |p| cyl.project_point(p)) else {
         return;
     };
-    let Ok(wire) = topo.wire(face.outer_wire()) else {
-        return;
-    };
-    let axis = cyl.axis();
-    let origin = cyl.origin();
-    let r = cyl.radius();
-    let rx = r * (1.0 - axis.x() * axis.x()).max(0.0).sqrt();
-    let ry = r * (1.0 - axis.y() * axis.y()).max(0.0).sqrt();
-    let rz = r * (1.0 - axis.z() * axis.z()).max(0.0).sqrt();
-    for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
-        for vid in [edge.start(), edge.end()] {
-            let Ok(v) = topo.vertex(vid) else {
-                continue;
-            };
-            let rel = remus_math::vec::Vec3::new(
-                v.point().x() - origin.x(),
-                v.point().y() - origin.y(),
-                v.point().z() - origin.z(),
-            );
-            let t = axis.dot(rel);
-            let coa = Point3::new(
-                origin.x() + axis.x() * t,
-                origin.y() + axis.y() * t,
-                origin.z() + axis.z() * t,
-            );
-            aabb_include(aabb, Point3::new(coa.x() - rx, coa.y() - ry, coa.z() - rz));
-            aabb_include(aabb, Point3::new(coa.x() + rx, coa.y() + ry, coa.z() + rz));
-        }
+    let frame = [cyl.x_axis(), cyl.y_axis(), cyl.axis()];
+    for v in [domain.v.0, domain.v.1] {
+        let (lo, hi) = ring_patch_box(
+            cyl.origin() + cyl.axis() * v,
+            frame,
+            cyl.radius(),
+            0.0,
+            PatchDomain {
+                u: domain.u,
+                v: (0.0, 0.0),
+            },
+        );
+        aabb_include(aabb, lo);
+        aabb_include(aabb, hi);
     }
 }
 
-/// Expand AABB for a cone face by computing each face vertex's radial
-/// distance from the axis (the local cone radius at that axial slice),
-/// then including a full circle of that radius at that slice.
-fn expand_cone_at_vertices(
+/// Expand an AABB for a cone face over the arc and slant range it spans.
+///
+/// A cone point is `apex + v·(cos a·radial(u) + sin a·axis)`: affine in `v`
+/// for a fixed angle, so, as for the cylinder, the union of the arc's box at
+/// the two end slices is exact. Each slice is a ring of radius `v·cos a`
+/// centred `v·sin a` up the axis.
+fn expand_cone_patch(
     topo: &Topology,
     aabb: &mut Aabb3,
-    face_id: remus_topology::face::FaceId,
+    face_id: FaceId,
     cone: &remus_math::surfaces::ConicalSurface,
 ) {
-    use remus_math::vec::Vec3;
-    let Ok(face) = topo.face(face_id) else {
+    let Some(domain) = ruled_patch_domain(topo, face_id, |p| cone.project_point(p)) else {
         return;
     };
-    let Ok(wire) = topo.wire(face.outer_wire()) else {
-        return;
-    };
-    let axis = cone.axis();
-    let apex = cone.apex();
-    // Axis-perpendicular projection scales for a full ring at slice centre.
-    let sx = (1.0 - axis.x() * axis.x()).max(0.0).sqrt();
-    let sy = (1.0 - axis.y() * axis.y()).max(0.0).sqrt();
-    let sz = (1.0 - axis.z() * axis.z()).max(0.0).sqrt();
-    for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
-        for vid in [edge.start(), edge.end()] {
-            let Ok(v) = topo.vertex(vid) else {
-                continue;
-            };
-            let rel = Vec3::new(
-                v.point().x() - apex.x(),
-                v.point().y() - apex.y(),
-                v.point().z() - apex.z(),
-            );
-            let t = axis.dot(rel);
-            let coa = Point3::new(
-                apex.x() + axis.x() * t,
-                apex.y() + axis.y() * t,
-                apex.z() + axis.z() * t,
-            );
-            // Local radius is the perpendicular distance from axis to vertex.
-            let perp = Vec3::new(
-                rel.x() - axis.x() * t,
-                rel.y() - axis.y() * t,
-                rel.z() - axis.z() * t,
-            );
-            let r = perp.length();
-            aabb_include(
-                aabb,
-                Point3::new(coa.x() - r * sx, coa.y() - r * sy, coa.z() - r * sz),
-            );
-            aabb_include(
-                aabb,
-                Point3::new(coa.x() + r * sx, coa.y() + r * sy, coa.z() + r * sz),
-            );
-        }
+    let (sin_a, cos_a) = cone.half_angle().sin_cos();
+    let frame = [cone.x_axis(), cone.y_axis(), cone.axis()];
+    for v in [domain.v.0, domain.v.1] {
+        let (lo, hi) = ring_patch_box(
+            cone.apex() + cone.axis() * (v * sin_a),
+            frame,
+            v * cos_a,
+            0.0,
+            PatchDomain {
+                u: domain.u,
+                v: (0.0, 0.0),
+            },
+        );
+        aabb_include(aabb, lo);
+        aabb_include(aabb, hi);
     }
 }
 
