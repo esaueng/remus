@@ -55,20 +55,33 @@ fn make_unknown_row(topo: &mut Topology, count: usize) -> SolidId {
     for k in 0..count {
         #[allow(clippy::cast_precision_loss)]
         let ox = k as f64 * 3.0;
-        let rim = Circle3D::new(Point3::new(ox, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
-        let seam = topo.add_vertex(Vertex::new(Point3::new(ox + 1.0, 0.0, 0.0), TOL));
-        let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(rim));
-        edge.set_trim(Some((0.0, std::f64::consts::TAU + 0.5)));
-        let rim_id = topo.add_edge(edge);
-        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim_id, true)], true).unwrap());
-        faces.push(topo.add_face(Face::new(
-            wire,
-            vec![],
-            FaceSurface::Plane {
-                normal: Vec3::new(0.0, 0.0, 1.0),
-                d: 0.0,
-            },
-        )));
+        let origin = Point3::new(ox, 0.0, 0.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let bottom = Circle3D::new(origin, axis, 1.0).unwrap();
+        let top = Circle3D::new(Point3::new(ox, 0.0, 1.0), axis, 1.0).unwrap();
+        let low = topo.add_vertex(Vertex::new(bottom.evaluate(0.0), TOL));
+        let high = topo.add_vertex(Vertex::new(top.evaluate(0.0), TOL));
+        let mut low_edge = Edge::new(low, low, EdgeCurve::Circle(bottom));
+        low_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let mut high_edge = Edge::new(high, high, EdgeCurve::Circle(top));
+        high_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let low_edge = topo.add_edge(low_edge);
+        let high_edge = topo.add_edge(high_edge);
+        let seam = topo.add_edge(Edge::new(low, high, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(low_edge, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(high_edge, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let carrier = remus_math::surfaces::CylindricalSurface::new(origin, axis, 1.0).unwrap();
+        faces.push(topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(carrier))));
     }
     let shell = topo.add_shell(Shell::new(faces).unwrap());
     topo.add_solid(Solid::new(shell, vec![]))

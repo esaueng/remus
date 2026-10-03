@@ -19,6 +19,12 @@
 //! source arena's global id layout). Deserialization always allocates fresh
 //! ids; session state, retired slots, assemblies, GCS sketches, and checkpoints
 //! are deliberately outside this format.
+//!
+//! Loading into an existing session appends document history instead of replacing
+//! it. Imported operation ids and entity ordinals are offset by the destination's
+//! respective high-water counters after recording any preceding history gap;
+//! references saved alongside the source document are not automatically rebased.
+//! Loading into a fresh session preserves their ids.
 
 use std::collections::HashMap;
 
@@ -1428,7 +1434,7 @@ pub fn deserialize_solid_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .solids
         .into_iter()
@@ -1472,7 +1478,7 @@ pub fn deserialize_solids_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.solids)
+    Ok(replay_document(document, topo, limits)?.solids)
 }
 
 /// Reconstructs one standalone sheet root from a version 4 or 5 arena document.
@@ -1509,7 +1515,7 @@ pub fn deserialize_sheet_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .sheets
         .into_iter()
@@ -1551,7 +1557,7 @@ pub fn deserialize_sheets_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.sheets)
+    Ok(replay_document(document, topo, limits)?.sheets)
 }
 
 /// Reconstructs one standalone wire root from a version 5 arena document.
@@ -1588,7 +1594,7 @@ pub fn deserialize_wire_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .wires
         .into_iter()
@@ -1630,7 +1636,7 @@ pub fn deserialize_wires_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.wires)
+    Ok(replay_document(document, topo, limits)?.wires)
 }
 
 /// Reconstructs solid, sheet, wire, and compound roots from a version 1, 2, 3,
@@ -1638,6 +1644,10 @@ pub fn deserialize_wires_with_limits(
 ///
 /// Version 1 input is represented as one solid root and no other root classes.
 /// All restored topology entities receive fresh ids.
+/// Imported history is appended with operation ids offset by the destination
+/// journal's `next_op` counter after preserving any preceding history gap.
+/// Source-document persistent references are not automatically rebased; existing
+/// destination references retain their ids.
 ///
 /// # Errors
 ///
@@ -1667,7 +1677,7 @@ pub fn deserialize_document_with_limits(
     limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     let document = parse_document(bytes, limits)?;
-    replay_document(document, topo)
+    replay_document(document, topo, limits)
 }
 
 // A journal has nested sequences whose restoration allocates, copies and sorts.
@@ -2147,12 +2157,13 @@ fn serialize_attributes(topo: &Topology, builder: &Builder<'_>) -> Option<SerAtt
 fn replay_document(
     document: ParsedDocument,
     topo: &mut Topology,
+    limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     // Replay against a snapshot so every parse/validation/construction error
     // leaves the caller's live topology untouched.  Committing with one move
     // also preserves the fresh ids allocated relative to the existing arenas.
     let mut staged = topo.clone();
-    let restored = replay_document_into(document, &mut staged)?;
+    let restored = replay_document_into(document, &mut staged, limits)?;
     *topo = staged;
     Ok(restored)
 }
@@ -2160,6 +2171,7 @@ fn replay_document(
 fn replay_document_into(
     document: ParsedDocument,
     topo: &mut Topology,
+    limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     let ParsedDocument {
         vertices,
@@ -2177,6 +2189,13 @@ fn replay_document_into(
         journal,
         attributes,
     } = document;
+
+    // Import is an append of independent topology. Preserve genuine gaps that
+    // preceded it, but do not let its own allocations masquerade as an
+    // unjournaled edit of existing entities when history is installed below.
+    let _ = topo.journal_begin("arena_import");
+    let destination_journal = topo.journal().snapshot();
+    check_arena_journal_append_budget(&destination_journal, journal.as_ref(), limits)?;
 
     for (index, pcurve) in pcurves.iter().enumerate() {
         validate_arena_pcurve(
@@ -2430,7 +2449,11 @@ fn replay_document_into(
 
     if let Some(journal) = journal {
         let restored = restore_journal(journal, &vertex_ids, &edge_ids, &face_ids)?;
-        topo.load_journal(restored);
+        topo.load_journal(append_arena_journal(destination_journal, restored)?);
+    } else if destination_journal.next_op != 0 || destination_journal.next_ordinal != 0 {
+        // Translator documents commonly have no history. Their new geometry
+        // still must not sever references to unrelated destination entities.
+        topo.load_journal(journal_from_snapshot(destination_journal)?);
     }
 
     Ok(DeserializedDocument {
@@ -2963,7 +2986,7 @@ fn restore_journal(
     face_ids: &[remus_topology::FaceId],
 ) -> Result<remus_topology::journal::Journal, IoError> {
     use remus_topology::journal::{
-        EntityKey, EntrySnapshot, EventSnapshot, Journal, JournalSnapshot, PayloadSnapshot,
+        EntityKey, EntrySnapshot, EventSnapshot, JournalSnapshot, PayloadSnapshot,
     };
 
     let mut index = Vec::with_capacity(encoded.index.len());
@@ -3040,13 +3063,166 @@ fn restore_journal(
             },
         })
         .collect();
-    Journal::from_snapshot(JournalSnapshot {
+    journal_from_snapshot(JournalSnapshot {
         next_op: encoded.next_op,
         next_ordinal: encoded.next_ordinal,
         index,
         entries,
     })
-    .map_err(|error| IoError::ParseError {
+}
+
+struct JournalAppendBudget {
+    items: usize,
+    limit: usize,
+}
+
+impl JournalAppendBudget {
+    fn add(&mut self, count: usize) -> Result<(), IoError> {
+        self.items = self
+            .items
+            .checked_add(count)
+            .ok_or(IoError::LimitExceeded {
+                resource: "arena journal append items",
+                limit: self.limit,
+                actual: usize::MAX,
+            })?;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), IoError> {
+        ensure_limit("arena journal append items", self.items, self.limit)
+    }
+}
+
+/// Count borrowed imported history before restoring its vectors or replaying
+/// geometry. Appending scopes a source global barrier to every source ordinal,
+/// so encoded item counts alone do not bound the resulting allocation/work.
+fn check_arena_journal_append_budget(
+    destination: &remus_topology::journal::JournalSnapshot,
+    imported: Option<&SerJournal>,
+    limits: ImportLimits,
+) -> Result<(), IoError> {
+    // Fresh-session replay keeps global barriers compact and retains the
+    // existing encoded-journal budget and roundtrip contract.
+    if destination.next_op == 0 && destination.next_ordinal == 0 {
+        return Ok(());
+    }
+    let Some(imported) = imported else {
+        return Ok(());
+    };
+    let mut budget = JournalAppendBudget {
+        items: 0,
+        limit: limits.max_model_entities,
+    };
+    budget.add(imported.index.len())?;
+    budget.add(imported.entries.len())?;
+    for entry in &imported.entries {
+        match &entry.payload {
+            SerJournalPayload::Evolution { scope, events, .. } => {
+                budget.add(scope.len())?;
+                budget.add(events.len())?;
+                // Journal::from_snapshot adds every subject and reference to
+                // the scope before sorting/deduplicating; count that temporary
+                // expansion even when the encoded scope already includes them.
+                budget.add(events.len())?;
+                for (_, event) in events {
+                    let references = match event {
+                        SerJournalEvent::Preserved { .. } | SerJournalEvent::Modified { .. } => 1,
+                        SerJournalEvent::Generated { sources } => sources.len(),
+                        SerJournalEvent::Merged { from } => from.len(),
+                        SerJournalEvent::Unresolved { candidates } => candidates.len(),
+                        SerJournalEvent::Deleted => 0,
+                    };
+                    budget.add(references)?;
+                    budget.add(references)?;
+                }
+            }
+            SerJournalPayload::Barrier { affected } => budget.add(affected.len())?,
+            SerJournalPayload::GlobalBarrier => budget.add(imported.index.len())?,
+        }
+    }
+    budget.finish()
+}
+
+/// Append an independent, already validated document journal without reissuing
+/// any destination identity, including identities retired by checkpoint restore.
+fn append_arena_journal(
+    mut destination: remus_topology::journal::JournalSnapshot,
+    imported: remus_topology::journal::Journal,
+) -> Result<remus_topology::journal::Journal, IoError> {
+    use remus_topology::journal::{EventSnapshot, PayloadSnapshot};
+
+    let mut imported = imported.snapshot();
+    let operation_offset = destination.next_op;
+    let ordinal_offset = destination.next_ordinal;
+    let has_destination_history = operation_offset != 0 || ordinal_offset != 0;
+    destination.next_op = operation_offset
+        .checked_add(imported.next_op)
+        .ok_or_else(|| IoError::ParseError {
+            reason: "arena journal operation counter overflows during append".into(),
+        })?;
+    destination.next_ordinal = ordinal_offset
+        .checked_add(imported.next_ordinal)
+        .ok_or_else(|| IoError::ParseError {
+            reason: "arena journal ordinal counter overflows during append".into(),
+        })?;
+
+    // Validation guarantees every imported id is below its corresponding
+    // counter, so the checked counter sums also bound every offset below.
+    for (ordinal, _) in &mut imported.index {
+        *ordinal += ordinal_offset;
+    }
+    let imported_ordinals: Vec<u64> = imported.index.iter().map(|(id, _)| *id).collect();
+    for entry in &mut imported.entries {
+        entry.op += operation_offset;
+        match &mut entry.payload {
+            PayloadSnapshot::Evolution { scope, events, .. } => {
+                for ordinal in scope {
+                    *ordinal += ordinal_offset;
+                }
+                for (subject, event) in events {
+                    *subject += ordinal_offset;
+                    match event {
+                        EventSnapshot::Preserved { from } | EventSnapshot::Modified { from } => {
+                            *from += ordinal_offset;
+                        }
+                        EventSnapshot::Generated { sources: from }
+                        | EventSnapshot::Merged { from }
+                        | EventSnapshot::Unresolved { candidates: from } => {
+                            for ordinal in from {
+                                *ordinal += ordinal_offset;
+                            }
+                        }
+                        EventSnapshot::Deleted => {}
+                    }
+                }
+            }
+            PayloadSnapshot::Barrier { affected } => {
+                for ordinal in affected {
+                    *ordinal += ordinal_offset;
+                }
+            }
+            PayloadSnapshot::GlobalBarrier => {
+                // Unknown changes in the source can sever only source history;
+                // they never touched pre-existing destination topology.
+                // A fresh-session replay keeps the original global payload.
+                if has_destination_history {
+                    entry.payload = PayloadSnapshot::Barrier {
+                        affected: imported_ordinals.clone(),
+                    };
+                }
+            }
+        }
+    }
+    destination.index.extend(imported.index);
+    destination.entries.extend(imported.entries);
+    journal_from_snapshot(destination)
+}
+
+fn journal_from_snapshot(
+    snapshot: remus_topology::journal::JournalSnapshot,
+) -> Result<remus_topology::journal::Journal, IoError> {
+    remus_topology::journal::Journal::from_snapshot(snapshot).map_err(|error| IoError::ParseError {
         reason: format!("journal restore failed: {error}"),
     })
 }
@@ -3068,6 +3244,26 @@ mod tests {
     use remus_operations::primitives::{make_box, make_cylinder};
     use remus_operations::sew::make_sheet_body;
     use remus_topology::explorer::solid_faces;
+
+    #[test]
+    fn journal_append_budget_checked_addition_rejects_overflow_without_allocating() {
+        JournalAppendBudget { items: 0, limit: 0 }.finish().unwrap();
+        let mut budget = JournalAppendBudget {
+            items: 0,
+            limit: usize::MAX,
+        };
+        budget.add(usize::MAX).unwrap();
+        let error = budget.add(1).unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "arena journal append items",
+                limit: usize::MAX,
+                actual: usize::MAX
+            }
+        ));
+        budget.finish().unwrap();
+    }
 
     #[test]
     fn arena_journal_nested_arrays_obey_cumulative_budget_before_replay() {
@@ -4310,7 +4506,8 @@ mod tests {
         let mut destination = Topology::new();
         let sentinel = destination.add_empty_solid();
         let before = destination.clone();
-        let error = replay_document(document, &mut destination).unwrap_err();
+        let error =
+            replay_document(document, &mut destination, ImportLimits::default()).unwrap_err();
 
         assert!(error.to_string().contains("non-finite legacy trim"));
         assert_eq!(destination.num_vertices(), before.num_vertices());
