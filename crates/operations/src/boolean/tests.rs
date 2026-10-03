@@ -64,6 +64,11 @@ fn sphere_cylinder_support_certificate_requires_finite_positive_clearance() {
             &outer,
             tol
         ));
+        assert!(!sphere_cylinder_enclosure_candidate(
+            &sphere(center, 8.0),
+            &outer,
+            tol
+        ));
     }
     let inner = sphere(Point3::new(0.0, 0.0, 10.0), 8.0);
     for outer in [
