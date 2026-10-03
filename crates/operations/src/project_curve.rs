@@ -63,7 +63,9 @@ pub struct ProjectCurveOptions {
     /// (arc onto a non-coaxial curved quadric). `false` refuses with
     /// [`ProjectCurveError::ApproximationRequired`]. Solid calls accept
     /// a full-source fitted image on one face only when every other face
-    /// is certified unable to intersect any source ray.
+    /// is certified unable to intersect any source ray. Fitting requires
+    /// whole-source and whole-fit containment in an unholed, full-period
+    /// cylinder slab with two circular rims; uncertified trims refuse.
     pub allow_approximate: bool,
     /// Absolute deviation bound for approximate images. `None` means
     /// `1e-6 · scale`. Values below `1e-9 · scale`, non-finite, or
@@ -216,7 +218,8 @@ pub enum ProjectCurveError {
         achieved: f64,
     },
     /// An approximate image needs trim clipping, has multiple candidate
-    /// faces, or lacks a whole-source no-hit proof for a competing face.
+    /// faces, lacks certified whole-source/whole-fit trim containment, or
+    /// lacks a whole-source no-hit proof for a competing face.
     #[error("approximate projections require one unclipped face with certified visibility")]
     ApproximateClipUnsupported,
     /// The image runs along a face boundary edge over a positive length.
@@ -306,8 +309,6 @@ const PARABOLA_EXACT_BAND: f64 = 1e-12;
 const PARABOLA_REFUSE_BAND: f64 = 1e-6;
 /// Post-check samples per piece (contract §7: 33 points).
 const POST_SAMPLES: usize = 33;
-/// Samples for the approximate clip probe.
-const APPROX_CLIP_SAMPLES: usize = 2049;
 /// Samples for the approximate deviation disclosure (denser than the
 /// oracle's 4096, per the design note).
 const APPROX_DISCLOSE_SAMPLES: usize = 16385;
@@ -4579,6 +4580,203 @@ struct ApproxJob<'a> {
     scale: f64,
 }
 
+struct ApproximateSlab {
+    origin: Point3,
+    axis: Vec3,
+    lower: f64,
+    upper: f64,
+}
+
+fn interval_dot_vectors(a: [ScalarInterval; 3], b: [ScalarInterval; 3]) -> ScalarInterval {
+    (0..3).fold(ScalarInterval::point(0.0), |sum, i| sum.add(a[i].mul(b[i])))
+}
+
+fn interval_amplitude(a: ScalarInterval, b: ScalarInterval) -> f64 {
+    let squared = interval_square(a).add(interval_square(b));
+    if !a.finite() || !b.finite() || !squared.finite() {
+        return f64::INFINITY;
+    }
+    squared.hi.max(0.0).sqrt().next_up()
+}
+
+/// Full-circle linear-coordinate enclosure, independent of a sampling grid.
+fn circle_coordinate(circle: &Circle3D, origin: Point3, axis: Vec3) -> ScalarInterval {
+    let center = interval_dot(
+        std::array::from_fn(|i| {
+            ScalarInterval::point(circle.center().0[i]).sub(ScalarInterval::point(origin.0[i]))
+        }),
+        axis,
+    );
+    let a = interval_dot(
+        std::array::from_fn(|i| ScalarInterval::point(circle.u_axis().0[i])),
+        axis,
+    );
+    let b = interval_dot(
+        std::array::from_fn(|i| ScalarInterval::point(circle.v_axis().0[i])),
+        axis,
+    );
+    let amplitude = ScalarInterval::point(circle.radius())
+        .mul(ScalarInterval::point(interval_amplitude(a, b)))
+        .hi;
+    center.add(ScalarInterval {
+        lo: -amplitude,
+        hi: amplitude,
+    })
+}
+
+/// Certify every source ray's first infinite-support root and the entire
+/// image's strict axial containment. Qualified fits currently require an
+/// unholed, full-period cylinder slab with two rims; other trim families
+/// refuse instead of inferring containment from membership probes.
+#[allow(clippy::too_many_lines)]
+fn approximate_slab(
+    topo: &Topology,
+    job: &ApproxJob<'_>,
+) -> Result<ApproximateSlab, ProjectCurveError> {
+    let SourceGeom::Circle { circle } = &job.source.geom else {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    };
+    let TargetGeom::Cylinder(cylinder) = job.target else {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    };
+    let (origin, axis) = (cylinder.origin(), cylinder.axis());
+    if !full_axial_trim(topo, job.face, origin, axis)? {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    }
+    let mut rims = Vec::new();
+    for boundary in boundary_edges(topo, job.face)? {
+        if let EdgeCurve::Circle(rim) = boundary.curve {
+            rims.push(circle_coordinate(&rim, origin, axis));
+        }
+    }
+    if rims.len() != 2 {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    }
+    rims.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    let slab = ApproximateSlab {
+        origin,
+        axis,
+        lower: rims[0].hi,
+        upper: rims[1].lo,
+    };
+    if !slab.lower.is_finite() || !slab.upper.is_finite() || slab.lower >= slab.upper {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    }
+    let project = |vector: [ScalarInterval; 3]| {
+        let axial = interval_dot(vector, axis);
+        std::array::from_fn(|i| vector[i].sub(ScalarInterval::point(axis.0[i]).mul(axial)))
+    };
+    let d = project(std::array::from_fn(|i| {
+        ScalarInterval::point(job.direction.0[i])
+    }));
+    let center = project(std::array::from_fn(|i| {
+        ScalarInterval::point(circle.center().0[i]).sub(ScalarInterval::point(origin.0[i]))
+    }));
+    let u = project(std::array::from_fn(|i| {
+        ScalarInterval::point(circle.u_axis().0[i])
+    }));
+    let v = project(std::array::from_fn(|i| {
+        ScalarInterval::point(circle.v_axis().0[i])
+    }));
+    let radius = ScalarInterval::point(circle.radius());
+    let amplitude = |a, b| ScalarInterval::point(interval_amplitude(a, b));
+    let a = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+        sum.add(interval_square(d[i]))
+    });
+    let b_center = interval_dot_vectors(center, d).mul(ScalarInterval::point(2.0));
+    let b_amplitude = radius
+        .mul(amplitude(
+            interval_dot_vectors(u, d),
+            interval_dot_vectors(v, d),
+        ))
+        .mul(ScalarInterval::point(2.0))
+        .hi;
+    let b = b_center.add(ScalarInterval {
+        lo: -b_amplitude,
+        hi: b_amplitude,
+    });
+    let base = (0..3)
+        .fold(ScalarInterval::point(0.0), |sum, i| {
+            sum.add(interval_square(center[i]))
+        })
+        .sub(interval_square(ScalarInterval::point(cylinder.radius())));
+    let linear = radius
+        .mul(amplitude(
+            interval_dot_vectors(center, u),
+            interval_dot_vectors(center, v),
+        ))
+        .mul(ScalarInterval::point(2.0));
+    let uu = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+        sum.add(interval_square(u[i]))
+    });
+    let vv = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+        sum.add(interval_square(v[i]))
+    });
+    let uv = interval_dot_vectors(u, v);
+    // cos²+sin²=1 and |2 cos sin|<=1. The omitted lower quadratic
+    // contribution is a squared norm and is therefore nonnegative.
+    let quadratic = interval_square(radius).mul(
+        ScalarInterval::point(uu.hi.max(vv.hi))
+            .add(ScalarInterval::point(uv.lo.abs().max(uv.hi.abs()))),
+    );
+    let c = ScalarInterval {
+        lo: base.sub(linear).lo,
+        hi: base.add(linear).add(quadratic).hi,
+    };
+    let discriminant = interval_square(b).sub(a.mul(c).mul(ScalarInterval::point(4.0)));
+    if !a.finite()
+        || !b.finite()
+        || !c.finite()
+        || !discriminant.finite()
+        || a.lo <= 0.0
+        || b.hi >= 0.0
+        || c.lo <= 0.0
+        || discriminant.lo <= 0.0
+    {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    }
+    let root = ScalarInterval::point(0.0)
+        .sub(b)
+        .sub(ScalarInterval {
+            lo: discriminant.lo.sqrt().next_down(),
+            hi: discriminant.hi.sqrt().next_up(),
+        })
+        .div(a.mul(ScalarInterval::point(2.0)));
+    let image = circle_coordinate(circle, origin, axis).add(
+        interval_dot(
+            std::array::from_fn(|i| ScalarInterval::point(job.direction.0[i])),
+            axis,
+        )
+        .mul(root),
+    );
+    if !root.finite()
+        || root.lo < 0.0
+        || !image.finite()
+        || image.lo <= slab.lower
+        || image.hi >= slab.upper
+    {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    }
+    Ok(slab)
+}
+
+/// Positive rational weights keep the whole fitted curve in its control hull.
+fn fit_inside_slab(curve: &NurbsCurve, slab: &ApproximateSlab) -> bool {
+    curve
+        .weights()
+        .iter()
+        .all(|weight| weight.is_finite() && *weight > 0.0)
+        && curve.control_points().iter().all(|point| {
+            let axial = interval_dot(
+                std::array::from_fn(|i| {
+                    ScalarInterval::point(point.0[i]).sub(ScalarInterval::point(slab.origin.0[i]))
+                }),
+                slab.axis,
+            );
+            axial.finite() && axial.lo > slab.lower && axial.hi < slab.upper
+        })
+}
+
 /// Fit the approximate image: exact first-root samples, clamped cubic
 /// interpolation, refinement until the disclosed deviation fits the budget.
 #[allow(clippy::too_many_lines)]
@@ -4601,23 +4799,7 @@ fn approximate_spec(topo: &Topology, job: &ApproxJob<'_>) -> Result<ApproxSpec, 
     };
     let (lo, hi) = source.domain;
     let closed = source.closed;
-    // Clip probe: every exact sample must lie in the face region.
-    let mut seen_inside = false;
-    let mut seen_outside = false;
-    for k in 0..APPROX_CLIP_SAMPLES {
-        let s = lo + (hi - lo) * (k as f64 / (APPROX_CLIP_SAMPLES - 1) as f64);
-        let probe = source_point(source, s);
-        match first_support_root(target, probe, direction, scale) {
-            Some(hit) if in_region(topo, face, hit)? => seen_inside = true,
-            _ => seen_outside = true,
-        }
-    }
-    if !seen_inside {
-        return Err(ProjectCurveError::EmptyProjection);
-    }
-    if seen_outside {
-        return Err(ProjectCurveError::ApproximateClipUnsupported);
-    }
+    let slab = approximate_slab(topo, job)?;
     let center = arc.center();
     let normal = arc.normal();
     let radius = arc.radius();
@@ -4673,8 +4855,8 @@ fn approximate_spec(topo: &Topology, job: &ApproxJob<'_>) -> Result<ApproxSpec, 
             }
         }
         if missing {
-            // The clip probe passed on its grid but this fit grid lands
-            // off the image: the image is not cleanly inside the face.
+            // Numerical root evaluation failed despite the support-root
+            // certificate. Refuse before allocating an image.
             return Err(ProjectCurveError::ApproximateClipUnsupported);
         }
         if closed {
@@ -4687,6 +4869,9 @@ fn approximate_spec(topo: &Topology, job: &ApproxJob<'_>) -> Result<ApproxSpec, 
         let achieved = disclose(&curve);
         best_achieved = best_achieved.min(achieved);
         if achieved <= tolerance {
+            if !fit_inside_slab(&curve, &slab) {
+                return Err(ProjectCurveError::ApproximateClipUnsupported);
+            }
             let domain = curve.domain();
             // Apply the contract's final on-face check before allocation,
             // including both fitted endpoints.
@@ -4731,6 +4916,39 @@ mod tests {
     use remus_math::vec::{Point3, Vec3};
 
     use super::*;
+
+    #[test]
+    fn fitted_control_hull_refuses_exterior_sliver_between_post_checks() {
+        let peak = 0.5 + 1.0 / 64.0;
+        let ceiling = 10.0 + 1e-6;
+        // Independent power polynomial z(t)=ceiling-(t-peak)^2,
+        // converted algebraically to quadratic Bezier coefficients.
+        let z0 = ceiling - peak * peak;
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 2.0, z0),
+                Point3::new(0.5, 2.0, z0 + peak),
+                Point3::new(1.0, 2.0, ceiling - (1.0 - peak).powi(2)),
+            ],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        for k in 0..33 {
+            assert!(curve.evaluate(f64::from(k) / 32.0).z() < 10.0);
+        }
+        assert!(curve.evaluate(peak).z() > 10.0 + 9e-7);
+        assert!(!fit_inside_slab(
+            &curve,
+            &ApproximateSlab {
+                origin: Point3::new(0.0, 0.0, 0.0),
+                axis: Vec3::new(0.0, 0.0, 1.0),
+                lower: 0.0,
+                upper: 10.0,
+            }
+        ));
+    }
 
     fn box_top_face() -> (Topology, FaceId, TargetGeom, f64) {
         let mut topo = Topology::new();
