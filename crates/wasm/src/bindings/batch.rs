@@ -1280,23 +1280,14 @@ impl BrepKernel {
             }
             "compoundCut" => {
                 let target = get_u32(args, "target")?;
+                let handles = get_u32_array(args, "tools")?;
                 let target_id = self
                     .resolve_solid(target)
                     .map_err(StructuredWasmError::from)?;
-                let tool_arr = args["tools"]
-                    .as_array()
-                    .ok_or("missing or invalid 'tools' array")?;
-                let tools: Vec<remus_topology::solid::SolidId> = tool_arr
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let h = v
-                            .as_u64()
-                            .ok_or_else(|| format!("tools[{i}] is not a number"))
-                            .map(|n| n as u32)?;
-                        self.resolve_solid(h).map_err(StructuredWasmError::from)
-                    })
-                    .collect::<Result<Vec<_>, StructuredWasmError>>()?;
+                let tools = handles
+                    .into_iter()
+                    .map(|h| self.resolve_solid(h).map_err(StructuredWasmError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
                 let result = boolean::compound_cut(
                     self.topo_mut(),
                     target_id,
@@ -1307,20 +1298,11 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "fuseAll" => {
-                let solid_arr = args["solids"]
-                    .as_array()
-                    .ok_or("missing or invalid 'solids' array")?;
-                let solids: Vec<remus_topology::solid::SolidId> = solid_arr
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let h = v
-                            .as_u64()
-                            .ok_or_else(|| format!("solids[{i}] is not a number"))
-                            .map(|n| n as u32)?;
-                        self.resolve_solid(h).map_err(StructuredWasmError::from)
-                    })
-                    .collect::<Result<Vec<_>, StructuredWasmError>>()?;
+                let handles = get_u32_array(args, "solids")?;
+                let solids = handles
+                    .into_iter()
+                    .map(|h| self.resolve_solid(h).map_err(StructuredWasmError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
                 let result = remus_operations::compound_ops::fuse_solids(self.topo_mut(), &solids)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
@@ -3378,7 +3360,12 @@ impl BrepKernel {
         args: &serde_json::Value,
     ) -> Option<Result<serde_json::Value, StructuredWasmError>> {
         match op {
-            "gcsNew" => Some(Ok(serde_json::json!(self.gcs_new()))),
+            "gcsNew" => Some(
+                self.gcs_sketches
+                    .push(crate::state::GcsSketchState::default())
+                    .map(|handle| serde_json::json!(handle))
+                    .map_err(StructuredWasmError::from),
+            ),
             "gcsAddPoint" => Some((|| {
                 let sketch = get_u32(args, "sketch")?;
                 let x = get_f64(args, "x")?;
@@ -3829,6 +3816,92 @@ mod batch_contract_tests {
             absent[1]["ok"], 1,
             "an absent optional handle array must still mean 'none': {absent}"
         );
+    }
+
+    #[test]
+    fn aggregate_boolean_arrays_reject_wrapping_handles_and_preserve_inputs() {
+        for v2 in [false, true] {
+            for (operation, array) in [("fuseAll", "solids"), ("compoundCut", "tools")] {
+                let mut kernel = BrepKernel::new();
+                let target = kernel.make_box_solid(2.0, 2.0, 2.0).expect("target box");
+                let tool = kernel.make_box_solid(1.0, 1.0, 1.0).expect("tool box");
+                kernel
+                    .transform_solid_binding(
+                        tool,
+                        vec![
+                            1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                            0.0, 1.0,
+                        ],
+                    )
+                    .expect("move tool clear of target");
+                let before = kernel.serialize_solids(&[target, tool]).expect("operands");
+                let slots = kernel.topo.allocated_slot_count();
+                for bad in [
+                    serde_json::json!(4_294_967_296_u64),
+                    serde_json::json!(4_294_967_297_u64),
+                    serde_json::json!(9_007_199_254_740_991_u64),
+                    serde_json::json!(u64::MAX),
+                    serde_json::json!(-1),
+                    serde_json::json!(1.5),
+                    serde_json::json!("0"),
+                    serde_json::Value::Null,
+                ] {
+                    let mut args = serde_json::json!({"target":target});
+                    args[array] = serde_json::json!([target, bad]);
+                    let request = serde_json::json!([{"op":operation,"args":args}]).to_string();
+                    let response = parse(&if v2 {
+                        kernel.execute_batch_v2(&request)
+                    } else {
+                        kernel.execute_batch(&request)
+                    });
+                    let error = &response[0]["error"];
+                    if v2 {
+                        assert_eq!(error["code"], "invalid_argument");
+                        assert_eq!(error["details"]["argument"], format!("{array}[1]"));
+                    } else {
+                        assert_eq!(
+                            error,
+                            &serde_json::json!(format!("{array}[1] is not a u32"))
+                        );
+                    }
+                    assert_eq!(
+                        kernel.serialize_solids(&[target, tool]).expect("operands"),
+                        before
+                    );
+                    assert_eq!(kernel.topo.allocated_slot_count(), slots);
+                }
+                // A maximum-width u32 is parsed intact and rejected by lookup,
+                // distinguishing range validation from blanket refusal.
+                let mut args = serde_json::json!({"target":target});
+                args[array] = serde_json::json!([u32::MAX]);
+                let request = serde_json::json!([{"op":operation,"args":args}]).to_string();
+                let response = parse(&if v2 {
+                    kernel.execute_batch_v2(&request)
+                } else {
+                    kernel.execute_batch(&request)
+                });
+                assert!(response[0]["error"].to_string().contains("4294967295"));
+                assert_eq!(kernel.topo.allocated_slot_count(), slots);
+                args[array] = if operation == "fuseAll" {
+                    serde_json::json!([target])
+                } else {
+                    serde_json::json!([tool])
+                };
+                let request = serde_json::json!([{"op":operation,"args":args}]).to_string();
+                let response = parse(&if v2 {
+                    kernel.execute_batch_v2(&request)
+                } else {
+                    kernel.execute_batch(&request)
+                });
+                let result = u32::try_from(response[0]["ok"].as_u64().expect("successful handle"))
+                    .expect("u32 handle");
+                assert!((kernel.volume(result, 0.01).expect("result volume") - 8.0).abs() < 1e-9);
+                assert_eq!(
+                    kernel.serialize_solids(&[target, tool]).expect("operands"),
+                    before
+                );
+            }
+        }
     }
 
     #[test]
@@ -4834,7 +4907,7 @@ mod rollback_tests {
     fn gcs_ellipse_batch_matches_direct() {
         // Direct reference.
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, 0.0).unwrap();
         for (ty, val) in [
@@ -4955,7 +5028,7 @@ mod rollback_tests {
         );
         // Direct call fails with the same message the legacy envelope carries.
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let err = k.gcs_add_ellipse_impl(s, c, 0.0, 1.0, 0.0).unwrap_err();
         assert!(format!("{err:?}").contains("semiaxis"), "{err:?}");
@@ -4978,7 +5051,7 @@ mod rollback_tests {
         // identically in direct, batch, and batchV2.
         let build_direct = || {
             let mut k = BrepKernel::new();
-            let s = k.gcs_new();
+            let s = k.gcs_new().unwrap();
             let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
             let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.1).unwrap();
             k.gcs_add_constraint_impl(

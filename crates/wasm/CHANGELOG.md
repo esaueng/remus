@@ -7,6 +7,20 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* `solidToSolidDistance` now requires complete native sphere pairs or
+  straight-edged planar boundaries, including certified affine NURBS planes.
+  Other curved pairs fail instead of returning sampled/chord estimates as
+  global minima. Point queries also refuse unsupported boundary candidates
+  that could determine the minimum. Point queries involving NURBS surfaces or trims retain local numerical
+  estimates. Nested bodies measure boundary separation.
+
+* Checkpoint IDs are opaque; retain the value returned by `checkpoint()`.
+  `checkpointCount()` counts live checkpoints and must not be used to predict
+  the next ID. For native Rust callers, `checkpoint`, `gcs_new`, `sketch_new`,
+  and `assembly_new` now return `Result<u32, JsError>` to report exhaustion
+  before allocation. JavaScript keeps its number-or-throw contract, and
+  `BrepKernel::new` keeps its existing signature.
+
 * `shell` is now exact-only: a solid whose kept faces include a NURBS face
   fails with category `unsupported` instead of returning a handle to a body
   whose inner skin was silently sample-refit. Use `shellWithQuality` (or
@@ -107,6 +121,22 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   provenance.
 
 ### Bug Fixes
+
+* Restore retires later opaque sketch, GCS entity, assembly, and component
+  handles without reusing their numbers, including repeated restore. Restore
+  and discard never reuse checkpoint IDs. Legacy sketch point and curve
+  indices keep their dense-array
+  semantics; use GCS when those entities need opaque handles. Batch `fuseAll`
+  and `compoundCut` reject integer handles above `u32` before lookup or mutation.
+* `loft` uses exact bilinear carriers for twisted quad walls; `loftSmooth`
+  shares interpolated boundary rails and a common parameterization between
+  adjacent walls. Both validate atomically and roll back failed construction.
+  Fresh and installed-package regressions check independent volumes, boundary
+  agreement, watertight meshes, and direct/batch parity.
+* Distance queries honor planar holes and actual circular rims. Complete sphere
+  pairs use analytic extrema; planar pairs include cavity walls and edge-face
+  crossings. Direct and both batch envelopes have independent packaged distance
+  and witness regressions.
 
 * Fix reflected anisotropic sphere classification: a certified full NURBS
   hemisphere cap now uses its exact rim half-space, so direct and prepared

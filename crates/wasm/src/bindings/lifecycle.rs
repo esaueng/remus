@@ -16,14 +16,12 @@ enum LifecycleError {
 impl BrepKernel {
     fn delete_solid_impl(&mut self, solid: u32) -> Result<(), LifecycleError> {
         let solid_id = self.resolve_solid(solid)?;
-        if let Some((assembly_index, _)) =
-            self.assemblies.iter().enumerate().find(|(_, assembly)| {
-                assembly
-                    .bill_of_materials()
-                    .iter()
-                    .any(|entry| entry.solid_index == solid_id.index())
-            })
-        {
+        if let Some((assembly_index, _)) = self.assemblies.iter().find(|(_, assembly)| {
+            assembly
+                .bill_of_materials()
+                .iter()
+                .any(|entry| entry.solid_index == solid_id.index())
+        }) {
             return Err(remus_topology::DeleteSolidError::Referenced {
                 solid: solid_id,
                 dependent: "assembly",
@@ -110,7 +108,7 @@ mod tests {
     fn delete_solid_rejects_live_assembly_reference_atomically() {
         let mut kernel = BrepKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
-        let assembly = kernel.assembly_new("assembly");
+        let assembly = kernel.assembly_new("assembly").unwrap();
         kernel
             .assembly_add_root(assembly, "box", solid, identity_matrix())
             .unwrap();
@@ -123,10 +121,26 @@ mod tests {
     }
 
     #[test]
+    fn restored_assembly_tombstones_do_not_pin_retained_solids() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let checkpoint = kernel.checkpoint().unwrap();
+        let retired = kernel.assembly_new("retired").unwrap();
+        kernel
+            .assembly_add_root(retired, "box", solid, identity_matrix())
+            .unwrap();
+        assert!(kernel.delete_solid_impl(solid).is_err());
+        kernel.restore(checkpoint).unwrap();
+        assert!(kernel.assemblies.get(retired as usize).is_none());
+        kernel.delete_solid_impl(solid).unwrap();
+        assert!(kernel.resolve_solid(solid).is_err());
+    }
+
+    #[test]
     fn restore_does_not_revive_retired_solid() {
         let mut kernel = BrepKernel::new();
         let retired = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
-        let checkpoint = kernel.checkpoint();
+        let checkpoint = kernel.checkpoint().unwrap();
 
         kernel.delete_solid(retired).unwrap();
         kernel.restore(checkpoint).unwrap();

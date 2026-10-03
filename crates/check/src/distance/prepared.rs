@@ -418,6 +418,7 @@ impl<'a> PreparedDistanceSolid<'a> {
         let mut best_point = point;
         let mut evaluated = 0usize;
         let mut failures = 0usize;
+        let mut deferred_errors = Vec::new();
 
         // Mandatory side path: exhaustive, in face-list order, establishing
         // the upper-bound witness for branch-and-bound.
@@ -457,8 +458,10 @@ impl<'a> PreparedDistanceSolid<'a> {
             ) {
                 Ok(result) => result,
                 Err(err) => {
-                    scratch.clear();
-                    return Err(err);
+                    evaluated += 1;
+                    failures += 1;
+                    deferred_errors.push((candidate.lower_sq, err));
+                    continue;
                 }
             };
             if let Some((dist, closest)) = result {
@@ -475,6 +478,12 @@ impl<'a> PreparedDistanceSolid<'a> {
 
         // Leave the scratch holding the ordered candidates for inspection if
         // desired; the next query clears it first, so reuse is always clean.
+        if let Err(error) = super::discharge_bounded_errors(deferred_errors, best_dist)
+            .and_then(|()| super::ensure_distance_witness(best_dist, point, best_point))
+        {
+            scratch.clear();
+            return Err(error);
+        }
 
         Ok((
             super::DistanceResult {

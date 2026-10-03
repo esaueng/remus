@@ -7,28 +7,61 @@ use wasm_bindgen::prelude::*;
 use crate::kernel::BrepKernel;
 use crate::state::Checkpoint;
 
+impl BrepKernel {
+    pub(crate) fn restore_checkpoint_impl(&mut self, checkpoint_id: u32) -> Result<(), String> {
+        let idx = checkpoint_id as usize;
+        let cp = self
+            .checkpoints
+            .get(idx)
+            .ok_or_else(|| format!("invalid checkpoint id: {checkpoint_id}"))?
+            .clone();
+        let snapshot_topo = Rc::clone(&cp.topo);
+        self.topo_mut()
+            .restore_preserving_handle_slots(&snapshot_topo);
+        self.assemblies
+            .restore(&cp.assemblies, crate::state::AssemblyState::restore);
+        self.sketches
+            .restore(&cp.sketches, |current, saved| *current = saved.clone());
+        self.gcs_sketches
+            .restore(&cp.gcs_sketches, crate::state::GcsSketchState::restore);
+        // Discard checkpoints created after the restored one
+        self.checkpoints.retire_from(idx + 1);
+        Ok(())
+    }
+    pub(crate) fn discard_checkpoint_impl(&mut self, checkpoint_id: u32) -> Result<(), String> {
+        let idx = checkpoint_id as usize;
+        if self.checkpoints.get(idx).is_none() {
+            return Err(format!("invalid checkpoint id: {checkpoint_id}"));
+        }
+        self.checkpoints.retire_from(idx);
+        Ok(())
+    }
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     /// Save a snapshot of the current kernel state.
     ///
-    /// Returns a checkpoint ID (zero-based index) that can be passed to
+    /// Returns an opaque checkpoint ID that can be passed to
     /// `restore` or `discardCheckpoint`.
     ///
     /// The snapshot is a clone of all topology, assembly, and sketch state.
-    /// Existing entity handles remain valid after restore.
+    /// Existing entity handles remain valid after restore. Opaque topology,
+    /// session, GCS entity, and assembly component handles allocated after it
+    /// are retired and never assigned to later entities. Legacy sketch point,
+    /// arc, and circle indices retain their dense-array semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint handle namespace is exhausted.
     #[wasm_bindgen(js_name = "checkpoint")]
-    pub fn checkpoint(&mut self) -> u32 {
-        let id = self.checkpoints.len();
-        self.checkpoints.push(Checkpoint {
+    pub fn checkpoint(&mut self) -> Result<u32, JsError> {
+        Ok(self.checkpoints.push(Checkpoint {
             topo: Rc::clone(&self.topo),
             assemblies: self.assemblies.clone(),
             sketches: self.sketches.clone(),
             gcs_sketches: self.gcs_sketches.clone(),
-        });
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            id as u32
-        }
+        })?)
     }
 
     /// Restore the kernel to a previously saved checkpoint.
@@ -48,21 +81,8 @@ impl BrepKernel {
     /// This is the only failure mode.
     #[wasm_bindgen(js_name = "restore")]
     pub fn restore(&mut self, checkpoint_id: u32) -> Result<(), JsError> {
-        let idx = checkpoint_id as usize;
-        let cp = self
-            .checkpoints
-            .get(idx)
-            .ok_or_else(|| JsError::new(&format!("invalid checkpoint id: {checkpoint_id}")))?
-            .clone();
-        let snapshot_topo = Rc::clone(&cp.topo);
-        self.topo_mut()
-            .restore_preserving_handle_slots(&snapshot_topo);
-        self.assemblies = cp.assemblies;
-        self.sketches = cp.sketches;
-        self.gcs_sketches = cp.gcs_sketches;
-        // Discard checkpoints created after the restored one
-        self.checkpoints.truncate(idx + 1);
-        Ok(())
+        self.restore_checkpoint_impl(checkpoint_id)
+            .map_err(|error| JsError::new(&error))
     }
 
     /// Discard a checkpoint and all checkpoints after it, freeing their memory.
@@ -72,14 +92,8 @@ impl BrepKernel {
     /// Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
     #[wasm_bindgen(js_name = "discardCheckpoint")]
     pub fn discard_checkpoint(&mut self, checkpoint_id: u32) -> Result<(), JsError> {
-        let idx = checkpoint_id as usize;
-        if idx >= self.checkpoints.len() {
-            return Err(JsError::new(&format!(
-                "invalid checkpoint id: {checkpoint_id}"
-            )));
-        }
-        self.checkpoints.truncate(idx);
-        Ok(())
+        self.discard_checkpoint_impl(checkpoint_id)
+            .map_err(|error| JsError::new(&error))
     }
 
     /// Returns the number of saved checkpoints.
@@ -88,7 +102,7 @@ impl BrepKernel {
     pub fn checkpoint_count(&self) -> u32 {
         #[allow(clippy::cast_possible_truncation)]
         {
-            self.checkpoints.len() as u32
+            self.checkpoints.active_len() as u32
         }
     }
 }
@@ -116,6 +130,114 @@ mod tests {
         k.classify_point(solid, x, y, z, TOL).unwrap()
     }
 
+    #[test]
+    fn restore_and_discard_never_reuse_checkpoint_handles() {
+        let mut k = BrepKernel::new();
+        let original = make_box(&mut k, 2.0, 3.0, 4.0);
+        let oldest = k.checkpoint().unwrap();
+        let stale = k.checkpoint().unwrap();
+        k.restore(oldest).unwrap();
+        let fresh = k.checkpoint().unwrap();
+        assert!(fresh > stale);
+        assert_eq!(k.checkpoint_count(), 2);
+        let before = k.serialize_solids(&[original]).unwrap();
+        assert!(k.restore_checkpoint_impl(stale).is_err());
+        assert!(k.discard_checkpoint_impl(stale).is_err());
+        assert_eq!(k.serialize_solids(&[original]).unwrap(), before);
+        assert_eq!(k.checkpoint_count(), 2);
+        k.discard_checkpoint(fresh).unwrap();
+        let newest = k.checkpoint().unwrap();
+        assert!(newest > fresh);
+        assert_eq!(k.checkpoint_count(), 2);
+        assert!(k.restore_checkpoint_impl(fresh).is_err());
+        k.restore(oldest).unwrap();
+        assert_eq!(k.checkpoint_count(), 1);
+        assert!((volume(&k, original) - 24.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn restore_retires_top_level_legacy_sketches_and_preserves_dense_retained_content() {
+        let mut k = BrepKernel::new();
+        let retained = k.sketch_new().unwrap();
+        k.sketch_add_point(retained, 3.0, 4.0, true).unwrap();
+        let checkpoint = k.checkpoint().unwrap();
+        let stale = k.sketch_new().unwrap();
+        k.sketch_add_point(stale, 99.0, 100.0, true).unwrap();
+        k.restore(checkpoint).unwrap();
+        let fresh = k.sketch_new().unwrap();
+        assert!(fresh > stale);
+        assert!(k.sketches.get(stale as usize).is_none());
+        let solved: serde_json::Value =
+            serde_json::from_str(&k.sketch_solve(retained, 20, 1e-8).unwrap()).unwrap();
+        assert_eq!(solved["points"], serde_json::json!([[3.0, 4.0]]));
+        assert_eq!(solved["converged"], true);
+        let dof: serde_json::Value =
+            serde_json::from_str(&k.sketch_dof(retained).unwrap()).unwrap();
+        assert_eq!(dof["dof"], 0);
+        k.sketch_add_point(fresh, 7.0, 8.0, true).unwrap();
+        let solved: serde_json::Value =
+            serde_json::from_str(&k.sketch_solve(fresh, 20, 1e-8).unwrap()).unwrap();
+        assert_eq!(solved["points"], serde_json::json!([[7.0, 8.0]]));
+    }
+
+    #[test]
+    fn restore_retires_assembly_and_component_handles_and_keeps_retained_tree() {
+        let mut k = BrepKernel::new();
+        let solid = make_box(&mut k, 2.0, 3.0, 4.0);
+        let assembly = k.assembly_new("retained").unwrap();
+        let identity = vec![
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let root = k
+            .assembly_add_root(assembly, "root", solid, identity.clone())
+            .unwrap();
+        let checkpoint = k.checkpoint().unwrap();
+        let stale_component = k
+            .assembly_add_child(assembly, root, "stale", solid, identity.clone())
+            .unwrap();
+        let stale_assembly = k.assembly_new("stale").unwrap();
+        k.assembly_add_root(stale_assembly, "stale", solid, identity.clone())
+            .unwrap();
+        k.restore(checkpoint).unwrap();
+        assert!(k.assemblies.get(stale_assembly as usize).is_none());
+        let fresh_assembly = k.assembly_new("fresh").unwrap();
+        assert!(fresh_assembly > stale_assembly);
+        let flat: serde_json::Value =
+            serde_json::from_str(&k.assembly_flatten(assembly).unwrap()).unwrap();
+        assert_eq!(flat.as_array().unwrap().len(), 1);
+        assert_eq!(flat[0]["solid"], solid);
+        assert_eq!(flat[0]["matrix"], serde_json::json!(identity));
+
+        let state = k.assemblies.get_mut(assembly as usize).unwrap();
+        let before = format!("{state:?}");
+        assert!(
+            state
+                .add_child_component(
+                    stale_component as usize,
+                    "invalid",
+                    k.topo.solid_id_from_index(solid as usize).unwrap(),
+                    remus_math::mat::Mat4::identity()
+                )
+                .is_err()
+        );
+        assert_eq!(format!("{state:?}"), before);
+        let fresh = k
+            .assembly_add_child(assembly, root, "fresh", solid, identity)
+            .unwrap();
+        assert!(fresh > stale_component);
+        let flattened: serde_json::Value =
+            serde_json::from_str(&k.assembly_flatten(assembly).unwrap()).unwrap();
+        assert_eq!(flattened.as_array().unwrap().len(), 2);
+        k.restore(checkpoint).unwrap();
+        assert!(
+            k.assemblies
+                .get(assembly as usize)
+                .unwrap()
+                .component(fresh as usize)
+                .is_err()
+        );
+    }
+
     // ── round-trip ────────────────────────────────────────────────
 
     /// Create a box, checkpoint, create a second box, restore → second box gone.
@@ -124,7 +246,7 @@ mod tests {
         let mut k = BrepKernel::new();
         let box1 = make_box(&mut k, 2.0, 2.0, 2.0);
 
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         assert_eq!(cp, 0);
 
         let _box2 = make_box(&mut k, 1.0, 1.0, 1.0);
@@ -146,7 +268,7 @@ mod tests {
     fn restore_never_reuses_post_checkpoint_solid_handle() {
         let mut k = BrepKernel::new();
         let original = make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         let stale = make_box(&mut k, 1.0, 1.0, 1.0);
 
         k.restore(cp).unwrap();
@@ -163,7 +285,7 @@ mod tests {
     fn roundtrip_preserves_original_solid_volume() {
         let mut k = BrepKernel::new();
         let box1 = make_box(&mut k, 3.0, 4.0, 5.0);
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
 
         make_box(&mut k, 1.0, 1.0, 1.0);
         k.restore(cp).unwrap();
@@ -190,7 +312,7 @@ mod tests {
 
         let mut k = BrepKernel::new();
         let keep = make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
 
         // Churn through ordinary operations until the lifetime counter is past
         // the old ceiling. Each box contributes ~34 slots and none of them are
@@ -229,13 +351,13 @@ mod tests {
         let mut k = BrepKernel::new();
 
         let box0 = make_box(&mut k, 1.0, 1.0, 1.0);
-        let cp0 = k.checkpoint(); // id 0
+        let cp0 = k.checkpoint().unwrap(); // id 0
 
         let box1 = make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp1 = k.checkpoint(); // id 1
+        let cp1 = k.checkpoint().unwrap(); // id 1
 
         let box2 = make_box(&mut k, 3.0, 3.0, 3.0);
-        let _cp2 = k.checkpoint(); // id 2
+        let _cp2 = k.checkpoint().unwrap(); // id 2
 
         assert_eq!(k.checkpoint_count(), 3);
 
@@ -259,11 +381,11 @@ mod tests {
         let mut k = BrepKernel::new();
 
         let box0 = make_box(&mut k, 1.0, 1.0, 1.0);
-        let cp0 = k.checkpoint(); // id 0
+        let cp0 = k.checkpoint().unwrap(); // id 0
         let _ = cp0;
 
         let box1 = make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp1 = k.checkpoint(); // id 1
+        let cp1 = k.checkpoint().unwrap(); // id 1
 
         let box2 = make_box(&mut k, 3.0, 3.0, 3.0);
 
@@ -286,9 +408,9 @@ mod tests {
         let mut k = BrepKernel::new();
         make_box(&mut k, 1.0, 1.0, 1.0);
 
-        let cp0 = k.checkpoint(); // id 0
+        let cp0 = k.checkpoint().unwrap(); // id 0
         make_box(&mut k, 2.0, 2.0, 2.0);
-        let _cp1 = k.checkpoint(); // id 1
+        let _cp1 = k.checkpoint().unwrap(); // id 1
 
         assert_eq!(k.checkpoint_count(), 2);
 
@@ -303,9 +425,9 @@ mod tests {
     fn discard_last_checkpoint_reduces_count() {
         let mut k = BrepKernel::new();
         make_box(&mut k, 1.0, 1.0, 1.0);
-        let _cp0 = k.checkpoint();
+        let _cp0 = k.checkpoint().unwrap();
         make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp1 = k.checkpoint();
+        let cp1 = k.checkpoint().unwrap();
 
         assert_eq!(k.checkpoint_count(), 2);
         k.discard_checkpoint(cp1).unwrap();
@@ -318,7 +440,7 @@ mod tests {
     fn discard_does_not_alter_current_topology() {
         let mut k = BrepKernel::new();
         let box0 = make_box(&mut k, 4.0, 4.0, 4.0);
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         k.discard_checkpoint(cp).unwrap();
 
         // box0 is still alive after discard.
@@ -333,13 +455,13 @@ mod tests {
         let mut k = BrepKernel::new();
         assert_eq!(k.checkpoint_count(), 0);
 
-        k.checkpoint();
+        k.checkpoint().unwrap();
         assert_eq!(k.checkpoint_count(), 1);
 
-        k.checkpoint();
+        k.checkpoint().unwrap();
         assert_eq!(k.checkpoint_count(), 2);
 
-        k.checkpoint();
+        k.checkpoint().unwrap();
         assert_eq!(k.checkpoint_count(), 3);
     }
 
@@ -368,9 +490,9 @@ mod tests {
     fn restore_discards_later_checkpoints() {
         let mut k = BrepKernel::new();
         make_box(&mut k, 1.0, 1.0, 1.0);
-        let cp0 = k.checkpoint();
+        let cp0 = k.checkpoint().unwrap();
         make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp1 = k.checkpoint();
+        let cp1 = k.checkpoint().unwrap();
 
         assert_eq!(k.checkpoint_count(), 2);
 
@@ -408,7 +530,7 @@ mod tests {
 
         // Checkpoint, mutate, restore: the restored verdict must not reuse
         // the mutated preparation.
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         let _third = make_box(&mut k, 3.0, 3.0, 3.0);
         k.restore(cp).unwrap();
         assert_eq!(classify(&k, solid, 1.0, 1.0, 1.0), "inside");
@@ -421,7 +543,7 @@ mod tests {
     fn classify_direct_and_batch_agree_across_restore() {
         let mut k = BrepKernel::new();
         let solid = make_box(&mut k, 2.0, 2.0, 2.0);
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         let _other = make_box(&mut k, 1.0, 1.0, 1.0);
         k.restore(cp).unwrap();
 

@@ -223,20 +223,33 @@ fn unknown_bound_heavy_stays_mandatory_and_matches() {
     for k in 0..8 {
         #[allow(clippy::cast_precision_loss)]
         let ox = k as f64 * 3.0;
-        let rim = Circle3D::new(Point3::new(ox, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
-        let seam = topo.add_vertex(Vertex::new(Point3::new(ox + 1.0, 0.0, 0.0), TOL));
-        let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(rim));
-        edge.set_trim(Some((0.0, std::f64::consts::TAU + 0.5)));
-        let rim_id = topo.add_edge(edge);
-        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim_id, true)], true).unwrap());
-        faces.push(topo.add_face(Face::new(
-            wire,
-            vec![],
-            FaceSurface::Plane {
-                normal: Vec3::new(0.0, 0.0, 1.0),
-                d: 0.0,
-            },
-        )));
+        let origin = Point3::new(ox, 0.0, 0.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let bottom = Circle3D::new(origin, axis, 1.0).unwrap();
+        let top = Circle3D::new(Point3::new(ox, 0.0, 1.0), axis, 1.0).unwrap();
+        let low = topo.add_vertex(Vertex::new(bottom.evaluate(0.0), TOL));
+        let high = topo.add_vertex(Vertex::new(top.evaluate(0.0), TOL));
+        let mut low_edge = Edge::new(low, low, EdgeCurve::Circle(bottom));
+        low_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let mut high_edge = Edge::new(high, high, EdgeCurve::Circle(top));
+        high_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let low_edge = topo.add_edge(low_edge);
+        let high_edge = topo.add_edge(high_edge);
+        let seam = topo.add_edge(Edge::new(low, high, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(low_edge, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(high_edge, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let carrier = remus_math::surfaces::CylindricalSurface::new(origin, axis, 1.0).unwrap();
+        faces.push(topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(carrier))));
     }
     let shell = topo.add_shell(Shell::new(faces).unwrap());
     let solid = topo.add_solid(Solid::new(shell, vec![]));
@@ -257,6 +270,44 @@ fn unknown_bound_heavy_stays_mandatory_and_matches() {
         let single = point_to_solid(&topo, *p, solid).unwrap();
         assert_eq!(single.distance, batched[i].distance);
         assert_eq!(single.point_b, batched[i].point_b);
+    }
+}
+
+#[test]
+fn invalid_overrun_trim_returns_the_same_typed_error_in_all_paths() {
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+    let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU + 0.5)));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    let point = Point3::new(0.0, 0.0, 3.0);
+    let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+    let mut scratch = DistanceScratch::new();
+    let errors = [
+        point_to_solid(&topo, point, solid).unwrap_err(),
+        point_to_solid_exhaustive(&topo, point, solid).unwrap_err(),
+        prepared.query(point, &mut scratch).unwrap_err(),
+        prepared.batch(&[point], &mut scratch).unwrap_err(),
+        point_to_solid_batch(&topo, &[point], solid).unwrap_err(),
+    ];
+    for error in &errors {
+        assert!(matches!(
+            error,
+            remus_check::CheckError::ValidationFailed(_)
+        ));
+        assert_eq!(error.to_string(), errors[0].to_string());
     }
 }
 
@@ -417,14 +468,23 @@ fn degenerate_points_match_one_shot() {
     let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
     let mut scratch = DistanceScratch::new();
     for p in &pts {
-        let one = point_to_solid(&topo, *p, solid).unwrap();
-        let via = prepared.query(*p, &mut scratch).unwrap();
-        assert_eq!(
-            one.distance.to_bits(),
-            via.distance.to_bits(),
-            "point {p:?}"
-        );
-        assert_eq!(one.point_b.x().to_bits(), via.point_b.x().to_bits());
+        let one = point_to_solid(&topo, *p, solid);
+        let via = prepared.query(*p, &mut scratch);
+        if p.x().is_finite() {
+            let one = one.unwrap();
+            let via = via.unwrap();
+            assert_eq!(
+                one.distance.to_bits(),
+                via.distance.to_bits(),
+                "point {p:?}"
+            );
+            assert_eq!(one.point_b.x().to_bits(), via.point_b.x().to_bits());
+        } else {
+            let one = one.unwrap_err();
+            let via = via.unwrap_err();
+            assert!(matches!(one, remus_check::CheckError::DistanceFailed(_)));
+            assert_eq!(one.to_string(), via.to_string());
+        }
     }
 }
 
@@ -433,22 +493,27 @@ fn repeated_calls_after_narrow_phase_failure_agree() {
     let mut topo = Topology::new();
     let (patch, _) = wavy_patch(&mut topo, 0.25, 3.0, 0.0);
     let query = Point3::new(0.5, 0.5, 2.0);
-    let (fast, fast_stats) = point_to_solid_with_stats(&topo, query, patch).unwrap();
-    assert_eq!(fast_stats.narrow_phase_failures, 1);
-    assert!(fast.distance.is_infinite());
+    let fast = point_to_solid_with_stats(&topo, query, patch).unwrap_err();
+    assert!(matches!(fast, remus_check::CheckError::DistanceFailed(_)));
     let prepared = PreparedDistanceSolid::prepare(&topo, patch).unwrap();
     let mut scratch = DistanceScratch::new();
-    for _ in 0..3 {
-        let (via, stats) = prepared.query_with_stats(query, &mut scratch).unwrap();
-        assert_eq!(via.distance, fast.distance);
-        assert_eq!(via.point_b, fast.point_b);
-        assert_eq!(stats.narrow_phase_failures, 1);
+    for _ in 0..5 {
+        let error = prepared.query_with_stats(query, &mut scratch).unwrap_err();
+        assert_eq!(error.to_string(), fast.to_string());
     }
-    let (exhaustive, estats) = prepared
+    let exhaustive = prepared
         .query_exhaustive_with_stats(query, &mut scratch)
-        .unwrap();
-    assert_eq!(exhaustive.distance, fast.distance);
-    assert_eq!(estats.narrow_phase_failures, 1);
+        .unwrap_err();
+    assert_eq!(exhaustive.to_string(), fast.to_string());
+    let batch = prepared.batch(&[query], &mut scratch).unwrap_err();
+    assert_eq!(batch.to_string(), fast.to_string());
+    // Scratch remains usable after refusal; a nearby point whose projection
+    // converges must agree with a fresh one-shot query.
+    let good = Point3::new(0.1, 0.1, 0.0);
+    let expected = point_to_solid(&topo, good, patch).unwrap();
+    let actual = prepared.query(good, &mut scratch).unwrap();
+    assert_eq!(actual.distance, expected.distance);
+    assert_eq!(actual.point_b, expected.point_b);
 }
 
 #[test]
