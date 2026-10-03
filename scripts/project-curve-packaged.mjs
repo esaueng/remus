@@ -88,7 +88,8 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       // the disk. The parallel lateral carrier contributes no earlier hit.
       const cylinder = kernel.makeCylinder(2, 10);
       const topCap = Array.from(kernel.getSolidFaces(cylinder))
-        .find((candidate) => kernel.getFaceNormal(candidate)[2] > 0.9);
+        .find((candidate) => kernel.getSurfaceType(candidate) === 'plane'
+          && kernel.getFaceNormal(candidate)[2] > 0.9);
       assert.notEqual(topCap, undefined);
       const aboveCap = kernel.makeLineEdge(-0.5, 0, 12, 0.5, 0, 12);
       const capSource = Array.from(kernel.getEdgeVertices(aboveCap));
