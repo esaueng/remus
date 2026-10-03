@@ -1042,11 +1042,13 @@ mod tests {
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface, ToroidalSurface};
 
     fn circle_seam_face(
+        reference: Vec3,
         seam: f64,
         normal_z: f64,
         descending: bool,
         hole: bool,
         split: bool,
+        plane_normal: f64,
     ) -> (Topology, FaceId, SolidId) {
         use remus_math::curves::Circle3D;
         use remus_topology::edge::{Edge, EdgeCurve};
@@ -1061,7 +1063,7 @@ mod tests {
                 Point3::new(0.0, 0.0, 0.0),
                 Vec3::new(0.0, 0.0, carrier_normal),
                 radius,
-                Vec3::new(carrier_normal * seam.sin(), seam.cos(), 0.0),
+                reference,
             )
             .unwrap();
             let vertex = topo.add_vertex(Vertex::new(circle.evaluate(seam), 1e-7));
@@ -1086,19 +1088,31 @@ mod tests {
                     };
                     let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
                     edge.set_trim(Some(domain));
+                    assert!(edge.strict_domain().is_ok());
+                    assert!(
+                        (circle.evaluate(domain.0) - topo.vertex(start).unwrap().point()).length()
+                            < 1e-12
+                    );
+                    assert!(
+                        (circle.evaluate(domain.1) - topo.vertex(end).unwrap().point()).length()
+                            < 1e-12
+                    );
                     OrientedEdge::new(topo.add_edge(edge), forward != descending)
                 })
                 .collect();
             if !forward {
                 edges.reverse();
             }
-            topo.add_wire(Wire::new(edges, true).unwrap())
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            remus_topology::validation::validate_wire_closed(topo.wire(wire).unwrap(), &topo)
+                .unwrap();
+            wire
         };
         // Reverse the outer coedge when its carrier is clockwise. Hole
-        // carriers run clockwise relative to the face's +Z normal.
-        let outer = rim(3.0, normal_z, normal_z > 0.0);
+        // carriers run clockwise relative to the face's normal.
+        let outer = rim(3.0, normal_z * plane_normal, normal_z > 0.0);
         let holes = if hole {
-            vec![rim(1.0, -1.0, true)]
+            vec![rim(1.0, -normal_z * plane_normal, normal_z > 0.0)]
         } else {
             vec![]
         };
@@ -1106,10 +1120,17 @@ mod tests {
             outer,
             holes,
             FaceSurface::Plane {
-                normal: Vec3::new(0.0, 0.0, 1.0),
+                normal: Vec3::new(0.0, 0.0, plane_normal),
                 d: 0.0,
             },
         ));
+        assert!(
+            crate::validate::check_face_inner_wire_orientation(&topo, face)
+                .unwrap()
+                .is_empty()
+        );
+        // A single-face shell exercises distance traversal only; the separate
+        // operations regression uses a validated closed annular extrusion.
         let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
         let solid = topo.add_solid(Solid::new(shell, vec![]));
         (topo, face, solid)
@@ -1117,62 +1138,105 @@ mod tests {
 
     #[test]
     fn circular_seam_membership_preserves_disks_and_clockwise_holes() {
-        for seam in [
-            0.0,
-            std::f64::consts::PI / 1000.0,
-            8.0 * std::f64::consts::TAU / 10000.0,
-            1.2,
-            std::f64::consts::FRAC_PI_2,
-            2.3,
+        // Exact coordinate-axis references reproduce the original failure;
+        // cos(PI/2)'s tiny residual can accidentally hide the seam event.
+        for reference in [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.37_f64.cos(), 0.37_f64.sin(), 0.0),
         ] {
-            for normal_z in [-1.0, 1.0] {
-                for descending in [false, true] {
-                    for hole in [false, true] {
-                        for split in [false, true] {
-                            let (topo, face, solid) =
-                                circle_seam_face(seam, normal_z, descending, hole, split);
-                            let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
-                            let mut scratch = DistanceScratch::new();
-                            let queries = [
-                                Point3::new(0.0, 0.0, 1.0),
-                                Point3::new(0.0, 1e-5, 1.0),
-                                Point3::new(0.0, -1e-5, 1.0),
-                                Point3::new(2.0, 0.0, 1.0),
-                            ];
-                            let batch = point_to_solid_batch(&topo, &queries, solid).unwrap();
-                            for (index, point) in queries.into_iter().enumerate() {
-                                let radial = point.x().hypot(point.y());
-                                let expected = if hole && radial < 1.0 {
-                                    (1.0 - radial).hypot(1.0)
-                                } else {
-                                    1.0
-                                };
-                                let face_result =
-                                    point_to_face(&topo, point, face).unwrap().unwrap();
-                                assert!(
-                                    (face_result.0 - expected).abs() < 1e-10,
-                                    "seam={seam}, normal={normal_z}, descending={descending}, hole={hole}: {face_result:?}"
-                                );
-                                let direct = point_to_solid(&topo, point, solid).unwrap();
-                                let exhaustive =
-                                    point_to_solid_exhaustive(&topo, point, solid).unwrap().0;
-                                let cached = prepared.query(point, &mut scratch).unwrap();
-                                for result in [&direct, &exhaustive, &cached, &batch[index]] {
-                                    assert!(
-                                        (result.distance - expected).abs() < 1e-10,
-                                        "{result:?}"
+            for seam in [
+                0.0,
+                std::f64::consts::PI / 1000.0,
+                0.37,
+                std::f64::consts::PI,
+                -std::f64::consts::PI,
+                2.0 * std::f64::consts::TAU,
+                -2.0 * std::f64::consts::TAU,
+            ] {
+                for normal_z in [-1.0, 1.0] {
+                    for descending in [false, true] {
+                        for hole in [false, true] {
+                            for split in [false, true] {
+                                for plane_normal in [-1.0, 1.0] {
+                                    let (mut topo, face, solid) = circle_seam_face(
+                                        reference,
+                                        seam,
+                                        normal_z,
+                                        descending,
+                                        hole,
+                                        split,
+                                        plane_normal,
                                     );
-                                    let witness_radius =
-                                        result.point_b.x().hypot(result.point_b.y());
-                                    assert!(witness_radius <= 3.0 + 1e-10);
-                                    if hole {
-                                        assert!(witness_radius >= 1.0 - 1e-10);
+                                    for reversed_face in [false, true] {
+                                        topo.face_mut(face).unwrap().set_reversed(reversed_face);
+                                        let snapshot = format!("{topo:?}");
+                                        let prepared =
+                                            PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+                                        let mut scratch = DistanceScratch::new();
+                                        let queries = [
+                                            Point3::new(0.0, 0.0, 1.0),
+                                            Point3::new(0.0, 1e-5, 1.0),
+                                            Point3::new(0.0, -1e-5, 1.0),
+                                            Point3::new(2.0, 0.0, 1.0),
+                                            Point3::new(3.5, 0.0, 1.0),
+                                            Point3::new(0.0, 3.5, 1.0),
+                                        ];
+                                        let batch =
+                                            point_to_solid_batch(&topo, &queries, solid).unwrap();
+                                        for (index, point) in queries.into_iter().enumerate() {
+                                            let radial = point.x().hypot(point.y());
+                                            let closest_radius =
+                                                radial.clamp(if hole { 1.0 } else { 0.0 }, 3.0);
+                                            let expected = (radial - closest_radius).hypot(1.0);
+                                            let face_result =
+                                                point_to_face(&topo, point, face).unwrap().unwrap();
+                                            assert!(
+                                                (face_result.0 - expected).abs() < 1e-10,
+                                                "ref={reference:?}, seam={seam}, normal={normal_z}, descending={descending}, hole={hole}, split={split}, reversed={reversed_face}: {face_result:?}"
+                                            );
+                                            let direct =
+                                                point_to_solid(&topo, point, solid).unwrap();
+                                            let exhaustive =
+                                                point_to_solid_exhaustive(&topo, point, solid)
+                                                    .unwrap()
+                                                    .0;
+                                            let cached =
+                                                prepared.query(point, &mut scratch).unwrap();
+                                            let cached_exhaustive = prepared
+                                                .query_exhaustive_with_stats(point, &mut scratch)
+                                                .unwrap()
+                                                .0;
+                                            for result in [
+                                                &direct,
+                                                &exhaustive,
+                                                &cached,
+                                                &cached_exhaustive,
+                                                &batch[index],
+                                            ] {
+                                                assert!(
+                                                    (result.distance - expected).abs() < 1e-10,
+                                                    "{result:?}"
+                                                );
+                                                let witness_radius =
+                                                    result.point_b.x().hypot(result.point_b.y());
+                                                assert!(
+                                                    (witness_radius - closest_radius).abs() < 1e-10
+                                                );
+                                                assert!(result.point_b.z().abs() < 1e-10);
+                                                assert!(
+                                                    ((point - result.point_b).length() - expected)
+                                                        .abs()
+                                                        < 1e-10
+                                                );
+                                            }
+                                            scratch.clear();
+                                            assert!(scratch.is_empty());
+                                        }
+                                        assert_eq!(format!("{topo:?}"), snapshot);
                                     }
-                                    assert!(result.point_b.z().abs() < 1e-10);
-                                    assert!(
-                                        ((point - result.point_b).length() - expected).abs()
-                                            < 1e-10
-                                    );
                                 }
                             }
                         }
@@ -1184,7 +1248,8 @@ mod tests {
 
     #[test]
     fn a_sub_tolerance_arc_gap_does_not_certify_a_complete_circle() {
-        let (mut topo, face, _) = circle_seam_face(0.0, 1.0, false, false, true);
+        let (mut topo, face, _) =
+            circle_seam_face(Vec3::new(0.0, 1.0, 0.0), 0.0, 1.0, false, false, true, 1.0);
         let wire = topo.face(face).unwrap().outer_wire();
         let second = topo.wire(wire).unwrap().edges()[1].edge();
         // This gap is smaller than the existing vertex tolerance but larger

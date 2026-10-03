@@ -148,6 +148,23 @@ function distanceWitnesses(BrepKernel) {
         assert.ok(Math.abs(Math.hypot(...query.map((coordinate, i) =>
           coordinate - [x, y, z][i])) - distance) < 1e-7);
       }
+      const [topDistance, topX, topY, topZ] = Array.from(
+        kernel.pointToSolidDistance(offset, offset, offset + 3, solid),
+      );
+      assert.ok(Math.abs(topDistance - Math.SQRT2) < 1e-7);
+      assert.ok(Math.abs(Math.hypot(topX - offset, topY - offset) - 1) < 1e-7);
+      assert.ok(Math.abs(topZ - offset - 2) < 1e-7);
+      // Interior cap projections remain valid; the repair must not force
+      // every projection to a circular rim.
+      const interiorQuery = [offset + 2, offset, offset - 1];
+      for (const result of [kernel.pointToFaceDistance(...interiorQuery, face),
+        kernel.pointToSolidDistance(...interiorQuery, solid)]) {
+        const [distance, x, y, z] = Array.from(result);
+        assert.ok(Math.abs(distance - 1) < 1e-7);
+        assert.ok(Math.abs(x - offset - 2) < 1e-7);
+        assert.ok(Math.abs(y - offset) < 1e-7);
+        assert.ok(Math.abs(z - offset) < 1e-7);
+      }
       assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), before);
       assert.deepEqual(Array.from(kernel.getFaceVertices(face))
         .map(vertex => Array.from(kernel.getVertexPosition(vertex))), verticesBefore);
