@@ -473,7 +473,7 @@ impl BrepKernel {
 impl BrepKernel {
     /// Project one edge along a direction onto a face's trimmed region.
     /// Returns the §8 typed ProjectedCurves object. Refusals throw with the
-    /// stable project-curve:<code> prefix; omitted options use defaults.
+    /// stable `project-curve:<code>` prefix; omitted options use defaults.
     #[wasm_bindgen(js_name = "projectCurveOntoFace")]
     pub fn project_curve_onto_face_js(
         &mut self,
