@@ -19,6 +19,12 @@
 //! source arena's global id layout). Deserialization always allocates fresh
 //! ids; session state, retired slots, assemblies, GCS sketches, and checkpoints
 //! are deliberately outside this format.
+//!
+//! Loading into an existing session appends document history instead of replacing
+//! it. Imported operation ids and entity ordinals are offset by the destination's
+//! respective high-water counters after recording any preceding history gap;
+//! references saved alongside the source document are not automatically rebased.
+//! Loading into a fresh session preserves their ids.
 
 use std::collections::HashMap;
 
@@ -1638,6 +1644,10 @@ pub fn deserialize_wires_with_limits(
 ///
 /// Version 1 input is represented as one solid root and no other root classes.
 /// All restored topology entities receive fresh ids.
+/// Imported history is appended with operation ids offset by the destination
+/// journal's `next_op` counter after preserving any preceding history gap.
+/// Source-document persistent references are not automatically rebased; existing
+/// destination references retain their ids.
 ///
 /// # Errors
 ///
@@ -2178,6 +2188,12 @@ fn replay_document_into(
         attributes,
     } = document;
 
+    // Import is an append of independent topology. Preserve genuine gaps that
+    // preceded it, but do not let its own allocations masquerade as an
+    // unjournaled edit of existing entities when history is installed below.
+    let _ = topo.journal_begin("arena_import");
+    let destination_journal = topo.journal().snapshot();
+
     for (index, pcurve) in pcurves.iter().enumerate() {
         validate_arena_pcurve(
             &pcurve.curve,
@@ -2430,7 +2446,11 @@ fn replay_document_into(
 
     if let Some(journal) = journal {
         let restored = restore_journal(journal, &vertex_ids, &edge_ids, &face_ids)?;
-        topo.load_journal(restored);
+        topo.load_journal(append_arena_journal(destination_journal, restored)?);
+    } else if destination_journal.next_op != 0 || destination_journal.next_ordinal != 0 {
+        // Translator documents commonly have no history. Their new geometry
+        // still must not sever references to unrelated destination entities.
+        topo.load_journal(journal_from_snapshot(destination_journal)?);
     }
 
     Ok(DeserializedDocument {
@@ -2963,7 +2983,7 @@ fn restore_journal(
     face_ids: &[remus_topology::FaceId],
 ) -> Result<remus_topology::journal::Journal, IoError> {
     use remus_topology::journal::{
-        EntityKey, EntrySnapshot, EventSnapshot, Journal, JournalSnapshot, PayloadSnapshot,
+        EntityKey, EntrySnapshot, EventSnapshot, JournalSnapshot, PayloadSnapshot,
     };
 
     let mut index = Vec::with_capacity(encoded.index.len());
@@ -3040,13 +3060,93 @@ fn restore_journal(
             },
         })
         .collect();
-    Journal::from_snapshot(JournalSnapshot {
+    journal_from_snapshot(JournalSnapshot {
         next_op: encoded.next_op,
         next_ordinal: encoded.next_ordinal,
         index,
         entries,
     })
-    .map_err(|error| IoError::ParseError {
+}
+
+/// Append an independent, already validated document journal without reissuing
+/// any destination identity, including identities retired by checkpoint restore.
+fn append_arena_journal(
+    mut destination: remus_topology::journal::JournalSnapshot,
+    imported: remus_topology::journal::Journal,
+) -> Result<remus_topology::journal::Journal, IoError> {
+    use remus_topology::journal::{EventSnapshot, PayloadSnapshot};
+
+    let mut imported = imported.snapshot();
+    let operation_offset = destination.next_op;
+    let ordinal_offset = destination.next_ordinal;
+    let has_destination_history = operation_offset != 0 || ordinal_offset != 0;
+    destination.next_op = operation_offset
+        .checked_add(imported.next_op)
+        .ok_or_else(|| IoError::ParseError {
+            reason: "arena journal operation counter overflows during append".into(),
+        })?;
+    destination.next_ordinal = ordinal_offset
+        .checked_add(imported.next_ordinal)
+        .ok_or_else(|| IoError::ParseError {
+            reason: "arena journal ordinal counter overflows during append".into(),
+        })?;
+
+    // Validation guarantees every imported id is below its corresponding
+    // counter, so the checked counter sums also bound every offset below.
+    for (ordinal, _) in &mut imported.index {
+        *ordinal += ordinal_offset;
+    }
+    let imported_ordinals: Vec<u64> = imported.index.iter().map(|(id, _)| *id).collect();
+    for entry in &mut imported.entries {
+        entry.op += operation_offset;
+        match &mut entry.payload {
+            PayloadSnapshot::Evolution { scope, events, .. } => {
+                for ordinal in scope {
+                    *ordinal += ordinal_offset;
+                }
+                for (subject, event) in events {
+                    *subject += ordinal_offset;
+                    match event {
+                        EventSnapshot::Preserved { from } | EventSnapshot::Modified { from } => {
+                            *from += ordinal_offset;
+                        }
+                        EventSnapshot::Generated { sources: from }
+                        | EventSnapshot::Merged { from }
+                        | EventSnapshot::Unresolved { candidates: from } => {
+                            for ordinal in from {
+                                *ordinal += ordinal_offset;
+                            }
+                        }
+                        EventSnapshot::Deleted => {}
+                    }
+                }
+            }
+            PayloadSnapshot::Barrier { affected } => {
+                for ordinal in affected {
+                    *ordinal += ordinal_offset;
+                }
+            }
+            PayloadSnapshot::GlobalBarrier => {
+                // Unknown changes in the source can sever only source history;
+                // they never touched pre-existing destination topology.
+                // A fresh-session replay keeps the original global payload.
+                if has_destination_history {
+                    entry.payload = PayloadSnapshot::Barrier {
+                        affected: imported_ordinals.clone(),
+                    };
+                }
+            }
+        }
+    }
+    destination.index.extend(imported.index);
+    destination.entries.extend(imported.entries);
+    journal_from_snapshot(destination)
+}
+
+fn journal_from_snapshot(
+    snapshot: remus_topology::journal::JournalSnapshot,
+) -> Result<remus_topology::journal::Journal, IoError> {
+    remus_topology::journal::Journal::from_snapshot(snapshot).map_err(|error| IoError::ParseError {
         reason: format!("journal restore failed: {error}"),
     })
 }
