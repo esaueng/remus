@@ -89,6 +89,44 @@ assert.equal(typeof kernel.exportStep, 'undefined', 'translators must not ship i
 assert.equal(typeof kernel.serializeSolids, 'function', 'arena codec must ship in the kernel');
 console.log('ok - RemusIo created; kernel module carries the arena codec only');
 
+// A full radius-8 sphere fits inside this radius-10 finite cylinder even
+// though corners of the sphere's enclosing box do not. Protect the emitted
+// artifact's whole-carrier support certificate and the enclosed cavity.
+{
+  const cavityKernel = new BrepKernel();
+  const cylinder = cavityKernel.makeCylinder(10, 20);
+  const sphere = cavityKernel.makeSphere(8, 32);
+  cavityKernel.transformSolid(sphere, new Float64Array([
+    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 10, 0, 0, 0, 1,
+  ]));
+  const operandBytes = bodies(cavityKernel, cylinder, sphere);
+  const journal = cavityKernel.journalSummary();
+  const cavity = cavityKernel.cut(cylinder, sphere);
+  const expectedVolume = Math.PI * (10 ** 2 * 20 - 4 * 8 ** 3 / 3);
+  const measured = JSON.parse(cavityKernel.massProperties(cavity, 1e-10, 12, 8));
+  assert.ok(Math.abs(measured.volume - expectedVolume) < expectedVolume * 1e-8);
+  assert.equal(JSON.parse(cavityKernel.validateSolidDetailed(cavity)).errorCount, 0);
+  assert.equal(cavityKernel.getSolidFaces(cavity).length, 5);
+  for (const [x, y, z, expected] of [
+    [0, 0, 10, 'outside'], [9, 0, 10, 'inside'],
+    [0, 0, 1, 'inside'], [0, 0, 19, 'inside'], [11, 0, 10, 'outside'],
+  ]) {
+    assert.equal(cavityKernel.classifyPoint(cavity, x, y, z, 1e-7), expected);
+  }
+  assert.deepEqual(bodies(cavityKernel, cylinder, sphere), operandBytes);
+  assert.equal(cavityKernel.journalSummary(), journal);
+  // Construction-derived entity history still refuses this disconnected
+  // enclosed-cavity GFA case, and the refusal must be transactional.
+  const cavityBytes = bodies(cavityKernel, cavity);
+  for (const op of ['cutWithEntityEvolution', 'cutJournaled']) {
+    assert.throws(() => cavityKernel[op](cylinder, sphere));
+    assert.deepEqual(bodies(cavityKernel, cylinder, sphere), operandBytes);
+    assert.deepEqual(bodies(cavityKernel, cavity), cavityBytes);
+    assert.equal(cavityKernel.journalSummary(), journal);
+  }
+  console.log('ok - complete sphere/cylinder cut preserves cavity, material, operands and journal');
+}
+
 // Stable batch-v2 errors are additive: successful envelopes match v1, while
 // v1 keeps its string error and v2 exposes the same text plus code/details.
 {

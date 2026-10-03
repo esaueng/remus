@@ -26,6 +26,241 @@ fn live_counts(t: &Topology) -> [usize; 6] {
     ]
 }
 
+fn operand_geometry(topo: &Topology, solid: remus_topology::solid::SolidId) -> String {
+    use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+    let root = topo.solid(solid).unwrap();
+    let mut entities = vec![
+        format!("{root:?}"),
+        format!("{:?}", topo.shell(root.outer_shell()).unwrap()),
+    ];
+    for face in solid_faces(topo, solid).unwrap() {
+        let face = topo.face(face).unwrap();
+        entities.push(format!("{face:?}"));
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            entities.push(format!("{:?}", topo.wire(wire).unwrap()));
+        }
+    }
+    for edge in solid_edges(topo, solid).unwrap() {
+        entities.push(format!("{:?}", topo.edge(edge).unwrap()));
+    }
+    for vertex in solid_vertices(topo, solid).unwrap() {
+        entities.push(format!("{:?}", topo.vertex(vertex).unwrap()));
+    }
+    entities.join("\n")
+}
+
+fn assert_complete_sphere_cavity(
+    topo: &Topology,
+    solid: remus_topology::solid::SolidId,
+    placement: Mat4,
+    center_x: f64,
+) {
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::FaceSurface;
+    let root = topo.solid(solid).unwrap();
+    assert_eq!(root.inner_shells().len(), 1);
+    assert_eq!(topo.shell(root.outer_shell()).unwrap().faces().len(), 3);
+    let cavity = topo.shell(root.inner_shells()[0]).unwrap();
+    assert_eq!(cavity.faces().len(), 2);
+    for &face in cavity.faces() {
+        let face = topo.face(face).unwrap();
+        assert!(face.is_reversed());
+        assert!(matches!(face.surface(), FaceSurface::Sphere(_)));
+    }
+    assert_eq!(solid_faces(topo, solid).unwrap().len(), 5);
+    assert!(
+        remus_operations::validate::validate_solid(topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    // Independent support geometry: cylinder volume minus the whole ball.
+    // Use trimmed quadrature, rather than chord-based volume, for this oracle.
+    let expected = std::f64::consts::PI * (10.0_f64.powi(2) * 20.0 - 4.0 * 8.0_f64.powi(3) / 3.0);
+    let props = remus_operations::measure::mass_properties_with_options(
+        topo,
+        solid,
+        &remus_check::properties::PropertiesOptions {
+            adaptive_eps: 1e-10,
+            gauss_order: 8,
+            max_depth: 12,
+        },
+    )
+    .unwrap();
+    assert!(
+        (props.mass - expected).abs() < expected * 1e-8,
+        "{} vs {expected}",
+        props.mass
+    );
+    for (point, expected) in [
+        (
+            Point3::new(center_x, 0.0, 10.0),
+            PointClassification::Outside,
+        ),
+        (Point3::new(-9.0, 0.0, 10.0), PointClassification::Inside),
+        (Point3::new(0.0, 0.0, 1.0), PointClassification::Inside),
+        (Point3::new(0.0, 0.0, 19.0), PointClassification::Inside),
+        (Point3::new(11.0, 0.0, 10.0), PointClassification::Outside),
+    ] {
+        assert_eq!(
+            classify_point(topo, solid, placement.mul_point(point), 0.01, 1e-7).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn whole_sphere_in_finite_cylinder_restores_exact_cavity_and_face_evolution() {
+    use remus_operations::boolean::{boolean, boolean_with_evolution};
+    use remus_operations::primitives::{make_cylinder, make_sphere};
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for (translation, angle, center_x) in [
+        (0.0, 0.0, 0.0),
+        (100.0, 0.7, 1.0),
+        (-100.0, std::f64::consts::PI, 0.0),
+    ] {
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+        let sphere = make_sphere(&mut topo, 8.0, 32).unwrap();
+        shift(&mut topo, sphere, center_x, 0.0, 10.0);
+        let placement =
+            Mat4::translation(translation, -translation, translation) * Mat4::rotation_x(angle);
+        for operand in [cylinder, sphere] {
+            transform_solid(&mut topo, operand, &placement).unwrap();
+            assert!(
+                remus_operations::validate::validate_solid(&topo, operand)
+                    .unwrap()
+                    .is_valid()
+            );
+        }
+        let operands = [
+            operand_geometry(&topo, cylinder),
+            operand_geometry(&topo, sphere),
+        ];
+        let journal_before = topo.journal().snapshot();
+        let plain = boolean(&mut topo, BooleanOp::Cut, cylinder, sphere).unwrap();
+        assert_complete_sphere_cavity(&topo, plain, placement, center_x);
+        let qualified =
+            boolean_with_context(&mut topo, BooleanOp::Cut, cylinder, sphere, &context).unwrap();
+        assert_eq!(qualified.quality, BooleanQuality::Exact);
+        assert_complete_sphere_cavity(&topo, qualified.solid, placement, center_x);
+        let (evolved, history) =
+            boolean_with_evolution(&mut topo, BooleanOp::Cut, cylinder, sphere).unwrap();
+        assert_complete_sphere_cavity(&topo, evolved, placement, center_x);
+        assert_eq!(
+            history.origin,
+            remus_operations::evolution::EvolutionOrigin::Geometry
+        );
+        let outputs: std::collections::BTreeSet<_> =
+            remus_topology::explorer::solid_faces(&topo, evolved)
+                .unwrap()
+                .into_iter()
+                .map(remus_topology::arena::Id::index)
+                .collect();
+        // The legacy geometric face map attributes the copied outer faces;
+        // reversing the cavity faces prevents its normal-based attribution.
+        // Keep that established, explicitly inferred scope, never inventing
+        // construction-derived cavity lineage.
+        let attributed = history.attributed_outputs();
+        assert!(attributed.is_subset(&outputs));
+        assert_eq!(attributed.len(), 3);
+        assert_eq!(
+            [
+                operand_geometry(&topo, cylinder),
+                operand_geometry(&topo, sphere)
+            ],
+            operands
+        );
+        assert_eq!(topo.journal().snapshot(), journal_before);
+    }
+}
+
+#[test]
+fn sphere_cylinder_containment_copy_and_empty_results_use_complete_geometry() {
+    use remus_operations::primitives::{make_cylinder, make_sphere};
+    let mut topo = Topology::new();
+    let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+    let sphere = make_sphere(&mut topo, 8.0, 32).unwrap();
+    shift(&mut topo, sphere, 1.0, 1.0, 10.0);
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for (op, expected) in [
+        (BooleanOp::Fuse, std::f64::consts::PI * 2000.0),
+        (
+            BooleanOp::Intersect,
+            std::f64::consts::PI * 4.0 * 512.0 / 3.0,
+        ),
+    ] {
+        for (a, b) in [(cylinder, sphere), (sphere, cylinder)] {
+            let result = boolean_with_context(&mut topo, op, a, b, &context).unwrap();
+            assert_eq!(result.quality, BooleanQuality::Exact);
+            let volume = remus_check::properties::solid_volume(
+                &topo,
+                result.solid,
+                &remus_check::properties::PropertiesOptions::default(),
+            )
+            .unwrap();
+            assert!((volume - expected).abs() < expected * 1e-6);
+        }
+    }
+    let before = live_counts(&topo);
+    assert!(matches!(
+        boolean_with_context(&mut topo, BooleanOp::Cut, sphere, cylinder, &context),
+        Err(remus_operations::OperationsError::EmptyResult { .. })
+    ));
+    assert_eq!(live_counts(&topo), before);
+}
+
+#[test]
+fn sphere_cylinder_entity_history_stays_fail_closed_and_transactional() {
+    use remus_operations::primitives::{make_cylinder, make_sphere};
+    for journaled in [false, true] {
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+        let sphere = make_sphere(&mut topo, 8.0, 32).unwrap();
+        shift(&mut topo, sphere, 0.0, 0.0, 10.0);
+        let pending = topo.journal_begin("operand_boundary");
+        remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, cylinder)
+            .unwrap();
+        let before = live_counts(&topo);
+        let slots_before = topo.allocated_slot_count();
+        let journal_before = topo.journal().snapshot();
+        let operands = [
+            operand_geometry(&topo, cylinder),
+            operand_geometry(&topo, sphere),
+        ];
+        let error = if journaled {
+            remus_operations::journal_ops::boolean_journaled_with_operation(
+                &mut topo,
+                BooleanOp::Cut,
+                cylinder,
+                sphere,
+            )
+            .unwrap_err()
+        } else {
+            remus_operations::boolean::boolean_with_entity_evolution(
+                &mut topo,
+                BooleanOp::Cut,
+                cylinder,
+                sphere,
+            )
+            .unwrap_err()
+        };
+        assert!(
+            matches!(error, remus_operations::OperationsError::Algo(_)),
+            "{error:?}"
+        );
+        assert_eq!(live_counts(&topo), before);
+        assert!(topo.allocated_slot_count() >= slots_before);
+        assert_eq!(topo.journal().snapshot(), journal_before);
+        assert_eq!(
+            [
+                operand_geometry(&topo, cylinder),
+                operand_geometry(&topo, sphere)
+            ],
+            operands
+        );
+    }
+}
+
 #[test]
 fn box_crossing_torus_hole_never_uses_vertex_containment() {
     let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
