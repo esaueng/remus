@@ -1434,7 +1434,7 @@ pub fn deserialize_solid_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .solids
         .into_iter()
@@ -1478,7 +1478,7 @@ pub fn deserialize_solids_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.solids)
+    Ok(replay_document(document, topo, limits)?.solids)
 }
 
 /// Reconstructs one standalone sheet root from a version 4 or 5 arena document.
@@ -1515,7 +1515,7 @@ pub fn deserialize_sheet_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .sheets
         .into_iter()
@@ -1557,7 +1557,7 @@ pub fn deserialize_sheets_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.sheets)
+    Ok(replay_document(document, topo, limits)?.sheets)
 }
 
 /// Reconstructs one standalone wire root from a version 5 arena document.
@@ -1594,7 +1594,7 @@ pub fn deserialize_wire_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .wires
         .into_iter()
@@ -1636,7 +1636,7 @@ pub fn deserialize_wires_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.wires)
+    Ok(replay_document(document, topo, limits)?.wires)
 }
 
 /// Reconstructs solid, sheet, wire, and compound roots from a version 1, 2, 3,
@@ -1677,7 +1677,7 @@ pub fn deserialize_document_with_limits(
     limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     let document = parse_document(bytes, limits)?;
-    replay_document(document, topo)
+    replay_document(document, topo, limits)
 }
 
 // A journal has nested sequences whose restoration allocates, copies and sorts.
@@ -2157,12 +2157,13 @@ fn serialize_attributes(topo: &Topology, builder: &Builder<'_>) -> Option<SerAtt
 fn replay_document(
     document: ParsedDocument,
     topo: &mut Topology,
+    limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     // Replay against a snapshot so every parse/validation/construction error
     // leaves the caller's live topology untouched.  Committing with one move
     // also preserves the fresh ids allocated relative to the existing arenas.
     let mut staged = topo.clone();
-    let restored = replay_document_into(document, &mut staged)?;
+    let restored = replay_document_into(document, &mut staged, limits)?;
     *topo = staged;
     Ok(restored)
 }
@@ -2170,6 +2171,7 @@ fn replay_document(
 fn replay_document_into(
     document: ParsedDocument,
     topo: &mut Topology,
+    limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     let ParsedDocument {
         vertices,
@@ -2193,6 +2195,7 @@ fn replay_document_into(
     // unjournaled edit of existing entities when history is installed below.
     let _ = topo.journal_begin("arena_import");
     let destination_journal = topo.journal().snapshot();
+    check_arena_journal_append_budget(&destination_journal, journal.as_ref(), limits)?;
 
     for (index, pcurve) in pcurves.iter().enumerate() {
         validate_arena_pcurve(
@@ -3068,6 +3071,79 @@ fn restore_journal(
     })
 }
 
+struct JournalAppendBudget {
+    items: usize,
+    limit: usize,
+}
+
+impl JournalAppendBudget {
+    fn add(&mut self, count: usize) -> Result<(), IoError> {
+        self.items = self
+            .items
+            .checked_add(count)
+            .ok_or(IoError::LimitExceeded {
+                resource: "arena journal append items",
+                limit: self.limit,
+                actual: usize::MAX,
+            })?;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), IoError> {
+        ensure_limit("arena journal append items", self.items, self.limit)
+    }
+}
+
+/// Count borrowed imported history before restoring its vectors or replaying
+/// geometry. Appending scopes a source global barrier to every source ordinal,
+/// so encoded item counts alone do not bound the resulting allocation/work.
+fn check_arena_journal_append_budget(
+    destination: &remus_topology::journal::JournalSnapshot,
+    imported: Option<&SerJournal>,
+    limits: ImportLimits,
+) -> Result<(), IoError> {
+    // Fresh-session replay keeps global barriers compact and retains the
+    // existing encoded-journal budget and roundtrip contract.
+    if destination.next_op == 0 && destination.next_ordinal == 0 {
+        return Ok(());
+    }
+    let Some(imported) = imported else {
+        return Ok(());
+    };
+    let mut budget = JournalAppendBudget {
+        items: 0,
+        limit: limits.max_model_entities,
+    };
+    budget.add(imported.index.len())?;
+    budget.add(imported.entries.len())?;
+    for entry in &imported.entries {
+        match &entry.payload {
+            SerJournalPayload::Evolution { scope, events, .. } => {
+                budget.add(scope.len())?;
+                budget.add(events.len())?;
+                // Journal::from_snapshot adds every subject and reference to
+                // the scope before sorting/deduplicating; count that temporary
+                // expansion even when the encoded scope already includes them.
+                budget.add(events.len())?;
+                for (_, event) in events {
+                    let references = match event {
+                        SerJournalEvent::Preserved { .. } | SerJournalEvent::Modified { .. } => 1,
+                        SerJournalEvent::Generated { sources } => sources.len(),
+                        SerJournalEvent::Merged { from } => from.len(),
+                        SerJournalEvent::Unresolved { candidates } => candidates.len(),
+                        SerJournalEvent::Deleted => 0,
+                    };
+                    budget.add(references)?;
+                    budget.add(references)?;
+                }
+            }
+            SerJournalPayload::Barrier { affected } => budget.add(affected.len())?,
+            SerJournalPayload::GlobalBarrier => budget.add(imported.index.len())?,
+        }
+    }
+    budget.finish()
+}
+
 /// Append an independent, already validated document journal without reissuing
 /// any destination identity, including identities retired by checkpoint restore.
 fn append_arena_journal(
@@ -3168,6 +3244,26 @@ mod tests {
     use remus_operations::primitives::{make_box, make_cylinder};
     use remus_operations::sew::make_sheet_body;
     use remus_topology::explorer::solid_faces;
+
+    #[test]
+    fn journal_append_budget_checked_addition_rejects_overflow_without_allocating() {
+        JournalAppendBudget { items: 0, limit: 0 }.finish().unwrap();
+        let mut budget = JournalAppendBudget {
+            items: 0,
+            limit: usize::MAX,
+        };
+        budget.add(usize::MAX).unwrap();
+        let error = budget.add(1).unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "arena journal append items",
+                limit: usize::MAX,
+                actual: usize::MAX
+            }
+        ));
+        budget.finish().unwrap();
+    }
 
     #[test]
     fn arena_journal_nested_arrays_obey_cumulative_budget_before_replay() {
@@ -4410,7 +4506,8 @@ mod tests {
         let mut destination = Topology::new();
         let sentinel = destination.add_empty_solid();
         let before = destination.clone();
-        let error = replay_document(document, &mut destination).unwrap_err();
+        let error =
+            replay_document(document, &mut destination, ImportLimits::default()).unwrap_err();
 
         assert!(error.to_string().contains("non-finite legacy trim"));
         assert_eq!(destination.num_vertices(), before.num_vertices());
