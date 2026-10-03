@@ -26,7 +26,7 @@ jobs:
           toolchain: "1.96.0"
           components: clippy,rustfmt,rust-src
           targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.62.30
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.62.30
         with:
           tool: cargo-mutants@27.0.0
       - run: python3 scripts/test-mutants-scope.py

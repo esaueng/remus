@@ -8,6 +8,18 @@ use crate::kernel::BrepKernel;
 use crate::state::Checkpoint;
 
 impl BrepKernel {
+    pub(crate) fn checkpoint_impl(&mut self) -> Result<u32, crate::error::WasmError> {
+        // Check before cloning any topology/session payload. Refusal leaves
+        // current state, saved snapshots, and the next opaque ID unchanged.
+        self.checkpoints.check_admission()?;
+        self.checkpoints.push(Checkpoint {
+            topo: Rc::clone(&self.topo),
+            assemblies: self.assemblies.clone(),
+            sketches: self.sketches.clone(),
+            gcs_sketches: self.gcs_sketches.clone(),
+        })
+    }
+
     pub(crate) fn restore_checkpoint_impl(&mut self, checkpoint_id: u32) -> Result<(), String> {
         let idx = checkpoint_id as usize;
         let cp = self
@@ -53,15 +65,13 @@ impl BrepKernel {
     ///
     /// # Errors
     ///
-    /// Returns an error if the checkpoint handle namespace is exhausted.
+    /// Returns an error if 33 snapshots are already retained (32 history
+    /// snapshots plus one temporary probe) or the checkpoint handle namespace
+    /// is exhausted. Discard a checkpoint to free capacity; existing
+    /// checkpoints remain valid and restore stays available.
     #[wasm_bindgen(js_name = "checkpoint")]
     pub fn checkpoint(&mut self) -> Result<u32, JsError> {
-        Ok(self.checkpoints.push(Checkpoint {
-            topo: Rc::clone(&self.topo),
-            assemblies: self.assemblies.clone(),
-            sketches: self.sketches.clone(),
-            gcs_sketches: self.gcs_sketches.clone(),
-        })?)
+        Ok(self.checkpoint_impl()?)
     }
 
     /// Restore the kernel to a previously saved checkpoint.
@@ -128,6 +138,99 @@ mod tests {
 
     fn classify(k: &BrepKernel, solid: u32, x: f64, y: f64, z: f64) -> String {
         k.classify_point(solid, x, y, z, TOL).unwrap()
+    }
+
+    #[test]
+    fn full_history_keeps_one_temporary_probe_and_refuses_a_second() {
+        let mut k = BrepKernel::new();
+        let mut solids = Vec::new();
+        let mut history = Vec::new();
+        for _ in 0..32 {
+            solids.push(make_box(&mut k, 2.0, 3.0, 4.0));
+            history.push(k.checkpoint_impl().unwrap());
+        }
+        let before = k.serialize_solids(&solids).unwrap();
+        let ticks = k.topo().mutation_ticks();
+        let temporary = k.checkpoint_impl().unwrap();
+        assert_eq!(temporary, 32);
+        assert_eq!(k.checkpoint_count(), 33);
+        let refs = std::rc::Rc::strong_count(&k.topo);
+        let slots = k.topo().allocated_slot_count();
+        assert!(matches!(
+            k.checkpoint_impl(),
+            Err(crate::error::WasmError::InvalidInput { reason })
+                if reason.contains("at most 33 checkpoints")
+        ));
+        assert_eq!(k.checkpoint_count(), 33);
+        assert_eq!(std::rc::Rc::strong_count(&k.topo), refs);
+        assert_eq!(k.topo().allocated_slot_count(), slots);
+        assert_eq!(k.topo().mutation_ticks(), ticks);
+        assert_eq!(k.serialize_solids(&solids).unwrap(), before);
+
+        let probe_solid = make_box(&mut k, 5.0, 1.0, 1.0);
+        assert!((volume(&k, probe_solid) - 5.0).abs() < 1e-10);
+        k.restore_checkpoint_impl(temporary).unwrap();
+        k.discard_checkpoint_impl(temporary).unwrap();
+        assert!(k.resolve_solid(probe_solid).is_err());
+        assert_eq!(k.checkpoint_count(), 32);
+        assert_eq!(k.topo().mutation_ticks(), ticks);
+        assert_eq!(k.serialize_solids(&solids).unwrap(), before);
+        for saved in &history {
+            assert!(k.checkpoints.get(*saved as usize).is_some());
+        }
+
+        let next = k.checkpoint_impl().unwrap();
+        assert_eq!(next, temporary + 1, "refusal must not consume IDs");
+        assert!(k.restore_checkpoint_impl(temporary).is_err());
+        k.restore_checkpoint_impl(next).unwrap();
+        k.discard_checkpoint_impl(next).unwrap();
+        assert_eq!(k.checkpoint_count(), 32);
+        k.restore_checkpoint_impl(*history.last().unwrap()).unwrap();
+        assert_eq!(k.checkpoint_count(), 32);
+        assert_eq!(k.serialize_solids(&solids).unwrap(), before);
+    }
+
+    #[test]
+    fn checkpoint_retention_refuses_before_cloning_and_restore_stays_available() {
+        let mut k = BrepKernel::new();
+        let keep = make_box(&mut k, 1.0, 1.0, 1.0);
+        let first = k.checkpoint_impl().unwrap();
+        for _ in 1..crate::state::MAX_CHECKPOINTS {
+            make_box(&mut k, 1.0, 1.0, 1.0);
+            k.checkpoint_impl().unwrap();
+        }
+        let refs = std::rc::Rc::strong_count(&k.topo);
+        let slots = k.topo().allocated_slot_count();
+        for _ in 0..5000 {
+            assert!(k.checkpoint_impl().is_err());
+        }
+        let maximum = u32::try_from(crate::state::MAX_CHECKPOINTS).unwrap();
+        assert_eq!(k.checkpoint_count(), maximum);
+        assert_eq!(std::rc::Rc::strong_count(&k.topo), refs);
+        assert_eq!(k.topo().allocated_slot_count(), slots);
+        k.restore_checkpoint_impl(first).unwrap();
+        assert!((volume(&k, keep) - 1.0).abs() < 0.05);
+        let fresh = k.checkpoint_impl().unwrap();
+        assert_eq!(fresh, maximum, "refusal must not consume IDs");
+        k.discard_checkpoint_impl(first).unwrap();
+        assert_eq!(k.checkpoint_count(), 0);
+        assert!(k.restore_checkpoint_impl(fresh).is_err());
+    }
+
+    #[test]
+    fn checkpoint_discard_churn_keeps_ids_stale_and_storage_bounded() {
+        let mut k = BrepKernel::new();
+        for expected in 0..5000 {
+            let cp = k.checkpoint_impl().unwrap();
+            assert_eq!(cp, expected);
+            k.discard_checkpoint_impl(cp).unwrap();
+            assert_eq!(k.checkpoint_count(), 0);
+            assert!(k.restore_checkpoint_impl(cp).is_err());
+        }
+        let fresh = k.checkpoint_impl().unwrap();
+        assert_eq!(fresh, 5000);
+        assert!(k.restore_checkpoint_impl(0).is_err());
+        k.restore_checkpoint_impl(fresh).unwrap();
     }
 
     #[test]

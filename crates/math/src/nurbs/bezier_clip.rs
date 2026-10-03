@@ -564,6 +564,49 @@ const HAUSDORFF_SAMPLES: usize = 5;
 /// and does not widen what counts as an intersection.
 const CLIP_NOISE_PAD: f64 = 1e-12;
 
+#[cfg(test)]
+thread_local! {
+    /// Calls of [`bezier_clip_recurse`] on this thread. Test-only: the
+    /// clip-or-subdivide strategy rarely changes WHICH contacts are found,
+    /// only how much work finding them takes, so its oracles count calls.
+    static RECURSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Depths of the active [`bezier_clip_recurse`] frames on this thread.
+    static RECURSE_DEPTHS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test-only frame guard: counts the call and checks that `depth` is the
+/// recursion level (one more than the caller's), the invariant that makes
+/// `MAX_DEPTH` and the depth-gated overlap checks mean what they say.
+#[cfg(test)]
+struct RecurseFrame;
+
+#[cfg(test)]
+impl RecurseFrame {
+    fn enter(depth: usize) -> Self {
+        RECURSE_CALLS.with(|c| c.set(c.get() + 1));
+        RECURSE_DEPTHS.with(|d| {
+            let mut d = d.borrow_mut();
+            let level = d.last().map_or(0, |parent| parent + 1);
+            assert_eq!(
+                depth, level,
+                "bezier_clip_recurse depth is not the recursion level"
+            );
+            d.push(depth);
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for RecurseFrame {
+    fn drop(&mut self) {
+        RECURSE_DEPTHS.with(|d| {
+            d.borrow_mut().pop();
+        });
+    }
+}
+
 /// Recursive Bezier clipping core.
 ///
 /// `swapped` records whether `a` is the second input curve, so hits and
@@ -577,6 +620,8 @@ fn bezier_clip_recurse(
     depth: usize,
     out: &mut ClipOutput,
 ) {
+    #[cfg(test)]
+    let _frame = RecurseFrame::enter(depth);
     let tolerance = out.tolerance;
     let (Some(sub_a), Some(sub_b)) = (SubSegment::new(a), SubSegment::new(b)) else {
         return;
@@ -846,12 +891,13 @@ fn project_onto_window(side: ClipSide<'_>, p: Point3) -> (f64, f64) {
 }
 
 /// Check if two curve segments are coincident over the given parameter
-/// intervals. Samples points on curve A and checks their distance to
-/// curve B. If the maximum distance (approximate Hausdorff distance)
-/// is below tolerance, emits an overlap and returns `true`.
+/// intervals. Samples points on each window and measures their distance
+/// to the other window's curve. If the maximum distance (a sampled
+/// Hausdorff distance) is below tolerance and the curves agree to second
+/// order, emits an overlap and returns `true`.
 fn check_overlap(a: ClipSide<'_>, b: ClipSide<'_>, swapped: bool, out: &mut ClipOutput) -> bool {
     let tolerance = out.tolerance;
-    let (seg_a, seg_b) = (a.seg, b.seg);
+    let seg_a = a.seg;
     let (u_a_lo, u_a_hi, u_b_lo, u_b_hi) = (a.lo, a.hi, b.lo, b.hi);
     let span_a = u_a_hi - u_a_lo;
     let span_b = u_b_hi - u_b_lo;
@@ -867,36 +913,20 @@ fn check_overlap(a: ClipSide<'_>, b: ClipSide<'_>, swapped: bool, out: &mut Clip
         return false;
     }
 
-    // Sample points on A and find closest points on B (symmetric Hausdorff).
+    // Sampled symmetric Hausdorff distance: every sample of one window is
+    // projected onto the OTHER WINDOW'S CURVE. Measuring to the other
+    // window's samples instead charges coincident curves with different
+    // parameter speeds up to half a sample spacing, so a curved overlap
+    // only passed once subdivision had shrunk the windows below about
+    // 100 tolerances of arc, and came out as dozens of fragments and point hits.
     let mut max_dist = 0.0_f64;
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..=HAUSDORFF_SAMPLES {
-        let t_a = u_a_lo + (u_a_hi - u_a_lo) * (i as f64) / (HAUSDORFF_SAMPLES as f64);
-        let pa = seg_a.evaluate(t_a);
-
-        let mut best_dist = f64::MAX;
-        #[allow(clippy::cast_precision_loss)]
-        for j in 0..=HAUSDORFF_SAMPLES {
-            let t_b = u_b_lo + (u_b_hi - u_b_lo) * (j as f64) / (HAUSDORFF_SAMPLES as f64);
-            let pb = seg_b.evaluate(t_b);
-            best_dist = best_dist.min((pa - pb).length());
+    for (own, other) in [(a, b), (b, a)] {
+        for i in 0..=HAUSDORFF_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let u = own.at(i as f64 / HAUSDORFF_SAMPLES as f64);
+            let (_, dist) = project_onto_window(other, own.seg.evaluate(u));
+            max_dist = max_dist.max(dist);
         }
-        max_dist = max_dist.max(best_dist);
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..=HAUSDORFF_SAMPLES {
-        let t_b = u_b_lo + (u_b_hi - u_b_lo) * (i as f64) / (HAUSDORFF_SAMPLES as f64);
-        let pb = seg_b.evaluate(t_b);
-
-        let mut best_dist = f64::MAX;
-        #[allow(clippy::cast_precision_loss)]
-        for j in 0..=HAUSDORFF_SAMPLES {
-            let t_a = u_a_lo + (u_a_hi - u_a_lo) * (j as f64) / (HAUSDORFF_SAMPLES as f64);
-            let pa = seg_a.evaluate(t_a);
-            best_dist = best_dist.min((pb - pa).length());
-        }
-        max_dist = max_dist.max(best_dist);
     }
 
     if max_dist < tolerance * 10.0 && coincident_to_second_order(a, b, tolerance) {
@@ -1104,6 +1134,9 @@ fn merge_overlaps(overlaps: &mut Vec<CurveCurveOverlap>, curve1: &NurbsCurve, to
 
     *overlaps = merged;
 }
+
+#[cfg(test)]
+mod mutation_oracle_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

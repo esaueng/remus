@@ -1,11 +1,10 @@
 # P-Class 7.4: directional curve projection — contract
 
-Status: contract (F1). Implementation is M5. The public surface is the stub
-`crates/operations/src/project_curve.rs`; the acceptance oracles are
-`crates/operations/tests/qualify_project_curve.rs`. M5 implements against
-both and may not change an expected value, a refusal code, or a threshold
-stated here. Anything this note does not decide is M5's choice only if no
-test observes it.
+Status: qualified M5 implementation in `crates/operations/src/project_curve.rs`,
+with acceptance oracles in `crates/operations/tests/qualify_project_curve.rs`
+and regressions in `crates/operations/tests/regress_project_curve.rs`.
+Expected values, refusal codes and thresholds remain fixed; the current
+qualification limits are stated in §§5, 6 and 8.
 
 Consumers: OpenZCAD S-6 (project model edges into the active sketch), 6.6
 linked sketch references, and later B73 wrap/emboss. 7.4's other half,
@@ -20,7 +19,8 @@ surface extension, is not covered here.
 | Ellipse | exact (ellipse or circle) | refused | refused |
 | NURBS, parabola, hyperbola | refused for faces; exact on sketch planes (§3.3) | refused | refused |
 
-"Approximate on request" means `allow_approximate = true`; the default
+"Approximate on request" means `allow_approximate = true`, within the
+certified cylinder-slab trim cell in §6; unqualified trims refuse. The default
 refuses (§6). Torus and NURBS targets are refused in every combination:
 a plane section of a torus is quartic and a NURBS section needs marching,
 and neither has a consumer in this slice.
@@ -88,7 +88,7 @@ pub fn project_curves_onto_plane(
 ) -> Result<Vec<PCurve>, ProjectCurveError>;
 ```
 
-The types are in the stub. Summary:
+The public types are defined alongside the implementation. Summary:
 
 - `ProjectCurveOptions { allow_approximate: false, approximation_tolerance:
   None (= 1e-6·scale), max_control_points: 512, plane_frame: None }`.
@@ -115,10 +115,17 @@ The types are in the stub. Summary:
   only vertices and edges. A refusal leaves every count (vertices, edges,
   wires, faces, shells, solids, p-curves) and the journal length unchanged.
   The source edge and the target are never modified.
-- **No journal entry.** Projection derives nothing from body topology: it
-  neither modifies nor replaces any entity, and like `make_line_edge` it
-  only allocates unbound geometry. A later operation that consumes the
-  edges (an imprint, §9) journals its own lineage.
+- **Scoped allocation history.** A successful face/solid call records one
+  barrier over only its new free edges and vertices; input entities remain
+  outside its scope. The operation opens history after all fallible
+  computation and before allocation, so image creation does not cause a
+  later global mutation-gap barrier that severs unrelated references.
+  An earlier unjournaled mutation still records its usual global barrier.
+  Refusals preserve journal entries, the live index, ID counters and mutation
+  ticks. A later operation that consumes the edges (an imprint, §9) journals
+  its own lineage. Sketch-plane projection remains read-only.
+  A containing transaction that rolls back after a successful projection
+  retires its image handles and issued journal IDs; those IDs are never reused.
 - Multi-source calls are atomic. A per-source refusal returns
   `SourceRefused { index, error }` (also for a single source) and creates
   nothing. Call-level refusals (invalid direction, options or frame,
@@ -316,17 +323,27 @@ cylinder about that line, and the image is a circle about the same axis:
 ## 5. Clipping and seams
 
 **Clipping.** Pieces are the maximal source intervals whose images lie in
-the trimmed region. M5 computes the candidate split parameters exactly:
+the trimmed region. The current implementation qualifies planar line
+polygons and whole circle/ellipse loops (including holes), primitive
+cylinder/cone slabs with coaxial circular rims, and qualified spherical
+caps or hemispheres. Mixed conic loops, oblique curved rims and other
+unqualified trims refuse before publishing edges. Periodic face/solid
+sources require ascending strict trims; descending sources refuse.
+For solid calls, an exact image covering the whole source on one planar
+face bounded by a single full circle or ellipse, with no holes, remains
+exact when interval bounds certify that the whole image lies inside the
+rim and exclude every deferred curved carrier along each ray up to that
+face. A later curved hit cannot force an approximation. Clipped images,
+polygonal or holed caps, and unresolved competing hits refuse this shortcut.
+Within these cells, M5 computes candidate split parameters as follows:
 
 - segment sources and coaxial arcs (image in a known plane `Π`): each face
   boundary edge ∩ `Π` — line: one root; circle/ellipse: `α cos t + β sin t = γ`,
-  two roots; parabola/hyperbola: a quadratic in `t` or in `eᵗ`; NURBS:
-  roots of the rational `m·C(t) − m·A` by Bézier decomposition and
-  clipping (`math/nurbs/decompose.rs`, `bezier_clip.rs`);
+  two roots. Parabola/hyperbola and NURBS boundaries remain refused;
 - arc and ellipse sources on plane targets: roots of the image conic's
   implicit `Q` composed with each boundary edge, `Q(B(t)) = 0` — quadratic
-  for lines, a quartic in `tan(t/2)` for circles/ellipses (closed form, then
-  one Newton polish), Bernstein subdivision for NURBS;
+  for lines, bounded quartic root isolation in `tan(t/2)` for
+  circles/ellipses;
 - silhouette points (§4.2) and the ends of the source.
 
 Candidates are mapped to source parameters, sorted, and each open interval
@@ -351,7 +368,14 @@ vertex is the image of the source start (P3–P5).
 
 ## 6. The approximate cell
 
-Arc → cylinder, cone or sphere, non-coaxial, `allow_approximate = true`.
+Non-coaxial circular source → full-period cylinder slab,
+`allow_approximate = true`. The target must have two full circular rims,
+one seam and no inner wires. The current certificate encloses the entire
+source circle, including the carrier beyond an open source arc; an
+unresolved enclosure refuses conservatively. It requires an exterior
+source and two distinct forward support roots over that circle; interior
+or tangent source configurations remain uncertified. Cone and sphere approximate
+trim cells remain refused until whole-image containment is certified.
 
 - Image points are exact: the first root of the ray `p(t) + λd̂` against the
   quadric, closed form.
@@ -367,8 +391,19 @@ Arc → cylinder, cone or sphere, non-coaxial, `allow_approximate = true`.
   exceed it, so M5 samples more densely than that.
 - Options: `tolerance` must be finite and `≥ 1e-9·scale`;
   `max_control_points ≥ 4`; otherwise `InvalidOptions`.
-- No clipping in slice 1: if any part of the exact image leaves the face
-  region, `ApproximateClipUnsupported`.
+- No clipping in slice 1: outward interval bounds certify every first
+  positive infinite-support root and enclose the whole exact image strictly
+  between the rim height bounds. Positive rational weights and an axial
+  control hull certify the entire fitted edge within the same slab. A hole,
+  an exterior sliver or either unresolved certificate returns
+  `ApproximateClipUnsupported`; trim probes and post-check samples cannot
+  establish containment.
+- A solid call accepts the fitted image only when one face contains the
+  whole image and conservative bounds prove that every other face cannot
+  meet any source ray. Competing faces or unresolved visibility return
+  `ApproximateClipUnsupported`; sampled probes do not decide occlusion.
+  Mixed exact and approximate sources report the largest sampled deviation
+  in the solid result's `quality`.
 - Instance A1: unit circle, centre `(0,5,5)`, `N = +y`, ref `+x`, `d = −y`,
   onto the cylinder: `q(t) = (cos t, √(4 − cos²t), 5 + sin t)`. Default
   tolerance at `scale = 2` is `2e-6`; `max_control_points = 4` is
@@ -466,12 +501,22 @@ type PlaneCurve2d =
   | { kind: "ellipse"; center: [number, number]; semiMajor: number; semiMinor: number;
       rotation: number; startAngle: number; endAngle: number }
   | { kind: "nurbs"; degree: number; knots: number[]; controlPoints: [number, number][];
-      weights: number[] }
+      weights: number[]; tStart: number; tEnd: number }
 ```
 
 `executeBatch` gets the same three ops with these names and JSON shapes.
+For NURBS, the serialized control net is restricted to the traversed interval
+while retaining the source knot parameterization. `tStart` and `tEnd` specify
+the traversal, including descending intervals; clients evaluate the carrier
+from `tStart` toward `tEnd` instead of assuming increasing knot order means
+increasing traversal.
 Contract tests go through `execute_batch()` per the wasm-bindings skill.
 Projection is in the shipped kernel package (no `io` feature).
+Sketch-plane NURBS currently require an already clamped, single-span
+Bézier carrier whose projected derivative and emitted control points can
+be qualified with outward-rounded arithmetic. Multispan carriers or an
+unresolved certificate refuse with `degenerate-image`; descending sketch
+traversal remains supported.
 
 ## 9. Phase 3 — imprint composition (deferred, not M5)
 
@@ -498,9 +543,8 @@ later row (4.5 / B73), not for M5:
 
 ## 10. Test map
 
-All tests in `qualify_project_curve.rs` that call the API are
-`#[ignore = "open: 7.4 — awaiting M5"]` and fail against the stub with
-`OperationsError::Unsupported` (verified: 48 of 48). Two tests run now:
+The 48 API acceptance tests in `qualify_project_curve.rs` run without
+`ignore` attributes. Two additional self-checks,
 `oracle_self_check_every_exact_cell_at_every_placement` and
 `oracle_self_check_solid_level_box_pieces` build every expected answer as
 edges and pass it through the acceptance checker, proving that the closed
@@ -516,6 +560,5 @@ on-face residual, the direction residual, a forward pre-image inside the
 source range that increases monotonically, first-hit agreement with the
 oracle, and no crossing of a face seam edge.
 
-M5 is done when every ignored test passes with its `ignore` removed, the
-two self-checks still pass unchanged, and the gates in `AGENTS.md` are
-green.
+M5 completion requires all 48 API acceptance tests, both self-checks,
+the projection regressions, and the gates in `AGENTS.md` to pass.
