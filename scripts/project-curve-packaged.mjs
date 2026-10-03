@@ -8,6 +8,25 @@ export function runProjectCurvePackaged({ BrepKernel }) {
     assert.equal(actual.length, expected.length);
     actual.forEach((value, index) => assert.ok(Math.abs(value - expected[index]) < 1e-7));
   };
+  const geometryDocument = (bytes) => {
+    const document = JSON.parse(new TextDecoder().decode(bytes));
+    delete document.journal;
+    return document;
+  };
+  const assertImageHistory = (before, after, kind) => {
+    const previous = JSON.parse(before);
+    const current = JSON.parse(after);
+    assert.deepEqual(current.slice(0, previous.length), previous);
+    const added = current.slice(previous.length);
+    assert.ok(added.length === 1 || added.length === 2);
+    if (added.length === 2) {
+      assert.equal(added[0].type, 'globalBarrier');
+      assert.equal(added[0].kind, 'unjournaled_mutations');
+    }
+    assert.equal(added.at(-1).type, 'barrier');
+    assert.equal(added.at(-1).kind, kind);
+    assert.ok(added.at(-1).detail.affected > 0);
+  };
   const invoke = (kernel, route, op, args, direct) => {
     if (route === 'direct') return direct();
     const response = JSON.parse(kernel[route](JSON.stringify([{ op, args }])))[0];
@@ -109,8 +128,8 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       near(Array.from(kernel.getEdgeVertices(capEdge.edge)), [-0.5, 0, 10, 0.5, 0, 10]);
       assert.ok(!Array.from(kernel.getSolidEdges(cylinder)).includes(capEdge.edge));
       assert.deepEqual(Array.from(kernel.getEdgeVertices(aboveCap)), capSource);
-      assert.equal(kernel.journalSummary(), capJournal);
-      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), capBytes);
+      assertImageHistory(capJournal, kernel.journalSummary(), 'project_curves_onto_solid');
+      assert.deepEqual(geometryDocument(kernel.serializeSolids(Uint32Array.of(cylinder))), geometryDocument(capBytes));
 
       // Oblique rays meet the top cap before the lateral wall. The later
       // curved hit must neither refuse nor approximate this exact circle.
@@ -118,9 +137,9 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       const obliqueSource = Array.from(kernel.getEdgeVertices(obliqueCircle));
       const obliqueSpan = Array.from(kernel.getEdgeParamSpan(obliqueCircle));
       near(obliqueSpan, [0, 2 * Math.PI]);
-      const obliqueJournal = kernel.journalSummary();
       const obliqueBytes = kernel.serializeSolids(Uint32Array.of(cylinder));
       for (const options of [undefined, { allowApproximate: true }]) {
+        const obliqueCallJournal = kernel.journalSummary();
         const obliqueArgs = { edges: [obliqueCircle], dirX: 0.5, dirY: 0, dirZ: -1, solid: cylinder, options };
         const oblique = invoke(kernel, route, 'projectCurvesOntoSolid', obliqueArgs,
           () => kernel.projectCurvesOntoSolid(Uint32Array.of(obliqueCircle), 0.5, 0, -1, cylinder, options));
@@ -145,8 +164,8 @@ export function runProjectCurvePackaged({ BrepKernel }) {
         assert.ok(!Array.from(kernel.getSolidEdges(cylinder)).includes(image.edge));
         assert.deepEqual(Array.from(kernel.getEdgeVertices(obliqueCircle)), obliqueSource);
         assert.deepEqual(Array.from(kernel.getEdgeParamSpan(obliqueCircle)), obliqueSpan);
-        assert.equal(kernel.journalSummary(), obliqueJournal);
-        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), obliqueBytes);
+        assertImageHistory(obliqueCallJournal, kernel.journalSummary(), 'project_curves_onto_solid');
+        assert.deepEqual(geometryDocument(kernel.serializeSolids(Uint32Array.of(cylinder))), geometryDocument(obliqueBytes));
       }
 
       // A1's first hit is the cylinder's front wall. Default options refuse
@@ -208,8 +227,8 @@ export function runProjectCurvePackaged({ BrepKernel }) {
         `sampled deviation ${measured} exceeds disclosed ${approximate.quality.maxDeviation}`);
       assert.deepEqual(Array.from(kernel.getEdgeVertices(circle)), circleSource);
       assert.deepEqual(Array.from(kernel.getEdgeParamSpan(circle)), circleSpan);
-      assert.equal(kernel.journalSummary(), approximateJournal);
-      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), approximateBytes);
+      assertImageHistory(approximateJournal, kernel.journalSummary(), 'project_curves_onto_solid');
+      assert.deepEqual(geometryDocument(kernel.serializeSolids(Uint32Array.of(cylinder))), geometryDocument(approximateBytes));
 
       // This phase puts a tiny exterior arc between every point of the old
       // 2049-point membership grid. Whole-interval trim qualification must
@@ -262,5 +281,93 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       kernel.free();
     }
   }
-  console.log('ok - packaged projection objects, forward-ray clipping, exact oblique cylinder caps, approximate solid images and whole-interval trim refusals');
+  // All sources and later modeling operands precede the anchor. Projection
+  // alone can introduce an unaccounted mutation between the two edits.
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    for (const mode of ['face', 'solid', 'mixed', 'approximate-face']) {
+      const kernel = new BrepKernel();
+      try {
+        const outer = kernel.makeBox(10, 8, 4);
+        const inner = kernel.makeBox(1, 1, 1);
+        const nextA = kernel.makeBox(2, 3, 4);
+        const nextB = kernel.makeBox(1, 1, 1);
+        const approximate = mode === 'mixed' || mode === 'approximate-face';
+        const cylinder = approximate ? kernel.makeCylinder(2, 10) : undefined;
+        const sources = approximate
+          ? [kernel.makeLineEdge(0, 5, 5, 0.5, 5, 5),
+            kernel.makeCircleEdgeWithRef(0, 5, 5, 0, 1, 0, 1, 1, 0, 0)]
+          : [kernel.makeLineEdge(1, 2, 7, 8, 5, 9)];
+        const anchor = JSON.parse(kernel.fuseJournaled(outer, inner));
+        const reference = kernel.makeOperationOutputRef(anchor.op, 'face', 0);
+        const bound = JSON.parse(kernel.resolveRef(reference));
+        assert.equal(bound.status, 'bound');
+        const target = approximate ? cylinder : anchor.solid;
+        const targetBefore = geometryDocument(kernel.serializeSolids(Uint32Array.of(target)));
+        const sourceBefore = sources.map(edge => [Array.from(kernel.getEdgeVertices(edge)),
+          Array.from(kernel.getEdgeParamSpan(edge))]);
+        const before = kernel.journalSummary();
+        const direction = approximate ? [0, -1, 0] : [0, 0, -1];
+        const options = { allowApproximate: approximate };
+        const ontoFace = mode === 'face' || mode === 'approximate-face';
+        let face;
+        let result;
+        if (ontoFace) {
+          face = Array.from(kernel.getSolidFaces(target)).find(candidate => approximate
+            ? kernel.getSurfaceType(candidate) === 'cylinder'
+            : kernel.getFaceNormal(candidate)[2] > 0.9);
+          const edge = sources.at(-1);
+          result = invoke(kernel, route, 'projectCurveOntoFace',
+            { edge, dirX: direction[0], dirY: direction[1], dirZ: direction[2], face, options },
+            () => kernel.projectCurveOntoFace(edge, ...direction, face, options));
+        } else {
+          result = invoke(kernel, route, 'projectCurvesOntoSolid',
+            { edges: sources, dirX: direction[0], dirY: direction[1], dirZ: direction[2], solid: target, options },
+            () => kernel.projectCurvesOntoSolid(Uint32Array.from(sources), ...direction, target, options));
+        }
+        assert.equal(result.quality.kind, approximate ? 'approximate' : 'exact');
+        const entries = JSON.parse(kernel.journalSummary());
+        assert.equal(entries.length, JSON.parse(before).length + 1);
+        assertImageHistory(before, kernel.journalSummary(), ontoFace
+          ? 'project_curve_onto_face' : 'project_curves_onto_solid');
+        assert.equal(entries.at(-1).detail.affected,
+          mode === 'mixed' ? 5 : mode === 'approximate-face' ? 2 : 3);
+        assert.deepEqual(sources.map(edge => [Array.from(kernel.getEdgeVertices(edge)),
+          Array.from(kernel.getEdgeParamSpan(edge))]), sourceBefore);
+        assert.deepEqual(geometryDocument(kernel.serializeSolids(Uint32Array.of(target))), targetBefore);
+        const images = ontoFace ? result.edges : result.sources.flatMap(source => source.edges);
+        const attached = Array.from(kernel.getSolidEdges(target));
+        assert.ok(images.every(image => !attached.includes(image.edge)));
+        kernel.fuseJournaled(nextA, nextB);
+        assert.deepEqual(JSON.parse(kernel.resolveRef(reference)), bound,
+          `${route} ${mode}: next journaled edit preserves the retained reference`);
+        assert.equal(JSON.parse(kernel.journalSummary()).length, entries.length + 1);
+        if (mode === 'face') {
+          kernel.makeLineEdge(-1, -1, 7, -2, -2, 7); // genuine earlier gap
+          const gapBefore = kernel.journalSummary();
+          const bytes = kernel.serializeSolids(Uint32Array.of(target));
+          if (route === 'direct') {
+            assert.throws(() => kernel.projectCurveOntoFace(sources[0], 0, 0, 0, face),
+              /project-curve:invalid-direction/);
+          } else {
+            const failed = JSON.parse(kernel[route](JSON.stringify([{ op: 'projectCurveOntoFace',
+              args: { edge: sources[0], dirX: 0, dirY: 0, dirZ: 0, face } }])))[0].error;
+            if (route === 'executeBatchV2') assert.equal(failed.details.kernelCode, 'project-curve:invalid-direction');
+            else assert.match(failed, /direction/);
+          }
+          assert.equal(kernel.journalSummary(), gapBefore);
+          assert.deepEqual(kernel.serializeSolids(Uint32Array.of(target)), bytes);
+          invoke(kernel, route, 'projectCurveOntoFace',
+            { edge: sources[0], dirX: 0, dirY: 0, dirZ: -1, face },
+            () => kernel.projectCurveOntoFace(sources[0], 0, 0, -1, face));
+          assertImageHistory(gapBefore, kernel.journalSummary(), 'project_curve_onto_face');
+          const gapAfter = JSON.parse(kernel.journalSummary()).slice(JSON.parse(gapBefore).length);
+          assert.equal(gapAfter.length, 2);
+          assert.equal(JSON.parse(kernel.resolveRef(reference)).operationKind, 'unjournaled_mutations');
+        }
+      } finally {
+        kernel.free();
+      }
+    }
+  }
+  console.log('ok - packaged projection objects, clipping, exact and approximate images, trim refusals and scoped history continuity');
 }
