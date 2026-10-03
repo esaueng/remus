@@ -254,7 +254,7 @@ class BrepKernel {
         }
     }
     /**
-     * Create a new empty assembly. Returns an assembly index.
+     * Create a new empty assembly. Returns an opaque assembly handle.
      * @param {string} name
      * @returns {number}
      */
@@ -262,7 +262,10 @@ class BrepKernel {
         const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.brepkernel_assemblyNew(this.__wbg_ptr, ptr0, len0);
-        return ret >>> 0;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Perform a bounded exact boolean between two Compound operands.
@@ -726,16 +729,26 @@ class BrepKernel {
     /**
      * Save a snapshot of the current kernel state.
      *
-     * Returns a checkpoint ID (zero-based index) that can be passed to
+     * Returns an opaque checkpoint ID that can be passed to
      * `restore` or `discardCheckpoint`.
      *
      * The snapshot is a clone of all topology, assembly, and sketch state.
-     * Existing entity handles remain valid after restore.
+     * Existing entity handles remain valid after restore. Opaque topology,
+     * session, GCS entity, and assembly component handles allocated after it
+     * are retired and never assigned to later entities. Legacy sketch point,
+     * arc, and circle indices retain their dense-array semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if the checkpoint handle namespace is exhausted.
      * @returns {number}
      */
     checkpoint() {
         const ret = wasm.brepkernel_checkpoint(this.__wbg_ptr);
-        return ret >>> 0;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Returns the number of saved checkpoints.
@@ -2796,7 +2809,10 @@ class BrepKernel {
      */
     gcsNew() {
         const ret = wasm.brepkernel_gcsNew(this.__wbg_ptr);
-        return ret >>> 0;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Current position of a point as `[x, y]`.
@@ -6890,11 +6906,18 @@ class BrepKernel {
      * supports all 24 constraint types with explicit line entities, and
      * allows constraint removal. The `sketch*` methods remain for
      * backward compatibility.
+     *
+     * # Errors
+     *
+     * Returns an error if the sketch handle namespace is exhausted.
      * @returns {number}
      */
     sketchNew() {
         const ret = wasm.brepkernel_sketchNew(this.__wbg_ptr);
-        return ret >>> 0;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Solve the sketch constraints.
