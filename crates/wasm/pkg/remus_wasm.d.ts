@@ -852,7 +852,7 @@ export class BrepKernel {
      */
     assemblyFlatten(assembly: number): string;
     /**
-     * Create a new empty assembly. Returns an assembly index.
+     * Create a new empty assembly. Returns an opaque assembly handle.
      */
     assemblyNew(name: string): number;
     /**
@@ -1068,11 +1068,18 @@ export class BrepKernel {
     /**
      * Save a snapshot of the current kernel state.
      *
-     * Returns a checkpoint ID (zero-based index) that can be passed to
+     * Returns an opaque checkpoint ID that can be passed to
      * `restore` or `discardCheckpoint`.
      *
      * The snapshot is a clone of all topology, assembly, and sketch state.
-     * Existing entity handles remain valid after restore.
+     * Existing entity handles remain valid after restore. Opaque topology,
+     * session, GCS entity, and assembly component handles allocated after it
+     * are retired and never assigned to later entities. Legacy sketch point,
+     * arc, and circle indices retain their dense-array semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if the checkpoint handle namespace is exhausted.
      */
     checkpoint(): number;
     /**
@@ -3785,6 +3792,10 @@ export class BrepKernel {
      * supports all 24 constraint types with explicit line entities, and
      * allows constraint removal. The `sketch*` methods remain for
      * backward compatibility.
+     *
+     * # Errors
+     *
+     * Returns an error if the sketch handle namespace is exhausted.
      */
     sketchNew(): number;
     /**
