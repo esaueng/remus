@@ -52,9 +52,7 @@ crates/offset/src/data.rs
 crates/offset/src/loops.rs
 crates/offset/src/move_faces.rs
 crates/operations/src/blend_ops.rs
-crates/operations/src/boolean/assembly.rs
 crates/operations/src/chamfer.rs
-crates/operations/src/compound_ops.rs
 crates/operations/src/copy.rs
 crates/operations/src/defeature.rs
 crates/operations/src/evolution.rs
