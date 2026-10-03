@@ -1030,6 +1030,97 @@ mod tests {
     }
 
     #[test]
+    fn far_cartesian_sphere_cylinder_public_cuts_keep_the_cavity() {
+        for translation in [1e13, -1e13] {
+            for batch in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let cylinder = kernel.make_cylinder_solid(10.0, 20.0).unwrap();
+                let sphere = kernel.make_sphere_solid(8.0, 32).unwrap();
+                for (solid, z) in [(cylinder, translation), (sphere, translation + 10.0)] {
+                    kernel
+                        .transform_solid_binding(
+                            solid,
+                            vec![
+                                1.0,
+                                0.0,
+                                0.0,
+                                translation,
+                                0.0,
+                                1.0,
+                                0.0,
+                                -translation,
+                                0.0,
+                                0.0,
+                                1.0,
+                                z,
+                                0.0,
+                                0.0,
+                                0.0,
+                                1.0,
+                            ],
+                        )
+                        .unwrap();
+                }
+                let before = kernel.serialize_solids(&[cylinder, sphere]).unwrap();
+                let journal = kernel.journal_summary();
+                let result = if batch {
+                    let response: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(
+                        &serde_json::json!([{"op":"cut", "args":{"solidA":cylinder,"solidB":sphere}}]).to_string(),
+                    )).unwrap();
+                    assert!(response[0]["ok"].is_u64(), "{response}");
+                    u32::try_from(response[0]["ok"].as_u64().unwrap()).unwrap()
+                } else {
+                    kernel.cut(cylinder, sphere).unwrap()
+                };
+                assert_eq!(kernel.get_solid_faces(result).unwrap().len(), 5);
+                let id = kernel.resolve_solid(result).unwrap();
+                assert_eq!(kernel.topo().solid(id).unwrap().inner_shells().len(), 1);
+                let measurements: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(
+                    &serde_json::json!([
+                        {"op":"massProperties", "args":{"solid":result,"adaptiveEps":1e-3,"gaussOrder":5,"maxDepth":8}},
+                        {"op":"validateSolid", "args":{"solid":result}},
+                    ]).to_string(),
+                )).unwrap();
+                assert!(measurements[0]["ok"]["volume"].is_f64(), "{measurements}");
+                let volume = measurements[0]["ok"]["volume"].as_f64().unwrap();
+                let expected = std::f64::consts::PI * (2000.0 - 4.0 * 512.0 / 3.0);
+                // Far-coordinate rounding affects existing quadrature. Keep
+                // the tighter ordinary-coordinate oracle in its own test.
+                assert!(
+                    (volume - expected).abs() < expected * 1e-4,
+                    "{volume} vs {expected}"
+                );
+                assert_eq!(measurements[1]["ok"], 0);
+                for (x, z, expected) in [
+                    (0.0, 10.0, "outside"),
+                    (9.0, 10.0, "inside"),
+                    (0.0, 1.0, "inside"),
+                    (0.0, 19.0, "inside"),
+                    (11.0, 10.0, "outside"),
+                ] {
+                    assert_eq!(
+                        kernel
+                            .classify_point(
+                                result,
+                                translation + x,
+                                -translation,
+                                translation + z,
+                                1e-7
+                            )
+                            .unwrap(),
+                        expected
+                    );
+                }
+                assert_eq!(
+                    kernel.serialize_solids(&[cylinder, sphere]).unwrap(),
+                    before
+                );
+                assert_eq!(kernel.journal_summary(), journal);
+            }
+        }
+    }
+
+    #[test]
     fn sphere_inside_cylinder_entity_history_refusals_leave_operands_and_journal_unchanged() {
         for op in ["cutWithEntityEvolution", "cutJournaled"] {
             let mut kernel = BrepKernel::new();
