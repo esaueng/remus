@@ -3545,7 +3545,7 @@ fn full_sphere_primitive(topo: &Topology, faces: &[FaceId]) -> bool {
         let Ok(edge) = topo.edge(oe.edge()) else {
             return false;
         };
-        if !matches!(edge.curve(), EdgeCurve::Line) {
+        if !matches!(edge.curve(), EdgeCurve::Line) || edge.strict_domain().is_err() {
             return false;
         }
         let Ok(vertex) = topo.vertex(oe.oriented_start(edge)) else {
@@ -3602,6 +3602,9 @@ fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim:
                 return false;
             }
             if require_full_trim {
+                if edge.strict_domain().is_err() {
+                    return false;
+                }
                 let Some((a, b)) = edge.trim() else {
                     return false;
                 };
@@ -3655,7 +3658,10 @@ fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim:
         let (FaceSurface::Cone(cone), EdgeCurve::Circle(circle)) = (surface, rim.curve()) else {
             return false;
         };
-        if !matches!(seam.curve(), EdgeCurve::Line) || seam.is_closed() {
+        if !matches!(seam.curve(), EdgeCurve::Line)
+            || seam.is_closed()
+            || (require_full_trim && seam.strict_domain().is_err())
+        {
             return false;
         }
         let apex_vertex = if seam.start() == rim.start() {
@@ -3696,8 +3702,11 @@ fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim:
     {
         return false;
     }
-    topo.edge(up.edge())
-        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line) && !edge.is_closed())
+    topo.edge(up.edge()).is_ok_and(|edge| {
+        matches!(edge.curve(), EdgeCurve::Line)
+            && !edge.is_closed()
+            && (!require_full_trim || edge.strict_domain().is_ok())
+    })
 }
 
 /// Algebraic full-circle compatibility with the finite wall and cap plane.
@@ -4146,10 +4155,106 @@ fn unoriented_axis_residual(a: Vec3, b: Vec3) -> f64 {
     (a - b).length().min((a + b).length())
 }
 
+/// A complete ball lies strictly inside a finite cylinder when its radial
+/// extent and both axial extremes have positive clearance. The enclosing
+/// sphere box is unnecessarily wide in the radial plane. Use the actual
+/// support extents, with an arithmetic allowance for carrier qualification,
+/// subtraction, projection and axis normalization; uncertain/touching cases
+/// remain outside this certificate even for a non-strict containment query.
+fn certified_sphere_in_cylinder(
+    sphere: &remus_algo::classifier::AnalyticClassifier,
+    cylinder: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    let (
+        AnalyticClassifier::Sphere { center, radius },
+        AnalyticClassifier::Cylinder {
+            origin,
+            axis,
+            radius: cylinder_radius,
+            z_min,
+            z_max,
+        },
+    ) = (sphere, cylinder)
+    else {
+        return false;
+    };
+    let values = [
+        center.x(),
+        center.y(),
+        center.z(),
+        origin.x(),
+        origin.y(),
+        origin.z(),
+        axis.x(),
+        axis.y(),
+        axis.z(),
+        *radius,
+        *cylinder_radius,
+        *z_min,
+        *z_max,
+        tol.linear,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || *radius <= 0.0
+        || *cylinder_radius <= 0.0
+        || z_min >= z_max
+        || tol.linear < 0.0
+    {
+        return false;
+    }
+    // Hypot avoids overflowing squared finite components. Stored analytic
+    // axes must already be unit vectors to arithmetic accuracy; normalization
+    // here removes their last-bit length error without accepting a scaled axis.
+    let norm = axis.x().hypot(axis.y()).hypot(axis.z());
+    if !norm.is_finite() || (norm - 1.0).abs() > 128.0 * f64::EPSILON {
+        return false;
+    }
+    let axis = *axis * norm.recip();
+    let offset = *center - *origin;
+    let axial = offset.dot(axis);
+    let cross = offset.cross(axis);
+    let radial = cross.x().hypot(cross.y()).hypot(cross.z());
+    let offset_norm = offset.x().hypot(offset.y()).hypot(offset.z());
+    let scale = values[..13]
+        .iter()
+        .fold(offset_norm.max(1.0), |scale, value| scale.max(value.abs()));
+    // The primitive qualification checks use allowances of at most 256 eps
+    // at this coordinate scale. Four times that also covers the bounded
+    // arithmetic above and does not turn a geometric tolerance into coverage.
+    let margin = tol.linear + 1024.0 * f64::EPSILON * scale;
+    let radial_extent = radial + radius;
+    let axial_low = axial - radius;
+    let axial_high = axial + radius;
+    let radial_limit = cylinder_radius - margin;
+    let axial_low_limit = z_min + margin;
+    let axial_high_limit = z_max - margin;
+    [
+        norm,
+        axial,
+        radial,
+        offset_norm,
+        margin,
+        radial_extent,
+        axial_low,
+        axial_high,
+        radial_limit,
+        axial_low_limit,
+        axial_high_limit,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+        && radial_extent < radial_limit
+        && axial_low > axial_low_limit
+        && axial_high < axial_high_limit
+}
+
 /// A convex region contains the hull of any points it contains. These points
 /// enclose complete face geometry, so acceptance proves containment. Analytic
-/// sphere pairs use their exact radial inequality to avoid an overly broad
-/// enclosing box. Unqualified containers and unknown bounds return false.
+/// sphere pairs and spheres inside finite cylinders use their support extents
+/// to avoid an overly broad enclosing box. Unqualified containers and unknown
+/// bounds return false.
 #[allow(clippy::too_many_arguments, clippy::float_cmp)] // Full torus axes/major circles must match exactly.
 fn certified_containment(
     topo: &Topology,
@@ -4199,6 +4304,12 @@ fn certified_containment(
     }
     if !qualified_convex_container(topo, outer, outer_classifier) {
         return false;
+    }
+    if let Some(inner_classifier @ AnalyticClassifier::Sphere { .. }) = inner_classifier
+        && let AnalyticClassifier::Cylinder { .. } = outer_classifier
+        && qualified_convex_container(topo, inner, inner_classifier)
+    {
+        return certified_sphere_in_cylinder(inner_classifier, outer_classifier, tol);
     }
     if let Some(
         inner_classifier @ AnalyticClassifier::Sphere {
