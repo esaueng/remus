@@ -4,7 +4,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_algo::bop::BooleanOp;
-use remus_io::arena_io::{deserialize_document, serialize_document};
+use remus_io::IoError;
+use remus_io::arena_io::{
+    deserialize_document, deserialize_document_with_limits, serialize_document,
+};
+use remus_io::limits::ImportLimits;
 use remus_math::mat::Mat4;
 use remus_operations::journal_ops::boolean_journaled;
 use remus_operations::primitives::make_box;
@@ -409,6 +413,170 @@ fn malformed_imported_history_and_counter_overflow_leave_destination_unchanged()
         assert_eq!(destination.cache_identity(), cache_before);
         assert_eq!(destination.mutation_ticks(), ticks_before);
         assert_eq!(destination.allocated_slot_count(), slots_before);
+        assert_eq!(bound(&destination, &old_reference), old_face);
+    }
+}
+
+fn global_barrier_document(ordinals: u64, barriers: u64) -> Vec<u8> {
+    let empty = serialize_document(&Topology::new(), &[], &[]).unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&empty).unwrap();
+    document["journal"] = serde_json::json!({
+        "next_op": barriers,
+        "next_ordinal": ordinals,
+        "index": (0..ordinals).map(|ordinal| serde_json::json!({"ordinal": ordinal, "kind": "face", "local": null})).collect::<Vec<_>>(),
+        "entries": (0..barriers).map(|op| serde_json::json!({"op": op, "kind": "unjournaled_mutations", "payload": "GlobalBarrier"})).collect::<Vec<_>>(),
+    });
+    serde_json::to_vec(&document).unwrap()
+}
+
+#[test]
+fn global_barrier_append_expansion_is_bounded_before_allocation_and_atomic() {
+    let mut destination = Topology::new();
+    let (solid, op) = journaled_box(&mut destination, 2.0);
+    let old_reference = reference(op);
+    let old_face = bound(&destination, &old_reference);
+    let document_before = serialize_document(&destination, &[solid], &[]).unwrap();
+    let journal_before = destination.journal().snapshot();
+    let identity_before = destination.cache_identity();
+    let ticks_before = destination.mutation_ticks();
+    let slots_before = destination.allocated_slot_count();
+    let input = global_barrier_document(200, 200);
+    let limits = ImportLimits {
+        max_model_entities: 1000,
+        ..ImportLimits::default()
+    };
+    assert!(matches!(
+        deserialize_document_with_limits(&input, &mut destination, limits),
+        Err(IoError::LimitExceeded {
+            resource: "arena journal append items",
+            limit: 1000,
+            actual: 40_400,
+        })
+    ));
+    assert_eq!(
+        serialize_document(&destination, &[solid], &[]).unwrap(),
+        document_before
+    );
+    assert_eq!(destination.journal().snapshot(), journal_before);
+    assert_eq!(destination.cache_identity(), identity_before);
+    assert_eq!(destination.mutation_ticks(), ticks_before);
+    assert_eq!(destination.allocated_slot_count(), slots_before);
+    assert_eq!(bound(&destination, &old_reference), old_face);
+
+    // A fresh load keeps compact global payloads and the source namespace;
+    // it does not allocate the append-only scoped expansion.
+    let mut fresh = Topology::new();
+    deserialize_document_with_limits(&input, &mut fresh, limits).unwrap();
+    assert!(
+        fresh
+            .journal()
+            .snapshot()
+            .entries
+            .iter()
+            .all(|entry| matches!(entry.payload, PayloadSnapshot::GlobalBarrier))
+    );
+}
+
+#[test]
+fn global_barrier_append_accepts_exact_aggregate_expansion_boundary() {
+    let input = global_barrier_document(20, 20);
+    // Twenty index entries, twenty entries, and twenty scoped vectors of
+    // twenty ordinals consume a single 440-item budget.
+    for (limit, admitted) in [(439, false), (440, true)] {
+        let mut destination = Topology::new();
+        let (_, op) = journaled_box(&mut destination, 2.0);
+        let old_reference = reference(op);
+        let old_face = bound(&destination, &old_reference);
+        let options = ImportLimits {
+            max_model_entities: limit,
+            ..ImportLimits::default()
+        };
+        let result = deserialize_document_with_limits(&input, &mut destination, options);
+        if admitted {
+            result.unwrap();
+            let snapshot = destination.journal().snapshot();
+            let affected: usize = snapshot
+                .entries
+                .iter()
+                .map(|entry| match &entry.payload {
+                    PayloadSnapshot::Barrier { affected } => affected.len(),
+                    PayloadSnapshot::GlobalBarrier | PayloadSnapshot::Evolution { .. } => 0,
+                })
+                .sum();
+            assert_eq!(affected, 400);
+            assert_eq!(bound(&destination, &old_reference), old_face);
+        } else {
+            assert!(matches!(
+                result,
+                Err(IoError::LimitExceeded {
+                    resource: "arena journal append items",
+                    limit: 439,
+                    actual: 440
+                })
+            ));
+        }
+    }
+}
+
+#[test]
+fn append_budget_includes_explicit_payloads_and_reconstructed_evolution_scope() {
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&global_barrier_document(20, 20)).unwrap();
+    let entries = document["journal"]["entries"].as_array_mut().unwrap();
+    entries.push(serde_json::json!({
+        "op": 20,
+        "kind": "source_evolution",
+        "payload": "Evolution",
+        "construction": false,
+        "scope": [0, 1],
+        "events": [
+            [0, {"event": "Generated", "sources": [1, 2]}],
+            [1, {"event": "Modified", "from": 2}],
+            [2, {"event": "Deleted"}],
+        ],
+    }));
+    entries.push(serde_json::json!({
+        "op": 21,
+        "kind": "source_barrier",
+        "payload": "Barrier",
+        "affected": [3, 4, 5],
+    }));
+    document["journal"]["next_op"] = serde_json::json!(22);
+    let input = serde_json::to_vec(&document).unwrap();
+    // Index + entries + expanded barriers = 442. Evolution uses two scope
+    // slots, three events, three subjects added to scope, and three references
+    // each retained in the event and added to scope (14). Explicit barrier = 3.
+    for (limit, admitted) in [(458, false), (459, true)] {
+        let mut destination = Topology::new();
+        let (_, op) = journaled_box(&mut destination, 2.0);
+        let old_reference = reference(op);
+        let old_face = bound(&destination, &old_reference);
+        let history_before = destination.journal().snapshot();
+        let options = ImportLimits {
+            max_model_entities: limit,
+            ..ImportLimits::default()
+        };
+        let result = deserialize_document_with_limits(&input, &mut destination, options);
+        if admitted {
+            result.unwrap();
+            let snapshot = destination.journal().snapshot();
+            let evolution = &snapshot.entries[history_before.entries.len() + 20];
+            assert!(matches!(
+                &evolution.payload,
+                PayloadSnapshot::Evolution { scope, events, .. }
+                    if scope.len() == 3 && events.len() == 3
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(IoError::LimitExceeded {
+                    resource: "arena journal append items",
+                    limit: 458,
+                    actual: 459,
+                })
+            ));
+            assert_eq!(destination.journal().snapshot(), history_before);
+        }
         assert_eq!(bound(&destination, &old_reference), old_face);
     }
 }
