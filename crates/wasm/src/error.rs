@@ -126,6 +126,12 @@ pub(crate) struct StructuredWasmError {
 }
 
 impl StructuredWasmError {
+    /// Mutable access to the structured detail map (e.g. for attaching a
+    /// native `kernelCode` alongside the wire code).
+    pub(crate) fn details_mut(&mut self) -> &mut Map<String, Value> {
+        &mut self.details
+    }
+
     pub(crate) fn new(code: WasmErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,

@@ -440,7 +440,7 @@ fn fuse_parallel_cylinder_cluster_impl(
         arc_plans.push((*arc, start_xy, end_xy, circle));
     }
 
-    let mut vertices = std::collections::HashMap::<(i64, i64), VertexId>::new();
+    let mut vertices = remus_math::det_hash::DetHashMap::<(i64, i64), VertexId>::default();
     let mut arc_edges = Vec::with_capacity(arc_plans.len());
     for (arc, start_xy, end_xy, circle) in arc_plans {
         let start_vertex = *vertices
@@ -480,7 +480,7 @@ fn fuse_parallel_cylinder_cluster_impl(
         arc_edges.push((start_vertex, end_vertex, edge, arc));
     }
 
-    let mut by_start = std::collections::HashMap::<usize, Vec<usize>>::new();
+    let mut by_start = remus_math::det_hash::DetHashMap::<usize, Vec<usize>>::default();
     for (index, (start, _, _, _)) in arc_edges.iter().enumerate() {
         by_start.entry(start.index()).or_default().push(index);
     }
@@ -614,7 +614,7 @@ fn polyhedral_bounds(topo: &Topology, sid: SolidId) -> Option<PolyhedralBounds> 
     let shell = topo.shell(solid.outer_shell()).ok()?;
 
     let mut normals = Vec::new();
-    let mut vert_ids = std::collections::HashSet::new();
+    let mut vert_ids = remus_math::det_hash::DetHashSet::default();
     for &fid in shell.faces() {
         let face = topo.face(fid).ok()?;
         match face.surface() {
@@ -896,17 +896,13 @@ mod tests {
         );
     }
 
-    /// Build `count` throwaway std `HashMap`s. Each `RandomState` advances the
-    /// thread's hash keys, so this perturbs the iteration order of every map
-    /// built afterwards — the same effect unrelated kernel calls have on a
-    /// long-lived wasm instance.
+    /// Build `count` throwaway `RandomState`s, as every std `HashMap::new()`
+    /// does. Each one advances the thread's hash keys, so this perturbs the
+    /// iteration order of every std map built afterwards — the same effect
+    /// unrelated kernel calls have on a long-lived wasm instance.
     fn advance_hash_keys(count: usize) {
-        for seed in 0..count {
-            let mut map = std::collections::HashMap::new();
-            for key in 0..8 {
-                map.insert(key, seed);
-            }
-            std::hint::black_box(&map);
+        for _ in 0..count {
+            std::hint::black_box(std::hash::RandomState::new());
         }
     }
 
@@ -1021,7 +1017,8 @@ mod tests {
         let vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
 
         // Every edge of a watertight solid is used by exactly two faces.
-        let mut uses: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut uses: remus_math::det_hash::DetHashMap<usize, usize> =
+            remus_math::det_hash::DetHashMap::default();
         for fid in remus_topology::explorer::solid_faces(&topo, fused).unwrap() {
             let face = topo.face(fid).unwrap();
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())

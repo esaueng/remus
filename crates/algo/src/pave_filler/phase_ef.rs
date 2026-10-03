@@ -1458,4 +1458,85 @@ mod tests {
         assert!(!crossings.is_empty());
         assert!((crossings[0].0 - 0.5).abs() < 0.02);
     }
+
+    /// An edge whose single pave block carries `extra` paves at the given
+    /// positions, in order; returns the edge and the extra-pave vertices.
+    fn edge_with_extra_paves(
+        topo: &mut Topology,
+        arena: &mut GfaArena,
+        extra: &[Point3],
+    ) -> (EdgeId, Vec<remus_topology::vertex::VertexId>) {
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(-10.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(10.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(remus_topology::edge::Edge::new(v0, v1, EdgeCurve::Line));
+        let pb = arena.init_edge_pave_block(edge, v0, 0.0, v1, 1.0);
+        let vertices: Vec<_> = extra
+            .iter()
+            .map(|p| topo.add_vertex(Vertex::new(*p, 1e-7)))
+            .collect();
+        for (i, v) in vertices.iter().enumerate() {
+            let t = (f64::from(u32::try_from(i).unwrap()) + 1.0) / 8.0;
+            arena
+                .pave_blocks
+                .get_mut(pb)
+                .unwrap()
+                .extra_paves
+                .push(Pave::new(*v, t));
+        }
+        (edge, vertices)
+    }
+
+    /// Distances are 3-4-5 exact: from the origin, (3,0,0) is 3, (0,3,0) is
+    /// 3, (3,4,0) is 5, and (3,0,0)-(3,4,0) is 4.
+    #[test]
+    fn extra_pave_within_keeps_the_radius_and_the_acceptance_test() {
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let mut topo = Topology::new();
+        let mut arena = GfaArena::new();
+        let (edge, v) = edge_with_extra_paves(&mut topo, &mut arena, &[Point3::new(3.0, 4.0, 0.0)]);
+        let query = |radius: f64, accept: bool| {
+            edge_extra_pave_within(&topo, &arena, edge, origin, radius, 1e-7, |_| accept)
+        };
+        assert_eq!(query(6.0, true), Some(v[0]));
+        // Exactly on the radius is within it.
+        assert_eq!(query(5.0, true), Some(v[0]));
+        assert_eq!(query(4.0, true), None);
+        assert_eq!(query(6.0, false), None);
+        // An edge without pave blocks has no extra pave.
+        let other = topo.add_edge(remus_topology::edge::Edge::new(v[0], v[0], EdgeCurve::Line));
+        assert_eq!(
+            edge_extra_pave_within(&topo, &arena, other, origin, 6.0, 1e-7, |_| true),
+            None
+        );
+    }
+
+    #[test]
+    fn extra_pave_within_returns_the_nearest_unless_candidates_are_distinct() {
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let near = Point3::new(3.0, 0.0, 0.0);
+        let far = Point3::new(3.0, 4.0, 0.0);
+        for order in [[near, far], [far, near]] {
+            let mut topo = Topology::new();
+            let mut arena = GfaArena::new();
+            let (edge, v) = edge_with_extra_paves(&mut topo, &mut arena, &order);
+            let nearest = if order[0] == near { v[0] } else { v[1] };
+            let query = |distinct_tol: f64| {
+                edge_extra_pave_within(&topo, &arena, edge, origin, 10.0, distinct_tol, |_| true)
+            };
+            // The candidates are 4 apart: only a tolerance below 4 makes them
+            // distinct, and two distinct candidates are ambiguous.
+            assert_eq!(query(5.0), Some(nearest));
+            assert_eq!(query(4.0), Some(nearest));
+            assert_eq!(query(1.0), None);
+        }
+        // Equidistant candidates: the first one found stays.
+        let mut topo = Topology::new();
+        let mut arena = GfaArena::new();
+        let (edge, v) =
+            edge_with_extra_paves(&mut topo, &mut arena, &[near, Point3::new(0.0, 3.0, 0.0)]);
+        assert_eq!(
+            edge_extra_pave_within(&topo, &arena, edge, origin, 10.0, 5.0, |_| true),
+            Some(v[0])
+        );
+    }
 }

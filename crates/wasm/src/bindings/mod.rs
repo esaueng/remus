@@ -23,6 +23,7 @@ pub mod nurbs;
 pub mod operations;
 pub mod polygon2d;
 pub mod primitives;
+pub mod project_curve;
 pub mod query;
 pub mod shapes;
 pub mod sketch;
