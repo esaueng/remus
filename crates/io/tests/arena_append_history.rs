@@ -417,166 +417,260 @@ fn malformed_imported_history_and_counter_overflow_leave_destination_unchanged()
     }
 }
 
-fn global_barrier_document(ordinals: u64, barriers: u64) -> Vec<u8> {
-    let empty = serialize_document(&Topology::new(), &[], &[]).unwrap();
-    let mut document: serde_json::Value = serde_json::from_slice(&empty).unwrap();
-    document["journal"] = serde_json::json!({
-        "next_op": barriers,
-        "next_ordinal": ordinals,
-        "index": (0..ordinals).map(|ordinal| serde_json::json!({"ordinal": ordinal, "kind": "face", "local": null})).collect::<Vec<_>>(),
-        "entries": (0..barriers).map(|op| serde_json::json!({"op": op, "kind": "unjournaled_mutations", "payload": "GlobalBarrier"})).collect::<Vec<_>>(),
-    });
-    serde_json::to_vec(&document).unwrap()
+fn empty_geometry_journal(index_count: usize, payloads: Vec<serde_json::Value>) -> Vec<u8> {
+    let index: Vec<_> = (0..index_count)
+        .map(|ordinal| serde_json::json!({"ordinal":ordinal,"kind":"face","local":null}))
+        .collect();
+    let entries: Vec<_> = payloads
+        .into_iter()
+        .enumerate()
+        .map(|(op, mut payload)| {
+            payload["op"] = serde_json::json!(op);
+            payload["kind"] = serde_json::json!("imported");
+            payload
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({
+        "version":2,"vertices":[],"edges":[],"wires":[],"faces":[],"shells":[],
+        "solids":[],"solid_roots":[],"compounds":[],"pcurves":[],
+        "journal":{"next_op":entries.len(),"next_ordinal":index_count,"index":index,"entries":entries}
+    }))
+    .unwrap()
 }
 
 #[test]
-fn global_barrier_append_expansion_is_bounded_before_allocation_and_atomic() {
-    let mut destination = Topology::new();
-    let (solid, op) = journaled_box(&mut destination, 2.0);
-    let old_reference = reference(op);
-    let old_face = bound(&destination, &old_reference);
-    let document_before = serialize_document(&destination, &[solid], &[]).unwrap();
-    let journal_before = destination.journal().snapshot();
-    let identity_before = destination.cache_identity();
-    let ticks_before = destination.mutation_ticks();
-    let slots_before = destination.allocated_slot_count();
-    let input = global_barrier_document(200, 200);
+fn expanded_global_barriers_obey_append_budget_and_preserve_destination_on_refusal() {
+    // There are only 32 encoded journal array items. Appending expands the
+    // sixteen compact global barriers to 16*16 ordinal references, totaling
+    // 288 append items. The encoded input is therefore below a cap of 100.
+    let bytes =
+        empty_geometry_journal(16, vec![serde_json::json!({"payload":"GlobalBarrier"}); 16]);
     let limits = ImportLimits {
-        max_model_entities: 1000,
+        max_model_entities: 100,
         ..ImportLimits::default()
     };
-    assert!(matches!(
-        deserialize_document_with_limits(&input, &mut destination, limits),
-        Err(IoError::LimitExceeded {
-            resource: "arena journal append items",
-            limit: 1000,
-            actual: 40_400,
-        })
-    ));
-    assert_eq!(
-        serialize_document(&destination, &[solid], &[]).unwrap(),
-        document_before
-    );
-    assert_eq!(destination.journal().snapshot(), journal_before);
-    assert_eq!(destination.cache_identity(), identity_before);
-    assert_eq!(destination.mutation_ticks(), ticks_before);
-    assert_eq!(destination.allocated_slot_count(), slots_before);
-    assert_eq!(bound(&destination, &old_reference), old_face);
-
-    // A fresh load keeps compact global payloads and the source namespace;
-    // it does not allocate the append-only scoped expansion.
     let mut fresh = Topology::new();
-    deserialize_document_with_limits(&input, &mut fresh, limits).unwrap();
+    deserialize_document_with_limits(&bytes, &mut fresh, limits).unwrap();
     assert!(
         fresh
             .journal()
             .snapshot()
             .entries
             .iter()
-            .all(|entry| matches!(entry.payload, PayloadSnapshot::GlobalBarrier))
+            .all(|entry| { matches!(entry.payload, PayloadSnapshot::GlobalBarrier) })
     );
-}
 
-#[test]
-fn global_barrier_append_accepts_exact_aggregate_expansion_boundary() {
-    let input = global_barrier_document(20, 20);
-    // Twenty index entries, twenty entries, and twenty scoped vectors of
-    // twenty ordinals consume a single 440-item budget.
-    for (limit, admitted) in [(439, false), (440, true)] {
-        let mut destination = Topology::new();
-        let (_, op) = journaled_box(&mut destination, 2.0);
-        let old_reference = reference(op);
-        let old_face = bound(&destination, &old_reference);
-        let options = ImportLimits {
-            max_model_entities: limit,
-            ..ImportLimits::default()
-        };
-        let result = deserialize_document_with_limits(&input, &mut destination, options);
-        if admitted {
-            result.unwrap();
-            let snapshot = destination.journal().snapshot();
-            let affected: usize = snapshot
-                .entries
-                .iter()
-                .map(|entry| match &entry.payload {
-                    PayloadSnapshot::Barrier { affected } => affected.len(),
-                    PayloadSnapshot::GlobalBarrier | PayloadSnapshot::Evolution { .. } => 0,
-                })
-                .sum();
-            assert_eq!(affected, 400);
-            assert_eq!(bound(&destination, &old_reference), old_face);
-        } else {
-            assert!(matches!(
-                result,
-                Err(IoError::LimitExceeded {
-                    resource: "arena journal append items",
-                    limit: 439,
-                    actual: 440
-                })
-            ));
-        }
-    }
-}
-
-#[test]
-fn append_budget_includes_explicit_payloads_and_reconstructed_evolution_scope() {
-    let mut document: serde_json::Value =
-        serde_json::from_slice(&global_barrier_document(20, 20)).unwrap();
-    let entries = document["journal"]["entries"].as_array_mut().unwrap();
-    entries.push(serde_json::json!({
-        "op": 20,
-        "kind": "source_evolution",
-        "payload": "Evolution",
-        "construction": false,
-        "scope": [0, 1],
-        "events": [
-            [0, {"event": "Generated", "sources": [1, 2]}],
-            [1, {"event": "Modified", "from": 2}],
-            [2, {"event": "Deleted"}],
-        ],
-    }));
-    entries.push(serde_json::json!({
-        "op": 21,
-        "kind": "source_barrier",
-        "payload": "Barrier",
-        "affected": [3, 4, 5],
-    }));
-    document["journal"]["next_op"] = serde_json::json!(22);
-    let input = serde_json::to_vec(&document).unwrap();
-    // Index + entries + expanded barriers = 442. Evolution uses two scope
-    // slots, three events, three subjects added to scope, and three references
-    // each retained in the event and added to scope (14). Explicit barrier = 3.
-    for (limit, admitted) in [(458, false), (459, true)] {
-        let mut destination = Topology::new();
-        let (_, op) = journaled_box(&mut destination, 2.0);
-        let old_reference = reference(op);
-        let old_face = bound(&destination, &old_reference);
-        let history_before = destination.journal().snapshot();
-        let options = ImportLimits {
-            max_model_entities: limit,
-            ..ImportLimits::default()
-        };
-        let result = deserialize_document_with_limits(&input, &mut destination, options);
-        if admitted {
-            result.unwrap();
-            let snapshot = destination.journal().snapshot();
-            let evolution = &snapshot.entries[history_before.entries.len() + 20];
-            assert!(matches!(
-                &evolution.payload,
-                PayloadSnapshot::Evolution { scope, events, .. }
-                    if scope.len() == 3 && events.len() == 3
-            ));
-        } else {
-            assert!(matches!(
-                result,
-                Err(IoError::LimitExceeded {
-                    resource: "arena journal append items",
-                    limit: 458,
-                    actual: 459,
-                })
-            ));
-            assert_eq!(destination.journal().snapshot(), history_before);
-        }
+    let mut destination = Topology::new();
+    let (solid, op) = journaled_box(&mut destination, 2.0);
+    let old_reference = reference(op);
+    let old_face = bound(&destination, &old_reference);
+    let before = serialize_document(&destination, &[solid], &[]).unwrap();
+    let journal_before = destination.journal().snapshot();
+    let slots_before = destination.allocated_slot_count();
+    let cache_before = destination.cache_identity();
+    let ticks_before = destination.mutation_ticks();
+    for cap in [100, 287] {
+        let error = deserialize_document_with_limits(
+            &bytes,
+            &mut destination,
+            ImportLimits {
+                max_model_entities: cap,
+                ..limits
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, IoError::LimitExceeded {
+            resource: "arena journal append items", limit, actual:288
+        } if limit == cap));
+        assert_eq!(
+            serialize_document(&destination, &[solid], &[]).unwrap(),
+            before
+        );
+        assert_eq!(destination.journal().snapshot(), journal_before);
+        assert_eq!(destination.allocated_slot_count(), slots_before);
+        assert_eq!(destination.cache_identity(), cache_before);
+        assert_eq!(destination.mutation_ticks(), ticks_before);
         assert_eq!(bound(&destination, &old_reference), old_face);
     }
+    deserialize_document_with_limits(
+        &bytes,
+        &mut destination,
+        ImportLimits {
+            max_model_entities: 288,
+            ..limits
+        },
+    )
+    .unwrap();
+    let appended = destination.journal().snapshot();
+    let expected: Vec<_> = (0..16)
+        .map(|ordinal| ordinal + journal_before.next_ordinal)
+        .collect();
+    for (position, entry) in appended.entries[journal_before.entries.len()..]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            entry.op,
+            journal_before.next_op + u64::try_from(position).unwrap()
+        );
+        assert_eq!(
+            entry.payload,
+            PayloadSnapshot::Barrier {
+                affected: expected.clone()
+            }
+        );
+    }
+    assert_eq!(bound(&destination, &old_reference), old_face);
+}
+
+#[test]
+fn restored_evolution_scopes_share_the_checked_append_budget() {
+    for (event, reference_count) in [
+        (serde_json::json!({"event":"Preserved","from":1}), 1),
+        (serde_json::json!({"event":"Modified","from":1}), 1),
+        (
+            serde_json::json!({"event":"Generated","sources":[1,2,3]}),
+            3,
+        ),
+        (serde_json::json!({"event":"Merged","from":[1,2,3]}), 3),
+        (
+            serde_json::json!({"event":"Unresolved","candidates":[1,2,3]}),
+            3,
+        ),
+    ] {
+        for scope in [vec![], vec![0, 1, 2, 3]] {
+            // Four index items, one entry, one event, its reconstructed
+            // subject, and references stored both in the event and scope.
+            let append_items = 4 + 1 + scope.len() + 2 + 2 * reference_count;
+            let bytes = empty_geometry_journal(
+                4,
+                vec![serde_json::json!({
+                    "payload":"Evolution","construction":false,"scope":scope,"events":[[0,event]]
+                })],
+            );
+            let mut destination = Topology::new();
+            let pending = destination.journal_begin("sentinel");
+            destination.journal_record_barrier(pending, vec![]);
+            let before = destination.journal().snapshot();
+            let error = deserialize_document_with_limits(
+                &bytes,
+                &mut destination,
+                ImportLimits {
+                    max_model_entities: append_items - 1,
+                    ..ImportLimits::default()
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(error, IoError::LimitExceeded {
+                resource:"arena journal append items", actual, ..
+            } if actual == append_items));
+            assert_eq!(destination.journal().snapshot(), before);
+            deserialize_document_with_limits(
+                &bytes,
+                &mut destination,
+                ImportLimits {
+                    max_model_entities: append_items,
+                    ..ImportLimits::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(destination.journal().snapshot().entries.len(), 2);
+        }
+    }
+}
+
+#[test]
+fn compact_empty_and_explicit_scopes_keep_zero_and_exact_limits() {
+    for affected in [vec![], vec![0, 1, 2, 3]] {
+        let bytes = empty_geometry_journal(
+            4,
+            vec![serde_json::json!({
+                "payload":"Barrier","affected":affected
+            })],
+        );
+        let cap = 4 + 1 + affected.len();
+        let mut destination = Topology::new();
+        let pending = destination.journal_begin("sentinel");
+        destination.journal_record_barrier(pending, vec![]);
+        deserialize_document_with_limits(
+            &bytes,
+            &mut destination,
+            ImportLimits {
+                max_model_entities: cap,
+                ..ImportLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(destination.journal().snapshot().entries.len(), 2);
+    }
+    let mut destination = Topology::new();
+    let pending = destination.journal_begin("sentinel");
+    destination.journal_record_barrier(pending, vec![]);
+    let before = destination.journal().snapshot();
+    deserialize_document_with_limits(
+        &empty_geometry_journal(0, vec![]),
+        &mut destination,
+        ImportLimits {
+            max_model_entities: 0,
+            ..ImportLimits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(destination.journal().snapshot(), before);
+}
+
+#[test]
+fn retired_empty_destination_namespace_still_budgets_expanded_barriers() {
+    let mut destination = Topology::new();
+    let checkpoint = destination.clone();
+    let _ = journaled_box(&mut destination, 2.0);
+    destination.restore_preserving_handle_slots(&checkpoint);
+    let before = destination.journal().snapshot();
+    assert!(before.entries.is_empty());
+    assert!(before.next_op > 0);
+    let slots_before = destination.allocated_slot_count();
+    let mut encoded: serde_json::Value = serde_json::from_slice(&empty_geometry_journal(
+        16,
+        vec![serde_json::json!({"payload":"GlobalBarrier"}); 16],
+    ))
+    .unwrap();
+    // Reserved source counter holes do not create additional vector slots.
+    encoded["journal"]["next_op"] = serde_json::json!(1_000_000_000_000_u64);
+    encoded["journal"]["next_ordinal"] = serde_json::json!(1_000_000_000_000_u64);
+    let bytes = serde_json::to_vec(&encoded).unwrap();
+    let error = deserialize_document_with_limits(
+        &bytes,
+        &mut destination,
+        ImportLimits {
+            max_model_entities: 100,
+            ..ImportLimits::default()
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        IoError::LimitExceeded {
+            resource: "arena journal append items",
+            actual: 288,
+            ..
+        }
+    ));
+    assert_eq!(destination.journal().snapshot(), before);
+    assert_eq!(destination.allocated_slot_count(), slots_before);
+    deserialize_document_with_limits(
+        &bytes,
+        &mut destination,
+        ImportLimits {
+            max_model_entities: 288,
+            ..ImportLimits::default()
+        },
+    )
+    .unwrap();
+    let imported = destination.journal().snapshot();
+    assert_eq!(imported.next_op, before.next_op + 1_000_000_000_000);
+    assert_eq!(
+        imported.next_ordinal,
+        before.next_ordinal + 1_000_000_000_000
+    );
+    assert!(imported.entries.iter().all(|entry|matches!(entry.payload, PayloadSnapshot::Barrier { ref affected } if affected.len()==16)));
 }

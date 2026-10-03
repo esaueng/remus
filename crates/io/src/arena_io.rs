@@ -3071,42 +3071,60 @@ fn restore_journal(
     })
 }
 
-/// Imported journal items, reconstructed scopes, and expanded global barriers
-/// share one checked append budget. Check borrowed data before replay allocates
-/// topology or restores/clones any imported journal vectors.
+struct JournalAppendBudget {
+    items: usize,
+    limit: usize,
+}
+
+impl JournalAppendBudget {
+    fn add(&mut self, count: usize) -> Result<(), IoError> {
+        self.items = self
+            .items
+            .checked_add(count)
+            .ok_or(IoError::LimitExceeded {
+                resource: "arena journal append items",
+                limit: self.limit,
+                actual: usize::MAX,
+            })?;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), IoError> {
+        ensure_limit("arena journal append items", self.items, self.limit)
+    }
+}
+
+/// Count borrowed imported history before restoring its vectors or replaying
+/// geometry. Appending scopes a source global barrier to every source ordinal,
+/// so encoded item counts alone do not bound the resulting allocation/work.
 fn check_arena_journal_append_budget(
     destination: &remus_topology::journal::JournalSnapshot,
     imported: Option<&SerJournal>,
     limits: ImportLimits,
 ) -> Result<(), IoError> {
+    // Fresh-session replay keeps global barriers compact and retains the
+    // existing encoded-journal budget and roundtrip contract.
     if destination.next_op == 0 && destination.next_ordinal == 0 {
         return Ok(());
     }
     let Some(imported) = imported else {
         return Ok(());
     };
-    let overflow = || IoError::LimitExceeded {
-        resource: "arena journal append items",
+    let mut budget = JournalAppendBudget {
+        items: 0,
         limit: limits.max_model_entities,
-        actual: usize::MAX,
     };
-    let mut items = imported
-        .index
-        .len()
-        .checked_add(imported.entries.len())
-        .ok_or_else(overflow)?;
-    let mut add = |count: usize| -> Result<(), IoError> {
-        items = items.checked_add(count).ok_or_else(overflow)?;
-        Ok(())
-    };
+    budget.add(imported.index.len())?;
+    budget.add(imported.entries.len())?;
     for entry in &imported.entries {
         match &entry.payload {
             SerJournalPayload::Evolution { scope, events, .. } => {
-                add(scope.len())?;
-                add(events.len())?;
-                // Journal::from_snapshot extends the restored scope with
-                // every subject and reference before sorting/deduplicating.
-                add(events.len())?;
+                budget.add(scope.len())?;
+                budget.add(events.len())?;
+                // Journal::from_snapshot adds every subject and reference to
+                // the scope before sorting/deduplicating; count that temporary
+                // expansion even when the encoded scope already includes them.
+                budget.add(events.len())?;
                 for (_, event) in events {
                     let references = match event {
                         SerJournalEvent::Preserved { .. } | SerJournalEvent::Modified { .. } => 1,
@@ -3115,19 +3133,15 @@ fn check_arena_journal_append_budget(
                         SerJournalEvent::Unresolved { candidates } => candidates.len(),
                         SerJournalEvent::Deleted => 0,
                     };
-                    add(references)?;
-                    add(references)?;
+                    budget.add(references)?;
+                    budget.add(references)?;
                 }
             }
-            SerJournalPayload::Barrier { affected } => add(affected.len())?,
-            SerJournalPayload::GlobalBarrier => add(imported.index.len())?,
+            SerJournalPayload::Barrier { affected } => budget.add(affected.len())?,
+            SerJournalPayload::GlobalBarrier => budget.add(imported.index.len())?,
         }
     }
-    ensure_limit(
-        "arena journal append items",
-        items,
-        limits.max_model_entities,
-    )
+    budget.finish()
 }
 
 /// Append an independent, already validated document journal without reissuing
@@ -3230,6 +3244,26 @@ mod tests {
     use remus_operations::primitives::{make_box, make_cylinder};
     use remus_operations::sew::make_sheet_body;
     use remus_topology::explorer::solid_faces;
+
+    #[test]
+    fn journal_append_budget_checked_addition_rejects_overflow_without_allocating() {
+        JournalAppendBudget { items: 0, limit: 0 }.finish().unwrap();
+        let mut budget = JournalAppendBudget {
+            items: 0,
+            limit: usize::MAX,
+        };
+        budget.add(usize::MAX).unwrap();
+        let error = budget.add(1).unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "arena journal append items",
+                limit: usize::MAX,
+                actual: usize::MAX
+            }
+        ));
+        budget.finish().unwrap();
+    }
 
     #[test]
     fn arena_journal_nested_arrays_obey_cumulative_budget_before_replay() {
