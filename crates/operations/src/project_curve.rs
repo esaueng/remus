@@ -2706,11 +2706,19 @@ fn build_pieces(
     // interior seam crossing puts the vertex on the seam (K5); otherwise
     // the vertex is the image of the source start.
     if source.closed {
-        let covered: f64 = split_runs.iter().map(|(_, a, b)| b - a).sum();
+        let complete = split_runs
+            .first()
+            .is_some_and(|(_, a, _)| a.to_bits() == lo.to_bits())
+            && split_runs
+                .last()
+                .is_some_and(|(_, _, b)| b.to_bits() == hi.to_bits())
+            && split_runs
+                .windows(2)
+                .all(|pair| pair[0].2.to_bits() == pair[1].1.to_bits());
         let single_ctx = split_runs.first().map(|(ctx, _, _)| *ctx);
         let one_loop =
             single_ctx.is_some_and(|first| split_runs.iter().all(|(ctx, _, _)| *ctx == first));
-        if covered >= TAU - PARAM_ABS && one_loop {
+        if complete && one_loop {
             let interior_seams: Vec<(f64, Point3)> = seams
                 .iter()
                 .flat_map(|list| list.iter())
@@ -3066,6 +3074,17 @@ fn curved_face_missed(
     direction: Vec3,
     target: &TargetGeom,
 ) -> Result<bool, ProjectCurveError> {
+    curved_face_missed_until(topo, face, source, direction, target, None)
+}
+
+fn curved_face_missed_until(
+    topo: &Topology,
+    face: FaceId,
+    source: &ResolvedSource,
+    direction: Vec3,
+    target: &TargetGeom,
+    max_ray_parameter: Option<f64>,
+) -> Result<bool, ProjectCurveError> {
     let Some(source_box) = source_bound(source) else {
         return Ok(false);
     };
@@ -3100,91 +3119,96 @@ fn curved_face_missed(
         ),
         TargetGeom::Plane { .. } => return Ok(false),
     };
-    let face_box = match target {
-        TargetGeom::Cylinder(_) | TargetGeom::Cone(_) => {
-            if !full_axial_trim(topo, face, origin, z_axis)? {
-                return Ok(false);
-            }
-            let mut axial = ScalarInterval {
-                lo: f64::INFINITY,
-                hi: f64::NEG_INFINITY,
-            };
-            for edge in boundary_edges(topo, face)? {
-                for point in [edge.start, edge.end] {
-                    let delta = std::array::from_fn(|i| {
-                        ScalarInterval::point(point.0[i]).sub(ScalarInterval::point(origin.0[i]))
-                    });
-                    let value = interval_dot(delta, z_axis);
-                    axial.lo = axial.lo.min(value.lo);
-                    axial.hi = axial.hi.max(value.hi);
+    let travel = if let Some(parameter) = max_ray_parameter {
+        parameter
+    } else {
+        let face_box = match target {
+            TargetGeom::Cylinder(_) | TargetGeom::Cone(_) => {
+                if !full_axial_trim(topo, face, origin, z_axis)? {
+                    return Ok(false);
                 }
-                if let EdgeCurve::Circle(c) = edge.curve {
-                    let delta = std::array::from_fn(|i| {
-                        ScalarInterval::point(c.center().0[i])
-                            .sub(ScalarInterval::point(origin.0[i]))
-                    });
-                    let center = interval_dot(delta, z_axis);
-                    let dot_axis = |axis: Vec3| {
-                        interval_dot(
-                            std::array::from_fn(|i| ScalarInterval::point(axis.0[i])),
-                            z_axis,
-                        )
-                    };
-                    let a = dot_axis(c.u_axis());
-                    let b = dot_axis(c.v_axis());
-                    let excursion = ScalarInterval::point(c.radius())
-                        .mul(ScalarInterval::point(
-                            ScalarInterval::point(a.lo.abs().max(a.hi.abs()))
-                                .add(ScalarInterval::point(b.lo.abs().max(b.hi.abs())))
-                                .hi,
-                        ))
-                        .hi;
-                    axial.lo = axial.lo.min((center.lo - excursion).next_down());
-                    axial.hi = axial.hi.max((center.hi + excursion).next_up());
+                let mut axial = ScalarInterval {
+                    lo: f64::INFINITY,
+                    hi: f64::NEG_INFINITY,
+                };
+                for edge in boundary_edges(topo, face)? {
+                    for point in [edge.start, edge.end] {
+                        let delta = std::array::from_fn(|i| {
+                            ScalarInterval::point(point.0[i])
+                                .sub(ScalarInterval::point(origin.0[i]))
+                        });
+                        let value = interval_dot(delta, z_axis);
+                        axial.lo = axial.lo.min(value.lo);
+                        axial.hi = axial.hi.max(value.hi);
+                    }
+                    if let EdgeCurve::Circle(c) = edge.curve {
+                        let delta = std::array::from_fn(|i| {
+                            ScalarInterval::point(c.center().0[i])
+                                .sub(ScalarInterval::point(origin.0[i]))
+                        });
+                        let center = interval_dot(delta, z_axis);
+                        let dot_axis = |axis: Vec3| {
+                            interval_dot(
+                                std::array::from_fn(|i| ScalarInterval::point(axis.0[i])),
+                                z_axis,
+                            )
+                        };
+                        let a = dot_axis(c.u_axis());
+                        let b = dot_axis(c.v_axis());
+                        let excursion = ScalarInterval::point(c.radius())
+                            .mul(ScalarInterval::point(
+                                ScalarInterval::point(a.lo.abs().max(a.hi.abs()))
+                                    .add(ScalarInterval::point(b.lo.abs().max(b.hi.abs())))
+                                    .hi,
+                            ))
+                            .hi;
+                        axial.lo = axial.lo.min((center.lo - excursion).next_down());
+                        axial.hi = axial.hi.max((center.hi + excursion).next_up());
+                    }
+                }
+                let radial = slope.map_or(radius, |s| {
+                    s.mul(ScalarInterval::point(axial.lo.abs().max(axial.hi.abs())))
+                        .hi
+                });
+                if !axial.finite() || !radial.is_finite() {
+                    return Ok(false);
+                }
+                let bounds: [ScalarInterval; 3] = std::array::from_fn(|i| {
+                    ScalarInterval::point(origin.0[i])
+                        .add(ScalarInterval::point(z_axis.0[i]).mul(axial))
+                        .add(ScalarInterval {
+                            lo: -radial,
+                            hi: radial,
+                        })
+                });
+                remus_math::aabb::Aabb3 {
+                    min: Point3::new(bounds[0].lo, bounds[1].lo, bounds[2].lo),
+                    max: Point3::new(bounds[0].hi, bounds[1].hi, bounds[2].hi),
                 }
             }
-            let radial = slope.map_or(radius, |s| {
-                s.mul(ScalarInterval::point(axial.lo.abs().max(axial.hi.abs())))
-                    .hi
-            });
-            if !axial.finite() || !radial.is_finite() {
-                return Ok(false);
-            }
-            let bounds: [ScalarInterval; 3] = std::array::from_fn(|i| {
-                ScalarInterval::point(origin.0[i])
-                    .add(ScalarInterval::point(z_axis.0[i]).mul(axial))
-                    .add(ScalarInterval {
-                        lo: -radial,
-                        hi: radial,
+            TargetGeom::Sphere(_) => {
+                let bounds: [ScalarInterval; 3] = std::array::from_fn(|i| {
+                    ScalarInterval::point(origin.0[i]).add(ScalarInterval {
+                        lo: -radius,
+                        hi: radius,
                     })
-            });
-            remus_math::aabb::Aabb3 {
-                min: Point3::new(bounds[0].lo, bounds[1].lo, bounds[2].lo),
-                max: Point3::new(bounds[0].hi, bounds[1].hi, bounds[2].hi),
+                });
+                remus_math::aabb::Aabb3 {
+                    min: Point3::new(bounds[0].lo, bounds[1].lo, bounds[2].lo),
+                    max: Point3::new(bounds[0].hi, bounds[1].hi, bounds[2].hi),
+                }
             }
-        }
-        TargetGeom::Sphere(_) => {
-            let bounds: [ScalarInterval; 3] = std::array::from_fn(|i| {
-                ScalarInterval::point(origin.0[i]).add(ScalarInterval {
-                    lo: -radius,
-                    hi: radius,
-                })
-            });
-            remus_math::aabb::Aabb3 {
-                min: Point3::new(bounds[0].lo, bounds[1].lo, bounds[2].lo),
-                max: Point3::new(bounds[0].hi, bounds[1].hi, bounds[2].hi),
-            }
-        }
-        TargetGeom::Plane { .. } => return Ok(false),
+            TargetGeom::Plane { .. } => return Ok(false),
+        };
+        let bounds = source_box.union(face_box);
+        let diagonal = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+            let width =
+                ScalarInterval::point(bounds.max.0[i]).sub(ScalarInterval::point(bounds.min.0[i]));
+            sum.add(interval_square(width))
+        });
+        ray_parameter_bound(diagonal.hi.sqrt().next_up(), direction)
     };
-    let bounds = source_box.union(face_box);
-    let diagonal = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
-        let width =
-            ScalarInterval::point(bounds.max.0[i]).sub(ScalarInterval::point(bounds.min.0[i]));
-        sum.add(interval_square(width))
-    });
-    let travel = ray_parameter_bound(diagonal.hi.sqrt().next_up(), direction);
-    if !travel.is_finite() {
+    if !travel.is_finite() || travel < 0.0 {
         return Ok(false);
     }
     let ray: [ScalarInterval; 3] = std::array::from_fn(|i| {
@@ -3481,6 +3505,120 @@ fn commit_approx_result(topo: &mut Topology, face: FaceId, spec: &ApproxSpec) ->
     }
 }
 
+/// Certify the complete planar ray image inside a single full conic rim.
+/// Holed and other loops remain refused by this narrow solid shortcut.
+fn planar_prefix_inside_rim(
+    topo: &Topology,
+    face: FaceId,
+    points: [ScalarInterval; 3],
+    direction: Vec3,
+    parameters: ScalarInterval,
+) -> Result<bool, ProjectCurveError> {
+    let data = topo.face(face).map_err(OperationsError::from)?;
+    if !data.inner_wires().is_empty() {
+        return Ok(false);
+    }
+    let edges = topo
+        .wire(data.outer_wire())
+        .map_err(OperationsError::from)?
+        .edges();
+    if edges.len() != 1 {
+        return Ok(false);
+    }
+    let edge = topo.edge(edges[0].edge()).map_err(OperationsError::from)?;
+    if !edge.strict_domain().is_ok_and(is_full_turn) {
+        return Ok(false);
+    }
+    let (center, x, y, rx, ry) = match edge.curve() {
+        EdgeCurve::Circle(c) => (c.center(), c.u_axis(), c.v_axis(), c.radius(), c.radius()),
+        EdgeCurve::Ellipse(c) => (
+            c.center(),
+            c.u_axis(),
+            c.v_axis(),
+            c.semi_major(),
+            c.semi_minor(),
+        ),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(false),
+    };
+    let image = std::array::from_fn(|i| {
+        points[i]
+            .add(ScalarInterval::point(direction.0[i]).mul(parameters))
+            .sub(ScalarInterval::point(center.0[i]))
+    });
+    let u = interval_dot(image, x).div(ScalarInterval::point(rx));
+    let v = interval_dot(image, y).div(ScalarInterval::point(ry));
+    let radial = interval_square(u).add(interval_square(v));
+    Ok(radial.finite() && radial.hi < 1.0)
+}
+
+/// A deferred curved target is harmless only through a certified complete
+/// planar first hit. Partial coverage and uncertain ray bounds stay refused.
+fn exact_planar_prefix_covers_source(
+    topo: &Topology,
+    source: &ResolvedSource,
+    direction: Vec3,
+    faces: &[FaceCtx],
+    pieces: &[PieceSpec],
+    clipped: bool,
+    deferred: &[(FaceId, &TargetGeom)],
+) -> Result<bool, ProjectCurveError> {
+    let Some(first) = pieces.first() else {
+        return Ok(false);
+    };
+    if clipped
+        || pieces.iter().any(|piece| piece.face != first.face)
+        || first.source_range.0.to_bits() != source.domain.0.to_bits()
+        || pieces
+            .last()
+            .is_none_or(|piece| piece.source_range.1.to_bits() != source.domain.1.to_bits())
+        || pieces
+            .windows(2)
+            .any(|pair| pair[0].source_range.1.to_bits() != pair[1].source_range.0.to_bits())
+    {
+        return Ok(false);
+    }
+    let Some(context) = faces.iter().find(|context| context.face == first.face) else {
+        return Ok(false);
+    };
+    let TargetGeom::Plane { normal, delta } = &context.target else {
+        return Ok(false);
+    };
+    let Some(bounds) = source_bound(source) else {
+        return Ok(false);
+    };
+    let points: [ScalarInterval; 3] = std::array::from_fn(|i| ScalarInterval {
+        lo: bounds.min.0[i],
+        hi: bounds.max.0[i],
+    });
+    let numerator = ScalarInterval::point(*delta).sub(interval_dot(points, *normal));
+    let denominator = interval_dot(
+        std::array::from_fn(|i| ScalarInterval::point(direction.0[i])),
+        *normal,
+    );
+    if !numerator.finite()
+        || !denominator.finite()
+        || (denominator.lo <= 0.0 && denominator.hi >= 0.0)
+    {
+        return Ok(false);
+    }
+    let parameters = numerator.div(denominator);
+    if !parameters.finite()
+        || parameters.lo < 0.0
+        || !planar_prefix_inside_rim(topo, first.face, points, direction, parameters)?
+    {
+        return Ok(false);
+    }
+    for (face, target) in deferred {
+        if !curved_face_missed_until(topo, *face, source, direction, target, Some(parameters.hi))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// One source over a solid's faces: per-face models, skipping faces that
 /// are certified unable to intersect any source ray.
 fn project_source_onto_faces(
@@ -3501,6 +3639,7 @@ fn project_source_onto_faces(
         });
     }
     let mut faces = Vec::new();
+    let mut deferred = Vec::new();
     for (face, target, extent) in targets {
         let scale = source.extent.max(*extent);
         let model = match &source.geom {
@@ -3533,6 +3672,7 @@ fn project_source_onto_faces(
         };
         match model {
             Ok(model) => faces.push(FaceCtx::build(topo, *face, target.clone(), model, scale)?),
+            Err(ProjectCurveError::ApproximationRequired) => deferred.push((*face, target)),
             Err(error) => {
                 if !is_face_skip(topo, *face, &error, source, direction, target)? {
                     return Err(error);
@@ -3541,9 +3681,21 @@ fn project_source_onto_faces(
         }
     }
     if faces.iter().all(|ctx| ctx.model.carrier().is_none()) {
-        return Ok((Vec::new(), true));
+        return if deferred.is_empty() {
+            Ok((Vec::new(), true))
+        } else {
+            Err(ProjectCurveError::ApproximationRequired)
+        };
     }
-    project_one_source(topo, source, direction, &faces)
+    let (pieces, clipped) = project_one_source(topo, source, direction, &faces)?;
+    if !deferred.is_empty()
+        && !exact_planar_prefix_covers_source(
+            topo, source, direction, &faces, &pieces, clipped, &deferred,
+        )?
+    {
+        return Err(ProjectCurveError::ApproximationRequired);
+    }
+    Ok((pieces, clipped))
 }
 
 enum ComputedSource {
