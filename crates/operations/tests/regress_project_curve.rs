@@ -605,6 +605,146 @@ fn solid_approx_fixture() -> (Topology, remus_topology::solid::SolidId, EdgeId) 
 }
 
 #[test]
+fn approximate_exterior_sliver_between_clip_probes_is_refused_atomically() {
+    for allow_approximate in [false, true] {
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, 2.0, 10.0).unwrap();
+        let face = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|id| matches!(topo.face(*id).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let phase = PI / 2048.0;
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 5.0, 9.0 + 5e-7),
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0,
+            Vec3::new(phase.cos(), 0.0, phase.sin()),
+        )
+        .unwrap();
+        // Every legacy clipping probe stays below the cap, while the true
+        // maximum halfway between two probes lies outside by 5e-7.
+        for k in 0..=2048 {
+            assert!(circle.evaluate(TAU * f64::from(k) / 2048.0).z() < 10.0);
+        }
+        assert!(circle.evaluate(1.5 * PI + phase).z() > 10.0 + 4e-7);
+        let source = edge(
+            &mut topo,
+            EdgeCurve::Circle(circle.clone()),
+            circle.evaluate(0.0),
+            circle.evaluate(TAU),
+            Some((0.0, TAU)),
+        );
+        let before = topo.clone();
+        let result = project_curve_onto_face(
+            &mut topo,
+            source,
+            Vec3::new(0.0, -1.0, 0.0),
+            face,
+            &ProjectCurveOptions {
+                allow_approximate,
+                ..ProjectCurveOptions::default()
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ProjectCurveError::ApproximateClipUnsupported) if allow_approximate
+            ) || matches!(result, Err(ProjectCurveError::ApproximationRequired) if !allow_approximate),
+            "{result:?}"
+        );
+        assert_eq!(topo.num_vertices(), before.num_vertices());
+        assert_eq!(topo.num_edges(), before.num_edges());
+        assert_eq!(topo.allocated_slot_count(), before.allocated_slot_count());
+        assert_eq!(topo.mutation_ticks(), before.mutation_ticks());
+        assert_eq!(topo.journal().snapshot(), before.journal().snapshot());
+    }
+}
+
+#[test]
+fn approximate_sub_probe_curved_hole_is_refused_atomically() {
+    use remus_topology::{
+        face::Face,
+        wire::{OrientedEdge, Wire},
+    };
+    for allow_approximate in [false, true] {
+        let (mut topo, solid, source) = solid_approx_fixture();
+        let face = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|id| matches!(topo.face(*id).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let source_parameter = TAU * 40.5 / 2048.0;
+        let (x, z) = (source_parameter.cos(), 5.0 - source_parameter.sin());
+        let angle = (4.0 - x * x).sqrt().atan2(x);
+        let (lo, hi) = (angle - 1e-5, angle + 1e-5);
+        let rim = |height| {
+            Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, height),
+                Vec3::new(0.0, 0.0, 1.0),
+                2.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let bottom = rim(z - 1e-5);
+        let top = rim(z + 1e-5);
+        let a = topo.add_vertex(Vertex::new(bottom.evaluate(lo), 1e-12));
+        let b = topo.add_vertex(Vertex::new(bottom.evaluate(hi), 1e-12));
+        let c = topo.add_vertex(Vertex::new(top.evaluate(hi), 1e-12));
+        let d = topo.add_vertex(Vertex::new(top.evaluate(lo), 1e-12));
+        let mut lower = Edge::new(a, b, EdgeCurve::Circle(bottom));
+        lower.set_trim(Some((lo, hi)));
+        let mut upper = Edge::new(d, c, EdgeCurve::Circle(top));
+        upper.set_trim(Some((lo, hi)));
+        let edges = [
+            topo.add_edge(lower),
+            topo.add_edge(Edge::new(b, c, EdgeCurve::Line)),
+            topo.add_edge(upper),
+            topo.add_edge(Edge::new(d, a, EdgeCurve::Line)),
+        ];
+        let hole = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(edges[0], true),
+                    OrientedEdge::new(edges[1], true),
+                    OrientedEdge::new(edges[2], false),
+                    OrientedEdge::new(edges[3], true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let data = topo.face(face).unwrap();
+        let modified = topo.add_face(Face::new(
+            data.outer_wire(),
+            vec![hole],
+            data.surface().clone(),
+        ));
+        let before = topo.clone();
+        let result = project_curve_onto_face(
+            &mut topo,
+            source,
+            Vec3::new(0.0, -1.0, 0.0),
+            modified,
+            &ProjectCurveOptions {
+                allow_approximate,
+                ..ProjectCurveOptions::default()
+            },
+        );
+        assert!(
+            matches!(result, Err(ProjectCurveError::ApproximateClipUnsupported) if allow_approximate)
+                || matches!(result, Err(ProjectCurveError::ApproximationRequired) if !allow_approximate)
+        );
+        assert_eq!(topo.num_vertices(), before.num_vertices());
+        assert_eq!(topo.num_edges(), before.num_edges());
+        assert_eq!(topo.allocated_slot_count(), before.allocated_slot_count());
+        assert_eq!(topo.mutation_ticks(), before.mutation_ticks());
+        assert_eq!(topo.journal().snapshot(), before.journal().snapshot());
+    }
+}
+
+#[test]
 fn solid_approximation_is_opt_in_and_discloses_global_quality() {
     let (mut topo, solid, source) = solid_approx_fixture();
     let direction = Vec3::new(0.0, -1.0, 0.0);
