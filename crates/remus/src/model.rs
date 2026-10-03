@@ -695,9 +695,10 @@ impl Model {
     /// Projects one edge along a direction onto a face's trimmed region
     /// (P-Class 7.4).
     ///
-    /// Returns free edges with a disclosed quality; records no journal
-    /// entry. See [`remus_operations::project_curve`] for the qualified
-    /// cells and typed refusals.
+    /// Returns free edges with a disclosed quality. Success records a scoped
+    /// journal barrier for the new image vertices and edges. Refusals leave the
+    /// journal unchanged. See [`remus_operations::project_curve`] for the
+    /// qualified cells and typed refusals.
     ///
     /// # Errors
     ///
