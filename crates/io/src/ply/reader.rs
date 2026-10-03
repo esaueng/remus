@@ -131,8 +131,10 @@ fn parse_ascii_body(
     })?;
 
     let mut lines = text.lines();
-    let mut positions = Vec::with_capacity(header.vertex_count);
-    let mut normals = Vec::with_capacity(header.vertex_count);
+    // ASCII counts do not prove that any valid records exist. Allocate only
+    // as records are parsed, including when the body contains blank lines.
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
     let mut indices = Vec::new();
     let mut triangle_count = 0_usize;
 
@@ -213,7 +215,12 @@ fn parse_binary_body(
     limits: ImportLimits,
 ) -> Result<TriangleMesh, crate::IoError> {
     let floats_per_vertex = if header.has_normals { 6 } else { 3 };
-    let vertex_bytes = header.vertex_count * floats_per_vertex * 4;
+    let vertex_bytes = header
+        .vertex_count
+        .checked_mul(floats_per_vertex * 4)
+        .ok_or_else(|| crate::IoError::ParseError {
+            reason: "PLY binary vertex byte count overflow".into(),
+        })?;
 
     if body.len() < vertex_bytes {
         return Err(crate::IoError::ParseError {
@@ -390,6 +397,42 @@ pub fn read_ply_solid(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_ascii_counts_cannot_allocate_without_valid_records() {
+        // Using the native configurable limit makes the old eager reservation
+        // fail with capacity overflow, without depending on RSS/overcommit.
+        let limits = ImportLimits {
+            max_model_entities: usize::MAX,
+            ..ImportLimits::default()
+        };
+        for body in ["", "\n\n", "0 0 0\n", "\r\n"] {
+            let ply = format!(
+                "ply\nformat ascii 1.0\nelement vertex {}\nelement face 0\nend_header\n{body}",
+                usize::MAX
+            );
+            assert!(matches!(
+                read_ply_with_limits(ply.as_bytes(), limits),
+                Err(crate::IoError::ParseError { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn binary_vertex_bytes_overflow_is_an_error() {
+        let ply = format!(
+            "ply\nformat binary_little_endian 1.0\nelement vertex {}\nelement face 0\nend_header\n",
+            usize::MAX
+        );
+        let limits = ImportLimits {
+            max_model_entities: usize::MAX,
+            ..ImportLimits::default()
+        };
+        assert!(matches!(
+            read_ply_with_limits(ply.as_bytes(), limits),
+            Err(crate::IoError::ParseError { .. })
+        ));
+    }
 
     #[test]
     fn read_ascii_triangle() {

@@ -8,8 +8,53 @@ permissions:
   contents: read
 
 jobs:
+  integrity:
+    name: Committed packages match source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test integrity and publisher scope guards
+        run: |
+          python3 scripts/test-wasm-package-integrity.py
+          bash scripts/test-publish-credentials.sh
+      - name: Detect committed package changes
+        id: packages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          git rev-parse --verify "$BASE_SHA^{commit}"
+          if git diff --quiet "$BASE_SHA" HEAD -- crates/wasm/pkg crates/wasm-io/pkg; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.packages.outputs.changed == 'true'
+        with:
+          node-version: 24
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        if: steps.packages.outputs.changed == 'true'
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+        if: steps.packages.outputs.changed == 'true'
+        with:
+          tool: wasm-pack@0.15.0
+      - name: Rebuild both packages and compare every committed file
+        if: steps.packages.outputs.changed == 'true'
+        run: |
+          # Remove committed files first: a build must not inherit extra payload
+          # files planted in a package that wasm-pack would otherwise leave alone.
+          rm -rf -- crates/wasm/pkg crates/wasm-io/pkg
+          cargo xtask wasm-build
+          python3 scripts/check-wasm-package-integrity.py --revision HEAD
+
   version:
     name: Changed kernel requires a new version
+    # Keep integrity inside the existing version-check dependency chain.
+    needs: integrity
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

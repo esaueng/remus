@@ -61,7 +61,9 @@ fn extract_model_xml(data: &[u8], limits: ImportLimits) -> Result<String, IoErro
         limits.max_archive_entry_bytes,
     )?;
 
-    let mut xml_str = String::with_capacity(declared_size);
+    // ZIP metadata is untrusted. Grow from bytes actually decoded instead of
+    // reserving the full declared size before reading the stream.
+    let mut xml_str = String::with_capacity(declared_size.min(64 * 1024));
     model_file
         .take(limits.max_archive_entry_bytes.saturating_add(1) as u64)
         .read_to_string(&mut xml_str)
@@ -345,6 +347,61 @@ mod tests {
 
     use super::*;
     use crate::threemf::writer;
+
+    fn tiny_archive() -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "3D/3dmodel.model",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut zip, b"<model><resources></resources></model>").unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn forge_declared_size(bytes: &mut [u8], size: u32) {
+        let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+        bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    }
+
+    #[test]
+    fn forged_zip_size_does_not_reserve_the_declared_entry() {
+        let mut bytes = tiny_archive();
+        assert!(bytes.len() < 1024);
+        let limits = ImportLimits::default();
+        forge_declared_size(&mut bytes, limits.max_archive_entry_bytes as u32);
+        let xml = extract_model_xml(&bytes, limits).unwrap();
+        assert_eq!(xml, "<model><resources></resources></model>");
+        assert!(
+            xml.capacity() <= 64 * 1024,
+            "untrusted metadata reserved {} bytes",
+            xml.capacity()
+        );
+        // Parsing the extracted XML still follows the ordinary format rules.
+        assert!(matches!(
+            read_threemf(&bytes),
+            Err(IoError::ParseError { .. })
+        ));
+    }
+
+    #[test]
+    fn actual_xml_size_is_bounded_even_when_metadata_understates_it() {
+        let mut bytes = tiny_archive();
+        forge_declared_size(&mut bytes, 1);
+        let limits = ImportLimits {
+            max_archive_entry_bytes: 8,
+            ..ImportLimits::default()
+        };
+        assert!(matches!(
+            extract_model_xml(&bytes, limits),
+            Err(IoError::LimitExceeded {
+                resource: "3MF model XML bytes",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn roundtrip_unit_cube() {

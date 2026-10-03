@@ -311,10 +311,19 @@ All Rust importer entry points apply production defaults through
 `ImportLimits`: 256 MiB encoded input, 256 MiB for the uncompressed 3MF model
 XML entry, and 3,000,000 format-specific model entities. Use each format's
 `*_with_limits` reader to choose stricter or application-specific budgets; the
-WASM importers accept optional `maxInputBytes` / `maxEntities` arguments for
-the same purpose. Limit violations return `IoError::LimitExceeded` before
+WASM importers accept optional `maxInputBytes` / `maxEntities` arguments to
+tighten the production defaults. These JS overrides must be finite positive
+integers no greater than 256 MiB and 3,000,000 respectively; fractional or
+above-default values are rejected rather than truncated or saturated.
+Native Rust readers retain configurable `ImportLimits`. Limit violations return `IoError::LimitExceeded` before
 avoidable large allocations. The WASM batch API separately limits JSON to
 16 MiB and 10,000 operations.
+
+Each kernel retains at most 32 checkpoints. A further `checkpoint()` call
+returns an error without changing the model or saved checkpoints. Use
+`discardCheckpoint(id)` to free that checkpoint and all later snapshots.
+Existing snapshots remain restorable at the limit, and discarded IDs are
+never reused.
 
 ## Getting Started
 
