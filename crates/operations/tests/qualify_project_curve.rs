@@ -4,11 +4,11 @@
 //! ...) refer to that note. Every expected value is the note's closed form;
 //! the implementation (M5) may not change them.
 //!
-//! The `oracle_self_check_*` tests run today. They build each cell's
+//! The `oracle_self_check_*` tests build each cell's
 //! closed-form answer as edges by hand and pass it through the same checker
 //! the API tests use, so the closed forms, the placements and the independent
-//! ray-cast oracle are proven consistent before any implementation exists.
-//! Every test that calls the projection API is ignored until M5 lands.
+//! ray-cast oracle are independently consistent. All 48 API acceptance
+//! tests run alongside these two self-checks.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -1859,115 +1859,96 @@ fn run_cell(build: CellFn) {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn p1_segment_onto_plane_is_a_line() {
     run_cell(cell_p1);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn p2_arc_onto_parallel_plane_is_a_congruent_circle() {
     run_cell(cell_p2);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn p3_tilted_arc_onto_plane_is_an_ellipse_r_and_r_cos_alpha() {
     run_cell(cell_p3);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn p4_tilted_arc_oblique_direction_follows_the_affine_rule() {
     run_cell(cell_p4);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn p5_ellipse_onto_parallel_plane_is_translated() {
     run_cell(cell_p5);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn clip_holed_plate_gives_two_sub_edges_in_source_order() {
     run_cell(cell_hole_clip);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn c1_segment_parallel_to_axis_is_a_ruling() {
     run_cell(cell_c1);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn c2_segment_perpendicular_to_axis_is_a_circular_arc() {
     run_cell(cell_c2);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn c3_oblique_direction_is_an_elliptic_arc_r_and_r_over_cos_theta() {
     run_cell(cell_c3);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn c4_seam_crossing_splits_into_two_edges_sharing_the_seam_vertex() {
     run_cell(cell_c4_seam);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn c5_silhouette_clips_to_the_front_half() {
     run_cell(cell_c5_silhouette);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn s1_segment_onto_sphere_is_a_circle_sqrt_r2_minus_h2() {
     run_cell(cell_s1);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn s2_image_over_the_pole_of_a_seamless_face_is_one_edge() {
     run_cell(cell_s2_pole);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn s3_coaxial_arc_onto_sphere_is_a_circle() {
     run_cell(cell_s3_coaxial);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn k1_cone_section_perpendicular_to_axis_is_a_circle() {
     run_cell(cell_k1);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn k2_cone_section_steeper_than_generator_is_an_ellipse() {
     run_cell(cell_k2);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn k3_cone_section_parallel_to_axis_is_a_hyperbola_real_branch() {
     run_cell(cell_k3);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn k4_cone_section_parallel_to_a_generator_is_a_parabola() {
     run_cell(cell_k4);
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn k5_closed_coaxial_circle_on_cone_puts_its_vertex_on_the_seam() {
     run_cell(cell_k5_coaxial);
 }
@@ -2067,7 +2048,6 @@ fn assert_refused<T: std::fmt::Debug>(
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn success_leaves_source_and_target_untouched() {
     let mut cell = cell_p1(&UNIT);
     let source = topo_edge_points(&cell.topo, cell.source_edge);
@@ -2164,7 +2144,6 @@ fn solid_box_fixture(pl: &Placement) -> SolidFixture {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn solid_level_first_hit_across_faces_in_source_order() {
     for pl in placements() {
         let SolidFixture {
@@ -2218,7 +2197,6 @@ fn solid_level_first_hit_across_faces_in_source_order() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn solid_level_is_atomic_and_names_the_refused_source() {
     let SolidFixture {
         mut topo,
@@ -2252,7 +2230,6 @@ fn solid_level_is_atomic_and_names_the_refused_source() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn solid_level_all_sources_missing_is_empty() {
     let SolidFixture {
         mut topo,
@@ -2347,7 +2324,6 @@ fn check_plane_curves(cell: &Cell, result: &ProjectedCurves, frame: &Frame3) {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn plane_frame_gives_2d_curves_on_planar_targets() {
     for build in [cell_p1 as CellFn, cell_p3, cell_hole_clip] {
         for pl in placements() {
@@ -2372,7 +2348,6 @@ fn plane_frame_gives_2d_curves_on_planar_targets() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn plane_frame_2d_types_match_the_3d_carrier() {
     let mut cell = cell_p3(&UNIT);
     let frame = top_frame(&UNIT);
@@ -2399,7 +2374,6 @@ fn plane_frame_2d_types_match_the_3d_carrier() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn plane_frame_mismatch_is_refused() {
     let tilted = Frame3 {
         origin: UNIT.p(0.0, 0.0, 4.0),
@@ -2488,7 +2462,6 @@ fn find_edge(
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn sketch_plane_rim_projects_to_an_ellipse_and_box_edge_to_a_line() {
     for pl in placements() {
         let mut topo = Topology::new();
@@ -2555,7 +2528,6 @@ fn plane_image(frame: &Frame3, d: Vec3, p: Point3) -> (f64, f64) {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn sketch_plane_nurbs_image_keeps_the_source_parameterization() {
     let mut topo = Topology::new();
     let w = std::f64::consts::FRAC_1_SQRT_2;
@@ -2588,7 +2560,6 @@ fn sketch_plane_nurbs_image_keeps_the_source_parameterization() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn sketch_plane_hyperbola_image_is_an_exact_rational_quadratic() {
     let mut topo = Topology::new();
     let h = Hyperbola3D::with_axes(
@@ -2634,7 +2605,6 @@ fn sketch_plane_hyperbola_image_is_an_exact_rational_quadratic() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn sketch_plane_refusals() {
     let mut topo = Topology::new();
     let cylinder = make_cylinder(&mut topo, 2.0, 10.0).expect("cylinder");
@@ -2719,7 +2689,6 @@ fn cylinder_distance(topo: &Topology, face: FaceId, q: Point3) -> f64 {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn approximate_arc_on_cylinder_discloses_a_dominating_deviation() {
     for pl in placements() {
         let mut cell = approximate_cell(&pl, 5.0);
@@ -2804,7 +2773,6 @@ fn approximate_refusal(
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn approximate_cell_is_refused_by_default() {
     approximate_refusal(
         &ProjectCurveOptions::default(),
@@ -2814,7 +2782,6 @@ fn approximate_cell_is_refused_by_default() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn approximate_cell_budget_exhaustion_is_typed() {
     let options = ProjectCurveOptions {
         allow_approximate: true,
@@ -2837,7 +2804,6 @@ fn approximate_cell_budget_exhaustion_is_typed() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn approximate_image_crossing_the_face_boundary_is_refused() {
     let options = ProjectCurveOptions {
         allow_approximate: true,
@@ -2847,7 +2813,6 @@ fn approximate_image_crossing_the_face_boundary_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn invalid_options_are_refused() {
     let bad = [
         ProjectCurveOptions {
@@ -2912,7 +2877,6 @@ fn seg(a: (f64, f64, f64), b: (f64, f64, f64)) -> Source {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn invalid_direction_is_refused() {
     for d in [
         Vec3::new(0.0, 0.0, 0.0),
@@ -2929,7 +2893,6 @@ fn invalid_direction_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn zero_length_source_is_refused() {
     let Target { mut topo, face, .. } = box_target(&UNIT);
     let edge = zero_length_segment(&mut topo, Point3::new(5.0, 4.0, 7.0));
@@ -2949,7 +2912,6 @@ fn zero_length_source_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn unsupported_source_curves_are_refused() {
     let Target { mut topo, face, .. } = box_target(&UNIT);
     let curve = NurbsCurve::new(
@@ -3013,7 +2975,6 @@ fn unsupported_source_curves_are_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn torus_and_nurbs_targets_are_refused() {
     let mut topo = Topology::new();
     let torus = make_torus(&mut topo, 5.0, 1.0, 16).expect("torus");
@@ -3071,7 +3032,6 @@ fn torus_and_nurbs_targets_are_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn segment_parallel_to_direction_is_refused() {
     refuse_on(
         box_target(&UNIT),
@@ -3082,7 +3042,6 @@ fn segment_parallel_to_direction_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn edge_on_arc_is_a_degenerate_image() {
     refuse_on(
         box_target(&UNIT),
@@ -3099,7 +3058,6 @@ fn edge_on_arc_is_a_degenerate_image() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn grazing_directions_are_refused() {
     refuse_on(
         box_target(&UNIT),
@@ -3116,7 +3074,6 @@ fn grazing_directions_are_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn tangent_sweep_planes_are_refused() {
     refuse_on(
         cylinder_target(&UNIT, 0.0),
@@ -3133,7 +3090,6 @@ fn tangent_sweep_planes_are_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn sweep_plane_through_the_cone_apex_is_refused() {
     refuse_on(
         cone_target(&UNIT),
@@ -3144,7 +3100,6 @@ fn sweep_plane_through_the_cone_apex_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn near_parabolic_cone_section_is_refused() {
     let tilt = FRAC_PI_4 + 1e-8;
     match refuse_on(
@@ -3161,7 +3116,6 @@ fn near_parabolic_cone_section_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn image_along_a_face_boundary_is_refused() {
     refuse_on(
         box_target(&UNIT),
@@ -3172,7 +3126,6 @@ fn image_along_a_face_boundary_is_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn empty_projections_are_refused() {
     refuse_on(
         box_target(&UNIT),
@@ -3189,7 +3142,6 @@ fn empty_projections_are_refused() {
 }
 
 #[test]
-#[ignore = "open: 7.4 — awaiting M5"]
 fn stale_handles_surface_as_topology_errors() {
     let Target { face, .. } = box_target(&UNIT);
     let mut topo = Topology::new();
