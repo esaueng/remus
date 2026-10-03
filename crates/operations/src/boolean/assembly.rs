@@ -5,7 +5,7 @@
 //! sharing. Post-assembly passes refine boundary edges and split non-manifold
 //! edges to ensure a valid manifold result.
 
-use std::collections::{HashMap, HashSet};
+use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet, DetState};
 
 use remus_math::aabb::Aabb3;
 use remus_math::tolerance::Tolerance;
@@ -649,9 +649,9 @@ fn assemble_solid_mixed_traced(
     );
 
     let mut vertex_map: HashMap<(i64, i64, i64), VertexId> =
-        HashMap::with_capacity(face_specs.len() * 4);
+        HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
     let mut edge_map: HashMap<(usize, usize), remus_topology::edge::EdgeId> =
-        HashMap::with_capacity(face_specs.len() * 4);
+        HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
     let mut edge_copies: HashMap<EdgeId, EdgeId> = HashMap::default();
 
     let mut face_ids = Vec::with_capacity(face_specs.len());
@@ -1276,7 +1276,7 @@ fn assemble_solid_mixed_traced(
     let boundary_edges = if capture_boundaries {
         edge_map.clone()
     } else {
-        HashMap::new()
+        HashMap::default()
     };
 
     // Post-assembly edge refinement: split long boundary edges at

@@ -1864,6 +1864,26 @@
       "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
     },
     {
+      "js": "projectCurveOntoFace",
+      "rust": "project_curve_onto_face_js",
+      "file": "bindings/project_curve.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "7.4",
+      "reason": "7.4 projection already returns the typed edge projection outcome with quality, clipping, source ranges and project-curve refusal codes; free edges are not solid-envelope results"
+    },
+    {
+      "js": "projectCurvesOntoSolid",
+      "rust": "project_curves_onto_solid_js",
+      "file": "bindings/project_curve.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "7.4",
+      "reason": "7.4 atomic projection already returns per-source typed free-edge outcomes with quality, clipping, source ranges and project-curve refusal codes; the target solid is untouched"
+    },
+    {
       "js": "propagateAttributesForOp",
       "rust": "propagate_attributes_for_op_js",
       "file": "bindings/naming.rs",
