@@ -688,18 +688,54 @@ mod tests {
                 .is_valid()
         );
         let snapshot = format!("{topo:?}");
-        let point = Point3::new(0.0, 0.0, -1.0);
-        let direct = point_to_solid_distance(&topo, point, solid).unwrap();
-        let batch = point_to_solid_batch(&topo, &[point], solid).unwrap();
-        let face_result = point_to_face(&topo, point, face).unwrap();
-        for result in [&direct, &batch[0], &face_result] {
-            assert!(
-                (result.distance - 2.0_f64.sqrt()).abs() < 1e-10,
-                "{result:?}"
-            );
-            assert!((result.point_b.x().hypot(result.point_b.y()) - 1.0).abs() < 1e-10);
-            assert!(result.point_b.z().abs() < 1e-10);
-            assert!(((point - result.point_b).length() - result.distance).abs() < 1e-10);
+        let queries = [
+            (Point3::new(0.0, 0.0, -1.0), 2.0_f64.sqrt(), 1.0, 0.0),
+            (Point3::new(0.0, 0.0, 3.0), 2.0_f64.sqrt(), 1.0, 2.0),
+            (Point3::new(2.0, 0.0, -1.0), 1.0, 2.0, 0.0),
+            (Point3::new(2.0, 0.0, 3.0), 1.0, 2.0, 2.0),
+        ];
+        let points: Vec<_> = queries.iter().map(|entry| entry.0).collect();
+        let batch = point_to_solid_batch(&topo, &points, solid).unwrap();
+        let prepared = remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+        let mut scratch = remus_check::distance::DistanceScratch::new();
+        for (i, (point, expected, radius, z)) in queries.into_iter().enumerate() {
+            let direct = point_to_solid_distance(&topo, point, solid).unwrap();
+            let checked = remus_check::distance::point_to_solid(&topo, point, solid).unwrap();
+            let exhaustive = remus_check::distance::point_to_solid_exhaustive(&topo, point, solid)
+                .unwrap()
+                .0;
+            let cached = prepared.query(point, &mut scratch).unwrap();
+            let cached_exhaustive = prepared
+                .query_exhaustive_with_stats(point, &mut scratch)
+                .unwrap()
+                .0;
+            for (distance, witness) in [
+                (direct.distance, direct.point_b),
+                (batch[i].distance, batch[i].point_b),
+                (checked.distance, checked.point_b),
+                (exhaustive.distance, exhaustive.point_b),
+                (cached.distance, cached.point_b),
+                (cached_exhaustive.distance, cached_exhaustive.point_b),
+            ] {
+                assert!(
+                    (distance - expected).abs() < 1e-10,
+                    "distance={distance}, witness={witness:?}"
+                );
+                assert!((witness.x().hypot(witness.y()) - radius).abs() < 1e-10);
+                assert!((witness.z() - z).abs() < 1e-10);
+                assert!(((point - witness).length() - distance).abs() < 1e-10);
+            }
+            if point.z() < 0.0 {
+                let face_result = point_to_face(&topo, point, face).unwrap();
+                assert!(
+                    (face_result.distance - expected).abs() < 1e-10,
+                    "{face_result:?}"
+                );
+                assert!(
+                    (face_result.point_b.x().hypot(face_result.point_b.y()) - radius).abs() < 1e-10
+                );
+                assert!(face_result.point_b.z().abs() < 1e-10);
+            }
         }
         assert_eq!(format!("{topo:?}"), snapshot);
     }
