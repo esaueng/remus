@@ -189,6 +189,7 @@ pub fn boolean_with_entity_evolution(
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), crate::OperationsError> {
+    refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
     let algo_op = match op {
         BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
         BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
@@ -217,6 +218,7 @@ pub fn boolean_regions(
     solid_b: SolidId,
 ) -> Result<BooleanRegionsResult, crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
+        refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
         let algo_op = match op {
             BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
             BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
@@ -372,6 +374,7 @@ pub fn boolean_compound_regions(
                         {
                             continue;
                         }
+                        refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
                         regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
                             topo,
                             remus_algo::bop::BooleanOp::Intersect,
@@ -385,6 +388,7 @@ pub fn boolean_compound_regions(
             BooleanOp::Cut if members_b.len() == 1 => {
                 let mut regions = Vec::new();
                 for solid_a in members_a {
+                    refuse_uncertified_carrier_relation(topo, solid_a, members_b[0])?;
                     regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
                         topo,
                         remus_algo::bop::BooleanOp::Cut,
@@ -809,13 +813,11 @@ fn boolean_with_context_impl(
             identical,
             a_in_b,
             b_in_a,
+            uncertified_carrier_relation,
         } = detect_trivial_relation(topo, a, b, ca.as_ref(), cb.as_ref(), tol);
 
-        // Identical-solid shortcut: matching AABBs AND every boundary
-        // vertex of each solid classifies as inside-or-on the other's
-        // analytic classifier. Stronger than a center test (a cube
-        // inscribed in a sphere has matching AABBs but cube corners fall
-        // outside the sphere) and works for non-convex solids like tori.
+        // Identity requires mutual geometric containment certificates, the
+        // same operand, or equal full-torus carrier parameters.
         if identical {
             return match op {
                 BooleanOp::Fuse | BooleanOp::Intersect => Ok(crate::copy::copy_solid(topo, a)?),
@@ -823,6 +825,32 @@ fn boolean_with_context_impl(
                     reason: "Cut of identical solids".into(),
                 }),
             };
+        }
+        // GFA also misbuilds some enclosed torus/tool pairs, while primitive
+        // merge shortcuts can replace cropped regions with complete carriers.
+        // Neither vertex acceptance nor a closed result proves the material.
+        // Keep these unqualified pairs on the disclosed fallback/refusal path.
+        if uncertified_carrier_relation {
+            // A complete outer bound can still prove that the actual trimmed
+            // operands are separated. Preserve their geometry before any
+            // classifier-based primitive rebuild or approximate fallback.
+            if certified_solids_clear_gap(topo, a, b, tol.linear) {
+                return match op {
+                    BooleanOp::Cut => Ok(crate::copy::copy_solid(topo, a)?),
+                    BooleanOp::Fuse => {
+                        let copied_a = crate::copy::copy_solid(topo, a)?;
+                        let copied_b = crate::copy::copy_solid(topo, b)?;
+                        crate::compound_ops::merge_disjoint_solids(topo, &[copied_a, copied_b])
+                    }
+                    BooleanOp::Intersect => Ok(topo.add_empty_solid()),
+                };
+            }
+            let remus_math::context::FallbackPolicy::AllowApproximate { budget } = context.fallback
+            else {
+                return Err(crate::OperationsError::ExactOnlyUnattainable);
+            };
+            *used_fallback = true;
+            return run_mesh_fallback(topo, op, a, b, budget, tol, opts);
         }
         // Containment shortcuts:
         // - Fuse/Intersect with either containment direction: copy the
@@ -842,7 +870,7 @@ fn boolean_with_context_impl(
         // (blank + a reversed copy of the tool as a cavity shell) directly.
         // GFA's no-intersection assembly drops fully-contained cone/torus
         // tools; the cavity is exactly the tool's reversed shell, so construct
-        // it here for any simple tool whose vertices are all strictly inside.
+        // it here only when complete tool geometry is certified strictly inside.
         if op == BooleanOp::Cut
             && b_in_a
             && !a_in_b
@@ -850,7 +878,7 @@ fn boolean_with_context_impl(
         {
             let tool_simple = topo.solid(b)?.inner_shells().is_empty();
             if tool_simple
-                && solid_strictly_inside(topo, b, classifier, tol)
+                && solid_strictly_inside(topo, b, a, classifier, tol)
                 && let Ok(result) = build_contained_cut_hollow(topo, a, b)
                 && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
             {
@@ -921,46 +949,30 @@ fn boolean_with_context_impl(
         // surface (shared apex, axis, and tan(half_angle) = r/z ratio)
         // collapse to a single frustum spanning the combined axial range.
         if let (
-            Some(remus_algo::classifier::AnalyticClassifier::Cone {
-                origin: oa,
-                axis: aa,
-                z_min: za_min,
-                z_max: za_max,
-                r_at_z_min: rmin_a,
-                r_at_z_max: rmax_a,
-            }),
-            Some(remus_algo::classifier::AnalyticClassifier::Cone {
-                origin: ob,
-                axis: ab,
-                z_min: zb_min,
-                z_max: zb_max,
-                r_at_z_min: rmin_b,
-                r_at_z_max: rmax_b,
-            }),
+            Some(
+                ca @ remus_algo::classifier::AnalyticClassifier::Cone {
+                    origin: oa,
+                    axis: aa,
+                    z_min: za_min,
+                    z_max: za_max,
+                    ..
+                },
+            ),
+            Some(
+                cb @ remus_algo::classifier::AnalyticClassifier::Cone {
+                    origin: ob,
+                    axis: ab,
+                    z_min: zb_min,
+                    z_max: zb_max,
+                    ..
+                },
+            ),
         ) = (ca.as_ref(), cb.as_ref())
         {
             let same_axis_dir = aa.dot(*ab) > 1.0 - tol.angular;
             let same_apex = (*oa - *ob).length() < tol.linear;
-            // Half-angle slope: dimensionless r/z. Use whichever endpoint has
-            // |z| above tol.linear (compared against tol.linear because slope
-            // is a length ratio, not an angle — `tol.angular` is a radian
-            // threshold, wrong unit). When both endpoints of a frustum are
-            // sub-tol (degenerate apex-pinned cone), skip the shortcut and
-            // let GFA handle it rather than dividing by near-zero.
-            let slope_a = if za_max.abs() > tol.linear {
-                Some(rmax_a / *za_max)
-            } else if za_min.abs() > tol.linear {
-                Some(rmin_a / *za_min)
-            } else {
-                None
-            };
-            let slope_b = if zb_max.abs() > tol.linear {
-                Some(rmax_b / *zb_max)
-            } else if zb_min.abs() > tol.linear {
-                Some(rmin_b / *zb_min)
-            } else {
-                None
-            };
+            let slope_a = cone_rebuild_slope(ca, tol);
+            let slope_b = cone_rebuild_slope(cb, tol);
             let same_half_angle = match (slope_a, slope_b) {
                 (Some(sa), Some(sb)) => (sa - sb).abs() < tol.linear,
                 _ => false,
@@ -2176,7 +2188,7 @@ fn boolean_with_evolution_impl(
         let ca = try_build_analytic_classifier(topo, a);
         let cb = try_build_analytic_classifier(topo, b);
         let rel = detect_trivial_relation(topo, a, b, ca.as_ref(), cb.as_ref(), tol);
-        rel.identical || rel.a_in_b || rel.b_in_a
+        rel.identical || rel.a_in_b || rel.b_in_a || rel.uncertified_carrier_relation
     };
     if a != b && !trivial {
         let input_indices: Vec<usize> = solid_faces(topo, a)?
@@ -2533,7 +2545,7 @@ fn coaxial_cylinder_shortcut(
         origin.y() + axis.y() * z_min,
         origin.z() + axis.z() * z_min,
     );
-    let xform = xform_from_canonical_z(world_origin, axis, tol);
+    let xform = xform_from_canonical_z(world_origin, axis);
     crate::transform::transform_solid(topo, cyl, &xform)?;
     // The rebuilt rims are full circles. An authoritative full-turn input
     // confirms that contract, but fresh primitive topology keeps its own
@@ -2642,7 +2654,7 @@ fn coaxial_cone_shortcut(
     if 1.0 - dot.abs() > tol.angular {
         return Ok(None);
     }
-    let xform = xform_from_canonical_z(world_origin, axis, tol);
+    let xform = xform_from_canonical_z(world_origin, axis);
     crate::transform::transform_solid(topo, cone, &xform)?;
     // Same full-circle contract as the coaxial-cylinder shortcut: keep the
     // fresh primitive's positive parameter sense and anchor every rim at its
@@ -3144,7 +3156,7 @@ fn coaxial_torus_shortcut(
     // degenerate seam lines, 1 face), so a rebuilt torus has no circle
     // edges to carry an interval. Revisit with the M2.4 torus splitters.
     let torus = crate::primitives::make_torus(topo, major_radius, minor_result, segments)?;
-    let xform = xform_from_canonical_z(center, axis, tol);
+    let xform = xform_from_canonical_z(center, axis);
     crate::transform::transform_solid(topo, torus, &xform)?;
     Ok(Some(torus))
 }
@@ -3154,47 +3166,46 @@ fn coaxial_torus_shortcut(
 /// world frame at `world_origin` with up-axis `axis` (assumed
 /// unit-length). Uses Rodrigues' rotation formula for the general case.
 ///
-/// Comparisons use `1.0 - axis.dot(canonical) < tol.angular` rather than
-/// vector-length deltas, because for unit vectors `|u−v| ≈ √2·θ`, so a
-/// length comparison against `tol.angular` would correspond to
-/// `θ ≈ 7×10⁻¹³` rad — effectively bit-identity.
-fn xform_from_canonical_z(
-    world_origin: Point3,
-    axis: Vec3,
-    tol: remus_math::tolerance::Tolerance,
-) -> remus_math::mat::Mat4 {
+/// Preserve the actual axis components even when its dot product with +Z
+/// rounds to one: a small tilt can move a long carrier beyond linear tolerance.
+/// Only an exactly canonical axis takes the translation or exact-flip branch.
+fn xform_from_canonical_z(world_origin: Point3, axis: Vec3) -> remus_math::mat::Mat4 {
     let translate =
         remus_math::mat::Mat4::translation(world_origin.x(), world_origin.y(), world_origin.z());
-    let canonical = Vec3::new(0.0, 0.0, 1.0);
-    let dot = canonical.dot(axis).clamp(-1.0, 1.0);
-    // Parallel to +Z: pure translation.
-    if 1.0 - dot < tol.angular {
-        return translate;
+    let dot = axis.z().clamp(-1.0, 1.0);
+    // A rounded dot product can equal ±1 while a small transverse component
+    // moves a long carrier appreciably. Preserve that actual component.
+    let sin_t = axis.x().hypot(axis.y());
+    if sin_t == 0.0 {
+        if dot >= 0.0 {
+            return translate;
+        }
+        // Exact canonical -Z; avoid introducing sin(PI) roundoff ourselves.
+        return translate
+            * remus_math::mat::Mat4([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]);
     }
-    // Antiparallel: rotate canonical (+z) by π around X to flip to −z.
-    if 1.0 + dot < tol.angular {
-        return translate * remus_math::mat::Mat4::rotation_x(std::f64::consts::PI);
-    }
-    // Rotate canonical (0,0,1) → axis via Rodrigues' formula:
-    //   R = I + sin(θ) K + (1 - cos(θ)) K²,  K = [k]× for k = ẑ × axis / sin(θ).
-    // k.z = 0 by construction, so K's z-row/z-column have a known structure.
-    let sin_t = (1.0 - dot * dot).sqrt();
+    // Stable Rodrigues rotation from +Z. sin(theta) comes from the cross
+    // product; 1-cos(theta) avoids cancellation near +Z.
     let kx = -axis.y() / sin_t;
     let ky = axis.x() / sin_t;
-    let one_minus_cos = 1.0 - dot;
+    let one_minus_cos = if dot >= 0.0 {
+        sin_t * sin_t / (1.0 + dot)
+    } else {
+        1.0 - dot
+    };
     let r00 = one_minus_cos.mul_add(kx * kx, dot);
     let r01 = one_minus_cos * kx * ky;
-    let r02 = sin_t * ky;
     let r10 = one_minus_cos * kx * ky;
     let r11 = one_minus_cos.mul_add(ky * ky, dot);
-    let r12 = -sin_t * kx;
-    let r20 = -sin_t * ky;
-    let r21 = sin_t * kx;
-    let r22 = dot;
     let rot = remus_math::mat::Mat4([
-        [r00, r01, r02, 0.0],
-        [r10, r11, r12, 0.0],
-        [r20, r21, r22, 0.0],
+        [r00, r01, axis.x(), 0.0],
+        [r10, r11, axis.y(), 0.0],
+        [-axis.x(), -axis.y(), dot, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]);
     translate * rot
@@ -3490,29 +3501,926 @@ fn solids_provably_disjoint(topo: &Topology, a: SolidId, b: SolidId, margin: f64
         .all(|ba| boxes_b.iter().all(|bb| aabbs_clear_gap(ba, bb, margin)))
 }
 
-/// The trivial operand relationships that let [`boolean`] short-circuit
-/// without running the GFA: identical solids and full containment.
+/// Relationships proved geometrically before taking copy/empty shortcuts.
+#[allow(clippy::struct_excessive_bools)] // Independent proved relations and one refusal gate.
 struct TrivialRelation {
-    /// Matching AABBs AND every boundary vertex of each solid classifies
-    /// as inside-or-on the other's analytic classifier.
     identical: bool,
-    /// A is fully contained in B.
     a_in_b: bool,
-    /// B is fully contained in A.
     b_in_a: bool,
+    uncertified_carrier_relation: bool,
 }
 
-/// Detect the trivial operand relationships (identical / contained).
-///
-/// [`boolean`] uses this to take copy/empty shortcuts. [`boolean_with_evolution`]
-/// consults the same detection BEFORE its faithful raw-GFA provenance path:
-/// these are exactly the fully-coincident-boundary configurations the raw GFA
-/// mis-splits (coincident walls dropped into an open shell whose
-/// position-duplicate free edges slip past the by-edge-id validation gate), so
-/// the evolution path must route them through [`boolean`]'s shortcuts instead.
-/// How many of `inner`'s boundary vertices are probed when disproving a
-/// containment shortcut. Bounds the added ray-casts on dense imported solids.
-const CONTAINMENT_PROBES: usize = 32;
+/// The native sphere representation is two complementary equator loops.
+/// Merely seeing spherical carriers would also accept arbitrary trimmed caps.
+#[allow(clippy::cast_precision_loss, clippy::float_cmp)] // Same-carrier equality is intentional.
+fn full_sphere_primitive(topo: &Topology, faces: &[FaceId]) -> bool {
+    let [north, south] = faces else { return false };
+    let (Ok(north), Ok(south)) = (topo.face(*north), topo.face(*south)) else {
+        return false;
+    };
+    let (FaceSurface::Sphere(a), FaceSurface::Sphere(b)) = (north.surface(), south.surface())
+    else {
+        return false;
+    };
+    if a.center() != b.center() || a.radius() != b.radius() || a.z_axis() != b.z_axis() {
+        return false;
+    }
+    let (Ok(north_wire), Ok(south_wire)) =
+        (topo.wire(north.outer_wire()), topo.wire(south.outer_wire()))
+    else {
+        return false;
+    };
+    let edges = north_wire.edges();
+    if edges.len() < 4
+        || edges.len() != south_wire.edges().len()
+        || !edges
+            .iter()
+            .zip(south_wire.edges().iter().rev())
+            .all(|(a, b)| a.edge() == b.edge() && a.is_forward() != b.is_forward())
+    {
+        return false;
+    }
+    let mut angles = Vec::with_capacity(edges.len());
+    for oe in edges {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            return false;
+        };
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return false;
+        }
+        let Ok(vertex) = topo.vertex(oe.oriented_start(edge)) else {
+            return false;
+        };
+        let offset = vertex.point() - a.center();
+        // Only arithmetic roundoff is accepted in the equator certificate.
+        let roundoff = 128.0
+            * f64::EPSILON
+            * a.radius()
+                .max(a.center().x().abs())
+                .max(a.center().y().abs())
+                .max(a.center().z().abs());
+        if offset.dot(a.z_axis()).abs() > roundoff
+            || (offset.length() - a.radius()).abs() > roundoff
+        {
+            return false;
+        }
+        angles.push(offset.dot(a.y_axis()).atan2(offset.dot(a.x_axis())));
+    }
+    let mut winding = 0.0;
+    let mut sign = 0.0_f64;
+    for i in 0..angles.len() {
+        let difference = angles[(i + 1) % angles.len()] - angles[i];
+        let step = difference.sin().atan2(difference.cos());
+        if step.abs() <= f64::EPSILON || (sign != 0.0 && step.signum() != sign) {
+            return false;
+        }
+        sign = step.signum();
+        winding += step;
+    }
+    (winding.abs() - std::f64::consts::TAU).abs() <= 128.0 * f64::EPSILON * edges.len() as f64
+}
+
+/// Complete cylinder/frustum walls have two full-circle caps and one doubled
+/// seam. Arbitrary cap outlines and cropped wall trims do not qualify.
+fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim: bool) -> bool {
+    let mut rims = Vec::new();
+    let mut wall = None;
+    let mut wall_surface = None;
+    for &fid in faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        let Ok(wire) = topo.wire(face.outer_wire()) else {
+            return false;
+        };
+        if matches!(face.surface(), FaceSurface::Plane { .. }) {
+            let [rim] = wire.edges() else { return false };
+            let Ok(edge) = topo.edge(rim.edge()) else {
+                return false;
+            };
+            if !edge.is_closed() || !matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                return false;
+            }
+            if require_full_trim {
+                let Some((a, b)) = edge.trim() else {
+                    return false;
+                };
+                if ((b - a).abs() - std::f64::consts::TAU).abs()
+                    > 64.0 * f64::EPSILON * std::f64::consts::TAU
+                {
+                    return false;
+                }
+            }
+            rims.push(rim.edge());
+        } else {
+            if wall.is_some() {
+                return false;
+            }
+            wall = Some(wire);
+            wall_surface = Some(face.surface());
+        }
+    }
+    let (Some(wall), Some(surface)) = (wall, wall_surface) else {
+        return false;
+    };
+    for &fid in faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        if let FaceSurface::Plane { normal, d } = face.surface() {
+            let Ok(wire) = topo.wire(face.outer_wire()) else {
+                return false;
+            };
+            let Ok(edge) = topo.edge(wire.edges()[0].edge()) else {
+                return false;
+            };
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                return false;
+            };
+            if !rotation_rim_on_carrier(circle, surface, *normal, *d) {
+                return false;
+            }
+        }
+    }
+    if let [rim] = rims.as_slice() {
+        let [base, up, down] = wall.edges() else {
+            return false;
+        };
+        if base.edge() != *rim || up.edge() != down.edge() || up.is_forward() == down.is_forward() {
+            return false;
+        }
+        let (Ok(rim), Ok(seam)) = (topo.edge(*rim), topo.edge(up.edge())) else {
+            return false;
+        };
+        let (FaceSurface::Cone(cone), EdgeCurve::Circle(circle)) = (surface, rim.curve()) else {
+            return false;
+        };
+        if !matches!(seam.curve(), EdgeCurve::Line) || seam.is_closed() {
+            return false;
+        }
+        let apex_vertex = if seam.start() == rim.start() {
+            seam.end()
+        } else if seam.end() == rim.start() {
+            seam.start()
+        } else {
+            return false;
+        };
+        let (Ok(apex_vertex), Ok(rim_vertex)) =
+            (topo.vertex(apex_vertex), topo.vertex(rim.start()))
+        else {
+            return false;
+        };
+        let roundoff = 256.0
+            * f64::EPSILON
+            * circle
+                .radius()
+                .max(cone.apex().x().abs())
+                .max(cone.apex().y().abs())
+                .max(cone.apex().z().abs())
+                .max(1.0);
+        let rim_offset = rim_vertex.point() - circle.center();
+        return (apex_vertex.point() - cone.apex()).length() <= roundoff
+            && rim_offset.dot(circle.normal()).abs() <= roundoff
+            && (rim_offset.length() - circle.radius()).abs() <= roundoff;
+    }
+    let [first, second] = rims.as_slice() else {
+        return false;
+    };
+    let [bottom, up, top, down] = wall.edges() else {
+        return false;
+    };
+    if up.edge() != down.edge()
+        || up.is_forward() == down.is_forward()
+        || !((bottom.edge() == *first && top.edge() == *second)
+            || (bottom.edge() == *second && top.edge() == *first))
+    {
+        return false;
+    }
+    topo.edge(up.edge())
+        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line) && !edge.is_closed())
+}
+
+/// Algebraic full-circle compatibility with the finite wall and cap plane.
+/// This rejects closed trimmed impostors whose rims belong to other carriers.
+fn rotation_rim_on_carrier(
+    circle: &remus_math::curves::Circle3D,
+    surface: &FaceSurface,
+    normal: Vec3,
+    d: f64,
+) -> bool {
+    let (origin, axis, expected_radius) = match surface {
+        FaceSurface::Cylinder(cylinder) => (cylinder.origin(), cylinder.axis(), cylinder.radius()),
+        FaceSurface::Cone(cone) => {
+            let axial = (circle.center() - cone.apex()).dot(cone.axis());
+            if axial <= 0.0 {
+                return false;
+            }
+            (cone.apex(), cone.axis(), axial / cone.half_angle().tan())
+        }
+        FaceSurface::Plane { .. }
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => return false,
+    };
+    let offset = circle.center() - origin;
+    let scale = circle
+        .radius()
+        .max(expected_radius)
+        .max(origin.x().abs())
+        .max(origin.y().abs())
+        .max(origin.z().abs())
+        .max(circle.center().x().abs())
+        .max(circle.center().y().abs())
+        .max(circle.center().z().abs())
+        .max(1.0);
+    let roundoff = 256.0 * f64::EPSILON * scale;
+    circle.normal().cross(axis).length() <= 256.0 * f64::EPSILON
+        && normal.cross(axis).length() <= 256.0 * f64::EPSILON
+        && (offset - axis * offset.dot(axis)).length() <= roundoff
+        && (circle.radius() - expected_radius).abs() <= roundoff
+        && (normal.dot(circle.center() - Point3::new(0.0, 0.0, 0.0)) - d).abs() <= roundoff
+}
+
+/// Native full tori encode the complete doubly-periodic carrier as the
+/// fundamental polygon a,b,a^-1,b^-1 over two closed degenerate line seams.
+fn full_torus_primitive(topo: &Topology, solid: SolidId) -> bool {
+    let Ok(solid) = topo.solid(solid) else {
+        return false;
+    };
+    if !solid.inner_shells().is_empty() {
+        return false;
+    }
+    let Ok(shell) = topo.shell(solid.outer_shell()) else {
+        return false;
+    };
+    let [fid] = shell.faces() else { return false };
+    let Ok(face) = topo.face(*fid) else {
+        return false;
+    };
+    if face.is_reversed()
+        || !face.inner_wires().is_empty()
+        || !matches!(face.surface(), FaceSurface::Torus(_))
+    {
+        return false;
+    }
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return false;
+    };
+    let [a, b, ar, br] = wire.edges() else {
+        return false;
+    };
+    if a.edge() == b.edge()
+        || a.edge() != ar.edge()
+        || b.edge() != br.edge()
+        || a.is_forward() == ar.is_forward()
+        || b.is_forward() == br.is_forward()
+    {
+        return false;
+    }
+    let (Ok(a), Ok(b)) = (topo.edge(a.edge()), topo.edge(b.edge())) else {
+        return false;
+    };
+    matches!(a.curve(), EdgeCurve::Line)
+        && matches!(b.curve(), EdgeCurve::Line)
+        && a.is_closed()
+        && b.is_closed()
+        && a.start() == b.start()
+}
+
+/// A classifier alone is not a certificate that arbitrary trimmed faces fill
+/// its complete region. Keep shortcuts inside closed, hole-free primitive
+/// carriers and closed straight-edged convex polyhedra. Mixed, reversed and
+/// cavity-bearing bodies must reach the boolean pipeline.
+fn qualified_convex_container(
+    topo: &Topology,
+    solid: SolidId,
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+) -> bool {
+    qualified_primitive_region(topo, solid, classifier, true)
+}
+
+/// Parameter-rebuilding merge paths historically accept a closed full rim
+/// whose stored trim was shortened (the edge-trims regression contract). That
+/// malformed closed-edge metadata is distinct from a valid cropped body,
+/// whose wall/cap composition fails this canonical topology check. This mode
+/// only selects the existing primitive reconstruction path; it never proves
+/// whole-region containment, which always requires explicit full-turn trims.
+fn canonical_primitive_merge_operand(
+    topo: &Topology,
+    solid: SolidId,
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+) -> bool {
+    qualified_primitive_region(topo, solid, classifier, false)
+}
+
+/// Legacy cone reconstruction selects a dimensionless r/z slope from an
+/// endpoint whose axial distance exceeds linear tolerance. Share that exact
+/// selector with the refusal gate so unrelated different-slope cones can
+/// continue to the general boolean path.
+fn cone_rebuild_slope(
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
+) -> Option<f64> {
+    let remus_algo::classifier::AnalyticClassifier::Cone {
+        z_min,
+        z_max,
+        r_at_z_min,
+        r_at_z_max,
+        ..
+    } = classifier
+    else {
+        return None;
+    };
+    if z_max.abs() > tol.linear {
+        Some(r_at_z_max / z_max)
+    } else if z_min.abs() > tol.linear {
+        Some(r_at_z_min / z_min)
+    } else {
+        None
+    }
+}
+
+/// Bound the displacement incurred by reconstructing B in A's carrier
+/// frame, including radial parameter differences. The legacy dot/slope tests
+/// select candidates only; they cannot certify finite geometry at large scale.
+fn certified_rebuild_alignment(
+    a: &remus_algo::classifier::AnalyticClassifier,
+    b: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    match (a, b) {
+        (
+            AnalyticClassifier::Cylinder {
+                origin: ao,
+                axis: aa,
+                radius: ar,
+                ..
+            },
+            AnalyticClassifier::Cylinder {
+                origin: bo,
+                axis: ba,
+                radius: br,
+                z_min,
+                z_max,
+            },
+        ) => {
+            let residual = (*aa - *ba).length();
+            let offset = *bo - *ao;
+            let perpendicular = offset - *aa * offset.dot(*aa);
+            let extent = z_min.abs().max(z_max.abs()).hypot(*br);
+            residual <= 128.0 * f64::EPSILON
+                && perpendicular.length() + extent * residual + (ar - br).abs() <= tol.linear
+        }
+        (
+            AnalyticClassifier::Cone {
+                origin: ao,
+                axis: aa,
+                ..
+            },
+            AnalyticClassifier::Cone {
+                origin: bo,
+                axis: ba,
+                z_min: bl,
+                z_max: bh,
+                r_at_z_min: brl,
+                r_at_z_max: brh,
+            },
+        ) => {
+            let (Some(sa), Some(sb)) = (cone_rebuild_slope(a, tol), cone_rebuild_slope(b, tol))
+            else {
+                return false;
+            };
+            let residual = (*aa - *ba).length();
+            let axial_extent = bl.abs().max(bh.abs());
+            let radial_extent = brl.abs().max(brh.abs());
+            residual <= 128.0 * f64::EPSILON
+                && (*ao - *bo).length()
+                    + axial_extent.hypot(radial_extent) * residual
+                    + axial_extent * (sa - sb).abs()
+                    <= tol.linear
+        }
+        _ => false,
+    }
+}
+
+fn qualified_primitive_region(
+    topo: &Topology,
+    solid: SolidId,
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+    require_full_trim: bool,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    // The recognizer represents a pointed cone as one cone constraint plus
+    // one cap halfspace: its single cap cannot establish two cap heights.
+    // Normalize only that canonical apex-ended family before proving the
+    // complete rim/seam topology. Other mixed analytic regions stay excluded.
+    if let AnalyticClassifier::ConvexAnalytic {
+        planes,
+        cylinders,
+        cones,
+    } = classifier
+    {
+        let [(origin, axis, z_min, z_max, r_at_z_min, r_at_z_max)] = cones.as_slice() else {
+            return false;
+        };
+        if planes.len() != 1 || !cylinders.is_empty() || *z_min != 0.0 || *r_at_z_min != 0.0 {
+            return false;
+        }
+        let cone = AnalyticClassifier::Cone {
+            origin: *origin,
+            axis: *axis,
+            z_min: *z_min,
+            z_max: *z_max,
+            r_at_z_min: *r_at_z_min,
+            r_at_z_max: *r_at_z_max,
+        };
+        return qualified_primitive_region(topo, solid, &cone, require_full_trim);
+    }
+    let Ok(solid) = topo.solid(solid) else {
+        return false;
+    };
+    if !solid.inner_shells().is_empty() {
+        return false;
+    }
+    let Ok(shell) = topo.shell(solid.outer_shell()) else {
+        return false;
+    };
+    if remus_topology::validation::validate_shell_closed(shell, topo).is_err() {
+        return false;
+    }
+    let mut curved = 0;
+    let mut planes = 0;
+    for &fid in shell.faces() {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        if face.is_reversed() || !face.inner_wires().is_empty() {
+            return false;
+        }
+        let matches_carrier = match (classifier, face.surface()) {
+            (AnalyticClassifier::Sphere { .. }, FaceSurface::Sphere(_)) => true,
+            (AnalyticClassifier::Cylinder { .. }, FaceSurface::Cylinder(_))
+            | (AnalyticClassifier::Cone { .. }, FaceSurface::Cone(_)) => {
+                curved += 1;
+                true
+            }
+            (AnalyticClassifier::Cylinder { axis, .. }, FaceSurface::Plane { normal, .. })
+            | (AnalyticClassifier::Cone { axis, .. }, FaceSurface::Plane { normal, .. }) => {
+                planes += 1;
+                axis.cross(*normal).length() <= 64.0 * f64::EPSILON
+            }
+            (
+                AnalyticClassifier::Box { .. } | AnalyticClassifier::ConvexPolyhedron { .. },
+                FaceSurface::Plane { .. },
+            ) => {
+                let Ok(wire) = topo.wire(face.outer_wire()) else {
+                    return false;
+                };
+                wire.edges().iter().all(|oe| {
+                    topo.edge(oe.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+                })
+            }
+            (
+                _,
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_),
+            ) => false,
+        };
+        if !matches_carrier {
+            return false;
+        }
+    }
+    match classifier {
+        AnalyticClassifier::Sphere { .. } => full_sphere_primitive(topo, shell.faces()),
+        AnalyticClassifier::Cylinder { .. } => {
+            curved == 1
+                && planes == 2
+                && full_rotation_primitive(topo, shell.faces(), require_full_trim)
+        }
+        AnalyticClassifier::Cone { .. } => {
+            curved == 1
+                && (planes == 1 || planes == 2)
+                && full_rotation_primitive(topo, shell.faces(), require_full_trim)
+        }
+        AnalyticClassifier::Box { .. } | AnalyticClassifier::ConvexPolyhedron { .. } => {
+            shell.faces().len() >= 4
+        }
+        _ => false,
+    }
+}
+
+fn bound_corners(bound: remus_math::aabb::Aabb3) -> [Point3; 8] {
+    std::array::from_fn(|i| {
+        Point3::new(
+            if i & 1 == 0 {
+                bound.min.x()
+            } else {
+                bound.max.x()
+            },
+            if i & 2 == 0 {
+                bound.min.y()
+            } else {
+                bound.max.y()
+            },
+            if i & 4 == 0 {
+                bound.min.z()
+            } else {
+                bound.max.z()
+            },
+        )
+    })
+}
+
+/// Points whose convex hull encloses every face of a solid. Straight planar
+/// patches use their complete boundary vertex hull; other patches use
+/// conservative whole-carrier/control-hull bounds, never sampled boxes.
+fn containment_hull(topo: &Topology, solid: SolidId) -> Option<Vec<Point3>> {
+    let mut points = Vec::new();
+    for fid in remus_topology::explorer::solid_faces(topo, solid).ok()? {
+        let face = topo.face(fid).ok()?;
+        let edges = remus_topology::explorer::face_edges(topo, fid).ok()?;
+        if face.surface().is_planar()
+            && edges.iter().all(|&eid| {
+                topo.edge(eid)
+                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+            })
+        {
+            for vid in remus_topology::explorer::face_vertices(topo, fid).ok()? {
+                points.push(topo.vertex(vid).ok()?.point());
+            }
+            continue;
+        }
+        // Cylinder/cone bounds need a finite axial interval. A linear axial
+        // coordinate attains its extrema on the boundary of a finite patch;
+        // each boundary curve has a conservative whole-span box.
+        let bound = match face.surface() {
+            FaceSurface::Cylinder(cylinder) => {
+                let (lo, hi) =
+                    boundary_axial_range(topo, &edges, cylinder.origin(), cylinder.axis())?;
+                remus_geometry::bounds::surface::cylinder_slab_bounds(cylinder, lo, hi)
+            }
+            FaceSurface::Cone(cone) => {
+                let (lo, hi) = boundary_axial_range(topo, &edges, cone.apex(), cone.axis())?;
+                let axial_scale = cone.half_angle().sin();
+                remus_geometry::bounds::surface::cone_slab_bounds(
+                    cone,
+                    lo / axial_scale,
+                    hi / axial_scale,
+                )
+            }
+            FaceSurface::Plane { .. }
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => {
+                let bound = remus_check::distance::face_bounds::face_bound(topo, fid).ok()?;
+                if !bound.prunable {
+                    return None;
+                }
+                remus_geometry::bounds::FiniteBound::conservative(bound.aabb)
+            }
+        };
+        if !bound.is_prunable() {
+            return None;
+        }
+        points.extend(bound_corners(bound.aabb()));
+    }
+    (!points.is_empty()).then_some(points)
+}
+
+/// A strict gap between complete, finite geometry bounds proves that even
+/// unqualified carrier regions are disjoint. Unlike the legacy measured
+/// component boxes, these bounds include whole curve spans and surface/control
+/// hulls; an unknown bound, empty operand or nonfinite coordinate fails closed.
+fn certified_solids_clear_gap(topo: &Topology, a: SolidId, b: SolidId, margin: f64) -> bool {
+    if !margin.is_finite() || margin < 0.0 {
+        return false;
+    }
+    let bounds = |solid| {
+        let points = containment_hull(topo, solid)?;
+        if points
+            .iter()
+            .any(|point| !point.x().is_finite() || !point.y().is_finite() || !point.z().is_finite())
+        {
+            return None;
+        }
+        remus_math::aabb::Aabb3::try_from_points(points)
+    };
+    match (bounds(a), bounds(b)) {
+        (Some(a), Some(b)) => aabbs_clear_gap(&a, &b, margin),
+        _ => false,
+    }
+}
+
+fn boundary_axial_range(
+    topo: &Topology,
+    edges: &[remus_topology::EdgeId],
+    origin: Point3,
+    axis: Vec3,
+) -> Option<(f64, f64)> {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &eid in edges {
+        let bound = remus_check::distance::face_bounds::edge_span_bound(topo, eid).ok()?;
+        if !bound.is_prunable() {
+            return None;
+        }
+        for point in bound_corners(bound.aabb()) {
+            let axial = (point - origin).dot(axis);
+            lo = lo.min(axial);
+            hi = hi.max(axial);
+        }
+    }
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+/// Arithmetic-scale residual for the same unoriented axis. Callers also
+/// propagate this residual into spatial bounds, so large geometry cannot
+/// conceal a meaningful tilt behind a small angular comparison.
+fn unoriented_axis_residual(a: Vec3, b: Vec3) -> f64 {
+    (a - b).length().min((a + b).length())
+}
+
+/// A convex region contains the hull of any points it contains. These points
+/// enclose complete face geometry, so acceptance proves containment. Analytic
+/// sphere pairs use their exact radial inequality to avoid an overly broad
+/// enclosing box. Unqualified containers and unknown bounds return false.
+#[allow(clippy::too_many_arguments, clippy::float_cmp)] // Full torus axes/major circles must match exactly.
+fn certified_containment(
+    topo: &Topology,
+    inner: SolidId,
+    outer: SolidId,
+    inner_classifier: Option<&remus_algo::classifier::AnalyticClassifier>,
+    outer_classifier: Option<&remus_algo::classifier::AnalyticClassifier>,
+    tol: remus_math::tolerance::Tolerance,
+    strict: bool,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    let Some(outer_classifier) = outer_classifier else {
+        return false;
+    };
+    // Preserve the existing exact coaxial-torus family. Distance to the
+    // same major circle defines both complete tubes, so radius inclusion is
+    // a whole-region certificate despite the container being nonconvex.
+    if let Some(AnalyticClassifier::Torus {
+        center: inner_center,
+        axis: inner_axis,
+        major_radius: inner_major,
+        minor_radius: inner_minor,
+    }) = inner_classifier
+        && let AnalyticClassifier::Torus {
+            center: outer_center,
+            axis: outer_axis,
+            major_radius: outer_major,
+            minor_radius: outer_minor,
+        } = outer_classifier
+        && full_torus_primitive(topo, inner)
+        && full_torus_primitive(topo, outer)
+        && inner_center == outer_center
+        && inner_major == outer_major
+    {
+        let residual = unoriented_axis_residual(*inner_axis, *outer_axis);
+        if residual > 128.0 * f64::EPSILON {
+            return false;
+        }
+        // The minimal rotation between the major-circle planes displaces
+        // every point by at most R times this unoriented-axis residual.
+        let tube_extent = inner_minor + inner_major * residual;
+        return if strict {
+            tube_extent < outer_minor - tol.linear
+        } else {
+            tube_extent <= outer_minor + tol.linear
+        };
+    }
+    if !qualified_convex_container(topo, outer, outer_classifier) {
+        return false;
+    }
+    if let Some(
+        inner_classifier @ AnalyticClassifier::Sphere {
+            center: inner_center,
+            radius: inner_radius,
+        },
+    ) = inner_classifier
+        && qualified_convex_container(topo, inner, inner_classifier)
+        && let AnalyticClassifier::Sphere {
+            center: outer_center,
+            radius: outer_radius,
+        } = outer_classifier
+    {
+        let extent = (*inner_center - *outer_center).length() + inner_radius;
+        return if strict {
+            extent < outer_radius - tol.linear
+        } else {
+            extent <= outer_radius + tol.linear
+        };
+    }
+    if let Some(
+        inner_classifier @ AnalyticClassifier::Cylinder {
+            origin: inner_origin,
+            axis: inner_axis,
+            radius: inner_radius,
+            z_min: inner_lo,
+            z_max: inner_hi,
+        },
+    ) = inner_classifier
+        && qualified_convex_container(topo, inner, inner_classifier)
+        && let AnalyticClassifier::Cylinder {
+            origin: outer_origin,
+            axis: outer_axis,
+            radius: outer_radius,
+            z_min: outer_lo,
+            z_max: outer_hi,
+        } = outer_classifier
+        && unoriented_axis_residual(*inner_axis, *outer_axis) <= 128.0 * f64::EPSILON
+    {
+        let offset = *inner_origin - *outer_origin;
+        let axial_offset = offset.dot(*outer_axis);
+        let axial_scale = inner_axis.dot(*outer_axis);
+        let a = axial_offset + axial_scale * inner_lo;
+        let b = axial_offset + axial_scale * inner_hi;
+        let radial_offset = |z| {
+            let center = offset + *inner_axis * z;
+            (center - *outer_axis * center.dot(*outer_axis)).length()
+        };
+        // Every cross section projects inside a radius-r disk; the convex
+        // center-line distance reaches its maximum at an endpoint. Its axial
+        // projection also includes the radius times the actual sine of tilt.
+        let radial_extent = radial_offset(*inner_lo).max(radial_offset(*inner_hi)) + inner_radius;
+        let axial_radius = inner_radius * inner_axis.cross(*outer_axis).length();
+        return if strict {
+            radial_extent < outer_radius - tol.linear
+                && a.min(b) - axial_radius > outer_lo + tol.linear
+                && a.max(b) + axial_radius < outer_hi - tol.linear
+        } else {
+            radial_extent <= outer_radius + tol.linear
+                && a.min(b) - axial_radius >= outer_lo - tol.linear
+                && a.max(b) + axial_radius <= outer_hi + tol.linear
+        };
+    }
+    containment_hull(topo, inner).is_some_and(|points| {
+        points.iter().all(|&point| {
+            point.x().is_finite()
+                && point.y().is_finite()
+                && point.z().is_finite()
+                && match outer_classifier.classify(point, tol) {
+                    Some(remus_algo::FaceClass::Inside) => true,
+                    None => !strict,
+                    Some(_) => false,
+                }
+        })
+    })
+}
+
+/// Compare complete analytic primitive regions, not sampled AABBs. The
+/// nonconvex torus arm is identity-only: it never certifies containment of
+/// another body in the torus tube.
+#[allow(clippy::float_cmp)] // Identical carrier parameters require exact equality.
+fn identical_analytic_regions(
+    topo: &Topology,
+    a: SolidId,
+    b: SolidId,
+    ca: Option<&remus_algo::classifier::AnalyticClassifier>,
+    cb: Option<&remus_algo::classifier::AnalyticClassifier>,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    let (Some(ca), Some(cb)) = (ca, cb) else {
+        return false;
+    };
+    match (ca, cb) {
+        (
+            AnalyticClassifier::Cone {
+                origin: ao,
+                axis: aa,
+                z_min: al,
+                z_max: ah,
+                r_at_z_min: arl,
+                r_at_z_max: arh,
+            },
+            AnalyticClassifier::Cone {
+                origin: bo,
+                axis: ba,
+                z_min: bl,
+                z_max: bh,
+                r_at_z_min: brl,
+                r_at_z_max: brh,
+            },
+        ) => {
+            qualified_convex_container(topo, a, ca)
+                && qualified_convex_container(topo, b, cb)
+                && ao == bo
+                && aa == ba
+                && al == bl
+                && ah == bh
+                && arl == brl
+                && arh == brh
+        }
+        (
+            AnalyticClassifier::Torus {
+                center: ac,
+                axis: aa,
+                major_radius: ar,
+                minor_radius: at,
+            },
+            AnalyticClassifier::Torus {
+                center: bc,
+                axis: ba,
+                major_radius: br,
+                minor_radius: bt,
+            },
+        ) => {
+            full_torus_primitive(topo, a)
+                && full_torus_primitive(topo, b)
+                && ac == bc
+                && ar == br
+                && at == bt
+                && (*aa == *ba || *aa == -*ba)
+        }
+        (
+            AnalyticClassifier::ConvexAnalytic {
+                planes: ap,
+                cylinders: ac,
+                cones: at,
+            },
+            AnalyticClassifier::ConvexAnalytic {
+                planes: bp,
+                cylinders: bc,
+                cones: bt,
+            },
+        ) => {
+            qualified_convex_container(topo, a, ca)
+                && qualified_convex_container(topo, b, cb)
+                && ap == bp
+                && ac == bc
+                && at == bt
+        }
+        _ => false,
+    }
+}
+
+/// This is a refusal prefilter, not a containment certificate. The former
+/// shortcut and the GFA both accept wrong material for some whole-AABB
+/// enclosed tools whose vertices happen to lie in a nonconvex torus tube.
+/// No such sampled relationship may publish an exact result until qualified.
+fn ambiguous_torus_enclosure(
+    topo: &Topology,
+    inner: SolidId,
+    outer: SolidId,
+    classifier: Option<&remus_algo::classifier::AnalyticClassifier>,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    let Some(classifier @ remus_algo::classifier::AnalyticClassifier::Torus { .. }) = classifier
+    else {
+        return false;
+    };
+    let (Ok(inner_box), Ok(outer_box)) = (
+        crate::measure::solid_bounding_box(topo, inner),
+        crate::measure::solid_bounding_box(topo, outer),
+    ) else {
+        return false;
+    };
+    let enclosed = bound_corners(inner_box).iter().all(|point| {
+        point.x() >= outer_box.min.x() - tol.linear
+            && point.x() <= outer_box.max.x() + tol.linear
+            && point.y() >= outer_box.min.y() - tol.linear
+            && point.y() <= outer_box.max.y() + tol.linear
+            && point.z() >= outer_box.min.z() - tol.linear
+            && point.z() <= outer_box.max.z() + tol.linear
+    });
+    enclosed
+        && remus_topology::explorer::solid_vertices(topo, inner).is_ok_and(|vertices| {
+            !vertices.is_empty()
+                && vertices.iter().all(|&vid| {
+                    topo.vertex(vid).is_ok_and(|vertex| {
+                        classifier.classify(vertex.point(), tol)
+                            != Some(remus_algo::FaceClass::Outside)
+                    })
+                })
+        })
+}
+
+pub(crate) fn refuse_uncertified_carrier_relation(
+    topo: &Topology,
+    a: SolidId,
+    b: SolidId,
+) -> Result<(), crate::OperationsError> {
+    let tol = remus_math::tolerance::Tolerance::new();
+    let ca = remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, a, tol);
+    let cb = remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, b, tol);
+    let relation = detect_trivial_relation(topo, a, b, ca.as_ref(), cb.as_ref(), tol);
+    if !relation.identical
+        && relation.uncertified_carrier_relation
+        && !certified_solids_clear_gap(topo, a, b, tol.linear)
+    {
+        Err(crate::OperationsError::ExactOnlyUnattainable)
+    } else {
+        Ok(())
+    }
+}
 
 fn detect_trivial_relation(
     topo: &Topology,
@@ -3522,280 +4430,125 @@ fn detect_trivial_relation(
     cb: Option<&remus_algo::classifier::AnalyticClassifier>,
     tol: remus_math::tolerance::Tolerance,
 ) -> TrivialRelation {
-    // Use measure::solid_bounding_box — it expands for surface curvature
-    // (cylinder vertex projection, sphere/torus analytic). The naive
-    // edge-vertex sampler missed cylinder lateral extents because cylinders
-    // only have seam vertices, leaving the AABB center on the lateral
-    // surface where the analytic classifier returns None.
-    let sample_aabb = |topo: &Topology, solid: SolidId| -> Option<(Point3, Point3)> {
-        let bb = crate::measure::solid_bounding_box(topo, solid).ok()?;
-        Some((bb.min, bb.max))
-    };
-    let aabb_a = sample_aabb(topo, a);
-    let aabb_b = sample_aabb(topo, b);
-    // AABB-encloses check (lenient): does `inner` fit inside `outer`?
-    let aabb_encloses =
-        |inner: &Option<(Point3, Point3)>, outer: &Option<(Point3, Point3)>| -> bool {
-            let Some(((i_min, i_max), (o_min, o_max))) = inner.zip(*outer) else {
-                return false;
+    let a_in_b = certified_containment(topo, a, b, ca, cb, tol, false);
+    let b_in_a = certified_containment(topo, b, a, cb, ca, tol, false);
+    let uncertified_carrier_pair = match (ca, cb) {
+        (
+            Some(
+                ca @ remus_algo::classifier::AnalyticClassifier::Cylinder {
+                    origin: ao,
+                    axis: aa,
+                    radius: ar,
+                    ..
+                },
+            ),
+            Some(
+                cb @ remus_algo::classifier::AnalyticClassifier::Cylinder {
+                    origin: bo,
+                    axis: ba,
+                    radius: br,
+                    ..
+                },
+            ),
+        ) => {
+            let offset = *bo - *ao;
+            let perpendicular = offset - *aa * offset.dot(*aa);
+            aa.dot(*ba) > 1.0 - tol.angular
+                && perpendicular.length() < tol.linear
+                && (ar - br).abs() < tol.linear
+                && (!canonical_primitive_merge_operand(topo, a, ca)
+                    || !canonical_primitive_merge_operand(topo, b, cb)
+                    || !certified_rebuild_alignment(ca, cb, tol))
+        }
+        (
+            Some(
+                ca @ remus_algo::classifier::AnalyticClassifier::Cone {
+                    origin: ao,
+                    axis: aa,
+                    ..
+                },
+            ),
+            Some(
+                cb @ remus_algo::classifier::AnalyticClassifier::Cone {
+                    origin: bo,
+                    axis: ba,
+                    ..
+                },
+            ),
+        ) => {
+            let same_half_angle = match (cone_rebuild_slope(ca, tol), cone_rebuild_slope(cb, tol)) {
+                (Some(sa), Some(sb)) => (sa - sb).abs() < tol.linear,
+                _ => false,
             };
-            let margin = tol.linear;
-            i_min.x() >= o_min.x() - margin
-                && i_min.y() >= o_min.y() - margin
-                && i_min.z() >= o_min.z() - margin
-                && i_max.x() <= o_max.x() + margin
-                && i_max.y() <= o_max.y() + margin
-                && i_max.z() <= o_max.z() + margin
-        };
-    // AABB enclosure is necessary but NOT sufficient for solid
-    // containment: a non-convex container (notched or hollow) can
-    // AABB-enclose a solid that actually lies in its empty region.
-    // Issue #801: `(a − b) ∪ (a ∩ b)` dropped the `a ∩ b` operand
-    // because the unit cube's bbox fits inside the notched `a − b`'s
-    // bbox, yet the cube lives in the carved-out notch. Confirm the
-    // AABB-only fallback with a real point-in-solid test: reject when
-    // the inner solid's center is provably inside `inner` yet outside
-    // `outer`. By the containment lemma (inner ⊆ outer ⇒ every point
-    // of inner is in outer), that witness can only occur for genuine
-    // non-containment, so it never rejects a true containment.
-    // The AABB centre alone is a weak witness, and it misses exactly the case
-    // where `inner` is a coaxial tool grown around a feature `outer` already
-    // has. Widening a boss from r=5 to r=8 gives a tool whose AABB nests
-    // inside the solid's and whose centre sits on the axis — inside the OLD
-    // boss — so containment reads true and Fuse silently returns the
-    // unmodified solid. `inner`'s own boundary vertices are the witnesses that
-    // catch it: the r=8 rim level with the boss top is provably in air.
-    //
-    // Sampling is sound in the same way the centre test is: a point of `inner`
-    // proven outside `outer` disproves containment outright, so extra probes
-    // can only reject a FALSE containment, never a true one. The cap keeps the
-    // added ray-casts bounded on dense imported solids.
-    // Each probe is tagged with whether it is KNOWN to belong to `inner`.
-    // A vertex of `inner` is on `inner`'s boundary by construction, so it needs
-    // no classification; only the AABB centre — which can fall in a concavity —
-    // has to be tested.
-    let witness_points = |topo: &Topology, inner: SolidId, bb: &Option<(Point3, Point3)>| {
-        let mut pts: Vec<(Point3, bool)> = Vec::with_capacity(CONTAINMENT_PROBES + 1);
-        if let Some((lo, hi)) = *bb {
-            pts.push((
-                Point3::new(
-                    0.5 * (lo.x() + hi.x()),
-                    0.5 * (lo.y() + hi.y()),
-                    0.5 * (lo.z() + hi.z()),
-                ),
-                false,
-            ));
+            (*ao - *bo).length() < tol.linear
+                && aa.dot(*ba) > 1.0 - tol.angular
+                && same_half_angle
+                && 1.0 - aa.z().abs() <= tol.angular
+                && (!canonical_primitive_merge_operand(topo, a, ca)
+                    || !canonical_primitive_merge_operand(topo, b, cb)
+                    || !certified_rebuild_alignment(ca, cb, tol))
         }
-        if let Ok(vids) = remus_topology::explorer::solid_vertices(topo, inner) {
-            let step = (vids.len() / CONTAINMENT_PROBES).max(1);
-            for vid in vids.iter().step_by(step).take(CONTAINMENT_PROBES) {
-                if let Ok(v) = topo.vertex(*vid) {
-                    pts.push((v.point(), true));
-                }
-            }
+        (
+            Some(ca @ remus_algo::classifier::AnalyticClassifier::Sphere { center: ac, .. }),
+            Some(cb @ remus_algo::classifier::AnalyticClassifier::Sphere { center: bc, .. }),
+        ) => {
+            (*ac - *bc).length() < tol.linear
+                && (!qualified_convex_container(topo, a, ca)
+                    || !qualified_convex_container(topo, b, cb))
         }
-        // Near-surface interior samples of `inner`'s faces. Vertices alone
-        // are blind for low-vertex analytic solids: a torus carries only a
-        // seam vertex (and degenerate point-line seam edges), so a cut
-        // plane through that seam read the whole torus as "contained" in a
-        // half-space whose boundary the seam happened to ride. A raw
-        // surface sample is NOT necessarily on the face's trimmed region (a
-        // plane's or cone's parameterization runs past the face, and
-        // distance-to-solid measures the untrimmed surface, so an off-face
-        // sample reads "on the solid"), which once falsely refuted a TRUE
-        // cone-in-box containment. So each sample is nudged INWARD along
-        // the face's outward normal and tagged unverified: it only counts
-        // after classifying strictly Inside `inner`, which an off-face
-        // nudge fails. Like every other witness these can only refute a
-        // FALSE containment, never reject a true one.
-        if let Some((lo, hi)) = *bb
-            && let Ok(fids) = remus_topology::explorer::solid_faces(topo, inner)
-        {
-            let diag = (hi - lo).length();
-            let nudge = (diag * 1e-3).max(1e-6);
-            let step = (fids.len() / CONTAINMENT_PROBES).max(1);
-            for fid in fids.iter().step_by(step).take(CONTAINMENT_PROBES) {
-                if let Ok(face) = topo.face(*fid) {
-                    let surf = face.surface();
-                    let flip = if face.is_reversed() { -1.0 } else { 1.0 };
-                    for (u, v) in [
-                        (0.0, 0.0),
-                        (std::f64::consts::PI, 0.0),
-                        (0.0, std::f64::consts::PI),
-                        (std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
-                    ] {
-                        if let Some(sample) = surf.evaluate(u, v)
-                            && let Ok(n) = (surf.normal(u, v) * flip).normalize()
-                        {
-                            pts.push((sample - n * nudge, false));
-                        }
-                    }
-                }
-            }
+        (
+            Some(remus_algo::classifier::AnalyticClassifier::Torus {
+                center: ac,
+                axis: aa,
+                major_radius: ar,
+                ..
+            }),
+            Some(remus_algo::classifier::AnalyticClassifier::Torus {
+                center: bc,
+                axis: ba,
+                major_radius: br,
+                ..
+            }),
+        ) => {
+            (*ac - *bc).length() < tol.linear
+                && aa.dot(*ba).abs() > 1.0 - tol.angular
+                && (ar - br).abs() < tol.linear
+                && (!full_torus_primitive(topo, a)
+                    || !full_torus_primitive(topo, b)
+                    || (!a_in_b && !b_in_a))
         }
-        pts
+        _ => false,
     };
-    let center_outside =
-        |topo: &Topology, inner: SolidId, outer: SolidId, bb: &Option<(Point3, Point3)>| -> bool {
-            let Some((lo, hi)) = *bb else { return false };
-            let (dx, dy, dz) = (hi.x() - lo.x(), hi.y() - lo.y(), hi.z() - lo.z());
-            let defl = (dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt() * 0.01).max(1e-6);
-            for (c, from_inner_boundary) in witness_points(topo, inner, bb) {
-                // Conservative by design: when the AABB centre falls in `inner`'s own
-                // concavity (a C/U-shaped solid), `on_inner` is false and that probe
-                // is skipped, so a false-positive containment could still slip
-                // through. That only ever fails to *reject* — it never rejects a true
-                // containment — so the shortcut stays sound, just not complete.
-                //
-                // Do NOT re-classify a vertex of `inner` against `inner`: it is on
-                // that boundary by construction, and `classify_point` reports a
-                // boundary vertex as Outside, which would discard every vertex
-                // witness and silently disable the check.
-                let on_inner = from_inner_boundary
-                    || matches!(
-                        crate::classify::classify_point(topo, inner, c, defl, tol.linear),
-                        Ok(crate::classify::PointClassification::Inside
-                            | crate::classify::PointClassification::OnBoundary)
-                    );
-                // `classify_point` reports a point ON `outer`'s boundary as
-                // Outside, so "not inside" is NOT a disproof: for identical
-                // solids every vertex of `inner` rides `outer`'s boundary and
-                // would spuriously refute a containment that genuinely holds.
-                // Require the witness to stand CLEAR of that boundary before
-                // its verdict counts.
-                let outside_outer = matches!(
-                    crate::classify::classify_point(topo, outer, c, defl, tol.linear),
-                    Ok(crate::classify::PointClassification::Outside)
-                ) && crate::distance::point_to_solid_distance(topo, c, outer)
-                    .is_ok_and(|d| d.distance > tol.linear * 100.0);
-                if on_inner && outside_outer {
-                    return true;
-                }
-            }
-            false
-        };
-
-    // Bidirectional vertex check via the analytic classifier — the
-    // primary signal for identical/containment classification. A vertex
-    // classifying as inside-or-on (None within tolerance band counts
-    // as on) means it sits within the solid's region.
-    let all_b_verts_in_a = ca.is_some_and(|c| all_vertices_inside_or_on(topo, b, c, tol));
-    let all_a_verts_in_b = cb.is_some_and(|c| all_vertices_inside_or_on(topo, a, c, tol));
-    let aabbs_match = aabb_a
-        .zip(aabb_b)
-        .map(|((a_min, a_max), (b_min, b_max))| {
-            let eps = tol.linear;
-            (a_min.x() - b_min.x()).abs() < eps
-                && (a_min.y() - b_min.y()).abs() < eps
-                && (a_min.z() - b_min.z()).abs() < eps
-                && (a_max.x() - b_max.x()).abs() < eps
-                && (a_max.y() - b_max.y()).abs() < eps
-                && (a_max.z() - b_max.z()).abs() < eps
-        })
-        .unwrap_or(false);
-
-    // Containment: A contains B only when A's analytic classifier accepts all
-    // of B's vertices, A's AABB encloses B's, and no sampled point proves the
-    // contrary. In particular, absence of a classifier is NOT evidence of
-    // containment: a complex, holed solid can enclose a tool's complete AABB
-    // while the tool still occupies the hole. Uncertain cases must proceed to
-    // the real boolean pipeline instead of silently copying one operand.
-    let b_in_a =
-        all_b_verts_in_a && aabb_encloses(&aabb_b, &aabb_a) && !center_outside(topo, b, a, &aabb_b);
-    let a_in_b =
-        all_a_verts_in_b && aabb_encloses(&aabb_a, &aabb_b) && !center_outside(topo, a, b, &aabb_a);
-
     TrivialRelation {
-        identical: aabbs_match && all_b_verts_in_a && all_a_verts_in_b,
+        identical: a == b || (a_in_b && b_in_a) || identical_analytic_regions(topo, a, b, ca, cb),
         a_in_b,
         b_in_a,
+        uncertified_carrier_relation: uncertified_carrier_pair
+            || (!a_in_b
+                && !b_in_a
+                && (ambiguous_torus_enclosure(topo, a, b, cb, tol)
+                    || ambiguous_torus_enclosure(topo, b, a, ca, tol))),
     }
 }
 
-/// Check whether every boundary vertex of `solid` is classified as
-/// `Inside` or `On` by `classifier`. Used by the identical-solid shortcut
-/// to distinguish truly-identical solids from co-located but differently
-/// shaped solids (e.g., a cone and a box that share an AABB).
-fn all_vertices_inside_or_on(
-    topo: &Topology,
-    solid: SolidId,
-    classifier: &remus_algo::classifier::AnalyticClassifier,
-    tol: remus_math::tolerance::Tolerance,
-) -> bool {
-    let Ok(s) = topo.solid(solid) else {
-        return false;
-    };
-    let Ok(sh) = topo.shell(s.outer_shell()) else {
-        return false;
-    };
-    for &fid in sh.faces() {
-        let Ok(f) = topo.face(fid) else { return false };
-        let Ok(w) = topo.wire(f.outer_wire()) else {
-            return false;
-        };
-        for oe in w.edges() {
-            let Ok(e) = topo.edge(oe.edge()) else {
-                return false;
-            };
-            for vid in [e.start(), e.end()] {
-                let Ok(v) = topo.vertex(vid) else {
-                    return false;
-                };
-                // The analytic classifier returns `None` for points within
-                // tol.linear of the boundary — treat as "on" for this check.
-                if classifier.classify(v.point(), tol) == Some(remus_algo::FaceClass::Outside) {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
-/// True when every outer-shell vertex of `inner` classifies as *strictly*
-/// `Inside` (not on the boundary) of `classifier`. A strictly-contained tool
-/// has no surface contact with the blank, so `Cut(blank, tool)` is a clean
-/// internal cavity rather than a notch through the boundary.
 fn solid_strictly_inside(
     topo: &Topology,
     inner: SolidId,
+    outer: SolidId,
     classifier: &remus_algo::classifier::AnalyticClassifier,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
-    let Ok(s) = topo.solid(inner) else {
-        return false;
-    };
-    let Ok(sh) = topo.shell(s.outer_shell()) else {
-        return false;
-    };
-    let mut saw_vertex = false;
-    for &fid in sh.faces() {
-        let Ok(f) = topo.face(fid) else { return false };
-        // Check the outer wire and any inner (hole) wires — a hole boundary on
-        // a simple solid's face can also reach the blank's surface.
-        let mut wires = vec![f.outer_wire()];
-        wires.extend_from_slice(f.inner_wires());
-        for wid in wires {
-            let Ok(w) = topo.wire(wid) else {
-                return false;
-            };
-            for oe in w.edges() {
-                let Ok(e) = topo.edge(oe.edge()) else {
-                    return false;
-                };
-                for vid in [e.start(), e.end()] {
-                    let Ok(v) = topo.vertex(vid) else {
-                        return false;
-                    };
-                    if classifier.classify(v.point(), tol) != Some(remus_algo::FaceClass::Inside) {
-                        return false;
-                    }
-                    saw_vertex = true;
-                }
-            }
-        }
-    }
-    saw_vertex
+    let inner_classifier =
+        remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, inner, tol);
+    certified_containment(
+        topo,
+        inner,
+        outer,
+        inner_classifier.as_ref(),
+        Some(classifier),
+        tol,
+        true,
+    )
 }
 
 /// Build `Cut(blank, tool)` for a tool strictly contained in the blank: the
@@ -6094,5 +6847,30 @@ mod resource_budget_tests {
         ));
         assert_eq!(topo.num_solids(), 4);
         assert_eq!(topo.num_vertices(), 32);
+    }
+
+    #[test]
+    fn certified_clear_gap_requires_finite_hulls_and_strict_finite_margin() {
+        let mut topo = Topology::new();
+        let a = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            b,
+            &remus_math::mat::Mat4::translation(0.0, 0.0, 4.0),
+        )
+        .unwrap();
+        assert!(certified_solids_clear_gap(&topo, a, b, 1e-7));
+        assert!(!certified_solids_clear_gap(&topo, a, b, 2.0));
+        for margin in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(!certified_solids_clear_gap(&topo, a, b, margin));
+        }
+        let empty = topo.add_empty_solid();
+        assert!(!certified_solids_clear_gap(&topo, a, empty, 1e-7));
+        let vertex = remus_topology::explorer::solid_vertices(&topo, a).unwrap()[0];
+        topo.vertex_mut(vertex)
+            .unwrap()
+            .set_point(Point3::new(f64::NAN, 0.0, 0.0));
+        assert!(!certified_solids_clear_gap(&topo, a, b, 1e-7));
     }
 }

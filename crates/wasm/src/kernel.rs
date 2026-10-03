@@ -31,7 +31,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::{WasmError, validate_finite};
 use crate::handles::{edge_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
-use crate::state::{Checkpoint, GcsSketchState, SketchState};
+use crate::state::{Checkpoint, GcsSketchState, HandleStore, SketchState};
 
 /// The B-Rep modeling kernel.
 ///
@@ -41,10 +41,10 @@ use crate::state::{Checkpoint, GcsSketchState, SketchState};
 #[wasm_bindgen]
 pub struct BrepKernel {
     pub(crate) topo: Rc<Topology>,
-    pub(crate) assemblies: Vec<remus_operations::assembly::Assembly>,
-    pub(crate) sketches: Vec<SketchState>,
-    pub(crate) gcs_sketches: Vec<GcsSketchState>,
-    pub(crate) checkpoints: Vec<Checkpoint>,
+    pub(crate) assemblies: crate::state::HandleStore<crate::state::AssemblyState>,
+    pub(crate) sketches: crate::state::HandleStore<SketchState>,
+    pub(crate) gcs_sketches: crate::state::HandleStore<GcsSketchState>,
+    pub(crate) checkpoints: crate::state::HandleStore<Checkpoint>,
     pub(crate) poisoned: bool,
     /// Persistent classification preparation (PERF-Q02).
     ///
@@ -64,10 +64,10 @@ impl BrepKernel {
         crate::panics::install_hook();
         Self {
             topo: Rc::new(Topology::new()),
-            assemblies: Vec::new(),
-            sketches: Vec::new(),
-            gcs_sketches: Vec::new(),
-            checkpoints: Vec::new(),
+            assemblies: HandleStore::default(),
+            sketches: HandleStore::default(),
+            gcs_sketches: HandleStore::default(),
+            checkpoints: HandleStore::default(),
             poisoned: false,
             classify_cache: std::cell::RefCell::new(
                 remus_check::classify::ClassificationCache::new(),
@@ -2133,24 +2133,100 @@ mod workflow_probes {
         fn snapshot_detects_non_geometry_state_changes() {
             let mut kernel = BrepKernel::new();
             let mut before = kernel.workflow_state_snapshot();
-            kernel.sketches.push(SketchState::default());
+            assert!(kernel.sketches.push(SketchState::default()).is_ok());
             let mut after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
-            kernel.gcs_sketches.push(GcsSketchState::default());
+            assert!(kernel.gcs_sketches.push(GcsSketchState::default()).is_ok());
             after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
-            kernel.assembly_new("sentinel");
+            assert!(kernel.assembly_new("sentinel").is_ok());
             after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
-            kernel.checkpoint();
+            assert!(kernel.checkpoint().is_ok());
             after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
             kernel.poisoned = true;
             assert_ne!(before, kernel.workflow_state_snapshot());
         }
+    }
+}
+
+#[cfg(test)]
+mod kernel_correctness_tests {
+    //! Public binding regressions for arena history and shared sheet retirement.
+
+    #![allow(clippy::unwrap_used)]
+
+    use crate::kernel::BrepKernel;
+
+    fn journaled_box(width: f64) -> (BrepKernel, u32, String) {
+        let mut kernel = BrepKernel::new();
+        let outer = kernel.make_box_solid(width, 3.0, 4.0).unwrap();
+        let inner = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let result: serde_json::Value =
+            serde_json::from_str(&kernel.fuse_journaled(outer, inner).unwrap()).unwrap();
+        let solid = u32::try_from(result["solid"].as_u64().unwrap()).unwrap();
+        let operation = u32::try_from(result["op"].as_u64().unwrap()).unwrap();
+        let reference = kernel
+            .make_operation_output_ref(operation, "face", 0)
+            .unwrap();
+        (kernel, solid, reference)
+    }
+
+    #[test]
+    fn arena_append_preserves_existing_operation_output_reference() {
+        let (source, source_solid, _) = journaled_box(7.0);
+        let (mut destination, original_solid, reference) = journaled_box(2.0);
+        let original_faces = destination.get_solid_faces(original_solid).unwrap();
+        let before = destination.resolve_ref(&reference).unwrap();
+        let resolution: serde_json::Value = serde_json::from_str(&before).unwrap();
+        assert_eq!(resolution["status"], "bound");
+
+        let bytes = source.serialize_solids(&[source_solid]).unwrap();
+        let imported = destination.deserialize_solids(&bytes).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(destination.resolve_ref(&reference).unwrap(), before);
+        assert_eq!(
+            destination.get_solid_faces(original_solid).unwrap(),
+            original_faces
+        );
+        let imported_faces = destination.get_solid_faces(imported[0]).unwrap();
+        assert!(
+            original_faces
+                .iter()
+                .all(|face| !imported_faces.contains(face))
+        );
+        assert!((destination.volume(original_solid, 0.01).unwrap() - 24.0).abs() < 1e-8);
+        assert!((destination.volume(imported[0], 0.01).unwrap() - 84.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn deleting_solid_keeps_shared_sheet_measurable_and_serializable() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let face = kernel.get_solid_faces(solid).unwrap()[0];
+        let sheet = kernel.make_sheet_body(vec![face]).unwrap();
+        let before = kernel.serialize_sheets(&[sheet]).unwrap();
+        let area = kernel.sheet_area(sheet, 0.01).unwrap();
+        assert!((area - 6.0).abs() < 1e-10);
+
+        kernel.delete_solid(solid).unwrap();
+        assert!(kernel.resolve_solid(solid).is_err());
+        assert_eq!(
+            kernel.sheet_area(sheet, 0.01).unwrap().to_bits(),
+            area.to_bits()
+        );
+        assert_eq!(kernel.serialize_sheets(&[sheet]).unwrap(), before);
+        assert!(
+            kernel
+                .tessellate_sheet(sheet, 0.05, None)
+                .unwrap()
+                .triangle_count()
+                > 0
+        );
     }
 }

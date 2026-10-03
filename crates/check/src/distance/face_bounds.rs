@@ -13,18 +13,19 @@
 //! is a weaker obligation than containing the true face — and it is the
 //! correct one, because branch-and-bound must reproduce the exhaustive
 //! result *of the same narrow phase*, not certify global minimization (a
-//! local Newton projection does not become globally exact through BVH use).
+//! local Newton projection does not become globally exact through safe pruning).
 //!
 //! The narrow phase returns, per face, either a carrier projection accepted
-//! by its projected trim predicate or a closest point on a
-//! wire segment (a straight chord between stored vertices). The face bound
-//! therefore covers:
+//! by its trim predicate or a closest point on an authoritative boundary
+//! curve: analytic line/circle extrema, or the documented local boundary
+//! estimate for a NURBS face or a NURBS trim on an analytic face. The narrow
+//! native-sphere equator certificate returns points on that equatorial circle.
+//! The face bound therefore covers:
 //!
 //! - every wire curve, via the geometry-layer span bounds over the edge's
 //!   authoritative trim (`Edge::strict_domain`), unioned with the stored
 //!   vertex positions (vertices can sit off-curve within sewing tolerance
-//!   and the narrow phase walks vertex chords, which the convex box then
-//!   contains);
+//!   and remain boundary candidates);
 //! - the carrier interior, per surface type:
 //!   - *Plane*: a linear coordinate over a planar patch attains its maximum
 //!     on the boundary (a non-constant linear function has no interior
@@ -35,7 +36,8 @@
 //!   - *Cone*: the projected predicate can admit points outside wire spans
 //!     on an unbounded carrier, so the face stays on the mandatory path;
 //!   - *Sphere* and *Torus*: their full carrier boxes cover every point the
-//!     projected predicate may admit, including the opposite side of a trim;
+//!     projected predicate may admit, including the opposite side of a trim
+//!     and the certified native-sphere equator;
 //!   - *NURBS*: the whole-surface control hull contains any trim, unioned
 //!     with the wire bound.
 //!
@@ -123,9 +125,9 @@ pub fn face_bound(topo: &Topology, face_id: FaceId) -> Result<FaceBound, CheckEr
 
     let surface = topo.face(face_id)?.surface().clone();
     let mut union = union_all(&edge_boxes);
-    // The narrow phase tests the projection of a curved carrier against a
-    // polygon in one plane. That predicate can accept the opposite side of
-    // the carrier, so critical points of the intended trim are insufficient.
+    // Carrier projections use trim membership. Full carrier boxes cover
+    // every accepted spherical/toroidal projection and the certified native
+    // sphere equator; boundary critical points alone would not suffice.
     let interior_unknown: Option<&'static str> = match &surface {
         FaceSurface::Plane { .. } => None,
         FaceSurface::Cylinder(_) => Some("cylinder_projection_outside_edge_bounds"),
@@ -175,7 +177,7 @@ pub fn face_bound(topo: &Topology, face_id: FaceId) -> Result<FaceBound, CheckEr
 /// Build the bound for a single edge span.
 ///
 /// Unions the geometry-layer span bound with the stored vertex positions
-/// (the narrow phase walks vertex chords). Returns the geometry confidence,
+/// (the narrow phase includes sewn endpoint vertices). Returns the geometry confidence,
 /// except that non-finite vertices force `Unknown`.
 ///
 /// # Errors
@@ -232,9 +234,8 @@ pub fn edge_span_bound(topo: &Topology, edge_id: EdgeId) -> Result<FiniteBound, 
 
     match span_bound.confidence() {
         BoundConfidence::Conservative => {
-            // Union the stored vertices: exact stored data, and the narrow
-            // phase walks vertex chords, so the convex box then contains
-            // both the span and the chords.
+            // Stored endpoint vertices remain candidates even when sewing
+            // tolerances permit a small difference from the carrier span.
             Ok(FiniteBound::conservative(
                 span_bound.aabb().union(vertex_box(start, end)),
             ))

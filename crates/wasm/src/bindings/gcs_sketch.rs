@@ -25,10 +25,11 @@ use crate::state::GcsSketchState;
 /// Fetch a handle from a per-sketch handle table, mapping out-of-range
 /// indices to a typed error. Staleness (entity removed) is detected later by
 /// the generational arena itself.
-fn table_get<T: Copy>(table: &[T], entity: &'static str, idx: u32) -> Result<T, WasmError> {
+fn table_get<T: Copy>(table: &[Option<T>], entity: &'static str, idx: u32) -> Result<T, WasmError> {
     table
         .get(idx as usize)
         .copied()
+        .flatten()
         .ok_or(WasmError::InvalidHandle {
             entity,
             index: idx as usize,
@@ -285,15 +286,15 @@ impl BrepKernel {
             });
         }
         let sk = self.gcs_sketch_mut(sketch)?;
+        let handle = crate::state::next_handle(sk.points.len())?;
         let id = sk
             .sys
             .add_point(remus_sketch::PointData { x, y, fixed })
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("addPoint: {e}"),
             })?;
-        sk.points.push(id);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((sk.points.len() - 1) as u32)
+        sk.points.push(Some(id));
+        Ok(handle)
     }
 
     pub(crate) fn gcs_add_line_impl(
@@ -305,12 +306,12 @@ impl BrepKernel {
         let sk = self.gcs_sketch_mut(sketch)?;
         let a = table_get(&sk.points, "gcs point", p1)?;
         let b = table_get(&sk.points, "gcs point", p2)?;
+        let handle = crate::state::next_handle(sk.lines.len())?;
         let id = sk.sys.add_line(a, b).map_err(|e| WasmError::InvalidInput {
             reason: format!("addLine: {e}"),
         })?;
-        sk.lines.push(id);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((sk.lines.len() - 1) as u32)
+        sk.lines.push(Some(id));
+        Ok(handle)
     }
 
     pub(crate) fn gcs_add_circle_impl(
@@ -326,15 +327,15 @@ impl BrepKernel {
         }
         let sk = self.gcs_sketch_mut(sketch)?;
         let c = table_get(&sk.points, "gcs point", center)?;
+        let handle = crate::state::next_handle(sk.circles.len())?;
         let id = sk
             .sys
             .add_circle(c, radius)
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("addCircle: {e}"),
             })?;
-        sk.circles.push(id);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((sk.circles.len() - 1) as u32)
+        sk.circles.push(Some(id));
+        Ok(handle)
     }
 
     pub(crate) fn gcs_add_arc_impl(
@@ -348,15 +349,15 @@ impl BrepKernel {
         let c = table_get(&sk.points, "gcs point", center)?;
         let s = table_get(&sk.points, "gcs point", start)?;
         let e = table_get(&sk.points, "gcs point", end)?;
+        let handle = crate::state::next_handle(sk.arcs.len())?;
         let id = sk
             .sys
             .add_arc(c, s, e)
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("addArc: {e}"),
             })?;
-        sk.arcs.push(id);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((sk.arcs.len() - 1) as u32)
+        sk.arcs.push(Some(id));
+        Ok(handle)
     }
 
     pub(crate) fn gcs_add_ellipse_impl(
@@ -384,15 +385,15 @@ impl BrepKernel {
         }
         let sk = self.gcs_sketch_mut(sketch)?;
         let c = table_get(&sk.points, "gcs point", center)?;
+        let handle = crate::state::next_handle(sk.ellipses.len())?;
         let id = sk
             .sys
             .add_ellipse(c, a, b, angle)
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("addEllipse: {e}"),
             })?;
-        sk.ellipses.push(id);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((sk.ellipses.len() - 1) as u32)
+        sk.ellipses.push(Some(id));
+        Ok(handle)
     }
 
     pub(crate) fn gcs_add_constraint_impl(
@@ -406,15 +407,15 @@ impl BrepKernel {
             })?;
         let sk = self.gcs_sketch_mut(sketch)?;
         let constraint = parse_gcs_constraint(sk, &val)?;
+        let handle = crate::state::next_handle(sk.constraints.len())?;
         let id = sk
             .sys
             .add_constraint(constraint)
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("addConstraint: {e}"),
             })?;
-        sk.constraints.push(id);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok((sk.constraints.len() - 1) as u32)
+        sk.constraints.push(Some(id));
+        Ok(handle)
     }
 
     pub(crate) fn gcs_remove_constraint_impl(
@@ -612,9 +613,9 @@ impl BrepKernel {
             .constraints
             .iter()
             .enumerate()
-            .map(|(i, &id)| {
+            .filter_map(|(i, &id)| {
                 #[allow(clippy::cast_possible_truncation)]
-                (id, i as u32)
+                id.map(|id| (id, i as u32))
             })
             .collect();
 
@@ -682,12 +683,8 @@ impl BrepKernel {
     /// system persists across calls, entities are typed handles, all 35
     /// constraint types are available, and constraints can be removed.
     #[wasm_bindgen(js_name = "gcsNew")]
-    pub fn gcs_new(&mut self) -> u32 {
-        self.gcs_sketches.push(GcsSketchState::default());
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            (self.gcs_sketches.len() - 1) as u32
-        }
+    pub fn gcs_new(&mut self) -> Result<u32, JsError> {
+        Ok(self.gcs_sketches.push(GcsSketchState::default())?)
     }
 
     /// Add a point at `(x, y)`. `fixed` points are not moved by the solver.
@@ -909,14 +906,134 @@ impl BrepKernel {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #[test]
+    fn restore_retires_sketch_and_every_entity_handle_without_rewinding() {
+        let mut k = BrepKernel::new();
+        let empty = k.checkpoint().unwrap();
+        let stale_sketch = k.gcs_new().unwrap();
+        let stale_point = k.gcs_add_point_impl(stale_sketch, 1.0, 2.0, false).unwrap();
+        k.restore(empty).unwrap();
+        let sketch = k.gcs_new().unwrap();
+        assert!(sketch > stale_sketch);
+        let center = k.gcs_add_point_impl(sketch, 0.0, 0.0, false).unwrap();
+        let start = k.gcs_add_point_impl(sketch, 1.0, 0.0, false).unwrap();
+        let end = k.gcs_add_point_impl(sketch, 0.0, 1.0, false).unwrap();
+        assert!(
+            k.gcs_point_position_impl(stale_sketch, stale_point)
+                .is_err()
+        );
+        let checkpoint = k.checkpoint().unwrap();
+        let mut previous = [0; 6];
+        for round in 0..3 {
+            let handles = [
+                k.gcs_add_point_impl(sketch, 99.0, 100.0, false).unwrap(),
+                k.gcs_add_line_impl(sketch, start, end).unwrap(),
+                k.gcs_add_circle_impl(sketch, center, 2.0).unwrap(),
+                k.gcs_add_arc_impl(sketch, center, start, end).unwrap(),
+                k.gcs_add_ellipse_impl(sketch, center, 3.0, 2.0, 0.0)
+                    .unwrap(),
+                k.gcs_add_constraint_impl(
+                    sketch,
+                    &format!(r#"{{"type":"fixX","point":{center},"value":0}}"#),
+                )
+                .unwrap(),
+            ];
+            if round > 0 {
+                assert!(handles.iter().zip(previous).all(|(new, old)| *new > old));
+            }
+            k.gcs_set_point_impl(sketch, center, 7.0, 8.0).unwrap();
+            k.restore(checkpoint).unwrap();
+            assert_position(&k, sketch, center, [0.0, 0.0]);
+            assert!(k.gcs_point_position_impl(sketch, handles[0]).is_err());
+            assert!(k.gcs_add_line_impl(sketch, handles[0], start).is_err());
+            assert!(k.gcs_circle_radius_impl(sketch, handles[2]).is_err());
+            assert!(k.gcs_ellipse_params_impl(sketch, handles[4]).is_err());
+            assert!(k.gcs_remove_constraint_impl(sketch, handles[5]).is_err());
+            let state = k.gcs_sketch(sketch).unwrap();
+            assert!(super::table_get(&state.lines, "gcs line", handles[1]).is_err());
+            assert!(super::table_get(&state.arcs, "gcs arc", handles[3]).is_err());
+            assert_eq!(state.sys.point_count(), 3);
+            previous = handles;
+        }
+        let point = k.gcs_add_point_impl(sketch, 88.0, 77.0, false).unwrap();
+        assert!(point > previous[0]);
+        assert_position(&k, sketch, point, [88.0, 77.0]);
+    }
 
     use crate::kernel::BrepKernel;
+
+    fn assert_position(kernel: &BrepKernel, sketch: u32, point: u32, expected: [f64; 2]) {
+        let actual = kernel.gcs_point_position_impl(sketch, point).unwrap();
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn restore_keeps_diagnostic_handles_and_failed_allocation_high_water() {
+        let mut k = BrepKernel::new();
+        let sketch = k.gcs_new().unwrap();
+        let point = k.gcs_add_point_impl(sketch, 5.0, 7.0, false).unwrap();
+        let retained = k
+            .gcs_add_constraint_impl(
+                sketch,
+                &format!(r#"{{"type":"fixX","point":{point},"value":2}}"#),
+            )
+            .unwrap();
+        let checkpoint = k.checkpoint().unwrap();
+        let stale_point = k.gcs_add_point_impl(sketch, 99.0, 100.0, false).unwrap();
+        let stale_constraint = k
+            .gcs_add_constraint_impl(
+                sketch,
+                &format!(r#"{{"type":"fixX","point":{point},"value":9}}"#),
+            )
+            .unwrap();
+        k.restore(checkpoint).unwrap();
+        let before = format!("{:?}", k.gcs_sketch(sketch).unwrap());
+        assert!(k.gcs_add_point_impl(sketch, f64::NAN, 0.0, false).is_err());
+        assert!(k.gcs_set_point_impl(sketch, stale_point, 1.0, 2.0).is_err());
+        assert!(k.gcs_add_line_impl(sketch, point, stale_point).is_err());
+        assert!(
+            k.gcs_add_constraint_impl(
+                sketch,
+                &format!(r#"{{"type":"fixY","point":{stale_point},"value":3}}"#),
+            )
+            .is_err()
+        );
+        assert_eq!(format!("{:?}", k.gcs_sketch(sketch).unwrap()), before);
+        let fresh_point = k.gcs_add_point_impl(sketch, 8.0, 9.0, true).unwrap();
+        assert_eq!(fresh_point, stale_point + 1);
+        let fresh_constraint = k
+            .gcs_add_constraint_impl(
+                sketch,
+                &format!(r#"{{"type":"fixY","point":{point},"value":3}}"#),
+            )
+            .unwrap();
+        assert_eq!(fresh_constraint, stale_constraint + 1);
+        let solved = k.gcs_solve_detailed_impl(sketch, 100, 1e-10).unwrap();
+        assert!(solved.converged);
+        let handles: Vec<_> = solved
+            .constraint_residuals
+            .iter()
+            .map(|residual| residual.constraint)
+            .collect();
+        assert_eq!(handles, vec![retained, fresh_constraint]);
+        assert_position(&k, sketch, point, [2.0, 3.0]);
+        assert_position(&k, sketch, fresh_point, [8.0, 9.0]);
+        k.restore(checkpoint).unwrap();
+        assert_position(&k, sketch, point, [5.0, 7.0]);
+        assert!(k.gcs_point_position_impl(sketch, fresh_point).is_err());
+        let restored = k.gcs_solve_detailed_impl(sketch, 100, 1e-10).unwrap();
+        assert!(restored.converged);
+        assert_eq!(restored.constraint_residuals.len(), 1);
+        assert_eq!(restored.constraint_residuals[0].constraint, retained);
+    }
 
     #[test]
     fn gcs_dense_budget_direct_and_batch_refuse_atomically() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
-        k.gcs_sketches[s as usize].sys =
+        let s = k.gcs_new().unwrap();
+        k.gcs_sketches.get_mut(s as usize).unwrap().sys =
             remus_sketch::GcsSystem::with_limits(remus_sketch::GcsLimits {
                 max_dense_bytes: 1,
                 ..remus_sketch::GcsLimits::default()
@@ -969,7 +1086,7 @@ mod tests {
     #[test]
     fn tangent_line_circle_solves_without_contact_point() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
 
         let c = k.gcs_add_point_impl(s, 5.0, 4.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 3.0).unwrap();
@@ -1007,7 +1124,7 @@ mod tests {
     #[test]
     fn symmetric_about_point_solves() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
 
         let center = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
         let p1 = k.gcs_add_point_impl(s, -4.0, 0.0, true).unwrap();
@@ -1032,7 +1149,7 @@ mod tests {
     #[test]
     fn tangent_line_arc_solves() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
 
         // Arc: center fixed at origin, start/end free near radius 5.
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
@@ -1081,7 +1198,7 @@ mod tests {
     #[test]
     fn point_on_circle_adjusts_radius() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 2.0).unwrap();
         let p = k.gcs_add_point_impl(s, 3.0, 4.0, true).unwrap();
@@ -1103,7 +1220,7 @@ mod tests {
     #[test]
     fn remove_constraint_restores_dof() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         let b = k.gcs_add_point_impl(s, 3.0, 0.0, false).unwrap();
         let cid = k
@@ -1127,7 +1244,7 @@ mod tests {
     #[test]
     fn all_twenty_four_constraint_types_parse() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p0 = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         let p1 = k.gcs_add_point_impl(s, 1.0, 0.0, false).unwrap();
         let p2 = k.gcs_add_point_impl(s, 0.0, 1.0, false).unwrap();
@@ -1192,7 +1309,7 @@ mod tests {
     #[test]
     fn invalid_constraints_error() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         assert!(
             k.gcs_add_constraint_impl(s, r#"{"type":"warp","a":0}"#)
                 .is_err()
@@ -1210,10 +1327,10 @@ mod tests {
     #[test]
     fn checkpoint_restores_gcs_sketch_state() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 1.0, 2.0, false).unwrap();
 
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         k.gcs_set_point_impl(s, a, 9.0, 9.0).unwrap();
         let moved = k.gcs_point_position_impl(s, a).unwrap();
         assert!((moved[0] - 9.0).abs() < 1e-12);
@@ -1233,7 +1350,7 @@ mod tests {
     #[test]
     fn circle_radius_constraint_drives_radius() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 1.0).unwrap();
         k.gcs_add_constraint_impl(
@@ -1252,7 +1369,7 @@ mod tests {
     #[test]
     fn circle_radius_rejects_bad_values() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 1.0).unwrap();
         for bad in ["0", "-3.0", "null"] {
@@ -1285,7 +1402,7 @@ mod tests {
     #[test]
     fn equal_radius_circle_circle_solves() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c1 = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let c2 = k.gcs_add_point_impl(s, 30.0, 0.0, true).unwrap();
         let circ1 = k.gcs_add_circle_impl(s, c1, 2.0).unwrap();
@@ -1311,7 +1428,7 @@ mod tests {
     #[test]
     fn equal_length_solves() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a0 = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let a1 = k.gcs_add_point_impl(s, 3.0, 4.0, true).unwrap();
         let l1 = k.gcs_add_line_impl(s, a0, a1).unwrap();
@@ -1337,7 +1454,7 @@ mod tests {
     #[test]
     fn midpoint_solves() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, -4.0, 2.0, true).unwrap();
         let b = k.gcs_add_point_impl(s, 10.0, 8.0, true).unwrap();
         let line = k.gcs_add_line_impl(s, a, b).unwrap();
@@ -1361,7 +1478,7 @@ mod tests {
     #[test]
     fn symmetric_solves() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         // Axis x = 2.
         let ax = k.gcs_add_point_impl(s, 2.0, -1.0, true).unwrap();
         let bx = k.gcs_add_point_impl(s, 2.0, 5.0, true).unwrap();
@@ -1388,7 +1505,7 @@ mod tests {
     #[test]
     fn point_lock_composes_from_fix_x_and_fix_y() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 5.0, 5.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":1.5}}"#))
             .unwrap();
@@ -1410,7 +1527,7 @@ mod tests {
     #[test]
     fn solve_detailed_reports_under_constrained() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let b = k.gcs_add_point_impl(s, 3.0, 0.0, false).unwrap();
         let cid = k
@@ -1441,7 +1558,7 @@ mod tests {
     #[test]
     fn solve_detailed_reports_redundant() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 5.0, 7.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
             .unwrap();
@@ -1464,7 +1581,7 @@ mod tests {
     #[test]
     fn solve_detailed_rolls_back_and_blames_nobody() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
         let c1 = k
             .gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
@@ -1500,7 +1617,7 @@ mod tests {
     #[test]
     fn solve_detailed_excludes_internal_arc_constraints() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let a0 = k.gcs_add_point_impl(s, 5.0, 0.0, false).unwrap();
         let a1 = k.gcs_add_point_impl(s, 0.0, 2.0, false).unwrap();
@@ -1528,7 +1645,7 @@ mod tests {
     #[test]
     fn solve_detailed_tracks_constraint_removal() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
             .unwrap();
@@ -1559,7 +1676,7 @@ mod tests {
     fn solve_detailed_is_deterministic() {
         let build = || {
             let mut k = BrepKernel::new();
-            let s = k.gcs_new();
+            let s = k.gcs_new().unwrap();
             let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
             let b = k.gcs_add_point_impl(s, 3.1, 0.7, false).unwrap();
             let c = k.gcs_add_point_impl(s, 1.0, 4.2, false).unwrap();
@@ -1618,7 +1735,7 @@ mod tests {
     #[test]
     fn solve_detailed_validates_arguments() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         assert!(k.gcs_solve_detailed_impl(s, 100, 0.0).is_err());
         assert!(k.gcs_solve_detailed_impl(s, 100, -1e-9).is_err());
         assert!(k.gcs_solve_detailed_impl(s, 100, f64::NAN).is_err());
@@ -1630,7 +1747,7 @@ mod tests {
     #[test]
     fn plain_solve_still_publishes_its_final_iterate() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
             .unwrap();
@@ -1653,7 +1770,7 @@ mod tests {
     #[test]
     fn b16_angle_solves_via_binding() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let o = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let x = k.gcs_add_point_impl(s, 4.0, 0.0, true).unwrap();
         let q = k.gcs_add_point_impl(s, 1.0, 1.0, false).unwrap();
@@ -1681,7 +1798,7 @@ mod tests {
     #[test]
     fn b16_point_line_distance_solves_via_binding() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let b = k.gcs_add_point_impl(s, 4.0, 0.0, true).unwrap();
         let p = k.gcs_add_point_impl(s, 1.0, 5.0, false).unwrap();
@@ -1705,7 +1822,7 @@ mod tests {
     fn b16_solve_detailed_redundant_and_rollback_via_binding() {
         // Redundant: duplicate FixX.
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
             .unwrap();
@@ -1720,7 +1837,7 @@ mod tests {
 
         // Rollback: contradictory FixX restores the pre-solve point.
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
             .unwrap();
@@ -1738,7 +1855,7 @@ mod tests {
     fn b16_translated_tangency_via_binding() {
         let (tx, ty) = (1_000_000.0, -1_000_000.0);
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, tx, ty, true).unwrap();
         let b = k.gcs_add_point_impl(s, tx + 4.0, ty, true).unwrap();
         let c = k.gcs_add_point_impl(s, tx + 1.0, ty + 5.0, false).unwrap();
@@ -1774,7 +1891,7 @@ mod tests {
     #[test]
     fn ellipse_add_query_mutate_validates() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.5).unwrap();
         let params = k.gcs_ellipse_params_impl(s, e).unwrap();
@@ -1835,7 +1952,7 @@ mod tests {
     #[test]
     fn ellipse_driven_solve_via_binding() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, 0.0).unwrap();
         k.gcs_add_constraint_impl(
@@ -1870,7 +1987,7 @@ mod tests {
     #[test]
     fn ellipse_tangent_solves_via_binding() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 4.0, 2.0, 0.0).unwrap();
         for (ty, val) in [
@@ -1920,11 +2037,11 @@ mod tests {
     #[test]
     fn checkpoint_restores_gcs_ellipse_state() {
         let mut k = BrepKernel::new();
-        let s = k.gcs_new();
+        let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.5).unwrap();
 
-        let cp = k.checkpoint();
+        let cp = k.checkpoint().unwrap();
         k.gcs_set_ellipse_impl(s, e, 9.0, 9.0, 6.0, 1.0, 1.2)
             .unwrap();
         k.restore(cp).unwrap();
