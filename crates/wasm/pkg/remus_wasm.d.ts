@@ -3393,7 +3393,7 @@ export class BrepKernel {
     /**
      * Project one edge along a direction onto a face's trimmed region.
      * Returns the §8 typed ProjectedCurves object. Refusals throw with the
-     * stable project-curve:<code> prefix; omitted options use defaults.
+     * stable `project-curve:<code>` prefix; omitted options use defaults.
      */
     projectCurveOntoFace(edge: number, dir_x: number, dir_y: number, dir_z: number, face: number, options?: ProjectCurveOptions | null): ProjectedCurves;
     /**
