@@ -559,6 +559,57 @@ mod tests {
         serde_json::from_str(&response).expect("batch v2 response parses")
     }
 
+    #[test]
+    fn batch_projection_keeps_retained_reference_through_next_journaled_edit() {
+        for v2 in [false, true] {
+            for onto_solid in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let made = batch(
+                    &mut kernel,
+                    r#"[
+                    {"op":"makeBox","args":{"width":10,"height":8,"depth":4}},
+                    {"op":"makeBox","args":{"width":1,"height":1,"depth":1}},
+                    {"op":"makeBox","args":{"width":2,"height":3,"depth":4}},
+                    {"op":"makeBox","args":{"width":1,"height":1,"depth":1}},
+                    {"op":"makeLineEdge","args":{"x1":1,"y1":2,"z1":7,"x2":8,"y2":5,"z2":9}}
+                ]"#,
+                );
+                let handles: Vec<_> = made
+                    .iter()
+                    .map(|row| u32::try_from(row["ok"].as_u64().unwrap()).unwrap())
+                    .collect();
+                let anchor: serde_json::Value =
+                    serde_json::from_str(&kernel.fuse_journaled(handles[0], handles[1]).unwrap())
+                        .unwrap();
+                let target = u32::try_from(anchor["solid"].as_u64().unwrap()).unwrap();
+                let operation = u32::try_from(anchor["op"].as_u64().unwrap()).unwrap();
+                let reference = kernel
+                    .make_operation_output_ref(operation, "face", 0)
+                    .unwrap();
+                let before = kernel.resolve_ref(&reference).unwrap();
+                let face = kernel.get_solid_faces(target).unwrap().into_iter().find(|id| {
+                    let face = kernel.resolve_face(*id).unwrap();
+                    matches!(kernel.topo.face(face).unwrap().surface(), remus_topology::face::FaceSurface::Plane { normal, .. } if normal.z() > 0.9)
+                }).unwrap();
+                let request = if onto_solid {
+                    serde_json::json!([{"op":"projectCurvesOntoSolid","args":{"edges":[handles[4]],"dirX":0,"dirY":0,"dirZ":-1,"solid":target}}])
+                } else {
+                    serde_json::json!([{"op":"projectCurveOntoFace","args":{"edge":handles[4],"dirX":0,"dirY":0,"dirZ":-1,"face":face}}])
+                }.to_string();
+                let result = if v2 {
+                    batch_v2(&mut kernel, &request)
+                } else {
+                    batch(&mut kernel, &request)
+                };
+                assert!(result[0].get("ok").is_some(), "{result:?}");
+                assert_eq!(kernel.topo.journal().len(), 2);
+                kernel.fuse_journaled(handles[2], handles[3]).unwrap();
+                assert_eq!(kernel.resolve_ref(&reference).unwrap(), before);
+                assert_eq!(kernel.topo.journal().len(), 3);
+            }
+        }
+    }
+
     fn box_top_face(kernel: &mut BrepKernel) -> (u32, u32) {
         let made = batch(
             kernel,
