@@ -83,9 +83,98 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       }
       assert.equal(kernel.journalSummary(), before);
       assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), bytes);
+
+      // A curved cap boundary must not prevent first-hit projection onto
+      // the disk. The parallel lateral carrier contributes no earlier hit.
+      const cylinder = kernel.makeCylinder(2, 10);
+      const topCap = Array.from(kernel.getSolidFaces(cylinder))
+        .find((candidate) => kernel.getFaceNormal(candidate)[2] > 0.9);
+      assert.notEqual(topCap, undefined);
+      const aboveCap = kernel.makeLineEdge(-0.5, 0, 12, 0.5, 0, 12);
+      const capSource = Array.from(kernel.getEdgeVertices(aboveCap));
+      const capJournal = kernel.journalSummary();
+      const capBytes = kernel.serializeSolids(Uint32Array.of(cylinder));
+      const capArgs = { edges: [aboveCap], dirX: 0, dirY: 0, dirZ: -1, solid: cylinder };
+      const onCap = invoke(kernel, route, 'projectCurvesOntoSolid', capArgs,
+        () => kernel.projectCurvesOntoSolid(Uint32Array.of(aboveCap), 0, 0, -1, cylinder));
+      assert.deepEqual(onCap.quality, { kind: 'exact' });
+      assert.equal(onCap.sources.length, 1);
+      assert.equal(onCap.sources[0].source, aboveCap);
+      assert.equal(onCap.sources[0].clipped, false);
+      assert.equal(onCap.sources[0].edges.length, 1);
+      const capEdge = onCap.sources[0].edges[0];
+      assert.equal(capEdge.face, topCap);
+      near([capEdge.sourceStart, capEdge.sourceEnd], [0, 1]);
+      near(Array.from(kernel.getEdgeVertices(capEdge.edge)), [-0.5, 0, 10, 0.5, 0, 10]);
+      assert.ok(!Array.from(kernel.getSolidEdges(cylinder)).includes(capEdge.edge));
+      assert.deepEqual(Array.from(kernel.getEdgeVertices(aboveCap)), capSource);
+      assert.equal(kernel.journalSummary(), capJournal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), capBytes);
+
+      // A1's first hit is the cylinder's front wall. Default options refuse
+      // approximation; explicit consent returns a free NURBS with disclosed
+      // deviation. Its independent metric combines cylinder distance and
+      // the source-circle distance after pulling back to the y=5 plane.
+      const circle = kernel.makeCircleEdgeWithRef(0, 5, 5, 0, 1, 0, 1, 1, 0, 0);
+      const circleSource = Array.from(kernel.getEdgeVertices(circle));
+      const circleSpan = Array.from(kernel.getEdgeParamSpan(circle));
+      const approximateJournal = kernel.journalSummary();
+      const approximateBytes = kernel.serializeSolids(Uint32Array.of(cylinder));
+      const approximateArgs = { edges: [circle], dirX: 0, dirY: -1, dirZ: 0, solid: cylinder };
+      if (route === 'direct') {
+        assert.throws(() => kernel.projectCurvesOntoSolid(Uint32Array.of(circle), 0, -1, 0, cylinder),
+          (error) => /project-curve:source-refused/.test(error.message)
+            && /source 0 refused/.test(error.message) && /approximation was not allowed/.test(error.message));
+      } else {
+        const failed = JSON.parse(kernel[route](JSON.stringify([
+          { op: 'projectCurvesOntoSolid', args: approximateArgs },
+        ])))[0].error;
+        if (route === 'executeBatchV2') {
+          assert.equal(failed.details.kernelCode, 'project-curve:source-refused');
+          assert.match(failed.message, /source 0 refused.*approximation was not allowed/);
+        } else assert.match(failed, /source 0 refused.*approximation was not allowed/);
+      }
+      assert.deepEqual(Array.from(kernel.getEdgeVertices(circle)), circleSource);
+      assert.deepEqual(Array.from(kernel.getEdgeParamSpan(circle)), circleSpan);
+      assert.equal(kernel.journalSummary(), approximateJournal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), approximateBytes);
+
+      const approximateOptions = { allowApproximate: true };
+      const approximate = invoke(kernel, route, 'projectCurvesOntoSolid',
+        { ...approximateArgs, options: approximateOptions },
+        () => kernel.projectCurvesOntoSolid(Uint32Array.of(circle), 0, -1, 0, cylinder, approximateOptions));
+      assert.equal(approximate.quality.kind, 'approximate');
+      assert.ok(Number.isFinite(approximate.quality.maxDeviation));
+      // The unit circle's diameter and the cylinder radius both give scale 2.
+      assert.ok(approximate.quality.maxDeviation > 0 && approximate.quality.maxDeviation <= 2e-6);
+      assert.equal(approximate.sources.length, 1);
+      assert.equal(approximate.sources[0].source, circle);
+      assert.equal(approximate.sources[0].clipped, false);
+      assert.equal(approximate.sources[0].edges.length, 1);
+      const fittedEdge = approximate.sources[0].edges[0];
+      near([fittedEdge.sourceStart, fittedEdge.sourceEnd], circleSpan);
+      assert.equal(kernel.getEdgeCurveType(fittedEdge.edge), 'BSPLINE_CURVE');
+      assert.notEqual(kernel.getEdgeNurbsData(fittedEdge.edge), null);
+      assert.ok(!Array.from(kernel.getSolidEdges(cylinder)).includes(fittedEdge.edge));
+      const fittedVertices = kernel.getEdgeVertexHandles(fittedEdge.edge);
+      assert.equal(fittedVertices[0], fittedVertices[1], 'closed circle keeps a closed image');
+      const [start, end] = kernel.getEdgeParamSpan(fittedEdge.edge);
+      let measured = 0;
+      for (let index = 0; index <= 4096; index += 1) {
+        const [x, y, z] = kernel.evaluateEdgeCurve(fittedEdge.edge, start + (end - start) * index / 4096);
+        assert.ok([x, y, z].every(Number.isFinite));
+        assert.ok(y > 0 && y < 5 && z >= 4 - 1e-7 && z <= 6 + 1e-7, 'front-wall first hit');
+        measured = Math.max(measured, Math.abs(Math.hypot(x, y) - 2), Math.abs(Math.hypot(x, z - 5) - 1));
+      }
+      assert.ok(measured <= approximate.quality.maxDeviation + 1e-10,
+        `sampled deviation ${measured} exceeds disclosed ${approximate.quality.maxDeviation}`);
+      assert.deepEqual(Array.from(kernel.getEdgeVertices(circle)), circleSource);
+      assert.deepEqual(Array.from(kernel.getEdgeParamSpan(circle)), circleSpan);
+      assert.equal(kernel.journalSummary(), approximateJournal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), approximateBytes);
     } finally {
       kernel.free();
     }
   }
-  console.log('ok - packaged projection objects, forward-ray clipping, sketch arrays and typed refusals');
+  console.log('ok - packaged projection objects, forward-ray clipping, cylinder caps, approximate solid images and typed refusals');
 }
