@@ -4500,7 +4500,8 @@ fn certified_cartesian_sphere_in_cylinder(
 /// An enclosure candidate is only a reason to refuse an uncertain whole-
 /// primitive pair before GFA; it never authorizes a copy or cavity. Local
 /// support inequalities here deliberately omit world-scale qualification
-/// uncertainty, which the actual certificates above must resolve.
+/// uncertainty, which the actual certificates above must resolve. Require
+/// positive local clearance so contact cases retain their existing pipeline.
 fn sphere_cylinder_enclosure_candidate(
     sphere: &remus_algo::classifier::AnalyticClassifier,
     cylinder: &remus_algo::classifier::AnalyticClassifier,
@@ -4557,9 +4558,9 @@ fn sphere_cylinder_enclosure_candidate(
         && *radius > 0.0
         && *cylinder_radius > 0.0
         && z_min < z_max
-        && extent <= cylinder_radius + margin
-        && low >= z_min - margin
-        && high <= z_max + margin
+        && extent < cylinder_radius - margin
+        && low > z_min + margin
+        && high < z_max - margin
 }
 
 /// A convex region contains the hull of any points it contains. These points
