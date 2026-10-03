@@ -15,6 +15,7 @@ import { dirname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regressions.mjs';
+import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
@@ -84,6 +85,7 @@ try {
 
   runSecurityResourceRegressions({ ...packageExports, ...ioExports });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
+  runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);
   console.log('\nInstalled-tarball consumer regressions passed');

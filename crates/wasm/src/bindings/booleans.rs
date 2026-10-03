@@ -2155,4 +2155,105 @@ mod tests {
             .unwrap();
         assert_eq!(out.quality, "exact");
     }
+
+    // ── fuseAll lump order ───────────────────────────────────────────
+
+    /// Through `executeBatch`, fuse four unit boxes at x = 0, 10, 10.5, 20 —
+    /// one lump, an overlapping pair, one lump — and return the lump each
+    /// published face belongs to (`0`, `1` = the pair, `2`) with consecutive
+    /// repeats collapsed.
+    fn batch_fuse_all_lump_order(k: &mut BrepKernel) -> Vec<usize> {
+        let run = |k: &mut BrepKernel, ops: serde_json::Value| -> Vec<serde_json::Value> {
+            let out: serde_json::Value = serde_json::from_str(&k.execute_batch(&ops.to_string()))
+                .expect("batch output is JSON");
+            out.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    assert!(r["error"].is_null(), "batch op failed: {r}");
+                    r["ok"].clone()
+                })
+                .collect()
+        };
+        let offsets = [0.0, 10.0, 10.5, 20.0];
+        let boxes: Vec<u64> = run(
+            k,
+            serde_json::Value::Array(
+                offsets
+                    .iter()
+                    .map(|_| {
+                        serde_json::json!({"op": "makeBox",
+                            "args": {"width": 1.0, "height": 1.0, "depth": 1.0}})
+                    })
+                    .collect(),
+            ),
+        )
+        .iter()
+        .map(|h| h.as_u64().unwrap())
+        .collect();
+        let mut ops: Vec<serde_json::Value> = boxes
+            .iter()
+            .zip(offsets)
+            .map(|(&solid, dx)| {
+                serde_json::json!({"op": "transform", "args": {"solid": solid, "matrix": [
+                    1.0, 0.0, 0.0, dx,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                ]}})
+            })
+            .collect();
+        ops.push(serde_json::json!({"op": "fuseAll", "args": {"solids": boxes}}));
+        let fused = run(k, serde_json::Value::Array(ops))
+            .last()
+            .unwrap()
+            .clone();
+        let faces = run(
+            k,
+            serde_json::json!([{"op": "getSolidFaces", "args": {"solid": fused}}]),
+        )[0]
+        .clone();
+        let positions = run(
+            k,
+            serde_json::Value::Array(
+                faces
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|f| serde_json::json!({"op": "getFaceVertexPositions", "args": {"face": f}}))
+                    .collect(),
+            ),
+        );
+        let mut order: Vec<usize> = Vec::new();
+        for coords in positions {
+            let x = coords[0].as_f64().unwrap();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let lump = (x / 10.0).round() as usize;
+            if order.last() != Some(&lump) {
+                order.push(lump);
+            }
+        }
+        order
+    }
+
+    /// `fuseAll` publishes disjoint lumps in input order, identically in a
+    /// fresh kernel and in one that has done unrelated work first. The lump
+    /// order used to follow a std `HashMap`'s per-instance `RandomState`, so
+    /// a checkpoint replay and a cold kernel could enumerate faces differently.
+    #[test]
+    fn fuse_all_lump_order_is_input_order_regardless_of_prior_work() {
+        let mut cold = BrepKernel::new();
+        assert_eq!(batch_fuse_all_lump_order(&mut cold), vec![0, 1, 2]);
+
+        for _ in 0..8 {
+            let (mut warm, setup) = two_boxes_batch();
+            let parsed: serde_json::Value = serde_json::from_str(&setup).unwrap();
+            let (a, b) = (&parsed[0]["ok"], &parsed[1]["ok"]);
+            let cut = warm.execute_batch(&format!(
+                r#"[{{"op": "cut", "args": {{"solidA": {a}, "solidB": {b}}}}}]"#
+            ));
+            assert!(batch_has_ok(&cut, 0), "{cut}");
+            assert_eq!(batch_fuse_all_lump_order(&mut warm), vec![0, 1, 2]);
+        }
+    }
 }
