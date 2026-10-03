@@ -121,6 +121,58 @@ function identityWitnesses(BrepKernel) {
 }
 
 function distanceWitnesses(BrepKernel) {
+  // Full circular rims must ignore their arbitrary parameter seams. The
+  // inner rim is correctly clockwise about the annular face's +Z normal.
+  // Both point-distance bindings are direct-only; no batch API is added here.
+  for (const offset of [0, 10, 100]) {
+    const kernel = new BrepKernel();
+    try {
+      const rim = (radius, normalZ) => kernel.makeWire(Uint32Array.of(
+        kernel.makeCircleEdgeWithRef(offset, offset, offset, 0, 0, normalZ, radius, 0, 1, 0),
+      ), true);
+      const face = kernel.makeFaceFromWires(rim(3, 1), Uint32Array.of(rim(1, -1)));
+      const solid = kernel.extrude(face, 0, 0, 1, 2);
+      assert.equal(JSON.parse(kernel.validateSolidDetailed(solid)).errorCount, 0);
+      const before = kernel.serializeSolids(Uint32Array.of(solid));
+      const verticesBefore = Array.from(kernel.getFaceVertices(face))
+        .map(vertex => Array.from(kernel.getVertexPosition(vertex)));
+      const query = [offset, offset, offset - 1];
+      for (const result of [kernel.pointToFaceDistance(...query, face),
+        kernel.pointToSolidDistance(...query, solid)]) {
+        const [distance, x, y, z] = Array.from(result);
+        assert.ok(Math.abs(distance - Math.SQRT2) < 1e-7,
+          `clockwise circular hole at ${offset}: minimum ${distance} vs sqrt(2)`);
+        assert.ok(Math.abs(Math.hypot(x - offset, y - offset) - 1) < 1e-7,
+          `annular witness must lie on the actual inner rim: ${result}`);
+        assert.ok(Math.abs(z - offset) < 1e-7);
+        assert.ok(Math.abs(Math.hypot(...query.map((coordinate, i) =>
+          coordinate - [x, y, z][i])) - distance) < 1e-7);
+      }
+      const [topDistance, topX, topY, topZ] = Array.from(
+        kernel.pointToSolidDistance(offset, offset, offset + 3, solid),
+      );
+      assert.ok(Math.abs(topDistance - Math.SQRT2) < 1e-7);
+      assert.ok(Math.abs(Math.hypot(topX - offset, topY - offset) - 1) < 1e-7);
+      assert.ok(Math.abs(topZ - offset - 2) < 1e-7);
+      // Interior cap projections remain valid; the repair must not force
+      // every projection to a circular rim.
+      const interiorQuery = [offset + 2, offset, offset - 1];
+      for (const result of [kernel.pointToFaceDistance(...interiorQuery, face),
+        kernel.pointToSolidDistance(...interiorQuery, solid)]) {
+        const [distance, x, y, z] = Array.from(result);
+        assert.ok(Math.abs(distance - 1) < 1e-7);
+        assert.ok(Math.abs(x - offset - 2) < 1e-7);
+        assert.ok(Math.abs(y - offset) < 1e-7);
+        assert.ok(Math.abs(z - offset) < 1e-7);
+      }
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), before);
+      assert.deepEqual(Array.from(kernel.getFaceVertices(face))
+        .map(vertex => Array.from(kernel.getVertexPosition(vertex))), verticesBefore);
+    } finally {
+      kernel.free();
+    }
+  }
+
   // Independent full-sphere extrema: closest points face each other along centres.
   for (const surface of surfaces) {
     for (const offset of [0, 10, 100]) {
