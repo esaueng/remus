@@ -1,5 +1,6 @@
 //! Checkpoint and sketch state types used by [`super::kernel::BrepKernel`].
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use remus_topology::Topology;
@@ -11,6 +12,55 @@ pub struct Checkpoint {
     pub assemblies: HandleStore<AssemblyState>,
     pub sketches: HandleStore<SketchState>,
     pub gcs_sketches: HandleStore<GcsSketchState>,
+}
+
+/// Maximum retained complete snapshots in one kernel session: 32 history
+/// snapshots plus one temporary probe snapshot.
+pub const MAX_CHECKPOINTS: usize = 33;
+
+/// Sparse, monotonic checkpoint handles. Retired snapshots leave no tombstone
+/// allocation, while their IDs remain permanently stale.
+#[derive(Debug, Default)]
+pub struct CheckpointStore {
+    live: BTreeMap<u32, Checkpoint>,
+    next: u32,
+}
+
+impl CheckpointStore {
+    pub(crate) fn check_admission(&self) -> Result<(), crate::error::WasmError> {
+        if self.live.len() >= MAX_CHECKPOINTS {
+            return Err(crate::error::WasmError::InvalidInput {
+                reason: format!(
+                    "at most {MAX_CHECKPOINTS} checkpoints may be retained; discard a checkpoint before saving another"
+                ),
+            });
+        }
+        next_handle(self.next as usize)?;
+        Ok(())
+    }
+
+    pub(crate) fn push(&mut self, checkpoint: Checkpoint) -> Result<u32, crate::error::WasmError> {
+        self.check_admission()?;
+        let id = self.next;
+        self.live.insert(id, checkpoint);
+        self.next += 1;
+        Ok(id)
+    }
+
+    pub(crate) fn get(&self, index: usize) -> Option<&Checkpoint> {
+        self.live.get(&u32::try_from(index).ok()?)
+    }
+
+    pub(crate) fn active_len(&self) -> usize {
+        self.live.len()
+    }
+
+    pub(crate) fn retire_from(&mut self, index: usize) {
+        if let Ok(id) = u32::try_from(index) {
+            // split_off removes all later IDs in one bounded pass.
+            drop(self.live.split_off(&id));
+        }
+    }
 }
 
 /// State for one sketch in the typed GCS API (`gcs*` bindings).
@@ -77,9 +127,6 @@ impl<T> HandleStore<T> {
     pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.slots.get_mut(index)?.as_mut()
     }
-    pub(crate) fn active_len(&self) -> usize {
-        self.slots.iter().filter(|slot| slot.is_some()).count()
-    }
     pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
         self.slots
             .iter()
@@ -90,11 +137,6 @@ impl<T> HandleStore<T> {
         let handle = next_handle(self.slots.len())?;
         self.slots.push(Some(value));
         Ok(handle)
-    }
-    pub(crate) fn retire_from(&mut self, index: usize) {
-        for slot in self.slots.iter_mut().skip(index) {
-            *slot = None;
-        }
     }
 }
 

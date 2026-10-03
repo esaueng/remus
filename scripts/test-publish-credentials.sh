@@ -82,6 +82,22 @@ if grep -Fq 'HEAD:main' "$PUBLISH_WORKFLOW"; then
   echo "package refresh must use a reviewed PR"
   exit 1
 fi
+# Inspect each token action block, rather than matching unrelated `with` keys.
+python3 - "$PUBLISH_WORKFLOW" <<'SCOPE'
+import re
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+blocks = re.findall(r"      - uses: actions/create-github-app-token@[^\n]+\n(.*?)(?=\n      - |\Z)", text, re.S)
+assert len(blocks) == 1, "publisher must have exactly one App-token action"
+expected = {"owner": "esaueng", "repositories": "remus",
+            "permission-contents": "write", "permission-pull-requests": "write"}
+inputs = dict(re.findall(r"^          ([\w-]+): ([^\n]+)$", blocks[0], re.M))
+for key, value in expected.items():
+    assert inputs.get(key) == value, f"publisher token must narrow {key} to {value}"
+assert {key for key in inputs if key.startswith("permission-")} == {"permission-contents", "permission-pull-requests"}, "publisher token has extra permissions"
+SCOPE
+
 python3 "$SCRIPT_DIR/test-package-refresh-pr.py"
 python3 "$SCRIPT_DIR/test-notify-openzcad-package.py"
 echo "Publish credential contract OK."

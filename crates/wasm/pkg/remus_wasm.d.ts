@@ -57,6 +57,29 @@ export interface EvolutionShapeV1 {
 }
 
 /**
+ * Atomic multi-source projection onto a solid.
+ */
+export interface SolidProjection {
+    sources: SourceProjection[];
+    quality: ProjectionQuality;
+}
+
+/**
+ * Disclosed projection quality; approximate deviation is a sampled maximum.
+ */
+export type ProjectionQuality = { kind: "exact" } | { kind: "approximate"; maxDeviation: number };
+
+/**
+ * Exact 2D curve returned in sketch-plane coordinates.
+ *
+ * NURBS are restricted to the source's trimmed interval. Their knots retain
+ * that interval rather than being normalized to [0, 1]. Explicit tStart/tEnd
+ * preserve the original parameterization and signed traversal, including
+ * descending source intervals; the control net is never reversed.
+ */
+export type PlaneCurve2d = { kind: "line"; start: [number, number]; end: [number, number] } | { kind: "circle"; center: [number, number]; radius: number; startAngle: number; endAngle: number } | { kind: "ellipse"; center: [number, number]; semiMajor: number; semiMinor: number; rotation: number; startAngle: number; endAngle: number } | { kind: "nurbs"; tStart: number; tEnd: number; degree: number; knots: number[]; controlPoints: [number, number][]; weights: number[] };
+
+/**
  * Material side for `faceMaterialSense`: `"outward"` (boss-like) or
  * `"inward"` (bore- or pocket-like).
  *
@@ -94,6 +117,17 @@ export interface ValidationIssueResult {
 }
 
 /**
+ * One projected edge and its source parameter interval.
+ */
+export interface ProjectedEdge {
+    edge: number;
+    face: number;
+    sourceStart: number;
+    sourceEnd: number;
+    planeCurve?: PlaneCurve2d;
+}
+
+/**
  * One row of `solidEdgeRelations`: the edge handle plus its convexity.
  *
  * Ship the bulk binding and tell the consumer to use it: a per-edge loop
@@ -121,6 +155,25 @@ export interface EdgeRelationRow {
 export interface EvolutionRelationV1 {
     source: number;
     results: number[];
+}
+
+/**
+ * One source's first-hit projections onto a solid, in input order.
+ */
+export interface SourceProjection {
+    source: number;
+    edges: ProjectedEdge[];
+    clipped: boolean;
+}
+
+/**
+ * Optional controls for directional curve projection (P-Class 7.4 §8).
+ */
+export interface ProjectCurveOptions {
+    allowApproximate?: boolean;
+    approximationTolerance?: number;
+    maxControlPoints?: number;
+    planeFrame?: SketchFrame;
 }
 
 /**
@@ -162,6 +215,16 @@ export interface HealStepResult {
 }
 
 /**
+ * Projection of one source onto a trimmed face.
+ */
+export interface ProjectedCurves {
+    edges: ProjectedEdge[];
+    face: number;
+    quality: ProjectionQuality;
+    clipped: boolean;
+}
+
+/**
  * Residual magnitude attributed to one constraint in a `gcsSolveDetailed`
  * report.
  *
@@ -181,6 +244,15 @@ export interface GcsConstraintResidual {
      * survives marks where it could not.
      */
     maxResidual: number;
+}
+
+/**
+ * Sketch plane coordinates; the y axis is normal × xAxis.
+ */
+export interface SketchFrame {
+    origin: [number, number, number];
+    xAxis: [number, number, number];
+    normal: [number, number, number];
 }
 
 /**
@@ -1079,7 +1151,10 @@ export class BrepKernel {
      *
      * # Errors
      *
-     * Returns an error if the checkpoint handle namespace is exhausted.
+     * Returns an error if 33 snapshots are already retained (32 history
+     * snapshots plus one temporary probe) or the checkpoint handle namespace
+     * is exhausted. Discard a checkpoint to free capacity; existing
+     * checkpoints remain valid and restore stays available.
      */
     checkpoint(): number;
     /**
@@ -3325,6 +3400,22 @@ export class BrepKernel {
      * or if any edges cross.
      */
     polygonsIntersect2d(coords_a: Float64Array, coords_b: Float64Array): boolean;
+    /**
+     * Project one edge along a direction onto a face's trimmed region.
+     * Returns the §8 typed ProjectedCurves object. Refusals throw with the
+     * stable `project-curve:<code>` prefix; omitted options use defaults.
+     */
+    projectCurveOntoFace(edge: number, dir_x: number, dir_y: number, dir_z: number, face: number, options?: ProjectCurveOptions | null): ProjectedCurves;
+    /**
+     * Project edges onto the unbounded plane of a typed SketchFrame object.
+     * Returns the §8 PlaneCurve2d object array without changing topology.
+     */
+    projectCurvesOntoSketchPlane(edges: Uint32Array, dir_x: number, dir_y: number, dir_z: number, frame: SketchFrame): PlaneCurve2d[];
+    /**
+     * Project edges along a direction onto a solid's first-hit faces.
+     * Returns the §8 typed SolidProjection object, atomically over sources.
+     */
+    projectCurvesOntoSolid(edges: Uint32Array, dir_x: number, dir_y: number, dir_z: number, solid: number, options?: ProjectCurveOptions | null): SolidProjection;
     /**
      * Project a solid's edges onto a view plane with hidden-line removal.
      *

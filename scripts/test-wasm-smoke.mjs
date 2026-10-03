@@ -14,8 +14,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
+import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
+import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -56,6 +58,8 @@ const {
   decodeEvolutionPayload,
 } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
 const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_io_node.cjs'));
+
+runSecurityResourceRegressions({ BrepKernel, RemusIo });
 
 const DEFLECTION = 0.1;
 
@@ -1627,6 +1631,7 @@ runB6SectionSplitPackaged({ BrepKernel });
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
 runCircularPatternPackaged({ BrepKernel });
+runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });

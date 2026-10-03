@@ -11,6 +11,144 @@ use tsify::Tsify;
 
 use crate::error::StructuredWasmError;
 
+/// Optional controls for directional curve projection (P-Class 7.4 §8).
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCurveOptions {
+    #[serde(
+        default,
+        deserialize_with = "present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allow_approximate: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub approximation_tolerance: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_control_points: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub plane_frame: Option<SketchFrame>,
+}
+
+// Missing optional fields use `default`; a present field must have its declared
+// type. In particular, null must not silently disable an approximation budget.
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Sketch plane coordinates; the y axis is normal × xAxis.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SketchFrame {
+    pub origin: [f64; 3],
+    pub x_axis: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+/// Exact 2D curve returned in sketch-plane coordinates.
+///
+/// NURBS are restricted to the source's trimmed interval. Their knots retain
+/// that interval rather than being normalized to [0, 1]. Explicit tStart/tEnd
+/// preserve the original parameterization and signed traversal, including
+/// descending source intervals; the control net is never reversed.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Tsify)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaneCurve2d {
+    Line {
+        start: [f64; 2],
+        end: [f64; 2],
+    },
+    Circle {
+        center: [f64; 2],
+        radius: f64,
+        start_angle: f64,
+        end_angle: f64,
+    },
+    Ellipse {
+        center: [f64; 2],
+        semi_major: f64,
+        semi_minor: f64,
+        rotation: f64,
+        start_angle: f64,
+        end_angle: f64,
+    },
+    Nurbs {
+        t_start: f64,
+        t_end: f64,
+        degree: usize,
+        knots: Vec<f64>,
+        control_points: Vec<[f64; 2]>,
+        weights: Vec<f64>,
+    },
+}
+
+/// Disclosed projection quality; approximate deviation is a sampled maximum.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Tsify)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProjectionQuality {
+    Exact,
+    Approximate { max_deviation: f64 },
+}
+
+/// One projected edge and its source parameter interval.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectedEdge {
+    pub edge: u32,
+    pub face: u32,
+    pub source_start: f64,
+    pub source_end: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plane_curve: Option<PlaneCurve2d>,
+}
+
+/// Projection of one source onto a trimmed face.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Tsify)]
+pub struct ProjectedCurves {
+    pub edges: Vec<ProjectedEdge>,
+    pub face: u32,
+    pub quality: ProjectionQuality,
+    pub clipped: bool,
+}
+
+/// One source's first-hit projections onto a solid, in input order.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Tsify)]
+pub struct SourceProjection {
+    pub source: u32,
+    pub edges: Vec<ProjectedEdge>,
+    pub clipped: bool,
+}
+
+/// Atomic multi-source projection onto a solid.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Tsify)]
+pub struct SolidProjection {
+    pub sources: Vec<SourceProjection>,
+    pub quality: ProjectionQuality,
+}
+
 /// Typed direct-method result for a mutating operation that returns a solid.
 ///
 /// O4.7 adds these envelopes alongside the legacy throwing methods. A failure
