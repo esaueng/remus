@@ -3545,7 +3545,7 @@ fn full_sphere_primitive(topo: &Topology, faces: &[FaceId]) -> bool {
         let Ok(edge) = topo.edge(oe.edge()) else {
             return false;
         };
-        if !matches!(edge.curve(), EdgeCurve::Line) {
+        if !matches!(edge.curve(), EdgeCurve::Line) || edge.strict_domain().is_err() {
             return false;
         }
         let Ok(vertex) = topo.vertex(oe.oriented_start(edge)) else {
@@ -3602,6 +3602,9 @@ fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim:
                 return false;
             }
             if require_full_trim {
+                if edge.strict_domain().is_err() {
+                    return false;
+                }
                 let Some((a, b)) = edge.trim() else {
                     return false;
                 };
@@ -3655,7 +3658,10 @@ fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim:
         let (FaceSurface::Cone(cone), EdgeCurve::Circle(circle)) = (surface, rim.curve()) else {
             return false;
         };
-        if !matches!(seam.curve(), EdgeCurve::Line) || seam.is_closed() {
+        if !matches!(seam.curve(), EdgeCurve::Line)
+            || seam.is_closed()
+            || (require_full_trim && seam.strict_domain().is_err())
+        {
             return false;
         }
         let apex_vertex = if seam.start() == rim.start() {
@@ -3696,8 +3702,11 @@ fn full_rotation_primitive(topo: &Topology, faces: &[FaceId], require_full_trim:
     {
         return false;
     }
-    topo.edge(up.edge())
-        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line) && !edge.is_closed())
+    topo.edge(up.edge()).is_ok_and(|edge| {
+        matches!(edge.curve(), EdgeCurve::Line)
+            && !edge.is_closed()
+            && (!require_full_trim || edge.strict_domain().is_ok())
+    })
 }
 
 /// Algebraic full-circle compatibility with the finite wall and cap plane.
@@ -4146,10 +4155,419 @@ fn unoriented_axis_residual(a: Vec3, b: Vec3) -> f64 {
     (a - b).length().min((a + b).length())
 }
 
+/// A complete ball lies strictly inside a finite cylinder when its radial
+/// extent and both axial extremes have positive clearance. The enclosing
+/// sphere box is unnecessarily wide in the radial plane. Use the actual
+/// support extents, with an arithmetic allowance for carrier qualification,
+/// subtraction, projection and axis normalization; uncertain/touching cases
+/// remain outside this certificate even for a non-strict containment query.
+fn certified_sphere_in_cylinder(
+    sphere: &remus_algo::classifier::AnalyticClassifier,
+    cylinder: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    let (
+        AnalyticClassifier::Sphere { center, radius },
+        AnalyticClassifier::Cylinder {
+            origin,
+            axis,
+            radius: cylinder_radius,
+            z_min,
+            z_max,
+        },
+    ) = (sphere, cylinder)
+    else {
+        return false;
+    };
+    let values = [
+        center.x(),
+        center.y(),
+        center.z(),
+        origin.x(),
+        origin.y(),
+        origin.z(),
+        axis.x(),
+        axis.y(),
+        axis.z(),
+        *radius,
+        *cylinder_radius,
+        *z_min,
+        *z_max,
+        tol.linear,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || *radius <= 0.0
+        || *cylinder_radius <= 0.0
+        || z_min >= z_max
+        || tol.linear < 0.0
+    {
+        return false;
+    }
+    // Hypot avoids overflowing squared finite components. Stored analytic
+    // axes must already be unit vectors to arithmetic accuracy; normalization
+    // here removes their last-bit length error without accepting a scaled axis.
+    let norm = axis.x().hypot(axis.y()).hypot(axis.z());
+    if !norm.is_finite() || (norm - 1.0).abs() > 128.0 * f64::EPSILON {
+        return false;
+    }
+    let axis = *axis * norm.recip();
+    let offset = *center - *origin;
+    let axial = offset.dot(axis);
+    let cross = offset.cross(axis);
+    let radial = cross.x().hypot(cross.y()).hypot(cross.z());
+    let offset_norm = offset.x().hypot(offset.y()).hypot(offset.z());
+    let scale = values[..13]
+        .iter()
+        .fold(offset_norm.max(1.0), |scale, value| scale.max(value.abs()));
+    // The primitive qualification checks use allowances of at most 256 eps
+    // at this coordinate scale. Four times that also covers the bounded
+    // arithmetic above and does not turn a geometric tolerance into coverage.
+    let margin = tol.linear + 1024.0 * f64::EPSILON * scale;
+    let radial_extent = radial + radius;
+    let axial_low = axial - radius;
+    let axial_high = axial + radius;
+    let radial_limit = cylinder_radius - margin;
+    let axial_low_limit = z_min + margin;
+    let axial_high_limit = z_max - margin;
+    [
+        norm,
+        axial,
+        radial,
+        offset_norm,
+        margin,
+        radial_extent,
+        axial_low,
+        axial_high,
+        radial_limit,
+        axial_low_limit,
+        axial_high_limit,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+        && radial_extent < radial_limit
+        && axial_low > axial_low_limit
+        && axial_high < axial_high_limit
+}
+
+/// The local fallback below requires exactly stored Cartesian frames, so it
+/// cannot hide a real tilt or normalization error behind a rounded dot product.
+#[allow(clippy::float_cmp)]
+fn cartesian_axis(axis: Vec3) -> Option<usize> {
+    (0..3).find(|&component| {
+        axis.0[component].abs() == 1.0
+            && (0..3).all(|other| other == component || axis.0[other] == 0.0)
+    })
+}
+
+#[allow(clippy::float_cmp)]
+fn cartesian_frame(x: Vec3, y: Vec3, z: Vec3) -> bool {
+    cartesian_axis(x).is_some()
+        && cartesian_axis(y).is_some()
+        && cartesian_axis(z).is_some()
+        && x.dot(y) == 0.0
+        && x.cross(y) == z
+}
+
+/// Bound the difference of two rounded coordinates by their rounding cells.
+/// This is a measured representable spacing, not a multiple of world scale.
+/// Arithmetic on the resulting local offsets is covered separately.
+fn coordinate_rounding_radius(a: Point3, b: Point3) -> Option<f64> {
+    let spacing = |value: f64| {
+        if !value.is_finite() {
+            return None;
+        }
+        let magnitude = value.abs();
+        let next = f64::from_bits(magnitude.to_bits() + 1);
+        let spacing = next - magnitude;
+        spacing.is_finite().then_some(spacing)
+    };
+    let mut radius = 0.0_f64;
+    for component in 0..3 {
+        let width = 0.5 * (spacing(a.0[component])? + spacing(b.0[component])?);
+        radius = radius.hypot(width);
+    }
+    radius.is_finite().then_some(radius)
+}
+
+/// Translation-safe fallback for the strictly canonical family. The ordinary
+/// certificate retains its world-scale qualification allowance. Removing that
+/// allowance here requires zero carrier/frame/cap/seam mismatch and explicitly
+/// bounded equator/rim rounding. In particular, a world-scale-qualified sphere
+/// loop shifted off its equator is never promoted to a complete ball.
+#[allow(clippy::float_cmp, clippy::too_many_arguments)]
+fn certified_cartesian_sphere_in_cylinder(
+    topo: &Topology,
+    sphere_id: SolidId,
+    cylinder_id: SolidId,
+    sphere: &remus_algo::classifier::AnalyticClassifier,
+    cylinder: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    let (
+        AnalyticClassifier::Sphere { center, radius },
+        AnalyticClassifier::Cylinder {
+            origin,
+            axis,
+            radius: cylinder_radius,
+            z_min,
+            z_max,
+        },
+    ) = (sphere, cylinder)
+    else {
+        return false;
+    };
+    let Some(axial_component) = cartesian_axis(*axis) else {
+        return false;
+    };
+    let local_roundoff = 64.0 * f64::EPSILON * radius.max(*cylinder_radius).max(1.0);
+    if !local_roundoff.is_finite() || *radius <= 0.0 || *cylinder_radius <= 0.0 {
+        return false;
+    }
+    let Ok(sphere_faces) = remus_topology::explorer::solid_faces(topo, sphere_id) else {
+        return false;
+    };
+    let mut sphere_excess = 0.0_f64;
+    for fid in sphere_faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        let FaceSurface::Sphere(carrier) = face.surface() else {
+            return false;
+        };
+        let Some(equator_component) = cartesian_axis(carrier.z_axis()) else {
+            return false;
+        };
+        if carrier.center() != *center
+            || carrier.radius() != *radius
+            || !cartesian_frame(carrier.x_axis(), carrier.y_axis(), carrier.z_axis())
+        {
+            return false;
+        }
+        let Ok(vertices) = remus_topology::explorer::face_vertices(topo, fid) else {
+            return false;
+        };
+        for vid in vertices {
+            let Ok(vertex) = topo.vertex(vid) else {
+                return false;
+            };
+            let point = vertex.point();
+            // Exact equator-plane membership plus the inherited complementary
+            // full winding proves both hemispheres, even if rounded radial
+            // coordinates lie slightly inside or outside the carrier circle.
+            if point.0[equator_component] != center.0[equator_component] {
+                return false;
+            }
+            let offset = point - *center;
+            let norm = offset.x().hypot(offset.y()).hypot(offset.z());
+            let Some(rounding) = coordinate_rounding_radius(point, *center) else {
+                return false;
+            };
+            let residual = norm - radius;
+            if !residual.is_finite() || residual.abs() > rounding + local_roundoff {
+                return false;
+            }
+            sphere_excess = sphere_excess.max(residual.max(0.0) + rounding + local_roundoff);
+        }
+    }
+    let Ok(cylinder_faces) = remus_topology::explorer::solid_faces(topo, cylinder_id) else {
+        return false;
+    };
+    let mut lower = None;
+    let mut upper = None;
+    let mut seam = None;
+    let mut rim_uncertainty = 0.0_f64;
+    for fid in cylinder_faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        let Ok(wire) = topo.wire(face.outer_wire()) else {
+            return false;
+        };
+        match face.surface() {
+            FaceSurface::Cylinder(carrier) => {
+                if carrier.origin() != *origin
+                    || carrier.axis() != *axis
+                    || carrier.radius() != *cylinder_radius
+                    || !cartesian_frame(carrier.x_axis(), carrier.y_axis(), carrier.axis())
+                {
+                    return false;
+                }
+                let [_, up, _, down] = wire.edges() else {
+                    return false;
+                };
+                if up.edge() != down.edge() || up.is_forward() == down.is_forward() {
+                    return false;
+                }
+                seam = Some(up.edge());
+            }
+            FaceSurface::Plane { normal, d } => {
+                let [rim] = wire.edges() else { return false };
+                let Ok(edge) = topo.edge(rim.edge()) else {
+                    return false;
+                };
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    return false;
+                };
+                let Ok((start, _)) = edge.strict_domain() else {
+                    return false;
+                };
+                let side = normal.dot(*axis);
+                if (side != -1.0 && side != 1.0)
+                    || !cartesian_frame(circle.u_axis(), circle.v_axis(), circle.normal())
+                    || cartesian_axis(circle.normal()) != Some(axial_component)
+                    || circle.radius() != *cylinder_radius
+                    || (0..3).any(|component| {
+                        component != axial_component
+                            && circle.center().0[component] != origin.0[component]
+                    })
+                    || *d != normal.0[axial_component] * circle.center().0[axial_component]
+                    || cartesian_axis(*normal) != Some(axial_component)
+                {
+                    return false;
+                }
+                let axial = (circle.center() - *origin).dot(*axis);
+                if axial != if side < 0.0 { *z_min } else { *z_max } {
+                    return false;
+                }
+                let Ok(vertex) = topo.vertex(edge.start()) else {
+                    return false;
+                };
+                let point = vertex.point();
+                if point != circle.evaluate(start)
+                    || point.0[axial_component] != circle.center().0[axial_component]
+                {
+                    return false;
+                }
+                let offset = point - circle.center();
+                let norm = offset.x().hypot(offset.y()).hypot(offset.z());
+                let Some(rounding) = coordinate_rounding_radius(point, circle.center()) else {
+                    return false;
+                };
+                let residual = (norm - cylinder_radius).abs();
+                if !residual.is_finite() || residual > rounding + local_roundoff {
+                    return false;
+                }
+                rim_uncertainty = rim_uncertainty.max(residual + rounding + local_roundoff);
+                let slot = if side < 0.0 { &mut lower } else { &mut upper };
+                if slot.replace((edge.start(), point)).is_some() {
+                    return false;
+                }
+            }
+            FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return false,
+        }
+    }
+    let (Some((lower_id, lower_point)), Some((upper_id, upper_point)), Some(seam)) =
+        (lower, upper, seam)
+    else {
+        return false;
+    };
+    let Ok(seam) = topo.edge(seam) else {
+        return false;
+    };
+    if !matches!(seam.curve(), EdgeCurve::Line)
+        || seam.strict_domain().is_err()
+        || !((seam.start() == lower_id && seam.end() == upper_id)
+            || (seam.start() == upper_id && seam.end() == lower_id))
+        || (0..3).any(|component| {
+            component != axial_component && lower_point.0[component] != upper_point.0[component]
+        })
+    {
+        return false;
+    }
+    // All remaining arithmetic is on local offsets and observed residuals.
+    // Inflate the complete sphere/Line hull and shrink the enclosing cylinder
+    // by their rounding uncertainty before reusing the unchanged strict test.
+    let offset = *center - *origin;
+    let local_sphere = AnalyticClassifier::Sphere {
+        center: Point3::new(offset.x(), offset.y(), offset.z()),
+        radius: radius + sphere_excess,
+    };
+    let local_cylinder = AnalyticClassifier::Cylinder {
+        origin: Point3::new(0.0, 0.0, 0.0),
+        axis: *axis,
+        radius: cylinder_radius - rim_uncertainty,
+        z_min: z_min + rim_uncertainty,
+        z_max: z_max - rim_uncertainty,
+    };
+    certified_sphere_in_cylinder(&local_sphere, &local_cylinder, tol)
+}
+
+/// An enclosure candidate is only a reason to refuse an uncertain whole-
+/// primitive pair before GFA; it never authorizes a copy or cavity. Local
+/// support inequalities here deliberately omit world-scale qualification
+/// uncertainty, which the actual certificates above must resolve. Require
+/// positive local clearance so contact cases retain their existing pipeline.
+fn sphere_cylinder_enclosure_candidate(
+    sphere: &remus_algo::classifier::AnalyticClassifier,
+    cylinder: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    use remus_algo::classifier::AnalyticClassifier;
+    let (
+        AnalyticClassifier::Sphere { center, radius },
+        AnalyticClassifier::Cylinder {
+            origin,
+            axis,
+            radius: cylinder_radius,
+            z_min,
+            z_max,
+        },
+    ) = (sphere, cylinder)
+    else {
+        return false;
+    };
+    let norm = axis.x().hypot(axis.y()).hypot(axis.z());
+    if !norm.is_finite() || (norm - 1.0).abs() > 128.0 * f64::EPSILON {
+        return false;
+    }
+    let axis = *axis * norm.recip();
+    let offset = *center - *origin;
+    let axial = offset.dot(axis);
+    let cross = offset.cross(axis);
+    let radial = cross.x().hypot(cross.y()).hypot(cross.z());
+    let scale = offset
+        .x()
+        .hypot(offset.y())
+        .hypot(offset.z())
+        .max(*radius)
+        .max(*cylinder_radius)
+        .max(z_min.abs())
+        .max(z_max.abs())
+        .max(1.0);
+    let margin = tol.linear + 1024.0 * f64::EPSILON * scale;
+    let extent = radial + radius;
+    let low = axial - radius;
+    let high = axial + radius;
+    [
+        *radius,
+        *cylinder_radius,
+        *z_min,
+        *z_max,
+        margin,
+        extent,
+        low,
+        high,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+        && *radius > 0.0
+        && *cylinder_radius > 0.0
+        && z_min < z_max
+        && extent < cylinder_radius - margin
+        && low > z_min + margin
+        && high < z_max - margin
+}
+
 /// A convex region contains the hull of any points it contains. These points
 /// enclose complete face geometry, so acceptance proves containment. Analytic
-/// sphere pairs use their exact radial inequality to avoid an overly broad
-/// enclosing box. Unqualified containers and unknown bounds return false.
+/// sphere pairs and spheres inside finite cylinders use their support extents
+/// to avoid an overly broad enclosing box. Unqualified containers and unknown
+/// bounds return false.
 #[allow(clippy::too_many_arguments, clippy::float_cmp)] // Full torus axes/major circles must match exactly.
 fn certified_containment(
     topo: &Topology,
@@ -4199,6 +4617,20 @@ fn certified_containment(
     }
     if !qualified_convex_container(topo, outer, outer_classifier) {
         return false;
+    }
+    if let Some(inner_classifier @ AnalyticClassifier::Sphere { .. }) = inner_classifier
+        && let AnalyticClassifier::Cylinder { .. } = outer_classifier
+        && qualified_convex_container(topo, inner, inner_classifier)
+    {
+        return certified_sphere_in_cylinder(inner_classifier, outer_classifier, tol)
+            || certified_cartesian_sphere_in_cylinder(
+                topo,
+                inner,
+                outer,
+                inner_classifier,
+                outer_classifier,
+                tol,
+            );
     }
     if let Some(
         inner_classifier @ AnalyticClassifier::Sphere {
@@ -4430,9 +4862,25 @@ fn detect_trivial_relation(
     cb: Option<&remus_algo::classifier::AnalyticClassifier>,
     tol: remus_math::tolerance::Tolerance,
 ) -> TrivialRelation {
+    use remus_algo::classifier::AnalyticClassifier;
     let a_in_b = certified_containment(topo, a, b, ca, cb, tol, false);
     let b_in_a = certified_containment(topo, b, a, cb, ca, tol, false);
     let uncertified_carrier_pair = match (ca, cb) {
+        (
+            Some(ca @ AnalyticClassifier::Sphere { .. }),
+            Some(cb @ AnalyticClassifier::Cylinder { .. }),
+        )
+        | (
+            Some(ca @ AnalyticClassifier::Cylinder { .. }),
+            Some(cb @ AnalyticClassifier::Sphere { .. }),
+        ) => {
+            !a_in_b
+                && !b_in_a
+                && qualified_convex_container(topo, a, ca)
+                && qualified_convex_container(topo, b, cb)
+                && (sphere_cylinder_enclosure_candidate(ca, cb, tol)
+                    || sphere_cylinder_enclosure_candidate(cb, ca, tol))
+        }
         (
             Some(
                 ca @ remus_algo::classifier::AnalyticClassifier::Cylinder {
