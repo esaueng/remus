@@ -89,6 +89,117 @@ assert.equal(typeof kernel.exportStep, 'undefined', 'translators must not ship i
 assert.equal(typeof kernel.serializeSolids, 'function', 'arena codec must ship in the kernel');
 console.log('ok - RemusIo created; kernel module carries the arena codec only');
 
+// A full radius-8 sphere fits inside this radius-10 finite cylinder even
+// though corners of the sphere's enclosing box do not. Protect the emitted
+// artifact's whole-carrier support certificate and the enclosed cavity.
+{
+  const cavityKernel = new BrepKernel();
+  const cylinder = cavityKernel.makeCylinder(10, 20);
+  const sphere = cavityKernel.makeSphere(8, 32);
+  cavityKernel.transformSolid(sphere, new Float64Array([
+    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 10, 0, 0, 0, 1,
+  ]));
+  const operandBytes = bodies(cavityKernel, cylinder, sphere);
+  const journal = cavityKernel.journalSummary();
+  const cavity = cavityKernel.cut(cylinder, sphere);
+  const expectedVolume = Math.PI * (10 ** 2 * 20 - 4 * 8 ** 3 / 3);
+  const measured = JSON.parse(cavityKernel.massProperties(cavity, 1e-10, 12, 8));
+  assert.ok(Math.abs(measured.volume - expectedVolume) < expectedVolume * 1e-8);
+  assert.equal(JSON.parse(cavityKernel.validateSolidDetailed(cavity)).errorCount, 0);
+  assert.equal(cavityKernel.getSolidFaces(cavity).length, 5);
+  for (const [x, y, z, expected] of [
+    [0, 0, 10, 'outside'], [9, 0, 10, 'inside'],
+    [0, 0, 1, 'inside'], [0, 0, 19, 'inside'], [11, 0, 10, 'outside'],
+  ]) {
+    assert.equal(cavityKernel.classifyPoint(cavity, x, y, z, 1e-7), expected);
+  }
+  assert.deepEqual(bodies(cavityKernel, cylinder, sphere), operandBytes);
+  assert.equal(cavityKernel.journalSummary(), journal);
+  // Construction-derived entity history still refuses this disconnected
+  // enclosed-cavity GFA case, and the refusal must be transactional.
+  const cavityBytes = bodies(cavityKernel, cavity);
+  for (const op of ['cutWithEntityEvolution', 'cutJournaled']) {
+    assert.throws(() => cavityKernel[op](cylinder, sphere));
+    assert.deepEqual(bodies(cavityKernel, cylinder, sphere), operandBytes);
+    assert.deepEqual(bodies(cavityKernel, cavity), cavityBytes);
+    assert.equal(cavityKernel.journalSummary(), journal);
+  }
+  console.log('ok - complete sphere/cylinder cut preserves cavity, material, operands and journal');
+}
+
+// A large shared translation must preserve the spherical cavity, rather
+// than merely returning a valid-looking cylinder that contains its centre.
+for (const translation of [1e13, -1e13]) {
+  const cavityKernel = new BrepKernel();
+  const cylinder = cavityKernel.makeCylinder(10, 20);
+  const sphere = cavityKernel.makeSphere(8, 32);
+  for (const [solid, z] of [[cylinder, translation], [sphere, translation + 10]]) {
+    cavityKernel.transformSolid(solid, new Float64Array([
+      1, 0, 0, translation, 0, 1, 0, -translation,
+      0, 0, 1, z, 0, 0, 0, 1,
+    ]));
+  }
+  const operandBytes = bodies(cavityKernel, cylinder, sphere);
+  const journal = cavityKernel.journalSummary();
+  const cavity = cavityKernel.cut(cylinder, sphere);
+  assert.equal(cavityKernel.getSolidFaces(cavity).length, 5);
+  assert.equal(JSON.parse(cavityKernel.validateSolidDetailed(cavity)).errorCount, 0);
+  const expected = Math.PI * (2000 - 4 * 512 / 3);
+  const measured = JSON.parse(cavityKernel.massProperties(cavity, 1e-3, 8, 5));
+  // Existing far-coordinate quadrature has about 2.7e-5 relative rounding
+  // error for this true cavity; ordinary-coordinate checks remain at 1e-8.
+  assert.ok(Math.abs(measured.volume - expected) < expected * 1e-4);
+  for (const [x, z, expectedClass] of [
+    [0, 10, 'outside'], [9, 10, 'inside'], [0, 1, 'inside'],
+    [0, 19, 'inside'], [11, 10, 'outside'],
+  ]) {
+    assert.equal(cavityKernel.classifyPoint(cavity, translation + x, -translation, translation + z, 1e-7), expectedClass);
+  }
+  assert.deepEqual(bodies(cavityKernel, cylinder, sphere), operandBytes);
+  assert.equal(cavityKernel.journalSummary(), journal);
+}
+console.log('ok - far translated sphere/cylinder cuts retain true cavities');
+
+// A ball tangent to the lower cap has no strict enclosure certificate, but
+// the established exact Fuse pipeline still returns the complete cylinder.
+for (const swapped of [false, true]) {
+  for (const batch of [false, true]) {
+    const contactKernel = new BrepKernel();
+    const cylinder = contactKernel.makeCylinder(10, 20);
+    const sphere = contactKernel.makeSphere(8, 32);
+    contactKernel.transformSolid(sphere, new Float64Array([
+      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 8, 0, 0, 0, 1,
+    ]));
+    const operandBytes = bodies(contactKernel, cylinder, sphere);
+    const journal = contactKernel.journalSummary();
+    const [a, b] = swapped ? [sphere, cylinder] : [cylinder, sphere];
+    let union;
+    if (batch) {
+      const response = JSON.parse(contactKernel.executeBatchV2(JSON.stringify([
+        { op: 'fuse', args: { solidA: a, solidB: b } },
+      ])));
+      assert.equal(typeof response[0].ok, 'number');
+      union = response[0].ok;
+    } else {
+      union = contactKernel.fuse(a, b);
+    }
+    assert.equal(contactKernel.getSolidFaces(union).length, 3);
+    assert.equal(JSON.parse(contactKernel.validateSolidDetailed(union)).errorCount, 0);
+    const expected = 2000 * Math.PI;
+    const props = JSON.parse(contactKernel.massProperties(union, 1e-10, 12, 8));
+    assert.ok(Math.abs(props.volume - expected) < expected * 1e-8);
+    for (const [x, z, expectedClass] of [
+      [0, 8, 'inside'], [9, 8, 'inside'], [0, 19, 'inside'],
+      [0, -1, 'outside'], [11, 8, 'outside'],
+    ]) {
+      assert.equal(contactKernel.classifyPoint(union, x, 0, z, 1e-7), expectedClass);
+    }
+    assert.deepEqual(bodies(contactKernel, cylinder, sphere), operandBytes);
+    assert.equal(contactKernel.journalSummary(), journal);
+  }
+}
+console.log('ok - axial sphere/cylinder contact preserves direct and batch exact union');
+
 // Stable batch-v2 errors are additive: successful envelopes match v1, while
 // v1 keeps its string error and v2 exposes the same text plus code/details.
 {

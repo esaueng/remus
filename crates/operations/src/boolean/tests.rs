@@ -21,6 +21,402 @@ use crate::test_helpers::assert_volume_near;
 
 use super::*;
 
+#[test]
+fn sphere_cylinder_support_certificate_requires_finite_positive_clearance() {
+    use remus_algo::classifier::AnalyticClassifier;
+    let tol = Tolerance::default();
+    let sphere = |center, radius| AnalyticClassifier::Sphere { center, radius };
+    let cylinder = |origin, axis, radius, z_min, z_max| AnalyticClassifier::Cylinder {
+        origin,
+        axis,
+        radius,
+        z_min,
+        z_max,
+    };
+    let outer = cylinder(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        10.0,
+        0.0,
+        20.0,
+    );
+    for center in [Point3::new(0.0, 0.0, 10.0), Point3::new(1.0, 1.0, 10.0)] {
+        assert!(certified_sphere_in_cylinder(
+            &sphere(center, 8.0),
+            &outer,
+            tol
+        ));
+    }
+    // Radial and axial contacts, crossings and sub-tolerance gaps must not
+    // authorize a copied result or a disconnected cavity shell.
+    for center in [
+        Point3::new(2.0, 0.0, 10.0),
+        Point3::new(2.1, 0.0, 10.0),
+        Point3::new(2.0 - tol.linear / 2.0, 0.0, 10.0),
+        Point3::new(0.0, 0.0, 8.0),
+        Point3::new(0.0, 0.0, 7.9),
+        Point3::new(0.0, 0.0, 8.0 + tol.linear / 2.0),
+        Point3::new(0.0, 0.0, 12.0),
+        Point3::new(0.0, 0.0, 12.1),
+    ] {
+        assert!(!certified_sphere_in_cylinder(
+            &sphere(center, 8.0),
+            &outer,
+            tol
+        ));
+        assert!(!sphere_cylinder_enclosure_candidate(
+            &sphere(center, 8.0),
+            &outer,
+            tol
+        ));
+    }
+    let inner = sphere(Point3::new(0.0, 0.0, 10.0), 8.0);
+    for outer in [
+        cylinder(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            10.0,
+            20.0,
+            0.0,
+        ),
+        cylinder(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0) * 2.0,
+            10.0,
+            0.0,
+            20.0,
+        ),
+        cylinder(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            10.0,
+            0.0,
+            20.0,
+        ),
+        cylinder(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            f64::INFINITY,
+            0.0,
+            20.0,
+        ),
+    ] {
+        assert!(!certified_sphere_in_cylinder(&inner, &outer, tol));
+    }
+    for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(!certified_sphere_in_cylinder(
+            &sphere(Point3::new(0.0, 0.0, 10.0), radius),
+            &outer,
+            tol,
+        ));
+    }
+    // Squaring the finite offset would overflow. Hypot still proves the
+    // ordinary ball/cylinder support inequalities at this scale.
+    let huge = cylinder(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.5e154,
+        0.0,
+        3.0e154,
+    );
+    assert!(certified_sphere_in_cylinder(
+        &sphere(Point3::new(0.0, 0.0, 1.5e154), 1.0e154),
+        &huge,
+        tol,
+    ));
+    let overflow = cylinder(
+        Point3::new(-f64::MAX, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        10.0,
+        0.0,
+        20.0,
+    );
+    assert!(!certified_sphere_in_cylinder(
+        &sphere(Point3::new(f64::MAX, 0.0, 10.0), 8.0),
+        &overflow,
+        tol,
+    ));
+}
+
+#[test]
+fn sphere_cylinder_containment_requires_complete_non_inverted_carriers() {
+    use crate::primitives::{make_cylinder, make_sphere};
+    use remus_algo::classifier::try_build_analytic_classifier;
+    for mutate_sphere in [false, true] {
+        for mutation in 0..4 {
+            // Native sphere equator Lines have canonical [0,1] authority
+            // even without stored trims; the absent-trim control belongs to
+            // Circle rims, and the separate seam control to the cylinder.
+            if mutate_sphere && mutation >= 2 {
+                continue;
+            }
+            let mut topo = Topology::new();
+            let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+            let sphere = make_sphere(&mut topo, 8.0, 16).unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                sphere,
+                &remus_math::mat::Mat4::translation(0.0, 0.0, 10.0),
+            )
+            .unwrap();
+            let inner = try_build_analytic_classifier(&topo, sphere).unwrap();
+            let outer = try_build_analytic_classifier(&topo, cylinder).unwrap();
+            assert!(certified_containment(
+                &topo,
+                sphere,
+                cylinder,
+                Some(&inner),
+                Some(&outer),
+                Tolerance::default(),
+                true
+            ));
+            let target = if mutate_sphere { sphere } else { cylinder };
+            let faces = remus_topology::explorer::solid_faces(&topo, target).unwrap();
+            if mutation == 1 {
+                topo.face_mut(faces[0]).unwrap().set_reversed(true);
+            } else {
+                let rim = remus_topology::explorer::solid_edges(&topo, target)
+                    .unwrap()
+                    .into_iter()
+                    .find(|&id| {
+                        mutate_sphere
+                            || if mutation == 3 {
+                                matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Line)
+                            } else {
+                                matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_))
+                            }
+                    })
+                    .unwrap();
+                let trim = if mutation == 2 {
+                    None
+                } else {
+                    Some((
+                        0.0,
+                        if mutate_sphere || mutation == 3 {
+                            0.5
+                        } else {
+                            std::f64::consts::PI
+                        },
+                    ))
+                };
+                topo.edge_mut(rim).unwrap().set_trim(trim);
+            }
+            for strict in [false, true] {
+                assert!(
+                    !certified_containment(
+                        &topo,
+                        sphere,
+                        cylinder,
+                        Some(&inner),
+                        Some(&outer),
+                        Tolerance::default(),
+                        strict
+                    ),
+                    "sphere={mutate_sphere}, mutation={mutation}, strict={strict}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sphere_cylinder_local_fallback_rejects_world_qualified_boundary_errors() {
+    use crate::primitives::{make_cylinder, make_sphere};
+    use remus_algo::classifier::try_build_analytic_classifier;
+    use remus_math::{curves::Circle3D, mat::Mat4};
+    let mut original = Topology::new();
+    let cylinder = make_cylinder(&mut original, 10.0, 20.0).unwrap();
+    let sphere = make_sphere(&mut original, 8.0, 32).unwrap();
+    crate::transform::transform_solid(&mut original, sphere, &Mat4::translation(1.9, 0.0, 10.0))
+        .unwrap();
+    let placement = Mat4::translation(1e13, -1e13, 1e13);
+    for operand in [cylinder, sphere] {
+        crate::transform::transform_solid(&mut original, operand, &placement).unwrap();
+    }
+    let inner = try_build_analytic_classifier(&original, sphere).unwrap();
+    let outer = try_build_analytic_classifier(&original, cylinder).unwrap();
+    let tol = Tolerance::default();
+    assert!(!certified_sphere_in_cylinder(&inner, &outer, tol));
+    assert!(certified_cartesian_sphere_in_cylinder(
+        &original, sphere, cylinder, &inner, &outer, tol
+    ));
+    let cap = remus_topology::explorer::solid_faces(&original, cylinder)
+        .unwrap()
+        .into_iter()
+        .find(|&fid| {
+            matches!(
+                original.face(fid).unwrap().surface(),
+                FaceSurface::Plane { .. }
+            )
+        })
+        .unwrap();
+    let cap_rim = original
+        .wire(original.face(cap).unwrap().outer_wire())
+        .unwrap()
+        .edges()[0]
+        .edge();
+    let seam = remus_topology::explorer::solid_edges(&original, cylinder)
+        .unwrap()
+        .into_iter()
+        .find(|&eid| matches!(original.edge(eid).unwrap().curve(), EdgeCurve::Line))
+        .unwrap();
+    let equator = remus_topology::explorer::solid_vertices(&original, sphere)
+        .unwrap()
+        .into_iter()
+        .max_by(|&a, &b| {
+            original
+                .vertex(a)
+                .unwrap()
+                .point()
+                .x()
+                .total_cmp(&original.vertex(b).unwrap().point().x())
+        })
+        .unwrap();
+    for mutation in 0..8 {
+        let mut topo = original.clone();
+        match mutation {
+            0 => {
+                let FaceSurface::Plane { normal, d } = topo.face(cap).unwrap().surface().clone()
+                else {
+                    unreachable!()
+                };
+                topo.face_mut(cap).unwrap().set_surface(FaceSurface::Plane {
+                    normal,
+                    d: d + 0.25,
+                });
+            }
+            1 | 2 => {
+                let edge = topo.edge(cap_rim).unwrap();
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    unreachable!()
+                };
+                let delta = if mutation == 1 { -0.25 } else { 0.25 };
+                let circle = Circle3D::new_with_ref(
+                    circle.center(),
+                    circle.normal(),
+                    circle.radius() + delta,
+                    circle.u_axis(),
+                )
+                .unwrap();
+                let trim = edge.trim();
+                topo.edge_mut(cap_rim)
+                    .unwrap()
+                    .set_curve(EdgeCurve::Circle(circle));
+                topo.edge_mut(cap_rim).unwrap().set_trim(trim);
+            }
+            3 => {
+                let start = topo.edge(seam).unwrap().start();
+                let twin = topo.add_vertex(topo.vertex(start).unwrap().clone());
+                topo.edge_mut(seam).unwrap().set_start(twin);
+            }
+            4 => {
+                let point = topo.vertex(equator).unwrap().point();
+                topo.vertex_mut(equator).unwrap().set_point(Point3::new(
+                    point.x(),
+                    point.y(),
+                    point.z() + 0.1,
+                ));
+            }
+            5 | 6 => {
+                let delta = if mutation == 5 { -0.25 } else { 0.25 };
+                let point = topo.vertex(equator).unwrap().point();
+                topo.vertex_mut(equator).unwrap().set_point(Point3::new(
+                    point.x() + delta,
+                    point.y(),
+                    point.z(),
+                ));
+            }
+            _ => {
+                let edge = topo.edge(cap_rim).unwrap();
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    unreachable!()
+                };
+                let center = circle.center();
+                let circle = Circle3D::new_with_ref(
+                    Point3::new(center.x() + 0.25, center.y(), center.z()),
+                    circle.normal(),
+                    circle.radius(),
+                    circle.u_axis(),
+                )
+                .unwrap();
+                let trim = edge.trim();
+                topo.edge_mut(cap_rim)
+                    .unwrap()
+                    .set_curve(EdgeCurve::Circle(circle));
+                topo.edge_mut(cap_rim).unwrap().set_trim(trim);
+            }
+        }
+        // These discrepancies fit the inherited absolute-world allowances.
+        // A new local margin must independently reject both inward/outward
+        // radial errors, shifted equators/caps and disconnected seam IDs.
+        assert!(
+            qualified_convex_container(&topo, sphere, &inner),
+            "sphere, mutation {mutation}"
+        );
+        assert!(
+            qualified_convex_container(&topo, cylinder, &outer),
+            "cylinder, mutation {mutation}"
+        );
+        assert!(
+            !certified_cartesian_sphere_in_cylinder(&topo, sphere, cylinder, &inner, &outer, tol),
+            "mutation {mutation}"
+        );
+        assert!(
+            !certified_containment(
+                &topo,
+                sphere,
+                cylinder,
+                Some(&inner),
+                Some(&outer),
+                tol,
+                true
+            ),
+            "mutation {mutation}"
+        );
+        assert!(
+            detect_trivial_relation(&topo, cylinder, sphere, Some(&outer), Some(&inner), tol)
+                .uncertified_carrier_relation,
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[test]
+fn rotated_far_sphere_cylinder_remains_outside_canonical_fallback() {
+    use crate::primitives::{make_cylinder, make_sphere};
+    use remus_algo::classifier::try_build_analytic_classifier;
+    use remus_math::mat::Mat4;
+    let mut topo = Topology::new();
+    let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+    let sphere = make_sphere(&mut topo, 8.0, 32).unwrap();
+    crate::transform::transform_solid(&mut topo, sphere, &Mat4::translation(0.0, 0.0, 10.0))
+        .unwrap();
+    let placement = Mat4::translation(1e13, -1e13, 1e13) * Mat4::rotation_x(0.7);
+    for operand in [cylinder, sphere] {
+        crate::transform::transform_solid(&mut topo, operand, &placement).unwrap();
+    }
+    let inner = try_build_analytic_classifier(&topo, sphere).unwrap();
+    // Supply the independently known finite-cylinder support explicitly:
+    // recognition may improve later, while this fallback remains Cartesian.
+    let outer = remus_algo::classifier::AnalyticClassifier::Cylinder {
+        origin: placement.mul_point(Point3::new(0.0, 0.0, 0.0)),
+        axis: Vec3::new(placement.0[0][2], placement.0[1][2], placement.0[2][2])
+            .normalize()
+            .unwrap(),
+        radius: 10.0,
+        z_min: 0.0,
+        z_max: 20.0,
+    };
+    assert!(!certified_cartesian_sphere_in_cylinder(
+        &topo,
+        sphere,
+        cylinder,
+        &inner,
+        &outer,
+        Tolerance::default(),
+    ));
+}
+
 /// A boolean under the permissive default context: the mesh fallback may
 /// run, and the test accepts whichever path produced the result. Used by
 /// tests whose geometry is known to need the fallback; the plain `boolean`
