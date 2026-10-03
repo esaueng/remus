@@ -15,6 +15,7 @@ import { dirname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regressions.mjs';
+import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -80,6 +81,7 @@ try {
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
+  runProjectCurvePackaged(packageExports);
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
