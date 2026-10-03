@@ -157,7 +157,9 @@ collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_
 the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
 two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
 `closed_rim_oracles`), and the B69, B70 and B71 tessellation witnesses
-(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`.
+(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`;
+and the five B79 holed-plane internal-section repros
+(`operations/tests/regress_b79_holed_plane_internal_section.rs`, failing on `main`).
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -190,7 +192,11 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
+- **A quadratic discriminant within 1e-12·b² of zero is a tangency: return the double root directly** — splitting the fp dust straddles the contact by its square root (~1e-9 relative), far above a 1e-9·scale vertex band; and a post-check whose samples land exactly on face boundaries must use the boundary-included membership test (`crates/operations/src/project_curve.rs`, P-Class 7.4).
 - **Bezier clipping must rebuild the fat line from the CURRENT sub-segments at every depth (fixed 2026-09-25, B10):** re-using the parent control polygon made every clip a fixed centred shrink that dropped off-centre roots silently; judge termination, Newton, merge and overlap-vs-tangency in model space, and separate a tangent contact from an overlap by second-order (tangent + curvature) agreement, never Hausdorff alone (`crates/math/src/nurbs/bezier_clip.rs`, `crates/geometry/tests/b10_curve_curve.rs`).
+- **A sampled Hausdorff overlap test must measure each sample to the other window's CURVE, not to its samples (fixed 2026-10-02, B19 F3a):** coincident arcs with different parameter speeds were charged half a sample spacing and came back as 49 overlap fragments plus 55 point hits (`crates/math/src/nurbs/bezier_clip.rs::check_overlap`).
+- **Search-strategy mutants change work, not answers; pin them with a test-only call counter and hand-derived counts (B19 F3a):** `RecurseFrame` in `bezier_clip.rs` counts `bezier_clip_recurse` calls and asserts `depth` is the recursion level, which killed the clip-threshold and depth-bookkeeping survivors no closed-form answer could (`crates/math/src/nurbs/bezier_clip/mutation_oracle_tests.rs`).
+- **An overflow shortcut must reproduce the comparison it replaces (fixed 2026-10-02, B19 F3a):** the infinite-threshold chaining clique joined finite points whose squared distance overflows, and the walk's scan then dropped them from the output (`crates/math/src/nurbs/intersection/chaining.rs::chain_with_clique`).
 - **A curve lying IN a surface resolves every seed as a hit (no overlap model in `intersect_curve_surface`);** a constant-coordinate "transversal" test config can be coincident — check the direction against the surface normal before believing a spray (`crates/geometry/tests/b10_curve_surface.rs`, B10).
 - **Extrema Newton must keep the residual-times-curvature term (fixed 2026-09-25, B10):** Gauss-Newton overshot 2x at an ellipse minor vertex (orbit), 3x at a hyperbola vertex (diverged) and went singular for parallel closest tangents; assert stationarity (a right-distance/wrong-point answer passes otherwise), backtrack on a halved residual as well as on distance (distance alone resolves the foot to sqrt(eps)), and derive a closed-form query's minima before trusting "the vertex is closest" (`crates/geometry/src/extrema/`, `crates/geometry/tests/b10_conic_distance.rs`).
 
@@ -198,6 +204,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Exact circular trims on bilinear/Coons caps are vacuous — a planar section of one is a hyperbola or ruling line, never a circle;** curved cap holes stay typed-refused (with rollback), chase the certified iso-rect class or converged-approximate paths instead (`crates/operations/tests/qualify_b12_annular_coons.rs`, B12).
 - **A closed-rim fillet that passes validity can be the mirror-image blend;** check that the ball centre sits inside the material and that the removed volume matches Pappus — the plane–cone arm shipped a flared-foot torus behind validity-only tests (B67, `blend/src/fillet_builder.rs::closed_rim_oracles`).
 - **A test that accepts `None` or "any direction" kills no mutant;** the existing SSI tangency tests did, so the B19 marcher survivors ran free — build the exact case (a cylinder resting on a plane, a saddle cut by its tangent plane) whose answer is a closed form (`math/src/nurbs/intersection/tests.rs::marching_oracles`).
+- **A surviving branch-flip mutant can be the fix (B19 F3b, 2026-10-02):** `null_directions` divided by the smaller diagonal and returned a non-null for `[[1, 1], [1, 1e-20]]`; solve quadratics with the cancellation-free root pair, and assert nullity `|Q(t,t)| <= 1e-12·‖Q‖` rather than "some direction" (`math/src/nurbs/intersection/surface_marching/oracle_tests.rs`).
 - **Replay a fuzz artifact natively and print BOTH measurements before believing its message;** an assertion that formats one reading twice reads exactly like a no-op that never happened (`modifier_ops`, 2026-09-02).
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
@@ -222,6 +229,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   `face_splitter` or section/clip change run ALL foils: d4, honeycomb pcut3,
   divider-lip, the nub fixtures, cylinder-slot, groove-mouth, junction-disc.
   Each has caught a discriminant that the target case alone blessed.
+- **A section loop strictly inside a plane face's OUTER wire can still cross one of its holes;** a shortcut that admits closed loops against the outer polygon alone carves overlapping holes, and an all-planar mesh fallback is nearly as compact as the exact result, so only the disclosed quality shows it (B79, `operations/tests/regress_b79_holed_plane_internal_section.rs`).
 - **Splitter interior points of notched or symmetric pieces land on
   feature-plane intersections by construction;** classification must survive
   on-plane samples (`classifier/ray_cast.rs` per-ray degeneracy re-cast).
@@ -262,6 +270,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **`log::debug!` inside `fill_images_faces.rs` does not emit** (cause
   undiagnosed): log-based probes there read as a false zero; use an env-gated
   `eprintln!` and do not commit it.
+- **Re-extracting an older commit over a tree with newer build artifacts makes cargo silently skip rebuilding dependencies** (commit-time mtimes read older than the artifacts, so a whole bisection round re-ran the wrong code) — verify attribution runs with cold builds in fresh dirs, never overwrite-extracts (M6 gauntlet census, 2026-10-02).
 - **Check capture-directory mtimes before replaying mixed capture dirs;** a
   stale pre-fix operand cost one full iteration.
 - **The reference kernel's snapshot pins are kernel-specific.** Triangle
@@ -281,6 +290,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Since PERF-D03 (#922) a tessellation stream identifies geometry, not a kernel call:** the same body built from different arena handles meshes byte-identically, so a consumer spy that matches streams to count tessellations double-counts the evolution probe's copy — count per solid handle and deflection (F4, OpenZCAD#522).
 - **cargo-mutants `--file` is ignored under the committed `.cargo/mutants.toml`;** scope a file with `-F` (regex on the mutant name) or drop to `--no-config` for the listing, and verify with `scripts/test-mutants-scope.py` before quoting a count (M2 proof tranche, 2026-10-01).
 - **An unexamined tail is a plan problem, not a verdict:** a sharded mutation run that times out reports its remainder as unexamined — carry that tail into the next in-diff set or a catch-up shard matrix instead of quoting the reachable prefix (M2 proof tranche, 84 unexamined in one shard, 2026-10-01).
+- **A gate inside a chain of interval checks shows only when every later check stays decided:** the curved clip's event-order mutants survived because the midpoint, material-sample and native-range checks refused the same near-coincident input; model the chain in a few lines to find a chart (subnormal or 2^60-wide) where only the targeted gate decides, and reach constructor-pre-empted gates through deserialized NURBS (B19 F3c, `crates/algo/src/pave_filler/curved_section_clip/tests.rs`).
 
 ## Subsystem trap notes
 
