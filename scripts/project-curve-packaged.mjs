@@ -210,9 +210,57 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       assert.deepEqual(Array.from(kernel.getEdgeParamSpan(circle)), circleSpan);
       assert.equal(kernel.journalSummary(), approximateJournal);
       assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), approximateBytes);
+
+      // This phase puts a tiny exterior arc between every point of the old
+      // 2049-point membership grid. Whole-interval trim qualification must
+      // refuse it instead of publishing an unclipped approximate image.
+      const lateral = Array.from(kernel.getSolidFaces(cylinder))
+        .find((candidate) => kernel.getSurfaceType(candidate) === 'cylinder');
+      assert.notEqual(lateral, undefined);
+      const phase = Math.PI / 2048;
+      const sliver = kernel.makeCircleEdgeWithRef(0, 5, 9 + 5e-7,
+        0, 1, 0, 1, Math.cos(phase), 0, Math.sin(phase));
+      const sliverWire = kernel.makeWire(Uint32Array.of(sliver), true);
+      const sliverSpan = Array.from(kernel.getEdgeParamSpan(sliver));
+      near(sliverSpan, [0, 2 * Math.PI]);
+      for (let index = 0; index <= 2048; index += 1) {
+        const z = kernel.evaluateEdgeCurve(sliver, 2 * Math.PI * index / 2048)[2];
+        assert.ok(z < 10, `${route}: the old grid misses the exterior arc`);
+      }
+      const extremum = kernel.evaluateEdgeCurve(sliver, 3 * Math.PI / 2 + phase);
+      assert.ok(extremum[2] > 10 + 4e-7, `${route}: off-grid point lies above the rim`);
+      const sliverSource = Array.from(kernel.getEdgeVertices(sliver));
+      const sliverSourceBytes = kernel.serializeWires(Uint32Array.of(sliverWire));
+      const sliverTargetBytes = kernel.serializeSolids(Uint32Array.of(cylinder));
+      const sliverTargetCounts = Array.from(kernel.getEntityCounts(cylinder));
+      const sliverJournal = kernel.journalSummary();
+      const sliverArgs = { edge: sliver, dirX: 0, dirY: -1, dirZ: 0,
+        face: lateral, options: { allowApproximate: true } };
+      if (route === 'direct') {
+        assert.throws(() => kernel.projectCurveOntoFace(sliver, 0, -1, 0,
+          lateral, sliverArgs.options), /project-curve:approximate-clip-unsupported/);
+      } else {
+        const response = JSON.parse(kernel[route](JSON.stringify([
+          { op: 'projectCurveOntoFace', args: sliverArgs },
+        ])))[0];
+        assert.equal(response.ok, undefined, `${route}: exterior arc must be refused`);
+        if (route === 'executeBatchV2') {
+          assert.equal(response.error.code, 'operation_failed');
+          assert.equal(response.error.details.kernelCode, 'project-curve:approximate-clip-unsupported');
+          assert.match(response.error.message, /approximate projections require one unclipped face/);
+        } else {
+          assert.match(response.error, /approximate projections require one unclipped face/);
+        }
+      }
+      assert.deepEqual(Array.from(kernel.getEdgeVertices(sliver)), sliverSource);
+      assert.deepEqual(Array.from(kernel.getEdgeParamSpan(sliver)), sliverSpan);
+      assert.deepEqual(kernel.serializeWires(Uint32Array.of(sliverWire)), sliverSourceBytes);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), sliverTargetBytes);
+      assert.deepEqual(Array.from(kernel.getEntityCounts(cylinder)), sliverTargetCounts);
+      assert.equal(kernel.journalSummary(), sliverJournal);
     } finally {
       kernel.free();
     }
   }
-  console.log('ok - packaged projection objects, forward-ray clipping, exact oblique cylinder caps, approximate solid images and typed refusals');
+  console.log('ok - packaged projection objects, forward-ray clipping, exact oblique cylinder caps, approximate solid images and whole-interval trim refusals');
 }
