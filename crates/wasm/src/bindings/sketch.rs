@@ -329,12 +329,13 @@ impl BrepKernel {
     /// supports all 24 constraint types with explicit line entities, and
     /// allows constraint removal. The `sketch*` methods remain for
     /// backward compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sketch handle namespace is exhausted.
     #[wasm_bindgen(js_name = "sketchNew")]
-    pub fn sketch_new(&mut self) -> u32 {
-        self.sketches.push(SketchState::default());
-        #[allow(clippy::cast_possible_truncation)]
-        let idx = (self.sketches.len() - 1) as u32;
-        idx
+    pub fn sketch_new(&mut self) -> Result<u32, JsError> {
+        Ok(self.sketches.push(SketchState::default())?)
     }
 
     /// Add a point to a sketch. Returns the point index.

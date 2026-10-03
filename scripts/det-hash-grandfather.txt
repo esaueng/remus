@@ -55,7 +55,6 @@ crates/operations/src/blend_ops.rs
 crates/operations/src/chamfer.rs
 crates/operations/src/copy.rs
 crates/operations/src/defeature.rs
-crates/operations/src/distance.rs
 crates/operations/src/evolution.rs
 crates/operations/src/feature_recognition.rs
 crates/operations/src/fillet/helpers.rs
