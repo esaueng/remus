@@ -37,6 +37,20 @@
 //! is treated as collinear-shared. Pass the same `tol` you use elsewhere for
 //! the geometry in question (e.g. `Tolerance::default().linear`, or a looser
 //! value for coarse data).
+//!
+//! # Work model
+//!
+//! [`polygon_boolean_with_budget`] meters the same algorithm against a
+//! caller-owned budget of abstract work units, where one unit is one
+//! constant-time step: an edge-pair split test, a midpoint-versus-edge test, a
+//! candidate scan while tracing, or one copied point. Each phase charges the
+//! work it is about to do, from sizes it has already measured, before doing
+//! it: `n + m` per input scan, `m` per subject edge for split tests, the
+//! split parameters each edge actually produced, `3m + 1` per sub-edge for
+//! midpoint classification, and the actual junction degrees for tracing. The
+//! charge therefore follows the arrangement the two polygons really form
+//! rather than its quartic worst case, while hostile inputs (many crossings,
+//! dense junctions) still exhaust the budget before the dominant phase runs.
 
 use crate::predicates::winding_number;
 use crate::vec::Point2;
@@ -118,39 +132,88 @@ pub fn polygon_union(a: &[Point2], b: &[Point2], tol: f64) -> Vec<Vec<Point2>> {
 /// arrangement could not be traced into closed loops; it never panics and
 /// never returns a silently-wrong partial result.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn polygon_boolean(
     a: &[Point2],
     b: &[Point2],
     op: BooleanOp,
     tol: f64,
 ) -> PolygonBooleanResult {
+    // An unlimited meter never refuses, so the default is unreachable.
+    polygon_boolean_metered(a, b, op, tol, &mut Meter::unlimited()).unwrap_or_default()
+}
+
+/// A metered polygon boolean ran out of work budget.
+///
+/// Returned by [`polygon_boolean_with_budget`] before the phase that would
+/// have exceeded the budget runs. No partial result is produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolygonWorkExceeded;
+
+impl std::fmt::Display for PolygonWorkExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("polygon boolean work budget exceeded")
+    }
+}
+
+impl std::error::Error for PolygonWorkExceeded {}
+
+/// [`polygon_boolean`] metered against a caller-owned work budget.
+///
+/// Every phase charges `budget` for the work it is about to do, from sizes
+/// already measured on these inputs (see the module's work model), before
+/// doing it; `budget` is left holding the units not spent, so one budget can
+/// be shared across many calls. The result, when one is returned, is
+/// identical to [`polygon_boolean`]'s.
+///
+/// # Errors
+///
+/// Returns [`PolygonWorkExceeded`] when the next phase would cost more than
+/// the budget that remains. The refused charge is not deducted, and no
+/// partial result is returned.
+pub fn polygon_boolean_with_budget(
+    a: &[Point2],
+    b: &[Point2],
+    op: BooleanOp,
+    tol: f64,
+    budget: &mut usize,
+) -> Result<PolygonBooleanResult, PolygonWorkExceeded> {
+    polygon_boolean_metered(a, b, op, tol, &mut Meter::limited(budget))
+}
+
+fn polygon_boolean_metered(
+    a: &[Point2],
+    b: &[Point2],
+    op: BooleanOp,
+    tol: f64,
+    meter: &mut Meter<'_>,
+) -> Result<PolygonBooleanResult, PolygonWorkExceeded> {
+    // The finite scan, both normalizations, and a possible degenerate
+    // fallback each read every input point once.
+    meter.charge(a.len().checked_add(b.len()).and_then(|n| n.checked_mul(3)))?;
     if a.iter()
         .chain(b)
         .any(|point| !point.x().is_finite() || !point.y().is_finite())
     {
-        return PolygonBooleanResult::default();
+        return Ok(PolygonBooleanResult::default());
     }
     let tol = if tol > 0.0 && tol.is_finite() {
         tol
     } else {
-        return PolygonBooleanResult::default();
+        return Ok(PolygonBooleanResult::default());
     };
 
-    let poly_a = match Polygon::normalized(a, tol) {
-        Some(p) => p,
-        None => return degenerate_fallback(a, b, op, tol),
+    let Some(poly_a) = Polygon::normalized(a, tol) else {
+        return Ok(degenerate_fallback(a, b, op, tol));
     };
-    let poly_b = match Polygon::normalized(b, tol) {
-        Some(p) => p,
-        None => return degenerate_fallback(a, b, op, tol),
+    let Some(poly_b) = Polygon::normalized(b, tol) else {
+        return Ok(degenerate_fallback(a, b, op, tol));
     };
 
     // Split each polygon's edges at every interaction with the other, snapping
     // all split coordinates to a shared grid so coincident points merge.
     let snapper = Snapper::new(tol);
-    let edges_a = split_polygon(&poly_a, &poly_b, &snapper, tol);
-    let edges_b = split_polygon(&poly_b, &poly_a, &snapper, tol);
+    let edges_a = split_polygon(&poly_a, &poly_b, &snapper, tol, meter)?;
+    let edges_b = split_polygon(&poly_b, &poly_a, &snapper, tol, meter)?;
 
     // Classify and select directed sub-edges per the operation.
     let mut selected: Vec<DirectedEdge> = Vec::new();
@@ -161,8 +224,9 @@ pub fn polygon_boolean(
         EdgeSource::A,
         &snapper,
         tol,
+        meter,
         &mut selected,
-    );
+    )?;
     select_edges(
         &edges_b,
         &poly_a,
@@ -170,15 +234,55 @@ pub fn polygon_boolean(
         EdgeSource::B,
         &snapper,
         tol,
+        meter,
         &mut selected,
-    );
+    )?;
 
     if selected.is_empty() {
-        return PolygonBooleanResult::default();
+        return Ok(PolygonBooleanResult::default());
     }
 
-    let loops = trace_loops(selected, &snapper, tol);
-    classify_loops(loops, tol)
+    let loops = trace_loops(selected, &snapper, tol, meter)?;
+    Ok(classify_loops(loops, tol))
+}
+
+// ===========================================================================
+// Work metering
+// ===========================================================================
+
+/// Charges work units against an optional budget. The unlimited meter backs
+/// [`polygon_boolean`], so the unmetered entry point never refuses.
+struct Meter<'a> {
+    remaining: Option<&'a mut usize>,
+}
+
+impl<'a> Meter<'a> {
+    const fn unlimited() -> Self {
+        Self { remaining: None }
+    }
+
+    const fn limited(budget: &'a mut usize) -> Self {
+        Self {
+            remaining: Some(budget),
+        }
+    }
+
+    /// Deduct `units` (`None` = overflowed while sizing) or refuse without
+    /// deducting anything.
+    fn charge(&mut self, units: Option<usize>) -> Result<(), PolygonWorkExceeded> {
+        let Some(remaining) = self.remaining.as_deref_mut() else {
+            return Ok(());
+        };
+        *remaining = units
+            .and_then(|units| remaining.checked_sub(units))
+            .ok_or(PolygonWorkExceeded)?;
+        Ok(())
+    }
+}
+
+/// `count * per_item`, `None` on overflow.
+fn work_product(count: usize, per_item: usize) -> Option<usize> {
+    count.checked_mul(per_item)
 }
 
 // ===========================================================================
@@ -354,22 +458,38 @@ struct SubEdge {
 /// Split every edge of `subject` at all parameters where it interacts with any
 /// edge of `other` (crossings, T-junctions, collinear-overlap endpoints).
 /// Endpoints are snapped; zero-length results are dropped.
-fn split_polygon(subject: &Polygon, other: &Polygon, snapper: &Snapper, tol: f64) -> Vec<SubEdge> {
+fn split_polygon(
+    subject: &Polygon,
+    other: &Polygon,
+    snapper: &Snapper,
+    tol: f64,
+    meter: &mut Meter<'_>,
+) -> Result<Vec<SubEdge>, PolygonWorkExceeded> {
     let mut out = Vec::new();
     let n = subject.len();
     for i in 0..n {
         let a1 = subject.vert(i);
         let a2 = subject.vert(i + 1);
 
-        // Collect split parameters in (0, 1) along this edge.
-        let mut params: Vec<f64> = Vec::new();
+        // Collect split parameters in (0, 1) along this edge. Each of the
+        // `m` pair tests pushes at most four, so the buffer is bounded by
+        // the units charged for the tests.
         let m = other.len();
+        meter.charge(Some(m))?;
+        let mut params: Vec<f64> = Vec::new();
         for j in 0..m {
             let b1 = other.vert(j);
             let b2 = other.vert(j + 1);
             collect_edge_split_params(a1, a2, b1, b2, tol, &mut params);
         }
 
+        // Sorting, deduplicating and emitting the sub-edges this edge really
+        // produced: `p log p + p + 1` for `p` parameters.
+        let p = params.len();
+        let log_p = (usize::BITS - p.leading_zeros()) as usize;
+        meter.charge(
+            work_product(p, log_p.saturating_add(2)).and_then(|units| units.checked_add(1)),
+        )?;
         // Snap-deduplicate parameters and clamp to the open interval.
         params.retain(|&t| t > 0.0 && t < 1.0);
         params.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
@@ -392,7 +512,7 @@ fn split_polygon(subject: &Polygon, other: &Polygon, snapper: &Snapper, tol: f64
             prev = pt;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Append the parameters along edge `[a1, a2]` (in `[0, 1]`) at which it should
@@ -539,8 +659,13 @@ fn select_edges(
     source: EdgeSource,
     snapper: &Snapper,
     tol: f64,
+    meter: &mut Meter<'_>,
     out: &mut Vec<DirectedEdge>,
-) {
+) -> Result<(), PolygonWorkExceeded> {
+    // Each midpoint classification scans `other` for a shared boundary,
+    // snaps a copy of it, and winds around that copy.
+    let per_edge = other.len().checked_mul(3).and_then(|n| n.checked_add(1));
+    meter.charge(per_edge.and_then(|units| work_product(edges.len(), units)))?;
     for e in edges {
         let class = classify_midpoint(e, other, snapper, tol);
         let keep = match (op, source, &class) {
@@ -583,6 +708,7 @@ fn select_edges(
             Keep::Drop => {}
         }
     }
+    Ok(())
 }
 
 enum Keep {
@@ -639,14 +765,30 @@ fn classify_midpoint(e: &SubEdge, other: &Polygon, snapper: &Snapper, tol: f64) 
 /// the most counter-clockwise turn from the incoming direction; this hugs one
 /// face at a time and separates the faces meeting at the pinch instead of
 /// weaving them into a figure-eight.
-fn trace_loops(edges: Vec<DirectedEdge>, snapper: &Snapper, tol: f64) -> Vec<Vec<Point2>> {
+fn trace_loops(
+    edges: Vec<DirectedEdge>,
+    snapper: &Snapper,
+    tol: f64,
+    meter: &mut Meter<'_>,
+) -> Result<Vec<Vec<Point2>>, PolygonWorkExceeded> {
     use std::collections::HashMap;
 
+    // Building the junction index and sizing the walk read each edge twice.
+    meter.charge(work_product(edges.len(), 2))?;
     // Adjacency: snapped start key → list of edge indices leaving it.
     let mut adjacency: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
     for (idx, e) in edges.iter().enumerate() {
         adjacency.entry(snapper.key(e.start)).or_default().push(idx);
     }
+    // Every edge is walked at most once and then scans the edges leaving its
+    // end junction; the walk also copies one point per edge and the loop
+    // filter and classifier take each copied point's signed area twice.
+    let mut scans = work_product(edges.len(), 4);
+    for e in &edges {
+        let degree = adjacency.get(&snapper.key(e.end)).map_or(0, Vec::len);
+        scans = scans.and_then(|units| units.checked_add(degree));
+    }
+    meter.charge(scans)?;
 
     let mut used = vec![false; edges.len()];
     let mut loops: Vec<Vec<Point2>> = Vec::new();
@@ -714,7 +856,7 @@ fn trace_loops(edges: Vec<DirectedEdge>, snapper: &Snapper, tol: f64) -> Vec<Vec
         }
     }
 
-    loops
+    Ok(loops)
 }
 
 /// Signed turn angle (radians, in `(-pi, pi]`) from the `incoming` direction to
@@ -1171,5 +1313,134 @@ mod tests {
         let i = polygon_boolean(&square, &diamond, BooleanOp::Intersection, TOL);
         assert!(!u.is_empty() && !i.is_empty());
         assert_area_close(u.area() + i.area(), area_sq + area_di, 1e-6);
+    }
+
+    /// A regular `n`-gon of radius `r` centred at `(cx, cy)`.
+    fn ngon(n: u32, r: f64, cx: f64, cy: f64) -> Vec<Point2> {
+        (0..n)
+            .map(|i| {
+                let a = std::f64::consts::TAU * f64::from(i) / f64::from(n);
+                Point2::new(r.mul_add(a.cos(), cx), r.mul_add(a.sin(), cy))
+            })
+            .collect()
+    }
+
+    /// A comb: a base strip along X with `teeth` columns rising in Y.
+    fn comb(teeth: u32) -> Vec<Point2> {
+        let span = 2.0 * f64::from(teeth);
+        let mut points = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(span, 0.0),
+            Point2::new(span, 1.0),
+        ];
+        for i in (0..teeth).rev() {
+            let x = 2.0 * f64::from(i);
+            points.extend([
+                Point2::new(x + 1.5, 1.0),
+                Point2::new(x + 1.5, span),
+                Point2::new(x + 0.5, span),
+                Point2::new(x + 0.5, 1.0),
+            ]);
+        }
+        points.push(Point2::new(0.0, 1.0));
+        points
+    }
+
+    fn transposed(points: &[Point2]) -> Vec<Point2> {
+        points.iter().map(|p| Point2::new(p.y(), p.x())).collect()
+    }
+
+    fn spend(a: &[Point2], b: &[Point2], op: BooleanOp) -> (PolygonBooleanResult, usize) {
+        let mut budget = usize::MAX;
+        let result = polygon_boolean_with_budget(a, b, op, TOL, &mut budget).unwrap();
+        (result, usize::MAX - budget)
+    }
+
+    #[test]
+    fn metered_boolean_matches_unmetered_down_to_its_exact_budget() {
+        let cases = [
+            (sq(0.0, 0.0, 4.0), sq(2.0, 2.0, 4.0)),
+            (ngon(32, 1.5, 0.0, 0.0), ngon(32, 1.5, 0.0, 0.0)),
+            (comb(8), transposed(&comb(8))),
+            (sq(0.0, 0.0, 1.0), sq(5.0, 5.0, 1.0)),
+            (
+                sq(0.0, 0.0, 1.0),
+                vec![Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)],
+            ),
+        ];
+        for (a, b) in &cases {
+            for op in [
+                BooleanOp::Union,
+                BooleanOp::Intersection,
+                BooleanOp::Difference,
+            ] {
+                let (metered, spent) = spend(a, b, op);
+                assert_eq!(metered, polygon_boolean(a, b, op, TOL));
+                let mut exact = spent;
+                assert_eq!(
+                    polygon_boolean_with_budget(a, b, op, TOL, &mut exact),
+                    Ok(metered)
+                );
+                assert_eq!(exact, 0);
+                let mut short = spent - 1;
+                assert_eq!(
+                    polygon_boolean_with_budget(a, b, op, TOL, &mut short),
+                    Err(PolygonWorkExceeded)
+                );
+            }
+        }
+    }
+
+    /// Two coincident 32-gons (a through hole seen from both caps) cost a
+    /// few thousand units: the charge follows the arrangement they really
+    /// form, not the 8nm sub-edges two 32-point rings could produce.
+    #[test]
+    fn metered_boolean_charges_coincident_rings_linearly_in_their_edges() {
+        let hole = ngon(32, 0.5, 10.0, 5.0);
+        let (result, spent) = spend(&hole, &hole, BooleanOp::Intersection);
+        assert_area_close(result.area(), signed_area(&hole), 1e-9);
+        // 3 * 64 scans, 2 * 32 * (32 + 1) split tests, 2 * 32 * (3 * 32 + 1)
+        // classifications, and 2 * 32 + 4 * 32 + 32 to trace one loop, plus
+        // the few split parameters rounding leaves at shared vertices (each
+        // charged, then dropped by the open-interval filter).
+        let ideal = 192 + 2112 + 6208 + 224;
+        assert!((ideal..ideal + 256).contains(&spent), "spent {spent}");
+    }
+
+    /// Crossing combs are the hostile case: `t` teeth each way cross at
+    /// `4t^2` points, and classifying every resulting sub-edge against the
+    /// other comb grows as `t^3`. The meter tracks that growth and refuses
+    /// before the classification it cannot afford, leaving the refused
+    /// charge undeducted.
+    #[test]
+    fn metered_boolean_refuses_crossing_combs_before_classifying_them() {
+        let (_, small) = spend(&comb(8), &transposed(&comb(8)), BooleanOp::Intersection);
+        let (_, large) = spend(&comb(32), &transposed(&comb(32)), BooleanOp::Intersection);
+        assert!(large > 32 * small, "{small} -> {large}");
+
+        let mut budget = 10_000_000;
+        let refused = polygon_boolean_with_budget(
+            &comb(128),
+            &transposed(&comb(128)),
+            BooleanOp::Intersection,
+            TOL,
+            &mut budget,
+        );
+        assert_eq!(refused, Err(PolygonWorkExceeded));
+        // Input scans and split tests were charged; the classification of the
+        // 128-tooth arrangement (over 100,000 sub-edges times 1,500 edges)
+        // was refused before it ran.
+        assert!(budget > 0 && budget < 10_000_000);
+    }
+
+    #[test]
+    fn metered_boolean_refuses_overflowing_charges_without_deducting() {
+        let mut budget = 100;
+        let mut meter = Meter::limited(&mut budget);
+        assert_eq!(meter.charge(None), Err(PolygonWorkExceeded));
+        assert_eq!(meter.charge(Some(101)), Err(PolygonWorkExceeded));
+        assert_eq!(meter.charge(Some(100)), Ok(()));
+        assert_eq!(budget, 0);
+        assert_eq!(Meter::unlimited().charge(None), Ok(()));
     }
 }
