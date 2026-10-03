@@ -503,7 +503,7 @@ fn separated_noncanonical_coaxial_cylinders_preserve_exact_material_in_both_orde
         let mut original = Topology::new();
         let a = noncanonical_cylinder(&mut original, split_lateral);
         let b = copy_solid(&mut original, a).unwrap();
-        shift(&mut original, b, 0.0, 0.0, 6.0);
+        shift(&mut original, b, 0.0, 0.0, 4.0);
         for input in [a, b] {
             assert!(
                 remus_operations::validate::validate_solid(&original, input)
@@ -516,7 +516,7 @@ fn separated_noncanonical_coaxial_cylinders_preserve_exact_material_in_both_orde
             ));
         }
         let expected = if split_lateral { 8.0 } else { 4.0 } * std::f64::consts::PI;
-        for (blank, tool, blank_z) in [(a, b, 1.0), (b, a, 7.0)] {
+        for (blank, tool, blank_z) in [(a, b, 1.0), (b, a, 5.0)] {
             for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
                 for route in 0..5 {
                     let mut topo = original.clone();
@@ -657,7 +657,7 @@ fn separated_noncanonical_coaxial_cylinders_preserve_exact_material_in_both_orde
                         }
                     );
                     assert_eq!(
-                        classify_point(&topo, result, Point3::new(1.0, 0.0, 4.0), 0.01, 1e-7)
+                        classify_point(&topo, result, Point3::new(1.0, 0.0, 3.0), 0.01, 1e-7)
                             .unwrap(),
                         PointClassification::Outside
                     );
@@ -729,6 +729,269 @@ fn noncanonical_carrier_overlap_touch_and_nonclear_gaps_still_refuse_atomically(
             }
         }
     }
+}
+
+#[test]
+fn separated_cropped_cylinders_keep_translated_exact_context_and_region_results() {
+    use remus_operations::boolean::boolean_regions;
+    use remus_operations::copy::copy_solid;
+
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for placement in [0.0, 10.0, 100.0] {
+        let mut original = Topology::new();
+        let a = noncanonical_cylinder(&mut original, false);
+        shift(&mut original, a, placement, placement, placement);
+        let b = copy_solid(&mut original, a).unwrap();
+        shift(&mut original, b, 0.0, 0.0, 4.0);
+        for (blank, tool, blank_z) in [(a, b, placement + 1.0), (b, a, placement + 5.0)] {
+            for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
+                let mut topo = original.clone();
+                let outcome = boolean_with_context(&mut topo, op, blank, tool, &context).unwrap();
+                assert_eq!(outcome.quality, BooleanQuality::Exact);
+                let expected = match op {
+                    BooleanOp::Fuse => 8.0 * std::f64::consts::PI,
+                    BooleanOp::Cut => 4.0 * std::f64::consts::PI,
+                    BooleanOp::Intersect => 0.0,
+                };
+                assert!(
+                    (solid_volume(&topo, outcome.solid, 0.01).unwrap() - expected).abs() < 1e-7
+                );
+                let before = live_counts(&topo);
+                let slots = topo.allocated_slot_count();
+                let journal = topo.journal().snapshot();
+                if op == BooleanOp::Intersect {
+                    let error = boolean_regions(&mut topo, op, blank, tool).unwrap_err();
+                    match error {
+                        remus_operations::OperationsError::EmptyResult { .. } => {}
+                        remus_operations::OperationsError::Algo(
+                            remus_algo::error::AlgoError::AssemblyFailed(reason),
+                        ) if reason == "no faces selected" => {}
+                        error => panic!("disjoint region intersection: {error:?}"),
+                    }
+                    assert_eq!(live_counts(&topo), before);
+                    assert_eq!(topo.allocated_slot_count(), slots);
+                    assert_eq!(topo.journal().snapshot(), journal);
+                    continue;
+                }
+                let result = boolean_regions(&mut topo, op, blank, tool).unwrap();
+                assert_eq!(
+                    result.regions.len(),
+                    if op == BooleanOp::Fuse { 2 } else { 1 }
+                );
+                assert_eq!(
+                    topo.compound(result.compound).unwrap().solids().len(),
+                    result.regions.len()
+                );
+                let volume: f64 = result
+                    .regions
+                    .iter()
+                    .map(|region| {
+                        assert!(
+                            remus_operations::validate::validate_solid(&topo, region.solid)
+                                .unwrap()
+                                .is_valid()
+                        );
+                        assert!(!region.evolution.faces.is_empty());
+                        solid_volume(&topo, region.solid, 0.01).unwrap()
+                    })
+                    .sum();
+                assert!((volume - expected).abs() < 1e-7);
+                assert!(result.regions.iter().any(|region| {
+                    classify_point(
+                        &topo,
+                        region.solid,
+                        Point3::new(placement + 1.0, placement, blank_z),
+                        0.01,
+                        1e-7,
+                    )
+                    .unwrap()
+                        == PointClassification::Inside
+                }));
+                for region in &result.regions {
+                    assert_eq!(
+                        classify_point(
+                            &topo,
+                            region.solid,
+                            Point3::new(placement - 1.0, placement, blank_z),
+                            0.01,
+                            1e-7
+                        )
+                        .unwrap(),
+                        PointClassification::Outside
+                    );
+                }
+                for input in [a, b] {
+                    assert!(
+                        (solid_volume(&topo, input, 0.01).unwrap() - 4.0 * std::f64::consts::PI)
+                            .abs()
+                            < 1e-7
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn separated_carriers_with_unknown_boundary_authority_still_refuse_before_mutation() {
+    use remus_operations::boolean::{boolean_regions, boolean_with_entity_evolution};
+    use remus_operations::copy::copy_solid;
+    use remus_operations::journal_ops::boolean_journaled_with_operation;
+    use remus_topology::edge::EdgeCurve;
+
+    let mut original = Topology::new();
+    let a = noncanonical_cylinder(&mut original, false);
+    let b = copy_solid(&mut original, a).unwrap();
+    shift(&mut original, b, 0.0, 0.0, 4.0);
+    // Stored vertices still imply the separated slabs, but an invalid stored
+    // NURBS trim has no authoritative whole-span bound. No sampled box or
+    // classifier may turn that uncertainty into a new disjoint certificate.
+    let edge = remus_topology::explorer::solid_edges(&original, a)
+        .unwrap()
+        .into_iter()
+        .find(|&id| matches!(original.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    let stored = original.edge(edge).unwrap();
+    let (lo, hi) = stored.trim().unwrap();
+    let EdgeCurve::Circle(circle) = stored.curve() else {
+        unreachable!()
+    };
+    let curve = remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(circle, lo, hi).unwrap();
+    let (lo, hi) = curve.domain();
+    let stored = original.edge_mut(edge).unwrap();
+    stored.set_curve(EdgeCurve::NurbsCurve(curve));
+    stored.set_trim(Some((lo, hi + 1.0)));
+    assert!(
+        !remus_check::distance::face_bounds::edge_span_bound(&original, edge)
+            .unwrap()
+            .is_prunable()
+    );
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for (blank, tool) in [(a, b), (b, a)] {
+        for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
+            for route in 0..4 {
+                let mut topo = original.clone();
+                let counts = live_counts(&topo);
+                let slots = topo.allocated_slot_count();
+                let ticks = topo.mutation_ticks();
+                let journal = topo.journal().snapshot();
+                let error = match route {
+                    0 => boolean_with_context(&mut topo, op, blank, tool, &context).unwrap_err(),
+                    1 => boolean_with_entity_evolution(&mut topo, op, blank, tool).unwrap_err(),
+                    2 => boolean_regions(&mut topo, op, blank, tool).unwrap_err(),
+                    3 => boolean_journaled_with_operation(&mut topo, op, blank, tool).unwrap_err(),
+                    _ => unreachable!(),
+                };
+                assert!(
+                    matches!(
+                        error,
+                        remus_operations::OperationsError::ExactOnlyUnattainable
+                    ),
+                    "{op:?}/{route}: {error:?}"
+                );
+                assert_eq!(live_counts(&topo), counts);
+                assert_eq!(topo.allocated_slot_count(), slots);
+                assert_eq!(topo.mutation_ticks(), ticks);
+                assert_eq!(topo.journal().snapshot(), journal);
+            }
+        }
+    }
+}
+
+#[test]
+fn carrier_disjoint_certificate_covers_narrow_nurbs_trim_spans() {
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_operations::copy::copy_solid;
+    use remus_topology::edge::EdgeCurve;
+
+    let mut topo = Topology::new();
+    let a = noncanonical_cylinder(&mut topo, false);
+    let b = copy_solid(&mut topo, a).unwrap();
+    shift(&mut topo, b, 0.0, 0.0, 4.0);
+    let edge = remus_topology::explorer::solid_edges(&topo, a)
+        .unwrap()
+        .into_iter()
+        .find(|&id| {
+            let edge = topo.edge(id).unwrap();
+            matches!(edge.curve(), EdgeCurve::Line)
+                && topo.vertex(edge.start()).unwrap().point().z() == 0.0
+                && topo.vertex(edge.end()).unwrap().point().z() == 2.0
+        })
+        .unwrap();
+    let start = topo
+        .vertex(topo.edge(edge).unwrap().start())
+        .unwrap()
+        .point();
+    let delta = topo.vertex(topo.edge(edge).unwrap().end()).unwrap().point() - start;
+    // Deliberately fold the shared planar/cylinder seam in a narrow knot span.
+    // This defensive fixture is not asserted to be a valid model: it proves
+    // the new certificate cannot rely on measured trim samples or endpoints.
+    let curve = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.002, 0.003, 0.004, 1.0, 1.0],
+        vec![
+            start,
+            start + delta * 0.002,
+            start + delta * 3.0,
+            start + delta * 0.004,
+            start + delta,
+        ],
+        vec![1.0; 5],
+    )
+    .unwrap();
+    assert_eq!(curve.evaluate(0.003).z(), 6.0);
+    let stored = topo.edge_mut(edge).unwrap();
+    stored.set_curve(EdgeCurve::NurbsCurve(curve));
+    stored.set_trim(Some((0.0, 1.0)));
+    let bound = remus_check::distance::face_bounds::edge_span_bound(&topo, edge).unwrap();
+    assert!(bound.is_prunable());
+    assert_eq!(bound.aabb().max.z(), 6.0);
+    assert_eq!(
+        remus_operations::measure::solid_bounding_box(&topo, a)
+            .unwrap()
+            .max
+            .z(),
+        2.0
+    );
+    let counts = live_counts(&topo);
+    let slots = topo.allocated_slot_count();
+    let journal = topo.journal().snapshot();
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
+        assert!(matches!(
+            boolean_with_context(&mut topo, op, a, b, &context),
+            Err(remus_operations::OperationsError::ExactOnlyUnattainable)
+        ));
+        assert_eq!(live_counts(&topo), counts);
+        assert_eq!(topo.allocated_slot_count(), slots);
+        assert_eq!(topo.journal().snapshot(), journal);
+    }
+}
+
+#[test]
+fn separated_cropped_carriers_preserve_approximate_only_policy() {
+    use remus_operations::copy::copy_solid;
+    let mut topo = Topology::new();
+    let a = noncanonical_cylinder(&mut topo, false);
+    let b = copy_solid(&mut topo, a).unwrap();
+    shift(&mut topo, b, 0.0, 0.0, 4.0);
+    let context =
+        OperationContext::new().with_fallback(FallbackPolicy::ApproximateOnly { budget: 0.1 });
+    let counts = live_counts(&topo);
+    let slots = topo.allocated_slot_count();
+    let journal = topo.journal().snapshot();
+    // The existing mesh route rejects this fixture's free boundaries. The
+    // disjoint exact certificate must not bypass an ApproximateOnly request.
+    let error = boolean_with_context(&mut topo, BooleanOp::Fuse, a, b, &context).unwrap_err();
+    assert!(
+        matches!(error, remus_operations::OperationsError::InvalidInput { reason }
+        if reason.contains("non-manifold") && reason.contains("free boundary"))
+    );
+    assert_eq!(live_counts(&topo), counts);
+    // Failed mesh work may reserve retired handles; rollback preserves their
+    // high-water marks rather than permitting those IDs to alias later work.
+    assert!(topo.allocated_slot_count() >= slots);
+    assert_eq!(topo.journal().snapshot(), journal);
 }
 
 #[test]
