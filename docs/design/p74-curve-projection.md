@@ -87,7 +87,7 @@ pub fn project_curves_onto_plane(
 ) -> Result<Vec<PCurve>, ProjectCurveError>;
 ```
 
-The types are in the stub. Summary:
+The public types are defined alongside the implementation. Summary:
 
 - `ProjectCurveOptions { allow_approximate: false, approximation_tolerance:
   None (= 1e-6·scale), max_control_points: 512, plane_frame: None }`.
@@ -372,6 +372,12 @@ Arc → cylinder, cone or sphere, non-coaxial, `allow_approximate = true`.
   `max_control_points ≥ 4`; otherwise `InvalidOptions`.
 - No clipping in slice 1: if any part of the exact image leaves the face
   region, `ApproximateClipUnsupported`.
+- A solid call accepts the fitted image only when one face contains the
+  whole image and conservative bounds prove that every other face cannot
+  meet any source ray. Competing faces or unresolved visibility return
+  `ApproximateClipUnsupported`; sampled probes do not decide occlusion.
+  Mixed exact and approximate sources report the largest sampled deviation
+  in the solid result's `quality`.
 - Instance A1: unit circle, centre `(0,5,5)`, `N = +y`, ref `+x`, `d = −y`,
   onto the cylinder: `q(t) = (cos t, √(4 − cos²t), 5 + sin t)`. Default
   tolerance at `scale = 2` is `2e-6`; `max_control_points = 4` is
