@@ -24,7 +24,11 @@ perf-counters = []
 criterion.workspace = true
 proptest.workspace = true
 remus-check.workspace = true
+# `serde` lets tests build NURBS the validating constructors refuse, the only
+# route to the clip adapter's own weight and grid gates.
+remus-math = {workspace = true, features = ["serde"]}
 remus-topology = {workspace = true, features = ["test-utils"]}
+serde_json.workspace = true
 
 [[bench]]
 harness = false

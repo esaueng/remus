@@ -1388,3 +1388,166 @@ fn curved_nurbs_trim_authority_stops_at_the_extent_handoff() {
         assert!((interval.source_range[1] - expected[1]).abs() < 1e-12);
     }
 }
+
+// ── Marched-trace-of-tangent-rim gate (B19 F3c) ───────────────────────────
+//
+// Every trace is a vertical run x = const, y = 0 and both partner carriers
+// are z-axis cylinders, so each carrier's normal is one constant along the
+// run (the angle test reads sin θ between them) and every sample's verdict
+// is decided by the hand-placed positions alone.
+
+/// A degree-1 NURBS through `points`, uniform knots over `domain`.
+fn polyline(points: &[Point3], domain: (f64, f64)) -> RawCurve {
+    let n = points.len();
+    let mut knots = vec![domain.0; 2];
+    for i in 1..n - 1 {
+        let f = f64::from(u32::try_from(i).unwrap()) / f64::from(u32::try_from(n - 1).unwrap());
+        knots.push(domain.0 + (domain.1 - domain.0) * f);
+    }
+    knots.extend([domain.1; 2]);
+    let curve = NurbsCurve::new(1, knots, points.to_vec(), vec![1.0; n]).unwrap();
+    RawCurve {
+        bbox: Aabb3::from_points(points.iter().copied()),
+        t_range: domain,
+        p_start: points[0],
+        p_end: points[n - 1],
+        curve: EdgeCurve::NurbsCurve(curve),
+    }
+}
+
+/// The rim: a circle of radius `r` about the z axis in the plane z = 0.
+fn z_rim(r: f64) -> RawCurve {
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    RawCurve {
+        bbox: Aabb3::from_points([Point3::new(-r, -r, 0.0), Point3::new(r, r, 0.0)]),
+        t_range: (0.0, TAU),
+        p_start: circle.evaluate(0.0),
+        p_end: circle.evaluate(0.0),
+        curve: EdgeCurve::Circle(circle),
+    }
+}
+
+/// Two radius-10 z-axis cylinders through the line x = `x`, y = 0, with
+/// normals there (1, 0, 0) and (cos θ, sin θ, 0).
+fn walls(theta: f64, x: f64) -> [FaceSurface; 2] {
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let wall = |n: Vec3| {
+        FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(x, 0.0, 0.0) - n * 10.0, z, 10.0).unwrap(),
+        )
+    };
+    [
+        wall(Vec3::new(1.0, 0.0, 0.0)),
+        wall(Vec3::new(theta.cos(), theta.sin(), 0.0)),
+    ]
+}
+
+fn drops(raw: &RawCurve, r: f64, planes: &[FaceSurface; 2]) -> bool {
+    super::is_marched_trace_of_tangent_rim(
+        raw,
+        std::slice::from_ref(&z_rim(r)),
+        &planes[0],
+        &planes[1],
+        Tolerance::default(),
+    )
+}
+
+#[test]
+fn a_trace_reaching_the_position_band_exactly_is_still_a_rim_duplicate() {
+    // r = 1e-6 < δ/2 with δ = 100·tol: the position band is δ itself and the
+    // angle band saturates at 1. The vertical run x = r, |z| <= δ ends exactly
+    // on the band: d = (r, 0, ±δ), h = ±δ, radial = r, hypot(δ, 0) = δ.
+    let r = 1e-6;
+    let weld = Tolerance::default().linear * 100.0;
+    let run = polyline(
+        &[Point3::new(r, 0.0, -weld), Point3::new(r, 0.0, weld)],
+        (0.0, 1.0),
+    );
+    assert!(drops(&run, r, &walls(0.5, r)));
+    // The same run at 2δ off the circle plane is outside the band.
+    let off = polyline(
+        &[Point3::new(r, 0.0, weld), Point3::new(r, 0.0, 2.0 * weld)],
+        (0.0, 1.0),
+    );
+    assert!(!drops(&off, r, &walls(0.5, r)));
+}
+
+#[test]
+fn a_trace_beside_the_rim_is_kept_at_any_normal_angle() {
+    // 2δ outside the circle: |radial − r| = 2δ > δ at every sample.
+    let r = 1e-6;
+    let weld = Tolerance::default().linear * 100.0;
+    let x = r + 2.0 * weld;
+    let beside = polyline(
+        &[Point3::new(x, 0.0, -r), Point3::new(x, 0.0, r)],
+        (0.0, 1.0),
+    );
+    assert!(!drops(&beside, r, &walls(0.0, x)));
+    // Moved onto the rim point (r, 0, 0) it is a duplicate.
+    let on = polyline(
+        &[Point3::new(r, 0.0, -r), Point3::new(r, 0.0, r)],
+        (0.0, 1.0),
+    );
+    assert!(drops(&on, r, &walls(0.0, r)));
+}
+
+#[test]
+fn the_angle_band_is_the_tangency_conditioning_sqrt_two_delta_over_r() {
+    // r = 4: angle band √(2δ/4) = 2.236e-3; position band √(8δ) = 8.9e-3.
+    // A run through the rim point (4, 0, 0) along z, |z| <= 1e-3, is inside
+    // the position band; the carriers' normals differ by sin θ.
+    let r = 4.0;
+    let run = polyline(
+        &[Point3::new(r, 0.0, -1e-3), Point3::new(r, 0.0, 1e-3)],
+        (0.0, 1.0),
+    );
+    assert!(drops(&run, r, &walls(2e-3, r)));
+    assert!(!drops(&run, r, &walls(3e-3, r)));
+}
+
+#[test]
+fn every_sample_of_the_trace_domain_is_checked() {
+    // A run on the rim's tangent line at (r, 0, 0) with one narrow excursion
+    // 5δ off the plane centred on the third of 33 samples, t0 + 2/32 of the
+    // span. Domain (1, 2), so the span is not its own end parameter.
+    let r = 1e-6;
+    let weld = Tolerance::default().linear * 100.0;
+    let at = |z: f64| Point3::new(r, 0.0, z);
+    // Control points at fractions 0, 1/32, 2/32, 3/32, 1 (non-uniform knots).
+    let fractions = [0.0, 0.046_875, 0.0625, 0.078_125, 1.0];
+    let points = [at(0.0), at(0.0), at(5.0 * weld), at(0.0), at(0.0)];
+    let mut knots = vec![1.0; 2];
+    knots.extend(fractions[1..4].iter().map(|f| 1.0 + f));
+    knots.extend([2.0; 2]);
+    let curve = NurbsCurve::new(1, knots, points.to_vec(), vec![1.0; 5]).unwrap();
+    let bumped = RawCurve {
+        bbox: Aabb3::from_points(points),
+        t_range: (1.0, 2.0),
+        p_start: points[0],
+        p_end: points[4],
+        curve: EdgeCurve::NurbsCurve(curve),
+    };
+    assert!(!drops(&bumped, r, &walls(0.0, r)));
+    // Without the excursion the run is a duplicate.
+    let flat = polyline(&[at(-weld / 2.0), at(weld / 2.0)], (1.0, 2.0));
+    assert!(drops(&flat, r, &walls(0.0, r)));
+}
+
+#[test]
+fn conic_extrema_need_a_finite_window() {
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let curve = EdgeCurve::Circle(circle);
+    // Any half turn holds an extreme along x and y, and the whole half turn
+    // is extreme along z (the plane's normal axis).
+    assert!(super::conic_arc_axis_extrema(&curve, 0.0, std::f64::consts::PI).len() >= 4);
+    for (t0, t1) in [
+        (0.0, f64::INFINITY),
+        (f64::NEG_INFINITY, 1.0),
+        (0.0, f64::NAN),
+    ] {
+        assert!(
+            super::conic_arc_axis_extrema(&curve, t0, t1).is_empty(),
+            "[{t0}, {t1}]"
+        );
+    }
+}

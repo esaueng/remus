@@ -14,6 +14,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
+import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
@@ -1630,6 +1631,7 @@ runB6SectionSplitPackaged({ BrepKernel });
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
 runCircularPatternPackaged({ BrepKernel });
+runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
