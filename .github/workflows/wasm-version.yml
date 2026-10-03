@@ -55,8 +55,17 @@ jobs:
     name: Changed kernel requires a new version
     # Keep integrity inside the existing version-check dependency chain.
     needs: integrity
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Require successful package integrity
+        env:
+          INTEGRITY_RESULT: ${{ needs.integrity.result }}
+        run: |
+          if [[ "$INTEGRITY_RESULT" != "success" ]]; then
+            echo "::error::Package integrity did not succeed: $INTEGRITY_RESULT"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
