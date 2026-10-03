@@ -14,8 +14,9 @@ pub struct Checkpoint {
     pub gcs_sketches: HandleStore<GcsSketchState>,
 }
 
-/// Maximum retained complete snapshots in one kernel session.
-pub const MAX_CHECKPOINTS: usize = 32;
+/// Maximum retained complete snapshots in one kernel session: 32 history
+/// snapshots plus one temporary probe snapshot.
+pub const MAX_CHECKPOINTS: usize = 33;
 
 /// Sparse, monotonic checkpoint handles. Retired snapshots leave no tombstone
 /// allocation, while their IDs remain permanently stale.
