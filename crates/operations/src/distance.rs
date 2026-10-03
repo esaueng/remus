@@ -654,6 +654,57 @@ mod tests {
     }
 
     #[test]
+    fn clockwise_circular_hole_distance_keeps_witnesses_on_the_annular_boundary() {
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let mut rim = |radius, normal_z| {
+            let edge = remus_topology::builder::make_circle_edge_with_ref(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, normal_z),
+                radius,
+                Vec3::new(0.0, 1.0, 0.0),
+                1e-7,
+            )
+            .unwrap();
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap())
+        };
+        let outer = rim(3.0, 1.0);
+        let hole = rim(1.0, -1.0);
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let solid =
+            crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .is_valid()
+        );
+        let snapshot = format!("{topo:?}");
+        let point = Point3::new(0.0, 0.0, -1.0);
+        let direct = point_to_solid_distance(&topo, point, solid).unwrap();
+        let batch = point_to_solid_batch(&topo, &[point], solid).unwrap();
+        let face_result = point_to_face(&topo, point, face).unwrap();
+        for result in [&direct, &batch[0], &face_result] {
+            assert!(
+                (result.distance - 2.0_f64.sqrt()).abs() < 1e-10,
+                "{result:?}"
+            );
+            assert!((result.point_b.x().hypot(result.point_b.y()) - 1.0).abs() < 1e-10);
+            assert!(result.point_b.z().abs() < 1e-10);
+            assert!(((point - result.point_b).length() - result.distance).abs() < 1e-10);
+        }
+        assert_eq!(format!("{topo:?}"), snapshot);
+    }
+
+    #[test]
     fn cylinder_lateral_distance_uses_the_closed_curved_rim() {
         let mut topo = Topology::new();
         let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();

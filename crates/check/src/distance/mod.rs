@@ -290,11 +290,14 @@ pub fn point_to_solid_batch(
 /// General NURBS carriers use a local Newton projection; NURBS trims use local
 /// numerical boundary estimates even on analytic faces. These are not global
 /// extremum certificates. Planar line/circle trims use
-/// analytic membership and boundary extrema.
+/// analytic membership and boundary extrema. Complete circular rims, including
+/// certified contiguous split rims, are independent of their parameter seam.
+/// Unresolved partial-arc endpoint events return a typed failure.
 ///
 /// # Errors
 ///
-/// Returns an error if the face lookup fails.
+/// Returns an error for invalid topology or uncertified trim membership or
+/// boundary extrema.
 pub fn point_to_face(
     topo: &Topology,
     point: Point3,
@@ -310,7 +313,8 @@ pub fn point_to_face(
 ///
 /// # Errors
 ///
-/// Returns an error if the face lookup fails or the options are invalid.
+/// Returns an error for invalid topology/options or uncertified trim membership
+/// or boundary extrema.
 pub fn point_to_face_with_options(
     topo: &Topology,
     point: Point3,
@@ -452,6 +456,70 @@ fn plane_point_in_face(
     Ok(true)
 }
 
+/// Recognize one complete circular traversal without summing approximate
+/// interval lengths. Every carrier, parameter junction and topological
+/// junction must agree, and the existing closed-edge domain rule checks the
+/// final full turn and geometric closure using the original tolerance.
+#[allow(clippy::float_cmp)]
+fn complete_circle_wire(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+) -> Result<Option<&remus_math::curves::Circle3D>, CheckError> {
+    use remus_topology::edge::EdgeCurve;
+    let wire = topo.wire(wire_id)?;
+    let Some(first) = wire.edges().first() else {
+        return Ok(None);
+    };
+    if !wire.is_closed() {
+        return Ok(None);
+    }
+    let first_edge = topo.edge(first.edge())?;
+    let EdgeCurve::Circle(carrier) = first_edge.curve() else {
+        return Ok(None);
+    };
+    let (a, b) = first_edge
+        .strict_domain()
+        .map_err(crate::error::edge_domain_validation)?;
+    let (start, end) = if first.is_forward() { (a, b) } else { (b, a) };
+    let increasing = end > start;
+    let first_vertex = first.oriented_start(first_edge);
+    let mut parameter = start;
+    let mut vertex = first_vertex;
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(None);
+        };
+        if circle.center() != carrier.center()
+            || circle.radius() != carrier.radius()
+            || circle.u_axis() != carrier.u_axis()
+            || circle.v_axis() != carrier.v_axis()
+        {
+            return Ok(None);
+        }
+        let (a, b) = edge
+            .strict_domain()
+            .map_err(crate::error::edge_domain_validation)?;
+        let (a, b) = if oriented.is_forward() {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        if a != parameter || (b > a) != increasing || oriented.oriented_start(edge) != vertex {
+            return Ok(None);
+        }
+        parameter = b;
+        vertex = oriented.oriented_end(edge);
+    }
+    if vertex != first_vertex {
+        return Ok(None);
+    }
+    let mut full_turn = first_edge.clone();
+    full_turn.set_end(full_turn.start());
+    full_turn.set_trim(Some((start, parameter)));
+    Ok(full_turn.strict_domain().is_ok().then_some(carrier))
+}
+
 #[allow(clippy::too_many_lines, clippy::float_cmp)] // Exact half-open interval endpoints.
 fn plane_point_in_wire(
     topo: &Topology,
@@ -462,6 +530,39 @@ fn plane_point_in_wire(
     use remus_topology::edge::EdgeCurve;
     let wire = topo.wire(wire_id)?;
     let frame = remus_math::frame::Frame3::from_normal(point, normal)?;
+    if let Some(circle) = complete_circle_wire(topo, wire_id)? {
+        let center = circle.center() - point;
+        let cos_y = circle.radius() * circle.u_axis().dot(frame.y);
+        let sin_y = circle.radius() * circle.v_axis().dot(frame.y);
+        let amplitude = cos_y.hypot(sin_y);
+        let center_y = center.dot(frame.y);
+        if !amplitude.is_finite() || amplitude <= 0.0 || !center_y.is_finite() {
+            return Err(CheckError::DistanceFailed(
+                "complete circular trim has no finite ray events".into(),
+            ));
+        }
+        let ordinate = -center_y / amplitude;
+        if ordinate.abs() >= 1.0 {
+            return Ok(false);
+        }
+        let phase = sin_y.atan2(cos_y);
+        let angle = ordinate.acos();
+        // A complete traversal has each algebraic ray event exactly once.
+        // Its arbitrary seam cannot remove or duplicate an event.
+        let mut crossings = 0;
+        for parameter in [phase - angle, phase + angle] {
+            let abscissa = (circle.evaluate(parameter) - point).dot(frame.x);
+            if !abscissa.is_finite() {
+                return Err(CheckError::DistanceFailed(
+                    "complete circular trim has no finite ray events".into(),
+                ));
+            }
+            if abscissa > 0.0 {
+                crossings += 1;
+            }
+        }
+        return Ok(crossings % 2 != 0);
+    }
     let mut crossings = 0;
     for oriented in wire.edges() {
         let edge = topo.edge(oriented.edge())?;
@@ -495,9 +596,36 @@ fn plane_point_in_wire(
                 let phase = sin_y.atan2(cos_y);
                 let angle = ordinate.acos();
                 let (lo, hi) = (a.min(b), a.max(b));
+                let period = std::f64::consts::TAU;
+                // Refuse arithmetic-ambiguous partial-arc admission. This is
+                // an error enclosure, not a geometric endpoint snap: no
+                // uncertain ray event is promoted into a crossing.
+                let ordinate_scale = center.x().abs() * frame.y.x().abs()
+                    + center.y().abs() * frame.y.y().abs()
+                    + center.z().abs() * frame.y.z().abs()
+                    + cos_y.abs()
+                    + sin_y.abs();
+                let angle_roundoff = 64.0
+                    * f64::EPSILON
+                    * (lo.abs().max(hi.abs()).max(period)
+                        + (ordinate_scale / amplitude) / (1.0 - ordinate * ordinate).sqrt());
+                if !angle_roundoff.is_finite() || angle_roundoff >= period / 4.0 {
+                    return Err(CheckError::DistanceFailed(
+                        "circular trim ray-event admission is unresolved".into(),
+                    ));
+                }
                 for raw in [phase - angle, phase + angle] {
-                    let period = std::f64::consts::TAU;
                     let t = raw + period * ((lo - raw) / period).ceil();
+                    if !t.is_finite()
+                        || [t - period, t, t + period].into_iter().any(|candidate| {
+                            (candidate - lo).abs() <= angle_roundoff
+                                || (candidate - hi).abs() <= angle_roundoff
+                        })
+                    {
+                        return Err(CheckError::DistanceFailed(
+                            "circular trim ray-event endpoint is unresolved".into(),
+                        ));
+                    }
                     if t > hi {
                         continue;
                     }
@@ -912,6 +1040,220 @@ mod tests {
 
     use super::*;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface, ToroidalSurface};
+
+    fn circle_seam_face(
+        seam: f64,
+        normal_z: f64,
+        descending: bool,
+        hole: bool,
+        split: bool,
+    ) -> (Topology, FaceId, SolidId) {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let mut rim = |radius: f64, carrier_normal: f64, forward: bool| {
+            let circle = Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, carrier_normal),
+                radius,
+                Vec3::new(carrier_normal * seam.sin(), seam.cos(), 0.0),
+            )
+            .unwrap();
+            let vertex = topo.add_vertex(Vertex::new(circle.evaluate(seam), 1e-7));
+            let end = seam + std::f64::consts::TAU;
+            let intervals = if split {
+                let middle = seam + std::f64::consts::PI;
+                let midpoint = topo.add_vertex(Vertex::new(circle.evaluate(middle), 1e-7));
+                vec![
+                    (vertex, midpoint, seam, middle),
+                    (midpoint, vertex, middle, end),
+                ]
+            } else {
+                vec![(vertex, vertex, seam, end)]
+            };
+            let mut edges: Vec<_> = intervals
+                .into_iter()
+                .map(|(start, end, lo, hi)| {
+                    let (start, end, domain) = if descending {
+                        (end, start, (hi, lo))
+                    } else {
+                        (start, end, (lo, hi))
+                    };
+                    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+                    edge.set_trim(Some(domain));
+                    OrientedEdge::new(topo.add_edge(edge), forward != descending)
+                })
+                .collect();
+            if !forward {
+                edges.reverse();
+            }
+            topo.add_wire(Wire::new(edges, true).unwrap())
+        };
+        // Reverse the outer coedge when its carrier is clockwise. Hole
+        // carriers run clockwise relative to the face's +Z normal.
+        let outer = rim(3.0, normal_z, normal_z > 0.0);
+        let holes = if hole {
+            vec![rim(1.0, -1.0, true)]
+        } else {
+            vec![]
+        };
+        let face = topo.add_face(Face::new(
+            outer,
+            holes,
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        (topo, face, solid)
+    }
+
+    #[test]
+    fn circular_seam_membership_preserves_disks_and_clockwise_holes() {
+        for seam in [
+            0.0,
+            std::f64::consts::PI / 1000.0,
+            8.0 * std::f64::consts::TAU / 10000.0,
+            1.2,
+            std::f64::consts::FRAC_PI_2,
+            2.3,
+        ] {
+            for normal_z in [-1.0, 1.0] {
+                for descending in [false, true] {
+                    for hole in [false, true] {
+                        for split in [false, true] {
+                            let (topo, face, solid) =
+                                circle_seam_face(seam, normal_z, descending, hole, split);
+                            let prepared = PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+                            let mut scratch = DistanceScratch::new();
+                            let queries = [
+                                Point3::new(0.0, 0.0, 1.0),
+                                Point3::new(0.0, 1e-5, 1.0),
+                                Point3::new(0.0, -1e-5, 1.0),
+                                Point3::new(2.0, 0.0, 1.0),
+                            ];
+                            let batch = point_to_solid_batch(&topo, &queries, solid).unwrap();
+                            for (index, point) in queries.into_iter().enumerate() {
+                                let radial = point.x().hypot(point.y());
+                                let expected = if hole && radial < 1.0 {
+                                    (1.0 - radial).hypot(1.0)
+                                } else {
+                                    1.0
+                                };
+                                let face_result =
+                                    point_to_face(&topo, point, face).unwrap().unwrap();
+                                assert!(
+                                    (face_result.0 - expected).abs() < 1e-10,
+                                    "seam={seam}, normal={normal_z}, descending={descending}, hole={hole}: {face_result:?}"
+                                );
+                                let direct = point_to_solid(&topo, point, solid).unwrap();
+                                let exhaustive =
+                                    point_to_solid_exhaustive(&topo, point, solid).unwrap().0;
+                                let cached = prepared.query(point, &mut scratch).unwrap();
+                                for result in [&direct, &exhaustive, &cached, &batch[index]] {
+                                    assert!(
+                                        (result.distance - expected).abs() < 1e-10,
+                                        "{result:?}"
+                                    );
+                                    let witness_radius =
+                                        result.point_b.x().hypot(result.point_b.y());
+                                    assert!(witness_radius <= 3.0 + 1e-10);
+                                    if hole {
+                                        assert!(witness_radius >= 1.0 - 1e-10);
+                                    }
+                                    assert!(result.point_b.z().abs() < 1e-10);
+                                    assert!(
+                                        ((point - result.point_b).length() - expected).abs()
+                                            < 1e-10
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_sub_tolerance_arc_gap_does_not_certify_a_complete_circle() {
+        let (mut topo, face, _) = circle_seam_face(0.0, 1.0, false, false, true);
+        let wire = topo.face(face).unwrap().outer_wire();
+        let second = topo.wire(wire).unwrap().edges()[1].edge();
+        // This gap is smaller than the existing vertex tolerance but larger
+        // than the rounding-only full-turn allowance. Geometry tolerance
+        // cannot replace exact interval coverage.
+        topo.edge_mut(second)
+            .unwrap()
+            .set_trim(Some((std::f64::consts::PI, std::f64::consts::TAU - 1e-10)));
+        let snapshot = format!("{topo:?}");
+        assert!(complete_circle_wire(&topo, wire).unwrap().is_none());
+        assert!(matches!(
+            point_to_face(&topo, Point3::new(0.0, 0.0, 1.0), face),
+            Err(CheckError::DistanceFailed(_))
+        ));
+        assert_eq!(format!("{topo:?}"), snapshot);
+    }
+
+    #[test]
+    fn unresolved_partial_circle_ray_events_refuse_without_mutation() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        for (lo, hi) in [(0.0, std::f64::consts::PI), (2e16, 2e16 + 4.0)] {
+            let mut topo = Topology::new();
+            let circle = Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+                Vec3::new(0.0, 1.0, 0.0),
+            )
+            .unwrap();
+            let start = topo.add_vertex(Vertex::new(circle.evaluate(lo), 1e-7));
+            let end = topo.add_vertex(Vertex::new(circle.evaluate(hi), 1e-7));
+            let mut arc = Edge::new(start, end, EdgeCurve::Circle(circle));
+            arc.set_trim(Some((lo, hi)));
+            let arc = topo.add_edge(arc);
+            let chord = topo.add_edge(Edge::new(end, start, EdgeCurve::Line));
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
+                    true,
+                )
+                .unwrap(),
+            );
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let snapshot = format!("{topo:?}");
+            assert!(matches!(
+                point_to_face(&topo, Point3::new(0.0, 0.0, 1.0), face),
+                Err(CheckError::DistanceFailed(_))
+            ));
+            if lo.to_bits() == 0 {
+                let result = point_to_face(&topo, Point3::new(-0.5, 0.0, 1.0), face)
+                    .unwrap()
+                    .unwrap();
+                assert!((result.0 - 1.0).abs() < 1e-10);
+                assert!((result.1 - Point3::new(-0.5, 0.0, 0.0)).length() < 1e-10);
+            }
+            assert_eq!(format!("{topo:?}"), snapshot);
+        }
+    }
 
     #[test]
     fn circular_hole_membership_and_witnesses_are_not_polygon_samples() {
