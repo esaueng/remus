@@ -765,3 +765,145 @@ fn later_solid_refusal_does_not_commit_computed_approximate_source() {
         (topo.num_vertices(), topo.num_edges(), topo.journal().len())
     );
 }
+
+fn oblique_cap_fixture(x: f64) -> (Topology, remus_topology::solid::SolidId, EdgeId) {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 10.0).unwrap();
+    let circle = Circle3D::new_with_ref(
+        Point3::new(x, 0.0, 12.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        0.5,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let source = edge(
+        &mut topo,
+        EdgeCurve::Circle(circle.clone()),
+        circle.evaluate(0.0),
+        circle.evaluate(TAU),
+        Some((0.0, TAU)),
+    );
+    (topo, solid, source)
+}
+
+#[test]
+fn oblique_circle_keeps_exact_cap_before_later_curved_hit() {
+    for allow_approximate in [false, true] {
+        for scale in [1e-300, 1.0, 1e300] {
+            let (mut topo, solid, source) = oblique_cap_fixture(0.0);
+            let baseline = topo.journal().len();
+            let options = ProjectCurveOptions {
+                allow_approximate,
+                ..ProjectCurveOptions::default()
+            };
+            let result = project_curves_onto_solid(
+                &mut topo,
+                &[source],
+                Vec3::new(0.5 * scale, 0.0, -scale),
+                solid,
+                &options,
+            )
+            .unwrap();
+            assert_eq!(result.quality, ProjectionQuality::Exact);
+            assert_eq!(result.sources[0].edges.len(), 1);
+            assert!(!result.sources[0].clipped);
+            let image = &result.sources[0].edges[0];
+            assert_eq!(image.source_range, (0.0, TAU));
+            assert!(
+                matches!(topo.face(image.face).unwrap().surface(), FaceSurface::Plane { normal, d } if normal.z() > 0.9 && (*d - 10.0).abs() < 1e-9)
+            );
+            let edge = topo.edge(image.edge).unwrap();
+            assert_eq!(edge.start(), edge.end());
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                panic!("expected exact circle");
+            };
+            assert!((circle.center() - Point3::new(1.0, 0.0, 10.0)).length() < 1e-9);
+            assert!((circle.radius() - 0.5).abs() < 1e-9);
+            assert_eq!(topo.journal().len(), baseline);
+            // The same ray starting at the source center later meets the
+            // lateral support at (2,0,8), strictly behind its cap hit.
+            assert!(circle.center().z() > 8.0);
+        }
+    }
+}
+
+#[test]
+fn clipped_or_occluded_cap_cannot_omit_approximate_curved_candidate() {
+    for x in [0.75, -3.0] {
+        for allow_approximate in [false, true] {
+            let (mut topo, solid, source) = oblique_cap_fixture(x);
+            let baseline = (topo.num_vertices(), topo.num_edges(), topo.journal().len());
+            let options = ProjectCurveOptions {
+                allow_approximate,
+                ..ProjectCurveOptions::default()
+            };
+            let result = project_curves_onto_solid(
+                &mut topo,
+                &[source],
+                Vec3::new(0.5, 0.0, -1.0),
+                solid,
+                &options,
+            );
+            let Err(ProjectCurveError::SourceRefused { error, .. }) = result else {
+                panic!("expected visibility refusal");
+            };
+            if allow_approximate {
+                assert!(matches!(
+                    *error,
+                    ProjectCurveError::ApproximateClipUnsupported
+                ));
+            } else {
+                assert!(matches!(*error, ProjectCurveError::ApproximationRequired));
+            }
+            assert_eq!(
+                baseline,
+                (topo.num_vertices(), topo.num_edges(), topo.journal().len())
+            );
+        }
+    }
+}
+
+#[test]
+fn tiny_cap_hole_cannot_inherit_manufactured_whole_source_coverage() {
+    use remus_topology::wire::{OrientedEdge, Wire};
+    for allow_approximate in [false, true] {
+        let (mut topo, solid, source) = oblique_cap_fixture(0.0);
+        let cap = solid_faces(&topo, solid).unwrap().into_iter().find(|id| matches!(topo.face(*id).unwrap().surface(), FaceSurface::Plane { normal, d } if normal.z() > 0.9 && (*d - 10.0).abs() < 1e-9)).unwrap();
+        let theta: f64 = 0.2;
+        let hole_circle = Circle3D::new_with_ref(
+            Point3::new(1.0 + 0.5 * theta.cos(), 0.5 * theta.sin(), 10.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1e-10,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let vertex = topo.add_vertex(Vertex::new(hole_circle.evaluate(0.0), 1e-12));
+        let mut rim = Edge::new(vertex, vertex, EdgeCurve::Circle(hole_circle));
+        rim.set_trim(Some((0.0, TAU)));
+        let rim = topo.add_edge(rim);
+        let hole = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+        let outer = topo.face(cap).unwrap().outer_wire();
+        topo.set_face_boundary_wires(cap, outer, vec![hole])
+            .unwrap();
+        let baseline = (topo.num_vertices(), topo.num_edges(), topo.journal().len());
+        let options = ProjectCurveOptions {
+            allow_approximate,
+            ..ProjectCurveOptions::default()
+        };
+        let result = project_curves_onto_solid(
+            &mut topo,
+            &[source],
+            Vec3::new(0.5, 0.0, -1.0),
+            solid,
+            &options,
+        );
+        assert!(matches!(
+            result,
+            Err(ProjectCurveError::SourceRefused { .. })
+        ));
+        assert_eq!(
+            baseline,
+            (topo.num_vertices(), topo.num_edges(), topo.journal().len())
+        );
+    }
+}
