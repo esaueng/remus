@@ -2,8 +2,10 @@
 
 ## Supported Versions
 
-Remus publishes no packages yet — no crates.io releases, no npm packages, no
-GitHub releases. Report issues against `main`; fixes land there.
+Report issues against `main`; fixes land there. Consumers also install the
+committed kernel and translator packages in `crates/wasm/pkg` and
+`crates/wasm-io/pkg` directly from Git. These directories are a distribution
+channel and changes to them must pass the PR package integrity and version gates.
 
 ## Scope
 
@@ -41,11 +43,12 @@ attacks (Shai-Hulud worm, chalk/debug compromise, tj-actions tag retag,
 prt-scan AI campaign), the build is configured to fail closed on the
 patterns those attacks exploited:
 
-| Defense | Where | What it blocks |
-|---|---|---|
-| All GitHub Actions pinned to commit SHA | `.github/workflows/*.yml` | Tag-retag attacks (tj-actions class). |
-| OSV scan against `Cargo.lock` + `package-lock.json` (PRs report-only, main blocking) | `.github/workflows/osv-scan.yml` | Known-CVE versions in either ecosystem. |
-| Dependabot cooldown (7d default / 14d major) across cargo, npm, github-actions | `.github/dependabot.yml` | Fresh malicious uploads. |
+| Defense                                                                                                                                    | Where                                | What it blocks                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| All GitHub Actions pinned to commit SHA                                                                                                    | `.github/workflows/*.yml`            | Tag-retag attacks (tj-actions class).                                                                  |
+| OSV scan against `Cargo.lock` + `package-lock.json` (PRs fail on newly introduced vulnerabilities; main fails on detected vulnerabilities) | `.github/workflows/osv-scan.yml`     | Known-CVE versions in either ecosystem. Required-check enforcement is configured separately in GitHub. |
+| Dependabot cooldown (7d default across cargo, npm, github-actions; 14d major for cargo and npm)                                            | `.github/dependabot.yml`             | Fresh malicious uploads.                                                                               |
+| Rebuild and compare changed committed WASM packages before the version gate passes                                                         | `.github/workflows/wasm-version.yml` | Substituted binaries, JS glue, or package contracts that do not match source.                          |
 
 Direct install-time cooldown via `.npmrc` `min-release-age` is not enabled
 here: npm bundled with Node 24 is 11.6.1, which silently ignores the field

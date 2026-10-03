@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regressions.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
+import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -81,6 +82,7 @@ try {
   const ioExports = consumerRequire('remus-wasm-io');
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
+  runSecurityResourceRegressions({ ...packageExports, ...ioExports });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);
