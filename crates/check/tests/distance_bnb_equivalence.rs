@@ -13,11 +13,8 @@
 //!    sphere), boundary minima (edge, vertex), and hand-computed closest
 //!    points — oracles that do not share code with either traversal.
 //!
-//! Explicitly out of scope (documented, not fixed): the narrow phase treats
-//! hole interiors as material (outer-wire polygon only) and walks curved
-//! wires as vertex chords. Both behaviors are identical in the two modes,
-//! so they cannot be introduced by branch-and-bound; the hole test below
-//! pins the current behavior with the true rim answer beside it.
+//! Hole interiors and curved boundaries are checked against independent
+//! rim/analytic witnesses; traversal equivalence alone cannot validate them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Bitwise float equality is intentional below: both traversal modes share the
@@ -220,7 +217,7 @@ fn cavity_inner_shell_is_traversed() {
 }
 
 #[test]
-fn hole_interior_documents_narrow_phase_boundary() {
+fn hole_interior_uses_the_actual_rim_minimum() {
     // A single holed plate (open solid): outer 4x4, square hole 1x1..2x2.
     let mut topo = Topology::new();
     let v = |topo: &mut Topology, x: f64, y: f64| {
@@ -276,21 +273,21 @@ fn hole_interior_documents_narrow_phase_boundary() {
     let shell = topo.add_shell(Shell::new(vec![fid]).unwrap());
     let plate = topo.add_solid(Solid::new(shell, vec![]));
 
-    // Above the hole centre: the independently constructed truth is the hole
-    // rim at √(0.5² + 5²) ≈ 5.0249, but the narrow phase tests only the
-    // outer polygon, so both modes answer the plate projection at 5.0.
-    // This pins the current narrow-phase behavior; fixing hole handling is
-    // a separate change, and branch-and-bound must not paper over it.
+    // Above the hole centre the rim is sqrt(0.5^2 + 5^2) away.
     let query = Point3::new(1.5, 1.5, 5.0);
     let (fast, _) = point_to_solid_with_stats(&topo, query, plate).unwrap();
     let (slow, _) = point_to_solid_exhaustive(&topo, query, plate).unwrap();
-    assert_eq!(fast.distance, slow.distance);
-    assert!((fast.distance - 5.0).abs() < 1e-9, "got {}", fast.distance);
     let rim_truth = (0.5f64.mul_add(0.5, 25.0)).sqrt();
+    assert_eq!(fast.distance, slow.distance);
+    assert!((fast.distance - rim_truth).abs() < 1e-10);
+    assert!(((query - fast.point_b).length() - rim_truth).abs() < 1e-10);
     assert!(
-        (fast.distance - rim_truth).abs() > 1e-6,
-        "this test documents hole-as-material behavior; update it if hole handling changes"
+        fast.point_b.x() == 1.0
+            || fast.point_b.x() == 2.0
+            || fast.point_b.y() == 1.0
+            || fast.point_b.y() == 2.0
     );
+    assert_eq!(fast.point_b.z(), 0.0);
     // Beside the hole, over material: both modes agree with the projection.
     let r = assert_modes_agree(&topo, Point3::new(3.0, 3.0, 5.0), plate);
     assert!((r.distance - 5.0).abs() < 1e-9);
@@ -492,23 +489,18 @@ fn wavy_patch(topo: &mut Topology, amp: f64, freq: f64, ox: f64) -> (SolidId, Nu
     (topo.add_solid(Solid::new(shell, vec![])), surface)
 }
 
-/// Newton divergence is shared, not hidden: on a steep wave with a query
-/// the local projection cannot handle, the narrow phase fails and both
-/// modes report the failure identically (counted, infinite distance) rather
-/// than branch-and-bound silently dropping the face.
+/// A failed local projection cannot certify a boundary-only minimum.
+/// Both traversals propagate the same typed refusal instead of silently
+/// dropping a potentially closer curved face.
 #[test]
 fn newton_divergence_is_shared_not_hidden() {
     let mut topo = Topology::new();
-    // Steep wave (verified to defeat the Newton projection from above).
     let (patch, _) = wavy_patch(&mut topo, 0.25, 3.0, 0.0);
     let query = Point3::new(0.5, 0.5, 2.0);
-    let (fast, fast_stats) = point_to_solid_with_stats(&topo, query, patch).unwrap();
-    let (slow, slow_stats) = point_to_solid_exhaustive(&topo, query, patch).unwrap();
-    assert_eq!(fast_stats.narrow_phase_failures, 1);
-    assert_eq!(slow_stats.narrow_phase_failures, 1);
-    assert!(fast.distance.is_infinite() && slow.distance.is_infinite());
-    assert_eq!(fast.distance, slow.distance);
-    assert_eq!(fast.point_b, slow.point_b);
+    let fast = point_to_solid_with_stats(&topo, query, patch).unwrap_err();
+    let slow = point_to_solid_exhaustive(&topo, query, patch).unwrap_err();
+    assert!(matches!(fast, remus_check::CheckError::DistanceFailed(_)));
+    assert_eq!(fast.to_string(), slow.to_string());
 }
 
 /// Six-way tie at a box centre: both modes pick the same winner, and
