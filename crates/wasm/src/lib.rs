@@ -15,6 +15,8 @@ mod handles;
 mod helpers;
 pub mod holed_face;
 pub mod kernel;
+#[cfg(test)]
+mod kernel_correctness_tests;
 mod logging;
 pub mod panics;
 #[cfg(not(target_arch = "wasm32"))]
