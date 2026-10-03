@@ -16,6 +16,7 @@ import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
+import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -1517,6 +1518,7 @@ runB6SectionSplitPackaged({ BrepKernel });
 // oracles plus session preservation.
 runCircularPatternPackaged({ BrepKernel });
 runProjectCurvePackaged({ BrepKernel });
+runNextKernelCorrectnessPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
 

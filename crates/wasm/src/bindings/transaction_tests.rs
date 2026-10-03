@@ -15,11 +15,11 @@ fn coordinated_boolean_items_commit_independently_and_keep_session_state() {
         ],
     )
     .unwrap();
-    k.assembly_new("retained");
-    let sketch = k.sketch_new();
+    k.assembly_new("retained").unwrap();
+    let sketch = k.sketch_new().unwrap();
     k.sketch_add_point(sketch, 1.0, 2.0, false).unwrap();
-    k.gcs_new();
-    let checkpoint = k.checkpoint();
+    k.gcs_new().unwrap();
+    let checkpoint = k.checkpoint().unwrap();
     let input = k.serialize_solids(&[a, b]).unwrap();
     let session = format!(
         "{:?}{:?}{:?}{:?}{}",
