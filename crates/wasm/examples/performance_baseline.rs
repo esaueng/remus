@@ -260,7 +260,7 @@ fn check_volume(kernel: &mut BrepKernel, solid: u32, expected: f64) {
 fn bool_success(size: usize) -> (u128, Value) {
     let (mut kernel, a, b, untouched, untouched_box, mut all, setup_ns) = boolean_doc(size);
     let start = Instant::now();
-    kernel.checkpoint();
+    kernel.checkpoint().expect("checkpoint must succeed");
     let snapshot_ns = start.elapsed().as_nanos();
     let start = Instant::now();
     let r = kernel.fuse(a, b).expect("fuse must succeed");
@@ -306,7 +306,7 @@ fn bool_success(size: usize) -> (u128, Value) {
 fn bool_refused(size: usize) -> (u128, Value) {
     let (mut kernel, a, b, untouched, untouched_box, all, setup_ns) = boolean_doc(size);
     let start = Instant::now();
-    kernel.checkpoint();
+    kernel.checkpoint().expect("checkpoint must succeed");
     let snapshot_ns = start.elapsed().as_nanos();
     let start = Instant::now();
     let output = kernel.execute_batch_v2(

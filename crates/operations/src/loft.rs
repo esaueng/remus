@@ -3,13 +3,15 @@
 //! The loft connects two or more planar profiles by creating ruled (linear)
 //! surfaces between corresponding profile edges.
 
+use remus_math::curves2d::{Curve2D, Line2D};
+use remus_math::nurbs::fitting::interpolate_with_params;
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::nurbs::surface_fitting::interpolate_surface;
 use remus_math::tolerance::Tolerance;
-use remus_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::pcurve::PCurve;
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
@@ -18,6 +20,22 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use crate::boolean::face_polygon;
 use crate::dot_normal_point;
 use crate::winding::ensure_ccw_profiles;
+
+/// A repeated polygon junction has no line image to loft. Keep each exact
+/// junction once, including the final-to-first closure, before correspondence
+/// and allocation. Distinct points retain their geometry and tolerance.
+fn canonical_polygon_junctions(points: Vec<Point3>) -> Vec<Point3> {
+    let mut junctions = Vec::with_capacity(points.len());
+    for point in points {
+        if junctions.last() != Some(&point) {
+            junctions.push(point);
+        }
+    }
+    if junctions.len() > 1 && junctions.last() == junctions.first() {
+        junctions.pop();
+    }
+    junctions
+}
 
 /// Resample a closed polygon to `target_count` evenly spaced points.
 ///
@@ -98,6 +116,66 @@ fn reject_holed_profiles(
     Ok(())
 }
 
+/// A straight-edged wall is planar only when all four corners agree with
+/// its carrier. Otherwise its exact ruled image is one bilinear NURBS span.
+fn ruled_quad_surface(corners: [Point3; 4]) -> Result<FaceSurface, crate::OperationsError> {
+    let [p0, p1, p2, p3] = corners;
+    let normal = (p1 - p0).cross(p3 - p0).normalize()?;
+    let d = dot_normal_point(normal, p0);
+    if corners
+        .iter()
+        .all(|point| (*point - p0).dot(normal).abs() <= Tolerance::new().linear)
+    {
+        return Ok(FaceSurface::Plane { normal, d });
+    }
+    // u follows the profile edge and v the connecting rail: the normal is
+    // edge × rail, and every boundary iso-curve is its existing straight edge.
+    Ok(FaceSurface::Nurbs(NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![vec![p0, p3], vec![p1, p2]],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )?))
+}
+
+/// Store the exact unit-square boundary chart in the wire's traversal order.
+/// The caller constructs each 3D edge from the corresponding surface boundary.
+fn set_rectangular_pcurves(
+    topo: &mut Topology,
+    face: FaceId,
+) -> Result<(), crate::OperationsError> {
+    let edges = topo.wire(topo.face(face)?.outer_wire())?.edges().to_vec();
+    let corners = [
+        Point2::new(0.0, 0.0),
+        Point2::new(1.0, 0.0),
+        Point2::new(1.0, 1.0),
+        Point2::new(0.0, 1.0),
+    ];
+    for (index, edge) in edges.iter().enumerate() {
+        let origin = corners[index];
+        let direction = corners[(index + 1) % 4] - origin;
+        let line = Line2D::new(origin, direction)?;
+        topo.set_pcurve_oriented(
+            edge.edge(),
+            face,
+            edge.is_forward(),
+            PCurve::new(Curve2D::Line(line), 0.0, 1.0),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_loft_result(topo: &Topology, solid: SolidId) -> Result<(), crate::OperationsError> {
+    let report = crate::validate::validate_solid(topo, solid)?;
+    if report.is_valid() {
+        Ok(())
+    } else {
+        Err(crate::OperationsError::ExactOnlyUnattainable)
+    }
+}
+
 /// Loft two or more profiles into a solid.
 ///
 /// Each profile is a face; its surface may be planar or curved — only the
@@ -117,8 +195,17 @@ fn reject_holed_profiles(
 /// - A profile has an inner wire (unsupported loft correspondence)
 /// - Profiles resample to fewer than 3 vertices
 /// - A section boundary is non-planar with more than 4 edges (unsupported cap)
-#[allow(clippy::too_many_lines)]
+/// - The constructed solid fails default validation; construction is rolled back
 pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_validated(
+        topo,
+        |topo| loft_impl(topo, profiles),
+        |topo, solid| validate_loft_result(topo, *solid),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn loft_impl(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
     if profiles.len() < 2 {
@@ -148,7 +235,7 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
 
     let mut profile_verts: Vec<Vec<Point3>> = Vec::with_capacity(profiles.len());
     for &fid in profiles {
-        let verts = face_polygon(topo, fid)?;
+        let verts = canonical_polygon_junctions(face_polygon(topo, fid)?);
         profile_verts.push(verts);
     }
 
@@ -233,14 +320,10 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
             // Quad: ring[s][i] → ring[s][next_i] → ring[s+1][next_i] → ring[s+1][i]
             let p0 = profile_verts[s][i];
             let p1 = profile_verts[s][next_i];
-            let p_next = profile_verts[s + 1][i];
-            let edge_dir = p1 - p0;
-            let connect_dir = p_next - p0;
-            let side_normal = edge_dir
-                .cross(connect_dir)
-                .normalize()
-                .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-            let side_d = dot_normal_point(side_normal, p0);
+            let p2 = profile_verts[s + 1][next_i];
+            let p3 = profile_verts[s + 1][i];
+            let surface = ruled_quad_surface([p0, p1, p2, p3])?;
+            let needs_pcurves = matches!(surface, FaceSurface::Nurbs(_));
 
             let side_wire = Wire::new(
                 vec![
@@ -254,14 +337,10 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
             .map_err(crate::OperationsError::Topology)?;
 
             let side_wire_id = topo.add_wire(side_wire);
-            let side_face = topo.add_face(Face::new(
-                side_wire_id,
-                vec![],
-                FaceSurface::Plane {
-                    normal: side_normal,
-                    d: side_d,
-                },
-            ));
+            let side_face = topo.add_face(Face::new(side_wire_id, vec![], surface));
+            if needs_pcurves {
+                set_rectangular_pcurves(topo, side_face)?;
+            }
             all_faces.push(side_face);
         }
     }
@@ -924,16 +1003,10 @@ fn try_loft_matching_curved_profiles(
             let p1s = profs[s + 1][i].start;
             let outward = (p0e - p0s).cross(p1s - p0s);
             let entry = match (&profs[s][i].curve, &profs[s + 1][i].curve) {
-                (EdgeCurve::Line, EdgeCurve::Line) => {
-                    let normal = outward.normalize().unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-                    (
-                        FaceSurface::Plane {
-                            normal,
-                            d: dot_normal_point(normal, p0s),
-                        },
-                        false,
-                    )
-                }
+                (EdgeCurve::Line, EdgeCurve::Line) => (
+                    ruled_quad_surface([p0s, p0e, profs[s + 1][i].end, p1s])?,
+                    false,
+                ),
                 (EdgeCurve::Circle(c0), EdgeCurve::Circle(c1)) => {
                     let (Some(range0), Some(range1)) = (profs[s][i].trim, profs[s + 1][i].trim)
                     else {
@@ -1144,7 +1217,13 @@ fn try_loft_matching_curved_profiles(
             if reversed {
                 face.set_reversed(true);
             }
-            all_faces.push(topo.add_face(face));
+            let face_id = topo.add_face(face);
+            if matches!(profs[s][i].curve, EdgeCurve::Line)
+                && matches!(topo.face(face_id)?.surface(), FaceSurface::Nurbs(_))
+            {
+                set_rectangular_pcurves(topo, face_id)?;
+            }
+            all_faces.push(face_id);
         }
     }
 
@@ -1412,10 +1491,40 @@ fn face_recognized_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, V
     }
 }
 
+/// Accumulated mean junction chord lengths give one profile parameter for
+/// the complete ring, rather than unrelated per-wall interpolation parameters.
+fn smooth_profile_parameters(profiles: &[Vec<Point3>]) -> Result<Vec<f64>, crate::OperationsError> {
+    let mut parameters = vec![0.0];
+    let mut total = 0.0;
+    for pair in profiles.windows(2) {
+        let distance: f64 = pair[0]
+            .iter()
+            .zip(&pair[1])
+            .map(|(&a, &b)| (b - a).length())
+            .sum();
+        if !distance.is_finite() || distance <= Tolerance::new().linear {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "smooth loft requires distinct finite adjacent profiles".into(),
+            });
+        }
+        total += distance;
+        parameters.push(total);
+    }
+    if !total.is_finite() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "smooth loft profile distances overflowed".into(),
+        });
+    }
+    for parameter in &mut parameters {
+        *parameter /= total;
+    }
+    Ok(parameters)
+}
+
 /// Loft profiles into a solid with smooth NURBS side surfaces.
 ///
 /// Like [`loft`], but produces smooth NURBS surfaces for the side faces
-/// instead of piecewise-planar quads. When 3+ profiles are provided,
+/// instead of piecewise ruled walls. When 3+ profiles are provided,
 /// the side surfaces interpolate smoothly through all profiles using
 /// tensor-product surface fitting, giving C1+ continuity across sections.
 ///
@@ -1431,9 +1540,21 @@ fn face_recognized_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, V
 /// - A profile has an inner wire (unsupported loft correspondence)
 /// - Profiles resample to fewer than 3 vertices
 /// - A section boundary is non-planar with more than 4 edges (unsupported cap)
+/// - The constructed solid fails default validation; construction is rolled back
 /// - Surface interpolation fails
-#[allow(clippy::too_many_lines)]
 pub fn loft_smooth(
+    topo: &mut Topology,
+    profiles: &[FaceId],
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_validated(
+        topo,
+        |topo| loft_smooth_impl(topo, profiles),
+        |topo, solid| validate_loft_result(topo, *solid),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn loft_smooth_impl(
     topo: &mut Topology,
     profiles: &[FaceId],
 ) -> Result<SolidId, crate::OperationsError> {
@@ -1448,12 +1569,12 @@ pub fn loft_smooth(
 
     // For 2 profiles, delegate to the basic loft (ruled surfaces are optimal).
     if profiles.len() == 2 {
-        return loft(topo, profiles);
+        return loft_impl(topo, profiles);
     }
 
     let mut profile_verts: Vec<Vec<Point3>> = Vec::with_capacity(profiles.len());
     for &fid in profiles {
-        let verts = face_polygon(topo, fid)?;
+        let verts = canonical_polygon_junctions(face_polygon(topo, fid)?);
         profile_verts.push(verts);
     }
 
@@ -1473,8 +1594,20 @@ pub fn loft_smooth(
     let _ = ensure_ccw_profiles(&mut profile_verts);
 
     let num_profiles = profile_verts.len();
+    let degree_u = (num_profiles - 1).min(3);
+    let parameters = smooth_profile_parameters(&profile_verts)?;
+    // One rail per junction, all fitted on the same parameter sequence. Each
+    // neighbouring wall copies that same rail's controls, knots and weights.
+    let rails = (0..n)
+        .map(|index| {
+            let points: Vec<Point3> = profile_verts.iter().map(|ring| ring[index]).collect();
+            interpolate_with_params(&points, degree_u, &parameters)
+                .map_err(crate::OperationsError::Math)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> = profile_verts
+    let endpoint_profiles = [&profile_verts[0], &profile_verts[num_profiles - 1]];
+    let ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> = endpoint_profiles
         .iter()
         .map(|verts| {
             verts
@@ -1496,6 +1629,20 @@ pub fn loft_smooth(
         })
         .collect();
 
+    let rail_edges: Vec<EdgeId> = rails
+        .iter()
+        .enumerate()
+        .map(|(index, rail)| {
+            let mut edge = Edge::new(
+                ring_verts[0][index],
+                ring_verts[1][index],
+                EdgeCurve::NurbsCurve(rail.clone()),
+            );
+            edge.set_trim(Some(rail.domain()));
+            topo.add_edge(edge)
+        })
+        .collect();
+
     let mut all_faces = Vec::new();
 
     // Start cap: reversed first profile.
@@ -1511,59 +1658,48 @@ pub fn loft_smooth(
         )?);
     }
 
-    // NURBS side faces: one surface per edge index, spanning ALL profiles.
-    // Degree in u (across profiles): min(P-1, 3) for smooth interpolation.
-    // Degree in v (along edge): 1 (linear between adjacent vertices).
-    let degree_u = (num_profiles - 1).min(3);
-    let degree_v = 1;
-
+    // u spans the profile sequence, and v spans a profile edge. The stored
+    // surface normal is rail × edge, so reverse both the face and its wire to
+    // keep the effective shell traversal opposed to its neighbours.
     for i in 0..n {
         let next_i = (i + 1) % n;
-
-        // Build the interpolation grid: rows = profiles, cols = 2 (edge endpoints).
-        let grid: Vec<Vec<Point3>> = (0..num_profiles)
-            .map(|k| vec![profile_verts[k][i], profile_verts[k][next_i]])
+        let left = &rails[i];
+        let right = &rails[next_i];
+        let control_points = left
+            .control_points()
+            .iter()
+            .zip(right.control_points())
+            .map(|(&a, &b)| vec![a, b])
             .collect();
-
-        let surface =
-            interpolate_surface(&grid, degree_u, degree_v).map_err(crate::OperationsError::Math)?;
-
-        // The wire goes around the edge of the NURBS patch:
-        // bottom edge → right rail → top edge (reversed) → left rail (reversed)
-        let last = num_profiles - 1;
-
-        // Bottom edge: ring_edges[0][i] (first profile, edge i)
-        // Top edge: ring_edges[last][i] (last profile, edge i)
-        // Left rail: connects vertex i across all profiles
-        // Right rail: connects vertex next_i across all profiles
-
-        // For the multi-section case, we need edges spanning ALL profiles.
-        // Create single edges from first to last profile for the rails.
-        let e_left_rail = topo.add_edge(Edge::new(
-            ring_verts[0][i],
-            ring_verts[last][i],
-            EdgeCurve::Line,
-        ));
-        let e_right_rail = topo.add_edge(Edge::new(
-            ring_verts[0][next_i],
-            ring_verts[last][next_i],
-            EdgeCurve::Line,
-        ));
-
+        let weights = left
+            .weights()
+            .iter()
+            .zip(right.weights())
+            .map(|(&a, &b)| vec![a, b])
+            .collect();
+        let surface = NurbsSurface::new(
+            degree_u,
+            1,
+            left.knots().to_vec(),
+            vec![0.0, 0.0, 1.0, 1.0],
+            control_points,
+            weights,
+        )?;
         let side_wire = Wire::new(
             vec![
-                OrientedEdge::new(ring_edges[0][i], true),     // bottom
-                OrientedEdge::new(e_right_rail, true),         // right
-                OrientedEdge::new(ring_edges[last][i], false), // top (reversed)
-                OrientedEdge::new(e_left_rail, false),         // left (reversed)
+                OrientedEdge::new(rail_edges[i], true),
+                OrientedEdge::new(ring_edges[1][i], true),
+                OrientedEdge::new(rail_edges[next_i], false),
+                OrientedEdge::new(ring_edges[0][i], false),
             ],
             true,
-        )
-        .map_err(crate::OperationsError::Topology)?;
-
+        )?;
         let side_wire_id = topo.add_wire(side_wire);
-        let side_face = topo.add_face(Face::new(side_wire_id, vec![], FaceSurface::Nurbs(surface)));
-        all_faces.push(side_face);
+        let mut face = Face::new(side_wire_id, vec![], FaceSurface::Nurbs(surface));
+        face.set_reversed(true);
+        let face_id = topo.add_face(face);
+        set_rectangular_pcurves(topo, face_id)?;
+        all_faces.push(face_id);
     }
 
     // End cap: last profile with forward orientation.
@@ -1572,7 +1708,7 @@ pub fn loft_smooth(
         let cap_normal = cap_normal_from_verts(&profile_verts[last], false)?;
         all_faces.push(crate::cap::build_cap_face(
             topo,
-            &ring_edges[last],
+            &ring_edges[1],
             vec![],
             &profile_verts[last],
             cap_normal,
