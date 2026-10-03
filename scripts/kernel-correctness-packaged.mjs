@@ -141,6 +141,99 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
     }
   }
 
+  // Two half cylinders occupy independent slabs [p,p+2] and [p+4,p+6].
+  // Their exact volumes are 4π each: the separated union is 8π, either
+  // difference is 4π, and intersection is empty. A carrier recognizer must
+  // neither refuse this proved gap nor fill the missing x<0 material.
+  const geometryDocument = bytes => {
+    const document = JSON.parse(new TextDecoder().decode(bytes));
+    delete document.journal;
+    return document;
+  };
+  for (const placement of [0, 10, 100]) {
+    for (const reverse of [false, true]) {
+      for (const kind of ['fuse', 'cut', 'intersect']) {
+        for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
+          for (const route of ['plain', 'journaled', 'quality']) {
+            const kernel = new BrepKernel();
+            const cylinder = kernel.makeCylinder(2, 2);
+            const box = kernel.makeBox(2, 4, 2);
+            kernel.transformSolid(box, translation(0, -2, 0));
+            const half = kernel.intersect(cylinder, box);
+            kernel.transformSolid(half, translation(placement, placement, placement));
+            const copy = kernel.copySolid(half);
+            kernel.transformSolid(copy, translation(0, 0, 4));
+            const [first, second] = reverse ? [copy, half] : [half, copy];
+            const blankZ = placement + (reverse ? 5 : 1);
+            const label = `${surface} ${route} ${kind} disjoint halves at ${placement}, reverse=${reverse}`;
+            for (const input of [half, copy]) {
+              assert.equal(kernel.validateSolid(input), 0, label);
+              assert.ok(Math.abs(kernel.volume(input, 0.01) - 4 * Math.PI) < 1e-7, label);
+            }
+            const ids = Uint32Array.of(half, copy);
+            const before = kernel.serializeSolids(ids);
+            const operation = route === 'quality' ? 'booleanWithQuality'
+              : route === 'journaled' ? `${kind}Journaled` : kind;
+            let outcome;
+            let error;
+            if (surface === 'direct') {
+              try {
+                outcome = route === 'quality'
+                  ? kernel.booleanWithQuality(kind, first, second, true)
+                  : kernel[operation](first, second);
+                if (route === 'journaled') outcome = JSON.parse(outcome);
+              } catch (caught) {
+                error = caught;
+              }
+            } else {
+              const args = { solidA: first, solidB: second };
+              if (route === 'quality') Object.assign(args, { operation: kind, exactOnly: true });
+              const response = JSON.parse(kernel[surface](JSON.stringify([{ op: operation, args }])))[0];
+              outcome = response.ok;
+              error = response.error;
+            }
+            if (error !== undefined) {
+              // GFA history APIs keep their existing explicit empty-result
+              // refusal; the other APIs return a faceless solid sentinel.
+              assert.equal(kind, 'intersect', label);
+              assert.equal(route, 'journaled', label);
+              const message = surface === 'executeBatchV2' ? error.message : String(error);
+              assert.match(message, /no faces selected|empty result|produced no regions/i, label);
+              assert.deepEqual(kernel.serializeSolids(ids), before, label);
+              kernel.free();
+              continue;
+            }
+            if (route === 'quality') assert.equal(outcome.quality, 'exact', label);
+            const result = route === 'plain' ? outcome : outcome.solid;
+            assert.ok(Number.isInteger(result) && result >= 0, label);
+            const wanted = kind === 'fuse' ? 8 * Math.PI : kind === 'cut' ? 4 * Math.PI : 0;
+            assert.ok(Math.abs(kernel.volume(result, 0.01) - wanted) < 1e-7, label);
+            if (kind === 'intersect') {
+              assert.equal(kernel.getSolidFaces(result).length, 0, label);
+            } else {
+              assert.equal(kernel.validateSolid(result), 0, label);
+              assert.equal(kernel.classifyPoint(result, placement + 1, placement, blankZ, 1e-7), 'inside', label);
+              assert.equal(kernel.classifyPoint(result, placement - 1, placement, blankZ, 1e-7), 'outside', label);
+              assert.equal(kernel.classifyPoint(result, placement + 1, placement, placement + 3, 1e-7), 'outside', label);
+              const toolZ = placement + (reverse ? 1 : 5);
+              assert.equal(kernel.classifyPoint(result, placement + 1, placement, toolZ, 1e-7),
+                kind === 'fuse' ? 'inside' : 'outside', label);
+            }
+            const after = kernel.serializeSolids(ids);
+            if (route === 'journaled') {
+              // A successful journaled operation appends history by contract;
+              // compare all serialized operand geometry independently of it.
+              assert.deepEqual(geometryDocument(after), geometryDocument(before), label);
+            } else {
+              assert.deepEqual(after, before, label);
+            }
+            kernel.free();
+          }
+        }
+      }
+    }
+  }
+
   // A rounded axis dot product cannot certify the same material region.
   // At R=1e12, these torus axes have dot=1 but R*|axisA cross axisB|≈0.01005.
   // Independent 70-digit evaluation of the serialized carriers gives:
