@@ -691,6 +691,89 @@ impl Model {
     pub fn resolve(&self, reference: &PersistentRef) -> Resolution {
         remus_topology::naming::resolve(&self.topology, reference)
     }
+
+    /// Projects one edge along a direction onto a face's trimmed region
+    /// (P-Class 7.4).
+    ///
+    /// Returns free edges with a disclosed quality; records no journal
+    /// entry. See [`remus_operations::project_curve`] for the qualified
+    /// cells and typed refusals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`remus_operations::project_curve::ProjectCurveError`] for every refusal in the design-note
+    /// contract (unsupported cells, grazing/tangent geometry, empty
+    /// projections, invalid inputs).
+    pub fn project_curve_onto_face(
+        &mut self,
+        source: EdgeId,
+        direction: Vec3,
+        face: FaceId,
+        options: &remus_operations::project_curve::ProjectCurveOptions,
+    ) -> Result<
+        remus_operations::project_curve::ProjectedCurves,
+        remus_operations::project_curve::ProjectCurveError,
+    > {
+        remus_operations::project_curve::project_curve_onto_face(
+            &mut self.topology,
+            source,
+            direction,
+            face,
+            options,
+        )
+    }
+
+    /// Projects edges along a direction onto a solid's first-hit faces.
+    ///
+    /// Atomic: a per-source refusal fails the whole call and creates
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`remus_operations::project_curve::ProjectCurveError`] (bare
+    /// call-level refusals, or `SourceRefused` naming the refused source).
+    pub fn project_curves_onto_solid(
+        &mut self,
+        sources: &[EdgeId],
+        direction: Vec3,
+        solid: SolidId,
+        options: &remus_operations::project_curve::ProjectCurveOptions,
+    ) -> Result<
+        remus_operations::project_curve::SolidProjection,
+        remus_operations::project_curve::ProjectCurveError,
+    > {
+        remus_operations::project_curve::project_curves_onto_solid(
+            &mut self.topology,
+            sources,
+            direction,
+            solid,
+            options,
+        )
+    }
+
+    /// Projects edges along a direction onto an unbounded sketch plane
+    /// (read-only; the topology is untouched).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`remus_operations::project_curve::ProjectCurveError`] (bare
+    /// direction/frame refusals, or `SourceRefused` per source).
+    pub fn project_curves_onto_plane(
+        &self,
+        sources: &[EdgeId],
+        direction: Vec3,
+        frame: &remus_math::frame::Frame3,
+    ) -> Result<
+        Vec<remus_topology::pcurve::PCurve>,
+        remus_operations::project_curve::ProjectCurveError,
+    > {
+        remus_operations::project_curve::project_curves_onto_plane(
+            &self.topology,
+            sources,
+            direction,
+            frame,
+        )
+    }
 }
 
 impl Default for Model {

@@ -1386,7 +1386,7 @@ mod tests {
                 .copied()
                 .zip(result_vertices.iter().copied())
                 .collect();
-            let mut boundary_edges = HashMap::new();
+            let mut boundary_edges = remus_math::det_hash::DetHashMap::default();
             for &id in &edges {
                 let edge = topo.edge(id).unwrap();
                 let a = mapping[&edge.start()].index();
