@@ -17,26 +17,16 @@ use crate::kernel::BrepKernel;
 /// `max_input_bytes` bounds the encoded input size; `max_entities` bounds
 /// format-specific model records (vertices, faces, triangles, STEP entities).
 /// Absent values keep the production defaults (256 MiB / 3,000,000).
+/// Overrides must be positive integer counts no greater than those defaults.
 pub(super) fn import_limits_from(
     max_input_bytes: Option<f64>,
     max_entities: Option<f64>,
 ) -> Result<remus_io::ImportLimits, WasmError> {
-    let mut limits = remus_io::ImportLimits::default();
-    if let Some(b) = max_input_bytes {
-        validate_positive(b, "maxInputBytes")?;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            limits.max_input_bytes = b as usize;
-        }
-    }
-    if let Some(n) = max_entities {
-        validate_positive(n, "maxEntities")?;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            limits.max_model_entities = n as usize;
-        }
-    }
-    Ok(limits)
+    remus_io::ImportLimits::with_restricted_overrides(max_input_bytes, max_entities).map_err(
+        |error| WasmError::InvalidInput {
+            reason: error.to_string(),
+        },
+    )
 }
 
 /// Parse optional JSON metadata for STEP export.
@@ -782,6 +772,24 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn import_budget_overrides_reject_saturation_and_fractional_counts() {
+        for bad in [1e30, f64::MAX, 0.5, 1.5, f64::NAN, f64::INFINITY] {
+            assert!(import_limits_from(Some(bad), None).is_err());
+            assert!(import_limits_from(None, Some(bad)).is_err());
+        }
+        assert_eq!(
+            import_limits_from(None, None).unwrap(),
+            remus_io::ImportLimits::default()
+        );
+        assert_eq!(
+            import_limits_from(Some(1024.0), Some(10.0))
+                .unwrap()
+                .max_model_entities,
+            10
+        );
+    }
 
     #[test]
     fn step_options_json_is_optional_and_supports_partial_overrides() {

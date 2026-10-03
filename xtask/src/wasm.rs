@@ -181,12 +181,30 @@ pub fn check_tools() -> Result<()> {
 
 /// Build one package's WASM for both bundler and nodejs targets.
 pub fn build_both_targets(spec: &PackageSpec, simd: bool) -> Result<()> {
-    let wasm_crate = project_root()?.join(spec.crate_dir);
-
-    let mut rustflags = String::from("-Dwarnings");
+    let root = project_root()?;
+    let wasm_crate = root.join(spec.crate_dir);
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(".cargo"))
+        })
+        .context("cannot locate Cargo home for reproducible path mapping")?;
+    let sysroot = run_cmd_output(Command::new("rustc").args(["--print", "sysroot"]))?;
+    // Panic locations and dependency sources otherwise embed runner/developer
+    // paths, preventing byte-identity checks and exposing local user names.
+    let mut rustflags = vec![
+        "-Dwarnings".to_owned(),
+        format!("--remap-path-prefix={}=/remus", root.display()),
+        format!("--remap-path-prefix={}=/cargo", cargo_home.display()),
+        format!("--remap-path-prefix={}=/rust", sysroot.trim()),
+    ];
     if simd {
-        rustflags.push_str(" -C target-feature=+simd128");
+        rustflags.extend(["-C".to_owned(), "target-feature=+simd128".to_owned()]);
     }
+    // Cargo's encoded form also preserves paths containing spaces.
+    let rustflags = rustflags.join("\x1f");
 
     println!("\nBuilding {} WASM (bundler target)...", spec.name);
     let mut bundler = Command::new("wasm-pack");
@@ -194,7 +212,8 @@ pub fn build_both_targets(spec: &PackageSpec, simd: bool) -> Result<()> {
     bundler
         .args(["--out-dir", "pkg"])
         .current_dir(&wasm_crate)
-        .env("RUSTFLAGS", &rustflags);
+        .env_remove("RUSTFLAGS")
+        .env("CARGO_ENCODED_RUSTFLAGS", &rustflags);
     if !spec.cargo_args.is_empty() {
         bundler.arg("--").args(spec.cargo_args);
     }
@@ -207,7 +226,8 @@ pub fn build_both_targets(spec: &PackageSpec, simd: bool) -> Result<()> {
     node.args(["build", "--target", "nodejs", "--release", "--no-opt"]);
     node.args(["--out-dir", "pkg-node"])
         .current_dir(&wasm_crate)
-        .env("RUSTFLAGS", &rustflags);
+        .env_remove("RUSTFLAGS")
+        .env("CARGO_ENCODED_RUSTFLAGS", &rustflags);
     if !spec.cargo_args.is_empty() {
         node.arg("--").args(spec.cargo_args);
     }
