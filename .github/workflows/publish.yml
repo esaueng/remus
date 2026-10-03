@@ -21,6 +21,7 @@ on:
       - "scripts/test-version-wasm-packages.mjs"
       - "xtask/**"
       - "Cargo.toml"
+      - "Cargo.lock"
       - "LICENSE-APACHE"
       - "rust-toolchain.toml"
   workflow_dispatch:
@@ -158,6 +159,10 @@ jobs:
         with:
           app-id: ${{ vars.REMUS_BOT_APP_ID }}
           private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
+          owner: esaueng
+          repositories: remus
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Open package refresh PR
         if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}

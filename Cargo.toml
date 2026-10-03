@@ -119,6 +119,7 @@ used_underscore_binding = "allow"
 codegen-units = 1
 lto = true
 opt-level = 3
+overflow-checks = true
 
 [profile.profiling]
 debug = true

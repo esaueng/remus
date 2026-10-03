@@ -31,7 +31,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::{WasmError, validate_finite};
 use crate::handles::{edge_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
-use crate::state::{Checkpoint, GcsSketchState, HandleStore, SketchState};
+use crate::state::{CheckpointStore, GcsSketchState, HandleStore, SketchState};
 
 /// The B-Rep modeling kernel.
 ///
@@ -44,7 +44,7 @@ pub struct BrepKernel {
     pub(crate) assemblies: crate::state::HandleStore<crate::state::AssemblyState>,
     pub(crate) sketches: crate::state::HandleStore<SketchState>,
     pub(crate) gcs_sketches: crate::state::HandleStore<GcsSketchState>,
-    pub(crate) checkpoints: crate::state::HandleStore<Checkpoint>,
+    pub(crate) checkpoints: CheckpointStore,
     pub(crate) poisoned: bool,
     /// Persistent classification preparation (PERF-Q02).
     ///
@@ -67,7 +67,7 @@ impl BrepKernel {
             assemblies: HandleStore::default(),
             sketches: HandleStore::default(),
             gcs_sketches: HandleStore::default(),
-            checkpoints: HandleStore::default(),
+            checkpoints: CheckpointStore::default(),
             poisoned: false,
             classify_cache: std::cell::RefCell::new(
                 remus_check::classify::ClassificationCache::new(),
