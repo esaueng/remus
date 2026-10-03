@@ -420,6 +420,317 @@ fn cropped_cylinder_copy_cannot_expand_to_complete_carrier() {
     }
 }
 
+fn noncanonical_cylinder(topo: &mut Topology, split_lateral: bool) -> remus_topology::SolidId {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+    use remus_operations::primitives::make_cylinder;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let cylinder = make_cylinder(topo, 2.0, 2.0).unwrap();
+    if !split_lateral {
+        let clip = make_box(topo, 2.0, 4.0, 2.0).unwrap();
+        shift(topo, clip, 0.0, -2.0, 0.0);
+        return boolean_with_context(
+            topo,
+            BooleanOp::Intersect,
+            cylinder,
+            clip,
+            &OperationContext::new().with_fallback(FallbackPolicy::ExactOnly),
+        )
+        .unwrap()
+        .solid;
+    }
+
+    // Partition the complete cylinder's lateral face at z=1. The two bands
+    // share one exact full-circle edge; the original planar caps are reused.
+    let shell = topo.solid(cylinder).unwrap().outer_shell();
+    let faces = topo.shell(shell).unwrap().faces().to_vec();
+    let lateral = topo.face(faces[0]).unwrap();
+    let surface = lateral.surface().clone();
+    let edges = topo.wire(lateral.outer_wire()).unwrap().edges();
+    let bottom = edges[0].edge();
+    let top = edges[2].edge();
+    let bottom_vertex = topo.edge(bottom).unwrap().start();
+    let top_vertex = topo.edge(top).unwrap().start();
+    let point = Point3::new(2.0, 0.0, 1.0);
+    let middle_vertex = topo.add_vertex(Vertex::new(point, 1e-7));
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let start = circle.project(point);
+    let mut edge = Edge::new(middle_vertex, middle_vertex, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((start, start + std::f64::consts::TAU)));
+    let middle = topo.add_edge(edge);
+    let lower_seam = topo.add_edge(Edge::new(bottom_vertex, middle_vertex, EdgeCurve::Line));
+    let upper_seam = topo.add_edge(Edge::new(middle_vertex, top_vertex, EdgeCurve::Line));
+    let mut result_faces = vec![faces[1], faces[2]];
+    for (lo, hi, seam) in [(bottom, middle, lower_seam), (middle, top, upper_seam)] {
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(lo, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(hi, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        assert!(matches!(surface, FaceSurface::Cylinder(_)));
+        result_faces.push(topo.add_face(Face::new(wire, vec![], surface.clone())));
+    }
+    let shell = topo.add_shell(Shell::new(result_faces).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+#[test]
+fn separated_noncanonical_coaxial_cylinders_preserve_exact_material_in_both_orders() {
+    use remus_operations::boolean::{
+        boolean, boolean_with_entity_evolution, boolean_with_evolution,
+    };
+    use remus_operations::copy::copy_solid;
+    use remus_operations::journal_ops::boolean_journaled_with_operation;
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::journal::EntityKind;
+    use remus_topology::naming::{PersistentRef, Resolution, resolve};
+
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for split_lateral in [false, true] {
+        let mut original = Topology::new();
+        let a = noncanonical_cylinder(&mut original, split_lateral);
+        let b = copy_solid(&mut original, a).unwrap();
+        shift(&mut original, b, 0.0, 0.0, 6.0);
+        for input in [a, b] {
+            assert!(
+                remus_operations::validate::validate_solid(&original, input)
+                    .unwrap()
+                    .is_valid()
+            );
+            assert!(matches!(
+                remus_algo::classifier::try_build_analytic_classifier(&original, input),
+                Some(remus_algo::classifier::AnalyticClassifier::Cylinder { .. })
+            ));
+        }
+        let expected = if split_lateral { 8.0 } else { 4.0 } * std::f64::consts::PI;
+        for (blank, tool, blank_z) in [(a, b, 1.0), (b, a, 7.0)] {
+            for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
+                for route in 0..5 {
+                    let mut topo = original.clone();
+                    let input_faces: Vec<_> = solid_faces(&topo, a)
+                        .unwrap()
+                        .into_iter()
+                        .chain(solid_faces(&topo, b).unwrap())
+                        .collect();
+                    if op == BooleanOp::Intersect && route >= 3 {
+                        // The GFA history APIs retain their existing typed
+                        // empty-result convention rather than the context
+                        // API's faceless-solid sentinel. The carrier precheck
+                        // must admit the proven gap before that decision.
+                        let before = live_counts(&topo);
+                        let journal = topo.journal().snapshot();
+                        let outcome = if route == 3 {
+                            boolean_with_entity_evolution(&mut topo, op, blank, tool)
+                                .map(|(solid, _)| solid)
+                        } else {
+                            boolean_journaled_with_operation(&mut topo, op, blank, tool)
+                                .map(|outcome| outcome.solid)
+                        };
+                        match outcome {
+                            Ok(result) => {
+                                assert!(solid_faces(&topo, result).unwrap().is_empty());
+                                assert_eq!(solid_volume(&topo, result, 0.01).unwrap(), 0.0);
+                            }
+                            Err(remus_operations::OperationsError::EmptyResult { .. }) => {
+                                assert_eq!(live_counts(&topo), before);
+                                assert_eq!(topo.journal().snapshot(), journal);
+                            }
+                            Err(remus_operations::OperationsError::Algo(
+                                remus_algo::error::AlgoError::AssemblyFailed(reason),
+                            )) if reason == "no faces selected" => {
+                                assert_eq!(live_counts(&topo), before);
+                                assert_eq!(topo.journal().snapshot(), journal);
+                            }
+                            Err(error) => panic!("disjoint history intersection: {error:?}"),
+                        }
+                        continue;
+                    }
+                    let result = match route {
+                        0 => boolean(&mut topo, op, blank, tool).unwrap(),
+                        1 => {
+                            let outcome =
+                                boolean_with_context(&mut topo, op, blank, tool, &context).unwrap();
+                            assert_eq!(outcome.quality, BooleanQuality::Exact);
+                            outcome.solid
+                        }
+                        2 => {
+                            boolean_with_evolution(&mut topo, op, blank, tool)
+                                .unwrap()
+                                .0
+                        }
+                        3 => {
+                            let (solid, evolution) =
+                                boolean_with_entity_evolution(&mut topo, op, blank, tool).unwrap();
+                            let result_faces = solid_faces(&topo, solid).unwrap();
+                            assert!(!result_faces.is_empty());
+                            assert_eq!(evolution.faces.len(), result_faces.len());
+                            for face in result_faces {
+                                assert!(evolution.faces.iter().any(|(result, source)| {
+                                    *result == face.index()
+                                        && source.is_some_and(|source| {
+                                            input_faces.iter().any(|input| input.index() == source)
+                                        })
+                                }));
+                            }
+                            solid
+                        }
+                        4 => {
+                            let outcome =
+                                boolean_journaled_with_operation(&mut topo, op, blank, tool)
+                                    .unwrap();
+                            if op != BooleanOp::Intersect {
+                                let reference = PersistentRef::operation_output(
+                                    outcome.op,
+                                    EntityKind::Face,
+                                    0,
+                                );
+                                let Resolution::Bound { entity, .. } = resolve(&topo, &reference)
+                                else {
+                                    panic!("disjoint journal result must have a bound face output");
+                                };
+                                assert!(
+                                    solid_faces(&topo, outcome.solid)
+                                        .unwrap()
+                                        .iter()
+                                        .any(|face| face.index() == entity.index)
+                                );
+                            }
+                            outcome.solid
+                        }
+                        _ => unreachable!(),
+                    };
+                    let volume = solid_volume(&topo, result, 0.01).unwrap();
+                    let wanted = match op {
+                        BooleanOp::Fuse => 2.0 * expected,
+                        BooleanOp::Cut => expected,
+                        BooleanOp::Intersect => 0.0,
+                    };
+                    assert!(
+                        (volume - wanted).abs() < 1e-7,
+                        "split={split_lateral}/{op:?}/route={route}: {volume} vs {wanted}"
+                    );
+                    assert!(
+                        solid_faces(&topo, result)
+                            .unwrap()
+                            .iter()
+                            .all(|face| !input_faces.contains(face))
+                    );
+                    for input in [a, b] {
+                        assert!(
+                            (solid_volume(&topo, input, 0.01).unwrap() - expected).abs() < 1e-7
+                        );
+                    }
+                    if op == BooleanOp::Intersect {
+                        assert!(solid_faces(&topo, result).unwrap().is_empty());
+                        continue;
+                    }
+                    assert!(
+                        remus_operations::validate::validate_solid(&topo, result)
+                            .unwrap()
+                            .is_valid()
+                    );
+                    assert_eq!(
+                        classify_point(&topo, result, Point3::new(1.0, 0.0, blank_z), 0.01, 1e-7)
+                            .unwrap(),
+                        PointClassification::Inside
+                    );
+                    assert_eq!(
+                        classify_point(&topo, result, Point3::new(-1.0, 0.0, blank_z), 0.01, 1e-7)
+                            .unwrap(),
+                        if split_lateral {
+                            PointClassification::Inside
+                        } else {
+                            PointClassification::Outside
+                        }
+                    );
+                    assert_eq!(
+                        classify_point(&topo, result, Point3::new(1.0, 0.0, 4.0), 0.01, 1e-7)
+                            .unwrap(),
+                        PointClassification::Outside
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn noncanonical_carrier_overlap_touch_and_nonclear_gaps_still_refuse_atomically() {
+    use remus_math::tolerance::Tolerance;
+    use remus_operations::OperationsError;
+    use remus_operations::boolean::boolean_with_entity_evolution;
+    use remus_operations::copy::copy_solid;
+    use remus_operations::journal_ops::boolean_journaled_with_operation;
+
+    for split_lateral in [false, true] {
+        for (offset, linear) in [
+            (1.0, 1e-7),        // overlapping axial ranges
+            (2.0, 1e-7),        // touching caps
+            (2.0 + 5e-8, 1e-7), // less than the default clear-gap margin
+            (2.0 + 5e-5, 1e-4), // less than the caller's custom margin
+        ] {
+            let mut original = Topology::new();
+            let a = noncanonical_cylinder(&mut original, split_lateral);
+            let b = copy_solid(&mut original, a).unwrap();
+            shift(&mut original, b, 0.0, 0.0, offset);
+            let context = OperationContext::new()
+                .with_fallback(FallbackPolicy::ExactOnly)
+                .with_tolerance(Tolerance {
+                    linear,
+                    ..Tolerance::new()
+                });
+            for (blank, tool) in [(a, b), (b, a)] {
+                for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
+                    let mut topo = original.clone();
+                    let before = live_counts(&topo);
+                    let slots = topo.allocated_slot_count();
+                    let ticks = topo.mutation_ticks();
+                    let cache = topo.cache_identity();
+                    let journal = topo.journal().snapshot();
+                    assert!(
+                        matches!(
+                            boolean_with_context(&mut topo, op, blank, tool, &context),
+                            Err(OperationsError::ExactOnlyUnattainable)
+                        ),
+                        "split={split_lateral}, offset={offset}, tol={linear}, {op:?}"
+                    );
+                    if linear == Tolerance::new().linear {
+                        assert!(matches!(
+                            boolean_with_entity_evolution(&mut topo, op, blank, tool),
+                            Err(OperationsError::ExactOnlyUnattainable)
+                        ));
+                        assert!(matches!(
+                            boolean_journaled_with_operation(&mut topo, op, blank, tool),
+                            Err(OperationsError::ExactOnlyUnattainable)
+                        ));
+                    }
+                    assert_eq!(live_counts(&topo), before);
+                    assert_eq!(topo.allocated_slot_count(), slots);
+                    assert_eq!(topo.mutation_ticks(), ticks);
+                    // Rollback invalidates spatial preparations while retaining
+                    // this document's identity; generations never rewind.
+                    assert_eq!(topo.cache_identity().lineage, cache.lineage);
+                    assert!(topo.cache_identity().generation > cache.generation);
+                    assert_eq!(topo.journal().snapshot(), journal);
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn canonical_pointed_cone_identity_preserves_exact_results() {
     use remus_operations::copy::copy_solid;
