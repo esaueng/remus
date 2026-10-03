@@ -1079,7 +1079,9 @@ export class BrepKernel {
      *
      * # Errors
      *
-     * Returns an error if the checkpoint handle namespace is exhausted.
+     * Returns an error if 32 snapshots are already retained or the checkpoint
+     * handle namespace is exhausted. Discard a checkpoint to free capacity;
+     * existing checkpoints remain valid and restore stays available.
      */
     checkpoint(): number;
     /**
