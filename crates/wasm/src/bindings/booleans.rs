@@ -1030,6 +1030,80 @@ mod tests {
     }
 
     #[test]
+    fn axial_sphere_cylinder_contact_keeps_public_fuse_support() {
+        for swapped in [false, true] {
+            for batch in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let cylinder = kernel.make_cylinder_solid(10.0, 20.0).unwrap();
+                let sphere = kernel.make_sphere_solid(8.0, 32).unwrap();
+                kernel
+                    .transform_solid_binding(
+                        sphere,
+                        vec![
+                            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 8.0, 0.0, 0.0,
+                            0.0, 1.0,
+                        ],
+                    )
+                    .unwrap();
+                let before = kernel.serialize_solids(&[cylinder, sphere]).unwrap();
+                let journal = kernel.journal_summary();
+                let (a, b) = if swapped {
+                    (sphere, cylinder)
+                } else {
+                    (cylinder, sphere)
+                };
+                let result = if batch {
+                    let response: serde_json::Value = serde_json::from_str(
+                        &kernel.execute_batch_v2(
+                            &serde_json::json!([{"op":"fuse", "args":{"solidA":a,"solidB":b}}])
+                                .to_string(),
+                        ),
+                    )
+                    .unwrap();
+                    assert!(response[0]["ok"].is_u64(), "{response}");
+                    u32::try_from(response[0]["ok"].as_u64().unwrap()).unwrap()
+                } else {
+                    kernel.fuse(a, b).unwrap()
+                };
+                assert_eq!(kernel.get_solid_faces(result).unwrap().len(), 3);
+                let id = kernel.resolve_solid(result).unwrap();
+                assert!(kernel.topo().solid(id).unwrap().inner_shells().is_empty());
+                let measurements: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(
+                    &serde_json::json!([
+                        {"op":"massProperties", "args":{"solid":result,"adaptiveEps":1e-10,"gaussOrder":8,"maxDepth":12}},
+                        {"op":"validateSolid", "args":{"solid":result}},
+                    ]).to_string(),
+                )).unwrap();
+                assert!(measurements[0]["ok"]["volume"].is_f64(), "{measurements}");
+                let volume = measurements[0]["ok"]["volume"].as_f64().unwrap();
+                let expected = 2000.0 * std::f64::consts::PI;
+                assert!(
+                    (volume - expected).abs() < expected * 1e-8,
+                    "{volume} vs {expected}"
+                );
+                assert_eq!(measurements[1]["ok"], 0);
+                for (x, z, expected) in [
+                    (0.0, 8.0, "inside"),
+                    (9.0, 8.0, "inside"),
+                    (0.0, 19.0, "inside"),
+                    (0.0, -1.0, "outside"),
+                    (11.0, 8.0, "outside"),
+                ] {
+                    assert_eq!(
+                        kernel.classify_point(result, x, 0.0, z, 1e-7).unwrap(),
+                        expected
+                    );
+                }
+                assert_eq!(
+                    kernel.serialize_solids(&[cylinder, sphere]).unwrap(),
+                    before
+                );
+                assert_eq!(kernel.journal_summary(), journal);
+            }
+        }
+    }
+
+    #[test]
     fn far_cartesian_sphere_cylinder_public_cuts_keep_the_cavity() {
         for translation in [1e13, -1e13] {
             for batch in [false, true] {

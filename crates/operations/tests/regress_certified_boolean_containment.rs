@@ -270,6 +270,111 @@ fn far_cartesian_sphere_cylinder_cuts_preserve_the_actual_cavity() {
 }
 
 #[test]
+fn axially_touching_sphere_cylinder_fuse_preserves_supported_exact_union() {
+    use remus_operations::boolean::boolean;
+    use remus_operations::primitives::{make_cylinder, make_sphere};
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::FaceSurface;
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for swapped in [false, true] {
+        for plain in [false, true] {
+            let mut topo = Topology::new();
+            let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+            let sphere = make_sphere(&mut topo, 8.0, 32).unwrap();
+            shift(&mut topo, sphere, 0.0, 0.0, 8.0);
+            let operands = [
+                operand_geometry(&topo, cylinder),
+                operand_geometry(&topo, sphere),
+            ];
+            let pending = topo.journal_begin("touching_operand_boundary");
+            remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, cylinder)
+                .unwrap();
+            let journal = topo.journal().snapshot();
+            let (a, b) = if swapped {
+                (sphere, cylinder)
+            } else {
+                (cylinder, sphere)
+            };
+            let result = if plain {
+                boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap()
+            } else {
+                let outcome =
+                    boolean_with_context(&mut topo, BooleanOp::Fuse, a, b, &context).unwrap();
+                assert_eq!(outcome.quality, BooleanQuality::Exact);
+                outcome.solid
+            };
+            let root = topo.solid(result).unwrap();
+            assert!(root.inner_shells().is_empty());
+            let faces = solid_faces(&topo, result).unwrap();
+            assert_eq!(faces.len(), 3);
+            assert_eq!(
+                faces
+                    .iter()
+                    .filter(|&&fid| matches!(
+                        topo.face(fid).unwrap().surface(),
+                        FaceSurface::Cylinder(_)
+                    ))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                faces
+                    .iter()
+                    .filter(|&&fid| matches!(
+                        topo.face(fid).unwrap().surface(),
+                        FaceSurface::Plane { .. }
+                    ))
+                    .count(),
+                2
+            );
+            assert!(
+                remus_operations::validate::validate_solid(&topo, result)
+                    .unwrap()
+                    .is_valid()
+            );
+            // The ball is within the cylinder and touches only its lower cap.
+            // Its union is exactly the cylinder, not a cavity or an empty body.
+            let expected = 2000.0 * std::f64::consts::PI;
+            let props = remus_operations::measure::mass_properties_with_options(
+                &topo,
+                result,
+                &remus_check::properties::PropertiesOptions {
+                    adaptive_eps: 1e-10,
+                    gauss_order: 8,
+                    max_depth: 12,
+                },
+            )
+            .unwrap();
+            assert!(
+                (props.mass - expected).abs() < expected * 1e-8,
+                "{} vs {expected}",
+                props.mass
+            );
+            for (point, expected) in [
+                (Point3::new(0.0, 0.0, 8.0), PointClassification::Inside),
+                (Point3::new(9.0, 0.0, 8.0), PointClassification::Inside),
+                (Point3::new(0.0, 0.0, 19.0), PointClassification::Inside),
+                (Point3::new(0.0, 0.0, -1.0), PointClassification::Outside),
+                (Point3::new(11.0, 0.0, 8.0), PointClassification::Outside),
+            ] {
+                assert_eq!(
+                    classify_point(&topo, result, point, 0.01, 1e-7).unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(
+                [
+                    operand_geometry(&topo, cylinder),
+                    operand_geometry(&topo, sphere)
+                ],
+                operands
+            );
+            assert_eq!(topo.journal().snapshot(), journal);
+        }
+    }
+}
+
+#[test]
 fn uncertain_sphere_cylinder_enclosures_refuse_without_mutation() {
     use remus_operations::boolean::{
         boolean, boolean_with_entity_evolution, boolean_with_evolution,
@@ -318,12 +423,31 @@ fn uncertain_sphere_cylinder_enclosures_refuse_without_mutation() {
                 )
                 .unwrap_err(),
             };
-            assert!(
+            // Contact uses the existing GFA pipeline, not the strict
+            // enclosure guard. Preserve its route-specific typed refusals.
+            let expected_refusal = if route < 3 {
                 matches!(
                     error,
                     remus_operations::OperationsError::ExactOnlyUnattainable
-                ),
-                "{translation}/{angle}/{x}/{z}: {error:?}"
+                )
+            } else if x == 0.0 {
+                matches!(
+                    error,
+                    remus_operations::OperationsError::Algo(
+                        remus_algo::error::AlgoError::AssemblyFailed(_)
+                    )
+                )
+            } else {
+                matches!(
+                    error,
+                    remus_operations::OperationsError::Algo(remus_algo::error::AlgoError::Math(
+                        remus_math::MathError::ConvergenceFailure { .. }
+                    ))
+                )
+            };
+            assert!(
+                expected_refusal,
+                "{translation}/{angle}/{x}/{z}/route{route}: {error:?}"
             );
             assert_eq!(live_counts(&topo), counts);
             assert!(topo.allocated_slot_count() >= slots);

@@ -160,6 +160,46 @@ for (const translation of [1e13, -1e13]) {
 }
 console.log('ok - far translated sphere/cylinder cuts retain true cavities');
 
+// A ball tangent to the lower cap has no strict enclosure certificate, but
+// the established exact Fuse pipeline still returns the complete cylinder.
+for (const swapped of [false, true]) {
+  for (const batch of [false, true]) {
+    const contactKernel = new BrepKernel();
+    const cylinder = contactKernel.makeCylinder(10, 20);
+    const sphere = contactKernel.makeSphere(8, 32);
+    contactKernel.transformSolid(sphere, new Float64Array([
+      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 8, 0, 0, 0, 1,
+    ]));
+    const operandBytes = bodies(contactKernel, cylinder, sphere);
+    const journal = contactKernel.journalSummary();
+    const [a, b] = swapped ? [sphere, cylinder] : [cylinder, sphere];
+    let union;
+    if (batch) {
+      const response = JSON.parse(contactKernel.executeBatchV2(JSON.stringify([
+        { op: 'fuse', args: { solidA: a, solidB: b } },
+      ])));
+      assert.equal(typeof response[0].ok, 'number');
+      union = response[0].ok;
+    } else {
+      union = contactKernel.fuse(a, b);
+    }
+    assert.equal(contactKernel.getSolidFaces(union).length, 3);
+    assert.equal(JSON.parse(contactKernel.validateSolidDetailed(union)).errorCount, 0);
+    const expected = 2000 * Math.PI;
+    const props = JSON.parse(contactKernel.massProperties(union, 1e-10, 12, 8));
+    assert.ok(Math.abs(props.volume - expected) < expected * 1e-8);
+    for (const [x, z, expectedClass] of [
+      [0, 8, 'inside'], [9, 8, 'inside'], [0, 19, 'inside'],
+      [0, -1, 'outside'], [11, 8, 'outside'],
+    ]) {
+      assert.equal(contactKernel.classifyPoint(union, x, 0, z, 1e-7), expectedClass);
+    }
+    assert.deepEqual(bodies(contactKernel, cylinder, sphere), operandBytes);
+    assert.equal(contactKernel.journalSummary(), journal);
+  }
+}
+console.log('ok - axial sphere/cylinder contact preserves direct and batch exact union');
+
 // Stable batch-v2 errors are additive: successful envelopes match v1, while
 // v1 keeps its string error and v2 exposes the same text plus code/details.
 {
