@@ -319,8 +319,9 @@ Native Rust readers retain configurable `ImportLimits`. Limit violations return 
 avoidable large allocations. The WASM batch API separately limits JSON to
 16 MiB and 10,000 operations.
 
-Each kernel retains at most 32 checkpoints. A further `checkpoint()` call
-returns an error without changing the model or saved checkpoints. Use
+Each kernel retains at most 33 checkpoints, allowing 32 history snapshots
+and one temporary probe snapshot. A 34th `checkpoint()` call returns an
+error without changing the model or saved checkpoints. Use
 `discardCheckpoint(id)` to free that checkpoint and all later snapshots.
 Existing snapshots remain restorable at the limit, and discarded IDs are
 never reused.

@@ -5,27 +5,49 @@ export function runSecurityResourceRegressions({ BrepKernel, RemusIo }) {
   const io = new RemusIo();
   try {
     const solid = kernel.makeBox(2, 3, 4);
-    const first = kernel.checkpoint();
+    const history = [kernel.checkpoint()];
+    const solids = [solid];
     for (let i = 1; i < 32; i++) {
-      kernel.makeBox(1, 1, 1);
-      kernel.checkpoint();
+      solids.push(kernel.makeBox(1, 1, 1));
+      history.push(kernel.checkpoint());
     }
+    const before = kernel.serializeSolids(Uint32Array.from(solids));
+    const temporary = kernel.checkpoint();
+    assert.equal(temporary, 32);
+    assert.equal(kernel.checkpointCount(), 33);
     for (let i = 0; i < 5000; i++) {
-      assert.throws(() => kernel.checkpoint(), /at most 32 checkpoints/);
+      assert.throws(() => kernel.checkpoint(), /at most 33 checkpoints/);
     }
+    assert.equal(kernel.checkpointCount(), 33);
+    assert.deepEqual(kernel.serializeSolids(Uint32Array.from(solids)), before);
+    const probeSolid = kernel.makeBox(5, 1, 1);
+    assert.ok(Math.abs(kernel.volume(probeSolid, 0.1) - 5) < 0.01);
+    kernel.restore(temporary);
+    kernel.discardCheckpoint(temporary);
+    assert.throws(() => kernel.volume(probeSolid, 0.1), /invalid solid handle/);
     assert.equal(kernel.checkpointCount(), 32);
-    kernel.restore(first);
+    assert.deepEqual(kernel.serializeSolids(Uint32Array.from(solids)), before);
+    const next = kernel.checkpoint();
+    assert.equal(next, temporary + 1, 'refusal must not consume IDs');
+    assert.throws(() => kernel.restore(temporary), /invalid checkpoint id/);
+    kernel.restore(next);
+    kernel.discardCheckpoint(next);
+    assert.equal(kernel.checkpointCount(), 32);
+    kernel.restore(history.at(-1));
+    assert.equal(kernel.checkpointCount(), 32);
+    assert.deepEqual(kernel.serializeSolids(Uint32Array.from(solids)), before);
+    kernel.restore(history[0]);
     assert.ok(Math.abs(kernel.volume(solid, 0.1) - 24) < 0.01);
     const fresh = kernel.checkpoint();
-    assert.equal(fresh, 32);
-    kernel.discardCheckpoint(first);
+    assert.equal(fresh, next + 1);
+    kernel.discardCheckpoint(history[0]);
     assert.equal(kernel.checkpointCount(), 0);
     assert.throws(() => kernel.restore(fresh), /invalid checkpoint id/);
     for (let i = 0; i < 5000; i++) {
       const cp = kernel.checkpoint();
       kernel.discardCheckpoint(cp);
     }
-    assert.throws(() => kernel.restore(first), /invalid checkpoint id/);
+    assert.throws(() => kernel.restore(history[0]), /invalid checkpoint id/);
 
     const document = kernel.serializeSolids(new Uint32Array([solid]));
     const step = io.exportStep(document);
