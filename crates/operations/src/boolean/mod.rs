@@ -802,6 +802,22 @@ fn boolean_with_context_impl(
         return run_mesh_fallback(topo, op, a, b, budget, tol, opts);
     }
 
+    // A clear gap between conservative component bounds proves the set
+    // operation independently of any shared analytic carrier. Preserve the
+    // actual operands here before a primitive shortcut can rebuild a cropped
+    // region or reject its noncanonical wall/cap composition.
+    if solids_provably_disjoint(topo, a, b, tol.linear) {
+        return match op {
+            BooleanOp::Cut => crate::copy::copy_solid(topo, a),
+            BooleanOp::Fuse => {
+                let copy_a = crate::copy::copy_solid(topo, a)?;
+                let copy_b = crate::copy::copy_solid(topo, b)?;
+                crate::compound_ops::merge_disjoint_solids(topo, &[copy_a, copy_b])
+            }
+            BooleanOp::Intersect => Ok(topo.add_empty_solid()),
+        };
+    }
+
     // Detect A⊂B or B⊂A (including A=B) and handle directly. A positive
     // containment result requires an analytic classifier for the containing
     // operand; AABB enclosure alone is only a necessary condition.
@@ -4371,6 +4387,11 @@ pub(crate) fn refuse_uncertified_carrier_relation(
     b: SolidId,
 ) -> Result<(), crate::OperationsError> {
     let tol = remus_math::tolerance::Tolerance::new();
+    // The same strict geometric witness used by the exact context dispatch
+    // also admits history wrappers before they open or mutate a journal.
+    if solids_provably_disjoint(topo, a, b, tol.linear) {
+        return Ok(());
+    }
     let ca = remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, a, tol);
     let cb = remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, b, tol);
     let relation = detect_trivial_relation(topo, a, b, ca.as_ref(), cb.as_ref(), tol);
