@@ -132,6 +132,7 @@ pub fn boolean_journaled(
     solid_b: SolidId,
 ) -> Result<JournaledBoolean, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
+        crate::boolean::refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
         // Pre-operation scope: both operands' entities, so an operand entity
         // the boolean consumed without a record (the GFA does not record face
         // deletions) severs instead of resolving to a retired handle.
