@@ -12,6 +12,22 @@ historical predecessor-line records, retained for provenance. The
 
 ### ⚠ BREAKING CHANGES
 
+* **check,operations,wasm:** solid-to-solid minimum distance now requires
+  complete native sphere pairs or straight-edged planar boundaries (including
+  certified affine NURBS planes). Other curved pairs return a typed distance
+  failure instead of a sampled/chord result presented as a global minimum.
+  Point queries use actual line/circle trim extrema and holes; an unsupported
+  boundary that could determine the minimum also refuses. Point queries involving NURBS surfaces or trims retain local numerical
+  estimates rather than global certificates.
+  Nested bodies measure boundary separation, as point-to-solid queries do.
+
+* **wasm (native Rust callers):** `BrepKernel::checkpoint`, `gcs_new`,
+  `sketch_new`, and `assembly_new` now return `Result<u32, JsError>` so handle
+  exhaustion fails before allocating. JavaScript keeps the number-or-throw
+  contract. `BrepKernel::new` retains its existing signature. Checkpoint IDs
+  are opaque: retain the returned ID; `checkpointCount` counts live checkpoints
+  and is not an allocation cursor.
+
 * **operations,wasm:** offset path consolidation (B25). `shell` /
   `shell_op::shell` is now exact-only: a solid whose kept faces include a
   NURBS face fails with a typed `Unsupported` refusal naming the face instead
@@ -92,6 +108,27 @@ historical predecessor-line records, retained for provenance. The
   the public work budget, and omitting them reproduces prior behavior exactly.
 
 ### Bug Fixes
+
+* **wasm:** checkpoint restore retires later opaque sketch, GCS entity,
+  assembly, and component handles without reusing their numbers. Restore and
+  discard never reuse checkpoint IDs; repeated restore preserves the allocation
+  high-water mark. The legacy sketch
+  solver's inner point and curve indices retain their dense-array contract;
+  use the GCS API when those entities need opaque handles. Batch `fuseAll` and
+  `compoundCut` validate every integer handle before lookup or mutation instead
+  of truncating values larger than `u32`.
+* **operations,wasm:** ruled lofts use exact bilinear carriers for twisted quad
+  walls. Smooth lofts share interpolated boundary rails and one parameterization
+  across adjacent walls. Both builders validate atomically, rolling back failed
+  construction. Independent volume, boundary/carrier, watertight mesh, and
+  rollback regressions cover the repaired paths. Guide curves, explicit profile
+  correspondence, periodic closure, and G1/G2 end conditions remain pending.
+* **check,operations,wasm:** distance witnesses now respect planar holes and
+  true circular rims, including closed circles whose endpoints coincide.
+  Complete sphere pairs use analytic extrema rather than vertex probes;
+  planar pairs include edge-face crossings and cavity walls. Nonfinite
+  arithmetic fails instead of publishing an invalid witness. Independent
+  regressions retain conservative pruning and repeated-query performance gates.
 
 * **heal,operations,wasm:** make every public healing mutation disclose counted,
   typed repair categories and fail closed behind two independent validators.

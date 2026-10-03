@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
+import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -1515,6 +1516,7 @@ runB6SectionSplitPackaged({ BrepKernel });
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
 runCircularPatternPackaged({ BrepKernel });
+runNextKernelCorrectnessPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
 

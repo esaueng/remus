@@ -1233,3 +1233,353 @@ fn coaxial_band_stack_refuses_non_positive_and_non_finite_radii() {
         );
     }
 }
+
+/// Every stored pcurve must lift to its owning 3D edge in the same oriented
+/// parameter, including curved rails and reversed wall uses.
+fn assert_rectangular_wall_boundaries(topo: &Topology, solid: SolidId) -> usize {
+    let mut curved = 0;
+    for face_id in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        let face = topo.face(face_id).unwrap();
+        let FaceSurface::Nurbs(surface) = face.surface() else {
+            continue;
+        };
+        curved += 1;
+        for oriented in topo.wire(face.outer_wire()).unwrap().edges() {
+            let edge = topo.edge(oriented.edge()).unwrap();
+            let pcurve = topo
+                .pcurve_oriented(oriented.edge(), face_id, oriented.is_forward())
+                .expect("exact wall boundary has an oriented pcurve");
+            let (lo, hi) = edge.strict_domain().unwrap();
+            let start = topo.vertex(edge.start()).unwrap().point();
+            let end = topo.vertex(edge.end()).unwrap().point();
+            for fraction in [0.0, 0.2, 0.5, 0.8, 1.0] {
+                let parameter = if oriented.is_forward() {
+                    lo + fraction * (hi - lo)
+                } else {
+                    hi - fraction * (hi - lo)
+                };
+                let point = edge.curve().evaluate_with_endpoints(parameter, start, end);
+                let uv = pcurve
+                    .evaluate(pcurve.t_start() + fraction * (pcurve.t_end() - pcurve.t_start()));
+                let lifted = surface.evaluate(uv.x(), uv.y());
+                assert!((point - lifted).length() < Tolerance::new().linear);
+            }
+        }
+    }
+    curved
+}
+
+#[test]
+fn loft_twisted_independent_squares_have_exact_bilinear_walls() {
+    use remus_math::mat::Mat4;
+    for placement in [0.0, 10.0, 100.0] {
+        let mut topo = Topology::new();
+        let first = make_square_at(&mut topo, 2.0, 1.0);
+        // Match the public fixture's independent square over [0, 2]^2.
+        crate::transform::transform_face(&mut topo, first, &Mat4::translation(1.0, 1.0, 0.0))
+            .unwrap();
+        let second = crate::copy::copy_face(&mut topo, first).unwrap();
+        let original = face_polygon(&topo, first).unwrap();
+        crate::transform::transform_face(
+            &mut topo,
+            second,
+            &(Mat4::translation(0.0, 0.0, 2.0) * Mat4::rotation_z(0.5)),
+        )
+        .unwrap();
+        assert_eq!(face_polygon(&topo, first).unwrap(), original);
+        let rigid = Mat4::translation(placement, -placement, placement) * Mat4::rotation_x(0.3);
+        for profile in [first, second] {
+            crate::transform::transform_face(&mut topo, profile, &rigid).unwrap();
+        }
+        let input_points = [
+            face_polygon(&topo, first).unwrap(),
+            face_polygon(&topo, second).unwrap(),
+        ];
+        let solid = loft(&mut topo, &[first, second]).unwrap();
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .is_valid()
+        );
+        assert_eq!(assert_rectangular_wall_boundaries(&topo, solid), 4);
+        let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+        assert!(crate::tessellate::is_watertight(&mesh));
+        assert_eq!(crate::tessellate::non_manifold_edge_count(&mesh), 0);
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap(),
+            (6, 12, 8)
+        );
+        // A(t)=(1-t)I+tR(theta), so integrating the horizontal square area
+        // gives h*4*(2+cos(theta))/3. Translation and rigid rotation preserve it.
+        let expected = 8.0 * (2.0 + 0.5_f64.cos()) / 3.0;
+        let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!((volume - expected).abs() < 1e-7, "{volume} != {expected}");
+        assert_eq!(face_polygon(&topo, first).unwrap(), input_points[0]);
+        assert_eq!(face_polygon(&topo, second).unwrap(), input_points[1]);
+    }
+}
+
+#[test]
+fn smooth_loft_middle_offset_has_shared_curved_rails_and_exact_volume() {
+    use remus_math::mat::Mat4;
+    for placement in [0.0, 10.0, 100.0] {
+        let mut topo = Topology::new();
+        let first = make_square_at(&mut topo, 2.0, 1.0);
+        // Match the public fixture's independent square over [0, 2]^2.
+        crate::transform::transform_face(&mut topo, first, &Mat4::translation(1.0, 1.0, 0.0))
+            .unwrap();
+        let middle = crate::copy::copy_face(&mut topo, first).unwrap();
+        let last = crate::copy::copy_face(&mut topo, first).unwrap();
+        crate::transform::transform_face(&mut topo, middle, &Mat4::translation(1.0, 0.0, 1.0))
+            .unwrap();
+        crate::transform::transform_face(&mut topo, last, &Mat4::translation(0.0, 0.0, 2.0))
+            .unwrap();
+        let rigid = Mat4::translation(placement, -placement, placement) * Mat4::rotation_y(0.2);
+        for profile in [first, middle, last] {
+            crate::transform::transform_face(&mut topo, profile, &rigid).unwrap();
+        }
+        let profiles = [first, middle, last];
+        let inputs: Vec<_> = profiles
+            .iter()
+            .map(|&face| face_polygon(&topo, face).unwrap())
+            .collect();
+        let solid = loft_smooth(&mut topo, &profiles).unwrap();
+        let report = crate::validate::validate_solid(&topo, solid).unwrap();
+        assert!(report.is_valid(), "{report:?}");
+        assert_eq!(assert_rectangular_wall_boundaries(&topo, solid), 4);
+        let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+        assert!(crate::tessellate::is_watertight(&mesh));
+        assert_eq!(crate::tessellate::non_manifold_edge_count(&mesh), 0);
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap(),
+            (6, 12, 8)
+        );
+        let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+        let rails: Vec<_> = edges
+            .iter()
+            .filter(|&&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::NurbsCurve(_)))
+            .collect();
+        assert_eq!(rails.len(), 4, "one shared rail at each junction");
+        for &edge in &rails {
+            let edge = topo.edge(*edge).unwrap();
+            let midpoint = edge.curve().evaluate_with_endpoints(
+                0.5,
+                topo.vertex(edge.start()).unwrap().point(),
+                topo.vertex(edge.end()).unwrap().point(),
+            );
+            assert!(
+                inputs[1]
+                    .iter()
+                    .any(|&point| (point - midpoint).length() < 1e-7)
+            );
+        }
+        // Every interpolated cross-section is merely a translated 2x2 square.
+        // The axial coordinate is affine from z=1 to z=3, so volume is 4*2.
+        let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!((volume - 8.0).abs() < 1e-7, "volume {volume}");
+        for (&face, expected) in profiles.iter().zip(&inputs) {
+            assert_eq!(face_polygon(&topo, face).unwrap(), *expected);
+        }
+    }
+}
+
+#[test]
+fn smooth_loft_uses_one_profile_parameter_on_every_wall() {
+    use remus_math::mat::Mat4;
+    let mut topo = Topology::new();
+    let first = make_square_at(&mut topo, 2.0, 0.0);
+    let middle = make_square_at(&mut topo, 1.0, 1.0);
+    let last = make_square_at(&mut topo, 3.0, 4.0);
+    crate::transform::transform_face(&mut topo, middle, &Mat4::translation(0.5, 0.0, 0.0)).unwrap();
+    crate::transform::transform_face(&mut topo, last, &Mat4::translation(-0.3, 0.0, 0.0)).unwrap();
+    let profiles = [first, middle, last];
+    let points: Vec<_> = profiles
+        .iter()
+        .map(|&face| face_polygon(&topo, face).unwrap())
+        .collect();
+    let first_band: f64 = points[0]
+        .iter()
+        .zip(&points[1])
+        .map(|(&a, &b)| (b - a).length())
+        .sum();
+    let last_band: f64 = points[1]
+        .iter()
+        .zip(&points[2])
+        .map(|(&a, &b)| (b - a).length())
+        .sum();
+    let parameters = [0.0, first_band / (first_band + last_band), 1.0];
+    let solid = loft_smooth(&mut topo, &profiles).unwrap();
+    assert_eq!(assert_rectangular_wall_boundaries(&topo, solid), 4);
+    let walls: Vec<_> = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .collect();
+    for (index, &face) in walls.iter().enumerate() {
+        let FaceSurface::Nurbs(surface) = topo.face(face).unwrap().surface() else {
+            unreachable!()
+        };
+        for (ring, &parameter) in points.iter().zip(&parameters) {
+            for v in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let expected = ring[index] + (ring[(index + 1) % 4] - ring[index]) * v;
+                assert!((surface.evaluate(parameter, v) - expected).length() < 1e-7);
+            }
+        }
+    }
+}
+
+fn loft_live_counts(topo: &Topology) -> [usize; 11] {
+    [
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+        topo.num_compounds(),
+        topo.num_compsolids(),
+        topo.num_loops(),
+        topo.num_coedges(),
+        topo.num_pcurves(),
+    ]
+}
+
+#[test]
+fn loft_late_failure_rolls_back_live_topology_and_history() {
+    use remus_topology::journal::EntityKey;
+    let mut topo = Topology::new();
+    let first = make_square_at(&mut topo, 2.0, 0.0);
+    let second = crate::copy::copy_face(&mut topo, first).unwrap();
+    let operation = topo.journal_begin("loft rollback fixture");
+    topo.journal_record_barrier(operation, vec![EntityKey::face(first.index())]);
+    let counts = loft_live_counts(&topo);
+    let journal = topo.journal().snapshot();
+    let first_before = format!("{:?}", topo.face(first));
+    let second_before = format!("{:?}", topo.face(second));
+    let points = face_polygon(&topo, first).unwrap();
+    let slots = topo.allocated_slot_count();
+    for smooth in [false, true] {
+        let result = if smooth {
+            loft_smooth(&mut topo, &[first, second])
+        } else {
+            loft(&mut topo, &[first, second])
+        };
+        assert!(matches!(
+            result,
+            Err(crate::OperationsError::Math(
+                remus_math::MathError::ZeroVector
+            ))
+        ));
+        assert_eq!(loft_live_counts(&topo), counts);
+        assert_eq!(topo.journal().snapshot(), journal);
+        assert_eq!(format!("{:?}", topo.face(first)), first_before);
+        assert_eq!(format!("{:?}", topo.face(second)), second_before);
+        assert_eq!(face_polygon(&topo, first).unwrap(), points);
+        assert_eq!(face_polygon(&topo, second).unwrap(), points);
+    }
+    // Failed handles remain retired above the old allocation high-water mark.
+    assert!(topo.allocated_slot_count() > slots);
+}
+
+fn face_from_polygon_junctions(topo: &mut Topology, points: &[Point3]) -> FaceId {
+    let wire = make_polygon_wire(topo, points, Tolerance::new().linear).unwrap();
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: points[0].z(),
+        },
+    ))
+}
+
+#[test]
+fn repeated_polygon_junctions_keep_closed_ruled_and_smooth_lofts() {
+    use remus_math::mat::Mat4;
+    for smooth in [false, true] {
+        for offset in [0.0, 100.0] {
+            let mut topo = Topology::new();
+            let profiles: Vec<_> = [(1.0, 0.0), (2.0, 1.0), (3.0, 0.0)]
+                .into_iter()
+                .map(|(z, shift)| {
+                    face_from_polygon_junctions(
+                        &mut topo,
+                        &[
+                            Point3::new(shift, 0.0, z),
+                            Point3::new(shift + 2.0, 0.0, z),
+                            Point3::new(shift + 2.0, 0.0, z),
+                            Point3::new(shift + 2.0, 2.0, z),
+                            Point3::new(shift, 2.0, z),
+                            Point3::new(shift, 0.0, z),
+                        ],
+                    )
+                })
+                .collect();
+            let rigid = Mat4::translation(offset, -offset, offset) * Mat4::rotation_y(0.2);
+            for &profile in &profiles {
+                crate::transform::transform_face(&mut topo, profile, &rigid).unwrap();
+            }
+            let inputs: Vec<_> = profiles
+                .iter()
+                .map(|&face| face_polygon(&topo, face).unwrap())
+                .collect();
+            let solid = if smooth {
+                loft_smooth(&mut topo, &profiles).unwrap()
+            } else {
+                loft(&mut topo, &profiles).unwrap()
+            };
+            assert!(
+                crate::validate::validate_solid(&topo, solid)
+                    .unwrap()
+                    .is_valid()
+            );
+            let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+            assert!(crate::tessellate::is_watertight(&mesh));
+            assert_eq!(crate::tessellate::non_manifold_edge_count(&mesh), 0);
+            let expected_counts = if smooth { (6, 12, 8) } else { (10, 20, 12) };
+            assert_eq!(
+                remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap(),
+                expected_counts
+            );
+            // Repeated junctions add no material. Every section translates a
+            // square of area 4, through an axial height of 2.
+            let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+            assert!((volume - 8.0).abs() < 1e-7, "volume {volume}");
+            if smooth {
+                assert_eq!(assert_rectangular_wall_boundaries(&topo, solid), 4);
+            }
+            for (&profile, input) in profiles.iter().zip(inputs) {
+                assert_eq!(face_polygon(&topo, profile).unwrap(), input);
+            }
+        }
+    }
+}
+
+#[test]
+fn wholly_repeated_polygon_junctions_refuse_without_mutation() {
+    use remus_topology::journal::EntityKey;
+    let mut topo = Topology::new();
+    let profiles: Vec<_> = [0.0, 1.0, 2.0]
+        .into_iter()
+        .map(|z| face_from_polygon_junctions(&mut topo, &[Point3::new(0.0, 0.0, z); 4]))
+        .collect();
+    let operation = topo.journal_begin("collapsed loft fixture");
+    topo.journal_record_barrier(operation, vec![EntityKey::face(profiles[0].index())]);
+    let counts = loft_live_counts(&topo);
+    let slots = topo.allocated_slot_count();
+    let journal = topo.journal().snapshot();
+    for smooth in [false, true] {
+        let result = if smooth {
+            loft_smooth(&mut topo, &profiles)
+        } else {
+            loft(&mut topo, &profiles)
+        };
+        assert!(matches!(
+            result,
+            Err(crate::OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(loft_live_counts(&topo), counts);
+        assert_eq!(topo.allocated_slot_count(), slots);
+        assert_eq!(topo.journal().snapshot(), journal);
+    }
+}

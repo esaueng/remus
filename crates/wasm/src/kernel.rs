@@ -31,7 +31,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::{WasmError, validate_finite};
 use crate::handles::{edge_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
-use crate::state::{Checkpoint, GcsSketchState, SketchState};
+use crate::state::{Checkpoint, GcsSketchState, HandleStore, SketchState};
 
 /// The B-Rep modeling kernel.
 ///
@@ -41,10 +41,10 @@ use crate::state::{Checkpoint, GcsSketchState, SketchState};
 #[wasm_bindgen]
 pub struct BrepKernel {
     pub(crate) topo: Rc<Topology>,
-    pub(crate) assemblies: Vec<remus_operations::assembly::Assembly>,
-    pub(crate) sketches: Vec<SketchState>,
-    pub(crate) gcs_sketches: Vec<GcsSketchState>,
-    pub(crate) checkpoints: Vec<Checkpoint>,
+    pub(crate) assemblies: crate::state::HandleStore<crate::state::AssemblyState>,
+    pub(crate) sketches: crate::state::HandleStore<SketchState>,
+    pub(crate) gcs_sketches: crate::state::HandleStore<GcsSketchState>,
+    pub(crate) checkpoints: crate::state::HandleStore<Checkpoint>,
     pub(crate) poisoned: bool,
     /// Persistent classification preparation (PERF-Q02).
     ///
@@ -64,10 +64,10 @@ impl BrepKernel {
         crate::panics::install_hook();
         Self {
             topo: Rc::new(Topology::new()),
-            assemblies: Vec::new(),
-            sketches: Vec::new(),
-            gcs_sketches: Vec::new(),
-            checkpoints: Vec::new(),
+            assemblies: HandleStore::default(),
+            sketches: HandleStore::default(),
+            gcs_sketches: HandleStore::default(),
+            checkpoints: HandleStore::default(),
             poisoned: false,
             classify_cache: std::cell::RefCell::new(
                 remus_check::classify::ClassificationCache::new(),
@@ -2133,19 +2133,19 @@ mod workflow_probes {
         fn snapshot_detects_non_geometry_state_changes() {
             let mut kernel = BrepKernel::new();
             let mut before = kernel.workflow_state_snapshot();
-            kernel.sketches.push(SketchState::default());
+            assert!(kernel.sketches.push(SketchState::default()).is_ok());
             let mut after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
-            kernel.gcs_sketches.push(GcsSketchState::default());
+            assert!(kernel.gcs_sketches.push(GcsSketchState::default()).is_ok());
             after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
-            kernel.assembly_new("sentinel");
+            assert!(kernel.assembly_new("sentinel").is_ok());
             after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
-            kernel.checkpoint();
+            assert!(kernel.checkpoint().is_ok());
             after = kernel.workflow_state_snapshot();
             assert_ne!(before, after);
             before = after;
