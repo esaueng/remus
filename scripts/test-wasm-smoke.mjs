@@ -127,6 +127,39 @@ console.log('ok - RemusIo created; kernel module carries the arena codec only');
   console.log('ok - complete sphere/cylinder cut preserves cavity, material, operands and journal');
 }
 
+// A large shared translation must preserve the spherical cavity, rather
+// than merely returning a valid-looking cylinder that contains its centre.
+for (const translation of [1e13, -1e13]) {
+  const cavityKernel = new BrepKernel();
+  const cylinder = cavityKernel.makeCylinder(10, 20);
+  const sphere = cavityKernel.makeSphere(8, 32);
+  for (const [solid, z] of [[cylinder, translation], [sphere, translation + 10]]) {
+    cavityKernel.transformSolid(solid, new Float64Array([
+      1, 0, 0, translation, 0, 1, 0, -translation,
+      0, 0, 1, z, 0, 0, 0, 1,
+    ]));
+  }
+  const operandBytes = bodies(cavityKernel, cylinder, sphere);
+  const journal = cavityKernel.journalSummary();
+  const cavity = cavityKernel.cut(cylinder, sphere);
+  assert.equal(cavityKernel.getSolidFaces(cavity).length, 5);
+  assert.equal(JSON.parse(cavityKernel.validateSolidDetailed(cavity)).errorCount, 0);
+  const expected = Math.PI * (2000 - 4 * 512 / 3);
+  const measured = JSON.parse(cavityKernel.massProperties(cavity, 1e-3, 8, 5));
+  // Existing far-coordinate quadrature has about 2.7e-5 relative rounding
+  // error for this true cavity; ordinary-coordinate checks remain at 1e-8.
+  assert.ok(Math.abs(measured.volume - expected) < expected * 1e-4);
+  for (const [x, z, expectedClass] of [
+    [0, 10, 'outside'], [9, 10, 'inside'], [0, 1, 'inside'],
+    [0, 19, 'inside'], [11, 10, 'outside'],
+  ]) {
+    assert.equal(cavityKernel.classifyPoint(cavity, translation + x, -translation, translation + z, 1e-7), expectedClass);
+  }
+  assert.deepEqual(bodies(cavityKernel, cylinder, sphere), operandBytes);
+  assert.equal(cavityKernel.journalSummary(), journal);
+}
+console.log('ok - far translated sphere/cylinder cuts retain true cavities');
+
 // Stable batch-v2 errors are additive: successful envelopes match v1, while
 // v1 keeps its string error and v2 exposes the same text plus code/details.
 {
