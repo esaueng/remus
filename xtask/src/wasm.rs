@@ -335,7 +335,9 @@ fn patch_package_json(pkg_json: &mut serde_json::Value, spec: &PackageSpec) -> R
 
         files.retain(|entry| entry.as_str() != Some("LICENSE-MIT"));
 
-        for entry in [node_entry.as_str(), "LICENSE-APACHE"] {
+        // Keep a clean package identical to an incremental build, where
+        // wasm-pack may already include the previously copied license.
+        for entry in ["LICENSE-APACHE", node_entry.as_str()] {
             let entry = serde_json::json!(entry);
             if !files.contains(&entry) {
                 files.push(entry);
@@ -886,7 +888,8 @@ mod tests {
 
         let files = pkg["files"].as_array().unwrap();
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0], "remus_wasm_node.cjs");
+        assert_eq!(files[0], "LICENSE-APACHE");
+        assert_eq!(files[1], "remus_wasm_node.cjs");
     }
 
     // -- validate_package_json tests --------------------------------------
@@ -986,6 +989,67 @@ export class BrepKernel {
     }
 
     // -- merge_at integration test ----------------------------------------
+
+    #[test]
+    fn clean_and_incremental_merges_have_identical_package_contracts() {
+        for spec in [KERNEL, TRANSLATORS] {
+            let mut incremental_contract = None;
+            for existing_license in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let pkg = dir.path().join("pkg");
+                let pkg_node = dir.path().join("pkg-node");
+                fs::create_dir_all(&pkg).unwrap();
+                fs::create_dir_all(&pkg_node).unwrap();
+                fs::write(dir.path().join("LICENSE-APACHE"), "fixture license\n").unwrap();
+                let mut files = vec![
+                    format!("{}_bg.wasm", spec.stem),
+                    format!("{}.js", spec.stem),
+                    format!("{}_bg.js", spec.stem),
+                    format!("{}.d.ts", spec.stem),
+                ];
+                if existing_license {
+                    files.push("LICENSE-APACHE".to_owned());
+                    fs::write(pkg.join("LICENSE-APACHE"), "fixture license\n").unwrap();
+                }
+                let initial = json!({
+                    "name": spec.name,
+                    "version": "2026.1.0",
+                    "files": files,
+                    "module": format!("{}.js", spec.stem),
+                });
+                fs::write(
+                    pkg.join("package.json"),
+                    serde_json::to_vec(&initial).unwrap(),
+                )
+                .unwrap();
+                fs::write(
+                    pkg_node.join(format!("{}.js", spec.stem)),
+                    "// node entry\n",
+                )
+                .unwrap();
+
+                merge_at(&pkg, &pkg_node, &spec).unwrap();
+                copy_package_metadata(dir.path(), &pkg).unwrap();
+                let contract = fs::read(pkg.join("package.json")).unwrap();
+                let parsed: serde_json::Value = serde_json::from_slice(&contract).unwrap();
+                files.extend(["LICENSE-APACHE".to_owned(), spec.node_entry()]);
+                files.dedup();
+                assert_eq!(parsed["files"], json!(files));
+                let conditions = parsed["exports"]["."]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                assert_eq!(conditions, ["node", "import", "default"]);
+                if let Some(before) = &incremental_contract {
+                    assert_eq!(&contract, before, "{} clean versus incremental", spec.name);
+                } else {
+                    incremental_contract = Some(contract);
+                }
+            }
+        }
+    }
 
     #[test]
     fn merge_at_copies_and_patches_correctly() {

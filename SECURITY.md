@@ -5,7 +5,9 @@
 Report issues against `main`; fixes land there. Consumers also install the
 committed kernel and translator packages in `crates/wasm/pkg` and
 `crates/wasm-io/pkg` directly from Git. These directories are a distribution
-channel and changes to them must pass the PR package integrity and version gates.
+channel. Branch protection must require `Changed kernel requires a new version`.
+That check depends on package integrity and explicitly fails if integrity fails,
+is cancelled, or is skipped. Changes to these directories must pass both checks.
 
 ## Scope
 

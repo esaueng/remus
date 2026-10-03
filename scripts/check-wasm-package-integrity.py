@@ -58,12 +58,21 @@ def check(revision, directory=Path(".")):
                 rebuilt[path.relative_to(directory).as_posix()] = path.read_bytes()
         for name in sorted(committed.keys() | rebuilt.keys()):
             before, after = committed.get(name), rebuilt.get(name)
+            label = name
             if before is not None and after is not None and name.endswith("/package.json"):
-                equal = manifest_contract(before) == manifest_contract(after, generated=True)
+                expected = manifest_contract(before)
+                actual = manifest_contract(after, generated=True)
+                equal = expected == actual
+                if not equal:
+                    expected_fields, actual_fields = json.loads(expected), json.loads(actual)
+                    changed = [key for key in sorted(expected_fields.keys() | actual_fields.keys())
+                               if key not in expected_fields or key not in actual_fields or
+                               json.dumps(expected_fields[key]) != json.dumps(actual_fields[key])]
+                    label += " (manifest fields: " + ", ".join(changed) + ")"
             else:
                 equal = before is not None and after is not None and before == after
             if not equal:
-                mismatches.append(name)
+                mismatches.append(label)
     if mismatches:
         raise ValueError("Committed packages differ from the source rebuild: " + ", ".join(mismatches))
     print("Committed WASM package integrity passed")
