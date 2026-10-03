@@ -654,6 +654,93 @@ mod tests {
     }
 
     #[test]
+    fn clockwise_circular_hole_distance_keeps_witnesses_on_the_annular_boundary() {
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let mut rim = |radius, normal_z| {
+            let edge = remus_topology::builder::make_circle_edge_with_ref(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, normal_z),
+                radius,
+                Vec3::new(0.0, 1.0, 0.0),
+                1e-7,
+            )
+            .unwrap();
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap())
+        };
+        let outer = rim(3.0, 1.0);
+        let hole = rim(1.0, -1.0);
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let solid =
+            crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .is_valid()
+        );
+        let snapshot = format!("{topo:?}");
+        let queries = [
+            (Point3::new(0.0, 0.0, -1.0), 2.0_f64.sqrt(), 1.0, 0.0),
+            (Point3::new(0.0, 0.0, 3.0), 2.0_f64.sqrt(), 1.0, 2.0),
+            (Point3::new(2.0, 0.0, -1.0), 1.0, 2.0, 0.0),
+            (Point3::new(2.0, 0.0, 3.0), 1.0, 2.0, 2.0),
+        ];
+        let points: Vec<_> = queries.iter().map(|entry| entry.0).collect();
+        let batch = point_to_solid_batch(&topo, &points, solid).unwrap();
+        let prepared = remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+        let mut scratch = remus_check::distance::DistanceScratch::new();
+        for (i, (point, expected, radius, z)) in queries.into_iter().enumerate() {
+            let direct = point_to_solid_distance(&topo, point, solid).unwrap();
+            let checked = remus_check::distance::point_to_solid(&topo, point, solid).unwrap();
+            let exhaustive = remus_check::distance::point_to_solid_exhaustive(&topo, point, solid)
+                .unwrap()
+                .0;
+            let cached = prepared.query(point, &mut scratch).unwrap();
+            let cached_exhaustive = prepared
+                .query_exhaustive_with_stats(point, &mut scratch)
+                .unwrap()
+                .0;
+            for (distance, witness) in [
+                (direct.distance, direct.point_b),
+                (batch[i].distance, batch[i].point_b),
+                (checked.distance, checked.point_b),
+                (exhaustive.distance, exhaustive.point_b),
+                (cached.distance, cached.point_b),
+                (cached_exhaustive.distance, cached_exhaustive.point_b),
+            ] {
+                assert!(
+                    (distance - expected).abs() < 1e-10,
+                    "distance={distance}, witness={witness:?}"
+                );
+                assert!((witness.x().hypot(witness.y()) - radius).abs() < 1e-10);
+                assert!((witness.z() - z).abs() < 1e-10);
+                assert!(((point - witness).length() - distance).abs() < 1e-10);
+            }
+            if point.z() < 0.0 {
+                let face_result = point_to_face(&topo, point, face).unwrap();
+                assert!(
+                    (face_result.distance - expected).abs() < 1e-10,
+                    "{face_result:?}"
+                );
+                assert!(
+                    (face_result.point_b.x().hypot(face_result.point_b.y()) - radius).abs() < 1e-10
+                );
+                assert!(face_result.point_b.z().abs() < 1e-10);
+            }
+        }
+        assert_eq!(format!("{topo:?}"), snapshot);
+    }
+
+    #[test]
     fn cylinder_lateral_distance_uses_the_closed_curved_rim() {
         let mut topo = Topology::new();
         let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
