@@ -1495,7 +1495,10 @@ fn planar_loop_inside(
                         .hypot(radial.dot(e.v_axis()) / e.semi_minor())
                         <= 1.0);
                 }
-                _ => {}
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {}
             }
         }
     }
@@ -1557,7 +1560,11 @@ fn full_axial_trim(
                 rims += 1;
             }
             EdgeCurve::Line if seams.contains(&boundary.id) => lines += 1,
-            _ => return Ok(false),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(false),
         }
     }
     Ok((1..=2).contains(&rims) && lines == 1 && seams.len() == 1)
@@ -1650,7 +1657,7 @@ fn in_region(topo: &Topology, face: FaceId, point: Point3) -> Result<bool, Proje
         FaceSurface::Cylinder(c) => full_axial_trim(topo, face, c.origin(), c.axis())?,
         FaceSurface::Cone(c) => full_axial_trim(topo, face, c.apex(), c.axis())?,
         FaceSurface::Sphere(s) => sphere_trim_rim(topo, face, s)?.is_some(),
-        _ => false,
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) | FaceSurface::Torus(_) => false,
     };
     if !qualified {
         return Err(ProjectCurveError::Operations(
@@ -1913,7 +1920,11 @@ fn boundary_edges(topo: &Topology, face: FaceId) -> Result<Vec<BoundaryEdge>, Pr
             .point();
         let trim = match data.curve() {
             EdgeCurve::Line => (0.0, 1.0),
-            _ => data.strict_domain().map_err(|_| {
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => data.strict_domain().map_err(|_| {
                 ProjectCurveError::Operations(OperationsError::InvalidInput {
                     reason: "face boundary edge has no valid parameter range".to_string(),
                 })
@@ -2135,7 +2146,10 @@ fn conic_angular_crossings(
             e.u_axis() * e.semi_major(),
             e.v_axis() * e.semi_minor(),
         ),
-        _ => return Ok(None),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(None),
     };
     let mut roots = Vec::new();
     let (mut lo, end) = (edge.trim.0.min(edge.trim.1), edge.trim.0.max(edge.trim.1));
