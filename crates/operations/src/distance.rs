@@ -2,7 +2,11 @@
 //!
 //! Computes minimum distance between solids and point-to-solid distance.
 //! Supports planar, NURBS, and analytic (cylinder, cone, sphere, torus) faces
-//! with BVH spatial acceleration.
+//! with conservative branch-and-bound acceleration.
+//! Point queries involving NURBS surfaces or trims are local numerical
+//! projection estimates.
+//! Solid-pair minima require supported global certificates; unsupported
+//! curved pairs return a typed error.
 
 #![allow(
     clippy::many_single_char_names,
@@ -19,19 +23,11 @@
     clippy::imprecise_flops
 )]
 
-use remus_geometry::extrema::{
-    point_to_cone as geo_point_to_cone, point_to_cylinder as geo_point_to_cylinder,
-    point_to_sphere as geo_point_to_sphere, point_to_torus as geo_point_to_torus,
-};
-use remus_math::aabb::Aabb3;
-use remus_math::bvh::Bvh;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
-
-use crate::boolean::face_polygon;
 
 /// Result of a distance computation.
 #[derive(Debug, Clone)]
@@ -46,9 +42,9 @@ pub struct DistanceResult {
 
 /// Compute the minimum distance from a point to a solid.
 ///
-/// Uses BVH over face AABBs for acceleration. Dispatches per face type:
-/// planar (point-to-polygon), NURBS (Newton projection), and analytic
-/// (closed-form for cylinder/cone/sphere/torus).
+/// Uses the shared best-first traversal over certified conservative face
+/// bounds. NURBS surfaces and trims retain local numerical projection estimates,
+/// including NURBS trims sewn onto analytic faces.
 ///
 /// # Errors
 ///
@@ -57,220 +53,79 @@ pub struct DistanceResult {
 pub fn point_to_solid_distance(
     topo: &Topology,
     point: Point3,
-    solid: SolidId,
+    solid_id: SolidId,
 ) -> Result<DistanceResult, crate::OperationsError> {
-    let tol = Tolerance::new();
-
-    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
-    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
-    // solid"). This query is not one of the per-shell exceptions.
-    let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
-
-    let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
-    let bvh = Bvh::build(&face_aabbs);
-
-    let mut best_dist = f64::INFINITY;
-    let mut best_point = point;
-
-    let candidates = bvh_distance_candidates(&bvh, &face_aabbs, point);
-
-    for idx in candidates {
-        let fid = face_ids[idx];
-        let aabb_dist_sq = face_aabbs[idx].1.distance_squared_to_point(point);
-        if prunable[idx] && aabb_dist_sq > best_dist * best_dist {
-            continue;
-        }
-
-        if let Some((dist, closest)) = point_to_face_distance(topo, point, fid, tol)?
-            && dist < best_dist
-        {
-            best_dist = dist;
-            best_point = closest;
-        }
+    let (result, stats) = remus_check::distance::point_to_solid_with_stats(topo, point, solid_id)?;
+    for _ in 0..stats.faces_evaluated {
+        remus_algo::perf::bump_distance_face_probe();
     }
-
     Ok(DistanceResult {
-        distance: best_dist,
-        point_a: point,
-        point_b: best_point,
+        distance: result.distance,
+        point_a: result.point_a,
+        point_b: result.point_b,
     })
 }
 
-/// Compute the minimum distance from many points to a solid, amortizing the
-/// one face-bound/BVH build over the whole batch.
+/// Query several points against one frozen boundary preparation.
 ///
-/// Builds face bounds and the BVH once, then reuses caller-owned candidate
-/// buffers across points (no per-point candidate allocation after warmup).
-/// Output order is deterministic input order. This is the operations-layer
-/// repeated-query consumer for the Q06 scratch-reuse pattern; the single-query
-/// [`point_to_solid_distance`] path is unchanged.
+/// Output order and the all-or-nothing error contract match individual calls;
+/// preparation and scratch storage are shared across the batch.
 ///
 /// # Errors
-///
-/// Returns an error if the solid, face bounds, or boundary references are
-/// invalid. Empty input validates all face boundary references before returning.
-/// All-or-nothing on per-point failures, matching
-/// a loop over [`point_to_solid_distance`].
+/// Returns an error for invalid topology, failed projection, or unsupported
+/// extrema that conservative bounds cannot exclude from the final minimum.
 pub fn point_to_solid_batch(
     topo: &Topology,
     points: &[Point3],
     solid: SolidId,
 ) -> Result<Vec<DistanceResult>, crate::OperationsError> {
-    let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
-    let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
-    if points.is_empty() {
-        // Bounds only inspect outer wires; holes are boundary too.
-        let _ = collect_solid_points(topo, solid)?;
-        return Ok(Vec::new());
-    }
-    let bvh = Bvh::build(&face_aabbs);
-    let tol = Tolerance::new();
-    let mut candidates: Vec<usize> = Vec::new();
-    let mut scored: Vec<(usize, f64)> = Vec::new();
-    let mut out = Vec::with_capacity(points.len());
+    let prepared = remus_check::distance::PreparedDistanceSolid::prepare(topo, solid)?;
+    let mut scratch = remus_check::distance::DistanceScratch::new();
+    let mut results = Vec::with_capacity(points.len());
     for &point in points {
-        bvh_distance_candidates_into(&bvh, &face_aabbs, point, &mut candidates, &mut scored);
-        let mut best_dist = f64::INFINITY;
-        let mut best_point = point;
-        for &idx in &candidates {
-            let fid = face_ids[idx];
-            let aabb_dist_sq = face_aabbs[idx].1.distance_squared_to_point(point);
-            if prunable[idx] && aabb_dist_sq > best_dist * best_dist {
-                continue;
-            }
-            if let Some((dist, closest)) = point_to_face_distance(topo, point, fid, tol)?
-                && dist < best_dist
-            {
-                best_dist = dist;
-                best_point = closest;
-            }
+        let (result, stats) = prepared.query_with_stats(point, &mut scratch)?;
+        for _ in 0..stats.faces_evaluated {
+            remus_algo::perf::bump_distance_face_probe();
         }
-        out.push(DistanceResult {
-            distance: best_dist,
-            point_a: point,
-            point_b: best_point,
+        results.push(DistanceResult {
+            distance: result.distance,
+            point_a: result.point_a,
+            point_b: result.point_b,
         });
     }
-    Ok(out)
+    Ok(results)
 }
 
-/// Compute the minimum distance between two solids.
+/// Compute the minimum distance between two solid boundaries.
 ///
-/// Checks vertices of each solid against faces of the other, with
-/// BVH acceleration. Also checks edge-to-edge distances for the
-/// closest vertex pairs.
+/// Complete native sphere pairs and straight-edged planar boundaries (including
+/// certified affine NURBS planes) have global minimum certificates. Unsupported
+/// curved pairs return a typed error instead of a sampled/chord approximation.
+/// Nested bodies measure the separation of their boundaries.
 ///
 /// # Errors
-///
-/// Returns an error if either solid is invalid.
-#[allow(clippy::too_many_lines)]
+/// Returns an error for missing topology or an unsupported minimum certificate.
 pub fn solid_to_solid_distance(
     topo: &Topology,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<DistanceResult, crate::OperationsError> {
-    let tol = Tolerance::new();
-
-    let verts_a = collect_solid_points(topo, solid_a)?;
-    let verts_b = collect_solid_points(topo, solid_b)?;
-
-    let mut best_dist = f64::INFINITY;
-    let mut best_a = Point3::new(0.0, 0.0, 0.0);
-    let mut best_b = Point3::new(0.0, 0.0, 0.0);
-
-    for &pa in &verts_a {
-        for &pb in &verts_b {
-            let dist = (pa - pb).length();
-            if dist < best_dist {
-                best_dist = dist;
-                best_a = pa;
-                best_b = pb;
-            }
-        }
-    }
-
-    // Vertices of A against faces of B.
-    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
-    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
-    // solid"). This query is not one of the per-shell exceptions.
-    let faces_b: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid_b)?;
-    let (aabbs_b, prunable_b) = build_face_aabbs(topo, &faces_b)?;
-    let bvh_b = Bvh::build(&aabbs_b);
-
-    // Reused across vertices: one candidate/score buffer per side (Q06 scratch
-    // reuse — same order and pruning as the allocating path, no per-vertex
-    // candidate allocation after warmup).
-    let mut candidates: Vec<usize> = Vec::new();
-    let mut scored: Vec<(usize, f64)> = Vec::new();
-    for &pa in &verts_a {
-        bvh_distance_candidates_into(&bvh_b, &aabbs_b, pa, &mut candidates, &mut scored);
-        for &idx in &candidates {
-            let aabb_dist_sq = aabbs_b[idx].1.distance_squared_to_point(pa);
-            if prunable_b[idx] && aabb_dist_sq > best_dist * best_dist {
-                continue;
-            }
-            remus_algo::perf::bump_distance_face_probe();
-            if let Some((dist, closest)) = point_to_face_distance(topo, pa, faces_b[idx], tol)?
-                && dist < best_dist
-            {
-                best_dist = dist;
-                best_a = pa;
-                best_b = closest;
-            }
-        }
-    }
-
-    // Vertices of B against faces of A.
-    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
-    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
-    // solid"). This query is not one of the per-shell exceptions.
-    let faces_a: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid_a)?;
-    let (aabbs_a, prunable_a) = build_face_aabbs(topo, &faces_a)?;
-    let bvh_a = Bvh::build(&aabbs_a);
-
-    candidates.clear();
-    scored.clear();
-    for &pb in &verts_b {
-        bvh_distance_candidates_into(&bvh_a, &aabbs_a, pb, &mut candidates, &mut scored);
-        for &idx in &candidates {
-            let aabb_dist_sq = aabbs_a[idx].1.distance_squared_to_point(pb);
-            if prunable_a[idx] && aabb_dist_sq > best_dist * best_dist {
-                continue;
-            }
-            remus_algo::perf::bump_distance_face_probe();
-            if let Some((dist, closest)) = point_to_face_distance(topo, pb, faces_a[idx], tol)?
-                && dist < best_dist
-            {
-                best_dist = dist;
-                best_a = closest;
-                best_b = pb;
-            }
-        }
-    }
-
-    // Edge-to-edge pass for closest edge pairs.
-    let edges_a = collect_solid_edges(topo, solid_a)?;
-    let edges_b = collect_solid_edges(topo, solid_b)?;
-
-    for &(a1, a2) in &edges_a {
-        for &(b1, b2) in &edges_b {
-            let (dist, ca, cb) = segment_to_segment_distance(a1, a2, b1, b2);
-            if dist < best_dist {
-                best_dist = dist;
-                best_a = ca;
-                best_b = cb;
-            }
-        }
-    }
-
+    let result = remus_check::distance::solid_to_solid_with_face_probe(
+        topo,
+        solid_a,
+        solid_b,
+        remus_algo::perf::bump_distance_face_probe,
+    )?;
     Ok(DistanceResult {
-        distance: best_dist,
-        point_a: best_a,
-        point_b: best_b,
+        distance: result.distance,
+        point_a: result.point_a,
+        point_b: result.point_b,
     })
 }
 
 /// Compute the minimum distance from a point to a face.
+/// NURBS surfaces and trims retain local numerical estimates, not a global
+/// minimum certificate.
 ///
 /// # Errors
 ///
@@ -280,480 +135,55 @@ pub fn point_to_face(
     point: Point3,
     face_id: FaceId,
 ) -> Result<DistanceResult, crate::OperationsError> {
-    let tol = Tolerance::new();
-    if let Some((dist, closest)) = point_to_face_distance(topo, point, face_id, tol)? {
-        Ok(DistanceResult {
-            distance: dist,
-            point_a: point,
-            point_b: closest,
-        })
-    } else {
-        // Fallback: distance to closest wire vertex
-        let face = topo.face(face_id)?;
-        let wire = topo.wire(face.outer_wire())?;
-        let mut best = f64::INFINITY;
-        let mut best_pt = point;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let vp = topo.vertex(edge.start())?.point();
-            let d = (point - vp).length();
-            if d < best {
-                best = d;
-                best_pt = vp;
-            }
-        }
-        Ok(DistanceResult {
-            distance: best,
-            point_a: point,
-            point_b: best_pt,
-        })
-    }
+    let Some((distance, closest)) = point_to_face_distance(topo, point, face_id, Tolerance::new())?
+    else {
+        return Err(crate::OperationsError::Check(
+            remus_check::CheckError::DistanceFailed(
+                "no point-to-face distance witness was found".into(),
+            ),
+        ));
+    };
+    Ok(DistanceResult {
+        distance,
+        point_a: point,
+        point_b: closest,
+    })
 }
 
-/// Compute the minimum distance from a point to an edge.
-///
-/// For line edges, uses exact point-to-segment distance.
-/// For curved edges, samples the curve and returns the closest sample.
+/// Compute the minimum distance to an authoritative line or circle interval.
+/// Other carriers are refused until a global curve extremum solver is available.
 ///
 /// # Errors
-///
-/// Returns an error if the edge lookup fails.
-#[allow(clippy::cast_precision_loss)]
+/// Returns an error for missing topology, invalid trims or unsupported carriers.
 pub fn point_to_edge(
     topo: &Topology,
     point: Point3,
     edge_id: remus_topology::edge::EdgeId,
 ) -> Result<DistanceResult, crate::OperationsError> {
-    let edge = topo.edge(edge_id)?;
-    let start = topo.vertex(edge.start())?.point();
-    let end = topo.vertex(edge.end())?.point();
-
-    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-        let closest = closest_point_on_segment(point, start, end);
-        let dist = (point - closest).length();
-        Ok(DistanceResult {
-            distance: dist,
-            point_a: point,
-            point_b: closest,
-        })
-    } else {
-        let (t0, t1) = match edge.curve() {
-            remus_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.domain(),
-            remus_topology::edge::EdgeCurve::Circle(c) => {
-                if edge.is_closed() {
-                    (0.0, std::f64::consts::TAU)
-                } else {
-                    // Project start/end vertices to get actual arc parameter range.
-                    let mut t0 = c.project(start);
-                    let mut t1 = c.project(end);
-                    if t0 < 0.0 {
-                        t0 += std::f64::consts::TAU;
-                    }
-                    if t1 <= t0 {
-                        t1 += std::f64::consts::TAU;
-                    }
-                    (t0, t1)
-                }
-            }
-            remus_topology::edge::EdgeCurve::Ellipse(e) => {
-                if edge.is_closed() {
-                    (0.0, std::f64::consts::TAU)
-                } else {
-                    let mut t0 = e.project(start);
-                    let mut t1 = e.project(end);
-                    if t0 < 0.0 {
-                        t0 += std::f64::consts::TAU;
-                    }
-                    if t1 <= t0 {
-                        t1 += std::f64::consts::TAU;
-                    }
-                    (t0, t1)
-                }
-            }
-            // Unbounded branches: `project` inverts the parameterization
-            // exactly, so the vertices give the arc's true parameter span.
-            remus_topology::edge::EdgeCurve::Hyperbola(h) => (h.project(start), h.project(end)),
-            remus_topology::edge::EdgeCurve::Parabola(p) => (p.project(start), p.project(end)),
-            // Line was handled above (early return via `if` branch).
-            remus_topology::edge::EdgeCurve::Line => (0.0, 0.0),
-        };
-        let n_samples = 64;
-        let mut best_dist = f64::INFINITY;
-        let mut best_pt = start;
-        for i in 0..=n_samples {
-            let t = t0 + (t1 - t0) * (i as f64) / (n_samples as f64);
-            let pt = match edge.curve() {
-                remus_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.evaluate(t),
-                remus_topology::edge::EdgeCurve::Circle(c) => c.evaluate(t),
-                remus_topology::edge::EdgeCurve::Ellipse(e) => e.evaluate(t),
-                remus_topology::edge::EdgeCurve::Hyperbola(h) => h.evaluate(t),
-                remus_topology::edge::EdgeCurve::Parabola(p) => p.evaluate(t),
-                // Line was handled above.
-                remus_topology::edge::EdgeCurve::Line => start,
-            };
-            let d = (point - pt).length();
-            if d < best_dist {
-                best_dist = d;
-                best_pt = pt;
-            }
-        }
-        Ok(DistanceResult {
-            distance: best_dist,
-            point_a: point,
-            point_b: best_pt,
-        })
-    }
+    let (distance, closest) = remus_check::distance::point_to_edge(topo, point, edge_id)?;
+    Ok(DistanceResult {
+        distance,
+        point_a: point,
+        point_b: closest,
+    })
 }
 
-/// Closest point on a line segment to a point.
-fn closest_point_on_segment(point: Point3, a: Point3, b: Point3) -> Point3 {
-    let ab = b - a;
-    let len_sq = ab.length_squared();
-    if len_sq < 1e-30 {
-        return a;
-    }
-    let ap = point - a;
-    let t = ap.dot(ab) / len_sq;
-    let t = t.clamp(0.0, 1.0);
-    a + ab * t
-}
-
-/// Compute the distance from a point to a single face, dispatching by type.
+/// Shared trim-aware narrow phase. NURBS surfaces and trims retain the documented
+/// local numerical estimates; they do not certify a solid-to-solid minimum.
 pub(crate) fn point_to_face_distance(
     topo: &Topology,
     point: Point3,
     face_id: FaceId,
     tol: Tolerance,
 ) -> Result<Option<(f64, Point3)>, crate::OperationsError> {
-    let face = topo.face(face_id)?;
-    let projection = match face.surface() {
-        FaceSurface::Plane { normal, d } => {
-            let verts = face_polygon(topo, face_id)?;
-            point_to_polygon_distance(point, &verts, *normal, *d, tol)
-        }
-        FaceSurface::Nurbs(surface) => {
-            let proj =
-                remus_math::nurbs::projection::project_point_to_surface(surface, point, tol.linear);
-            match proj {
-                Ok(p) => Some((p.distance, p.point)),
-                Err(_) => None,
-            }
-        }
-        FaceSurface::Cylinder(cyl) => Some(point_to_cylinder(point, cyl)),
-        FaceSurface::Cone(cone) => Some(point_to_cone(point, cone)),
-        FaceSurface::Sphere(sph) => Some(point_to_sphere(point, sph)),
-        FaceSurface::Torus(tor) => Some(point_to_torus(point, tor)),
-    };
-    // Imported trimming curves may deviate from their carrier within the
-    // source's tolerance. A valid carrier projection is therefore a candidate,
-    // not proof that no boundary curve is closer to the query point.
-    let mut best = if let Some((distance, closest)) = projection
-        && remus_check::classify::surface_point_in_face(topo, face_id, closest)?
-    {
-        Some((distance, closest))
-    } else {
-        None
-    };
-    if best.is_some_and(|(distance, _)| distance <= tol.linear) {
-        return Ok(best);
-    }
-    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        for oriented in topo.wire(wid)?.edges() {
-            let candidate = closest_boundary_point(topo, point, oriented.edge())?;
-            if best.is_none_or(|(distance, _)| candidate.0 < distance) {
-                best = Some(candidate);
-            }
-        }
-    }
-    Ok(best)
-}
-
-fn closest_boundary_point(
-    topo: &Topology,
-    point: Point3,
-    edge_id: remus_topology::edge::EdgeId,
-) -> Result<(f64, Point3), crate::OperationsError> {
-    use remus_geometry::extrema::point_to_curve;
-    use remus_topology::edge::EdgeCurve;
-
-    let edge = topo.edge(edge_id)?;
-    let start = topo.vertex(edge.start())?.point();
-    let end = topo.vertex(edge.end())?.point();
-    if matches!(edge.curve(), EdgeCurve::Line) {
-        let closest = closest_point_on_segment(point, start, end);
-        return Ok(((point - closest).length(), closest));
-    }
-    let (a, b) = edge
-        .strict_domain()
-        .map_err(|error| crate::OperationsError::InvalidInput {
-            reason: error.to_string(),
-        })?;
-    let (lo, hi) = (a.min(b), a.max(b));
-    let closest = match edge.curve() {
-        EdgeCurve::Circle(circle) => {
-            let raw = circle.project(point);
-            let center = lo + (hi - lo) * 0.5;
-            let period = std::f64::consts::TAU;
-            let t = raw + period * ((center - raw) / period).round();
-            circle.evaluate(t.clamp(lo, hi))
-        }
-        EdgeCurve::Ellipse(curve) => point_to_curve(point, curve, lo, hi).point,
-        EdgeCurve::NurbsCurve(curve) => point_to_curve(point, curve, lo, hi).point,
-        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
-            let curve = BoundaryCurve {
-                curve: edge.curve(),
-                start,
-                end,
-                domain: (lo, hi),
-            };
-            point_to_curve(point, &curve, lo, hi).point
-        }
-        EdgeCurve::Line => closest_point_on_segment(point, start, end),
-    };
-    // Topological vertices are part of the trimmed boundary even when an
-    // imported curve endpoint differs within the source's sewing tolerance.
-    let mut best = ((point - closest).length(), closest);
-    for vertex in [start, end] {
-        let distance = (point - vertex).length();
-        if distance < best.0 {
-            best = (distance, vertex);
-        }
-    }
-    Ok(best)
-}
-
-struct BoundaryCurve<'a> {
-    curve: &'a remus_topology::edge::EdgeCurve,
-    start: Point3,
-    end: Point3,
-    domain: (f64, f64),
-}
-
-impl remus_math::traits::ParametricCurve for BoundaryCurve<'_> {
-    fn evaluate(&self, t: f64) -> Point3 {
-        self.curve.evaluate_with_endpoints(t, self.start, self.end)
-    }
-
-    fn tangent(&self, t: f64) -> Vec3 {
-        self.curve.tangent_with_endpoints(t, self.start, self.end)
-    }
-
-    fn domain(&self) -> (f64, f64) {
-        self.domain
-    }
-}
-
-// -- Analytic point-to-surface distance (delegating to remus_geometry) ------
-
-/// Closest point on a cylinder to a given point.
-fn point_to_cylinder(
-    point: Point3,
-    cyl: &remus_math::surfaces::CylindricalSurface,
-) -> (f64, Point3) {
-    let proj = geo_point_to_cylinder(point, cyl);
-    (proj.distance, proj.point)
-}
-
-/// Closest point on a cone to a given point.
-fn point_to_cone(point: Point3, cone: &remus_math::surfaces::ConicalSurface) -> (f64, Point3) {
-    let proj = geo_point_to_cone(point, cone);
-    (proj.distance, proj.point)
-}
-
-/// Closest point on a sphere to a given point.
-fn point_to_sphere(
-    point: Point3,
-    sphere: &remus_math::surfaces::SphericalSurface,
-) -> (f64, Point3) {
-    let proj = geo_point_to_sphere(point, sphere);
-    (proj.distance, proj.point)
-}
-
-/// Closest point on a torus to a given point.
-fn point_to_torus(point: Point3, torus: &remus_math::surfaces::ToroidalSurface) -> (f64, Point3) {
-    let proj = geo_point_to_torus(point, torus);
-    (proj.distance, proj.point)
-}
-
-// -- BVH helpers --------------------------------------------------------------
-
-/// Vertex bounds order candidates; only planar, straight-edged bounds can prune.
-#[allow(clippy::type_complexity)]
-fn build_face_aabbs(
-    topo: &Topology,
-    face_ids: &[FaceId],
-) -> Result<(Vec<(usize, Aabb3)>, Vec<bool>), crate::OperationsError> {
-    let mut result = Vec::with_capacity(face_ids.len());
-    let mut prunable = Vec::with_capacity(face_ids.len());
-    for (i, &fid) in face_ids.iter().enumerate() {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        let mut polygonal = face.surface().is_planar();
-        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        let mut grow = |p: Point3| {
-            min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
-            max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
-        };
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            polygonal &= matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line);
-            for vid in [edge.start(), edge.end()] {
-                grow(topo.vertex(vid)?.point());
-            }
-        }
-        // A NURBS face can be pruned on a conservative box: every point
-        // `point_to_face_distance` can return lies on the carrier inside its
-        // domain (the projection clamps there), which the convex hull of the
-        // control net contains, or on a boundary edge, which lies within the
-        // edge tolerance of the carrier and inside the margin below. Analytic
-        // curved carriers are unbounded and their distance is cheap, so they
-        // keep the exact-vertex box and stay unprunable.
-        let bounded_carrier = if let FaceSurface::Nurbs(surface) = face.surface() {
-            for p in surface.control_points().iter().flatten() {
-                grow(*p);
-            }
-            true
-        } else {
-            false
-        };
-        // Curved faces can extend arbitrarily far beyond seam vertices.
-        // Their boxes are ordering hints, never distance lower bounds.
-        let margin = 0.01;
-        min = Point3::new(min.x() - margin, min.y() - margin, min.z() - margin);
-        max = Point3::new(max.x() + margin, max.y() + margin, max.z() + margin);
-        result.push((i, Aabb3 { min, max }));
-        prunable.push(polygonal || bounded_carrier);
-    }
-    Ok((result, prunable))
-}
-
-/// Get candidate face indices sorted by AABB distance to a point.
-fn bvh_distance_candidates(bvh: &Bvh, aabbs: &[(usize, Aabb3)], point: Point3) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut scored = Vec::new();
-    bvh_distance_candidates_into(bvh, aabbs, point, &mut out, &mut scored);
-    out
-}
-
-/// Get candidate face indices, reusing caller-owned buffers.
-///
-/// `out` is cleared and refilled in the same order [`bvh_distance_candidates`]
-/// returns (ascending AABB distance, closest-BVH hint first); `scored` holds
-/// the transient `(index, distance)` pairs. Both grow to the high-water mark
-/// once and are then reused without further allocation. Empty input, early
-/// exit and errors leave both cleared on the next call via the leading
-/// `clear()`.
-fn bvh_distance_candidates_into(
-    bvh: &Bvh,
-    aabbs: &[(usize, Aabb3)],
-    point: Point3,
-    out: &mut Vec<usize>,
-    scored: &mut Vec<(usize, f64)>,
-) {
-    out.clear();
-    scored.clear();
-    scored.extend(
-        aabbs
-            .iter()
-            .map(|(i, aabb)| (*i, aabb.distance_squared_to_point(point))),
-    );
-    scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    if let Some(closest_idx) = bvh.query_closest(point)
-        && let Some(pos) = scored.iter().position(|(i, _)| *i == closest_idx)
-    {
-        scored.swap(0, pos);
-    }
-
-    out.extend(scored.iter().map(|(i, _)| *i));
-}
-
-// -- Segment-to-segment distance ----------------------------------------------
-
-/// Compute the minimum distance between two 3D line segments.
-///
-/// Delegates to [`remus_geometry::extrema::segment_segment_distance`].
-fn segment_to_segment_distance(
-    a1: Point3,
-    a2: Point3,
-    b1: Point3,
-    b2: Point3,
-) -> (f64, Point3, Point3) {
-    remus_geometry::extrema::segment_segment_distance(a1, a2, b1, b2)
-}
-
-/// Collect all edge segments from a solid.
-fn collect_solid_edges(
-    topo: &Topology,
-    solid: SolidId,
-) -> Result<Vec<(Point3, Point3)>, crate::OperationsError> {
-    let mut seen = std::collections::HashSet::new();
-    let mut edges = Vec::new();
-
-    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
-    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
-    // solid"). This query is not one of the per-shell exceptions.
-    // Inner wires matter for the same reason: a hole rim is boundary too.
-    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
-        let face = topo.face(fid)?;
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let wire = topo.wire(wid)?;
-            for oe in wire.edges() {
-                if seen.insert(oe.edge().index()) {
-                    let edge = topo.edge(oe.edge())?;
-                    let p1 = topo.vertex(edge.start())?.point();
-                    let p2 = topo.vertex(edge.end())?.point();
-                    edges.push((p1, p2));
-                }
-            }
-        }
-    }
-
-    Ok(edges)
-}
-
-// -- Existing helpers (preserved) ---------------------------------------------
-
-/// Compute the distance from a point to a planar polygon.
-///
-/// Returns `(distance, closest_point)` or `None` if the polygon is degenerate.
-fn point_to_polygon_distance(
-    point: Point3,
-    verts: &[Point3],
-    normal: Vec3,
-    d: f64,
-    _tol: Tolerance,
-) -> Option<(f64, Point3)> {
-    if verts.len() < 3 {
-        return None;
-    }
-
-    let signed_dist = normal.dot(Vec3::new(point.x(), point.y(), point.z())) - d;
-    let projected = Point3::new(
-        (-normal.x()).mul_add(signed_dist, point.x()),
-        (-normal.y()).mul_add(signed_dist, point.y()),
-        (-normal.z()).mul_add(signed_dist, point.z()),
-    );
-
-    if point_in_polygon_3d(&projected, verts, &normal) {
-        return Some((signed_dist.abs(), projected));
-    }
-
-    let mut best_dist = f64::INFINITY;
-    let mut best_point = verts[0];
-    let n = verts.len();
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let (dist, closest) = point_to_segment_distance(point, verts[i], verts[j]);
-        if dist < best_dist {
-            best_dist = dist;
-            best_point = closest;
-        }
-    }
-
-    Some((best_dist, best_point))
+    Ok(remus_check::distance::point_to_face_with_options(
+        topo,
+        point,
+        face_id,
+        remus_check::distance::DistanceOptions {
+            projection_tolerance: tol.linear,
+        },
+    )?)
 }
 
 /// Point-in-polygon test for 3D (projecting to 2D).
@@ -785,55 +215,6 @@ pub(crate) fn point_in_polygon_3d(point: &Point3, polygon: &[Point3], normal: &V
     point_in_polygon(proj_pt, &proj_poly)
 }
 
-/// Distance from a point to a line segment.
-fn point_to_segment_distance(point: Point3, a: Point3, b: Point3) -> (f64, Point3) {
-    let ab = b - a;
-    let ap = point - a;
-    let len_sq = ab.length_squared();
-
-    if len_sq < 1e-30 {
-        return ((point - a).length(), a);
-    }
-
-    let t = (ap.dot(ab) / len_sq).clamp(0.0, 1.0);
-    let closest = Point3::new(
-        ab.x().mul_add(t, a.x()),
-        ab.y().mul_add(t, a.y()),
-        ab.z().mul_add(t, a.z()),
-    );
-    ((point - closest).length(), closest)
-}
-
-/// Collect all unique vertex positions from a solid.
-fn collect_solid_points(
-    topo: &Topology,
-    solid: SolidId,
-) -> Result<Vec<Point3>, crate::OperationsError> {
-    let mut seen = std::collections::HashSet::new();
-    let mut points = Vec::new();
-
-    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
-    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
-    // solid"). This query is not one of the per-shell exceptions.
-    // Inner wires matter for the same reason: a hole rim is boundary too.
-    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
-        let face = topo.face(fid)?;
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let wire = topo.wire(wid)?;
-            for oe in wire.edges() {
-                let edge = topo.edge(oe.edge())?;
-                for vid in [edge.start(), edge.end()] {
-                    if seen.insert(vid.index()) {
-                        points.push(topo.vertex(vid)?.point());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(points)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -841,9 +222,730 @@ mod tests {
     use remus_math::tolerance::Tolerance;
     use remus_math::vec::Point3;
     use remus_topology::Topology;
+    use remus_topology::face::FaceSurface;
     use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     use super::*;
+
+    #[test]
+    fn empty_operations_batch_checks_inner_references_after_unknown_outer_bound() {
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let outer = topo.face(face).unwrap().outer_wire();
+        let edge = topo.wire(outer).unwrap().edges()[0].edge();
+        // This produces an early unknown bound before the missing inner wire.
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_trim(Some((0.0, std::f64::consts::TAU + 0.5)));
+        let mut other = Topology::new();
+        let missing = (0..100)
+            .map(|_| other.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap()))
+            .last()
+            .unwrap();
+        let surface = topo.face(face).unwrap().surface().clone();
+        *topo.face_mut(face).unwrap() =
+            remus_topology::face::Face::new(outer, vec![missing], surface);
+        assert!(matches!(
+            point_to_solid_batch(&topo, &[], solid),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::Topology(_)
+            ))
+        ));
+        assert!(matches!(
+            point_to_solid_batch(&topo, &[Point3::new(0.0, 0.0, 3.0)], solid),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::Topology(_)
+            ))
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, clippy::float_cmp)] // Exact witness parity across public entrypoints.
+    fn bounded_narrow_failure_needs_a_strict_final_witness_gap_in_every_path() {
+        use remus_math::curves::Ellipse3D;
+        use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        for far in [true, false] {
+            for reverse in [false, true] {
+                let mut topo = Topology::new();
+                let near_wire = make_polygon_wire(
+                    &mut topo,
+                    &[
+                        Point3::new(-1.0, -1.0, 0.0),
+                        Point3::new(1.0, -1.0, 0.0),
+                        Point3::new(1.0, 1.0, 0.0),
+                        Point3::new(-1.0, 1.0, 0.0),
+                    ],
+                    1e-7,
+                )
+                .unwrap();
+                let near = make_face_from_wire(&mut topo, near_wire).unwrap();
+                let x = if far { 100.0 } else { 0.0 };
+                let ellipse =
+                    Ellipse3D::new(Point3::new(x, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0, 1.0)
+                        .unwrap();
+                let vertex = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
+                let mut edge = Edge::new(vertex, vertex, EdgeCurve::Ellipse(ellipse));
+                edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+                let edge = topo.add_edge(edge);
+                let wire =
+                    topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+                let unsupported = topo.add_face(Face::new(
+                    wire,
+                    vec![],
+                    FaceSurface::Plane {
+                        normal: Vec3::new(0.0, 0.0, 1.0),
+                        d: 0.0,
+                    },
+                ));
+                let faces = if reverse {
+                    vec![unsupported, near]
+                } else {
+                    vec![near, unsupported]
+                };
+                let shell = topo.add_shell(Shell::new(faces).unwrap());
+                let solid = topo.add_solid(Solid::new(shell, vec![]));
+                let point = Point3::new(0.0, 0.0, 1.0);
+                let prepared =
+                    remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+                let mut scratch = remus_check::distance::DistanceScratch::new();
+                let fast = remus_check::distance::point_to_solid_with_stats(&topo, point, solid);
+                let slow = remus_check::distance::point_to_solid_exhaustive(&topo, point, solid);
+                let cached = prepared.query_with_stats(point, &mut scratch);
+                let cached_slow = prepared.query_exhaustive_with_stats(point, &mut scratch);
+                let batch = prepared.batch(&[point], &mut scratch);
+                let checked_batch =
+                    remus_check::distance::point_to_solid_batch(&topo, &[point], solid);
+                let operation = point_to_solid_distance(&topo, point, solid);
+                let operation_batch = point_to_solid_batch(&topo, &[point], solid);
+                if far {
+                    let fast = fast.unwrap();
+                    let slow = slow.unwrap();
+                    assert_eq!(fast.0.distance, 1.0);
+                    assert_eq!(fast.0.point_b, Point3::new(0.0, 0.0, 0.0));
+                    assert_eq!(fast.1.faces_skipped_by_bound, 1);
+                    assert_eq!(slow.1.faces_evaluated, 2);
+                    assert_eq!(slow.1.narrow_phase_failures, 1);
+                    assert_eq!(slow.0.distance, fast.0.distance);
+                    assert_eq!(cached.unwrap().0.distance, 1.0);
+                    assert_eq!(cached_slow.unwrap().0.distance, 1.0);
+                    assert_eq!(batch.unwrap()[0].distance, 1.0);
+                    assert_eq!(checked_batch.unwrap()[0].distance, 1.0);
+                    assert_eq!(operation.unwrap().distance, 1.0);
+                    assert_eq!(operation_batch.unwrap()[0].distance, 1.0);
+                } else {
+                    for error in [
+                        fast.unwrap_err(),
+                        slow.unwrap_err(),
+                        cached.unwrap_err(),
+                        cached_slow.unwrap_err(),
+                        batch.unwrap_err(),
+                        checked_batch.unwrap_err(),
+                    ] {
+                        assert!(matches!(error, remus_check::CheckError::DistanceFailed(_)));
+                    }
+                    assert!(matches!(
+                        operation,
+                        Err(crate::OperationsError::Check(
+                            remus_check::CheckError::DistanceFailed(_)
+                        ))
+                    ));
+                    assert!(matches!(
+                        operation_batch,
+                        Err(crate::OperationsError::Check(
+                            remus_check::CheckError::DistanceFailed(_)
+                        ))
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn far_unknown_carrier_failure_cannot_be_discharged() {
+        use remus_math::curves::Ellipse3D;
+        use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let near_wire = make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(-1.0, -1.0, 0.0),
+                Point3::new(1.0, -1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(-1.0, 1.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let near = make_face_from_wire(&mut topo, near_wire).unwrap();
+        // Exact tilted-plane intersections with the same radius-one cylinder.
+        // Each ellipse has radial coordinates (-cos(t), -sin(t)), while its
+        // height is center_z + sqrt(3)*cos(t).
+        let normal = Vec3::new(3.0_f64.sqrt() * 0.5, 0.0, 0.5);
+        let reference = Vec3::new(-0.5, 0.0, 3.0_f64.sqrt() * 0.5);
+        let mut rims = Vec::new();
+        let mut vertices = Vec::new();
+        for height in [0.0, 4.0] {
+            let ellipse = Ellipse3D::new_with_ref(
+                Point3::new(100.0, 0.0, height),
+                normal,
+                2.0,
+                1.0,
+                reference,
+            )
+            .unwrap();
+            let vertex = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
+            vertices.push(vertex);
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Ellipse(ellipse));
+            edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+            rims.push(topo.add_edge(edge));
+        }
+        let seam = topo.add_edge(Edge::new(vertices[0], vertices[1], EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(rims[0], true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(rims[1], false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let carrier = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(100.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let far = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(carrier)));
+        assert!(
+            !remus_check::distance::face_bounds::face_bound(&topo, far)
+                .unwrap()
+                .prunable
+        );
+        let shell = topo.add_shell(Shell::new(vec![near, far]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let point = Point3::new(0.0, 0.0, 1.0);
+        let prepared = remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+        let mut scratch = remus_check::distance::DistanceScratch::new();
+        for error in [
+            remus_check::distance::point_to_solid(&topo, point, solid).unwrap_err(),
+            remus_check::distance::point_to_solid_exhaustive(&topo, point, solid).unwrap_err(),
+            prepared.query(point, &mut scratch).unwrap_err(),
+            prepared
+                .query_exhaustive_with_stats(point, &mut scratch)
+                .unwrap_err(),
+            prepared.batch(&[point], &mut scratch).unwrap_err(),
+        ] {
+            assert!(matches!(error, remus_check::CheckError::DistanceFailed(_)));
+        }
+        assert!(point_to_solid_distance(&topo, point, solid).is_err());
+        assert!(point_to_solid_batch(&topo, &[point], solid).is_err());
+    }
+
+    #[test]
+    fn complete_sphere_pairs_have_global_face_interior_extrema() {
+        use remus_math::mat::Mat4;
+        // Closed-form boundary gaps: separated, tangent, intersecting,
+        // eccentric containment and concentric containment. The oblique
+        // separation's minimizer is neither a primitive vertex nor an edge.
+        for (ra, rb, delta, expected) in [
+            (1.0, 1.0, Vec3::new(0.0, 0.0, 3.0), 1.0),
+            (2.0, 3.0, Vec3::new(3.0, 4.0, 12.0), 8.0),
+            (1.0, 1.0, Vec3::new(0.0, 0.0, 2.0), 0.0),
+            (2.0, 1.0, Vec3::new(0.0, 0.0, 2.0), 0.0),
+            (4.0, 1.0, Vec3::new(0.0, 0.0, 1.0), 2.0),
+            (1.0, 4.0, Vec3::new(0.0, 0.0, 1.0), 2.0),
+            (4.0, 1.0, Vec3::new(0.0, 0.0, 0.0), 3.0),
+        ] {
+            let mut topo = Topology::new();
+            let a = crate::primitives::make_sphere(&mut topo, ra, 8).unwrap();
+            let b = crate::primitives::make_sphere(&mut topo, rb, 12).unwrap();
+            let center_a = Point3::new(2.0, -3.0, 5.0);
+            let center_b = center_a + delta;
+            crate::transform::transform_solid(&mut topo, a, &Mat4::translation(2.0, -3.0, 5.0))
+                .unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                b,
+                &Mat4::translation(center_b.x(), center_b.y(), center_b.z()),
+            )
+            .unwrap();
+            let snapshot = format!("{topo:?}");
+            let result = solid_to_solid_distance(&topo, a, b).unwrap();
+            let checked = remus_check::distance::solid_to_solid(&topo, a, b).unwrap();
+            let reverse = solid_to_solid_distance(&topo, b, a).unwrap();
+            assert!((result.distance - expected).abs() < 1e-10, "{result:?}");
+            assert!((reverse.distance - expected).abs() < 1e-10);
+            assert!((checked.distance - expected).abs() < 1e-10);
+            assert!(((result.point_a - center_a).length() - ra).abs() < 1e-10);
+            assert!(((result.point_b - center_b).length() - rb).abs() < 1e-10);
+            assert!(((result.point_a - result.point_b).length() - result.distance).abs() < 1e-10);
+            assert_eq!(format!("{topo:?}"), snapshot);
+        }
+    }
+
+    #[test]
+    fn cropped_or_unsupported_curved_pairs_refuse_a_global_minimum() {
+        let mut topo = Topology::new();
+        let a = crate::primitives::make_sphere(&mut topo, 1.0, 8).unwrap();
+        let b = crate::primitives::make_sphere(&mut topo, 1.0, 8).unwrap();
+        let cylinder = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
+        assert!(matches!(
+            remus_check::distance::solid_to_solid(&topo, a, cylinder),
+            Err(remus_check::CheckError::DistanceFailed(_))
+        ));
+        assert!(matches!(
+            solid_to_solid_distance(&topo, a, cylinder),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::DistanceFailed(_)
+            ))
+        ));
+        let shell = topo.solid(b).unwrap().outer_shell();
+        let face = topo.shell(shell).unwrap().faces()[0];
+        *topo.shell_mut(shell).unwrap() = remus_topology::shell::Shell::new(vec![face]).unwrap();
+        assert!(matches!(
+            solid_to_solid_distance(&topo, a, b),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::DistanceFailed(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn overflowing_line_or_planar_distance_refuses_a_nonfinite_minimum() {
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1e200, 0.0, 0.0), 1e-7));
+        let line = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        assert!(matches!(
+            point_to_edge(&topo, Point3::new(1.0, 1.0, 0.0), line),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::DistanceFailed(_)
+            ))
+        ));
+        let left = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let right = crate::primitives::make_box(&mut topo, 1e200, 1.0, 1.0).unwrap();
+        assert!(matches!(
+            solid_to_solid_distance(&topo, left, right),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::DistanceFailed(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn large_finite_sphere_gap_has_finite_carrier_witnesses() {
+        let mut topo = Topology::new();
+        let radius = 1e154;
+        let a = crate::primitives::make_sphere(&mut topo, radius, 8).unwrap();
+        let b = crate::primitives::make_sphere(&mut topo, radius, 8).unwrap();
+        let offset = Vec3::new(0.0, 0.0, 3e154);
+        for vertex in remus_topology::explorer::solid_vertices(&topo, b).unwrap() {
+            let point = topo.vertex(vertex).unwrap().point();
+            topo.vertex_mut(vertex).unwrap().set_point(point + offset);
+        }
+        for face in remus_topology::explorer::solid_faces(&topo, b).unwrap() {
+            topo.face_mut(face)
+                .unwrap()
+                .set_surface(FaceSurface::Sphere(
+                    remus_math::surfaces::SphericalSurface::new(
+                        Point3::new(0.0, 0.0, 3e154),
+                        radius,
+                    )
+                    .unwrap(),
+                ));
+        }
+        let result = solid_to_solid_distance(&topo, a, b).unwrap();
+        assert!(result.distance.is_finite());
+        assert!((result.distance / radius - 1.0).abs() < 1e-12, "{result:?}");
+        let length = |point: Point3, center: Point3| {
+            let offset = point - center;
+            offset.x().hypot(offset.y()).hypot(offset.z())
+        };
+        assert!((length(result.point_a, Point3::new(0.0, 0.0, 0.0)) / radius - 1.0).abs() < 1e-12);
+        assert!(
+            (length(result.point_b, Point3::new(0.0, 0.0, 3e154)) / radius - 1.0).abs() < 1e-12
+        );
+    }
+
+    #[test]
+    fn native_sphere_point_witness_is_on_the_surface_not_an_equator_chord() {
+        let mut topo = Topology::new();
+        let sphere = crate::primitives::make_sphere(&mut topo, 1.0, 8).unwrap();
+        for point in [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.2, 0.2, 0.1),
+            Point3::new(0.2, 0.2, -0.1),
+        ] {
+            let result = remus_check::distance::point_to_solid(&topo, point, sphere).unwrap();
+            let operation = point_to_solid_distance(&topo, point, sphere).unwrap();
+            assert!(
+                (result.distance - (1.0 - (point - Point3::new(0.0, 0.0, 0.0)).length())).abs()
+                    < 1e-10
+            );
+            assert!(((result.point_b - Point3::new(0.0, 0.0, 0.0)).length() - 1.0).abs() < 1e-10);
+            assert!((operation.distance - result.distance).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn holed_plate_distance_witness_is_on_the_rim_in_all_paths() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let plate = crate::primitives::make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
+        let tool = crate::primitives::make_box(&mut topo, 2.0, 2.0, 4.0).unwrap();
+        crate::transform::transform_solid(&mut topo, tool, &Mat4::translation(4.0, 4.0, -1.0))
+            .unwrap();
+        let solid = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, plate, tool)
+            .unwrap();
+        let points = [
+            Point3::new(5.0, 5.0, 3.0),
+            Point3::new(5.0, 5.0, 1.0),
+            Point3::new(2.0, 2.0, 3.0),
+        ];
+        let expected = [2.0_f64.sqrt(), 1.0, 1.0];
+        let prepared = remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+        let mut scratch = remus_check::distance::DistanceScratch::new();
+        let batch = remus_check::distance::point_to_solid_batch(&topo, &points, solid).unwrap();
+        let operation_batch = point_to_solid_batch(&topo, &points, solid).unwrap();
+        for (i, point) in points.into_iter().enumerate() {
+            let checked = remus_check::distance::point_to_solid(&topo, point, solid).unwrap();
+            let exhaustive = remus_check::distance::point_to_solid_exhaustive(&topo, point, solid)
+                .unwrap()
+                .0;
+            let cached = prepared.query(point, &mut scratch).unwrap();
+            let operation = point_to_solid_distance(&topo, point, solid).unwrap();
+            for result in [&checked, &exhaustive, &cached, &batch[i]] {
+                assert!((result.distance - expected[i]).abs() < 1e-10, "{result:?}");
+                assert!(((point - result.point_b).length() - result.distance).abs() < 1e-10);
+                // No witness may float in the centre of the through hole.
+                assert!(
+                    !(result.point_b.x() > 4.0
+                        && result.point_b.x() < 6.0
+                        && result.point_b.y() > 4.0
+                        && result.point_b.y() < 6.0)
+                );
+            }
+            assert!((operation.distance - expected[i]).abs() < 1e-10);
+            assert!((operation_batch[i].distance - expected[i]).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn clockwise_circular_hole_distance_keeps_witnesses_on_the_annular_boundary() {
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let mut rim = |radius, normal_z| {
+            let edge = remus_topology::builder::make_circle_edge_with_ref(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, normal_z),
+                radius,
+                Vec3::new(0.0, 1.0, 0.0),
+                1e-7,
+            )
+            .unwrap();
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap())
+        };
+        let outer = rim(3.0, 1.0);
+        let hole = rim(1.0, -1.0);
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let solid =
+            crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .is_valid()
+        );
+        let snapshot = format!("{topo:?}");
+        let queries = [
+            (Point3::new(0.0, 0.0, -1.0), 2.0_f64.sqrt(), 1.0, 0.0),
+            (Point3::new(0.0, 0.0, 3.0), 2.0_f64.sqrt(), 1.0, 2.0),
+            (Point3::new(2.0, 0.0, -1.0), 1.0, 2.0, 0.0),
+            (Point3::new(2.0, 0.0, 3.0), 1.0, 2.0, 2.0),
+        ];
+        let points: Vec<_> = queries.iter().map(|entry| entry.0).collect();
+        let batch = point_to_solid_batch(&topo, &points, solid).unwrap();
+        let prepared = remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+        let mut scratch = remus_check::distance::DistanceScratch::new();
+        for (i, (point, expected, radius, z)) in queries.into_iter().enumerate() {
+            let direct = point_to_solid_distance(&topo, point, solid).unwrap();
+            let checked = remus_check::distance::point_to_solid(&topo, point, solid).unwrap();
+            let exhaustive = remus_check::distance::point_to_solid_exhaustive(&topo, point, solid)
+                .unwrap()
+                .0;
+            let cached = prepared.query(point, &mut scratch).unwrap();
+            let cached_exhaustive = prepared
+                .query_exhaustive_with_stats(point, &mut scratch)
+                .unwrap()
+                .0;
+            for (distance, witness) in [
+                (direct.distance, direct.point_b),
+                (batch[i].distance, batch[i].point_b),
+                (checked.distance, checked.point_b),
+                (exhaustive.distance, exhaustive.point_b),
+                (cached.distance, cached.point_b),
+                (cached_exhaustive.distance, cached_exhaustive.point_b),
+            ] {
+                assert!(
+                    (distance - expected).abs() < 1e-10,
+                    "distance={distance}, witness={witness:?}"
+                );
+                assert!((witness.x().hypot(witness.y()) - radius).abs() < 1e-10);
+                assert!((witness.z() - z).abs() < 1e-10);
+                assert!(((point - witness).length() - distance).abs() < 1e-10);
+            }
+            if point.z() < 0.0 {
+                let face_result = point_to_face(&topo, point, face).unwrap();
+                assert!(
+                    (face_result.distance - expected).abs() < 1e-10,
+                    "{face_result:?}"
+                );
+                assert!(
+                    (face_result.point_b.x().hypot(face_result.point_b.y()) - radius).abs() < 1e-10
+                );
+                assert!(face_result.point_b.z().abs() < 1e-10);
+            }
+        }
+        assert_eq!(format!("{topo:?}"), snapshot);
+    }
+
+    #[test]
+    fn cylinder_lateral_distance_uses_the_closed_curved_rim() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let point = Point3::new(-2.0, 0.0, 2.0);
+        let checked = remus_check::distance::point_to_face(&topo, point, face)
+            .unwrap()
+            .unwrap();
+        let operation = point_to_face(&topo, point, face).unwrap();
+        assert!((checked.0 - 2.0_f64.sqrt()).abs() < 1e-10);
+        assert!((checked.1 - Point3::new(-1.0, 0.0, 1.0)).length() < 1e-10);
+        assert!((operation.point_b - checked.1).length() < 1e-10);
+        assert!((operation.distance - checked.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn crossing_planar_faces_have_a_shared_boundary_witness() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let a = crate::primitives::make_box(&mut topo, 6.0, 1.0, 1.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, 1.0, 6.0, 1.0).unwrap();
+        crate::transform::transform_solid(&mut topo, a, &Mat4::translation(-3.0, -0.5, -0.5))
+            .unwrap();
+        crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-0.5, -3.0, -0.1))
+            .unwrap();
+        // No vertex lies in the other body's boundary, and the crossing
+        // horizontal edges have different heights. Edge-face interiors meet.
+        let result = solid_to_solid_distance(&topo, a, b).unwrap();
+        assert!(result.distance < 1e-10);
+        for solid in [a, b] {
+            let witness =
+                remus_check::distance::point_to_solid(&topo, result.point_a, solid).unwrap();
+            assert!(witness.distance < 1e-10, "{witness:?}");
+        }
+    }
+
+    #[test]
+    fn planar_solid_distance_includes_cavity_boundaries() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let outside = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cavity = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+        crate::transform::transform_solid(&mut topo, cavity, &Mat4::translation(3.0, 3.0, 3.0))
+            .unwrap();
+        let hollow =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outside, cavity)
+                .unwrap();
+        let inner = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        crate::transform::transform_solid(&mut topo, inner, &Mat4::translation(4.5, 4.5, 4.5))
+            .unwrap();
+        let result = solid_to_solid_distance(&topo, hollow, inner).unwrap();
+        assert!((result.distance - 1.5).abs() < 1e-10, "{result:?}");
+        assert!(
+            remus_check::distance::point_to_solid(&topo, result.point_a, hollow)
+                .unwrap()
+                .distance
+                < 1e-10
+        );
+        assert!(
+            remus_check::distance::point_to_solid(&topo, result.point_b, inner)
+                .unwrap()
+                .distance
+                < 1e-10
+        );
+    }
+
+    #[test]
+    fn circular_edge_distance_uses_trim_authority_and_both_endpoints() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let (lo, hi) = (1.5 * std::f64::consts::PI, 2.5 * std::f64::consts::PI);
+        let a = topo.add_vertex(Vertex::new(circle.evaluate(lo), 1e-7));
+        let b = topo.add_vertex(Vertex::new(circle.evaluate(hi), 1e-7));
+        for (start, end, trim) in [(a, b, (lo, hi)), (b, a, (hi, lo))] {
+            let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(trim));
+            let edge = topo.add_edge(edge);
+            let result = point_to_edge(&topo, Point3::new(-2.0, 0.0, 0.0), edge).unwrap();
+            assert!(
+                (result.distance - 5.0_f64.sqrt()).abs() < 1e-10,
+                "{result:?}"
+            );
+            assert!(result.point_b.x().abs() < 1e-10);
+            assert!((result.point_b.y().abs() - 1.0).abs() < 1e-10);
+        }
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(1.2), 1e-7));
+        let mut closed = Edge::new(seam, seam, EdgeCurve::Circle(circle.clone()));
+        closed.set_trim(Some((1.2, 1.2 + std::f64::consts::TAU)));
+        let closed = topo.add_edge(closed);
+        let result = point_to_edge(&topo, Point3::new(-2.0, 0.0, 0.0), closed).unwrap();
+        assert!((result.distance - 1.0).abs() < 1e-10);
+        assert!((result.point_b - Point3::new(-1.0, 0.0, 0.0)).length() < 1e-10);
+        let missing_trim = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+        assert!(point_to_edge(&topo, Point3::new(-2.0, 0.0, 0.0), missing_trim).is_err());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn analytic_face_nurbs_trim_keeps_local_curve_and_sewn_vertex_witnesses() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        // The sewn trim is 2e-5 from its carrier, as in imported STEP blends.
+        let bottom = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            axis,
+            1.000_02,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let curve =
+            remus_geometry::convert::circle_to_nurbs(&bottom, 0.0, std::f64::consts::TAU).unwrap();
+        let trim = curve.domain();
+        let on_curve = curve.evaluate(trim.0 + 0.371 * (trim.1 - trim.0));
+        let sewn_vertex = curve.evaluate(trim.0) + axis * 1e-5;
+        let low = topo.add_vertex(Vertex::new(sewn_vertex, 3e-5));
+        let top = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 1.0),
+            axis,
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let high = topo.add_vertex(Vertex::new(top.evaluate(0.0), 3e-5));
+        let mut lower = Edge::new(low, low, EdgeCurve::NurbsCurve(curve));
+        lower.set_trim(Some(trim));
+        let lower = topo.add_edge(lower);
+        let mut upper = Edge::new(high, high, EdgeCurve::Circle(top));
+        upper.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let upper = topo.add_edge(upper);
+        let seam = topo.add_edge(Edge::new(low, high, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(lower, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(upper, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let carrier = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), axis, 1.0).unwrap();
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(carrier)));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let points = [on_curve, sewn_vertex];
+        let prepared = remus_check::distance::PreparedDistanceSolid::prepare(&topo, solid).unwrap();
+        let mut scratch = remus_check::distance::DistanceScratch::new();
+        let batch = point_to_solid_batch(&topo, &points, solid).unwrap();
+        for (i, point) in points.into_iter().enumerate() {
+            let direct = point_to_solid_distance(&topo, point, solid).unwrap();
+            let checked = remus_check::distance::point_to_solid(&topo, point, solid).unwrap();
+            let exhaustive = remus_check::distance::point_to_solid_exhaustive(&topo, point, solid)
+                .unwrap()
+                .0;
+            let cached = prepared.query(point, &mut scratch).unwrap();
+            for result in [&checked, &exhaustive, &cached] {
+                assert!(result.distance < 1e-10, "{result:?}");
+                assert!((result.point_b - point).length() < 1e-10, "{result:?}");
+            }
+            for result in [
+                &direct,
+                &batch[i],
+                &point_to_face(&topo, point, face).unwrap(),
+            ] {
+                assert!(result.distance < 1e-10, "{result:?}");
+                assert!((result.point_b - point).length() < 1e-10, "{result:?}");
+            }
+        }
+        // Local point estimates do not authorize an exact edge or solid-pair minimum.
+        assert!(matches!(
+            remus_check::distance::point_to_edge(&topo, on_curve, lower),
+            Err(remus_check::CheckError::DistanceFailed(_))
+        ));
+        let other = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        assert!(matches!(
+            solid_to_solid_distance(&topo, solid, other),
+            Err(crate::OperationsError::Check(
+                remus_check::CheckError::DistanceFailed(_)
+            ))
+        ));
+    }
 
     /// A hollow solid's cavity wall is boundary. Walking only `outer_shell()`
     /// answers this with the distance to the OUTER wall, which is both wrong and
@@ -959,7 +1061,9 @@ mod tests {
     fn point_to_sphere_distance() {
         let sphere =
             remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0).unwrap();
-        let (dist, closest) = point_to_sphere(Point3::new(10.0, 0.0, 0.0), &sphere);
+        let projection =
+            remus_geometry::extrema::point_to_sphere(Point3::new(10.0, 0.0, 0.0), &sphere);
+        let (dist, closest) = (projection.distance, projection.point);
         let tol = Tolerance::loose();
         assert!(
             tol.approx_eq(dist, 5.0),
@@ -980,7 +1084,8 @@ mod tests {
             3.0,
         )
         .unwrap();
-        let (dist, _closest) = point_to_cylinder(Point3::new(5.0, 0.0, 1.0), &cyl);
+        let dist =
+            remus_geometry::extrema::point_to_cylinder(Point3::new(5.0, 0.0, 1.0), &cyl).distance;
         let tol = Tolerance::loose();
         assert!(
             tol.approx_eq(dist, 2.0),
@@ -990,7 +1095,7 @@ mod tests {
 
     #[test]
     fn segment_to_segment_parallel() {
-        let (dist, _, _) = segment_to_segment_distance(
+        let (dist, _, _) = remus_geometry::extrema::segment_segment_distance(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 0.0, 0.0),
             Point3::new(0.0, 3.0, 0.0),
@@ -1005,7 +1110,7 @@ mod tests {
 
     #[test]
     fn segment_to_segment_crossing() {
-        let (dist, _, _) = segment_to_segment_distance(
+        let (dist, _, _) = remus_geometry::extrema::segment_segment_distance(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 0.0, 0.0),
             Point3::new(0.5, 0.0, -1.0),
