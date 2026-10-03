@@ -11,14 +11,12 @@ use crate::kernel::BrepKernel;
 
 #[wasm_bindgen]
 impl BrepKernel {
-    /// Create a new empty assembly. Returns an assembly index.
+    /// Create a new empty assembly. Returns an opaque assembly handle.
     #[wasm_bindgen(js_name = "assemblyNew")]
-    pub fn assembly_new(&mut self, name: &str) -> u32 {
-        self.assemblies
-            .push(remus_operations::assembly::Assembly::new(name));
-        #[allow(clippy::cast_possible_truncation)]
-        let idx = (self.assemblies.len() - 1) as u32;
-        idx
+    pub fn assembly_new(&mut self, name: &str) -> Result<u32, JsError> {
+        Ok(self
+            .assemblies
+            .push(crate::state::AssemblyState::new(name))?)
     }
 
     /// Add a root component to an assembly.
@@ -42,9 +40,8 @@ impl BrepKernel {
                 entity: "assembly",
                 index: assembly as usize,
             })?;
-        let cid = asm.add_root_component(name, solid_id, mat);
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(cid as u32)
+        let cid = asm.add_root_component(name, solid_id, mat)?;
+        Ok(cid)
     }
 
     /// Add a child component to a parent in an assembly.
@@ -70,8 +67,7 @@ impl BrepKernel {
                 index: assembly as usize,
             })?;
         let cid = asm.add_child_component(parent as usize, name, solid_id, mat)?;
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(cid as u32)
+        Ok(cid)
     }
 
     /// Flatten an assembly into `[(solid, matrix), ...]`.
