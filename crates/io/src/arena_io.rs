@@ -1434,7 +1434,7 @@ pub fn deserialize_solid_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .solids
         .into_iter()
@@ -1478,7 +1478,7 @@ pub fn deserialize_solids_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.solids)
+    Ok(replay_document(document, topo, limits)?.solids)
 }
 
 /// Reconstructs one standalone sheet root from a version 4 or 5 arena document.
@@ -1515,7 +1515,7 @@ pub fn deserialize_sheet_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .sheets
         .into_iter()
@@ -1557,7 +1557,7 @@ pub fn deserialize_sheets_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.sheets)
+    Ok(replay_document(document, topo, limits)?.sheets)
 }
 
 /// Reconstructs one standalone wire root from a version 5 arena document.
@@ -1594,7 +1594,7 @@ pub fn deserialize_wire_with_limits(
                     .to_owned(),
         });
     }
-    let restored = replay_document(document, topo)?;
+    let restored = replay_document(document, topo, limits)?;
     restored
         .wires
         .into_iter()
@@ -1636,7 +1636,7 @@ pub fn deserialize_wires_with_limits(
                 .to_owned(),
         });
     }
-    Ok(replay_document(document, topo)?.wires)
+    Ok(replay_document(document, topo, limits)?.wires)
 }
 
 /// Reconstructs solid, sheet, wire, and compound roots from a version 1, 2, 3,
@@ -1677,7 +1677,7 @@ pub fn deserialize_document_with_limits(
     limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     let document = parse_document(bytes, limits)?;
-    replay_document(document, topo)
+    replay_document(document, topo, limits)
 }
 
 // A journal has nested sequences whose restoration allocates, copies and sorts.
@@ -2157,12 +2157,13 @@ fn serialize_attributes(topo: &Topology, builder: &Builder<'_>) -> Option<SerAtt
 fn replay_document(
     document: ParsedDocument,
     topo: &mut Topology,
+    limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     // Replay against a snapshot so every parse/validation/construction error
     // leaves the caller's live topology untouched.  Committing with one move
     // also preserves the fresh ids allocated relative to the existing arenas.
     let mut staged = topo.clone();
-    let restored = replay_document_into(document, &mut staged)?;
+    let restored = replay_document_into(document, &mut staged, limits)?;
     *topo = staged;
     Ok(restored)
 }
@@ -2170,6 +2171,7 @@ fn replay_document(
 fn replay_document_into(
     document: ParsedDocument,
     topo: &mut Topology,
+    limits: ImportLimits,
 ) -> Result<DeserializedDocument, IoError> {
     let ParsedDocument {
         vertices,
@@ -2193,6 +2195,7 @@ fn replay_document_into(
     // unjournaled edit of existing entities when history is installed below.
     let _ = topo.journal_begin("arena_import");
     let destination_journal = topo.journal().snapshot();
+    check_arena_journal_append_budget(&destination_journal, journal.as_ref(), limits)?;
 
     for (index, pcurve) in pcurves.iter().enumerate() {
         validate_arena_pcurve(
@@ -3066,6 +3069,65 @@ fn restore_journal(
         index,
         entries,
     })
+}
+
+/// Imported journal items, reconstructed scopes, and expanded global barriers
+/// share one checked append budget. Check borrowed data before replay allocates
+/// topology or restores/clones any imported journal vectors.
+fn check_arena_journal_append_budget(
+    destination: &remus_topology::journal::JournalSnapshot,
+    imported: Option<&SerJournal>,
+    limits: ImportLimits,
+) -> Result<(), IoError> {
+    if destination.next_op == 0 && destination.next_ordinal == 0 {
+        return Ok(());
+    }
+    let Some(imported) = imported else {
+        return Ok(());
+    };
+    let overflow = || IoError::LimitExceeded {
+        resource: "arena journal append items",
+        limit: limits.max_model_entities,
+        actual: usize::MAX,
+    };
+    let mut items = imported
+        .index
+        .len()
+        .checked_add(imported.entries.len())
+        .ok_or_else(overflow)?;
+    let mut add = |count: usize| -> Result<(), IoError> {
+        items = items.checked_add(count).ok_or_else(overflow)?;
+        Ok(())
+    };
+    for entry in &imported.entries {
+        match &entry.payload {
+            SerJournalPayload::Evolution { scope, events, .. } => {
+                add(scope.len())?;
+                add(events.len())?;
+                // Journal::from_snapshot extends the restored scope with
+                // every subject and reference before sorting/deduplicating.
+                add(events.len())?;
+                for (_, event) in events {
+                    let references = match event {
+                        SerJournalEvent::Preserved { .. } | SerJournalEvent::Modified { .. } => 1,
+                        SerJournalEvent::Generated { sources } => sources.len(),
+                        SerJournalEvent::Merged { from } => from.len(),
+                        SerJournalEvent::Unresolved { candidates } => candidates.len(),
+                        SerJournalEvent::Deleted => 0,
+                    };
+                    add(references)?;
+                    add(references)?;
+                }
+            }
+            SerJournalPayload::Barrier { affected } => add(affected.len())?,
+            SerJournalPayload::GlobalBarrier => add(imported.index.len())?,
+        }
+    }
+    ensure_limit(
+        "arena journal append items",
+        items,
+        limits.max_model_entities,
+    )
 }
 
 /// Append an independent, already validated document journal without reissuing
@@ -4410,7 +4472,8 @@ mod tests {
         let mut destination = Topology::new();
         let sentinel = destination.add_empty_solid();
         let before = destination.clone();
-        let error = replay_document(document, &mut destination).unwrap_err();
+        let error =
+            replay_document(document, &mut destination, ImportLimits::default()).unwrap_err();
 
         assert!(error.to_string().contains("non-finite legacy trim"));
         assert_eq!(destination.num_vertices(), before.num_vertices());
