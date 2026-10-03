@@ -4,7 +4,7 @@ Status: qualified M5 implementation in `crates/operations/src/project_curve.rs`,
 with acceptance oracles in `crates/operations/tests/qualify_project_curve.rs`
 and regressions in `crates/operations/tests/regress_project_curve.rs`.
 Expected values, refusal codes and thresholds remain fixed; the current
-qualification limits are stated in §§5 and 8.
+qualification limits are stated in §§5, 6 and 8.
 
 Consumers: OpenZCAD S-6 (project model edges into the active sketch), 6.6
 linked sketch references, and later B73 wrap/emboss. 7.4's other half,
@@ -19,7 +19,8 @@ surface extension, is not covered here.
 | Ellipse | exact (ellipse or circle) | refused | refused |
 | NURBS, parabola, hyperbola | refused for faces; exact on sketch planes (§3.3) | refused | refused |
 
-"Approximate on request" means `allow_approximate = true`; the default
+"Approximate on request" means `allow_approximate = true`, within the
+certified cylinder-slab trim cell in §6; unqualified trims refuse. The default
 refuses (§6). Torus and NURBS targets are refused in every combination:
 a plane section of a torus is quartic and a NURBS section needs marching,
 and neither has a consumer in this slice.
@@ -360,7 +361,14 @@ vertex is the image of the source start (P3–P5).
 
 ## 6. The approximate cell
 
-Arc → cylinder, cone or sphere, non-coaxial, `allow_approximate = true`.
+Non-coaxial circular source → full-period cylinder slab,
+`allow_approximate = true`. The target must have two full circular rims,
+one seam and no inner wires. The current certificate encloses the entire
+source circle, including the carrier beyond an open source arc; an
+unresolved enclosure refuses conservatively. It requires an exterior
+source and two distinct forward support roots over that circle; interior
+or tangent source configurations remain uncertified. Cone and sphere approximate
+trim cells remain refused until whole-image containment is certified.
 
 - Image points are exact: the first root of the ray `p(t) + λd̂` against the
   quadric, closed form.
@@ -376,8 +384,13 @@ Arc → cylinder, cone or sphere, non-coaxial, `allow_approximate = true`.
   exceed it, so M5 samples more densely than that.
 - Options: `tolerance` must be finite and `≥ 1e-9·scale`;
   `max_control_points ≥ 4`; otherwise `InvalidOptions`.
-- No clipping in slice 1: if any part of the exact image leaves the face
-  region, `ApproximateClipUnsupported`.
+- No clipping in slice 1: outward interval bounds certify every first
+  positive infinite-support root and enclose the whole exact image strictly
+  between the rim height bounds. Positive rational weights and an axial
+  control hull certify the entire fitted edge within the same slab. A hole,
+  an exterior sliver or either unresolved certificate returns
+  `ApproximateClipUnsupported`; trim probes and post-check samples cannot
+  establish containment.
 - A solid call accepts the fitted image only when one face contains the
   whole image and conservative bounds prove that every other face cannot
   meet any source ray. Competing faces or unresolved visibility return
