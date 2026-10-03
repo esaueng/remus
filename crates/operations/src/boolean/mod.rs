@@ -831,6 +831,20 @@ fn boolean_with_context_impl(
         // Neither vertex acceptance nor a closed result proves the material.
         // Keep these unqualified pairs on the disclosed fallback/refusal path.
         if uncertified_carrier_relation {
+            // A complete outer bound can still prove that the actual trimmed
+            // operands are separated. Preserve their geometry before any
+            // classifier-based primitive rebuild or approximate fallback.
+            if certified_solids_clear_gap(topo, a, b, tol.linear) {
+                return match op {
+                    BooleanOp::Cut => Ok(crate::copy::copy_solid(topo, a)?),
+                    BooleanOp::Fuse => {
+                        let copied_a = crate::copy::copy_solid(topo, a)?;
+                        let copied_b = crate::copy::copy_solid(topo, b)?;
+                        crate::compound_ops::merge_disjoint_solids(topo, &[copied_a, copied_b])
+                    }
+                    BooleanOp::Intersect => Ok(topo.add_empty_solid()),
+                };
+            }
             let remus_math::context::FallbackPolicy::AllowApproximate { budget } = context.fallback
             else {
                 return Err(crate::OperationsError::ExactOnlyUnattainable);
@@ -4079,6 +4093,30 @@ fn containment_hull(topo: &Topology, solid: SolidId) -> Option<Vec<Point3>> {
     (!points.is_empty()).then_some(points)
 }
 
+/// A strict gap between complete, finite geometry bounds proves that even
+/// unqualified carrier regions are disjoint. Unlike the legacy measured
+/// component boxes, these bounds include whole curve spans and surface/control
+/// hulls; an unknown bound, empty operand or nonfinite coordinate fails closed.
+fn certified_solids_clear_gap(topo: &Topology, a: SolidId, b: SolidId, margin: f64) -> bool {
+    if !margin.is_finite() || margin < 0.0 {
+        return false;
+    }
+    let bounds = |solid| {
+        let points = containment_hull(topo, solid)?;
+        if points
+            .iter()
+            .any(|point| !point.x().is_finite() || !point.y().is_finite() || !point.z().is_finite())
+        {
+            return None;
+        }
+        remus_math::aabb::Aabb3::try_from_points(points)
+    };
+    match (bounds(a), bounds(b)) {
+        (Some(a), Some(b)) => aabbs_clear_gap(&a, &b, margin),
+        _ => false,
+    }
+}
+
 fn boundary_axial_range(
     topo: &Topology,
     edges: &[remus_topology::EdgeId],
@@ -4374,7 +4412,10 @@ pub(crate) fn refuse_uncertified_carrier_relation(
     let ca = remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, a, tol);
     let cb = remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, b, tol);
     let relation = detect_trivial_relation(topo, a, b, ca.as_ref(), cb.as_ref(), tol);
-    if !relation.identical && relation.uncertified_carrier_relation {
+    if !relation.identical
+        && relation.uncertified_carrier_relation
+        && !certified_solids_clear_gap(topo, a, b, tol.linear)
+    {
         Err(crate::OperationsError::ExactOnlyUnattainable)
     } else {
         Ok(())
@@ -6806,5 +6847,30 @@ mod resource_budget_tests {
         ));
         assert_eq!(topo.num_solids(), 4);
         assert_eq!(topo.num_vertices(), 32);
+    }
+
+    #[test]
+    fn certified_clear_gap_requires_finite_hulls_and_strict_finite_margin() {
+        let mut topo = Topology::new();
+        let a = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            b,
+            &remus_math::mat::Mat4::translation(0.0, 0.0, 4.0),
+        )
+        .unwrap();
+        assert!(certified_solids_clear_gap(&topo, a, b, 1e-7));
+        assert!(!certified_solids_clear_gap(&topo, a, b, 2.0));
+        for margin in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(!certified_solids_clear_gap(&topo, a, b, margin));
+        }
+        let empty = topo.add_empty_solid();
+        assert!(!certified_solids_clear_gap(&topo, a, empty, 1e-7));
+        let vertex = remus_topology::explorer::solid_vertices(&topo, a).unwrap()[0];
+        topo.vertex_mut(vertex)
+            .unwrap()
+            .set_point(Point3::new(f64::NAN, 0.0, 0.0));
+        assert!(!certified_solids_clear_gap(&topo, a, b, 1e-7));
     }
 }
