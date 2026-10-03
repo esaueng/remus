@@ -1967,6 +1967,7 @@ struct Census {
     solids: usize,
     pcurves: usize,
     journal: usize,
+    journal_gap: bool,
 }
 
 impl Census {
@@ -1980,11 +1981,17 @@ impl Census {
             solids: topo.num_solids(),
             pcurves: topo.num_pcurves(),
             journal: topo.journal().len(),
+            journal_gap: topo
+                .journal()
+                .entries()
+                .last()
+                .is_some_and(|entry| entry.ticks_after() != topo.mutation_ticks()),
         }
     }
 
     /// Success adds only free edges and their vertices: no wires, faces,
-    /// pcurves or journal entries, and every new edge is unused by any face.
+    /// pcurves, and every new edge is unused by any face. History records
+    /// one scoped output barrier, plus any pre-existing mutation gap.
     fn assert_only_free_edges_added(&self, topo: &Topology, result: &ProjectedCurves) {
         let after = Self::of(topo);
         let mut vertices: Vec<_> = result
@@ -2009,18 +2016,24 @@ impl Census {
                 after.faces,
                 after.shells,
                 after.solids,
-                after.pcurves,
-                after.journal
+                after.pcurves
             ),
             (
                 self.wires,
                 self.faces,
                 self.shells,
                 self.solids,
-                self.pcurves,
-                self.journal
+                self.pcurves
             ),
-            "projection must create only free edges and record no journal entry"
+            "projection must create only free edges"
+        );
+        assert_eq!(
+            after.journal,
+            self.journal + 1 + usize::from(self.journal_gap)
+        );
+        assert!(
+            !after.journal_gap,
+            "successful image allocation is accounted for"
         );
         for e in &result.edges {
             assert!(
@@ -2192,7 +2205,10 @@ fn solid_level_first_hit_across_faces_in_source_order() {
             (after.edges, after.vertices),
             (before.edges + 2, before.vertices + 3)
         );
-        assert_eq!(after.journal, before.journal);
+        assert_eq!(
+            after.journal,
+            before.journal + 1 + usize::from(before.journal_gap)
+        );
     }
 }
 

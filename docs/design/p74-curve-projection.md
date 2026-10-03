@@ -115,10 +115,17 @@ The public types are defined alongside the implementation. Summary:
   only vertices and edges. A refusal leaves every count (vertices, edges,
   wires, faces, shells, solids, p-curves) and the journal length unchanged.
   The source edge and the target are never modified.
-- **No journal entry.** Projection derives nothing from body topology: it
-  neither modifies nor replaces any entity, and like `make_line_edge` it
-  only allocates unbound geometry. A later operation that consumes the
-  edges (an imprint, §9) journals its own lineage.
+- **Scoped allocation history.** A successful face/solid call records one
+  barrier over only its new free edges and vertices; input entities remain
+  outside its scope. The operation opens history after all fallible
+  computation and before allocation, so image creation does not cause a
+  later global mutation-gap barrier that severs unrelated references.
+  An earlier unjournaled mutation still records its usual global barrier.
+  Refusals preserve journal entries, the live index, ID counters and mutation
+  ticks. A later operation that consumes the edges (an imprint, §9) journals
+  its own lineage. Sketch-plane projection remains read-only.
+  A containing transaction that rolls back after a successful projection
+  retires its image handles and issued journal IDs; those IDs are never reused.
 - Multi-source calls are atomic. A per-source refusal returns
   `SourceRefused { index, error }` (also for a single source) and creates
   nothing. Call-level refusals (invalid direction, options or frame,

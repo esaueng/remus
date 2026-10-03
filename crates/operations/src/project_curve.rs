@@ -28,8 +28,10 @@
 //!   points, source ends); open intervals are classified by midpoint
 //!   first-hit ray casts. Seam crossings split pieces with a shared vertex.
 //!
-//! Results are free edges (no wires, coedges, p-curves or journal entries).
-//! Every entry point runs inside `run_append_only`; a refusal leaves the
+//! Results are free edges (no wires, coedges or registered p-curves).
+//! Success records an output-only scoped journal barrier; input entities
+//! remain outside its scope, preserving unrelated persistent references.
+//! Face/solid entry points run inside `run_append_only`; a refusal leaves the
 //! topology untouched.
 
 use std::f64::consts::TAU;
@@ -46,6 +48,7 @@ use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::journal::EntityKey;
 use remus_topology::pcurve::PCurve;
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::Vertex;
@@ -2917,16 +2920,42 @@ fn plane_curve_2d(
     }
 }
 
-/// Allocate free edges for committed pieces with vertex sharing between
-/// consecutive coincident ends. Returns the projected edges in order.
+/// Complete fallible 2D conversion before opening history or allocating.
+fn prepare_plane_curves(
+    pieces: &[PieceSpec],
+    plane_frame: Option<&Frame3>,
+) -> Result<Vec<Option<PCurve>>, ProjectCurveError> {
+    pieces
+        .iter()
+        .map(|piece| {
+            plane_frame
+                .map(|frame| {
+                    plane_curve_2d(
+                        frame,
+                        &piece.carrier,
+                        piece.trim,
+                        piece.start,
+                        piece.end,
+                        piece.closed,
+                    )
+                })
+                .transpose()
+        })
+        .collect()
+}
+
+/// Allocate free edges with shared consecutive endpoints and collect only
+/// newly allocated entities for the operation's journal scope.
 fn commit_pieces(
     topo: &mut Topology,
     pieces: &[PieceSpec],
-    plane_frame: Option<&Frame3>,
-) -> Result<Vec<ProjectedEdge>, ProjectCurveError> {
+    plane_curves: Vec<Option<PCurve>>,
+    affected: &mut Vec<EntityKey>,
+) -> Vec<ProjectedEdge> {
+    debug_assert_eq!(pieces.len(), plane_curves.len());
     let mut committed = Vec::new();
     let mut last_vertex: Option<(remus_topology::vertex::VertexId, Point3, f64)> = None;
-    for piece in pieces {
+    for (piece, plane_curve) in pieces.iter().zip(plane_curves) {
         let start_vertex = match last_vertex {
             Some((id, point, source_end))
                 if (piece.source_range.0 - source_end).abs() <= PARAM_DEDUPE
@@ -2934,30 +2963,26 @@ fn commit_pieces(
             {
                 id
             }
-            _ => topo.add_vertex(Vertex::new(piece.start, linear_tol())),
+            _ => {
+                let vertex = topo.add_vertex(Vertex::new(piece.start, linear_tol()));
+                affected.push(EntityKey::vertex(vertex.index()));
+                vertex
+            }
         };
         let end_vertex = if piece.closed {
             start_vertex
         } else {
-            topo.add_vertex(Vertex::new(piece.end, linear_tol()))
+            let vertex = topo.add_vertex(Vertex::new(piece.end, linear_tol()));
+            affected.push(EntityKey::vertex(vertex.index()));
+            vertex
         };
         let mut edge = Edge::new(start_vertex, end_vertex, piece.carrier.to_edge_curve());
         if !matches!(piece.carrier, Carrier::Line { .. }) {
             edge.set_trim(Some(piece.trim));
         }
         let edge_id = topo.add_edge(edge);
+        affected.push(EntityKey::edge(edge_id.index()));
         last_vertex = Some((end_vertex, piece.end, piece.source_range.1));
-        let plane_curve = match plane_frame {
-            Some(frame) => Some(plane_curve_2d(
-                frame,
-                &piece.carrier,
-                piece.trim,
-                piece.start,
-                piece.end,
-                piece.closed,
-            )?),
-            None => None,
-        };
         committed.push(ProjectedEdge {
             edge: edge_id,
             face: piece.face,
@@ -2965,7 +2990,7 @@ fn commit_pieces(
             plane_curve,
         });
     }
-    Ok(committed)
+    committed
 }
 
 // ---------------------------------------------------------------------------
@@ -3425,7 +3450,11 @@ fn project_face_inner(
                         scale,
                     };
                     let spec = approximate_spec(topo, &job)?;
-                    return Ok(commit_approx_result(topo, face, &spec));
+                    let pending = topo.journal_begin("project_curve_onto_face");
+                    let mut affected = Vec::new();
+                    let result = commit_approx_result(topo, face, &spec, &mut affected);
+                    topo.journal_record_barrier(pending, affected);
+                    return Ok(result);
                 }
             }
         }
@@ -3472,7 +3501,13 @@ fn commit_face_result(
     if pieces.is_empty() {
         return Err(ProjectCurveError::EmptyProjection);
     }
-    let edges = commit_pieces(topo, &pieces, frame)?;
+    // Complete every fallible conversion before opening history. Even a
+    // refused call with a pre-existing mutation gap must consume no IDs.
+    let plane_curves = prepare_plane_curves(&pieces, frame)?;
+    let pending = topo.journal_begin("project_curve_onto_face");
+    let mut affected = Vec::new();
+    let edges = commit_pieces(topo, &pieces, plane_curves, &mut affected);
+    topo.journal_record_barrier(pending, affected);
     Ok(ProjectedCurves {
         edges,
         face,
@@ -3481,16 +3516,25 @@ fn commit_face_result(
     })
 }
 
-fn commit_approx_result(topo: &mut Topology, face: FaceId, spec: &ApproxSpec) -> ProjectedCurves {
+fn commit_approx_result(
+    topo: &mut Topology,
+    face: FaceId,
+    spec: &ApproxSpec,
+    affected: &mut Vec<EntityKey>,
+) -> ProjectedCurves {
     let vertex = topo.add_vertex(Vertex::new(spec.point, linear_tol()));
+    affected.push(EntityKey::vertex(vertex.index()));
     let end = if spec.closed {
         vertex
     } else {
-        topo.add_vertex(Vertex::new(spec.end, linear_tol()))
+        let vertex = topo.add_vertex(Vertex::new(spec.end, linear_tol()));
+        affected.push(EntityKey::vertex(vertex.index()));
+        vertex
     };
     let mut edge = Edge::new(vertex, end, EdgeCurve::NurbsCurve(spec.curve.clone()));
     edge.set_trim(Some(spec.trim));
     let edge_id = topo.add_edge(edge);
+    affected.push(EntityKey::edge(edge_id.index()));
     ProjectedCurves {
         edges: vec![ProjectedEdge {
             edge: edge_id,
@@ -3854,13 +3898,16 @@ fn project_solid_inner(
     if !any_piece {
         return Err(ProjectCurveError::EmptyProjection);
     }
+    let pending = topo.journal_begin("project_curves_onto_solid");
+    let mut affected = Vec::new();
     let mut out = Vec::new();
     let mut quality = ProjectionQuality::Exact;
     for (index, result) in computed.iter().enumerate() {
         let (edges, clipped) = match result {
-            ComputedSource::Exact { pieces, clipped } => {
-                (commit_pieces(topo, pieces, None)?, *clipped)
-            }
+            ComputedSource::Exact { pieces, clipped } => (
+                commit_pieces(topo, pieces, vec![None; pieces.len()], &mut affected),
+                *clipped,
+            ),
             ComputedSource::Approximate { face, spec } => {
                 let max_deviation = match quality {
                     ProjectionQuality::Exact => spec.max_deviation,
@@ -3869,7 +3916,10 @@ fn project_solid_inner(
                     }
                 };
                 quality = ProjectionQuality::Approximate { max_deviation };
-                (commit_approx_result(topo, *face, spec).edges, false)
+                (
+                    commit_approx_result(topo, *face, spec, &mut affected).edges,
+                    false,
+                )
             }
         };
         out.push(SourceProjection {
@@ -3878,6 +3928,7 @@ fn project_solid_inner(
             clipped,
         });
     }
+    topo.journal_record_barrier(pending, affected);
     Ok(SolidProjection {
         sources: out,
         quality,
@@ -3886,8 +3937,9 @@ fn project_solid_inner(
 
 /// Project `source` along `direction` onto the trimmed region of `face`.
 ///
-/// Creates free edges only; records no journal entry; leaves the source
-/// edge and the face unchanged. A refusal leaves the topology unchanged.
+/// Creates free edges and records a scoped journal barrier over only the
+/// new edges and vertices. The source edge and face are unchanged. A
+/// refusal leaves topology, journal and mutation ticks unchanged.
 ///
 /// # Errors
 ///

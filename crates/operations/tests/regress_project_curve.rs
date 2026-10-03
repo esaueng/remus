@@ -32,6 +32,432 @@ fn top(t: &mut Topology) -> FaceId {
     let s = make_box(t, 10., 8., 4.).unwrap();
     solid_faces(t,s).unwrap().into_iter().find(|f|matches!(t.face(*f).unwrap().surface(),FaceSurface::Plane{normal,d} if normal.z()>0.9 && *d>3.9)).unwrap()
 }
+
+struct ProjectionHistory {
+    topo: Topology,
+    target: remus_topology::solid::SolidId,
+    source: EdgeId,
+    next: [remus_topology::solid::SolidId; 2],
+    reference: remus_topology::naming::PersistentRef,
+}
+
+fn projection_history_fixture() -> ProjectionHistory {
+    let mut topo = Topology::new();
+    // All inputs are prepared before history starts: the projection is the
+    // only unaccounted mutation between the two real modeling operations.
+    let source = edge(
+        &mut topo,
+        EdgeCurve::Line,
+        Point3::new(1., 2., 7.),
+        Point3::new(8., 5., 9.),
+        None,
+    );
+    let (target, next, reference) = anchor_prepared_history(&mut topo);
+    ProjectionHistory {
+        topo,
+        target,
+        source,
+        next,
+        reference,
+    }
+}
+
+fn anchor_prepared_history(
+    topo: &mut Topology,
+) -> (
+    remus_topology::solid::SolidId,
+    [remus_topology::solid::SolidId; 2],
+    remus_topology::naming::PersistentRef,
+) {
+    use remus_operations::{boolean::BooleanOp, journal_ops::boolean_journaled_with_operation};
+    use remus_topology::{journal::EntityKind, naming::PersistentRef};
+    let outer = make_box(topo, 10., 8., 4.).unwrap();
+    let inner = make_box(topo, 1., 1., 1.).unwrap();
+    let next = [
+        make_box(topo, 2., 3., 4.).unwrap(),
+        make_box(topo, 1., 1., 1.).unwrap(),
+    ];
+    let anchor = boolean_journaled_with_operation(topo, BooleanOp::Fuse, outer, inner).unwrap();
+    (
+        anchor.solid,
+        next,
+        PersistentRef::operation_output(anchor.op, EntityKind::Face, 0),
+    )
+}
+
+fn assert_projection_scope(
+    topo: &Topology,
+    edges: &[remus_operations::project_curve::ProjectedEdge],
+    kind: &str,
+) {
+    use remus_topology::journal::{EntityKey, EntryPayload};
+    let entry = topo.journal().entries().last().unwrap();
+    assert_eq!(entry.kind(), kind);
+    assert_eq!(entry.ticks_after(), topo.mutation_ticks());
+    let EntryPayload::Barrier { affected } = entry.payload() else {
+        panic!("projection must record a scoped barrier");
+    };
+    let mut actual: Vec<_> = affected
+        .iter()
+        .map(|ordinal| topo.journal().key_of(*ordinal).unwrap())
+        .collect();
+    let mut expected = Vec::new();
+    for projected in edges {
+        let edge = topo.edge(projected.edge).unwrap();
+        expected.extend([
+            EntityKey::edge(projected.edge.index()),
+            EntityKey::vertex(edge.start().index()),
+            EntityKey::vertex(edge.end().index()),
+        ]);
+    }
+    actual.sort_unstable_by_key(|key| (key.kind.as_str(), key.index));
+    expected.sort_unstable_by_key(|key| (key.kind.as_str(), key.index));
+    expected.dedup();
+    assert_eq!(
+        actual, expected,
+        "only new output edges and vertices are in scope"
+    );
+}
+
+#[test]
+fn successful_projection_keeps_unrelated_history_through_next_journaled_edit() {
+    use remus_operations::{boolean::BooleanOp, journal_ops::boolean_journaled_with_operation};
+    use remus_topology::naming::{Resolution, resolve};
+    for onto_solid in [false, true] {
+        let ProjectionHistory {
+            mut topo,
+            target,
+            source,
+            next,
+            reference,
+        } = projection_history_fixture();
+        let before = resolve(&topo, &reference);
+        assert!(matches!(before, Resolution::Bound { .. }));
+        let pending = topo.journal_begin("prepared_source");
+        let mut draft = remus_topology::journal::EvolutionDraft::construction();
+        draft.push(
+            remus_topology::journal::EntityKey::edge(source.index()),
+            remus_topology::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+        let source_op = topo.journal_record_evolution(pending, draft).unwrap();
+        let source_reference = remus_topology::naming::PersistentRef::operation_output(
+            source_op,
+            remus_topology::journal::EntityKind::Edge,
+            0,
+        );
+        let source_bound = resolve(&topo, &source_reference);
+        assert!(matches!(source_bound, Resolution::Bound { .. }));
+        let entries_before = topo.journal().len();
+        let edges = if onto_solid {
+            project_curves_onto_solid(
+                &mut topo,
+                &[source],
+                Vec3::new(0., 0., -1.),
+                target,
+                &ProjectCurveOptions::default(),
+            )
+            .unwrap()
+            .sources
+            .into_iter()
+            .flat_map(|source| source.edges)
+            .collect::<Vec<_>>()
+        } else {
+            let face = solid_faces(&topo, target)
+                .unwrap()
+                .into_iter()
+                .find(|id| {
+                    matches!(topo.face(*id).unwrap().surface(), FaceSurface::Plane { normal, .. }
+                    if normal.z() > 0.9)
+                })
+                .unwrap();
+            project_curve_onto_face(
+                &mut topo,
+                source,
+                Vec3::new(0., 0., -1.),
+                face,
+                &ProjectCurveOptions::default(),
+            )
+            .unwrap()
+            .edges
+        };
+        assert_eq!(topo.journal().len(), entries_before + 1);
+        assert_projection_scope(
+            &topo,
+            &edges,
+            if onto_solid {
+                "project_curves_onto_solid"
+            } else {
+                "project_curve_onto_face"
+            },
+        );
+        boolean_journaled_with_operation(&mut topo, BooleanOp::Fuse, next[0], next[1]).unwrap();
+        assert_eq!(
+            resolve(&topo, &reference),
+            before,
+            "free image allocation must not sever unrelated body history"
+        );
+        assert_eq!(
+            resolve(&topo, &source_reference),
+            source_bound,
+            "the input edge is outside the output-only scope"
+        );
+    }
+}
+
+#[test]
+fn approximate_and_mixed_solid_images_keep_history_scoped_to_new_entities() {
+    use remus_operations::{boolean::BooleanOp, journal_ops::boolean_journaled_with_operation};
+    use remus_topology::naming::resolve;
+    for onto_solid in [false, true] {
+        let (mut topo, target, circle) = solid_approx_fixture();
+        let line = edge(
+            &mut topo,
+            EdgeCurve::Line,
+            Point3::new(0., 5., 5.),
+            Point3::new(0.5, 5., 5.),
+            None,
+        );
+        let (_, next, reference) = anchor_prepared_history(&mut topo);
+        let before = resolve(&topo, &reference);
+        let options = ProjectCurveOptions {
+            allow_approximate: true,
+            ..ProjectCurveOptions::default()
+        };
+        let journal_before = topo.journal().snapshot();
+        let ticks_before = topo.mutation_ticks();
+        let strict = project_curves_onto_solid(
+            &mut topo,
+            &[line, circle],
+            Vec3::new(0., -1., 0.),
+            target,
+            &ProjectCurveOptions::default(),
+        );
+        assert!(strict.is_err());
+        assert_eq!(topo.journal().snapshot(), journal_before);
+        assert_eq!(topo.mutation_ticks(), ticks_before);
+        let (edges, quality) = if onto_solid {
+            let result = project_curves_onto_solid(
+                &mut topo,
+                &[line, circle],
+                Vec3::new(0., -1., 0.),
+                target,
+                &options,
+            )
+            .unwrap();
+            assert_eq!(result.sources.len(), 2);
+            (
+                result
+                    .sources
+                    .into_iter()
+                    .flat_map(|source| source.edges)
+                    .collect::<Vec<_>>(),
+                result.quality,
+            )
+        } else {
+            let face = solid_faces(&topo, target)
+                .unwrap()
+                .into_iter()
+                .find(|id| matches!(topo.face(*id).unwrap().surface(), FaceSurface::Cylinder(_)))
+                .unwrap();
+            let result =
+                project_curve_onto_face(&mut topo, circle, Vec3::new(0., -1., 0.), face, &options)
+                    .unwrap();
+            (result.edges, result.quality)
+        };
+        assert!(matches!(quality, ProjectionQuality::Approximate { .. }));
+        assert_eq!(topo.journal().len(), 2);
+        assert_projection_scope(
+            &topo,
+            &edges,
+            if onto_solid {
+                "project_curves_onto_solid"
+            } else {
+                "project_curve_onto_face"
+            },
+        );
+        boolean_journaled_with_operation(&mut topo, BooleanOp::Fuse, next[0], next[1]).unwrap();
+        assert_eq!(resolve(&topo, &reference), before);
+    }
+}
+
+#[test]
+fn projection_refusals_preserve_full_history_even_with_an_existing_gap() {
+    use remus_topology::transaction::run_transacted;
+    let ProjectionHistory {
+        mut topo,
+        target,
+        source,
+        reference,
+        ..
+    } = projection_history_fixture();
+    let mut invalid = source;
+    let result: Result<(), ()> = run_transacted(&mut topo, |topo| {
+        invalid = edge(
+            topo,
+            EdgeCurve::Line,
+            Point3::new(1., 2., 7.),
+            Point3::new(8., 5., 9.),
+            None,
+        );
+        Err(())
+    });
+    assert!(result.is_err());
+    topo.add_vertex(Vertex::new(Point3::new(-1., -1., -1.), 1e-7));
+    let face = solid_faces(&topo, target).unwrap()[0];
+    let before = topo.journal().snapshot();
+    let ticks = topo.mutation_ticks();
+    let counts = (topo.num_vertices(), topo.num_edges());
+    let bound = remus_topology::naming::resolve(&topo, &reference);
+    assert!(
+        project_curve_onto_face(
+            &mut topo,
+            source,
+            Vec3::new(0., 0., 0.),
+            face,
+            &ProjectCurveOptions::default()
+        )
+        .is_err()
+    );
+    assert!(
+        project_curve_onto_face(
+            &mut topo,
+            invalid,
+            Vec3::new(0., 0., -1.),
+            face,
+            &ProjectCurveOptions::default()
+        )
+        .is_err()
+    );
+    let failure = project_curves_onto_solid(
+        &mut topo,
+        &[source, invalid],
+        Vec3::new(0., 0., -1.),
+        target,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        failure,
+        ProjectCurveError::SourceRefused { index: 1, .. }
+    ));
+    assert_eq!(topo.journal().snapshot(), before);
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!((topo.num_vertices(), topo.num_edges()), counts);
+    assert_eq!(remus_topology::naming::resolve(&topo, &reference), bound);
+    let pending = topo.journal_begin("next_edit");
+    let gap = topo.journal().entries().last().unwrap();
+    assert_eq!(gap.op().value(), before.next_op);
+    assert_eq!(gap.kind(), "unjournaled_mutations");
+    topo.journal_record_barrier(pending, Vec::new());
+}
+
+#[test]
+fn projection_preserves_preexisting_gap_and_nested_pending_scope_semantics() {
+    use remus_topology::{
+        journal::EntryPayload,
+        naming::{Resolution, resolve},
+        transaction::run_transacted,
+    };
+    for gap in [false, true] {
+        let ProjectionHistory {
+            mut topo,
+            target,
+            source,
+            reference,
+            ..
+        } = projection_history_fixture();
+        let bound = resolve(&topo, &reference);
+        let pending = topo.journal_begin("outer_edit");
+        if gap {
+            topo.add_vertex(Vertex::new(Point3::new(-1., -1., -1.), 1e-7));
+        }
+        project_curves_onto_solid(
+            &mut topo,
+            &[source],
+            Vec3::new(0., 0., -1.),
+            target,
+            &ProjectCurveOptions::default(),
+        )
+        .unwrap();
+        topo.journal_record_barrier(pending, Vec::new());
+        if gap {
+            assert!(matches!(
+                topo.journal().entries()[1].payload(),
+                EntryPayload::GlobalBarrier
+            ));
+            assert!(
+                matches!(resolve(&topo, &reference), Resolution::UnresolvedAcrossOperation { kind, .. } if kind == "unjournaled_mutations")
+            );
+        } else {
+            assert_eq!(resolve(&topo, &reference), bound);
+        }
+    }
+    let ProjectionHistory {
+        mut topo,
+        target,
+        source,
+        reference,
+        ..
+    } = projection_history_fixture();
+    let before = topo.journal().snapshot();
+    let ticks = topo.mutation_ticks();
+    let bound = resolve(&topo, &reference);
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_faces(),
+        topo.num_pcurves(),
+    );
+    let mut retired = None;
+    let failure: Result<(), ()> = run_transacted(&mut topo, |topo| {
+        let image = project_curves_onto_solid(
+            topo,
+            &[source],
+            Vec3::new(0., 0., -1.),
+            target,
+            &ProjectCurveOptions::default(),
+        )
+        .unwrap();
+        retired = Some((
+            image.sources[0].edges[0].edge,
+            topo.journal().entries().last().unwrap().op(),
+        ));
+        Err(())
+    });
+    assert!(failure.is_err());
+    let after = topo.journal().snapshot();
+    assert_eq!(after.entries, before.entries);
+    assert_eq!(after.index, before.index);
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!(resolve(&topo, &reference), bound);
+    assert_eq!(
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_faces(),
+            topo.num_pcurves()
+        ),
+        counts
+    );
+    let (edge, op) = retired.unwrap();
+    assert!(topo.edge(edge).is_err());
+    assert!(
+        after.next_op > op.value(),
+        "outer rollback retires issued IDs"
+    );
+    assert!(after.next_ordinal > before.next_ordinal);
+    project_curves_onto_solid(
+        &mut topo,
+        &[source],
+        Vec3::new(0., 0., -1.),
+        target,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap();
+    assert!(topo.journal().entries().last().unwrap().op().value() > op.value());
+}
 fn xy() -> Frame3 {
     Frame3::from_normal(Point3::new(0., 0., 0.), Vec3::new(0., 0., 1.)).unwrap()
 }
@@ -959,7 +1385,7 @@ fn oblique_circle_keeps_exact_cap_before_later_curved_hit() {
             };
             assert!((circle.center() - Point3::new(1.0, 0.0, 10.0)).length() < 1e-9);
             assert!((circle.radius() - 0.5).abs() < 1e-9);
-            assert_eq!(topo.journal().len(), baseline);
+            assert_eq!(topo.journal().len(), baseline + 1);
             // The same ray starting at the source center later meets the
             // lateral support at (2,0,8), strictly behind its cap hit.
             assert!(circle.center().z() > 8.0);
