@@ -1624,7 +1624,13 @@ impl Topology {
     }
 
     /// Retires a solid and every entity in its topology tree that no other
-    /// live solid references.
+    /// live body references.
+    ///
+    /// Other solids and explicitly tagged sheet shells retain their complete
+    /// subtrees. A wire not owned by any face boundary is a standalone wire
+    /// body and retains its edges and vertices. Face-owned wires remain part
+    /// of their owning face's subtree; their default wire tag alone does not
+    /// make every solid boundary an independent root.
     ///
     /// Retirement invalidates the solid handle and unshared shell, face,
     /// wire, edge, vertex, and pcurve handles. It does **not** compact the
@@ -1634,7 +1640,7 @@ impl Topology {
     /// # Errors
     ///
     /// Returns [`DeleteSolidError`] if `solid` is invalid, if a live compound or
-    /// comp-solid still references it, or if any live solid contains an
+    /// comp-solid still references it, or if any live body contains an
     /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
@@ -1668,6 +1674,31 @@ impl Topology {
         for (other_id, _) in self.solids.iter() {
             if other_id != solid {
                 self.collect_solid_entities_into(other_id, &mut retained)?;
+            }
+        }
+
+        // Sheet shells are explicit roots. Ordinary solid-owned shells are
+        // not roots by themselves: retaining every live shell here would keep
+        // the deleted solid's entire exclusive subtree alive.
+        for (sheet_id, shell) in self.shells.iter() {
+            if shell.body_class() == BodyClass::Sheet {
+                self.collect_shell_entities_into(sheet_id, &mut retained)?;
+            }
+        }
+
+        // Wires all carry the wire tag, including face boundaries. Only a
+        // wire with no owning face is a standalone root under the current
+        // representation; a boundary wire is retained through its live body.
+        let face_owned_wires: HashSet<_> = self
+            .faces
+            .iter()
+            .flat_map(|(_, face)| {
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            })
+            .collect();
+        for (wire_id, _) in self.wires.iter() {
+            if !face_owned_wires.contains(&wire_id) {
+                self.collect_wire_entities_into(wire_id, &mut retained)?;
             }
         }
 
@@ -1756,37 +1787,54 @@ impl Topology {
         for shell_id in std::iter::once(solid_data.outer_shell())
             .chain(solid_data.inner_shells().iter().copied())
         {
-            if !entities.shells.insert(shell_id) {
+            self.collect_shell_entities_into(shell_id, entities)?;
+        }
+        Ok(())
+    }
+
+    fn collect_shell_entities_into(
+        &self,
+        shell_id: ShellId,
+        entities: &mut SolidEntities,
+    ) -> Result<(), TopologyError> {
+        if !entities.shells.insert(shell_id) {
+            return Ok(());
+        }
+        let shell = self.shell(shell_id)?;
+        for &face_id in shell.faces() {
+            if !entities.faces.insert(face_id) {
                 continue;
             }
-            let shell = self.shell(shell_id)?;
-            for &face_id in shell.faces() {
-                if !entities.faces.insert(face_id) {
-                    continue;
-                }
-                let face = self.face(face_id)?;
-                for wire_id in
-                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-                {
-                    if !entities.wires.insert(wire_id) {
-                        continue;
-                    }
-                    let wire = self.wire(wire_id)?;
-                    for oriented_edge in wire.edges() {
-                        let edge_id = oriented_edge.edge();
-                        if !entities.edges.insert(edge_id) {
-                            continue;
-                        }
-                        let edge = self.edge(edge_id)?;
-                        self.vertex(edge.start())?;
-                        self.vertex(edge.end())?;
-                        entities.vertices.insert(edge.start());
-                        entities.vertices.insert(edge.end());
-                    }
-                }
+            let face = self.face(face_id)?;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                self.collect_wire_entities_into(wire_id, entities)?;
             }
         }
+        Ok(())
+    }
 
+    fn collect_wire_entities_into(
+        &self,
+        wire_id: WireId,
+        entities: &mut SolidEntities,
+    ) -> Result<(), TopologyError> {
+        if !entities.wires.insert(wire_id) {
+            return Ok(());
+        }
+        let wire = self.wire(wire_id)?;
+        for oriented_edge in wire.edges() {
+            let edge_id = oriented_edge.edge();
+            if !entities.edges.insert(edge_id) {
+                continue;
+            }
+            let edge = self.edge(edge_id)?;
+            self.vertex(edge.start())?;
+            self.vertex(edge.end())?;
+            entities.vertices.insert(edge.start());
+            entities.vertices.insert(edge.end());
+        }
         Ok(())
     }
 
@@ -2649,6 +2697,186 @@ mod tests {
                 .iter()
                 .all(|&id| topo.vertex(id).is_err())
         );
+    }
+
+    #[test]
+    fn delete_solid_preserves_sheet_authority_and_attributes() {
+        use crate::attributes::{ColorRgb, EntityAttributes};
+
+        let mut topo = Topology::new();
+        let (solid, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let solid_shell = topo.solid(solid).unwrap().outer_shell();
+        let sheet = topo.add_shell(Shell::new(vec![face]).unwrap());
+        topo.set_shell_body_class(sheet, BodyClass::Sheet).unwrap();
+        let second_sheet = topo.add_shell(Shell::new(vec![face]).unwrap());
+        topo.set_shell_body_class(second_sheet, BodyClass::Sheet)
+            .unwrap();
+        let loops = topo.loops_of_face(face).unwrap().to_vec();
+        let coedges = topo.face_loop(loops[0]).unwrap().coedges().to_vec();
+        let pcurve = test_pcurve(0.0);
+        topo.set_pcurve(edge, face, pcurve.clone()).unwrap();
+        let attributes = EntityAttributes {
+            name: Some("shared face".into()),
+            color: Some(ColorRgb::new(0.2, 0.4, 0.6).unwrap()),
+        };
+        topo.set_face_attributes(face, attributes.clone()).unwrap();
+        topo.set_solid_attributes(
+            solid,
+            EntityAttributes {
+                name: Some("source solid".into()),
+                color: None,
+            },
+        )
+        .unwrap();
+
+        topo.delete_solid(solid).unwrap();
+
+        assert!(topo.solid(solid).is_err());
+        assert!(topo.shell(solid_shell).is_err());
+        for retained_sheet in [sheet, second_sheet] {
+            assert_eq!(topo.shell(retained_sheet).unwrap().faces(), &[face]);
+            assert_eq!(
+                topo.body_class_of(BodyId::Shell(retained_sheet)).unwrap(),
+                BodyClass::Sheet
+            );
+        }
+        assert_eq!(topo.loops_of_face(face).unwrap(), loops);
+        assert_eq!(topo.face_loop(loops[0]).unwrap().coedges(), coedges);
+        let retained_pcurve = topo.pcurve(edge, face).unwrap().unwrap();
+        assert_eq!(
+            retained_pcurve.t_start().to_bits(),
+            pcurve.t_start().to_bits()
+        );
+        assert_eq!(retained_pcurve.t_end().to_bits(), pcurve.t_end().to_bits());
+        assert_eq!(retained_pcurve.evaluate(0.5), pcurve.evaluate(0.5));
+        assert_eq!(topo.attributes().face(face), Some(&attributes));
+        assert!(topo.attributes().solid(solid).is_none());
+        validate_boundary_authority(&topo).unwrap();
+        assert_eq!(topo.num_faces(), 1);
+        assert_eq!(topo.num_wires(), 1);
+        assert_eq!(topo.num_edges(), 3);
+        assert_eq!(topo.num_vertices(), 3);
+    }
+
+    #[test]
+    fn delete_solid_preserves_standalone_wire_shared_edge_only() {
+        let mut topo = Topology::new();
+        let (solid, face, shared_edge) = make_triangle_solid(&mut topo, 0.0);
+        let boundary_wire = topo.face(face).unwrap().outer_wire();
+        let boundary = topo.wire(boundary_wire).unwrap().clone();
+        let edge = topo.edge(shared_edge).unwrap().clone();
+        let wire_body =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(shared_edge, true)], false).unwrap());
+
+        topo.delete_solid(solid).unwrap();
+
+        assert_eq!(
+            topo.body_class_of(BodyId::Wire(wire_body)).unwrap(),
+            BodyClass::Wire
+        );
+        assert!(topo.wire(boundary_wire).is_err());
+        assert!(topo.face(face).is_err());
+        assert!(topo.edge(shared_edge).is_ok());
+        assert!(topo.vertex(edge.start()).is_ok());
+        assert!(topo.vertex(edge.end()).is_ok());
+        assert!(
+            boundary
+                .edges()
+                .iter()
+                .map(OrientedEdge::edge)
+                .filter(|&edge| edge != shared_edge)
+                .all(|edge| topo.edge(edge).is_err())
+        );
+        assert_eq!(topo.num_wires(), 1);
+        assert_eq!(topo.num_edges(), 1);
+        assert_eq!(topo.num_vertices(), 2);
+        assert_eq!(topo.num_loops(), 0);
+        assert_eq!(topo.num_coedges(), 0);
+    }
+
+    #[test]
+    fn delete_solid_retains_sheet_after_last_shared_solid_is_deleted() {
+        let mut topo = Topology::new();
+        let (first, face, _) = make_triangle_solid(&mut topo, 0.0);
+        let shell = topo.solid(first).unwrap().outer_shell();
+        let second = topo.add_solid(Solid::new(shell, Vec::new()));
+        let sheet = topo.add_shell(Shell::new(vec![face]).unwrap());
+        topo.set_shell_body_class(sheet, BodyClass::Sheet).unwrap();
+
+        topo.delete_solid(first).unwrap();
+        assert!(topo.shell(shell).is_ok());
+        topo.delete_solid(second).unwrap();
+
+        assert!(topo.shell(shell).is_err());
+        assert_eq!(topo.shell(sheet).unwrap().faces(), &[face]);
+        assert!(topo.face(face).is_ok());
+        validate_boundary_authority(&topo).unwrap();
+    }
+
+    #[test]
+    fn delete_solid_refuses_invalid_sheet_before_retiring_source_entities() {
+        let mut topo = Topology::new();
+        let (solid, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let (temporary, stale_face, _) = make_triangle_solid(&mut topo, 10.0);
+        topo.delete_solid(temporary).unwrap();
+        let invalid_sheet = topo.add_shell(Shell::new(vec![stale_face]).unwrap());
+        topo.set_shell_body_class(invalid_sheet, BodyClass::Sheet)
+            .unwrap();
+        let counts = (
+            topo.num_solids(),
+            topo.num_shells(),
+            topo.num_faces(),
+            topo.num_edges(),
+            topo.num_vertices(),
+        );
+        let loops = topo.loops_of_face(face).unwrap().to_vec();
+
+        assert!(topo.delete_solid(solid).is_err());
+
+        assert!(topo.solid(solid).is_ok());
+        assert!(topo.face(face).is_ok());
+        assert!(topo.edge(edge).is_ok());
+        assert_eq!(topo.loops_of_face(face).unwrap(), loops);
+        assert_eq!(
+            counts,
+            (
+                topo.num_solids(),
+                topo.num_shells(),
+                topo.num_faces(),
+                topo.num_edges(),
+                topo.num_vertices()
+            )
+        );
+    }
+
+    #[test]
+    fn delete_solid_with_retained_sheet_rolls_back_exclusive_retirements() {
+        let mut topo = Topology::new();
+        let (shared, face, _) = make_triangle_solid(&mut topo, 0.0);
+        let sheet = topo.add_shell(Shell::new(vec![face]).unwrap());
+        topo.set_shell_body_class(sheet, BodyClass::Sheet).unwrap();
+        let (exclusive, exclusive_face, exclusive_edge) = make_triangle_solid(&mut topo, 10.0);
+        topo.set_pcurve(exclusive_edge, exclusive_face, test_pcurve(2.0))
+            .unwrap();
+        let before = format!("{topo:?}");
+
+        let result =
+            crate::transaction::run_transacted(&mut topo, |topo| -> Result<(), TopologyError> {
+                topo.delete_solid(shared).unwrap();
+                topo.delete_solid(exclusive).unwrap();
+                Err(TopologyError::WireNotClosed)
+            });
+
+        assert!(result.is_err());
+        assert_eq!(format!("{topo:?}"), before);
+        assert!(topo.solid(shared).is_ok());
+        assert!(topo.solid(exclusive).is_ok());
+        assert!(
+            topo.pcurve(exclusive_edge, exclusive_face)
+                .unwrap()
+                .is_some()
+        );
+        validate_boundary_authority(&topo).unwrap();
     }
 
     #[test]
