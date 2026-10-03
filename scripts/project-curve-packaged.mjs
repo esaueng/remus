@@ -112,6 +112,43 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       assert.equal(kernel.journalSummary(), capJournal);
       assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), capBytes);
 
+      // Oblique rays meet the top cap before the lateral wall. The later
+      // curved hit must neither refuse nor approximate this exact circle.
+      const obliqueCircle = kernel.makeCircleEdgeWithRef(0, 0, 12, 0, 0, 1, 0.5, 1, 0, 0);
+      const obliqueSource = Array.from(kernel.getEdgeVertices(obliqueCircle));
+      const obliqueSpan = Array.from(kernel.getEdgeParamSpan(obliqueCircle));
+      near(obliqueSpan, [0, 2 * Math.PI]);
+      const obliqueJournal = kernel.journalSummary();
+      const obliqueBytes = kernel.serializeSolids(Uint32Array.of(cylinder));
+      for (const options of [undefined, { allowApproximate: true }]) {
+        const obliqueArgs = { edges: [obliqueCircle], dirX: 0.5, dirY: 0, dirZ: -1, solid: cylinder, options };
+        const oblique = invoke(kernel, route, 'projectCurvesOntoSolid', obliqueArgs,
+          () => kernel.projectCurvesOntoSolid(Uint32Array.of(obliqueCircle), 0.5, 0, -1, cylinder, options));
+        assert.deepEqual(oblique.quality, { kind: 'exact' });
+        assert.equal(oblique.sources.length, 1);
+        assert.equal(oblique.sources[0].source, obliqueCircle);
+        assert.equal(oblique.sources[0].clipped, false);
+        assert.equal(oblique.sources[0].edges.length, 1);
+        const image = oblique.sources[0].edges[0];
+        assert.equal(image.face, topCap);
+        near([image.sourceStart, image.sourceEnd], obliqueSpan);
+        assert.equal(kernel.getEdgeCurveType(image.edge), 'CIRCLE');
+        near(Array.from(kernel.getEdgeVertices(image.edge)), [1.5, 0, 10, 1.5, 0, 10]);
+        const handles = kernel.getEdgeVertexHandles(image.edge);
+        assert.equal(handles[0], handles[1], 'exact cap image remains closed');
+        const [start, end] = kernel.getEdgeParamSpan(image.edge);
+        near([end - start], [2 * Math.PI]);
+        for (let index = 0; index <= 32; index += 1) {
+          const [x, y, z] = kernel.evaluateEdgeCurve(image.edge, start + (end - start) * index / 32);
+          near([z, Math.hypot(x - 1, y)], [10, 0.5]);
+        }
+        assert.ok(!Array.from(kernel.getSolidEdges(cylinder)).includes(image.edge));
+        assert.deepEqual(Array.from(kernel.getEdgeVertices(obliqueCircle)), obliqueSource);
+        assert.deepEqual(Array.from(kernel.getEdgeParamSpan(obliqueCircle)), obliqueSpan);
+        assert.equal(kernel.journalSummary(), obliqueJournal);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder)), obliqueBytes);
+      }
+
       // A1's first hit is the cylinder's front wall. Default options refuse
       // approximation; explicit consent returns a free NURBS with disclosed
       // deviation. Its independent metric combines cylinder distance and
@@ -177,5 +214,5 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       kernel.free();
     }
   }
-  console.log('ok - packaged projection objects, forward-ray clipping, cylinder caps, approximate solid images and typed refusals');
+  console.log('ok - packaged projection objects, forward-ray clipping, exact oblique cylinder caps, approximate solid images and typed refusals');
 }

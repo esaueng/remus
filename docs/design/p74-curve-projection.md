@@ -321,6 +321,12 @@ cylinder/cone slabs with coaxial circular rims, and qualified spherical
 caps or hemispheres. Mixed conic loops, oblique curved rims and other
 unqualified trims refuse before publishing edges. Periodic face/solid
 sources require ascending strict trims; descending sources refuse.
+For solid calls, an exact image covering the whole source on one planar
+face bounded by a single full circle or ellipse, with no holes, remains
+exact when interval bounds certify that the whole image lies inside the
+rim and exclude every deferred curved carrier along each ray up to that
+face. A later curved hit cannot force an approximation. Clipped images,
+polygonal or holed caps, and unresolved competing hits refuse this shortcut.
 Within these cells, M5 computes candidate split parameters as follows:
 
 - segment sources and coaxial arcs (image in a known plane `Π`): each face
