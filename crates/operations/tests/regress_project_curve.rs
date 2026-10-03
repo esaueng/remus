@@ -7,10 +7,10 @@ use remus_math::{
     vec::{Point3, Vec3},
 };
 use remus_operations::{
-    primitives::{make_box, make_cylinder},
+    primitives::{make_box, make_cone, make_cylinder, make_sphere},
     project_curve::{
-        ProjectCurveError, ProjectCurveOptions, project_curve_onto_face, project_curves_onto_plane,
-        project_curves_onto_solid,
+        ProjectCurveError, ProjectCurveOptions, ProjectionQuality, project_curve_onto_face,
+        project_curves_onto_plane, project_curves_onto_solid,
     },
 };
 use remus_topology::{
@@ -474,4 +474,294 @@ fn narrow_true_circular_hole_is_not_replaced_by_its_chords() {
     assert_eq!(result.edges.len(), 2);
     assert!(result.edges[0].source_range.1 < 0.5);
     assert!(result.edges[1].source_range.0 > 0.5);
+}
+
+#[test]
+fn vertical_segment_hits_cylinder_cap_when_lateral_carrier_is_missed() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 10.0).unwrap();
+    let source = edge(
+        &mut topo,
+        EdgeCurve::Line,
+        Point3::new(-0.5, 0.0, 12.0),
+        Point3::new(0.5, 0.0, 12.0),
+        None,
+    );
+    let result = project_curves_onto_solid(
+        &mut topo,
+        &[source],
+        Vec3::new(0.0, 0.0, -1.0),
+        solid,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(result.sources[0].edges.len(), 1);
+    let image = &result.sources[0].edges[0];
+    assert!(
+        matches!(topo.face(image.face).unwrap().surface(), FaceSurface::Plane { normal, d } if normal.z() > 0.9 && (*d - 10.0).abs() < 1e-9)
+    );
+    assert!(!result.sources[0].clipped);
+}
+
+#[test]
+fn vertical_segment_cylinder_miss_and_unresolved_graze_remain_distinct() {
+    for (a, b, is_miss) in [(3.0, 4.0, true), (1.5, 2.5, false)] {
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, 2.0, 10.0).unwrap();
+        let source = edge(
+            &mut topo,
+            EdgeCurve::Line,
+            Point3::new(a, 0.0, 12.0),
+            Point3::new(b, 0.0, 12.0),
+            None,
+        );
+        let result = project_curves_onto_solid(
+            &mut topo,
+            &[source],
+            Vec3::new(0.0, 0.0, -1.0),
+            solid,
+            &ProjectCurveOptions::default(),
+        );
+        if is_miss {
+            assert!(matches!(result, Err(ProjectCurveError::EmptyProjection)));
+        } else {
+            assert!(
+                matches!(result, Err(ProjectCurveError::SourceRefused { error, .. }) if matches!(*error, ProjectCurveError::GrazingDirection))
+            );
+        }
+    }
+}
+
+#[test]
+fn vertical_segment_hits_cone_cap_when_lateral_carrier_is_missed() {
+    let mut topo = Topology::new();
+    let solid = make_cone(&mut topo, 2.0, 1.0, 10.0).unwrap();
+    let source = edge(
+        &mut topo,
+        EdgeCurve::Line,
+        Point3::new(-0.5, 0.0, 12.0),
+        Point3::new(0.5, 0.0, 12.0),
+        None,
+    );
+    let result = project_curves_onto_solid(
+        &mut topo,
+        &[source],
+        Vec3::new(0.0, 0.0, -1.0),
+        solid,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(result.sources[0].edges.len(), 1);
+    let image = &result.sources[0].edges[0];
+    assert!(
+        matches!(topo.face(image.face).unwrap().surface(), FaceSurface::Plane { normal, d } if normal.z() > 0.9 && (*d - 10.0).abs() < 1e-9)
+    );
+}
+
+#[test]
+fn vertical_segment_keeps_first_sphere_hit() {
+    let mut topo = Topology::new();
+    let solid = make_sphere(&mut topo, 2.0, 16).unwrap();
+    let source = edge(
+        &mut topo,
+        EdgeCurve::Line,
+        Point3::new(-0.5, 0.0, 12.0),
+        Point3::new(0.5, 0.0, 12.0),
+        None,
+    );
+    let result = project_curves_onto_solid(
+        &mut topo,
+        &[source],
+        Vec3::new(0.0, 0.0, -1.0),
+        solid,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap();
+    for image in &result.sources[0].edges {
+        let e = topo.edge(image.edge).unwrap();
+        assert!(topo.vertex(e.start()).unwrap().point().z() > 1.9);
+        assert!(topo.vertex(e.end()).unwrap().point().z() > 1.9);
+    }
+}
+
+fn solid_approx_fixture() -> (Topology, remus_topology::solid::SolidId, EdgeId) {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 10.0).unwrap();
+    let circle = Circle3D::new_with_ref(
+        Point3::new(0.0, 5.0, 5.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        1.0,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let source = edge(
+        &mut topo,
+        EdgeCurve::Circle(circle.clone()),
+        circle.evaluate(0.0),
+        circle.evaluate(TAU),
+        Some((0.0, TAU)),
+    );
+    (topo, solid, source)
+}
+
+#[test]
+fn solid_approximation_is_opt_in_and_discloses_global_quality() {
+    let (mut topo, solid, source) = solid_approx_fixture();
+    let direction = Vec3::new(0.0, -1.0, 0.0);
+    let baseline = (topo.num_vertices(), topo.num_edges(), topo.journal().len());
+    assert!(
+        matches!(project_curves_onto_solid(&mut topo, &[source], direction, solid, &ProjectCurveOptions::default()), Err(ProjectCurveError::SourceRefused { error, .. }) if matches!(*error, ProjectCurveError::ApproximationRequired))
+    );
+    assert_eq!(
+        baseline,
+        (topo.num_vertices(), topo.num_edges(), topo.journal().len())
+    );
+    let exact = edge(
+        &mut topo,
+        EdgeCurve::Line,
+        Point3::new(0.5, 5.0, 6.0),
+        Point3::new(0.5, 5.0, 7.0),
+        None,
+    );
+    let other_circle = Circle3D::new_with_ref(
+        Point3::new(0.0, 5.0, 6.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        0.5,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let other = edge(
+        &mut topo,
+        EdgeCurve::Circle(other_circle.clone()),
+        other_circle.evaluate(0.0),
+        other_circle.evaluate(TAU),
+        Some((0.0, TAU)),
+    );
+    let options = ProjectCurveOptions {
+        allow_approximate: true,
+        ..ProjectCurveOptions::default()
+    };
+    let face = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|id| matches!(topo.face(*id).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap();
+    let mut reference = topo.clone();
+    let mut expected = 0.0_f64;
+    for id in [source, other] {
+        let result =
+            project_curve_onto_face(&mut reference, id, direction, face, &options).unwrap();
+        let ProjectionQuality::Approximate { max_deviation } = result.quality else {
+            panic!("expected fitted face image");
+        };
+        expected = expected.max(max_deviation);
+    }
+    let result = project_curves_onto_solid(
+        &mut topo,
+        &[source, exact, other],
+        direction,
+        solid,
+        &options,
+    )
+    .unwrap();
+    let ProjectionQuality::Approximate { max_deviation } = result.quality else {
+        panic!("solid quality lost the fitted image");
+    };
+    assert!((max_deviation - expected).abs() < 1e-15);
+    assert!(max_deviation > 0.0);
+    assert_eq!(
+        result.sources.iter().map(|s| s.source).collect::<Vec<_>>(),
+        vec![source, exact, other]
+    );
+    for item in &result.sources {
+        assert!(!item.clipped);
+        assert_eq!(item.edges.len(), 1);
+        assert_eq!(item.edges[0].face, face);
+    }
+    assert!(matches!(
+        topo.edge(result.sources[1].edges[0].edge).unwrap().curve(),
+        EdgeCurve::Line
+    ));
+    assert!(matches!(
+        topo.edge(result.sources[0].edges[0].edge).unwrap().curve(),
+        EdgeCurve::NurbsCurve(_)
+    ));
+}
+
+#[test]
+fn solid_approximation_refuses_budget_and_uncertified_visibility_atomically() {
+    for (direction, options, budget) in [
+        (
+            Vec3::new(0.0, -1.0, 0.0),
+            ProjectCurveOptions {
+                allow_approximate: true,
+                approximation_tolerance: Some(1e-6),
+                max_control_points: 4,
+                ..ProjectCurveOptions::default()
+            },
+            true,
+        ),
+        (
+            Vec3::new(0.0, -1.0, -1.0),
+            ProjectCurveOptions {
+                allow_approximate: true,
+                ..ProjectCurveOptions::default()
+            },
+            false,
+        ),
+    ] {
+        let (mut topo, solid, source) = solid_approx_fixture();
+        let baseline = (topo.num_vertices(), topo.num_edges(), topo.journal().len());
+        let result = project_curves_onto_solid(&mut topo, &[source], direction, solid, &options);
+        let Err(ProjectCurveError::SourceRefused { index, error }) = result else {
+            panic!("expected atomic source refusal");
+        };
+        assert_eq!(index, 0);
+        if budget {
+            assert!(matches!(
+                *error,
+                ProjectCurveError::ToleranceUnattainable { .. }
+            ));
+        } else {
+            assert!(matches!(
+                *error,
+                ProjectCurveError::ApproximateClipUnsupported
+            ));
+        }
+        assert_eq!(
+            baseline,
+            (topo.num_vertices(), topo.num_edges(), topo.journal().len())
+        );
+    }
+}
+
+#[test]
+fn later_solid_refusal_does_not_commit_computed_approximate_source() {
+    let (mut topo, solid, source) = solid_approx_fixture();
+    let parallel = edge(
+        &mut topo,
+        EdgeCurve::Line,
+        Point3::new(0.0, 6.0, 5.0),
+        Point3::new(0.0, 5.0, 5.0),
+        None,
+    );
+    let baseline = (topo.num_vertices(), topo.num_edges(), topo.journal().len());
+    let options = ProjectCurveOptions {
+        allow_approximate: true,
+        ..ProjectCurveOptions::default()
+    };
+    let result = project_curves_onto_solid(
+        &mut topo,
+        &[source, parallel],
+        Vec3::new(0.0, -1.0, 0.0),
+        solid,
+        &options,
+    );
+    assert!(
+        matches!(result, Err(ProjectCurveError::SourceRefused { index: 1, error }) if matches!(*error, ProjectCurveError::SourceParallelToDirection))
+    );
+    assert_eq!(
+        baseline,
+        (topo.num_vertices(), topo.num_edges(), topo.journal().len())
+    );
 }

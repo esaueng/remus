@@ -61,7 +61,9 @@ pub const DEFAULT_MAX_CONTROL_POINTS: usize = 512;
 pub struct ProjectCurveOptions {
     /// Accept a fitted NURBS image where no exact construction exists
     /// (arc onto a non-coaxial curved quadric). `false` refuses with
-    /// [`ProjectCurveError::ApproximationRequired`].
+    /// [`ProjectCurveError::ApproximationRequired`]. Solid calls accept
+    /// a full-source fitted image on one face only when every other face
+    /// is certified unable to intersect any source ray.
     pub allow_approximate: bool,
     /// Absolute deviation bound for approximate images. `None` means
     /// `1e-6 · scale`. Values below `1e-9 · scale`, non-finite, or
@@ -213,8 +215,9 @@ pub enum ProjectCurveError {
         /// Best deviation reached within the control-point budget.
         achieved: f64,
     },
-    /// An approximate image would need clipping against the face boundary.
-    #[error("approximate projections cannot be clipped in this slice")]
+    /// An approximate image needs trim clipping, has multiple candidate
+    /// faces, or lacks a whole-source no-hit proof for a competing face.
+    #[error("approximate projections require one unclipped face with certified visibility")]
     ApproximateClipUnsupported,
     /// The image runs along a face boundary edge over a positive length.
     #[error("projected image runs along a face boundary")]
@@ -3009,6 +3012,208 @@ fn validate_plane_frame(
 // Face-level and solid-level orchestration.
 // ---------------------------------------------------------------------------
 
+fn source_bound(source: &ResolvedSource) -> Option<remus_math::aabb::Aabb3> {
+    use remus_geometry::bounds::curve::{
+        circle_arc_bounds, ellipse_arc_bounds, line_segment_bounds,
+    };
+    let bound = match &source.geom {
+        SourceGeom::Segment { a, b } => line_segment_bounds(*a, *b),
+        SourceGeom::Circle { circle } => {
+            circle_arc_bounds(circle, source.domain.0, source.domain.1)
+        }
+        SourceGeom::Ellipse { ellipse } => {
+            ellipse_arc_bounds(ellipse, source.domain.0, source.domain.1)
+        }
+        SourceGeom::Other { .. } => return None,
+    };
+    bound.is_prunable().then(|| bound.aabb())
+}
+
+fn interval_dot(vector: [ScalarInterval; 3], axis: Vec3) -> ScalarInterval {
+    (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+        sum.add(vector[i].mul(ScalarInterval::point(axis.0[i])))
+    })
+}
+
+fn ray_parameter_bound(distance: f64, direction: Vec3) -> f64 {
+    let norm = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+        sum.add(interval_square(ScalarInterval::point(direction.0[i])))
+    });
+    let lower_norm = norm.lo.max(0.0).sqrt().next_down();
+    ScalarInterval::point(distance)
+        .div(ScalarInterval::point(lower_norm))
+        .hi
+}
+
+fn interval_square(value: ScalarInterval) -> ScalarInterval {
+    let lower = if value.lo <= 0.0 && value.hi >= 0.0 {
+        0.0
+    } else {
+        value.lo.abs().min(value.hi.abs()).powi(2).next_down()
+    };
+    ScalarInterval {
+        lo: lower,
+        hi: value.lo.abs().max(value.hi.abs()).powi(2).next_up(),
+    }
+}
+
+/// A whole-source no-hit proof. Curved faces are bounded only after their
+/// primitive trim is qualified; uncertain interval hulls keep the refusal.
+fn curved_face_missed(
+    topo: &Topology,
+    face: FaceId,
+    source: &ResolvedSource,
+    direction: Vec3,
+    target: &TargetGeom,
+) -> Result<bool, ProjectCurveError> {
+    let Some(source_box) = source_bound(source) else {
+        return Ok(false);
+    };
+    let (origin, x_axis, y_axis, z_axis, radius, slope) = match target {
+        TargetGeom::Cylinder(c) => (
+            c.origin(),
+            c.x_axis(),
+            c.y_axis(),
+            c.axis(),
+            c.radius(),
+            None,
+        ),
+        TargetGeom::Cone(c) => {
+            let (sin, cos) = c.half_angle().sin_cos();
+            let slope = ScalarInterval {
+                lo: cos.next_down(),
+                hi: cos.next_up(),
+            }
+            .div(ScalarInterval {
+                lo: sin.next_down(),
+                hi: sin.next_up(),
+            });
+            (c.apex(), c.x_axis(), c.y_axis(), c.axis(), 0.0, Some(slope))
+        }
+        TargetGeom::Sphere(c) => (
+            c.center(),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            c.radius(),
+            None,
+        ),
+        TargetGeom::Plane { .. } => return Ok(false),
+    };
+    let face_box = match target {
+        TargetGeom::Cylinder(_) | TargetGeom::Cone(_) => {
+            if !full_axial_trim(topo, face, origin, z_axis)? {
+                return Ok(false);
+            }
+            let mut axial = ScalarInterval {
+                lo: f64::INFINITY,
+                hi: f64::NEG_INFINITY,
+            };
+            for edge in boundary_edges(topo, face)? {
+                for point in [edge.start, edge.end] {
+                    let delta = std::array::from_fn(|i| {
+                        ScalarInterval::point(point.0[i]).sub(ScalarInterval::point(origin.0[i]))
+                    });
+                    let value = interval_dot(delta, z_axis);
+                    axial.lo = axial.lo.min(value.lo);
+                    axial.hi = axial.hi.max(value.hi);
+                }
+                if let EdgeCurve::Circle(c) = edge.curve {
+                    let delta = std::array::from_fn(|i| {
+                        ScalarInterval::point(c.center().0[i])
+                            .sub(ScalarInterval::point(origin.0[i]))
+                    });
+                    let center = interval_dot(delta, z_axis);
+                    let dot_axis = |axis: Vec3| {
+                        interval_dot(
+                            std::array::from_fn(|i| ScalarInterval::point(axis.0[i])),
+                            z_axis,
+                        )
+                    };
+                    let a = dot_axis(c.u_axis());
+                    let b = dot_axis(c.v_axis());
+                    let excursion = ScalarInterval::point(c.radius())
+                        .mul(ScalarInterval::point(
+                            ScalarInterval::point(a.lo.abs().max(a.hi.abs()))
+                                .add(ScalarInterval::point(b.lo.abs().max(b.hi.abs())))
+                                .hi,
+                        ))
+                        .hi;
+                    axial.lo = axial.lo.min((center.lo - excursion).next_down());
+                    axial.hi = axial.hi.max((center.hi + excursion).next_up());
+                }
+            }
+            let radial = slope.map_or(radius, |s| {
+                s.mul(ScalarInterval::point(axial.lo.abs().max(axial.hi.abs())))
+                    .hi
+            });
+            if !axial.finite() || !radial.is_finite() {
+                return Ok(false);
+            }
+            let bounds: [ScalarInterval; 3] = std::array::from_fn(|i| {
+                ScalarInterval::point(origin.0[i])
+                    .add(ScalarInterval::point(z_axis.0[i]).mul(axial))
+                    .add(ScalarInterval {
+                        lo: -radial,
+                        hi: radial,
+                    })
+            });
+            remus_math::aabb::Aabb3 {
+                min: Point3::new(bounds[0].lo, bounds[1].lo, bounds[2].lo),
+                max: Point3::new(bounds[0].hi, bounds[1].hi, bounds[2].hi),
+            }
+        }
+        TargetGeom::Sphere(_) => {
+            let bounds: [ScalarInterval; 3] = std::array::from_fn(|i| {
+                ScalarInterval::point(origin.0[i]).add(ScalarInterval {
+                    lo: -radius,
+                    hi: radius,
+                })
+            });
+            remus_math::aabb::Aabb3 {
+                min: Point3::new(bounds[0].lo, bounds[1].lo, bounds[2].lo),
+                max: Point3::new(bounds[0].hi, bounds[1].hi, bounds[2].hi),
+            }
+        }
+        TargetGeom::Plane { .. } => return Ok(false),
+    };
+    let bounds = source_box.union(face_box);
+    let diagonal = (0..3).fold(ScalarInterval::point(0.0), |sum, i| {
+        let width =
+            ScalarInterval::point(bounds.max.0[i]).sub(ScalarInterval::point(bounds.min.0[i]));
+        sum.add(interval_square(width))
+    });
+    let travel = ray_parameter_bound(diagonal.hi.sqrt().next_up(), direction);
+    if !travel.is_finite() {
+        return Ok(false);
+    }
+    let ray: [ScalarInterval; 3] = std::array::from_fn(|i| {
+        ScalarInterval {
+            lo: source_box.min.0[i],
+            hi: source_box.max.0[i],
+        }
+        .sub(ScalarInterval::point(origin.0[i]))
+        .add(ScalarInterval::point(direction.0[i]).mul(ScalarInterval {
+            lo: 0.0,
+            hi: travel,
+        }))
+    });
+    let radial =
+        interval_square(interval_dot(ray, x_axis)).add(interval_square(interval_dot(ray, y_axis)));
+    let implicit = match target {
+        TargetGeom::Cylinder(_) => radial.sub(interval_square(ScalarInterval::point(radius))),
+        TargetGeom::Cone(_) => radial.sub(
+            interval_square(interval_dot(ray, z_axis))
+                .mul(interval_square(slope.unwrap_or_else(ScalarInterval::whole))),
+        ),
+        TargetGeom::Sphere(_) => radial
+            .add(interval_square(interval_dot(ray, z_axis)))
+            .sub(interval_square(ScalarInterval::point(radius))),
+        TargetGeom::Plane { .. } => return Ok(false),
+    };
+    Ok(implicit.finite() && (implicit.lo > 0.0 || implicit.hi < 0.0))
+}
+
 /// Errors that only skip one face of a solid call (that face contributes
 /// no pieces); everything else refuses the source being processed.
 fn is_face_skip(
@@ -3022,11 +3227,17 @@ fn is_face_skip(
     use remus_geometry::bounds::curve::{
         circle_arc_bounds, ellipse_arc_bounds, line_segment_bounds,
     };
-    if !matches!(error, ProjectCurveError::GrazingDirection) {
+    if !matches!(
+        error,
+        ProjectCurveError::GrazingDirection
+            | ProjectCurveError::SectionThroughApex
+            | ProjectCurveError::TangentSection
+            | ProjectCurveError::NearParabolicSection { .. }
+    ) {
         return Ok(false);
     }
     let TargetGeom::Plane { normal, delta } = target else {
-        return Ok(false);
+        return curved_face_missed(topo, face, source, direction, target);
     };
     let dot = |vector: Vec3| {
         (0..3).fold(ScalarInterval::point(0.0), |sum, axis| {
@@ -3102,11 +3313,15 @@ fn is_face_skip(
             .sub(ScalarInterval::point(bounds.min.0[axis]));
         sum.add(width.mul(width))
     });
-    let travel = diagonal_squared.hi.max(0.0).sqrt().next_up();
+    let travel = ray_parameter_bound(diagonal_squared.hi.max(0.0).sqrt().next_up(), direction);
     let denominator = dot(direction);
     let max_change = ScalarInterval::point(denominator.lo.abs().max(denominator.hi.abs()))
         .mul(ScalarInterval::point(travel))
         .hi;
+    if (distance.lo > 0.0 && denominator.lo >= 0.0) || (distance.hi < 0.0 && denominator.hi <= 0.0)
+    {
+        return Ok(true);
+    }
     // Any point of the finite face is at most `travel` from any source
     // point. A ray too parallel to change the source's plane distance
     // over that travel cannot meet this face, even after rigid placement.
@@ -3267,7 +3482,7 @@ fn commit_approx_result(topo: &mut Topology, face: FaceId, spec: &ApproxSpec) ->
 }
 
 /// One source over a solid's faces: per-face models, skipping faces that
-/// cannot contribute exactly (the clipped flag discloses the gap).
+/// are certified unable to intersect any source ray.
 fn project_source_onto_faces(
     topo: &Topology,
     source: &ResolvedSource,
@@ -3331,6 +3546,73 @@ fn project_source_onto_faces(
     project_one_source(topo, source, direction, &faces)
 }
 
+enum ComputedSource {
+    Exact {
+        pieces: Vec<PieceSpec>,
+        clipped: bool,
+    },
+    Approximate {
+        face: FaceId,
+        spec: ApproxSpec,
+    },
+}
+
+fn solid_approximate_spec(
+    topo: &Topology,
+    source: &ResolvedSource,
+    direction: Vec3,
+    targets: &[(FaceId, TargetGeom, f64)],
+    options: &ProjectCurveOptions,
+) -> Result<ComputedSource, ProjectCurveError> {
+    let SourceGeom::Circle { circle } = &source.geom else {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    };
+    let mut candidate = None;
+    for (face, target, extent) in targets {
+        let scale = source.extent.max(*extent);
+        if matches!(
+            conic_model(Some(circle), None, direction, target, scale),
+            Ok(CurvedArcOutcome::NeedsApproximate)
+        ) {
+            if candidate.is_some() {
+                return Err(ProjectCurveError::ApproximateClipUnsupported);
+            }
+            candidate = Some((*face, target, scale));
+        }
+    }
+    let Some((face, target, scale)) = candidate else {
+        return Err(ProjectCurveError::ApproximateClipUnsupported);
+    };
+    for (other_face, other_target, _) in targets {
+        if *other_face == face {
+            continue;
+        }
+        if !is_face_skip(
+            topo,
+            *other_face,
+            &ProjectCurveError::GrazingDirection,
+            source,
+            direction,
+            other_target,
+        )? {
+            return Err(ProjectCurveError::ApproximateClipUnsupported);
+        }
+    }
+    let job = ApproxJob {
+        source,
+        face,
+        target,
+        direction,
+        tolerance: effective_tolerance(options, scale),
+        max_control_points: options.max_control_points,
+        scale,
+    };
+    Ok(ComputedSource::Approximate {
+        face,
+        spec: approximate_spec(topo, &job)?,
+    })
+}
+
 /// Solid-level projection: atomic over sources, first-hit across faces.
 fn project_solid_inner(
     topo: &mut Topology,
@@ -3357,7 +3639,8 @@ fn project_solid_inner(
             }
         }
     }
-    // Resolve faces, skipping torus/NURBS carriers (opaque to this slice).
+    // Every target must be supported; unknown carriers cannot be omitted
+    // from a first-hit or approximate-visibility decision.
     let mut targets: Vec<(FaceId, TargetGeom, f64)> = Vec::new();
     for face in face_ids {
         match resolve_target(topo, face) {
@@ -3383,17 +3666,29 @@ fn project_solid_inner(
     }
     validate_options(options, global_scale)?;
     // Compute every source before allocating anything.
-    let mut computed: Vec<(Vec<PieceSpec>, bool)> = Vec::new();
+    let mut computed = Vec::new();
     let mut any_piece = false;
     for (index, source) in sources.iter().enumerate() {
         let unsupported = match &source.geom {
             SourceGeom::Other { curve } => Some(curve.type_tag()),
             _ => None,
         };
-        match project_source_onto_faces(topo, source, unsupported, direction, &targets) {
-            Ok((pieces, clipped)) => {
-                any_piece = any_piece || !pieces.is_empty();
-                computed.push((pieces, clipped));
+        let result = match project_source_onto_faces(topo, source, unsupported, direction, &targets)
+        {
+            Ok((pieces, clipped)) => Ok(ComputedSource::Exact { pieces, clipped }),
+            Err(ProjectCurveError::ApproximationRequired) if options.allow_approximate => {
+                solid_approximate_spec(topo, source, direction, &targets, options)
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(value) => {
+                any_piece = any_piece
+                    || match &value {
+                        ComputedSource::Exact { pieces, .. } => !pieces.is_empty(),
+                        ComputedSource::Approximate { .. } => true,
+                    };
+                computed.push(value);
             }
             Err(error) => {
                 return Err(ProjectCurveError::SourceRefused {
@@ -3407,17 +3702,32 @@ fn project_solid_inner(
         return Err(ProjectCurveError::EmptyProjection);
     }
     let mut out = Vec::new();
-    for (index, (pieces, clipped)) in computed.iter().enumerate() {
-        let edges = commit_pieces(topo, pieces, None)?;
+    let mut quality = ProjectionQuality::Exact;
+    for (index, result) in computed.iter().enumerate() {
+        let (edges, clipped) = match result {
+            ComputedSource::Exact { pieces, clipped } => {
+                (commit_pieces(topo, pieces, None)?, *clipped)
+            }
+            ComputedSource::Approximate { face, spec } => {
+                let max_deviation = match quality {
+                    ProjectionQuality::Exact => spec.max_deviation,
+                    ProjectionQuality::Approximate { max_deviation } => {
+                        max_deviation.max(spec.max_deviation)
+                    }
+                };
+                quality = ProjectionQuality::Approximate { max_deviation };
+                (commit_approx_result(topo, *face, spec).edges, false)
+            }
+        };
         out.push(SourceProjection {
             source: source_ids[index],
             edges,
-            clipped: *clipped,
+            clipped,
         });
     }
     Ok(SolidProjection {
         sources: out,
-        quality: ProjectionQuality::Exact,
+        quality,
     })
 }
 
