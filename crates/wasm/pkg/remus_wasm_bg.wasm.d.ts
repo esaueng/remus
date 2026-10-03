@@ -23,7 +23,7 @@ export const brepkernel_assemblyAddChild: (a: number, b: number, c: number, d: n
 export const brepkernel_assemblyAddRoot: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_assemblyBom: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_assemblyFlatten: (a: number, b: number) => [number, number, number, number];
-export const brepkernel_assemblyNew: (a: number, b: number, c: number) => number;
+export const brepkernel_assemblyNew: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_booleanCompoundRegions: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_booleanRegions: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_booleanWithCancellation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => [number, number, number];
@@ -41,7 +41,7 @@ export const brepkernel_chamferJournaled: (a: number, b: number, c: number, d: n
 export const brepkernel_chamferV2: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_chamferV2Detailed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_chamferWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-export const brepkernel_checkpoint: (a: number) => number;
+export const brepkernel_checkpoint: (a: number) => [number, number, number];
 export const brepkernel_checkpointCount: (a: number) => number;
 export const brepkernel_circularPattern: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_circularPatternJournaled: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
@@ -131,7 +131,7 @@ export const brepkernel_gcsAddPoint: (a: number, b: number, c: number, d: number
 export const brepkernel_gcsCircleRadius: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_gcsDof: (a: number, b: number) => [number, number, number];
 export const brepkernel_gcsEllipseParams: (a: number, b: number, c: number) => [number, number, number, number];
-export const brepkernel_gcsNew: (a: number) => number;
+export const brepkernel_gcsNew: (a: number) => [number, number, number];
 export const brepkernel_gcsPointPosition: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_gcsRemoveConstraint: (a: number, b: number, c: number) => [number, number];
 export const brepkernel_gcsSetEllipse: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -307,7 +307,7 @@ export const brepkernel_sketchAddCircle: (a: number, b: number, c: number, d: nu
 export const brepkernel_sketchAddConstraint: (a: number, b: number, c: number, d: number) => [number, number];
 export const brepkernel_sketchAddPoint: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_sketchDof: (a: number, b: number) => [number, number, number, number];
-export const brepkernel_sketchNew: (a: number) => number;
+export const brepkernel_sketchNew: (a: number) => [number, number, number];
 export const brepkernel_sketchSolve: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_solidEdgeRelations: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_solidFromShell: (a: number, b: number) => [number, number, number];
