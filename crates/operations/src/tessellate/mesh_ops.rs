@@ -184,17 +184,20 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
 /// `tri_faces` is a parallel tri -> face attribution array (one entry per
 /// triangle); entries for removed triangles are filtered alongside so group
 /// offsets recomputed from it stay aligned.
+///
+/// Returns whether any triangle was removed.
 pub(super) fn dedupe_coincident_triangles(
     mesh: &mut TriangleMesh,
     tri_faces: Option<&mut Vec<u32>>,
-) {
+) -> bool {
     #[cfg(test)]
     if super::tests::mesh_passes::use_reference_passes() {
-        return super::tests::mesh_passes::reference::dedupe_coincident_triangles(mesh, tri_faces);
+        super::tests::mesh_passes::reference::dedupe_coincident_triangles(mesh, tri_faces);
+        return true;
     }
     let tri_count = mesh.indices.len() / 3;
     if tri_count < 2 {
-        return;
+        return false;
     }
 
     // PERF-D07: quantize each vertex once and give every distinct quantized
@@ -207,7 +210,7 @@ pub(super) fn dedupe_coincident_triangles(
     // removal rule below is symmetric in the two classes, and triangles
     // within a group stay in index order, so the kept set is unchanged.
     let Some(ids) = quantized_vertex_ids(mesh) else {
-        return;
+        return false;
     };
 
     let mut keys: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
@@ -295,7 +298,7 @@ pub(super) fn dedupe_coincident_triangles(
     }
 
     if keep.iter().all(|&k| k) {
-        return;
+        return false;
     }
 
     let mut new_indices = Vec::with_capacity(mesh.indices.len());
@@ -337,6 +340,7 @@ pub(super) fn dedupe_coincident_triangles(
     mesh.indices = new_indices;
     mesh.positions = new_positions;
     mesh.normals = new_normals;
+    true
 }
 
 /// Removal rule for one group of position-coincident triangles (in index
@@ -537,27 +541,29 @@ pub fn sample_solid_edges_filtered(
 /// degenerate triangles (where merged indices create duplicate vertices).
 /// `tri_faces` is the parallel tri -> face attribution array; entries for
 /// removed degenerate triangles are filtered alongside.
+///
+/// Returns `false` only when the mesh had no boundary half-edge (every
+/// directed edge has its reverse), in which case it was left untouched.
 pub(super) fn weld_boundary_vertices(
     mesh: &mut TriangleMesh,
     deflection: f64,
     tri_faces: Option<&mut Vec<u32>>,
-) {
+) -> bool {
     #[cfg(test)]
     if super::tests::mesh_passes::use_reference_passes() {
-        return super::tests::mesh_passes::reference::weld_boundary_vertices(
-            mesh, deflection, tri_faces,
-        );
+        super::tests::mesh_passes::reference::weld_boundary_vertices(mesh, deflection, tri_faces);
+        return true;
     }
     let n_verts = mesh.positions.len();
     if n_verts == 0 || mesh.indices.is_empty() {
-        return;
+        return true;
     }
 
     // Boundary vertices: incident on half-edges without a matching reverse.
     // PERF-D07: found through a vertex-indexed half-edge table instead of a
     // hash map of every half-edge; the set is the same.
     let Some(table) = HalfEdgeTable::new(&mesh.indices, n_verts) else {
-        return;
+        return true;
     };
     let mut is_boundary = vec![false; n_verts];
     let mut any_boundary = false;
@@ -570,7 +576,7 @@ pub(super) fn weld_boundary_vertices(
     }
 
     if !any_boundary {
-        return;
+        return false;
     }
 
     // Sorted iteration keeps grid-cell contents and union order independent
@@ -672,6 +678,7 @@ pub(super) fn weld_boundary_vertices(
             *tf = new_tri_faces;
         }
     }
+    true
 }
 
 /// Close a three-edge tessellation gap that is smaller than the requested
