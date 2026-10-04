@@ -641,10 +641,11 @@ mod tests {
     }
 
     /// The kernel enables the content-keyed face-integral cache and the
-    /// identity-keyed volume memo on construction. Repeats are answered from
-    /// them — also for a deserialized copy in a second kernel — with the
-    /// uncached readings, and an in-place transform or a checkpoint restore
-    /// retires a memoized volume instead of serving it stale.
+    /// identity- and content-keyed volume memo on construction. Repeats are
+    /// answered from them — also for a deserialized copy in a second kernel —
+    /// with the uncached readings; an in-place transform retires a memoized
+    /// volume instead of serving it stale, and a checkpoint restore, which
+    /// brings the measured content back, is answered by content.
     #[test]
     fn measurement_memos_hit_repeats_and_never_serve_stale_readings() {
         use remus_check::properties::face_cache::thread_face_cache_stats;
@@ -704,8 +705,52 @@ mod tests {
         k.restore(cp).unwrap();
         let stats = thread_volume_memo_stats();
         let restored = volume(&k, cylinder);
-        assert_eq!(thread_volume_memo_stats().misses, stats.misses + 1);
+        assert_eq!(
+            thread_volume_memo_stats().content_hits,
+            stats.content_hits + 1
+        );
         assert_eq!(restored.to_bits(), v0.to_bits());
+    }
+
+    /// The application's edit flow, as the OpenZCAD adapter runs it: read the
+    /// source's volume, checkpoint, move a face, checkpoint, allocate
+    /// elsewhere (its recognition probes do), then read the result's volume.
+    /// The checkpoint makes the next mutation clone the topology and the
+    /// allocation moves its generation, so only the content key can find a
+    /// reading the move left — and it does, equal to a fresh reading.
+    #[test]
+    fn a_moved_result_volume_survives_checkpoints_and_unrelated_allocations() {
+        use remus_operations::measure::{
+            set_thread_volume_memo_capacity, thread_volume_memo_stats,
+        };
+
+        let mut k = BrepKernel::new();
+        let block = make_box(&mut k, 10.0, 6.0, 4.0);
+        let top = k
+            .get_solid_faces(block)
+            .unwrap()
+            .into_iter()
+            .find(|&f| {
+                let n = k.get_face_normal(f).unwrap();
+                n[2] > 0.99
+            })
+            .unwrap();
+        let _ = volume(&k, block);
+        let _cp = k.checkpoint().unwrap();
+        let moved = k.move_faces_binding(block, vec![top], 1.5).unwrap();
+        let _after = k.checkpoint().unwrap();
+        let _other = make_box(&mut k, 1.0, 1.0, 1.0);
+        let stats = thread_volume_memo_stats();
+        let read = volume(&k, moved);
+        let now = thread_volume_memo_stats();
+        assert_eq!(now.misses, stats.misses, "the move's reading is found");
+        assert_eq!(now.content_hits, stats.content_hits + 1);
+        let capacity = now.capacity;
+        set_thread_volume_memo_capacity(0);
+        let fresh = volume(&k, moved);
+        set_thread_volume_memo_capacity(capacity);
+        assert_eq!(read.to_bits(), fresh.to_bits());
+        assert!((read - 10.0 * 6.0 * 5.5).abs() <= 1e-9 * read);
     }
 
     /// PERF-Q02: direct and batch `classifyPoint` agree, including after a

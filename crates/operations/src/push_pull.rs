@@ -111,6 +111,7 @@ pub(crate) fn move_faces_with_entity_evolution(
     let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
         let boundary_pairs;
+        let mut volume_seeds = Vec::new();
         let source_faces = solid_faces(topo, solid)?;
         let result = if let Some((face, new_radius)) =
             cylindrical_bore_move_request(topo, solid, faces, distance)?
@@ -165,6 +166,7 @@ pub(crate) fn move_faces_with_entity_evolution(
             crate::resize_blend::move_planar_faces_with_blends(topo, solid, faces, distance)?
         {
             boundary_pairs = result.boundary_pairs;
+            volume_seeds = result.volume_seeds;
             MoveFacesResult {
                 solid: result.solid,
                 evolution: result.evolution,
@@ -217,6 +219,12 @@ pub(crate) fn move_faces_with_entity_evolution(
                 ),
             }
             .into());
+        }
+        // Derived volumes are recorded only now that the result is proven
+        // outward-wound and valid; readings the move measured are memoized
+        // already (both only while an application enabled the memo).
+        for (deflection, volume) in volume_seeds {
+            crate::measure::seed_solid_volume(topo, result.solid, deflection, volume);
         }
 
         Ok((result, boundary_pairs))
