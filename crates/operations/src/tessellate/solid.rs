@@ -1625,16 +1625,18 @@ fn tessellate_faces_core(
         session.commit();
     }
 
-    if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
-        weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
-    }
+    let closed = matches!(boundary_mode, MeshBoundaryMode::ClosedSolid);
+    let had_boundary =
+        closed && weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
 
     // Drop coincident/cancelling triangles left by booleans that
     // produced overlapping coplanar faces (issue #696). Keyed on quantized
     // positions so position-coincident triangles with distinct vertex IDs
     // are still caught.
-    dedupe_coincident_triangles(&mut plan.merged, tri_faces.as_mut());
-    if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
+    let deduped = dedupe_coincident_triangles(&mut plan.merged, tri_faces.as_mut());
+    // Gap fill only acts on boundary half-edges: a mesh the weld found
+    // closed, and that dedupe left unchanged, has none (PERF-D07).
+    if closed && (had_boundary || deduped) {
         fill_sub_deflection_triangular_gaps(&mut plan.merged, plan.deflection, tri_faces.as_mut());
     }
 
