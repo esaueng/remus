@@ -5894,6 +5894,10 @@ fn compute_raw_curves(
                 // it in an exact circle: substitute it for the marched ring
                 // (see the function docs for why the march is unusable here).
                 Ok(vec![exact])
+            } else if let Some(exact) =
+                exact_ruled_plane_section(*normal, *d, nurbs, context.tolerance)?
+            {
+                Ok(exact)
             } else {
                 plane_nurbs_intersection(*normal, *d, nurbs)
             }
@@ -6318,7 +6322,85 @@ fn analytic_analytic_intersection(
     Ok(results)
 }
 
-/// Plane-NURBS intersection.
+/// A planar profile translated along the linear u direction has an exact
+/// constant-u section. Certify the two rows algebraically, then interpolate
+/// their control points instead of marching a zero crossing at a cap seam.
+/// Equal paired weights make the extrusion parameter affine even for a
+/// rational profile. Other surfaces retain the general intersection path.
+#[allow(clippy::float_cmp)] // Knot and weight identity is an algebraic precondition.
+fn exact_ruled_plane_section(
+    normal: Vec3,
+    d: f64,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let points = surface.control_points();
+    let weights = surface.weights();
+    if surface.degree_u() != 1 || points.len() != 2 || weights[0] != weights[1] {
+        return Ok(None);
+    }
+    let knots = surface.knots_u();
+    if knots.len() != 4 || knots[0] != knots[1] || knots[2] != knots[3] {
+        return Ok(None);
+    }
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let distance = |p: Point3| normal.dot(p - origin) - d;
+    let h0 = distance(points[0][0]);
+    let h1 = distance(points[1][0]);
+    let scale = points.iter().flatten().fold(d.abs().max(1.0), |s, p| {
+        s.max(p.x().abs()).max(p.y().abs()).max(p.z().abs())
+    });
+    let roundoff = (32.0 * f64::EPSILON * scale).min(tol.linear);
+    if points[0]
+        .iter()
+        .any(|&p| (distance(p) - h0).abs() > roundoff)
+        || points[1]
+            .iter()
+            .any(|&p| (distance(p) - h1).abs() > roundoff)
+        || (h1 - h0).abs() <= roundoff
+    {
+        return Ok(None);
+    }
+    let fraction = -h0 / (h1 - h0);
+    if fraction < -roundoff / (h1 - h0).abs() || fraction > 1.0 + roundoff / (h1 - h0).abs() {
+        return Ok(Some(Vec::new()));
+    }
+    let control_points: Vec<Point3> = if h0.abs() <= roundoff {
+        points[0].clone()
+    } else if h1.abs() <= roundoff {
+        points[1].clone()
+    } else {
+        points[0]
+            .iter()
+            .zip(&points[1])
+            .map(|(&a, &b)| a + (b - a) * fraction)
+            .collect()
+    };
+    // Positive weights keep the whole rational trace inside this hull;
+    // certify the final rounded coefficients against the original plane.
+    if control_points
+        .iter()
+        .any(|&p| distance(p).abs() > tol.linear)
+    {
+        return Ok(None);
+    }
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(
+        surface.degree_v(),
+        surface.knots_v().to_vec(),
+        control_points,
+        weights[0].clone(),
+    )?;
+    let domain = curve.domain();
+    Ok(Some(vec![RawCurve {
+        bbox: curve.aabb(),
+        p_start: curve.evaluate(domain.0),
+        p_end: curve.evaluate(domain.1),
+        t_range: domain,
+        curve: EdgeCurve::NurbsCurve(curve),
+    }]))
+}
+
+/// General plane-NURBS intersection when no algebraic section is qualified.
 fn plane_nurbs_intersection(
     normal: Vec3,
     d: f64,
@@ -9989,3 +10071,6 @@ mod face_bbox_conic_tests {
 
 #[cfg(test)]
 mod helper_oracle_tests;
+
+#[cfg(test)]
+mod ruled_plane_tests;

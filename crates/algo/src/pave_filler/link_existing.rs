@@ -220,6 +220,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
 ///
 /// Returns `true` if the pair was linked. Skips self-pairs, pairs already
 /// sharing a CB, and geometrically incompatible curves.
+#[allow(clippy::float_cmp)] // Exact spline span identity is required, not proximity.
 fn try_link(
     topo: &Topology,
     tol: Tolerance,
@@ -249,7 +250,19 @@ fn try_link(
     };
     let boundary_curve = boundary_edge.curve();
 
-    if !curves_compatible(section_curve, boundary_curve, tol) {
+    let identical_spline_span = match (section_curve, boundary_curve) {
+        (EdgeCurve::NurbsCurve(a), EdgeCurve::NurbsCurve(b)) if a == b => arena
+            .pave_blocks
+            .get(section_pb_id)
+            .is_some_and(|section_pb| {
+                section_pb.start.parameter == boundary_pb.start.parameter
+                    && section_pb.end.parameter == boundary_pb.end.parameter
+            }),
+        _ => false,
+    };
+    // Equal coefficients AND equal parameter spans prove the whole trace.
+    // Endpoints alone cannot identify a spline branch or a co-endpoint lens.
+    if !identical_spline_span && !curves_compatible(section_curve, boundary_curve, tol) {
         return false;
     }
 
@@ -316,5 +329,73 @@ fn curves_compatible(a: &EdgeCurve, b: &EdgeCurve, tol: Tolerance) -> bool {
             | EdgeCurve::NurbsCurve(_),
             _,
         ) => false,
+    }
+}
+
+#[cfg(test)]
+mod spline_identity_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::ds::{Pave, PaveBlock};
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
+
+    fn pair(mid_y: f64, span: (f64, f64)) -> bool {
+        let mut topo = Topology::new();
+        let a = Point3::new(0.0, 0.0, 0.0);
+        let b = Point3::new(2.0, 0.0, 0.0);
+        let va = topo.add_vertex(Vertex::new(a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+        let curve = |y| {
+            EdgeCurve::NurbsCurve(
+                NurbsCurve::new(
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![a, Point3::new(1.0, y, 0.0), b],
+                    vec![1.0; 3],
+                )
+                .unwrap(),
+            )
+        };
+        let section_curve = curve(-1.0);
+        let section = topo.add_edge(Edge::new(va, vb, section_curve.clone()));
+        let boundary = topo.add_edge(Edge::new(va, vb, curve(mid_y)));
+        let mut arena = GfaArena::new();
+        let section_pb = arena.pave_blocks.alloc(PaveBlock::new(
+            section,
+            Pave::new(va, 0.0),
+            Pave::new(vb, 1.0),
+        ));
+        let boundary_pb = arena.pave_blocks.alloc(PaveBlock::new(
+            boundary,
+            Pave::new(va, span.0),
+            Pave::new(vb, span.1),
+        ));
+        try_link(
+            &topo,
+            Tolerance::new(),
+            &mut arena,
+            section_pb,
+            &section_curve,
+            boundary_pb,
+        )
+    }
+
+    #[test]
+    fn identical_spline_coefficients_and_span_share_one_boundary() {
+        assert!(pair(-1.0, (0.0, 1.0)));
+    }
+
+    #[test]
+    fn coendpoint_spline_lenses_never_link() {
+        assert!(!pair(1.0, (0.0, 1.0)));
+        assert!(!pair(-1.0 - 1e-10, (0.0, 1.0)));
+    }
+
+    #[test]
+    fn equal_spline_coefficients_do_not_link_different_parameter_spans() {
+        assert!(!pair(-1.0, (0.25, 0.75)));
     }
 }
