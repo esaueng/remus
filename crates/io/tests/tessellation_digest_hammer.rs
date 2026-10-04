@@ -33,9 +33,17 @@ const HAMMER_HOLDER: &str = include_str!("data/shapr3d_hammer_holder.step");
 const ANGULAR: f64 = 0.06;
 
 /// `(deflection, source digest, moved digest)` recorded on aarch64 macOS.
+///
+/// History: recorded first from the passes before PERF-D07 and unchanged by
+/// their rewrite. Translation-exact edge sampling and the NURBS frame chart
+/// (PERF-D01) then changed them: identical vertex, triangle and face
+/// counts and identical triangles (same vertex ids and winding) on every
+/// face; 34 NURBS faces emit their triangles in another order; about 7 150
+/// positions moved by at most 2.2e-14 (circle, ellipse and NURBS edge
+/// samples, NURBS interior points) and NURBS normals by at most 1.9e-12.
 const EXPECTED: [(f64, u64, u64); 2] = [
-    (0.0148, 0x1ff3_1ab7_f5f5_088f, 0x3b42_10f1_b7d6_4e89),
-    (0.1, 0xd7e9_273d_6634_8587, 0x3751_1c78_4c0f_6155),
+    (0.0148, 0x9875_a3dc_bd84_0ee8, 0x0acd_5a65_b372_035a),
+    (0.1, 0xfdbd_f3b1_19cc_6895, 0x4625_53fb_d5d8_4b72),
 ];
 
 /// FNV-1a over the mesh bytes: deterministic on every platform.
