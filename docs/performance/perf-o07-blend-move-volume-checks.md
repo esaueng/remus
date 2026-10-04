@@ -37,11 +37,16 @@ faces decline to integrate keeps the whole-body mesh comparison.
   size. The integral vouches for itself before it is used: every reading must
   be finite, each face's quadrature area must read the same before and after
   (a rigid translation preserves area, so a different reading means the two
-  sides did not sample the same trim), and the two families whose UV outline
-  the trimmed quadrature is known to get wrong (scalloped sphere collars,
-  quadric walls whose rim winds the period) are not read at all. Any of these
-  failing keeps the whole-body mesh comparison with its original slack
-  (`|V_source| × 1e-9 + 1e-7`), so such bodies behave exactly as before.
+  sides did not sample the same trim), and a face from a family whose UV
+  outline the trimmed quadrature can get wrong (`gauss_unqualified_face`:
+  scalloped sphere collars, torus trims outside the two-rim band family, walls
+  whose rim winds the period) must agree with an independent reading of the
+  same quantity that never touches the UV outline: its shadow along the move
+  taken from its boundary by Stokes (`boundary_shadow_along`, magnitude only,
+  2 % tolerance). Any of these failing keeps the whole-body mesh comparison
+  with its original slack (`|V_source| × 1e-9 + 1e-7`), so such bodies behave
+  exactly as before. On the fixture the torus corner patch carried by the move
+  is such a face; it passes the cross-check.
 - Disclosed behaviour changes on the integral path: a move whose volume
   change fell inside the old slack band (sub-micron moves on this body) was
   refused by mesh noise and is now judged on its shadow; a body whose
@@ -59,9 +64,10 @@ faces decline to integrate keeps the whole-body mesh comparison.
   quarter-cylinder band of a filleted 10-cube (100d, region area
   90 + 5π); the same with the band carried as its exact rational NURBS
   (the production hot path, trimmed by projection on both sides); and two
-  filleted top edges whose corner patch rides along (100d). The end-to-end
-  test of the rigid translation now also checks the result volume and a
-  negative distance.
+  filleted top edges whose corner patch rides along (100d). The boundary
+  shadow has its own closed forms (rectangle, circle, quarter band, and zero
+  along the face's own plane). The end-to-end test of the rigid translation
+  now also checks the result volume and a negative distance.
 
 ## Measurement
 
