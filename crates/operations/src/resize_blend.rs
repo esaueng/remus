@@ -1663,8 +1663,11 @@ fn boundary_shadow_along(
     if points.len() < 3 {
         return Ok(None);
     }
+    // The vector area of a closed loop is translation-invariant, so take the
+    // cross products about a point on the loop: about the world origin a
+    // millimetre loop a metre away loses its area to cancellation.
+    let origin = points[0];
     let mut twice_vector_area = Vec3::new(0.0, 0.0, 0.0);
-    let origin = Point3::new(0.0, 0.0, 0.0);
     for pair in points.windows(2) {
         twice_vector_area += (pair[0] - origin).cross(pair[1] - origin);
     }
@@ -5434,6 +5437,24 @@ mod tests {
         assert!(
             (shadow - 20.0).abs() < 1e-5 * 20.0,
             "band shadow {shadow} vs 20"
+        );
+
+        // Far from the world origin the cross products about the origin would
+        // cancel to nothing; about a loop point the shadow is still exact.
+        let far = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            far,
+            &remus_math::mat::Mat4::translation(1e8, -1e8, 5e7),
+        )
+        .unwrap();
+        let far_lid = face_with_outward_normal(&topo, far, Vec3::new(0.0, 0.0, 1.0));
+        let shadow = boundary_shadow_along(&topo, far_lid, Vec3::new(0.0, 0.0, 0.5))
+            .unwrap()
+            .unwrap();
+        assert!(
+            (shadow - 3.0).abs() < 1e-6,
+            "lid shadow a hundred kilometres out {shadow}"
         );
     }
 
