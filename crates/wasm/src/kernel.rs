@@ -62,6 +62,7 @@ impl BrepKernel {
     #[must_use]
     pub fn new() -> Self {
         crate::panics::install_hook();
+        remus_operations::tessellate::enable_face_mesh_cache();
         Self {
             topo: Rc::new(Topology::new()),
             assemblies: HandleStore::default(),
