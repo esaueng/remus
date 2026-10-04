@@ -543,7 +543,7 @@ fn open_mesh_exact_volume(
 /// Planes (Green's theorem on the real boundary), NURBS patches, closing
 /// quadric trims — NURBS-trimmed countersink cones and cross-drilled bores
 /// among them — and holed cylinder/cone walls integrate on their outline.
-fn gauss_unqualified_face(
+pub fn gauss_unqualified_face(
     topo: &Topology,
     fid: FaceId,
 ) -> Result<Option<&'static str>, crate::OperationsError> {
