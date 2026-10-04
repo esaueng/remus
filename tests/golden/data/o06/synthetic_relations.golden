@@ -1,0 +1,194 @@
+fixture=two_hole_plate probe=default
+relations=18
+edge=33 relation=convex angle=1.5707963267948966
+edge=34 relation=convex angle=1.5707963267948966
+edge=35 relation=convex angle=1.5707963267948966
+edge=36 relation=convex angle=1.5707963267948966
+edge=37 relation=convex angle=1.5707963267948966
+edge=38 relation=convex angle=1.5707963267948966
+edge=39 relation=convex angle=1.5707963267948966
+edge=40 relation=convex angle=1.5707963267948966
+edge=41 relation=convex angle=1.5707963267948966
+edge=42 relation=convex angle=1.5707963267948966
+edge=43 relation=convex angle=1.5707963267948966
+edge=44 relation=convex angle=1.5707963267948966
+edge=45 relation=convex angle=1.5707963267948966
+edge=46 relation=convex angle=1.5707963267948966
+edge=47 relation=unknown angle=none
+edge=48 relation=convex angle=1.5707963267948966
+edge=49 relation=unknown angle=none
+edge=50 relation=convex angle=1.5707963267948966
+fixture=two_hole_plate probe=0.01
+relations=18
+edge=33 relation=convex angle=1.5707963267948966
+edge=34 relation=convex angle=1.5707963267948966
+edge=35 relation=convex angle=1.5707963267948966
+edge=36 relation=convex angle=1.5707963267948966
+edge=37 relation=convex angle=1.5707963267948966
+edge=38 relation=convex angle=1.5707963267948966
+edge=39 relation=convex angle=1.5707963267948966
+edge=40 relation=convex angle=1.5707963267948966
+edge=41 relation=convex angle=1.5707963267948966
+edge=42 relation=convex angle=1.5707963267948966
+edge=43 relation=convex angle=1.5707963267948966
+edge=44 relation=convex angle=1.5707963267948966
+edge=45 relation=convex angle=1.5707963267948966
+edge=46 relation=convex angle=1.5707963267948966
+edge=47 relation=unknown angle=none
+edge=48 relation=convex angle=1.5707963267948966
+edge=49 relation=unknown angle=none
+edge=50 relation=convex angle=1.5707963267948966
+fixture=pocketed_box probe=default
+relations=24
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=1.5707963267948966
+edge=27 relation=convex angle=1.5707963267948966
+edge=28 relation=convex angle=1.5707963267948966
+edge=29 relation=convex angle=1.5707963267948966
+edge=30 relation=convex angle=1.5707963267948966
+edge=31 relation=convex angle=1.5707963267948966
+edge=32 relation=convex angle=1.5707963267948966
+edge=33 relation=convex angle=1.5707963267948966
+edge=34 relation=convex angle=1.5707963267948966
+edge=35 relation=convex angle=1.5707963267948966
+edge=36 relation=convex angle=1.5707963267948966
+edge=37 relation=convex angle=1.5707963267948966
+edge=38 relation=convex angle=1.5707963267948966
+edge=39 relation=convex angle=1.5707963267948966
+edge=40 relation=concave angle=-1.5707963267948966
+edge=41 relation=concave angle=-1.5707963267948966
+edge=42 relation=concave angle=-1.5707963267948966
+edge=43 relation=concave angle=-1.5707963267948966
+edge=44 relation=concave angle=-1.5707963267948966
+edge=45 relation=concave angle=-1.5707963267948966
+edge=46 relation=concave angle=-1.5707963267948966
+edge=47 relation=concave angle=-1.5707963267948966
+fixture=pocketed_box probe=0.01
+relations=24
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=1.5707963267948966
+edge=27 relation=convex angle=1.5707963267948966
+edge=28 relation=convex angle=1.5707963267948966
+edge=29 relation=convex angle=1.5707963267948966
+edge=30 relation=convex angle=1.5707963267948966
+edge=31 relation=convex angle=1.5707963267948966
+edge=32 relation=convex angle=1.5707963267948966
+edge=33 relation=convex angle=1.5707963267948966
+edge=34 relation=convex angle=1.5707963267948966
+edge=35 relation=convex angle=1.5707963267948966
+edge=36 relation=convex angle=1.5707963267948966
+edge=37 relation=convex angle=1.5707963267948966
+edge=38 relation=convex angle=1.5707963267948966
+edge=39 relation=convex angle=1.5707963267948966
+edge=40 relation=concave angle=-1.5707963267948966
+edge=41 relation=concave angle=-1.5707963267948966
+edge=42 relation=concave angle=-1.5707963267948966
+edge=43 relation=concave angle=-1.5707963267948966
+edge=44 relation=concave angle=-1.5707963267948966
+edge=45 relation=concave angle=-1.5707963267948966
+edge=46 relation=concave angle=-1.5707963267948966
+edge=47 relation=concave angle=-1.5707963267948966
+fixture=blind_hole_plate probe=default
+relations=15
+edge=15 relation=convex angle=1.5707963267948966
+edge=16 relation=convex angle=1.5707963267948966
+edge=17 relation=convex angle=1.5707963267948966
+edge=18 relation=convex angle=1.5707963267948966
+edge=19 relation=convex angle=1.5707963267948966
+edge=20 relation=convex angle=1.5707963267948966
+edge=21 relation=convex angle=1.5707963267948966
+edge=22 relation=convex angle=1.5707963267948966
+edge=23 relation=convex angle=1.5707963267948966
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=1.5707963267948966
+edge=27 relation=convex angle=1.5707963267948966
+edge=28 relation=concave angle=-1.5707963267948966
+edge=29 relation=unknown angle=none
+fixture=blind_hole_plate probe=0.01
+relations=15
+edge=15 relation=convex angle=1.5707963267948966
+edge=16 relation=convex angle=1.5707963267948966
+edge=17 relation=convex angle=1.5707963267948966
+edge=18 relation=convex angle=1.5707963267948966
+edge=19 relation=convex angle=1.5707963267948966
+edge=20 relation=convex angle=1.5707963267948966
+edge=21 relation=convex angle=1.5707963267948966
+edge=22 relation=convex angle=1.5707963267948966
+edge=23 relation=convex angle=1.5707963267948966
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=1.5707963267948966
+edge=27 relation=convex angle=1.5707963267948966
+edge=28 relation=concave angle=-1.5707963267948966
+edge=29 relation=unknown angle=none
+fixture=chamfered_box probe=default
+relations=15
+edge=12 relation=convex angle=1.5707963267948966
+edge=13 relation=convex angle=1.5707963267948966
+edge=14 relation=convex angle=1.5707963267948966
+edge=15 relation=convex angle=1.5707963267948966
+edge=16 relation=convex angle=1.5707963267948966
+edge=17 relation=convex angle=1.5707963267948966
+edge=18 relation=convex angle=1.5707963267948966
+edge=19 relation=convex angle=1.5707963267948966
+edge=20 relation=convex angle=0.7853981633974483
+edge=21 relation=convex angle=1.5707963267948966
+edge=22 relation=convex angle=1.5707963267948966
+edge=23 relation=convex angle=1.5707963267948966
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=0.7853981633974483
+fixture=chamfered_box probe=0.01
+relations=15
+edge=12 relation=convex angle=1.5707963267948966
+edge=13 relation=convex angle=1.5707963267948966
+edge=14 relation=convex angle=1.5707963267948966
+edge=15 relation=convex angle=1.5707963267948966
+edge=16 relation=convex angle=1.5707963267948966
+edge=17 relation=convex angle=1.5707963267948966
+edge=18 relation=convex angle=1.5707963267948966
+edge=19 relation=convex angle=1.5707963267948966
+edge=20 relation=convex angle=0.7853981633974483
+edge=21 relation=convex angle=1.5707963267948966
+edge=22 relation=convex angle=1.5707963267948966
+edge=23 relation=convex angle=1.5707963267948966
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=0.7853981633974483
+fixture=filleted_box probe=default
+relations=15
+edge=12 relation=convex angle=1.5707963267948966
+edge=13 relation=tangent angle=1.2246467991473532e-16
+edge=14 relation=convex angle=1.5707963267948966
+edge=15 relation=tangent angle=6.123233995736766e-17
+edge=16 relation=convex angle=1.5707963267948966
+edge=17 relation=convex angle=1.5707963267948966
+edge=18 relation=convex angle=1.5707963267948966
+edge=19 relation=convex angle=1.5707963267948966
+edge=20 relation=convex angle=1.5707963267948966
+edge=21 relation=convex angle=1.5707963267948966
+edge=22 relation=convex angle=1.5707963267948966
+edge=23 relation=convex angle=1.5707963267948966
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=1.5707963267948966
+fixture=filleted_box probe=0.01
+relations=15
+edge=12 relation=convex angle=1.5707963267948966
+edge=13 relation=tangent angle=1.2246467991473532e-16
+edge=14 relation=convex angle=1.5707963267948966
+edge=15 relation=tangent angle=6.123233995736766e-17
+edge=16 relation=convex angle=1.5707963267948966
+edge=17 relation=convex angle=1.5707963267948966
+edge=18 relation=convex angle=1.5707963267948966
+edge=19 relation=convex angle=1.5707963267948966
+edge=20 relation=convex angle=1.5707963267948966
+edge=21 relation=convex angle=1.5707963267948966
+edge=22 relation=convex angle=1.5707963267948966
+edge=23 relation=convex angle=1.5707963267948966
+edge=24 relation=convex angle=1.5707963267948966
+edge=25 relation=convex angle=1.5707963267948966
+edge=26 relation=convex angle=1.5707963267948966
