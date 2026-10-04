@@ -347,6 +347,7 @@ Quick reference — find the right file for any task:
 | AABB computation | `properties/bbox.rs` |
 | Face Gauss integration | `properties/face_integrator.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
+| Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |

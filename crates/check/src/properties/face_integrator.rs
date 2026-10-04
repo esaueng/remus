@@ -17,6 +17,9 @@ use super::PropertiesOptions;
 use crate::CheckError;
 
 mod adaptive;
+mod loop_index;
+
+use loop_index::{IntervalIndex, winding_number_over};
 
 #[derive(Clone, Copy)]
 struct IntegrationRule<'a> {
@@ -1025,9 +1028,72 @@ impl UvLoop {
     }
 
     /// Whether `(u, v)` lies inside the patch this loop encloses.
+    #[cfg(test)]
     fn encloses(&self, u: f64, v: f64, u_periodic: bool) -> bool {
+        self.encloses_with(None, u, v, u_periodic)
+    }
+
+    /// [`Self::encloses`], visiting only the edges `index` (from
+    /// [`Self::edge_v_index`]) files under `v` when one is supplied — the
+    /// same winding number, so the same verdict.
+    fn encloses_with(
+        &self,
+        index: Option<&IntervalIndex>,
+        u: f64,
+        v: f64,
+        u_periodic: bool,
+    ) -> bool {
         use remus_math::predicates::point_in_polygon;
-        point_in_polygon(Point2::new(self.wrap_u(u, u_periodic), v), &self.points)
+        let point = Point2::new(self.wrap_u(u, u_periodic), v);
+        match index {
+            Some(index) => winding_number_over(point, &self.points, index.candidates(v)) != 0,
+            None => point_in_polygon(point, &self.points),
+        }
+    }
+
+    /// Index over the `v` extents of the closed polygon's edges
+    /// `i -> (i + 1) % n`, for [`Self::encloses_with`].
+    fn edge_v_index(&self) -> Option<IntervalIndex> {
+        let n = self.points.len();
+        let intervals: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let (a, b) = (self.points[i].y(), self.points[(i + 1) % n].y());
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        IntervalIndex::build(&intervals)
+    }
+
+    /// Segment `i` as [`Self::for_each_v_crossing`] walks it.
+    fn crossing_segment(&self, i: usize, wraps: bool) -> (Point2, Point2) {
+        let n = self.points.len();
+        let a = self.points[i];
+        let b = if i + 1 < n {
+            self.points[i + 1]
+        } else if wraps {
+            Point2::new(
+                self.points[0].x() + std::f64::consts::TAU,
+                self.points[0].y(),
+            )
+        } else {
+            self.points[0]
+        };
+        (a, b)
+    }
+
+    /// Index over the `u` extents of the segments
+    /// [`Self::for_each_v_crossing`] walks with this `wraps`.
+    fn segment_u_index(&self, wraps: bool) -> Option<IntervalIndex> {
+        if self.points.len() < 2 {
+            return None;
+        }
+        let intervals: Vec<(f64, f64)> = (0..self.points.len())
+            .map(|i| {
+                let (a, b) = self.crossing_segment(i, wraps);
+                (a.x().min(b.x()), a.x().max(b.x()))
+            })
+            .collect();
+        IntervalIndex::build(&intervals)
     }
 
     /// Call `f` with the `v` of every point where the vertical line at `u`
@@ -1037,7 +1103,20 @@ impl UvLoop {
     /// from its last sample back to its first, a period-wrapping loop by the
     /// step to its first sample one whole turn on. Each segment is taken
     /// half-open in `u` so a shared endpoint is reported once.
-    fn for_each_v_crossing(&self, u: f64, u_periodic: bool, wraps: bool, mut f: impl FnMut(f64)) {
+    ///
+    /// With `index` (from [`Self::segment_u_index`] with the same `wraps`),
+    /// visits only the segments it files under the query `u`. Every segment
+    /// that can cross is among them and is tested exactly as the full scan
+    /// tests it; crossings may arrive in a different order, which no caller
+    /// observes (cuts are sorted, strands counted).
+    fn for_each_v_crossing_with(
+        &self,
+        index: Option<&IntervalIndex>,
+        u: f64,
+        u_periodic: bool,
+        wraps: bool,
+        mut f: impl FnMut(f64),
+    ) {
         let tau = std::f64::consts::TAU;
         let n = self.points.len();
         if n < 2 {
@@ -1051,15 +1130,8 @@ impl UvLoop {
             self.wrap_u(u, u_periodic)
         };
 
-        for i in 0..n {
-            let a = self.points[i];
-            let b = if i + 1 < n {
-                self.points[i + 1]
-            } else if wraps {
-                Point2::new(self.points[0].x() + tau, self.points[0].y())
-            } else {
-                self.points[0]
-            };
+        let mut visit = |i: usize| {
+            let (a, b) = self.crossing_segment(i, wraps);
             let (lo, hi) = if a.x() <= b.x() {
                 (a.x(), b.x())
             } else {
@@ -1069,6 +1141,10 @@ impl UvLoop {
                 let t = (uq - a.x()) / (b.x() - a.x());
                 f((b.y() - a.y()).mul_add(t, a.y()));
             }
+        };
+        match index {
+            Some(index) => index.candidates(uq).iter().copied().for_each(&mut visit),
+            None => (0..n).for_each(&mut visit),
         }
     }
 
@@ -1089,9 +1165,9 @@ impl UvLoop {
     /// abscissa rather than a polygon crossing number.
     ///
     /// The loop must already be [`Self::oriented_along_u`].
-    fn strands_above(&self, u: f64, v: f64) -> usize {
+    fn strands_above(&self, index: Option<&IntervalIndex>, u: f64, v: f64) -> usize {
         let mut count = 0;
-        self.for_each_v_crossing(u, true, true, |vc| {
+        self.for_each_v_crossing_with(index, u, true, true, |vc| {
             if vc > v {
                 count += 1;
             }
@@ -1215,17 +1291,69 @@ struct UvTrim<'a> {
     bands: &'a [UvLoop],
     /// Whether `u` is periodic on this surface.
     u_periodic: bool,
+    /// Segment indexes for the loops above, built once per trim (O06).
+    index: TrimIndex,
+}
+
+/// [`IntervalIndex`]es for one loop: crossing segments by `u` and winding
+/// edges by `v`. `None` falls back to scanning the loop.
+#[derive(Debug, Default)]
+struct LoopIndex {
+    crossing_u: Option<IntervalIndex>,
+    winding_v: Option<IntervalIndex>,
+}
+
+impl LoopIndex {
+    /// A patch loop: crossed with a closing chord, tested by winding.
+    fn patch(loop_: &UvLoop) -> Self {
+        Self {
+            crossing_u: loop_.segment_u_index(false),
+            winding_v: loop_.edge_v_index(),
+        }
+    }
+
+    /// A period-wrapping band: crossed with the step one turn on, counted.
+    fn band(loop_: &UvLoop) -> Self {
+        Self {
+            crossing_u: loop_.segment_u_index(true),
+            winding_v: None,
+        }
+    }
+}
+
+/// Per-loop indexes of a [`UvTrim`], index-aligned with its loops.
+#[derive(Debug, Default)]
+struct TrimIndex {
+    outer: LoopIndex,
+    pockets: Vec<LoopIndex>,
+    bands: Vec<LoopIndex>,
 }
 
 impl<'a> UvTrim<'a> {
+    /// Assemble a trim and index its loops.
+    fn new(
+        outer: Option<&'a UvLoop>,
+        pockets: &'a [UvLoop],
+        bands: &'a [UvLoop],
+        u_periodic: bool,
+    ) -> Self {
+        let index = TrimIndex {
+            outer: outer.map(LoopIndex::patch).unwrap_or_default(),
+            pockets: pockets.iter().map(LoopIndex::patch).collect(),
+            bands: bands.iter().map(LoopIndex::band).collect(),
+        };
+        Self {
+            outer,
+            pockets,
+            bands,
+            u_periodic,
+            index,
+        }
+    }
+
     /// Keep the whole domain but remove `uv`'s holes.
     fn holes_of(uv: &'a FaceUv) -> Self {
-        Self {
-            outer: None,
-            pockets: &uv.pockets,
-            bands: &uv.bands,
-            u_periodic: uv.u_periodic,
-        }
+        Self::new(None, &uv.pockets, &uv.bands, uv.u_periodic)
     }
 
     /// Keep the whole domain and remove only the holes that enclose a patch.
@@ -1235,38 +1363,36 @@ impl<'a> UvTrim<'a> {
     /// [`full_revolution_hole_vs`]), and counting them again as bands would
     /// reject the very strip they bound.
     fn pockets_of(uv: &'a FaceUv) -> Self {
-        Self {
-            outer: None,
-            pockets: &uv.pockets,
-            bands: &[],
-            u_periodic: uv.u_periodic,
-        }
+        Self::new(None, &uv.pockets, &[], uv.u_periodic)
     }
 
     /// Trim to `uv`'s boundary and remove its holes.
     fn boundary_of(uv: &'a FaceUv) -> Self {
-        Self {
-            outer: Some(&uv.boundary),
-            pockets: &uv.pockets,
-            bands: &uv.bands,
-            u_periodic: uv.u_periodic,
-        }
+        Self::new(Some(&uv.boundary), &uv.pockets, &uv.bands, uv.u_periodic)
     }
 
     fn accepts(&self, u: f64, v: f64) -> bool {
         if let Some(outer) = self.outer
-            && !outer.encloses(u, v, self.u_periodic)
+            && !outer.encloses_with(self.index.outer.winding_v.as_ref(), u, v, self.u_periodic)
         {
             return false;
         }
         if self
             .pockets
             .iter()
-            .any(|hole| hole.encloses(u, v, self.u_periodic))
+            .zip(&self.index.pockets)
+            .any(|(hole, index)| {
+                hole.encloses_with(index.winding_v.as_ref(), u, v, self.u_periodic)
+            })
         {
             return false;
         }
-        let strands: usize = self.bands.iter().map(|b| b.strands_above(u, v)).sum();
+        let strands: usize = self
+            .bands
+            .iter()
+            .zip(&self.index.bands)
+            .map(|(band, index)| band.strands_above(index.crossing_u.as_ref(), u, v))
+            .sum();
         strands.is_multiple_of(2)
     }
 
@@ -1331,13 +1457,31 @@ impl<'a> UvTrim<'a> {
 
         let mut cuts: Vec<f64> = vec![v0, v1];
         if let Some(outer) = self.outer {
-            outer.for_each_v_crossing(u, self.u_periodic, false, |vc| cuts.push(vc));
+            outer.for_each_v_crossing_with(
+                self.index.outer.crossing_u.as_ref(),
+                u,
+                self.u_periodic,
+                false,
+                |vc| cuts.push(vc),
+            );
         }
-        for hole in self.pockets {
-            hole.for_each_v_crossing(u, self.u_periodic, false, |vc| cuts.push(vc));
+        for (hole, index) in self.pockets.iter().zip(&self.index.pockets) {
+            hole.for_each_v_crossing_with(
+                index.crossing_u.as_ref(),
+                u,
+                self.u_periodic,
+                false,
+                |vc| cuts.push(vc),
+            );
         }
-        for band in self.bands {
-            band.for_each_v_crossing(u, self.u_periodic, true, |vc| cuts.push(vc));
+        for (band, index) in self.bands.iter().zip(&self.index.bands) {
+            band.for_each_v_crossing_with(
+                index.crossing_u.as_ref(),
+                u,
+                self.u_periodic,
+                true,
+                |vc| cuts.push(vc),
+            );
         }
         cuts.retain(|c| c.is_finite() && *c >= v0 && *c <= v1);
         cuts.sort_by(f64::total_cmp);
