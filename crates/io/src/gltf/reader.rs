@@ -129,6 +129,46 @@ pub fn read_glb_with_limits(
         });
     }
 
+    // Shared accessors are materialized once per primitive reference. Charge
+    // that expanded work before any decoder allocates its output, including
+    // normals that may later be truncated by padding/reconciliation.
+    ensure_limit(
+        "GLB primitives",
+        primitives.len(),
+        limits.max_model_entities,
+    )?;
+    let mut decoded_entities = 0usize;
+    for prim in &primitives {
+        if prim.mode != Some(4) {
+            return Err(crate::IoError::ParseError {
+                reason: "unsupported GLB primitive mode (expected TRIANGLES=4)".into(),
+            });
+        }
+        for index in [
+            prim.position_accessor,
+            prim.normal_accessor,
+            prim.indices_accessor,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(accessor) = accessors.get(index) {
+                decoded_entities = decoded_entities.checked_add(accessor.count).ok_or(
+                    crate::IoError::LimitExceeded {
+                        resource: "GLB decoded accessor entities",
+                        limit: limits.max_model_entities,
+                        actual: usize::MAX,
+                    },
+                )?;
+                ensure_limit(
+                    "GLB decoded accessor entities",
+                    decoded_entities,
+                    limits.max_model_entities,
+                )?;
+            }
+        }
+    }
+
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();
@@ -339,6 +379,8 @@ struct MeshPrimitive {
     position_accessor: Option<usize>,
     normal_accessor: Option<usize>,
     indices_accessor: Option<usize>,
+    // Absent means malformed; glTF's omitted mode defaults to TRIANGLES.
+    mode: Option<u64>,
 }
 
 /// Minimal JSON parsing for accessor array.
@@ -450,6 +492,13 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
                 let pos = extract_attribute_accessor(prim_obj, "POSITION");
                 let norm = extract_attribute_accessor(prim_obj, "NORMAL");
                 let idx = extract_int(prim_obj, "indices");
+                let mode = serde_json::from_str::<serde_json::Value>(prim_obj)
+                    .ok()
+                    .and_then(|object| {
+                        object
+                            .get("mode")
+                            .map_or(Some(4), serde_json::Value::as_u64)
+                    });
 
                 // Only add if at least POSITION is present
                 if pos.is_some() {
@@ -457,6 +506,7 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
                         position_accessor: pos,
                         normal_accessor: norm,
                         indices_accessor: idx,
+                        mode,
                     });
                 }
             }
@@ -476,6 +526,7 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
                 position_accessor: Some(0),
                 normal_accessor: Some(1),
                 indices_accessor: Some(2),
+                mode: Some(4),
             });
         }
     }
@@ -1101,5 +1152,149 @@ mod tests {
             format!("{err}").contains("component type"),
             "unexpected error: {err}"
         );
+    }
+
+    fn shared_accessor_glb(
+        mesh_counts: &[usize],
+        normal_count: usize,
+        component_type: u32,
+    ) -> Vec<u8> {
+        let mut bin = Vec::new();
+        for value in [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        let index_length = if component_type == 5123 { 6 } else { 12 };
+        for value in [0_u32, 1, 2] {
+            if component_type == 5123 {
+                bin.extend_from_slice(&(value as u16).to_le_bytes());
+            } else {
+                bin.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let normal_offset = bin.len();
+        if normal_count > 0 {
+            for value in [0.0_f32, 0.0, 1.0].repeat(normal_count) {
+                bin.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let mut accessors = vec![
+            serde_json::json!({"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}),
+            serde_json::json!({"bufferView":1,"componentType":component_type,"count":3,"type":"SCALAR"}),
+        ];
+        let mut views = vec![
+            serde_json::json!({"buffer":0,"byteOffset":0,"byteLength":36}),
+            serde_json::json!({"buffer":0,"byteOffset":36,"byteLength":index_length}),
+        ];
+        let mut primitive = serde_json::json!({"attributes":{"POSITION":0},"indices":1});
+        if normal_count > 0 {
+            accessors.push(
+                serde_json::json!({"bufferView":2,"componentType":5126,"count":normal_count,"type":"VEC3"}),
+            );
+            views.push(serde_json::json!({"buffer":0,"byteOffset":normal_offset,"byteLength":normal_count * 12}));
+            primitive["attributes"]["NORMAL"] = serde_json::json!(2);
+        }
+        let meshes: Vec<_> = mesh_counts
+            .iter()
+            .map(|&count| serde_json::json!({"primitives":vec![primitive.clone();count]}))
+            .collect();
+        let json = serde_json::json!({"asset":{"version":"2.0"},"meshes":meshes,
+            "accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":bin.len()}]});
+        build_glb_bytes(&json.to_string(), &bin)
+    }
+
+    #[test]
+    fn shared_accessors_are_budgeted_per_reference_before_decoding() {
+        for component_type in [5123, 5125] {
+            for mesh_counts in [&[3][..], &[1, 2][..]] {
+                let glb = shared_accessor_glb(mesh_counts, 0, component_type);
+                for budget in [6, 17] {
+                    let limits = ImportLimits {
+                        max_model_entities: budget,
+                        ..Default::default()
+                    };
+                    assert!(matches!(
+                        read_glb_with_limits(&glb, limits),
+                        Err(crate::IoError::LimitExceeded {
+                            resource: "GLB decoded accessor entities",
+                            ..
+                        })
+                    ));
+                }
+                let limits = ImportLimits {
+                    max_model_entities: 18,
+                    ..Default::default()
+                };
+                let mesh = read_glb_with_limits(&glb, limits).unwrap();
+                assert_eq!(mesh.positions.len(), 9);
+                assert_eq!(mesh.normals.len(), 9);
+                assert_eq!(mesh.indices, (0..9).collect::<Vec<u32>>());
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_normals_are_charged_even_before_final_reconciliation() {
+        for (normal_count, rejected_budget, exact_budget) in [(3, 24, 27), (6, 35, 36)] {
+            let glb = shared_accessor_glb(&[3], normal_count, 5123);
+            let limits = ImportLimits {
+                max_model_entities: rejected_budget,
+                ..Default::default()
+            };
+            assert!(matches!(
+                read_glb_with_limits(&glb, limits),
+                Err(crate::IoError::LimitExceeded {
+                    resource: "GLB decoded accessor entities",
+                    ..
+                })
+            ));
+            let limits = ImportLimits {
+                max_model_entities: exact_budget,
+                ..Default::default()
+            };
+            let mesh = read_glb_with_limits(&glb, limits).unwrap();
+            // Oversized normals are decoded before being truncated to the
+            // nine positions, so the budget must charge the discarded values.
+            assert_eq!(mesh.normals.len(), 9);
+            assert!(
+                mesh.normals
+                    .iter()
+                    .all(|normal| *normal == Vec3::new(0.0, 0.0, 1.0))
+            );
+        }
+    }
+
+    #[test]
+    fn only_triangle_primitive_modes_are_accepted() {
+        let original = shared_accessor_glb(&[1], 0, 5123);
+        // Reuse this fixture's chunks, changing only the mode declaration.
+        let json_len = u32::from_le_bytes(original[12..16].try_into().unwrap()) as usize;
+        let json_end = 20 + json_len;
+        let mut json: serde_json::Value = serde_json::from_slice(&original[20..json_end]).unwrap();
+        let bin = &original[json_end + 8..];
+        for mode in [
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(2),
+            serde_json::json!(3),
+            serde_json::json!(5),
+            serde_json::json!(6),
+            serde_json::json!(7),
+            serde_json::json!(-1),
+            serde_json::json!(4.5),
+            serde_json::json!("4"),
+            serde_json::Value::Null,
+        ] {
+            json["meshes"][0]["primitives"][0]["mode"] = mode;
+            let error = read_glb(&build_glb_bytes(&json.to_string(), bin)).unwrap_err();
+            assert!(error.to_string().contains("primitive mode"), "{error}");
+        }
+        json["meshes"][0]["primitives"][0]["mode"] = serde_json::json!(4);
+        assert_eq!(
+            read_glb(&build_glb_bytes(&json.to_string(), bin))
+                .unwrap()
+                .indices,
+            vec![0, 1, 2]
+        );
+        assert_eq!(read_glb(&original).unwrap().indices, vec![0, 1, 2]);
     }
 }

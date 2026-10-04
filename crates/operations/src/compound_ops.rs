@@ -70,7 +70,7 @@ fn fuse_solids_impl(
     // directly (no boolean needed), while overlapping groups use boolean fuse.
     let bboxes: Vec<Aabb3> = solids
         .iter()
-        .map(|&sid| crate::measure::solid_bounding_box(topo, sid))
+        .map(|&sid| crate::measure::conservative_solid_bounding_box(topo, sid))
         .collect::<Result<_, _>>()?;
 
     // Per-solid polyhedral bounds (plane normals + vertices), or `None` for any
