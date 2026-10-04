@@ -8,6 +8,7 @@ use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, SQRT_2, TAU};
 
 use crate::MathError;
 use crate::curves::{Circle3D, Ellipse3D};
+use crate::fma::FusedMulAdd;
 use crate::frame::Frame3;
 use crate::nurbs::fitting::interpolate;
 use crate::nurbs::intersection::{IntersectionCurve, IntersectionPoint};
@@ -311,7 +312,7 @@ pub(crate) fn exact_plane_torus_special(
         }
 
         let section_center = center + axis * height;
-        let radial_offset = (minor.mul_add(minor, -(height * height))).sqrt();
+        let radial_offset = (minor.fma(minor, -(height * height))).sqrt();
         if !radial_offset.is_finite() || radial_offset == 0.0 {
             return Ok(None);
         }
@@ -351,7 +352,7 @@ fn plane_section_roundoff(normal: Vec3, d: f64, point: Point3, feature_size: f64
     let coordinate_scale = normal
         .x()
         .abs()
-        .mul_add(point.x().abs(), normal.y().abs() * point.y().abs())
+        .fma(point.x().abs(), normal.y().abs() * point.y().abs())
         + normal.z().abs() * point.z().abs();
     // Two fused multiply-adds plus the final subtraction need only a small
     // first-order envelope. Summing operand magnitudes retains cancellation
@@ -375,11 +376,11 @@ fn exact_plane_sphere(
         return Ok(vec![]);
     }
 
-    let circle_r = (r.mul_add(r, -(h * h))).sqrt();
+    let circle_r = (r.fma(r, -(h * h))).sqrt();
     let circle_center = Point3::new(
-        h.mul_add(-normal.x(), sphere.center().x()),
-        h.mul_add(-normal.y(), sphere.center().y()),
-        h.mul_add(-normal.z(), sphere.center().z()),
+        h.fma(-normal.x(), sphere.center().x()),
+        h.fma(-normal.y(), sphere.center().y()),
+        h.fma(-normal.z(), sphere.center().z()),
     );
 
     let circle = Circle3D::new(circle_center, normal, circle_r)?;
@@ -852,11 +853,11 @@ fn sample_plane_sphere(
         return Ok(vec![]);
     }
 
-    let circle_r = (r.mul_add(r, -(h * h))).sqrt();
+    let circle_r = (r.fma(r, -(h * h))).sqrt();
     let circle_center = Point3::new(
-        h.mul_add(-normal.x(), sphere.center().x()),
-        h.mul_add(-normal.y(), sphere.center().y()),
-        h.mul_add(-normal.z(), sphere.center().z()),
+        h.fma(-normal.x(), sphere.center().x()),
+        h.fma(-normal.y(), sphere.center().y()),
+        h.fma(-normal.z(), sphere.center().z()),
     );
 
     let basis = Frame3::from_normal(circle_center, normal)?;
@@ -1160,11 +1161,11 @@ pub fn intersect_plane_sphere(
         return Ok(vec![]);
     }
 
-    let circle_r = (r.mul_add(r, -(h * h))).sqrt();
+    let circle_r = (r.fma(r, -(h * h))).sqrt();
     let circle_center = Point3::new(
-        h.mul_add(-normal.x(), sphere.center().x()),
-        h.mul_add(-normal.y(), sphere.center().y()),
-        h.mul_add(-normal.z(), sphere.center().z()),
+        h.fma(-normal.x(), sphere.center().x()),
+        h.fma(-normal.y(), sphere.center().y()),
+        h.fma(-normal.z(), sphere.center().z()),
     );
 
     // Build a local frame on the plane.
@@ -1278,8 +1279,8 @@ pub fn intersect_plane_torus(
 
     for iu in 0..n_grid {
         for iv in 0..n_grid {
-            let u0 = (iu as f64).mul_add(du, u_off);
-            let v0 = (iv as f64).mul_add(dv, v_off);
+            let u0 = (iu as f64).fma(du, u_off);
+            let v0 = (iv as f64).fma(dv, v_off);
             let u1 = u0 + du;
             let v1 = v0 + dv;
 
@@ -1290,7 +1291,7 @@ pub fn intersect_plane_torus(
             // Check horizontal edge (u0,v0)-(u1,v0).
             if f00 * f10 < 0.0 {
                 let t = f00 / (f00 - f10);
-                let u = t.mul_add(u1 - u0, u0);
+                let u = t.fma(u1 - u0, u0);
                 let (u_r, v_r) = newton_refine_torus(torus, normal, d, u, v0);
                 crossing_pts.push((u_r, v_r, torus.evaluate(u_r, v_r)));
             }
@@ -1298,7 +1299,7 @@ pub fn intersect_plane_torus(
             // Check vertical edge (u0,v0)-(u0,v1).
             if f00 * f01 < 0.0 {
                 let t = f00 / (f00 - f01);
-                let v = t.mul_add(v1 - v0, v0);
+                let v = t.fma(v1 - v0, v0);
                 let (u_r, v_r) = newton_refine_torus(torus, normal, d, u0, v);
                 crossing_pts.push((u_r, v_r, torus.evaluate(u_r, v_r)));
             }
@@ -1435,7 +1436,7 @@ fn newton_refine_torus(
             - dot_np(normal, torus.evaluate(u, v - eps)))
             / (2.0 * eps);
 
-        let grad_sq = fu.mul_add(fu, fv * fv);
+        let grad_sq = fu.fma(fu, fv * fv);
         if grad_sq < 1e-20 {
             break;
         }
@@ -1472,25 +1473,25 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
     let (c0, c1) = (za.dot(o), za.dot(dir));
 
     // G(t) = a² + b² + c² + R² − r²  (quadratic: g2 t² + g1 t + g0)
-    let g2 = a1.mul_add(a1, b1.mul_add(b1, c1 * c1));
-    let g1 = 2.0 * a1.mul_add(a0, b1.mul_add(b0, c1 * c0));
-    let g0 = a0.mul_add(
+    let g2 = a1.fma(a1, b1.fma(b1, c1 * c1));
+    let g1 = 2.0 * a1.fma(a0, b1.fma(b0, c1 * c0));
+    let g0 = a0.fma(
         a0,
-        b0.mul_add(b0, c0.mul_add(c0, big_r.mul_add(big_r, -small_r * small_r))),
+        b0.fma(b0, c0.fma(c0, big_r.fma(big_r, -small_r * small_r))),
     );
 
     // H(t) = 4R² (a² + b²)  (quadratic: h2 t² + h1 t + h0)
     let four_rr = 4.0 * big_r * big_r;
-    let h2 = four_rr * a1.mul_add(a1, b1 * b1);
-    let h1 = four_rr * (2.0 * a1.mul_add(a0, b1 * b0));
-    let h0 = four_rr * a0.mul_add(a0, b0 * b0);
+    let h2 = four_rr * a1.fma(a1, b1 * b1);
+    let h1 = four_rr * (2.0 * a1.fma(a0, b1 * b0));
+    let h0 = four_rr * a0.fma(a0, b0 * b0);
 
     // Quartic G² − H = 0:  e4 t⁴ + e3 t³ + e2 t² + e1 t + e0.
     let e4 = g2 * g2;
     let e3 = 2.0 * g2 * g1;
-    let e2 = g1.mul_add(g1, 2.0 * g2 * g0) - h2;
-    let e1 = 2.0f64.mul_add(g1 * g0, -h1);
-    let e0 = g0.mul_add(g0, -h0);
+    let e2 = g1.fma(g1, 2.0 * g2 * g0) - h2;
+    let e1 = 2.0f64.fma(g1 * g0, -h1);
+    let e0 = g0.fma(g0, -h0);
 
     let mut roots = real_roots_quartic(e4, e3, e2, e1, e0);
     // One Newton polish against the torus implicit for full precision.
@@ -1606,7 +1607,7 @@ fn real_roots_cubic(a: f64, b: f64, c: f64, d: f64) -> Vec<f64> {
         let theta = (3.0 * q / (p * m)).clamp(-1.0, 1.0).acos() / 3.0;
         (0..3)
             .map(|k| {
-                m.mul_add(
+                m.fma(
                     (theta - 2.0 * std::f64::consts::PI * f64::from(k) / 3.0).cos(),
                     shift,
                 )
@@ -1670,8 +1671,8 @@ impl std::ops::Mul for Complex {
     type Output = Self;
     fn mul(self, o: Self) -> Self {
         Self::new(
-            self.re.mul_add(o.re, -(self.im * o.im)),
-            self.re.mul_add(o.im, self.im * o.re),
+            self.re.fma(o.re, -(self.im * o.im)),
+            self.re.fma(o.im, self.im * o.re),
         )
     }
 }
@@ -1679,10 +1680,10 @@ impl std::ops::Mul for Complex {
 impl std::ops::Div for Complex {
     type Output = Self;
     fn div(self, o: Self) -> Self {
-        let den = o.re.mul_add(o.re, o.im * o.im);
+        let den = o.re.fma(o.re, o.im * o.im);
         Self::new(
-            self.re.mul_add(o.re, self.im * o.im) / den,
-            self.im.mul_add(o.re, -(self.re * o.im)) / den,
+            self.re.fma(o.re, self.im * o.im) / den,
+            self.im.fma(o.re, -(self.re * o.im)) / den,
         )
     }
 }
@@ -1916,7 +1917,7 @@ pub fn intersect_analytic_analytic_bounded(
                     let mut bad = false;
                     let mut hard_bad = false;
                     for fraction in [0.25, 0.5, 0.75] {
-                        let p = curve.evaluate((ts[1] - ts[0]).mul_add(fraction, ts[0]));
+                        let p = curve.evaluate((ts[1] - ts[0]).fma(fraction, ts[0]));
                         let (ua, va) = project_analytic(&a, p, u_range_a, v_range_a);
                         let (ub, vb) = project_analytic(&b, p, u_range_b, v_range_b);
                         let residual = (p - surf_a(ua, va))
@@ -2491,9 +2492,7 @@ pub fn exact_torus_cylinder(
     }
 
     let dr = cyl.radius() - torus.major_radius();
-    let h_sq = torus
-        .minor_radius()
-        .mul_add(torus.minor_radius(), -(dr * dr));
+    let h_sq = torus.minor_radius().fma(torus.minor_radius(), -(dr * dr));
     if h_sq < -1e-12 {
         // The cylinder misses the tube entirely — exactly no intersection.
         return Ok(Some(vec![]));
@@ -2505,9 +2504,9 @@ pub fn exact_torus_cylinder(
     let mut circles = Vec::new();
     for &z in offsets {
         let center = Point3::new(
-            axis_t.x().mul_add(z, c0.x()),
-            axis_t.y().mul_add(z, c0.y()),
-            axis_t.z().mul_add(z, c0.z()),
+            axis_t.x().fma(z, c0.x()),
+            axis_t.y().fma(z, c0.y()),
+            axis_t.z().fma(z, c0.z()),
         );
         circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
             center,
@@ -2548,7 +2547,7 @@ pub fn exact_torus_sphere(
     let r_s = sphere.radius();
     let a = 2.0 * big_r * r;
     let b = -2.0 * d * r;
-    let c = r_s.mul_add(r_s, -big_r.mul_add(big_r, r.mul_add(r, d * d)));
+    let c = r_s.fma(r_s, -big_r.fma(big_r, r.fma(r, d * d)));
     let amp = a.hypot(b);
     if amp < 1e-12 {
         // Degenerate torus (R = 0 and d = 0) — defer.
@@ -2569,16 +2568,16 @@ pub fn exact_torus_sphere(
     };
     let mut circles = Vec::new();
     let mut emit = |v: f64| -> Result<(), MathError> {
-        let radius = r.mul_add(v.cos(), big_r);
+        let radius = r.fma(v.cos(), big_r);
         if radius <= 1e-12 {
             return Ok(());
         }
         let z = r * v.sin();
         let c0 = torus.center();
         let center = Point3::new(
-            axis.x().mul_add(z, c0.x()),
-            axis.y().mul_add(z, c0.y()),
-            axis.z().mul_add(z, c0.z()),
+            axis.x().fma(z, c0.x()),
+            axis.y().fma(z, c0.y()),
+            axis.z().fma(z, c0.z()),
         );
         circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
             center, axis, radius,
@@ -2651,20 +2650,20 @@ pub fn exact_torus_torus(
         return Ok(Some(vec![])); // separate or contained tubes — no contact
     }
     // Distance from A's centre to the radical chord, along A→B.
-    let a = (dd.mul_add(dd, r1.mul_add(r1, -(r2 * r2)))) / (2.0 * dd);
-    let h_sq = r1.mul_add(r1, -(a * a));
+    let a = (dd.fma(dd, r1.fma(r1, -(r2 * r2)))) / (2.0 * dd);
+    let h_sq = r1.fma(r1, -(a * a));
     let h = h_sq.max(0.0).sqrt();
     let (ux, uz) = (dx / dd, dz / dd);
-    let (mx, mz) = (a.mul_add(ux, big_r1), a * uz);
+    let (mx, mz) = (a.fma(ux, big_r1), a * uz);
     let mut circles = Vec::new();
     let c0 = t1.center();
     let mut emit = |rho: f64, z: f64| -> Result<(), MathError> {
         if rho > 1e-9 {
             circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
                 Point3::new(
-                    axis.x().mul_add(z, c0.x()),
-                    axis.y().mul_add(z, c0.y()),
-                    axis.z().mul_add(z, c0.z()),
+                    axis.x().fma(z, c0.x()),
+                    axis.y().fma(z, c0.y()),
+                    axis.z().fma(z, c0.z()),
                 ),
                 axis,
                 rho,
@@ -2675,8 +2674,8 @@ pub fn exact_torus_torus(
     if h < 1e-10 {
         emit(mx, mz)?; // tangent tubes — one shared ring
     } else {
-        emit(h.mul_add(-uz, mx), h.mul_add(ux, mz))?;
-        emit(h.mul_add(uz, mx), h.mul_add(-ux, mz))?;
+        emit(h.fma(-uz, mx), h.fma(ux, mz))?;
+        emit(h.fma(uz, mx), h.fma(-ux, mz))?;
     }
     Ok(Some(circles))
 }
@@ -2717,10 +2716,10 @@ pub fn exact_torus_cone(
     let r = torus.minor_radius();
 
     // (m·t − R)² + (t − t₀)² = r²  →  (m²+1)·t² − 2(mR + t₀)·t + (R² + t₀² − r²) = 0
-    let qa = m.mul_add(m, 1.0);
-    let qb = -2.0 * m.mul_add(big_r, t0);
-    let qc = big_r.mul_add(big_r, t0.mul_add(t0, -(r * r)));
-    let disc = qb.mul_add(qb, -4.0 * qa * qc);
+    let qa = m.fma(m, 1.0);
+    let qb = -2.0 * m.fma(big_r, t0);
+    let qc = big_r.fma(big_r, t0.fma(t0, -(r * r)));
+    let disc = qb.fma(qb, -4.0 * qa * qc);
     if disc < -1e-12 {
         return Ok(Some(vec![])); // the cone misses the tube entirely
     }
@@ -2731,9 +2730,9 @@ pub fn exact_torus_cone(
         if rho > 1e-9 {
             circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
                 Point3::new(
-                    axis.x().mul_add(t, apex.x()),
-                    axis.y().mul_add(t, apex.y()),
-                    axis.z().mul_add(t, apex.z()),
+                    axis.x().fma(t, apex.x()),
+                    axis.y().fma(t, apex.y()),
+                    axis.z().fma(t, apex.z()),
                 ),
                 axis,
                 rho,
@@ -2790,10 +2789,10 @@ pub fn exact_cone_sphere(
     let r_s = sphere.radius();
 
     // m²t² + (t − tₛ)² = rₛ²  →  (m²+1)·t² − 2·tₛ·t + (tₛ² − rₛ²) = 0
-    let qa = m.mul_add(m, 1.0);
+    let qa = m.fma(m, 1.0);
     let qb = -2.0 * ts;
-    let qc = ts.mul_add(ts, -(r_s * r_s));
-    let disc = qb.mul_add(qb, -4.0 * qa * qc);
+    let qc = ts.fma(ts, -(r_s * r_s));
+    let disc = qb.fma(qb, -4.0 * qa * qc);
     if disc < -1e-12 {
         return Ok(Some(vec![])); // the sphere misses the cone entirely
     }
@@ -2804,9 +2803,9 @@ pub fn exact_cone_sphere(
         if rho > 1e-9 {
             circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
                 Point3::new(
-                    axis.x().mul_add(t, apex.x()),
-                    axis.y().mul_add(t, apex.y()),
-                    axis.z().mul_add(t, apex.z()),
+                    axis.x().fma(t, apex.x()),
+                    axis.y().fma(t, apex.y()),
+                    axis.z().fma(t, apex.z()),
                 ),
                 axis,
                 rho,
@@ -3125,10 +3124,7 @@ fn algebraic_cylinder_cylinder(
 
         let b_coeff = 2.0 * (q_dot_a1 - alpha * q_dot_a2);
         let c_coeff = q_sq - q_dot_a2 * q_dot_a2 - r2 * r2;
-        (
-            b_coeff,
-            b_coeff.mul_add(b_coeff, -(4.0 * a_coeff * c_coeff)),
-        )
+        (b_coeff, b_coeff.fma(b_coeff, -(4.0 * a_coeff * c_coeff)))
     };
     let roots_at = |u: f64| -> Option<(f64, f64)> {
         let (b_coeff, disc) = quadratic_at(u);
@@ -3728,9 +3724,9 @@ fn march_analytic_intersection(
             prev_tangent = Some(t_dir);
 
             let next = Point3::new(
-                h.mul_add(t_dir.x(), current.x()),
-                h.mul_add(t_dir.y(), current.y()),
-                h.mul_add(t_dir.z(), current.z()),
+                h.fma(t_dir.x(), current.x()),
+                h.fma(t_dir.y(), current.y()),
+                h.fma(t_dir.z(), current.z()),
             );
 
             let (ua2, va2) = project_analytic(a, next, u_range_a, v_range_a);
@@ -3900,9 +3896,9 @@ fn bisect_band_exit(
             surf_b,
             norm_b,
             Point3::new(
-                s.mul_add(t_dir.x(), current.x()),
-                s.mul_add(t_dir.y(), current.y()),
-                s.mul_add(t_dir.z(), current.z()),
+                s.fma(t_dir.x(), current.x()),
+                s.fma(t_dir.y(), current.y()),
+                s.fma(t_dir.z(), current.z()),
             ),
             u_range_a,
             v_range_a,
