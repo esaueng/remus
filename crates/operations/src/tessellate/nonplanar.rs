@@ -2516,6 +2516,17 @@ pub(super) fn tessellate_nonplanar_cdt(
 
     let wire = topo.wire(face_data.outer_wire())?;
     let tol_dup = 1e-10;
+    // A NURBS carrier is charted in its own frame (PERF-D01): boundary
+    // projection, grid sizing and normals read the control net relative to
+    // its first control point, so a rigidly translated face charts and
+    // meshes bit for bit like its source (see `NurbsFrame`).
+    let nurbs_frame = match face_data.surface() {
+        FaceSurface::Nurbs(surface) => NurbsFrame::new(surface),
+        _ => None,
+    };
+    let chart_surface = nurbs_frame
+        .as_ref()
+        .map_or_else(|| face_data.surface(), NurbsFrame::surface);
     // GFA band faces (wire carries a section Circle) project through the
     // exact wall chart (see below); a converted PRIMITIVE wall keeps the
     // established Newton path the seam-wall regression test pins.
@@ -2683,7 +2694,7 @@ pub(super) fn tessellate_nonplanar_cdt(
             // (two uses on this face) address their own branch via the
             // oriented key; a missing pcurve falls back to projection.
             if let Some(pcurve) = topo.pcurve_oriented(*edge_id_local, face_id, *is_fwd)
-                && let Some(uv) = project_via_pcurve(pcurve, *pt, face_data.surface())
+                && let Some(uv) = pcurve_uv(pcurve, *pt, face_data.surface(), nurbs_frame.as_ref())
             {
                 return Ok(uv);
             }
@@ -2704,7 +2715,7 @@ pub(super) fn tessellate_nonplanar_cdt(
             {
                 return Ok((u, v));
             }
-            project_to_surface_uv(face_data.surface(), *pt)
+            chart_uv(face_data.surface(), nurbs_frame.as_ref(), *pt)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -2927,11 +2938,12 @@ pub(super) fn tessellate_nonplanar_cdt(
             hole.iter()
                 .map(|(point, _, edge_id, is_fwd)| {
                     if let Some(pcurve) = topo.pcurve_oriented(*edge_id, face_id, *is_fwd)
-                        && let Some(uv) = project_via_pcurve(pcurve, *point, face_data.surface())
+                        && let Some(uv) =
+                            pcurve_uv(pcurve, *point, face_data.surface(), nurbs_frame.as_ref())
                     {
                         return Ok(uv);
                     }
-                    project_to_surface_uv(face_data.surface(), *point)
+                    chart_uv(face_data.surface(), nurbs_frame.as_ref(), *point)
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
@@ -3082,7 +3094,7 @@ pub(super) fn tessellate_nonplanar_cdt(
             pu_raw
         };
         let pt3 = eval_surface_point(surface, pu, pv);
-        let base_nrm = surface.normal(pu, pv);
+        let base_nrm = chart_surface.normal(pu, pv);
         // A GFA band face on a recognized wall evaluates its interior
         // grid through the EXACT chart too: the unwrapped CDT rectangle
         // straddles the knot-domain seam (u in [0.75, 1.75] on a [0, 1]
@@ -3125,8 +3137,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     };
 
     if du > 1e-15 && dv > 1e-15 {
-        let (n_u, n_v) =
-            interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
+        let (n_u, n_v) = interior_grid_resolution(chart_surface, du, dv, deflection, angular_tol);
         let n_v = interior_rows_for_boundary(
             face_data.surface(),
             &boundary_uv,
@@ -3636,6 +3647,112 @@ fn project_to_surface_uv(
         FaceSurface::Plane { .. } => Err(crate::OperationsError::InvalidInput {
             reason: "planar faces should not use CDT tessellation".to_string(),
         }),
+    }
+}
+
+/// A NURBS carrier re-expressed relative to its first control point, with
+/// the projection seed grid built once (PERF-D01).
+///
+/// The CDT mesher charts a NURBS face by Newton projection of its boundary
+/// samples, sizes its interior grid from the control net and takes interior
+/// normals from surface derivatives. In world coordinates each of those sums
+/// control points of the body's magnitude, so a rigidly translated copy of a
+/// face charts differently in the last bits and its CDT can resolve
+/// cocircular grid quads the other way. Here every one of them works on
+/// `control point − anchor` and `sample − anchor`: when the face and its
+/// boundary samples are exact translates (what the face cache's
+/// `TranslationRule::NurbsFrame` verifies), those differences are
+/// bit-identical, so the chart, the grid and the normals are too. Interior
+/// positions are still evaluated on the world surface.
+///
+/// The seed grid is the one `project_point_to_surface` rebuilds on every
+/// call (81 surface evaluations); building it once per face returns the same
+/// projection bit for bit.
+pub(super) struct NurbsFrame {
+    anchor: Point3,
+    surface: FaceSurface,
+    grid: remus_math::nurbs::projection::SurfaceSeedGrid,
+}
+
+impl NurbsFrame {
+    pub(super) fn new(surface: &remus_math::nurbs::surface::NurbsSurface) -> Option<Self> {
+        let anchor = *surface.control_points().first()?.first()?;
+        let rel = remus_math::nurbs::surface::NurbsSurface::new(
+            surface.degree_u(),
+            surface.degree_v(),
+            surface.knots_u().to_vec(),
+            surface.knots_v().to_vec(),
+            surface
+                .control_points()
+                .iter()
+                .map(|row| row.iter().map(|&p| self_relative(p, anchor)).collect())
+                .collect(),
+            surface.weights().to_vec(),
+        )
+        .ok()?;
+        let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(&rel);
+        Some(Self {
+            anchor,
+            surface: FaceSurface::Nurbs(rel),
+            grid,
+        })
+    }
+
+    /// The carrier in this frame (same parameterization as the face's).
+    pub(super) const fn surface(&self) -> &FaceSurface {
+        &self.surface
+    }
+
+    /// `(u, v)` of a world point, projected in this frame.
+    fn project(&self, point: Point3) -> Result<(f64, f64), crate::OperationsError> {
+        let FaceSurface::Nurbs(rel) = &self.surface else {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "NURBS frame without a NURBS carrier".into(),
+            });
+        };
+        remus_math::nurbs::projection::project_point_to_surface_with_grid(
+            rel,
+            self_relative(point, self.anchor),
+            1e-6,
+            &self.grid,
+        )
+        .map(|proj| (proj.u, proj.v))
+        .map_err(crate::OperationsError::Math)
+    }
+}
+
+/// `p − anchor` as a point (componentwise, one rounding each).
+fn self_relative(p: Point3, anchor: Point3) -> Point3 {
+    Point3::new(p.x() - anchor.x(), p.y() - anchor.y(), p.z() - anchor.z())
+}
+
+/// [`project_via_pcurve`], in the NURBS frame when there is one (the search
+/// only compares surface points with `point`, so it runs unchanged on the
+/// frame's carrier and `point − anchor`).
+fn pcurve_uv(
+    pcurve: &remus_topology::pcurve::PCurve,
+    point: Point3,
+    surface: &FaceSurface,
+    frame: Option<&NurbsFrame>,
+) -> Option<(f64, f64)> {
+    match frame {
+        Some(frame) => {
+            project_via_pcurve(pcurve, self_relative(point, frame.anchor), frame.surface())
+        }
+        None => project_via_pcurve(pcurve, point, surface),
+    }
+}
+
+/// Chart coordinates of a boundary point: in the NURBS frame when there is
+/// one, otherwise [`project_to_surface_uv`].
+fn chart_uv(
+    surface: &FaceSurface,
+    frame: Option<&NurbsFrame>,
+    point: Point3,
+) -> Result<(f64, f64), crate::OperationsError> {
+    match frame {
+        Some(frame) => frame.project(point),
+        None => project_to_surface_uv(surface, point),
     }
 }
 

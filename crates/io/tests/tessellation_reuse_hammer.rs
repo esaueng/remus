@@ -108,10 +108,15 @@ fn offset_face_edit_reuses_source_meshes_exactly() {
     let refused = s1.translation_refused - s0.translation_refused;
     assert_eq!(lookups, 154);
     assert_eq!(exact + translated + misses, lookups);
-    // Every face the edit did not touch is served exactly, and part of the
-    // moved region is served by translation.
+    // Every face the edit did not touch is served exactly, and the moved
+    // region by translation: four cylinders, a sphere, a torus and a plane
+    // (bit-identical charts), two more cylinders whose rims now sample
+    // translation-exactly, and both NURBS patches (frame chart). Four
+    // blends stay refused: move_faces rebuilds their rim circles' frames
+    // (unit vectors one ulp apart), or a translated rim crosses a binade.
     assert!(exact >= 120, "only {exact} exact hits");
-    assert!(translated >= 1, "no translated hit");
+    assert!(translated >= 11, "only {translated} translated hits");
+    assert!(refused <= 4, "{refused} refused translates");
     assert!(refused <= misses);
     assert_eq!(s1.replay_conflicts - s0.replay_conflicts, 0);
     assert_eq!(s1.uncacheable - s0.uncacheable, 0);
