@@ -120,6 +120,7 @@ pub fn offset_face_with_quality(
 ) -> Result<FaceOffsetOutcome, OperationsError> {
     let tol = Tolerance::new();
     let face = topo.face(face_id)?;
+    let reversed = face.is_reversed();
     let surface = face.surface().clone();
     let outer_wire = face.outer_wire();
     let inner_wires: Vec<_> = face.inner_wires().to_vec();
@@ -145,7 +146,10 @@ pub fn offset_face_with_quality(
         quality: FaceOffsetQuality::Exact,
     };
 
-    match surface {
+    // Carrier normals are parametric; a reversed face's outward normal is
+    // their negation. Keep the same orientation on the new face.
+    let distance = if reversed { -distance } else { distance };
+    let outcome = match surface {
         FaceSurface::Plane { normal, d } => {
             offset_planar_face(topo, outer_wire, &inner_wires, normal, d, distance).map(exact)
         }
@@ -181,7 +185,9 @@ pub fn offset_face_with_quality(
         FaceSurface::Torus(ref torus) => {
             offset_torus_face(topo, outer_wire, &inner_wires, torus, distance).map(exact)
         }
-    }
+    }?;
+    topo.face_mut(outcome.face)?.set_reversed(reversed);
+    Ok(outcome)
 }
 
 /// Offset a planar face: shift plane along its normal.
@@ -240,6 +246,8 @@ fn offset_nurbs_face(
     let tol = Tolerance::new();
 
     let coarse = n.max(4);
+    let (u_min, u_max) = nurbs.domain_u();
+    let (v_min, v_max) = nurbs.domain_v();
     #[allow(clippy::cast_precision_loss)]
     let coarse_div = (coarse - 1) as f64;
     let mut max_curvature = 0.0_f64;
@@ -247,10 +255,10 @@ fn offset_nurbs_face(
 
     #[allow(clippy::cast_precision_loss)]
     for i in 0..coarse {
-        let u = i as f64 / coarse_div;
+        let u = (i as f64 / coarse_div).mul_add(u_max - u_min, u_min);
         let mut row = Vec::with_capacity(coarse);
         for j in 0..coarse {
-            let v = j as f64 / coarse_div;
+            let v = (j as f64 / coarse_div).mul_add(v_max - v_min, v_min);
             let kappa = estimate_curvature(nurbs, u, v);
             max_curvature = max_curvature.max(kappa);
             row.push(kappa);
@@ -339,8 +347,10 @@ fn offset_nurbs_face(
     let mut offset_grid: Vec<Vec<Point3>> = Vec::with_capacity(nu);
 
     for &u in &u_params {
+        let u = u.mul_add(u_max - u_min, u_min);
         let mut row = Vec::with_capacity(nv);
         for &v in &v_params {
+            let v = v.mul_add(v_max - v_min, v_min);
             let pt = nurbs.evaluate(u, v);
             let normal = nurbs
                 .normal(u, v)
