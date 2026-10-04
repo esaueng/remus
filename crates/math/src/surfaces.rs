@@ -6,6 +6,7 @@
 
 use crate::MathError;
 use crate::aabb::Aabb3;
+use crate::fma::FusedMulAdd;
 use crate::frame::Frame3;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
@@ -765,7 +766,7 @@ impl ToroidalSurface {
     pub fn evaluate(&self, u: f64, v: f64) -> Point3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
-        let tube_radius = self.minor_radius.mul_add(cos_v, self.major_radius);
+        let tube_radius = self.minor_radius.fma(cos_v, self.major_radius);
         self.center
             + self.x_axis * (tube_radius * cos_u)
             + self.y_axis * (tube_radius * sin_u)
@@ -965,11 +966,11 @@ impl RevolutionSurface {
         let idx = (param as usize).min(num_pts - 2);
         let frac = param - idx as f64;
 
-        let r = frac.mul_add(
+        let r = frac.fma(
             self.generatrix_radii[idx + 1] - self.generatrix_radii[idx],
             self.generatrix_radii[idx],
         );
-        let height = frac.mul_add(
+        let height = frac.fma(
             self.generatrix_heights[idx + 1] - self.generatrix_heights[idx],
             self.generatrix_heights[idx],
         );
