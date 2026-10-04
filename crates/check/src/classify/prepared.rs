@@ -152,7 +152,15 @@ impl<'a> PreparedSolid<'a> {
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
             let support_hull = match topo.face(fid).map(remus_topology::face::Face::surface) {
                 Ok(FaceSurface::Nurbs(surface)) => nurbs_support_hull(surface),
-                _ => None,
+                // Analytic distances are closed-form; nothing to skip.
+                Ok(
+                    FaceSurface::Plane { .. }
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_),
+                )
+                | Err(_) => None,
             };
             prepared_faces.push(PreparedFace {
                 fid,
