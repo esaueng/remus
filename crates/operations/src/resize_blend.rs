@@ -940,7 +940,15 @@ fn move_planar_faces_with_blends_remove_rebuild(
     }
 
     let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
-    let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+    // Whole-body mesh volume of `current_solid`, read at most once per stage.
+    // Every stage below allocates its result as a new solid and leaves its
+    // input in the arena, so one reading serves as a stage's "after" and the
+    // next stage's "before". On NURBS-heavy imports one such mesh costs more
+    // than the whole reconstruction, and the band removal is what refuses on
+    // the bodies this path cannot serve, so nothing is meshed before a band
+    // has actually come off.
+    let mut current_volume: Option<f64> = None;
+    let mut source_volume: Option<f64> = None;
     let mut current_solid = solid;
     let mut selected_faces = faces.to_vec();
     let mut plans = Vec::new();
@@ -955,10 +963,12 @@ fn move_planar_faces_with_blends_remove_rebuild(
         let (band_faces, exact) =
             describe_band_face_lineage(topo, current_solid, &band, &construction_map)?;
         lineage_is_exact &= exact;
-        let stage_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
         let sharp = remove_blend_region(topo, current_solid, &band)?;
         validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
+        let stage_volume = stage_volume_of(topo, current_solid, current_volume)?;
+        source_volume.get_or_insert(stage_volume);
         let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
+        current_volume = Some(sharp_volume);
         validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
 
         selected_faces = remap_faces(&selected_faces, &sharp.face_map, "selected planar support")?;
@@ -990,10 +1000,12 @@ fn move_planar_faces_with_blends_remove_rebuild(
     let moved_area = selected_faces.iter().try_fold(0.0, |area, &face| {
         crate::measure::face_area(topo, face, 0.01).map(|value| area + value)
     })?;
-    let sharp_before = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+    let sharp_before = stage_volume_of(topo, current_solid, current_volume)?;
+    let source_volume = source_volume.unwrap_or(sharp_before);
     let moved =
         remus_offset::move_faces_with_face_map(topo, current_solid, &selected_faces, distance)?;
     let sharp_after = crate::measure::solid_volume(topo, moved.solid, 0.05)?;
+    current_volume = Some(sharp_after);
     validate_expected_volume(
         sharp_before + moved_area * distance,
         sharp_after,
@@ -1006,7 +1018,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
     current_solid = moved.solid;
 
     for index in (0..plans.len()).rev() {
-        let before_rebuild = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+        let before_rebuild = stage_volume_of(topo, current_solid, current_volume)?;
         let edges = resolve_support_pair_edges(topo, current_solid, &plans[index])?;
         let rebuilt = rebuild_blend_edges(
             topo,
@@ -1018,6 +1030,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
         )?;
         validate_exact_result(topo, rebuilt.solid, "moved blend reconstruction")?;
         let rebuilt_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
+        current_volume = Some(rebuilt_volume);
         validate_expected_volume(
             before_rebuild + plans[index].volume_effect,
             rebuilt_volume,
@@ -1047,7 +1060,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
             "blend-aware planar move changed (faces, edges, vertices) from {source_counts:?} to {final_counts:?}"
         )));
     }
-    let final_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+    let final_volume = stage_volume_of(topo, current_solid, current_volume)?;
     validate_expected_volume(
         source_volume + moved_area * distance,
         final_volume,
@@ -1476,6 +1489,109 @@ fn translation_invariant_blend_region(
     })
 }
 
+/// Whole-body mesh volume of `solid` for one reconstruction stage, reusing the
+/// reading the previous stage took of the same solid.
+fn stage_volume_of(
+    topo: &Topology,
+    solid: SolidId,
+    known: Option<f64>,
+) -> Result<f64, OperationsError> {
+    match known {
+        Some(volume) => Ok(volume),
+        None => crate::measure::solid_volume(topo, solid, 0.05),
+    }
+}
+
+/// What [`translated_faces_volume_change`] read off the translated faces.
+struct TranslatedFacesChange {
+    /// Whole-body volume change of the translation.
+    volume: f64,
+    /// Area of the translated faces: the scale the change is judged against.
+    area: f64,
+}
+
+/// Volume change of a rigid translation of `faces`, read from those faces
+/// alone.
+///
+/// Translating a face set S by δ while every face that bounds S is invariant
+/// under δ sweeps a prism of volume δ · ∫_S n dA: on S the boundary moves with
+/// velocity δ, on the invariant carriers it slides tangentially, everywhere
+/// else it stands still. The divergence theorem splits that volume three
+/// ways: the moved faces' own flux (1/3)∮ P·n dA changes by exactly one third
+/// of it, and the lateral band the carriers grow or lose supplies the other
+/// two thirds (a box pulled up by d, integrated about a bottom corner: the lid
+/// gains d·A/3, the two walls away from that corner gain d·A/3 each, the two
+/// through it nothing). Faces that are neither moved nor carriers keep their
+/// geometry and cancel exactly; the carriers' share is fixed by closure, which
+/// `validate_exact_result` proves topologically, and carrier invariance is the
+/// construction's own premise (`surface_translation_invariant`). So integrating
+/// S before and after about one reference point and tripling the difference is
+/// the whole-body change without a whole-body mesh.
+///
+/// Before and after share one surface parameterization and one trim — the
+/// surface and its boundary translate together — so the fixed-order quadrature
+/// sees the same sample set on both sides and the difference is δ · Σ wᵢ nᵢ
+/// over those samples: its error is relative to the moved faces' projected
+/// area, never to the body. That premise is checked, not assumed: a rigid
+/// translation preserves each face's area, so a face whose quadrature area
+/// reads differently after the move did not resample the same trim.
+///
+/// `None` — the caller then compares whole-body meshes instead of refusing —
+/// when a moved face declines to integrate, reads back a different area,
+/// yields a non-finite number, or is a sphere collar or period-winding
+/// quadric wall, the families whose UV outline the trimmed quadrature is
+/// known to get wrong.
+fn translated_faces_volume_change(
+    before: &Topology,
+    after: &Topology,
+    solid: SolidId,
+    faces: &HashSet<FaceId>,
+) -> Result<Option<TranslatedFacesChange>, OperationsError> {
+    use remus_check::properties::face_integrator::integrate_face_fixed_about;
+
+    let reference = remus_check::properties::integration_reference(before, solid)?;
+    let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let mut ordered: Vec<FaceId> = faces.iter().copied().collect();
+    ordered.sort_unstable_by_key(|face| face.index());
+    let mut change = 0.0;
+    let mut area = 0.0;
+    for face in ordered {
+        let (Ok(was), Ok(now)) = (
+            integrate_face_fixed_about(before, face, order, reference),
+            integrate_face_fixed_about(after, face, order, reference),
+        ) else {
+            return Ok(None);
+        };
+        let readings = [was.volume, now.volume, was.area, now.area];
+        if !readings.iter().all(|value| value.is_finite())
+            || (now.area - was.area).abs() > was.area.abs().mul_add(1e-9, 1e-12)
+        {
+            return Ok(None);
+        }
+        // A wrong UV outline is consistent before and after, so the area
+        // check above cannot see it. Two families are known to lose theirs in
+        // the trimmed quadrature: a scalloped sphere collar (its holes are
+        // modelled as latitude bands) and a quadric wall whose rim winds the
+        // period (no closed outline to trim by). `gauss_unqualified_face`
+        // names both; it also names torus trims outside the two-rim band
+        // family, but those it declines only for the whole-solid band
+        // integrator — the trimmed quadrature unwraps both torus axes and
+        // integrates the real outline, and the torus corners of ordinary
+        // fillets are exactly what a planar move carries along.
+        if !matches!(before.face(face)?.surface(), FaceSurface::Torus(_))
+            && crate::measure::gauss_unqualified_face(before, face)?.is_some()
+        {
+            return Ok(None);
+        }
+        change += now.volume - was.volume;
+        area += was.area.abs();
+    }
+    let volume = 3.0 * change;
+    Ok(volume
+        .is_finite()
+        .then_some(TranslatedFacesChange { volume, area }))
+}
+
 fn translate_face_surface(
     topo: &mut Topology,
     face: FaceId,
@@ -1603,7 +1719,6 @@ fn move_translation_invariant_blend_region(
     let region = translation_invariant_blend_region(topo, solid, faces, direction)?;
     let delta = direction * distance;
     let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
-    let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
     let mut work = topo.clone();
     let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
     moved_faces.extend(region.translated_faces);
@@ -1674,7 +1789,7 @@ fn move_translation_invariant_blend_region(
     }
     let matrix = remus_math::mat::Mat4::translation(delta.x(), delta.y(), delta.z());
     crate::transform::transform_edges(&mut work, &translated_edges, &matrix)?;
-    for face in moved_faces {
+    for &face in &moved_faces {
         translate_face_surface(&mut work, face, delta)?;
     }
     validate_exact_result(&work, solid, "translation-invariant blend move")?;
@@ -1684,9 +1799,28 @@ fn move_translation_invariant_blend_region(
             "blend translation changed (faces, edges, vertices) from {source_counts:?} to {result_counts:?}"
         )));
     }
-    let result_volume = crate::measure::solid_volume(&work, solid, 0.05)?;
-    let volume_change = result_volume - source_volume;
-    let volume_slack = source_volume.abs().mul_add(1e-9, 1e-7);
+    // The body's volume change is read off the translated faces alone; meshing
+    // the whole body twice for this one sign was most of the cost of a planar
+    // move on NURBS-heavy imports. On that path the change is `distance` times
+    // the region's shadow along the move, so the slack is that shadow against
+    // the region's own area: only a degenerate region, whose shadow is
+    // negligible next to its area, is refused, independent of body size. A
+    // region the integral cannot vouch for keeps the whole-body mesh
+    // comparison with its original slack, so those bodies behave as before.
+    let (volume_change, volume_slack) =
+        if let Some(read) = translated_faces_volume_change(topo, &work, solid, &moved_faces)? {
+            (
+                read.volume,
+                (read.area * 1e-9).mul_add(distance.abs(), 1e-7),
+            )
+        } else {
+            let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+            let result_volume = crate::measure::solid_volume(&work, solid, 0.05)?;
+            (
+                result_volume - source_volume,
+                source_volume.abs().mul_add(1e-9, 1e-7),
+            )
+        };
     if volume_change.abs() <= volume_slack
         || volume_change.is_sign_positive() != distance.is_sign_positive()
     {
@@ -5103,6 +5237,410 @@ mod tests {
             (moved_volume - expected).abs() < 1e-3 * expected,
             "moving the support by 1 must lengthen the filleted block: {moved_volume} vs {expected}"
         );
+        let translated_volume =
+            crate::measure::solid_volume(&topo, translated.solid, 0.05).unwrap();
+        assert!(
+            (translated_volume - expected).abs() < 1e-3 * expected,
+            "the rigid translation builds the same block: {translated_volume} vs {expected}"
+        );
+        let shrunk =
+            move_translation_invariant_blend_region(&mut topo, solid, &[support], -0.5).unwrap();
+        let shrunk_volume = crate::measure::solid_volume(&topo, shrunk.solid, 0.05).unwrap();
+        let expected = 950.0 - fillet_removed;
+        assert!(
+            (shrunk_volume - expected).abs() < 1e-3 * expected,
+            "moving the support by −0.5 must shorten the filleted block: {shrunk_volume} vs {expected}"
+        );
+    }
+
+    /// Translate `faces` rigidly by `delta` the way the translation-invariant
+    /// move does: their vertices, the edges joining two moved vertices, then
+    /// their surfaces. Lines with one moved endpoint follow their vertex.
+    fn translate_faces(topo: &mut Topology, solid: SolidId, faces: &[FaceId], delta: Vec3) {
+        let mut vertices = HashSet::new();
+        for &face in faces {
+            vertices.extend(remus_topology::explorer::face_vertices(topo, face).unwrap());
+        }
+        let mut edges = HashSet::new();
+        for edge in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
+            let data = topo.edge(edge).unwrap();
+            if vertices.contains(&data.start()) && vertices.contains(&data.end()) {
+                edges.insert(edge);
+            }
+        }
+        for vertex in vertices {
+            let point = topo.vertex(vertex).unwrap().point();
+            topo.vertex_mut(vertex).unwrap().set_point(point + delta);
+        }
+        let matrix = remus_math::mat::Mat4::translation(delta.x(), delta.y(), delta.z());
+        crate::transform::transform_edges(topo, &edges, &matrix).unwrap();
+        for &face in faces {
+            translate_face_surface(topo, face, delta).unwrap();
+        }
+    }
+
+    fn face_with_outward_normal(topo: &Topology, solid: SolidId, axis: Vec3) -> FaceId {
+        remus_topology::explorer::solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.dot(axis) > 0.99)
+            })
+            .unwrap()
+    }
+
+    fn read_change(
+        before: &Topology,
+        after: &Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+    ) -> TranslatedFacesChange {
+        translated_faces_volume_change(before, after, solid, &faces.iter().copied().collect())
+            .unwrap()
+            .expect("every face of this fixture integrates")
+    }
+
+    /// Closed form: pulling the 2 × 3 lid of a box by d sweeps 6d, in either
+    /// direction, and the closed-form box volume agrees. Lid and floor pulled
+    /// together is the degenerate region the gate exists to refuse: its
+    /// shadow along the move is zero.
+    #[test]
+    fn translated_faces_volume_change_is_the_swept_prism_on_a_box() {
+        let mut before = Topology::new();
+        let solid = crate::primitives::make_box(&mut before, 2.0, 3.0, 4.0).unwrap();
+        let lid = face_with_outward_normal(&before, solid, Vec3::new(0.0, 0.0, 1.0));
+        let floor = face_with_outward_normal(&before, solid, Vec3::new(0.0, 0.0, -1.0));
+        for distance in [0.5, -0.25] {
+            let mut after = before.clone();
+            translate_faces(&mut after, solid, &[lid], Vec3::new(0.0, 0.0, distance));
+            let read = read_change(&before, &after, solid, &[lid]);
+            assert!(
+                (read.volume - 6.0 * distance).abs() < 1e-9,
+                "lid moved by {distance}: change {}, expected {}",
+                read.volume,
+                6.0 * distance
+            );
+            assert!((read.area - 6.0).abs() < 1e-9, "lid area {}", read.area);
+            let measured = crate::measure::solid_volume(&after, solid, 0.05).unwrap()
+                - crate::measure::solid_volume(&before, solid, 0.05).unwrap();
+            assert!(
+                (read.volume - measured).abs() < 1e-6,
+                "face integral {} disagrees with the measured volume {measured}",
+                read.volume
+            );
+        }
+        let mut after = before.clone();
+        translate_faces(&mut after, solid, &[lid, floor], Vec3::new(0.0, 0.0, 0.5));
+        let read = read_change(&before, &after, solid, &[lid, floor]);
+        assert!(
+            read.volume.abs() < 1e-9 && (read.area - 12.0).abs() < 1e-9,
+            "lid and floor together have no shadow: change {} area {}",
+            read.volume,
+            read.area
+        );
+        assert!(
+            read.volume.abs() <= (read.area * 1e-9).mul_add(0.5, 1e-7),
+            "the gate's slack must refuse the shadowless region"
+        );
+    }
+
+    /// Closed form on a curved boundary: the r = 1.5 cap of a cylinder pulled
+    /// along its axis by d sweeps π r² d, either way. The circle integrates
+    /// exactly.
+    #[test]
+    fn translated_faces_volume_change_is_the_swept_prism_on_a_cylinder_cap() {
+        let mut before = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut before, 1.5, 4.0).unwrap();
+        let cap = face_with_outward_normal(&before, solid, Vec3::new(0.0, 0.0, 1.0));
+        for distance in [0.75, -0.4] {
+            let mut after = before.clone();
+            translate_faces(&mut after, solid, &[cap], Vec3::new(0.0, 0.0, distance));
+            let read = read_change(&before, &after, solid, &[cap]);
+            let expected = std::f64::consts::PI * 1.5 * 1.5 * distance;
+            assert!(
+                (read.volume - expected).abs() < 1e-9 * expected.abs(),
+                "cap moved by {distance}: change {}, expected {expected}",
+                read.volume
+            );
+        }
+    }
+
+    /// Closed form with an inner wire: the top of a 6 × 6 × 3 plate with an
+    /// r = 1 through-hole moved by d sweeps (36 − π) d. The hole wall is a
+    /// carrier (axis along the move); the hole's circle integrates exactly as
+    /// a subtracted loop.
+    #[test]
+    fn translated_faces_volume_change_subtracts_an_inner_wire() {
+        let mut before = Topology::new();
+        let plate = crate::primitives::make_box(&mut before, 6.0, 6.0, 3.0).unwrap();
+        let drill = crate::primitives::make_cylinder(&mut before, 1.0, 5.0).unwrap();
+        crate::transform::transform_solid(
+            &mut before,
+            drill,
+            &remus_math::mat::Mat4::translation(3.0, 3.0, -1.0),
+        )
+        .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut before, crate::boolean::BooleanOp::Cut, plate, drill)
+                .unwrap();
+        let top = face_with_outward_normal(&before, solid, Vec3::new(0.0, 0.0, 1.0));
+        assert_eq!(
+            before.face(top).unwrap().inner_wires().len(),
+            1,
+            "the drilled top carries the hole as an inner wire"
+        );
+        for distance in [0.5, -0.25] {
+            let mut after = before.clone();
+            translate_faces(&mut after, solid, &[top], Vec3::new(0.0, 0.0, distance));
+            let read = read_change(&before, &after, solid, &[top]);
+            let expected = (36.0 - std::f64::consts::PI) * distance;
+            assert!(
+                (read.volume - expected).abs() < 1e-9 * expected.abs(),
+                "drilled top moved by {distance}: change {}, expected {expected}",
+                read.volume
+            );
+        }
+    }
+
+    /// Closed form on a reversed face: the ceiling of a 4-cube cavity inside a
+    /// 10-cube faces into the cavity, so its outward normal is −Z. Moving it
+    /// along that normal by d shrinks the void and grows the body by 16 d.
+    #[test]
+    fn translated_faces_volume_change_follows_a_cavity_ceiling() {
+        let mut before = Topology::new();
+        let block = crate::primitives::make_box(&mut before, 10.0, 10.0, 10.0).unwrap();
+        let void = crate::primitives::make_box(&mut before, 4.0, 4.0, 4.0).unwrap();
+        crate::transform::transform_solid(
+            &mut before,
+            void,
+            &remus_math::mat::Mat4::translation(3.0, 3.0, 3.0),
+        )
+        .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut before, crate::boolean::BooleanOp::Cut, block, void)
+                .unwrap();
+        assert_eq!(
+            before.solid(solid).unwrap().inner_shells().len(),
+            1,
+            "the cut leaves one cavity shell"
+        );
+        let ceiling = remus_topology::explorer::solid_faces(&before, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                let data = before.face(face).unwrap();
+                data.effective_plane_normal()
+                    .is_some_and(|normal| normal.z() < -0.99)
+                    && remus_topology::explorer::face_vertices(&before, face)
+                        .unwrap()
+                        .iter()
+                        .all(|&vertex| {
+                            (before.vertex(vertex).unwrap().point().z() - 7.0).abs() < 1e-9
+                        })
+            })
+            .expect("the cavity ceiling is the −Z plane at z = 7");
+        for distance in [0.5, -0.25] {
+            let mut after = before.clone();
+            translate_faces(
+                &mut after,
+                solid,
+                &[ceiling],
+                Vec3::new(0.0, 0.0, -distance),
+            );
+            let read = read_change(&before, &after, solid, &[ceiling]);
+            assert!(
+                (read.volume - 16.0 * distance).abs() < 1e-9,
+                "ceiling moved by {distance} into the void: change {}, expected {}",
+                read.volume,
+                16.0 * distance
+            );
+        }
+    }
+
+    /// The filleted 10-cube of the end-to-end test: its support plane (10 × 9
+    /// after the r = 1 fillet) and quarter-cylinder band move together.
+    fn filleted_cube_support_and_band() -> (Topology, SolidId, FaceId, FaceId, Vec3) {
+        use remus_topology::explorer::{solid_edges, solid_faces};
+
+        let mut topo = Topology::new();
+        let sharp = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edge = solid_edges(&topo, sharp).unwrap()[0];
+        let solid = fillet_v2(&mut topo, sharp, &[edge], 1.0).unwrap().solid;
+        let band = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    FaceSurface::Cylinder(cylinder)
+                        if Tolerance::new().approx_eq(cylinder.radius(), 1.0)
+                )
+            })
+            .unwrap();
+        let support = describe_band(&topo, solid, band).unwrap().supports[0];
+        let direction = topo
+            .face(support)
+            .unwrap()
+            .effective_plane_normal()
+            .unwrap();
+        (topo, solid, support, band, direction)
+    }
+
+    /// Closed form with a translated blend face: the band's shadow along the
+    /// move is r × 10, so the prism is (90 + 10) d — the same +100 the
+    /// remove/rebuild path measures on this fixture — and the region's area is
+    /// 90 + π/2 · 10.
+    #[test]
+    fn translated_faces_volume_change_counts_a_translated_blend_band() {
+        let (before, solid, support, band, direction) = filleted_cube_support_and_band();
+        for distance in [1.0, -0.5] {
+            let mut after = before.clone();
+            translate_faces(&mut after, solid, &[support, band], direction * distance);
+            let read = read_change(&before, &after, solid, &[support, band]);
+            let expected = 100.0 * distance;
+            assert!(
+                (read.volume - expected).abs() < 1e-6 * expected.abs(),
+                "support and band moved by {distance}: change {}, expected {expected}",
+                read.volume
+            );
+            let expected_area = 10.0f64.mul_add(std::f64::consts::FRAC_PI_2, 90.0);
+            assert!(
+                (read.area - expected_area).abs() < 1e-6 * expected_area,
+                "region area {} vs {expected_area}",
+                read.area
+            );
+        }
+    }
+
+    /// Two filleted top edges meeting at a corner give the moved region a
+    /// vertex patch (sphere or torus) besides the two bands. Lifting the whole
+    /// top assembly by d builds a 10 × 10 × (10 + d) block with the same
+    /// fillets, so the prism is exactly 100 d whatever the corner patch is —
+    /// and a torus corner is the family the independent area check vets.
+    #[test]
+    fn translated_faces_volume_change_carries_a_fillet_corner_patch() {
+        use remus_topology::explorer::{face_vertices, solid_edges, solid_faces};
+
+        let mut before = Topology::new();
+        let sharp = crate::primitives::make_box(&mut before, 10.0, 10.0, 10.0).unwrap();
+        let top_edges: Vec<_> = solid_edges(&before, sharp)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                let data = before.edge(edge).unwrap();
+                [data.start(), data.end()]
+                    .iter()
+                    .all(|&vertex| (before.vertex(vertex).unwrap().point().z() - 10.0).abs() < 1e-9)
+            })
+            .collect();
+        let shared = |a: EdgeId, b: EdgeId| {
+            let (ea, eb) = (before.edge(a).unwrap(), before.edge(b).unwrap());
+            [ea.start(), ea.end()]
+                .iter()
+                .any(|v| *v == eb.start() || *v == eb.end())
+        };
+        let first = top_edges[0];
+        let second = top_edges[1..]
+            .iter()
+            .copied()
+            .find(|&edge| shared(first, edge))
+            .expect("two top edges share a corner");
+        let solid = fillet_v2(&mut before, sharp, &[first, second], 1.0)
+            .unwrap()
+            .solid;
+        // The top assembly: every face whose vertices all sit within the
+        // fillet radius of the top. The walls reach z = 0 and stay behind.
+        let moved: Vec<FaceId> = solid_faces(&before, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                face_vertices(&before, face)
+                    .unwrap()
+                    .iter()
+                    .all(|&vertex| before.vertex(vertex).unwrap().point().z() >= 9.0 - 1e-9)
+            })
+            .collect();
+        assert!(
+            moved.iter().any(|&face| matches!(
+                before.face(face).unwrap().surface(),
+                FaceSurface::Torus(_) | FaceSurface::Sphere(_)
+            )),
+            "the two fillets meet in a corner patch"
+        );
+        for distance in [0.5, -0.25] {
+            let mut after = before.clone();
+            translate_faces(&mut after, solid, &moved, Vec3::new(0.0, 0.0, distance));
+            let read = read_change(&before, &after, solid, &moved);
+            let expected = 100.0 * distance;
+            assert!(
+                (read.volume - expected).abs() < 1e-6 * expected.abs(),
+                "top assembly lifted by {distance}: change {}, expected {expected}",
+                read.volume
+            );
+        }
+    }
+
+    /// The production hot path: a translated NURBS support. The band's
+    /// cylinder is replaced by its exact rational NURBS (trimmed by the same
+    /// edges, projected onto the new surface), so the quadrature runs the
+    /// NURBS arm with a non-rectangular trim before and after. Same closed
+    /// form, and the same-trim self-check must accept the rigid translation.
+    #[test]
+    fn translated_faces_volume_change_reads_a_translated_nurbs_support() {
+        let (mut before, solid, support, band, direction) = filleted_cube_support_and_band();
+        let FaceSurface::Cylinder(cylinder) = before.face(band).unwrap().surface().clone() else {
+            unreachable!("the band is a cylinder");
+        };
+        let axial: Vec<f64> = remus_topology::explorer::face_vertices(&before, band)
+            .unwrap()
+            .iter()
+            .map(|&vertex| {
+                (before.vertex(vertex).unwrap().point() - cylinder.origin()).dot(cylinder.axis())
+            })
+            .collect();
+        let v_min = axial.iter().copied().fold(f64::INFINITY, f64::min) - 0.5;
+        let v_max = axial.iter().copied().fold(f64::NEG_INFINITY, f64::max) + 0.5;
+        let nurbs =
+            remus_geometry::convert::surface_to_nurbs::cylinder_to_nurbs(&cylinder, (v_min, v_max))
+                .unwrap();
+        // Keep the face outward: flip its orientation flag if the NURBS
+        // parameterization's normal points the other way than the cylinder's.
+        let (ku, kv) = (nurbs.knots_u(), nurbs.knots_v());
+        let (u_mid, v_mid) = (
+            f64::midpoint(ku[0], ku[ku.len() - 1]),
+            f64::midpoint(kv[0], kv[kv.len() - 1]),
+        );
+        let point = nurbs.evaluate(u_mid, v_mid);
+        let radial = {
+            let offset = point - cylinder.origin();
+            offset - cylinder.axis() * offset.dot(cylinder.axis())
+        };
+        let flip = nurbs.normal(u_mid, v_mid).unwrap().dot(radial) < 0.0;
+        {
+            let face = before.face_mut(band).unwrap();
+            face.set_surface(FaceSurface::Nurbs(nurbs));
+            face.compose_orientation(flip);
+        }
+        for distance in [1.0, -0.5] {
+            let mut after = before.clone();
+            translate_faces(&mut after, solid, &[support, band], direction * distance);
+            let read = read_change(&before, &after, solid, &[support, band]);
+            let expected = 100.0 * distance;
+            assert!(
+                (read.volume - expected).abs() < 1e-6 * expected.abs(),
+                "NURBS band moved by {distance}: change {}, expected {expected}",
+                read.volume
+            );
+            let expected_area = 10.0f64.mul_add(std::f64::consts::FRAC_PI_2, 90.0);
+            assert!(
+                (read.area - expected_area).abs() < 1e-6 * expected_area,
+                "region area {} vs {expected_area}",
+                read.area
+            );
+        }
     }
 
     #[test]
