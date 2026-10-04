@@ -107,6 +107,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         extent.z()
     );
 
+    if std::env::var_os("OFFSET_PERF_MEMOS").is_some() {
+        return edit_with_memos(&topo, solid, face, distance);
+    }
     if std::env::var_os("OFFSET_PERF_ONLY_MOVE").is_some() {
         let runs: usize = std::env::var("OFFSET_PERF_ONLY_MOVE")
             .ok()
@@ -201,6 +204,98 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 move_faces(&mut t3, solid, &[face], distance)
             });
         }
+    }
+    Ok(())
+}
+
+/// The application's view of one edit with both measurement memos on, as the
+/// WASM kernel runs them: the source was measured and strictly validated at
+/// import, the edit runs on a copy-on-write clone of the topology, and the
+/// result is then validated and measured. `OFFSET_PERF_MEMOS=<runs>`.
+fn edit_with_memos(
+    topo: &Topology,
+    solid: SolidId,
+    face: remus_topology::face::FaceId,
+    distance: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use remus_check::properties::face_cache::{
+        clear_thread_face_cache, enable_thread_face_cache, set_thread_face_cache_limits,
+        thread_face_cache_stats,
+    };
+    use remus_operations::measure::{
+        clear_thread_volume_memo, enable_thread_volume_memo, set_thread_volume_memo_capacity,
+        thread_volume_memo_stats,
+    };
+    let runs: usize = std::env::var("OFFSET_PERF_MEMOS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    for run in 0..runs {
+        clear_thread_face_cache();
+        clear_thread_volume_memo();
+        enable_thread_face_cache();
+        enable_thread_volume_memo();
+        println!("--- run {run}: import ---");
+        let source = timed("solid_volume(source, 0.08)", || {
+            solid_volume(topo, solid, 0.08)
+        })?;
+        timed("validate_solid(source, strict)", || {
+            validate_solid(topo, solid)
+        })?;
+        let mut edit = topo.clone();
+        println!("--- run {run}: edit ---");
+        let before = (thread_face_cache_stats(), thread_volume_memo_stats());
+        let moved = timed("push_pull::move_faces", || {
+            move_faces(&mut edit, solid, &[face], distance)
+        })?;
+        let during = (thread_face_cache_stats(), thread_volume_memo_stats());
+        println!(
+            "  move: faces hit {} (re-referenced {}, translated {}), integrated {}; volumes hit {}, measured {}, seeded {}",
+            during.0.hits - before.0.hits,
+            during.0.rereferenced - before.0.rereferenced,
+            during.0.translated - before.0.translated,
+            during.0.misses - before.0.misses,
+            during.1.hits - before.1.hits,
+            during.1.misses - before.1.misses,
+            during.1.seeded - before.1.seeded,
+        );
+        // What the application does next, on a clone (its checkpoint).
+        let after = edit.clone();
+        let report = timed("validate_solid(result, strict)", || {
+            validate_solid(&after, moved)
+        })?;
+        let read = timed("solid_volume(result, 0.08)", || {
+            solid_volume(&after, moved, 0.08)
+        })?;
+        let end = (thread_face_cache_stats(), thread_volume_memo_stats());
+        println!(
+            "  after: valid={} faces hit {} integrated {}; volume hit {} (seeded {})",
+            report.is_valid(),
+            end.0.hits - during.0.hits,
+            end.0.misses - during.0.misses,
+            end.1.hits - during.1.hits,
+            end.1.seeded_hits - during.1.seeded_hits,
+        );
+        println!(
+            "  retained: face cache {} entries / {} KB, volume memo {} readings / {} KB",
+            end.0.len,
+            end.0.retained_bytes / 1024,
+            end.1.len,
+            end.1.retained_bytes / 1024,
+        );
+        set_thread_face_cache_limits(0, 0);
+        set_thread_volume_memo_capacity(0);
+        let fresh = timed("solid_volume(result, 0.08), memos off", || {
+            solid_volume(&after, moved, 0.08)
+        })?;
+        timed("validate_solid(result, strict), memos off", || {
+            validate_solid(&after, moved)
+        })?;
+        println!(
+            "  source {source:.6} result read {read:.6} fresh {fresh:.6} (read - fresh {:.3e}, {:.3e} relative)",
+            read - fresh,
+            (read - fresh) / fresh
+        );
     }
     Ok(())
 }
