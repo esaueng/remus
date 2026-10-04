@@ -66,6 +66,10 @@ pub struct DerivativeScratch {
     /// that method, which verifies before trusting.
     last_span_u: Option<usize>,
     last_span_v: Option<usize>,
+    /// Bits of the last `u` an analytic surface's scratch evaluation took
+    /// `sin_cos` of, and that value. Quadrature walks a whole row of `v`
+    /// abscissae at one `u`, so the row pays for the trig once.
+    last_sin_cos_u: Option<(u64, (f64, f64))>,
 }
 
 impl DerivativeScratch {
@@ -73,6 +77,21 @@ impl DerivativeScratch {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `u.sin_cos()`, remembered for the last `u` (compared by bits, so the
+    /// value returned is always exactly `u.sin_cos()`).
+    #[inline]
+    pub fn sin_cos_u(&mut self, u: f64) -> (f64, f64) {
+        let bits = u.to_bits();
+        match self.last_sin_cos_u {
+            Some((seen, value)) if seen == bits => value,
+            _ => {
+                let value = u.sin_cos();
+                self.last_sin_cos_u = Some((bits, value));
+                value
+            }
+        }
     }
 
     fn ensure_basis(&mut self, len: usize) {
@@ -156,6 +175,7 @@ impl DerivativeScratch {
             point_and_partials_out: out,
             last_span_u,
             last_span_v,
+            last_sin_cos_u: _,
         } = self;
         let (span_u, hit_u) = surface.find_span_hinted_u(u, last_span_u.unwrap_or(usize::MAX));
         let (span_v, hit_v) = surface.find_span_hinted_v(v, last_span_v.unwrap_or(usize::MAX));
@@ -194,6 +214,7 @@ impl DerivativeScratch {
             point_and_partials_out: out,
             last_span_u,
             last_span_v,
+            last_sin_cos_u: _,
         } = self;
         let (span_u, _) = surface.find_span_hinted_u(u, last_span_u.unwrap_or(usize::MAX));
         let (span_v, _) = surface.find_span_hinted_v(v, last_span_v.unwrap_or(usize::MAX));
