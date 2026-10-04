@@ -99,6 +99,7 @@ fn contribution(a: Components, sign: f64) -> FaceContribution {
         cx: a[11],
         cy: a[12],
         cz: a[13],
+        ..Accumulator::default()
     }
     .finish(sign)
 }
