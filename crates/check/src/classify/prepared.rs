@@ -16,9 +16,10 @@
 
 use remus_math::aabb::Aabb3;
 use remus_math::bvh::Bvh;
+use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 use super::{ClassifyOptions, ClassifySource, PointClassification};
@@ -33,6 +34,64 @@ struct PreparedFace {
     /// build fails — queries then rebuild on demand with the original error
     /// semantics instead of silently treating the face as untrimmed.
     trim: Option<super::boundary::FaceTrimData>,
+    /// Lazily filled ray- and point-independent work (NURBS seed grids, UV
+    /// trim images).
+    cache: super::boundary::FaceCache,
+    /// Conservative box around a NURBS face's whole support surface — its
+    /// control-point bounds, certified by positive weights — used to skip the
+    /// boundary-distance projection for points that cannot be within
+    /// tolerance of the surface. `None` when it cannot be certified.
+    support_hull: Option<Aabb3>,
+}
+
+/// Control-point bounds of a NURBS surface, when they bound the surface.
+///
+/// With every weight positive, each surface point is a convex combination of
+/// the control points (non-negative basis values on the knot domain), so the
+/// control points' box contains the whole untrimmed support surface. Any
+/// non-positive or non-finite weight, or a non-finite control point, refuses.
+fn nurbs_support_hull(surface: &NurbsSurface) -> Option<Aabb3> {
+    if surface
+        .weights()
+        .iter()
+        .flatten()
+        .any(|&weight| !(weight.is_finite() && weight > 0.0))
+    {
+        return None;
+    }
+    let hull = Aabb3::try_from_points(surface.control_points().iter().flatten().copied())?;
+    let corners = [hull.min, hull.max];
+    corners
+        .iter()
+        .all(|c| c.x().is_finite() && c.y().is_finite() && c.z().is_finite())
+        .then_some(hull)
+}
+
+/// Whether `point` is provably farther than `tolerance` from every point the
+/// boundary test's projection could return on a surface inside `hull`.
+///
+/// The projection reports `|S(u, v) - point|` for an evaluated surface point,
+/// which lies in the hull up to evaluation rounding (~1e-14 of the coordinate
+/// scale). The `1e-9` relative margin dominates that rounding by five orders
+/// of magnitude, so a skipped face is one whose distance would have compared
+/// `>= tolerance` anyway — the skip never changes a verdict. A point with a
+/// non-finite coordinate never measures `< tolerance` on either path.
+fn hull_excludes(hull: Aabb3, point: Point3, tolerance: f64) -> bool {
+    let scale = [
+        hull.min.x(),
+        hull.min.y(),
+        hull.min.z(),
+        hull.max.x(),
+        hull.max.y(),
+        hull.max.z(),
+        point.x(),
+        point.y(),
+        point.z(),
+    ]
+    .iter()
+    .fold(1.0_f64, |acc, c| acc.max(c.abs()));
+    let margin = 1.0e-9 * scale;
+    hull.distance_squared_to_point(point).sqrt() > tolerance + margin
 }
 
 /// Operation-local immutable preparation for repeated point classification.
@@ -49,6 +108,11 @@ struct PreparedFace {
 /// `classify_point_with_source` vote loop. A prepared query and a
 /// one-shot query over the same topology state therefore admit exactly the
 /// same candidates and reach exactly the same verdicts.
+///
+/// Queries also fill a per-face cache of work that depends on neither the
+/// point nor the ray (NURBS seed grids, trim polygons projected to UV), and
+/// the boundary test skips a NURBS face whose certified control box is out of
+/// tolerance reach; both return what the one-shot path computes (O06).
 #[derive(Debug, Clone)]
 pub struct PreparedSolid<'a> {
     topo: &'a Topology,
@@ -86,7 +150,16 @@ impl<'a> PreparedSolid<'a> {
                 face_aabbs.push((i, bounds));
             }
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
-            prepared_faces.push(PreparedFace { fid, trim });
+            let support_hull = match topo.face(fid).map(remus_topology::face::Face::surface) {
+                Ok(FaceSurface::Nurbs(surface)) => nurbs_support_hull(surface),
+                _ => None,
+            };
+            prepared_faces.push(PreparedFace {
+                fid,
+                trim,
+                cache: super::boundary::FaceCache::default(),
+                support_hull,
+            });
         }
         let bvh = Bvh::build(&face_aabbs);
         crate::perf::bump_classify_bvh_build();
@@ -174,7 +247,21 @@ impl<'a> PreparedSolid<'a> {
     /// Returns an error if a topology lookup fails.
     pub fn is_point_on_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError> {
         for prepared in &self.prepared_faces {
-            if super::face_surface_distance(self.topo, prepared.fid, point, tolerance)? < tolerance
+            // A face whose whole support surface is provably out of reach
+            // would measure `>= tolerance` below; skip the projection.
+            if prepared
+                .support_hull
+                .is_some_and(|hull| hull_excludes(hull, point, tolerance))
+            {
+                continue;
+            }
+            if super::face_surface_distance_cached(
+                self.topo,
+                prepared.fid,
+                point,
+                tolerance,
+                Some(&prepared.cache),
+            )? < tolerance
             {
                 let owned_trim;
                 let trim = if let Some(cached) = &prepared.trim {
@@ -213,10 +300,11 @@ impl<'a> PreparedSolid<'a> {
                 owned_trim = super::boundary::FaceTrimData::build(self.topo, prepared.fid)?;
                 Some(&owned_trim)
             };
-            crossings += super::boundary::count_face_ray_crossings_with_trim(
+            crossings += super::boundary::count_face_ray_crossings_cached(
                 self.topo,
                 prepared.fid,
                 trim,
+                Some(&prepared.cache),
                 origin,
                 direction,
             )?;
