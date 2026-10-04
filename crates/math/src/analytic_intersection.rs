@@ -1513,8 +1513,62 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
     roots
 }
 
+/// Durand–Kerner sweep budget of [`real_roots_quartic`].
+const DURAND_KERNER_SWEEPS: usize = 100;
+
+/// Sweeps after which [`real_roots_quartic`] starts recording states for the
+/// cycle jump. Solves that converge (most of them, in about a dozen sweeps)
+/// never pay for the bookkeeping; a cycle that starts earlier is still found,
+/// one period after the first recorded state.
+const DURAND_KERNER_RECORD_FROM: usize = 16;
+
+/// The four Durand–Kerner iterates as bit patterns: the solver's whole state.
+type DurandKernerState = [u64; 8];
+
+/// A cheap fingerprint of a state, compared before the full state.
+fn durand_kerner_key(state: &DurandKernerState) -> u64 {
+    state.iter().fold(0_u64, |key, &word| {
+        (key.rotate_left(17) ^ word).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    })
+}
+
+fn durand_kerner_state(r: &[Complex; 4]) -> DurandKernerState {
+    let mut bits = [0_u64; 8];
+    for (k, z) in r.iter().enumerate() {
+        bits[2 * k] = z.re.to_bits();
+        bits[2 * k + 1] = z.im.to_bits();
+    }
+    bits
+}
+
+fn durand_kerner_iterates(bits: &DurandKernerState) -> [Complex; 4] {
+    std::array::from_fn(|k| {
+        Complex::new(f64::from_bits(bits[2 * k]), f64::from_bits(bits[2 * k + 1]))
+    })
+}
+
+/// Where the sweep budget ends on a cycle: the sweep count whose state the
+/// budget ends on, for a sequence whose state after `updates` sweeps repeats
+/// the state after `first`.
+///
+/// From `first` on the sequence is periodic with period `updates - first`
+/// (each state is a pure function of the previous one), so the state after
+/// the budget is the one after `first + (DURAND_KERNER_SWEEPS - first) %
+/// period` sweeps, which lies in `first..updates`.
+const fn durand_kerner_budget_end(first: usize, updates: usize) -> usize {
+    first + (DURAND_KERNER_SWEEPS - first) % (updates - first)
+}
+
 /// Real roots of `c4 x⁴ + c3 x³ + c2 x² + c1 x + c0` via Durand–Kerner, falling
 /// back to the lower-degree solvers when the leading coefficients vanish.
+///
+/// A sweep is a pure function of the iterates' bits (the coefficients are
+/// fixed), and so is its convergence test. Once a sweep reproduces a state the
+/// loop already passed through, every remaining sweep only repeats that cycle
+/// — each of its sweeps already failed the convergence test — so the iterates
+/// the sweep budget would end on are the cycle member at the same phase. The
+/// loop jumps there, and the root filter sees exactly the iterates running out
+/// the budget would have left.
 fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
     // Degenerate leading coefficient → lower degree.
     if c4.abs() < 1e-14 {
@@ -1523,9 +1577,8 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
     // Monic: x⁴ + a x³ + b x² + c x + d.
     let (a, b, c, d) = (c3 / c4, c2 / c4, c1 / c4, c0 / c4);
     let eval = |z: Complex| -> Complex {
-        // Horner.
-        let mut acc = Complex::new(1.0, 0.0);
-        acc = acc * z + Complex::new(a, 0.0);
+        // Horner, from the leading coefficient one.
+        let mut acc = z.one_times() + Complex::new(a, 0.0);
         acc = acc * z + Complex::new(b, 0.0);
         acc = acc * z + Complex::new(c, 0.0);
         acc * z + Complex::new(d, 0.0)
@@ -1538,13 +1591,23 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
         seed * seed,
         seed * seed * seed,
     ];
-    for _ in 0..100 {
+    // `recorded[k]`: the iterates (and their key) after
+    // `DURAND_KERNER_RECORD_FROM + k` sweeps.
+    let mut recorded: Vec<(u64, DurandKernerState)> = Vec::new();
+    for sweep in 0..DURAND_KERNER_SWEEPS {
         let mut max_step = 0.0_f64;
         for i in 0..4 {
             let mut denom = Complex::new(1.0, 0.0);
+            let mut first_factor = true;
             for j in 0..4 {
                 if i != j {
-                    denom = denom * (r[i] - r[j]);
+                    let factor = r[i] - r[j];
+                    denom = if first_factor {
+                        factor.one_times()
+                    } else {
+                        denom * factor
+                    };
+                    first_factor = false;
                 }
             }
             if denom.norm() < 1e-300 {
@@ -1557,6 +1620,25 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
         if max_step < 1e-14 {
             break;
         }
+        let updates = sweep + 1;
+        if updates < DURAND_KERNER_RECORD_FROM {
+            continue;
+        }
+        let state = durand_kerner_state(&r);
+        let key = durand_kerner_key(&state);
+        if let Some(k) = recorded
+            .iter()
+            .position(|(seen_key, seen)| *seen_key == key && *seen == state)
+        {
+            let first = DURAND_KERNER_RECORD_FROM + k;
+            let end = durand_kerner_budget_end(first, updates);
+            r = durand_kerner_iterates(&recorded[end - DURAND_KERNER_RECORD_FROM].1);
+            break;
+        }
+        if recorded.is_empty() {
+            recorded.reserve_exact(DURAND_KERNER_SWEEPS + 1 - DURAND_KERNER_RECORD_FROM);
+        }
+        recorded.push((key, state));
     }
     // Keep roots with negligible imaginary part AND a small REAL-polynomial
     // residual — Durand–Kerner stops after a fixed iteration cap whether or not
@@ -1650,6 +1732,15 @@ impl Complex {
     }
     fn norm(self) -> f64 {
         self.re.hypot(self.im)
+    }
+
+    /// `Complex::new(1.0, 0.0) * self`, spelled out. The product's fused
+    /// multiply-adds have the factor one, and `fma(1, x, y)` is exactly
+    /// `x + y`: LLVM folds the intrinsic that way, but not the out-of-line
+    /// `wasm32` [`fma`](crate::fma::fma), so the solver writes the sum itself.
+    #[allow(clippy::suboptimal_flops)]
+    fn one_times(self) -> Self {
+        Self::new(self.re + -(0.0 * self.im), self.im + 0.0 * self.re)
     }
 }
 
@@ -4049,6 +4140,9 @@ fn surface_closures<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod quartic_cycle_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
