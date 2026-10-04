@@ -2522,7 +2522,13 @@ pub(super) fn tessellate_nonplanar_cdt(
     // meshes bit for bit like its source (see `NurbsFrame`).
     let nurbs_frame = match face_data.surface() {
         FaceSurface::Nurbs(surface) => NurbsFrame::new(surface),
-        _ => None,
+        // Analytic carriers chart in their own closed-form parameterization
+        // (below); only a NURBS net needs the anchored frame.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
     };
     let chart_surface = nurbs_frame
         .as_ref()
