@@ -359,11 +359,11 @@ pub fn boolean_compound_regions(
                 let tolerance = remus_math::tolerance::Tolerance::new().linear;
                 let bounds_a = members_a
                     .iter()
-                    .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+                    .map(|&solid| crate::measure::conservative_solid_bounding_box(topo, solid))
                     .collect::<Result<Vec<_>, _>>()?;
                 let bounds_b = members_b
                     .iter()
-                    .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+                    .map(|&solid| crate::measure::conservative_solid_bounding_box(topo, solid))
                     .collect::<Result<Vec<_>, _>>()?;
                 let mut regions = Vec::new();
                 for (index_a, &solid_a) in members_a.iter().enumerate() {
@@ -1139,8 +1139,8 @@ fn boolean_with_context_impl(
     // The boxes are conservative outer bounds, so box non-overlap implies
     // solid non-overlap. Symmetric in A and B by construction.
     if op == BooleanOp::Intersect {
-        let bb_a = crate::measure::solid_bounding_box(topo, a).ok();
-        let bb_b = crate::measure::solid_bounding_box(topo, b).ok();
+        let bb_a = crate::measure::conservative_solid_bounding_box(topo, a).ok();
+        let bb_b = crate::measure::conservative_solid_bounding_box(topo, b).ok();
         if let Some((a_box, b_box)) = bb_a.zip(bb_b)
             && aabbs_separated(&a_box, &b_box, tol.linear)
         {
@@ -2098,7 +2098,7 @@ fn cluster_tools_by_aabb(
     }
     let mut boxes = Vec::with_capacity(tools.len());
     for &t in tools {
-        boxes.push(crate::measure::solid_bounding_box(topo, t).ok()?);
+        boxes.push(crate::measure::conservative_solid_bounding_box(topo, t).ok()?);
     }
     let mut parent: Vec<usize> = (0..tools.len()).collect();
     for i in 0..boxes.len() {
@@ -5634,7 +5634,7 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
     let Some(aabbs): Option<Vec<(Point3, Point3)>> = components
         .iter()
         .map(|component| {
-            crate::measure::face_set_bounding_box(topo, component)
+            crate::measure::conservative_face_set_bounding_box(topo, component)
                 .ok()
                 .map(|aabb| (aabb.min, aabb.max))
         })
