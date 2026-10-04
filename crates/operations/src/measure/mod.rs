@@ -20,9 +20,11 @@ pub use volume::{
     solid_volume_from_faces,
 };
 pub use volume_memo::{
-    DEFAULT_VOLUME_MEMO_CAPACITY, VolumeMemoStats, clear_thread_volume_memo,
-    enable_thread_volume_memo, set_thread_volume_memo_capacity, thread_volume_memo_stats,
+    DEFAULT_VOLUME_MEMO_BYTE_BUDGET, DEFAULT_VOLUME_MEMO_CAPACITY, VolumeMemoStats,
+    clear_thread_volume_memo, enable_thread_volume_memo, set_thread_volume_memo_capacity,
+    set_thread_volume_memo_limits, thread_volume_memo_stats,
 };
+pub(crate) use volume_memo::{measured_readings, seed_solid_volume};
 
 /// Gauss order [`mass_properties`] integrates at.
 ///
