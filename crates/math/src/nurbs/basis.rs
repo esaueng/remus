@@ -272,6 +272,82 @@ pub fn ders_basis_funs_into(
     }
 }
 
+/// The first-order case of [`ders_basis_funs_into`] (`n_derivs == 1`): the
+/// basis functions and their first derivatives, bit-identical to the general
+/// routine.
+///
+/// A2.3 keeps the whole `(p + 1)²` `ndu` table and a two-row coefficient
+/// table for arbitrary derivative orders. For the first derivative only the
+/// last two upper-triangle columns (degree `p - 1` and `p` basis functions)
+/// and the last lower-triangle row (knot differences) are ever read, so this
+/// rolls those through three short stack arrays and spells the `k = 1` step
+/// out — same operations, same order, same `mul_add`s, nothing else. The
+/// general routine zero-fills a 121-entry table and walks its index
+/// arithmetic per call; a quadrature abscissa calls this twice.
+///
+/// `out` must have length `>= 2 * (degree + 1)`: `out[j]` receives
+/// `N_{span-degree+j}(u)` and `out[degree + 1 + j]` its first derivative.
+/// Degrees above the stack bound take [`ders_basis_funs_into`].
+#[allow(clippy::cast_precision_loss)]
+pub fn ders_basis_funs_first_into(
+    span: usize,
+    u: f64,
+    degree: usize,
+    knots: &[f64],
+    out: &mut [f64],
+) {
+    let p = degree;
+    if p > MAX_STACK_DEGREE {
+        ders_basis_funs_into(span, u, p, 1, knots, out);
+        return;
+    }
+    let stride = p + 1;
+    let mut left = [0.0_f64; MAX_STACK_DEGREE + 1];
+    let mut right = [0.0_f64; MAX_STACK_DEGREE + 1];
+    // `prev`/`cur`: upper-triangle columns `j - 1` and `j` of `ndu`, i.e.
+    // `ndu[r][j - 1]` and `ndu[r][j]`; `lower`: lower-triangle row `j`,
+    // `ndu[j][r]`. After the loop `prev` is column `p - 1` and `lower` row
+    // `p`, which is all the first derivative reads.
+    let mut prev = [0.0_f64; MAX_STACK_DEGREE + 1];
+    let mut cur = [0.0_f64; MAX_STACK_DEGREE + 1];
+    let mut lower = [0.0_f64; MAX_STACK_DEGREE + 1];
+    cur[0] = 1.0;
+    for j in 1..=p {
+        prev[..j].copy_from_slice(&cur[..j]);
+        left[j] = u - knots[span + 1 - j];
+        right[j] = knots[span + j] - u;
+        let mut saved = 0.0;
+        for r in 0..j {
+            lower[r] = right[r + 1] + left[j - r];
+            let temp = prev[r] / lower[r];
+            cur[r] = right[r + 1].mul_add(temp, saved);
+            saved = left[j - r] * temp;
+        }
+        cur[j] = saved;
+    }
+    out[..stride].copy_from_slice(&cur[..stride]);
+
+    // A2.3 at k = 1 with a[s1][0] = 1: the leading term exists for r >= 1,
+    // the trailing one for r <= p - 1, and the middle loop is empty.
+    for r in 0..=p {
+        let mut d = if r >= 1 {
+            let a0 = 1.0 / lower[r - 1];
+            a0 * prev[r - 1]
+        } else {
+            0.0
+        };
+        if r < p {
+            let a1 = -1.0 / lower[r];
+            d += a1 * prev[r];
+        }
+        out[stride + r] = d;
+    }
+    let factor = p as f64;
+    for value in &mut out[stride..2 * stride] {
+        *value *= factor;
+    }
+}
+
 /// Compute basis function derivatives at parameter `u` (A2.3).
 ///
 /// Returns a 2D vector `ders[k][j]` where `ders[k][j]` is the `k`-th derivative
@@ -406,6 +482,44 @@ mod tests {
         basis_funs_into(span, 1.5, 3, &knots, &mut out);
         for (a, b) in expected.iter().zip(out.iter()) {
             assert!((a - b).abs() < 1e-15, "mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn first_order_basis_matches_general_bitwise() {
+        // Degrees 0..=12 (12 above the stack bound), clamped and unclamped
+        // knot vectors with repeated interior knots, parameters across every
+        // span, exactly on knots and at both ends.
+        for degree in 0..=12usize {
+            for repeated in [false, true] {
+                let mut knots = vec![0.0; degree + 1];
+                for k in 1..6 {
+                    let t = f64::from(k) / 6.0 + 0.013 * f64::from(k * k);
+                    knots.push(t);
+                    if repeated && k % 2 == 0 {
+                        knots.push(t);
+                    }
+                }
+                knots.extend(vec![1.5; degree + 1]);
+                let n = knots.len() - degree - 1;
+                let mut params: Vec<f64> = (0..=97).map(|i| 1.5 * f64::from(i) / 97.0).collect();
+                params.extend(knots.iter().copied());
+                params.extend([1e-300, 1.5 - 1e-15]);
+                for u in params {
+                    let span = find_span(n, degree, u, &knots);
+                    let stride = degree + 1;
+                    let mut general = vec![0.0; 2 * stride];
+                    ders_basis_funs_into(span, u, degree, 1, &knots, &mut general);
+                    let mut first = vec![0.0; 2 * stride];
+                    ders_basis_funs_first_into(span, u, degree, &knots, &mut first);
+                    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(
+                        bits(&first),
+                        bits(&general),
+                        "degree {degree} repeated {repeated} u {u} span {span}"
+                    );
+                }
+            }
         }
     }
 
