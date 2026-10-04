@@ -966,6 +966,8 @@ fn tessellate_faces_core(
             }
         }
 
+        // Built on first use: a body without circle edges never pays for it.
+        let mut pool_index: Option<Option<super::pool_index::PoolIndex>> = None;
         for &edge_idx in &edge_indices {
             let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
                 continue;
@@ -1050,10 +1052,25 @@ fn tessellate_faces_core(
                 plan.edge_chains.get(&edge_idx).cloned().unwrap_or_default();
             let existing_gids: DetHashSet<u32> = existing_gids_vec.iter().copied().collect();
 
+            // PERF-D07: scan only the pool vertices along the arc (in
+            // ascending id order, like the full scan) when the index can
+            // bound them; the acceptance test below is unchanged.
+            let index = pool_index.get_or_insert_with(|| {
+                super::pool_index::PoolIndex::new(&plan.merged.positions, refine_tol)
+            });
+            let range = (!is_closed && t_min < t_max).then_some((t_min - 1e-8, t_max + 1e-8));
+            let candidates = index
+                .as_ref()
+                .and_then(|index| index.circle_candidates(circle, range));
+            #[cfg(test)]
+            let candidates =
+                candidates.filter(|_| !super::tests::mesh_passes::use_reference_passes());
+            #[allow(clippy::cast_possible_truncation)]
+            let candidates: Vec<u32> =
+                candidates.unwrap_or_else(|| (0..plan.merged.positions.len() as u32).collect());
             let mut insertions: Vec<(f64, u32)> = Vec::new();
-            for (gid, pos) in plan.merged.positions.iter().enumerate() {
-                #[allow(clippy::cast_possible_truncation)]
-                let gid32 = gid as u32;
+            for gid32 in candidates {
+                let pos = &plan.merged.positions[gid32 as usize];
                 if existing_gids.contains(&gid32) {
                     continue;
                 }
