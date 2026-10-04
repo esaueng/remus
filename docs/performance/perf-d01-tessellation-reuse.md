@@ -174,3 +174,156 @@ lookup and replay about 4%.
   analytic faces whose chart coordinates are not bit-identical re-mesh.
 - No JS binding for the statistics; the consumer's extent-relative display
   deflection is outside the kernel.
+
+## 8. Follow-up (2026-10-04): translated NURBS reuse and the whole-mesh passes
+
+Branch `perf/tessellation-remainder` (on top of #958). Backlog rows D01
+(remainder of §7) and D07.
+
+### Why the translates were refused
+
+Instrumenting the eight refusals showed every carrier, vertex and control
+point of the moved region translated by exactly (6, 0, 0); the differences
+were all in **edge samples**. A circle sample was
+`center + u·r·cos t + v·r·sin t`, two roundings at world magnitude, and a
+NURBS edge sample a de Boor sum of world control points, so a sample of the
+moved edge was its source's plus 6 ± one ulp. Every chart built from those
+samples (analytic `project_point`, NURBS Newton projection) then differed in
+the last bits, and the CDT resolved cocircular quads accordingly.
+
+### What changed
+
+- **Translation-exact edge sampling** (`edge_sampling.rs`). Circles and
+  ellipses form the offset in their own frame and add the centre once
+  (`sample_circle_uniform`, also used by the A2 circle sync and the A3 torus
+  rim densification); NURBS edges evaluate, and project a closed edge's
+  start vertex, relative to their first control point
+  (`AnchoredNurbsCurve`). A rigid translation now moves every sample by
+  exactly the translation whenever the moved coordinate stays in its binade.
+- **NURBS frame chart** (`NurbsFrame` in `nonplanar.rs`). The CDT mesher
+  charts a NURBS carrier on `control point − anchor`: boundary Newton
+  projection, pcurve lookup, interior grid sizing and interior normals.
+  Interior positions are still evaluated on the world surface. The
+  projection seed grid (81 surface evaluations) is built once per face
+  instead of once per boundary sample; that returns the same projection bit
+  for bit and is most of the cold-path gain below.
+- **Cache rule** (`TranslationRule::NurbsFrame`). A NURBS face that can only
+  reach the frame-charted CDT (non-periodic carrier, so neither the pole-cap
+  nor the blend-band mesher; not a recognized cylinder wall with an outer
+  circle, so not the wall-band mesher or the wall-chart projection) is
+  replayed by translation when every recorded position is an *exact*
+  translate (Knuth two-sum error zero, so every difference of positions is
+  bit-identical, and unit vectors bit-identical) and its capture was meshed
+  by that path (a CDT failure falls back to the world-coordinate snap mesher
+  and is never replayed by translation).
+- **Whole-mesh passes** (`pool_index.rs`, `mesh_ops.rs`): the circle contact
+  refinement scans only pool vertices in grid cells along each arc (the
+  acceptance test is unchanged and candidates keep ascending id order);
+  dedupe numbers distinct quantized positions once and groups triangles by
+  sorted id triples with a counting sort; weld and gap fill find boundary
+  half-edges through a vertex-indexed half-edge table; gap fill is skipped
+  when the weld found no boundary half-edge and dedupe removed nothing.
+
+### Output
+
+- The pass rewrites are byte-identical: the previous implementations are
+  kept verbatim as test oracles (`tessellate::tests::mesh_passes`) and a
+  test-only switch meshes drilled, fused, coplanar-fused, filleted, hollow,
+  ridge-filleted (circle insertions) and primitive bodies both ways at three
+  deflections; damaged meshes (duplicated, reversed, degenerate and removed
+  triangles, nudged vertices) are passed through each pass both ways. The
+  Hammer Holder digests (source and edit, deflections 0.0148 and 0.1) were
+  recorded from #958 and held through the rewrite.
+- The sampling and frame-chart change moves untranslated output by roundoff
+  only. On the Hammer Holder: identical vertex, triangle and face counts and
+  identical triangles (vertex ids and winding) on every face; 34 NURBS faces
+  emit their triangles in a different order; about 7 150 positions move by at
+  most 2.2e-14 and NURBS normals by at most 1.9e-12. The digests were
+  re-pinned for that commit. The golden regressions are unchanged.
+
+### Hammer Holder edit (native and WASM run the same code)
+
+| Stage-D faces of the moved body | #958 | now |
+|---|---|---|
+| exact hits | 127 | 127 |
+| translated hits | 7 | 11 (+ cylinders 204/238, NURBS 232/233) |
+| misses: re-limited carriers | 12 | 12 |
+| misses: refused translates | 8 | 4 (sphere 191, torus 200, cylinder 201, torus 222) |
+| conflicts / uncacheable | 0 / 0 | 0 / 0 |
+
+The four remaining refusals are real roundoff differences in the input, not
+mesher artefacts: `move_faces` rebuilds the rim circles of the blends at
+191/200/201 with unit vectors one ulp apart (the key accepts them within 64
+ulps, the chart does not), and torus 222 has rim samples that cross a binade
+(x −17.5 → −11.5), where the moved coordinate gains a bit its source never
+had. The reused mesh equals the fresh one: indices and face offsets
+identical, normals bit-identical, positions within 1.5e-14, watertight.
+
+### Native (Apple M5 Pro, profiling build, shared machine at load ≈ 7–17, medians of 7, two interleaved runs)
+
+| Call | #958 | now |
+|---|---|---|
+| source, cache off | 294–301 ms | 193 ms (1.5×) |
+| source, cache warm (all exact) | 89.5 ms | 22.3 ms (4.0×) |
+| moved body, warm from the source | 112.5–115.0 ms | 28.7 ms (3.9×) |
+| `move_faces`, cache off | 1826–1832 ms | 1510–1518 ms |
+| `move_faces`, cache warm | 1119–1130 ms | 862–866 ms |
+
+Warm stages before → after: circle contact refinement 38.7 → 2.0 ms, dedupe
+22.3 → 1.8 ms, weld 8.1 → 3.1 ms, gap fill 7.9 → 0 ms (skipped).
+
+### WASM (`wasm-pack --release --no-opt`, simd128, Node 22.23.1, two runs each)
+
+Fixed display deflection 0.0148 (the behaviour of OpenZCAD #598), direct
+calls on the packages in one kernel (scratch driver):
+
+| Call | #958 | now |
+|---|---|---|
+| source display mesh, first call | 1001–1057 ms | 668–696 ms |
+| source display mesh, warm | 213–238 ms | 41–45 ms |
+| moved body display mesh, warm from the source | 287–318 ms | 58–65 ms (≈ 5×) |
+| `moveFaces −6` | 3350–3478 ms | 2793–3040 ms |
+
+OpenZCAD harness (`test/perf/offset-face-perf.test.ts`, the main OpenZCAD
+checkout as is, which does not carry #598 and so re-meshes the edit at the
+new extent's deflection, a cold mesh): `tessellateSolidGroupedBinary` at
+import 1012–1099 → 659–668 ms, in the offset sync 916 → 643–697 ms;
+`moveFacesJournaled` 2632–2673 → 2147–2381 ms. The offset sync's wall time
+(10.9–12.0 s) is dominated by `recognizeFeatures` (3.4 s), `validateSolid`
+(2.5 s over 12 calls) and `faceArea` (1.1 s over 510 calls).
+
+### What remains (warm source, native)
+
+Stage D key building and replay about 12 ms (key construction walks every
+chain and hashes positions), the holed planar CDT jobs (stage B/C, not
+cached) about 9.5 ms, the boundary-normal pass about 4 ms, weld 3 ms, circle
+refinement 2 ms, dedupe 1.8 ms.
+
+### Qualification
+
+- `tessellate::tests::face_cache` (9 tests): adds a smooth loft (curved
+  NURBS with pcurves) and a converted box (bilinear NURBS) translated by
+  (8, 0, 0): every NURBS face is a translated hit and the mesh reproduces
+  fresh (indices, offsets, normals identical, positions within 4 ulps);
+  disabling the frame chart fails it (face offsets differ). A translate
+  across a binade is refused and re-meshes to the fresh mesh; a rounded
+  0.1 step within one binade is an exact translate by the rounded step and
+  is reused.
+- `tessellate::tests::mesh_passes` (3 tests): the reference comparisons
+  above, plus the weld and dedupe reports that gate gap fill.
+- `crates/io/tests/tessellation_reuse_hammer.rs`: now ≥ 11 translated,
+  ≤ 4 refused; `crates/io/tests/tessellation_digest_hammer.rs`: the
+  digests, asserted on aarch64 macOS (C `libm` trigonometry differs in the
+  last bit between platforms), watertight and deterministic everywhere.
+- Full `remus-operations`, `remus-io` and `remus-wasm` suites pass.
+
+### Not done
+
+- Analytic faces still need bit-identical `project_point` charts; the four
+  refusals above are input differences the tessellator cannot remove.
+  Planar faces translated across their projection plane keep re-meshing
+  (their chart is the kept world coordinates).
+- Holed planar faces (stage B/C) and the boundary-normal pass are still
+  uncached; the key construction is now the largest warm cost.
+- No JS binding for the statistics; OpenZCAD #598 is required for the
+  display call to hit the cache after an edit.
