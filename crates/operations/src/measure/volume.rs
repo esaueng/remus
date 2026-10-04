@@ -1974,8 +1974,10 @@ pub fn shell_signed_volume(
     };
     let mut total = 0.0;
     for &fid in &faces {
-        // Orientation probes need fixed-order signs, not adaptive moment convergence.
-        total += remus_check::properties::face_integrator::integrate_face_fixed_about(
+        // Orientation probes need fixed-order signs, not adaptive moment
+        // convergence. Through the thread's face-integral cache when an
+        // application enabled it: a hit is bit-identical to integrating.
+        total += remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
             topo,
             fid,
             gauss_order,
@@ -2101,7 +2103,24 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// on its closed mesh tessellates open, carries a face the exact Gauss
 /// integrator does not measure either, and has no closed mesh at the clamp to
 /// fall back on (see above).
+///
+/// # Memo
+///
+/// With this thread's volume memo enabled (see
+/// [`super::enable_thread_volume_memo`]; off by default), a repeated reading
+/// of the same solid at the same deflection on an unchanged topology returns
+/// the previous result, bit for bit.
 pub fn solid_volume(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    super::volume_memo::memoized(topo, solid, deflection, || {
+        solid_volume_uncached(topo, solid, deflection)
+    })
+}
+
+fn solid_volume_uncached(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
