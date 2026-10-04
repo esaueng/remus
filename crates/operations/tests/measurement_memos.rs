@@ -1,8 +1,10 @@
 //! The opt-in measurement memos — the content-keyed face-integral cache
 //! behind strict validation's orientation probe and `face_area`, and the
-//! identity-keyed `solid_volume` memo — must be invisible: every reading
-//! through them is bit-identical to the uncached computation, and no
-//! in-place mutation can make a memoized reading stale.
+//! identity- and content-keyed `solid_volume` memo — must be invisible:
+//! every reading of unchanged content through them is bit-identical to the
+//! uncached computation, a re-expressed or translated face integral is
+//! within rounding of it, and no in-place mutation can make a memoized
+//! reading stale.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use remus_check::properties::face_cache::{
@@ -12,8 +14,8 @@ use remus_math::mat::Mat4;
 use remus_math::vec::Point3;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::{
-    enable_thread_volume_memo, face_area, set_thread_volume_memo_capacity, solid_volume,
-    thread_volume_memo_stats,
+    enable_thread_volume_memo, face_area, set_thread_volume_memo_capacity,
+    set_thread_volume_memo_limits, solid_volume, thread_volume_memo_stats,
 };
 use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
 use remus_operations::transform::transform_solid;
@@ -121,20 +123,52 @@ fn face_cache_readings_are_bit_identical() {
     }
 }
 
-/// A rigidly moved copy is new content: it misses, and still reads the same
-/// verdict.
+/// The strict probe's signed volume with the face cache off.
+fn uncached_probe(topo: &Topology, solid: SolidId) -> f64 {
+    let stats = thread_face_cache_stats();
+    set_thread_face_cache_limits(0, 0);
+    let (_, probes) =
+        validate_solid_with_budget_probes(topo, solid, &ValidationOptions::default()).unwrap();
+    set_thread_face_cache_limits(stats.capacity, stats.byte_budget);
+    probes.shells[0].signed_volume
+}
+
+/// A rigidly translated body is the same faces moved: its probe reads every
+/// face from the source's entries (re-expressed by the vector area, so
+/// within rounding of integrating afresh) and reaches the same verdict. A
+/// rotated body is new content and integrates afresh.
 #[test]
-fn moved_faces_are_integrated_afresh() {
+fn translated_bodies_read_their_source_integrals() {
     let _memos = Memos::off();
     enable_thread_face_cache();
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let faces = solid_faces(&topo, solid).unwrap().len() as u64;
     let (report, _) = probe_bits(&topo, solid);
-    transform_solid(&mut topo, solid, &Mat4::translation(0.5, 0.0, 0.0)).unwrap();
+    transform_solid(&mut topo, solid, &Mat4::translation(0.5, -3.25, 7.0)).unwrap();
     let before = thread_face_cache_stats();
     let (moved, probes) = probe_bits(&topo, solid);
+    let after = thread_face_cache_stats();
     assert_eq!(moved, report);
     assert_eq!(probes.len(), 1);
+    assert_eq!(after.misses, before.misses, "every face is a translation");
+    assert_eq!(after.translated - before.translated, faces);
+    let read = f64::from_bits(probes[0].3);
+    let fresh = uncached_probe(&topo, solid);
+    assert!(
+        (read - fresh).abs() <= fresh.abs() * 1e-12,
+        "translated probe {read} vs fresh {fresh}"
+    );
+
+    transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::rotation_x(std::f64::consts::FRAC_PI_3),
+    )
+    .unwrap();
+    let before = thread_face_cache_stats();
+    let (rotated, _) = probe_bits(&topo, solid);
+    assert_eq!(rotated, report);
     assert!(thread_face_cache_stats().misses > before.misses);
 }
 
@@ -146,10 +180,20 @@ fn uncached_volume(topo: &Topology, solid: SolidId) -> u64 {
     volume
 }
 
+/// What the memo may do with a reading after an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// The edit changed what `solid_volume` reads about the solid: retaken.
+    Retaken,
+    /// The edit left (or put back) the solid's content: served by content.
+    Reused,
+}
+
 /// Read the volume twice (the second must hit), apply `edit`, and read it
-/// again: the memo must miss and return exactly the uncached reading of the
-/// edited topology.
-fn assert_edit_invalidates(label: &str, edit: impl FnOnce(&mut Topology, SolidId)) {
+/// again. The reading must be exactly the uncached reading of the edited
+/// topology either way; an edit that changes the solid's content must make
+/// the memo retake it, and one that does not may be answered from it.
+fn assert_edit(label: &str, after: After, edit: impl FnOnce(&mut Topology, SolidId)) {
     let _memos = Memos::off();
     enable_thread_volume_memo();
     let mut topo = Topology::new();
@@ -166,44 +210,60 @@ fn assert_edit_invalidates(label: &str, edit: impl FnOnce(&mut Topology, SolidId
 
     edit(&mut topo, solid);
     let stats = thread_volume_memo_stats();
-    let after = solid_volume(&topo, solid, 0.05).unwrap();
-    assert_eq!(
-        thread_volume_memo_stats().misses,
-        stats.misses + 1,
-        "{label}: the edit must retire the reading"
-    );
-    assert_eq!(after.to_bits(), uncached_volume(&topo, solid), "{label}");
+    let read = solid_volume(&topo, solid, 0.05).unwrap();
+    let now = thread_volume_memo_stats();
+    match after {
+        After::Retaken => assert_eq!(
+            now.misses,
+            stats.misses + 1,
+            "{label}: the edit must retire the reading"
+        ),
+        After::Reused => assert_eq!(
+            (now.misses, now.content_hits),
+            (stats.misses, stats.content_hits + 1),
+            "{label}: unchanged content must be found again"
+        ),
+    }
+    assert_eq!(read.to_bits(), uncached_volume(&topo, solid), "{label}");
 }
 
+/// Two requests that `solid_volume` clamps to the same deflection read one
+/// mesh, so they share a reading; requests finer than the clamp do not.
 #[test]
-fn volume_memo_hits_only_at_the_same_deflection() {
+fn volume_memo_matches_requests_by_clamped_deflection() {
     let _memos = Memos::off();
     enable_thread_volume_memo();
     let mut topo = Topology::new();
     let solid = make_sphere(&mut topo, 2.0, 16).unwrap();
+    // The clamp is the bounding-box diagonal (4√3) × 5e-5 ≈ 3.5e-4.
     let a = solid_volume(&topo, solid, 0.05).unwrap();
     let b = solid_volume(&topo, solid, 0.02).unwrap();
-    let c = solid_volume(&topo, solid, 0.05).unwrap();
-    assert_eq!(a.to_bits(), c.to_bits());
-    let _ = b;
+    assert_eq!(a.to_bits(), b.to_bits());
     let stats = thread_volume_memo_stats();
-    assert_eq!((stats.misses, stats.hits), (2, 1));
+    assert_eq!((stats.misses, stats.hits), (1, 1));
+    let fine = solid_volume(&topo, solid, 1e-4).unwrap();
+    let finer = solid_volume(&topo, solid, 5e-5).unwrap();
+    let again = solid_volume(&topo, solid, 1e-4).unwrap();
+    assert_eq!(fine.to_bits(), again.to_bits());
+    let _ = finer;
+    let stats = thread_volume_memo_stats();
+    assert_eq!((stats.misses, stats.hits), (3, 2));
     // Off: never consulted.
     set_thread_volume_memo_capacity(0);
     let _ = solid_volume(&topo, solid, 0.05).unwrap();
-    assert_eq!(thread_volume_memo_stats().misses, 2);
+    assert_eq!(thread_volume_memo_stats().misses, 3);
 }
 
 #[test]
 fn volume_memo_invalidated_by_in_place_transform() {
-    assert_edit_invalidates("transform_solid", |topo, solid| {
+    assert_edit("transform_solid", After::Retaken, |topo, solid| {
         transform_solid(topo, solid, &Mat4::scale(1.5, 1.0, 1.0)).unwrap();
     });
 }
 
 #[test]
 fn volume_memo_invalidated_by_vertex_mut() {
-    assert_edit_invalidates("vertex_mut", |topo, solid| {
+    assert_edit("vertex_mut", After::Retaken, |topo, solid| {
         let face = solid_faces(topo, solid).unwrap()[0];
         let wire = topo.face(face).unwrap().outer_wire();
         let edge = topo.wire(wire).unwrap().edges()[0].edge();
@@ -217,7 +277,7 @@ fn volume_memo_invalidated_by_vertex_mut() {
 
 #[test]
 fn volume_memo_invalidated_by_face_mut() {
-    assert_edit_invalidates("face_mut", |topo, solid| {
+    assert_edit("face_mut", After::Retaken, |topo, solid| {
         let face = solid_faces(topo, solid).unwrap()[0];
         let f = topo.face_mut(face).unwrap();
         f.set_reversed(!f.is_reversed());
@@ -226,7 +286,7 @@ fn volume_memo_invalidated_by_face_mut() {
 
 #[test]
 fn volume_memo_invalidated_by_edge_mut() {
-    assert_edit_invalidates("edge_mut", |topo, solid| {
+    assert_edit("edge_mut", After::Retaken, |topo, solid| {
         let face = solid_faces(topo, solid).unwrap()[0];
         let wire = topo.face(face).unwrap().outer_wire();
         let edge = topo.wire(wire).unwrap().edges()[0].edge();
@@ -237,9 +297,35 @@ fn volume_memo_invalidated_by_edge_mut() {
     });
 }
 
+/// The tessellator consults pcurves, so they are part of the content.
 #[test]
-fn volume_memo_invalidated_by_rollback() {
-    assert_edit_invalidates("RollbackSnapshot::restore", |topo, solid| {
+fn volume_memo_invalidated_by_a_pcurve_write() {
+    assert_edit("set_pcurve_oriented", After::Retaken, |topo, solid| {
+        let face = solid_faces(topo, solid).unwrap()[0];
+        let wire = topo.face(face).unwrap().outer_wire();
+        let used = topo.wire(wire).unwrap().edges()[0];
+        let line = remus_math::curves2d::Line2D::new(
+            remus_math::vec::Point2::new(0.0, 0.0),
+            remus_math::vec::Vec2::new(1.0, 0.0),
+        )
+        .unwrap();
+        topo.set_pcurve_oriented(
+            used.edge(),
+            face,
+            used.is_forward(),
+            remus_topology::pcurve::PCurve::new(
+                remus_math::curves2d::Curve2D::Line(line),
+                0.0,
+                1.0,
+            ),
+        )
+        .unwrap();
+    });
+}
+
+#[test]
+fn volume_memo_reused_after_rollback() {
+    assert_edit("RollbackSnapshot::restore", After::Reused, |topo, solid| {
         let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
         transform_solid(topo, solid, &Mat4::scale(2.0, 2.0, 2.0)).unwrap();
         snapshot.restore(topo);
@@ -247,29 +333,37 @@ fn volume_memo_invalidated_by_rollback() {
 }
 
 #[test]
-fn volume_memo_invalidated_by_snapshot_restore() {
-    assert_edit_invalidates("restore_preserving_handle_slots", |topo, solid| {
-        let snapshot = topo.clone();
-        transform_solid(topo, solid, &Mat4::scale(2.0, 1.0, 1.0)).unwrap();
-        topo.restore_preserving_handle_slots(&snapshot);
-    });
+fn volume_memo_reused_after_snapshot_restore() {
+    assert_edit(
+        "restore_preserving_handle_slots",
+        After::Reused,
+        |topo, solid| {
+            let snapshot = topo.clone();
+            transform_solid(topo, solid, &Mat4::scale(2.0, 1.0, 1.0)).unwrap();
+            topo.restore_preserving_handle_slots(&snapshot);
+        },
+    );
 }
 
 #[test]
 fn volume_memo_invalidated_by_in_place_heal() {
-    assert_edit_invalidates("heal::fix_face_orientations", |topo, solid| {
-        let face = solid_faces(topo, solid).unwrap()[2];
-        let f = topo.face_mut(face).unwrap();
-        f.set_reversed(!f.is_reversed());
-        remus_operations::heal::fix_face_orientations(topo, solid).unwrap();
-    });
+    assert_edit(
+        "heal::fix_face_orientations",
+        After::Retaken,
+        |topo, solid| {
+            let face = solid_faces(topo, solid).unwrap()[2];
+            let f = topo.face_mut(face).unwrap();
+            f.set_reversed(!f.is_reversed());
+            remus_operations::heal::fix_face_orientations(topo, solid).unwrap();
+        },
+    );
 }
 
+/// An allocation elsewhere moves the topology identity but not the solid's
+/// content, so the reading is found again by content (and is still exact).
 #[test]
-fn volume_memo_misses_after_an_unrelated_allocation() {
-    // Conservative: the identity cannot tell an allocation elsewhere from an
-    // edit, so the reading is retaken (and still exact).
-    assert_edit_invalidates("unrelated make_box", |topo, _| {
+fn volume_memo_survives_an_unrelated_allocation() {
+    assert_edit("unrelated make_box", After::Reused, |topo, _| {
         make_box(topo, 1.0, 1.0, 1.0).unwrap();
     });
 }
@@ -285,18 +379,46 @@ fn volume_memo_never_answers_for_a_deleted_solid() {
     assert!(solid_volume(&topo, solid, 0.05).is_err());
 }
 
-/// Clones have their own lineage: a reading of the source is not reused for
-/// the clone even though the content is equal.
+/// A clone has its own lineage but the same content and handles: it is
+/// answered from the source's reading, and an edit to either retires it for
+/// that one only.
 #[test]
-fn volume_memo_is_per_topology_value() {
+fn volume_memo_reads_a_clone_by_content() {
     let _memos = Memos::off();
     enable_thread_volume_memo();
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
     let a = solid_volume(&topo, solid, 0.05).unwrap();
-    let clone = topo.clone();
+    let mut clone = topo.clone();
     let stats = thread_volume_memo_stats();
     let b = solid_volume(&clone, solid, 0.05).unwrap();
     assert_eq!(a.to_bits(), b.to_bits());
+    assert_eq!(
+        thread_volume_memo_stats().content_hits,
+        stats.content_hits + 1
+    );
+    transform_solid(&mut clone, solid, &Mat4::scale(1.0, 2.0, 1.0)).unwrap();
+    let stats = thread_volume_memo_stats();
+    let c = solid_volume(&clone, solid, 0.05).unwrap();
+    assert_eq!(thread_volume_memo_stats().misses, stats.misses + 1);
+    assert_eq!(c.to_bits(), uncached_volume(&clone, solid));
+    let d = solid_volume(&topo, solid, 0.05).unwrap();
+    assert_eq!(d.to_bits(), a.to_bits());
+}
+
+/// A content key larger than the byte budget is not retained; the reading
+/// stays findable by identity alone.
+#[test]
+fn volume_memo_keeps_oversized_readings_by_identity_only() {
+    let _memos = Memos::off();
+    set_thread_volume_memo_limits(8, 16);
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    solid_volume(&topo, solid, 0.05).unwrap();
+    solid_volume(&topo, solid, 0.05).unwrap();
+    let stats = thread_volume_memo_stats();
+    assert_eq!((stats.hits, stats.retained_bytes), (1, 0));
+    make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    solid_volume(&topo, solid, 0.05).unwrap();
     assert_eq!(thread_volume_memo_stats().misses, stats.misses + 1);
 }
