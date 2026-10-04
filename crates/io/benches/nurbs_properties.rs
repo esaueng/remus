@@ -3,7 +3,8 @@
 //!
 //! Strict `validate_solid` integrates a signed volume over every face for its
 //! inside-out check, and `mass_properties` integrates second moments at Gauss
-//! order 8; both are bound by `NurbsSurface::derivatives`.
+//! order 8; both are bound by `NurbsSurface::derivatives`. The warm variant
+//! measures strict validation answered from the opt-in face-integral cache.
 
 #![allow(missing_docs, clippy::expect_used, clippy::unwrap_used)]
 
@@ -31,6 +32,20 @@ fn bench_nurbs_properties(c: &mut Criterion) {
             assert!(report.is_valid());
         });
     });
+    // The opt-in face-integral cache (off above): every iteration after the
+    // first is answered from it, which is what a consumer repeating strict
+    // validation of an unchanged body pays.
+    remus_check::properties::face_cache::enable_thread_face_cache();
+    group.bench_function(
+        "validate_solid strict, warm face cache (hammer holder)",
+        |b| {
+            b.iter(|| {
+                let report = validate_solid(&topo, solid).expect("validation runs");
+                assert!(report.is_valid());
+            });
+        },
+    );
+    remus_check::properties::face_cache::set_thread_face_cache_limits(0, 0);
     group.bench_function("mass_properties (hammer holder)", |b| {
         b.iter(|| mass_properties(&topo, solid).expect("mass properties"));
     });
