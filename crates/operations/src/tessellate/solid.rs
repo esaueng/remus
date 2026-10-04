@@ -16,6 +16,7 @@ use super::boundary_plan::{BoundaryPlan, BoundaryRefinementRequest, SampleChains
 use super::edge_sampling::{
     circle_param_range, sample_edge, sample_edge_with_params, segments_for_chord_deviation_a,
 };
+use super::face_cache;
 use super::mesh_ops::{
     dedupe_coincident_triangles, fill_sub_deflection_triangular_gaps, weld_boundary_vertices,
 };
@@ -1416,12 +1417,58 @@ fn tessellate_faces_core(
     // construction). Curved families keep their established
     // structured/CDT/snap dispatch and fallback behaviour; only the plan
     // they read from is now explicit.
+    //
+    // PERF-D01: with this thread's face mesh cache enabled, a face whose
+    // content key (surface, wires, final boundary chains, tolerances) matches
+    // a retained capture up to a rigid translation is replayed instead of
+    // re-meshed; every other face is meshed as before and captured.
+    let mut cache_session = face_cache::Session::begin();
     for &fi in &other_face_indices {
+        let face_id = all_faces[fi];
         let allow_latitude_cap = !plan.policy.circle_floor
-            && has_trimmed_same_sphere_neighbor(topo, all_faces[fi], &edge_face_map)?;
+            && has_trimmed_same_sphere_neighbor(topo, face_id, &edge_face_map)?;
+        let mut capture = None;
+        if let Some(session) = cache_session.as_mut()
+            && let Ok((key, boundary)) = face_cache::face_key(
+                topo,
+                face_id,
+                face_cache::MeshRequest {
+                    deflection: plan.deflection,
+                    angular_tol: plan.angular_tol,
+                    circle_floor: plan.policy.circle_floor,
+                    allow_latitude_cap,
+                },
+                &plan.edge_chains,
+                &plan.merged.positions,
+            )
+        {
+            match session.try_replay(
+                face_id,
+                &key,
+                boundary,
+                &mut plan.merged,
+                &mut plan.point_to_global,
+            ) {
+                Ok(()) => {
+                    if let Some(tf) = tri_faces.as_mut() {
+                        #[allow(clippy::cast_possible_truncation)]
+                        tf.resize(plan.merged.indices.len() / 3, fi as u32);
+                    }
+                    continue;
+                }
+                Err(boundary) => {
+                    let start = face_cache::Session::capture_start(
+                        &boundary,
+                        &plan.merged,
+                        &plan.point_to_global,
+                    );
+                    capture = Some((key, boundary, start));
+                }
+            }
+        }
         tessellate_face_with_shared_edges(
             topo,
-            all_faces[fi],
+            face_id,
             plan.deflection,
             plan.angular_tol,
             plan.policy.circle_floor,
@@ -1430,6 +1477,16 @@ fn tessellate_faces_core(
             &mut plan.merged,
             &mut plan.point_to_global,
         )?;
+        if let (Some(session), Some((key, boundary, start))) = (cache_session.as_mut(), capture) {
+            session.capture_finish(
+                face_id,
+                key,
+                boundary,
+                &start,
+                &plan.merged,
+                &plan.point_to_global,
+            );
+        }
         // Attribute every triangle appended by this face so `tri_faces` stays
         // parallel to the triangle list.
         if let Some(tf) = tri_faces.as_mut() {
@@ -1476,13 +1533,34 @@ fn tessellate_faces_core(
             if let Some(faces) = vertex_faces.get(&i) {
                 for &fid in faces {
                     if let Ok(face_data) = topo.face(fid) {
-                        let surf = face_data.surface();
-                        if let Some(n) = crate::fillet::face_surface_normal_at(surf, pos) {
-                            let oriented = if face_data.is_reversed() {
-                                Vec3::new(-n.x(), -n.y(), -n.z())
-                            } else {
-                                n
-                            };
+                        #[allow(clippy::cast_possible_truncation)]
+                        let gid = i as u32;
+                        // A replayed face supplies its cached oriented
+                        // contribution; the summation order is unchanged.
+                        let cached = cache_session
+                            .as_ref()
+                            .map_or(face_cache::NormalSlot::Unknown, |session| {
+                                session.cached_normal(fid, gid)
+                            });
+                        let contribution = match cached {
+                            face_cache::NormalSlot::Known(normal) => normal,
+                            face_cache::NormalSlot::Unknown => {
+                                let surf = face_data.surface();
+                                let fresh =
+                                    crate::fillet::face_surface_normal_at(surf, pos).map(|n| {
+                                        if face_data.is_reversed() {
+                                            Vec3::new(-n.x(), -n.y(), -n.z())
+                                        } else {
+                                            n
+                                        }
+                                    });
+                                if let Some(session) = cache_session.as_mut() {
+                                    session.record_normal(fid, gid, fresh);
+                                }
+                                fresh
+                            }
+                        };
+                        if let Some(oriented) = contribution {
                             normal_sum += oriented;
                             count += 1;
                         }
@@ -1522,6 +1600,10 @@ fn tessellate_faces_core(
                 }
             }
         }
+    }
+
+    if let Some(session) = cache_session {
+        session.commit();
     }
 
     if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
