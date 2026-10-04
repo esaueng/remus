@@ -192,3 +192,162 @@ RECOG_PERF_ONLY=relations samply record --save-only -o relations.json.gz \
 
 The example prints a digest of each call's full output; it asserts that
 repeated runs agree.
+
+## Follow-up, 2026-10-04: the WASM remainder
+
+After the change above, `recognizeFeatures` and `solidEdgeRelations` were
+still the largest kernel calls in OpenZCAD's per-edit sync. This follow-up
+takes the next exact steps; every output byte is unchanged.
+
+### What dominated in WASM
+
+Node 22 `--cpu-prof` of scratch `wasm-pack --target nodejs --release --no-opt`
+builds (SIMD, `--no-default-features`, the name section kept), five calls of
+each binding on the hammer holder. Shares of the binding's samples:
+
+| share | `recognizeFeatures` | `solidEdgeRelations` |
+|---|---|---|
+| software `fma` (`compiler_builtins` `fma` + `__multi3`) | 50 % | 65 % |
+| ray crossings of the quadrant probes | 51 % | 93 % |
+| — line-NURBS seed scan and Newton refinement | 28 % | 46 % |
+| — ray-torus quartic (Durand–Kerner) | 19 % | 37 % |
+| face areas: trimmed Gauss quadrature of analytic faces | 37 % | — |
+| — `sin`/`cos` of the cylinder, sphere and torus abscissae | 15 % | — |
+| face areas: NURBS face tessellation | 7 % | — |
+
+Every `f64::mul_add` is a call into `compiler_builtins`' integer-arithmetic
+`fma` on `wasm32`, which has no fused multiply-add instruction. Inside the
+torus solver the fallback was 34 points of the 37; the remaining calls came
+from `Vec3::dot`/`cross`/`length`, the NURBS basis functions and the Gauss
+abscissae.
+
+### Change
+
+- **Exact `fma` for `wasm32`** (`remus_math::fma`). `fma(a, b, c)` is
+  `f64::mul_add` on every other target. On `wasm32`, operands in a range
+  where nothing can underflow or overflow (factors in `[2^-450, 2^450]`,
+  addend below `2^900`) take Boldo and Melquiond's emulation from Dekker's
+  product, TwoSum and one rounding to odd; a zero factor with finite operands
+  takes the plain `a * b + c` (exact); anything else (subnormal, huge,
+  infinite or NaN operands) still calls `mul_add`. The correctly rounded
+  result is unique, so a correct emulation returns `mul_add`'s bits. The hot
+  `mul_add` sites switch to it: `Vector` length, dot and cross; the NURBS
+  basis functions; the line-NURBS Newton refinement and point projection;
+  analytic surface evaluation; all of `analytic_intersection` (the quartic
+  solver's complex arithmetic and coefficients included); the face
+  integrator. The emulation stays out of line, one call per use like the
+  `mul_add` call it replaces. Inlined at every site it ran the edge relations
+  about 7 % faster but made the `-Oz` kernel 10 809 835 bytes, past the
+  10 MiB hard limit; inlined only into the quartic solver's complex
+  arithmetic it gained nothing measurable. Two places keep `mul_add` on purpose:
+  `mul_add(1.0, x)` in the line-NURBS seed scan, which LLVM folds to an
+  addition, and the solver's products by the constant `1 + 0i`, which are now
+  written as that addition (`Complex::one_times`) because the out-of-line
+  call hides the fold. `Vector::length_squared` starts from `x * x`: the fused
+  `x·x + 0.0` it replaced rounds to the same value, a square never being
+  `-0.0`.
+- **Durand–Kerner cycle jump** (`real_roots_quartic`). A sweep is a pure
+  function of the four iterates' bits, so once a state repeats, the rest of
+  the 100-sweep budget only cycles; the solver jumps to the state the budget
+  would end on, as the line-NURBS Newton refinement already does. States are
+  recorded only from sweep 16 on (with a 64-bit key in front of the full
+  comparison), so the 72 % of solves that converge in about a dozen sweeps pay
+  nothing for it. On the fixture's edge relations 1 100 of 6 078 solves jump,
+  removing 52 292 of 224 791 sweeps (23 %).
+- **Analytic trig shared across a quadrature row**. The cylinder, sphere and
+  torus `point_and_partials` compute `sin_cos` once per parameter instead of
+  once per piece (position, `∂S/∂u`, `∂S/∂v`), and the scratch-taking
+  variant the integrator calls remembers `u.sin_cos()` by its bits in
+  `DerivativeScratch` (`sin_cos_u`), so each row of `v` abscissae at one `u`
+  pays for it once. Each component is the same expression over the same
+  values as the separate calls.
+
+Not changed: NURBS face areas still tessellate (`FilletLike` reports that
+area); no bounding-volume reject in the torus solver (which near-miss roots
+it reports would change); per-call JSON building and adjacency builds do not
+show in either profile (< 0.5 %).
+
+### Equivalence
+
+- The O06 goldens (`crates/operations/tests/perf_o06_recognition_golden.rs`)
+  pass unmodified; the `recognition_perf` `Debug` dumps of the candidate are
+  byte-identical to the baseline's, and both WASM payloads have the same
+  SHA-256 prefix (`1603288bda55aaf6` features, `72bdca85596cad22` relations).
+- `fma`: the emulation is compared bit for bit with the native `mul_add` on
+  1.5 M random operands (with cancelling, exact-midpoint and few-bit
+  significands mixed in), 600 k exact ties, and every boundary of the
+  accepted range; four local runs of the ignored long test checked a further
+  4 × 10⁹ cases. Mutating the rounding to odd or the final sum fails the
+  tests. The emulation is plain binary64 arithmetic, which WebAssembly
+  specifies exactly, so the native comparison covers it.
+- Durand–Kerner: `intersect_line_torus` against a verbatim copy of the
+  previous solver on 3 600 rays (hits, near misses, tangents, misses; four
+  tori from fillet-corner to fat proportions, at the origin and at model
+  scale), with fixed points, longer cycles and non-repeating budget runs all
+  exercised; the jump target against a step-by-step simulation of every cycle
+  shape. Jumping to the wrong cycle member fails the test.
+- Shared trig: the overrides against the separate calls on 20 000 points per
+  surface, large arguments included, and the scratch path along rows of `v`.
+
+### Measurement
+
+Baseline: `dd71bbf1` (this note's change). Candidate: this follow-up.
+
+WASM, Node 22, the binding called directly on the imported fixture, seven
+calls per binding, two interleaved rounds:
+
+| binding | baseline | candidate | speed-up |
+|---|---|---|---|
+| `recognizeFeatures` | 580–616 ms (medians 597, 593) | 377–403 ms (medians 388, 384) | 1.5× |
+| `solidEdgeRelations` | 294–316 ms (medians 302, 301) | 206–214 ms (medians 210, 211) | 1.4× |
+
+Where the candidate's WASM time goes: `solidEdgeRelations` 51 % line-NURBS
+crossings, 27 % ray-torus quartic, and 46 % of all samples inside the
+emulated `fma` (22 points under the quartic, 16 under the line-NURBS
+refinement); `recognizeFeatures` 56 % ray classification, 39 % face areas
+(29 % quadrature, 9 % NURBS tessellation), 48 % inside the emulated `fma`.
+`sin`/`cos` fell from 15 % to 4 % of recognition.
+
+Native, `profiling` profile, five interleaved rounds of five runs (medians
+per round):
+
+| call | baseline | candidate |
+|---|---|---|
+| `recognize_features` | 150.2–154.0 ms | 124.3–126.5 ms |
+| `solid_edge_relations` | 72.3–73.1 ms | 67.9–71.4 ms |
+
+Native `fma` is unchanged (it is `mul_add`); the native gains are the shared
+trig and the cycle jump.
+
+The optimized (`wasm-opt -Oz`) kernel shrinks from 10 374 770 to
+10 357 257 bytes.
+
+Through the consumer: OpenZCAD's untracked offset-face harness on the main
+OpenZCAD checkout (which, unlike the consumer measurement that motivated this,
+still runs a dozen `validateSolid` calls per sync), with kernel and translator
+packages built the same way from each source. Three interleaved rounds; the
+third ran under heavy load from other jobs. Body volume, face count, delta and
+warnings are identical.
+
+| per sync (rounds 1, 2) | baseline | candidate |
+|---|---|---|
+| `recognizeFeatures`, cold import | 592, 594 ms | 386, 385 ms |
+| `recognizeFeatures`, offset | 586, 580 ms | 393, 374 ms |
+| `faceArea` ×508, cold import | 840, 821 ms | 458, 458 ms |
+| `volume`, cold import | 777, 773 ms | 570, 573 ms |
+| `tessellateSolidGroupedBinary`, cold import | 978, 963 ms | 717, 710 ms |
+| `moveFacesJournaled`, offset | 4 287, 4 298 ms | 3 393, 3 329 ms |
+| whole offset sync, wall | 10 734, 10 697 ms | 8 549, 8 359 ms |
+
+The harness does not call `solidEdgeRelations`.
+
+### Left out
+
+- **A faster emulation.** The remaining WASM time is dominated by the
+  emulated `fma` itself (about 30 floating-point operations per call); a
+  SIMD form that computes the two halves of a complex product together would
+  need `core::arch::wasm32` intrinsics and a separate native test path.
+- **The solver's arithmetic.** The Durand–Kerner iteration still runs its
+  sweeps (about 170 000 per edge-relations call) with the same operations;
+  converging faster or skipping solves would change which near-miss roots are
+  reported.
