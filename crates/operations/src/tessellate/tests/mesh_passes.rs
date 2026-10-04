@@ -659,25 +659,44 @@ fn passes_match_reference_on_damaged_meshes() {
                         let call = |m: &mut TriangleMesh, f: Option<&mut Vec<u32>>| match pass {
                             0 => super::super::mesh_ops::weld_boundary_vertices(m, deflection, f),
                             1 => super::super::mesh_ops::dedupe_coincident_triangles(m, f),
-                            _ => super::super::mesh_ops::fill_sub_deflection_triangular_gaps(
-                                m, deflection, f,
-                            ),
+                            _ => {
+                                super::super::mesh_ops::fill_sub_deflection_triangular_gaps(
+                                    m, deflection, f,
+                                );
+                                true
+                            }
                         };
                         let mut plain = input.clone();
-                        if reference {
+                        let reported = if reference {
                             with_reference(|| {
-                                call(&mut m, Some(&mut f));
                                 call(&mut plain, None);
-                            });
+                                call(&mut m, Some(&mut f))
+                            })
                         } else {
-                            call(&mut m, Some(&mut f));
                             call(&mut plain, None);
-                        }
-                        (m, f, plain)
+                            call(&mut m, Some(&mut f))
+                        };
+                        (m, f, plain, reported)
                     };
-                    let (fast, fast_faces, fast_plain) = run(false);
-                    let (slow, slow_faces, slow_plain) = run(true);
+                    let (fast, fast_faces, fast_plain, reported) = run(false);
+                    let (slow, slow_faces, slow_plain, _) = run(true);
                     let context = format!("{context} pass {pass}");
+                    // The fast passes' reports, which let the pipeline skip
+                    // gap fill: weld says `false` only for a mesh without
+                    // boundary half-edges (left untouched), dedupe says
+                    // whether it removed anything.
+                    match pass {
+                        0 if !reported => {
+                            assert_eq!(boundary_edge_count(&input), 0, "{context}");
+                            assert_eq!(fast.indices, input.indices, "{context}");
+                        }
+                        1 => assert_eq!(
+                            reported,
+                            fast.indices.len() != input.indices.len(),
+                            "{context}"
+                        ),
+                        _ => {}
+                    }
                     assert_bit_identical(
                         &(fast, fast_faces.clone()),
                         &(slow, slow_faces),
@@ -724,8 +743,12 @@ fn passes_match_reference_on_degenerate_inputs() {
                 let mut m = mesh.clone();
                 let mut f: Vec<u32> = (0..m.indices.len() as u32 / 3).collect();
                 let go = |m: &mut TriangleMesh, f: &mut Vec<u32>| match pass {
-                    0 => super::super::mesh_ops::weld_boundary_vertices(m, 0.5, Some(f)),
-                    1 => super::super::mesh_ops::dedupe_coincident_triangles(m, Some(f)),
+                    0 => {
+                        super::super::mesh_ops::weld_boundary_vertices(m, 0.5, Some(f));
+                    }
+                    1 => {
+                        super::super::mesh_ops::dedupe_coincident_triangles(m, Some(f));
+                    }
                     _ => {
                         super::super::mesh_ops::fill_sub_deflection_triangular_gaps(
                             m,
