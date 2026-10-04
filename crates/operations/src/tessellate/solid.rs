@@ -569,7 +569,7 @@ fn tessellate_faces_core(
                         && pts.len() < expected_count
                     {
                         let (t_start, t_end) = circle_param_range(edge_data)?;
-                        let mut new_pts = remus_geometry::sampling::sample_uniform(
+                        let mut new_pts = super::edge_sampling::sample_circle_uniform(
                             circle,
                             t_start,
                             t_end,
@@ -688,8 +688,9 @@ fn tessellate_faces_core(
                     .get(&edge_idx)
                     .is_some_and(|pts| pts.len() < expected);
                 if needs_densify {
-                    let mut new_pts =
-                        remus_geometry::sampling::sample_uniform(circle, t_start, t_end, expected);
+                    let mut new_pts = super::edge_sampling::sample_circle_uniform(
+                        circle, t_start, t_end, expected,
+                    );
                     if let Some(first) = new_pts.first_mut() {
                         first.clone_from(&topo.vertex(edge_data.start())?.point());
                     }
@@ -1483,7 +1484,7 @@ fn tessellate_faces_core(
                 }
             }
         }
-        tessellate_face_with_shared_edges(
+        let nurbs_frame_chart = tessellate_face_with_shared_edges(
             topo,
             face_id,
             plan.deflection,
@@ -1500,6 +1501,7 @@ fn tessellate_faces_core(
                 key,
                 boundary,
                 &start,
+                nurbs_frame_chart,
                 &plan.merged,
                 &plan.point_to_global,
             );
@@ -1756,6 +1758,10 @@ pub(super) fn split_triangles_spanning_boundary_splits(
 }
 
 /// Tessellate a single face, reusing shared edge vertices from the global mesh.
+///
+/// Returns whether the face was a NURBS face meshed by the CDT in its own
+/// frame (`NurbsFrame`): the face mesh cache replays a translated copy of
+/// such a face only when its capture took that path.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn tessellate_face_with_shared_edges(
     topo: &Topology,
@@ -1767,7 +1773,8 @@ pub(super) fn tessellate_face_with_shared_edges(
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
-) -> Result<(), crate::OperationsError> {
+) -> Result<bool, crate::OperationsError> {
+    let mut nurbs_frame_chart = false;
     let face_data = topo.face(face_id)?;
     let is_reversed = face_data.is_reversed();
 
@@ -1844,7 +1851,7 @@ pub(super) fn tessellate_face_with_shared_edges(
 
         let n = boundary_global_ids.len();
         if n < 3 {
-            return Ok(());
+            return Ok(false);
         }
 
         let local_positions: Vec<Point3> = boundary_global_ids
@@ -1937,6 +1944,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                 merged,
                 point_to_global,
             );
+            nurbs_frame_chart = cdt_ok.is_ok() && merged.indices.len() > idx_save;
             if cdt_ok.is_err() || merged.indices.len() == idx_save {
                 merged.positions.truncate(pos_save);
                 merged.normals.truncate(nrm_save);
@@ -2215,7 +2223,7 @@ pub(super) fn tessellate_face_with_shared_edges(
         }
     }
 
-    Ok(())
+    Ok(nurbs_frame_chart)
 }
 
 #[cfg(test)]
