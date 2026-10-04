@@ -59,6 +59,12 @@ impl CylindricalSurface {
     #[must_use]
     pub fn evaluate(&self, u: f64, v: f64) -> Point3 {
         let (sin_u, cos_u) = u.sin_cos();
+        self.evaluate_trig(sin_u, cos_u, v)
+    }
+
+    /// [`Self::evaluate`] from an already computed `u.sin_cos()`.
+    #[inline]
+    pub(crate) fn evaluate_trig(&self, sin_u: f64, cos_u: f64, v: f64) -> Point3 {
         self.origin
             + self.x_axis * (self.radius * cos_u)
             + self.y_axis * (self.radius * sin_u)
@@ -488,6 +494,13 @@ impl SphericalSurface {
     pub fn evaluate(&self, u: f64, v: f64) -> Point3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
+        self.evaluate_trig(sin_u, cos_u, sin_v, cos_v)
+    }
+
+    /// [`Self::evaluate`] from already computed `u.sin_cos()` and
+    /// `v.sin_cos()`.
+    #[inline]
+    pub(crate) fn evaluate_trig(&self, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Point3 {
         self.center
             + self.x_axis * (self.radius * cos_v * cos_u)
             + self.y_axis * (self.radius * cos_v * sin_u)
@@ -766,6 +779,13 @@ impl ToroidalSurface {
     pub fn evaluate(&self, u: f64, v: f64) -> Point3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
+        self.evaluate_trig(sin_u, cos_u, sin_v, cos_v)
+    }
+
+    /// [`Self::evaluate`] from already computed `u.sin_cos()` and
+    /// `v.sin_cos()`.
+    #[inline]
+    pub(crate) fn evaluate_trig(&self, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Point3 {
         let tube_radius = self.minor_radius.fma(cos_v, self.major_radius);
         self.center
             + self.x_axis * (tube_radius * cos_u)
