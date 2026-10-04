@@ -1538,14 +1538,16 @@ struct TranslatedFacesChange {
 ///
 /// `None` — the caller then compares whole-body meshes instead of refusing —
 /// when a moved face declines to integrate, reads back a different area,
-/// yields a non-finite number, or is a sphere collar or period-winding
-/// quadric wall, the families whose UV outline the trimmed quadrature is
-/// known to get wrong.
+/// yields a non-finite number, or belongs to a family whose UV outline the
+/// trimmed quadrature can get wrong (`gauss_unqualified_face`) and its
+/// boundary-derived shadow along the move disagrees with the quadrature's
+/// (`boundary_shadow_along`).
 fn translated_faces_volume_change(
     before: &Topology,
     after: &Topology,
     solid: SolidId,
     faces: &HashSet<FaceId>,
+    delta: Vec3,
 ) -> Result<Option<TranslatedFacesChange>, OperationsError> {
     use remus_check::properties::face_integrator::integrate_face_fixed_about;
 
@@ -1569,27 +1571,108 @@ fn translated_faces_volume_change(
             return Ok(None);
         }
         // A wrong UV outline is consistent before and after, so the area
-        // check above cannot see it. Two families are known to lose theirs in
-        // the trimmed quadrature: a scalloped sphere collar (its holes are
-        // modelled as latitude bands) and a quadric wall whose rim winds the
-        // period (no closed outline to trim by). `gauss_unqualified_face`
-        // names both; it also names torus trims outside the two-rim band
-        // family, but those it declines only for the whole-solid band
-        // integrator — the trimmed quadrature unwraps both torus axes and
-        // integrates the real outline, and the torus corners of ordinary
-        // fillets are exactly what a planar move carries along.
-        if !matches!(before.face(face)?.surface(), FaceSurface::Torus(_))
-            && crate::measure::gauss_unqualified_face(before, face)?.is_some()
-        {
-            return Ok(None);
+        // check above cannot see it. The families `gauss_unqualified_face`
+        // names (a scalloped sphere collar, a torus trim outside the two-rim
+        // band family — the generic integrator is on record over-reading a
+        // bore's rim torus — and a quadric wall whose rim winds the period)
+        // must therefore agree with a reading that does not go through the UV
+        // outline at all: the face's shadow along the move taken from its
+        // boundary (Stokes). The torus corners of ordinary fillets land here
+        // and pass; a misread outline whose extra or missing region casts a
+        // shadow along the move does not, and the body falls back to the
+        // whole-body comparison.
+        let face_change = 3.0 * (now.volume - was.volume);
+        if crate::measure::gauss_unqualified_face(before, face)?.is_some() {
+            let Some(shadow) = boundary_shadow_along(before, face, delta)? else {
+                return Ok(None);
+            };
+            let slack = (0.02 * delta.length()).mul_add(was.area.abs(), 1e-9);
+            if (face_change.abs() - shadow).abs() > slack {
+                return Ok(None);
+            }
         }
-        change += now.volume - was.volume;
+        change += face_change;
         area += was.area.abs();
     }
-    let volume = 3.0 * change;
-    Ok(volume
-        .is_finite()
-        .then_some(TranslatedFacesChange { volume, area }))
+    Ok(change.is_finite().then_some(TranslatedFacesChange {
+        volume: change,
+        area,
+    }))
+}
+
+/// `|δ · ∫_f n dA|` read from the face's boundary alone.
+///
+/// By Stokes the vector area of a closed loop is `(1/2) ∮ P × dP` whatever
+/// surface spans it, so this never consults the face's UV outline and is an
+/// independent check on a trimmed quadrature that may have one wrong. Only the
+/// magnitude is read — the loop's stored winding is not relied on for a sign —
+/// which is all the cross-check needs. Lines contribute exactly; every other
+/// edge is sampled densely on its own authoritative domain (2048 chords per
+/// edge: a full circle reads within 2e-6 relative), far below the tolerance
+/// the caller applies.
+///
+/// `None` for a face with inner wires (the loops' relative winding would then
+/// matter) or an edge without a usable domain.
+fn boundary_shadow_along(
+    topo: &Topology,
+    face: FaceId,
+    delta: Vec3,
+) -> Result<Option<f64>, OperationsError> {
+    const CURVE_SAMPLES: usize = 2048;
+
+    let face_data = topo.face(face)?;
+    if !face_data.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut points: Vec<Point3> = Vec::new();
+    let mut previous_end: Option<VertexId> = None;
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let (start_id, end_id) = (edge.start(), edge.end());
+        // Wires store edges in loop order, but per-edge orientation flags are
+        // not guaranteed to chain head-to-tail; re-derive the traversal from
+        // vertex connectivity with the previous edge (the integrators'
+        // convention), falling back to the stored flag for closed edges.
+        let forward = match previous_end {
+            Some(previous) if start_id == previous && end_id != previous => true,
+            Some(previous) if end_id == previous && start_id != previous => false,
+            _ => oriented.is_forward(),
+        };
+        previous_end = Some(if forward { end_id } else { start_id });
+        let start = topo.vertex(start_id)?.point();
+        let end = topo.vertex(end_id)?.point();
+        let mut samples: Vec<Point3> = if matches!(edge.curve(), EdgeCurve::Line) {
+            vec![start, end]
+        } else {
+            let Ok((t0, t1)) = edge.strict_domain() else {
+                return Ok(None);
+            };
+            (0..=CURVE_SAMPLES)
+                .map(|index| {
+                    let t = (t1 - t0).mul_add(index as f64 / CURVE_SAMPLES as f64, t0);
+                    edge.curve().evaluate_with_endpoints(t, start, end)
+                })
+                .collect()
+        };
+        if !forward {
+            samples.reverse();
+        }
+        points.extend(samples);
+    }
+    if points.len() < 3 {
+        return Ok(None);
+    }
+    let mut twice_vector_area = Vec3::new(0.0, 0.0, 0.0);
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    for pair in points.windows(2) {
+        twice_vector_area += (pair[0] - origin).cross(pair[1] - origin);
+    }
+    if let (Some(&last), Some(&first)) = (points.last(), points.first()) {
+        twice_vector_area += (last - origin).cross(first - origin);
+    }
+    let shadow = delta.dot(twice_vector_area * 0.5).abs();
+    Ok(shadow.is_finite().then_some(shadow))
 }
 
 fn translate_face_surface(
@@ -1807,20 +1890,21 @@ fn move_translation_invariant_blend_region(
     // negligible next to its area, is refused, independent of body size. A
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
-    let (volume_change, volume_slack) =
-        if let Some(read) = translated_faces_volume_change(topo, &work, solid, &moved_faces)? {
-            (
-                read.volume,
-                (read.area * 1e-9).mul_add(distance.abs(), 1e-7),
-            )
-        } else {
-            let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
-            let result_volume = crate::measure::solid_volume(&work, solid, 0.05)?;
-            (
-                result_volume - source_volume,
-                source_volume.abs().mul_add(1e-9, 1e-7),
-            )
-        };
+    let (volume_change, volume_slack) = if let Some(read) =
+        translated_faces_volume_change(topo, &work, solid, &moved_faces, delta)?
+    {
+        (
+            read.volume,
+            (read.area * 1e-9).mul_add(distance.abs(), 1e-7),
+        )
+    } else {
+        let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+        let result_volume = crate::measure::solid_volume(&work, solid, 0.05)?;
+        (
+            result_volume - source_volume,
+            source_volume.abs().mul_add(1e-9, 1e-7),
+        )
+    };
     if volume_change.abs() <= volume_slack
         || volume_change.is_sign_positive() != distance.is_sign_positive()
     {
@@ -5297,10 +5381,60 @@ mod tests {
         after: &Topology,
         solid: SolidId,
         faces: &[FaceId],
+        delta: Vec3,
     ) -> TranslatedFacesChange {
-        translated_faces_volume_change(before, after, solid, &faces.iter().copied().collect())
+        translated_faces_volume_change(
+            before,
+            after,
+            solid,
+            &faces.iter().copied().collect(),
+            delta,
+        )
+        .unwrap()
+        .expect("every face of this fixture integrates")
+    }
+
+    /// The boundary-only shadow matches closed forms on a rectangle, a
+    /// circle and a quarter-cylinder band, and ignores the move direction's
+    /// tangential components.
+    #[test]
+    fn boundary_shadow_along_matches_closed_forms() {
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let lid = face_with_outward_normal(&topo, bx, Vec3::new(0.0, 0.0, 1.0));
+        let shadow = boundary_shadow_along(&topo, lid, Vec3::new(0.0, 0.0, 0.5))
             .unwrap()
-            .expect("every face of this fixture integrates")
+            .unwrap();
+        assert!((shadow - 3.0).abs() < 1e-12, "lid shadow {shadow}");
+        let sideways = boundary_shadow_along(&topo, lid, Vec3::new(1.0, 0.0, 0.0))
+            .unwrap()
+            .unwrap();
+        assert!(
+            sideways < 1e-12,
+            "a lid casts no shadow along its own plane"
+        );
+
+        let cyl = crate::primitives::make_cylinder(&mut topo, 1.5, 4.0).unwrap();
+        let cap = face_with_outward_normal(&topo, cyl, Vec3::new(0.0, 0.0, 1.0));
+        let shadow = boundary_shadow_along(&topo, cap, Vec3::new(0.0, 0.0, 2.0))
+            .unwrap()
+            .unwrap();
+        let expected = 2.0 * std::f64::consts::PI * 1.5 * 1.5;
+        // Chord residual of the dense sampling on a full circle.
+        assert!(
+            (shadow - expected).abs() < 1e-5 * expected,
+            "cap shadow {shadow} vs {expected}"
+        );
+
+        let (fixture, _solid, _support, band, direction) = filleted_cube_support_and_band();
+        let shadow = boundary_shadow_along(&fixture, band, direction * 2.0)
+            .unwrap()
+            .unwrap();
+        // The quarter band's shadow along the support normal is r × 10.
+        assert!(
+            (shadow - 20.0).abs() < 1e-5 * 20.0,
+            "band shadow {shadow} vs 20"
+        );
     }
 
     /// Closed form: pulling the 2 × 3 lid of a box by d sweeps 6d, in either
@@ -5316,7 +5450,13 @@ mod tests {
         for distance in [0.5, -0.25] {
             let mut after = before.clone();
             translate_faces(&mut after, solid, &[lid], Vec3::new(0.0, 0.0, distance));
-            let read = read_change(&before, &after, solid, &[lid]);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &[lid],
+                Vec3::new(0.0, 0.0, distance),
+            );
             assert!(
                 (read.volume - 6.0 * distance).abs() < 1e-9,
                 "lid moved by {distance}: change {}, expected {}",
@@ -5334,7 +5474,13 @@ mod tests {
         }
         let mut after = before.clone();
         translate_faces(&mut after, solid, &[lid, floor], Vec3::new(0.0, 0.0, 0.5));
-        let read = read_change(&before, &after, solid, &[lid, floor]);
+        let read = read_change(
+            &before,
+            &after,
+            solid,
+            &[lid, floor],
+            Vec3::new(0.0, 0.0, 0.5),
+        );
         assert!(
             read.volume.abs() < 1e-9 && (read.area - 12.0).abs() < 1e-9,
             "lid and floor together have no shadow: change {} area {}",
@@ -5358,7 +5504,13 @@ mod tests {
         for distance in [0.75, -0.4] {
             let mut after = before.clone();
             translate_faces(&mut after, solid, &[cap], Vec3::new(0.0, 0.0, distance));
-            let read = read_change(&before, &after, solid, &[cap]);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &[cap],
+                Vec3::new(0.0, 0.0, distance),
+            );
             let expected = std::f64::consts::PI * 1.5 * 1.5 * distance;
             assert!(
                 (read.volume - expected).abs() < 1e-9 * expected.abs(),
@@ -5395,7 +5547,13 @@ mod tests {
         for distance in [0.5, -0.25] {
             let mut after = before.clone();
             translate_faces(&mut after, solid, &[top], Vec3::new(0.0, 0.0, distance));
-            let read = read_change(&before, &after, solid, &[top]);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &[top],
+                Vec3::new(0.0, 0.0, distance),
+            );
             let expected = (36.0 - std::f64::consts::PI) * distance;
             assert!(
                 (read.volume - expected).abs() < 1e-9 * expected.abs(),
@@ -5450,7 +5608,13 @@ mod tests {
                 &[ceiling],
                 Vec3::new(0.0, 0.0, -distance),
             );
-            let read = read_change(&before, &after, solid, &[ceiling]);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &[ceiling],
+                Vec3::new(0.0, 0.0, -distance),
+            );
             assert!(
                 (read.volume - 16.0 * distance).abs() < 1e-9,
                 "ceiling moved by {distance} into the void: change {}, expected {}",
@@ -5499,7 +5663,13 @@ mod tests {
         for distance in [1.0, -0.5] {
             let mut after = before.clone();
             translate_faces(&mut after, solid, &[support, band], direction * distance);
-            let read = read_change(&before, &after, solid, &[support, band]);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &[support, band],
+                direction * distance,
+            );
             let expected = 100.0 * distance;
             assert!(
                 (read.volume - expected).abs() < 1e-6 * expected.abs(),
@@ -5573,7 +5743,13 @@ mod tests {
         for distance in [0.5, -0.25] {
             let mut after = before.clone();
             translate_faces(&mut after, solid, &moved, Vec3::new(0.0, 0.0, distance));
-            let read = read_change(&before, &after, solid, &moved);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &moved,
+                Vec3::new(0.0, 0.0, distance),
+            );
             let expected = 100.0 * distance;
             assert!(
                 (read.volume - expected).abs() < 1e-6 * expected.abs(),
@@ -5627,7 +5803,13 @@ mod tests {
         for distance in [1.0, -0.5] {
             let mut after = before.clone();
             translate_faces(&mut after, solid, &[support, band], direction * distance);
-            let read = read_change(&before, &after, solid, &[support, band]);
+            let read = read_change(
+                &before,
+                &after,
+                solid,
+                &[support, band],
+                direction * distance,
+            );
             let expected = 100.0 * distance;
             assert!(
                 (read.volume - expected).abs() < 1e-6 * expected.abs(),
