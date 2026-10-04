@@ -2,14 +2,23 @@
 //!
 //! The orientation probe may be answered from
 //! `remus_check::properties::face_cache` once an application enables it (the
-//! WASM kernel does). The cache keys faces by content, so the probes must be
-//! identical — verdict, shell, Gauss order, face count and signed-volume bits
-//! — whether the cache is off, cold, warm, or serving a deserialized copy of
-//! the body in a fresh topology, the way a consumer's short-lived probe
-//! kernel validates it. The signed volumes are also pinned against the
-//! values recorded before the cache and the first-order NURBS solve landed
-//! (relative 1e-12: platform `libm` may move the last bits of the analytic
-//! faces; the same-platform runs above are compared bit for bit).
+//! WASM kernel does). The cache keys faces by content, so the probes must
+//! agree — verdict, shell, Gauss order and face count exactly — whether the
+//! cache is off, cold, warm, or serving a deserialized copy of the body in a
+//! fresh topology, the way a consumer's short-lived probe kernel validates
+//! it; the face areas exactly too.
+//!
+//! The signed volume is the one reading allowed to move, and only in its
+//! last bits: a face whose content is a rigid translation of one integrated
+//! before (a patterned hole, a repeated blend) reads that face's volume term
+//! re-expressed by its vector area instead of integrating again, which
+//! regroups the same sum. So the cached probes are compared with the
+//! uncached one at relative 1e-12 — the tolerance the recorded values were
+//! already pinned at, far below the 1e-9 × diag³ floor the verdict reads —
+//! and with each other bit for bit (warm and copy replay the cold pass).
+//! The signed volumes are also pinned against the values recorded before
+//! the cache and the first-order NURBS solve landed (relative 1e-12: platform
+//! `libm` may move the last bits of the analytic faces).
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -82,6 +91,22 @@ fn read(topo: &Topology, solid: SolidId) -> Reading {
     )
 }
 
+/// Report, probe shells/orders/face counts and face areas exactly; the
+/// signed volume to relative 1e-12 (see the module docs).
+fn assert_agrees(cached: &Reading, uncached: &Reading, label: &str) {
+    assert_eq!(cached.0, uncached.0, "{label}: report");
+    assert_eq!(cached.2, uncached.2, "{label}: face areas");
+    assert_eq!(cached.1.len(), uncached.1.len(), "{label}: probes");
+    for (c, u) in cached.1.iter().zip(&uncached.1) {
+        assert_eq!((c.0, c.1, c.2), (u.0, u.1, u.2), "{label}: probe");
+        let (c, u) = (f64::from_bits(c.3), f64::from_bits(u.3));
+        assert!(
+            (c - u).abs() <= u.abs() * 1e-12,
+            "{label}: signed volume {c} vs uncached {u}"
+        );
+    }
+}
+
 #[test]
 fn b28_probes_are_identical_with_the_face_cache() {
     set_thread_face_cache_limits(0, 0);
@@ -114,8 +139,8 @@ fn b28_probes_are_identical_with_the_face_cache() {
         let before_warm = thread_face_cache_stats();
         let warm = read(&topo, solid);
         let after_warm = thread_face_cache_stats();
-        assert_eq!(cold, uncached, "{label}: cold cache");
-        assert_eq!(warm, uncached, "{label}: warm cache");
+        assert_agrees(&cold, &uncached, &format!("{label}: cold cache"));
+        assert_eq!(warm, cold, "{label}: warm cache replays the cold pass");
         assert_eq!(
             after_warm.misses, before_warm.misses,
             "{label}: warm must hit"
@@ -126,7 +151,11 @@ fn b28_probes_are_identical_with_the_face_cache() {
         let mut copy = Topology::new();
         let copied = deserialize_solids(&bytes, &mut copy).expect("deserialize")[0];
         let before_copy = thread_face_cache_stats();
-        assert_eq!(read(&copy, copied), uncached, "{label}: deserialized copy");
+        assert_eq!(
+            read(&copy, copied),
+            cold,
+            "{label}: deserialized copy replays the cold pass"
+        );
         assert_eq!(
             thread_face_cache_stats().misses,
             before_copy.misses,
