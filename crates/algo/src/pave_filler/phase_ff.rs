@@ -3788,8 +3788,32 @@ fn snap_to_boundary_junction_band(
         }
     }
     let (_, foot, tm, owner_fid, eid) = best?;
-    // A foot landing weld-close to the boundary edge's own endpoint means
-    // the junction IS that existing vertex — adopt it exactly. The
+    let other = if owner_fid == fa { fb } else { fa };
+    let other_surf = surf_of(other)?;
+    let dist_to_surf = |q: Point3| -> f64 {
+        match &other_surf {
+            FaceSurface::Plane { normal, d } => {
+                let length = normal.length();
+                if length.is_finite() && length > 0.0 {
+                    (normal.dot(q - Point3::new(0.0, 0.0, 0.0)) - d).abs() / length
+                } else {
+                    f64::MAX
+                }
+            }
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => other_surf
+                .project_point(q)
+                .and_then(|(u, v)| other_surf.evaluate(u, v))
+                .map_or(f64::MAX, |s| (s - q).length()),
+        }
+    };
+    // A foot landing weld-close to the boundary edge's own endpoint can
+    // adopt that vertex only if it also lies on the partner surface. The
+    // search band accommodates fit error; it must not consume a distinct
+    // thin band between the section and a nearby cap. The
     // partner-surface refinement below is degenerate when the boundary
     // curve lies IN the partner surface (coincident faces): the distance
     // objective is flat, the ternary search converges on noise, and every
@@ -3804,7 +3828,7 @@ fn snap_to_boundary_junction_band(
         } else {
             ((ep - foot).length(), ep)
         };
-        if dmin <= weld {
+        if dmin <= weld && dist_to_surf(vp) <= tol.linear {
             return Some(vp);
         }
     }
@@ -3813,20 +3837,11 @@ fn snap_to_boundary_junction_band(
     // meets the PARTNER face's surface — refine to it so every section
     // ending here (this one, and the partner-pair sections computed
     // independently) mints the SAME vertex.
-    let other = if owner_fid == fa { fb } else { fa };
-    let (Some(other_surf), Ok(edge)) = (surf_of(other), topo.edge(eid)) else {
-        return Some(foot);
-    };
+    let edge = topo.edge(eid).ok()?;
     let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-        return Some(foot);
+        return None;
     };
     let (sp, ep) = (sv.point(), ev.point());
-    let dist_to_surf = |q: Point3| -> f64 {
-        other_surf
-            .project_point(q)
-            .and_then(|(u, v)| other_surf.evaluate(u, v))
-            .map_or(f64::MAX, |s| (s - q).length())
-    };
     let (d0, d1) =
         super::helpers::authoritative_edge_domain(edge, eid, "boundary-junction refinement")
             .ok()?;
@@ -3850,8 +3865,10 @@ fn snap_to_boundary_junction_band(
     let junction = edge.curve().evaluate_with_endpoints(tj, sp, ep);
     if dist_to_surf(junction) <= tol.linear * 10.0 && (junction - foot).length() <= weld {
         Some(junction)
-    } else {
+    } else if dist_to_surf(foot) <= tol.linear * 10.0 {
         Some(foot)
+    } else {
+        None
     }
 }
 
@@ -5894,6 +5911,10 @@ fn compute_raw_curves(
                 // it in an exact circle: substitute it for the marched ring
                 // (see the function docs for why the march is unusable here).
                 Ok(vec![exact])
+            } else if let Some(exact) =
+                exact_ruled_plane_section(*normal, *d, nurbs, context.tolerance)?
+            {
+                Ok(exact)
             } else {
                 plane_nurbs_intersection(*normal, *d, nurbs)
             }
@@ -6318,7 +6339,85 @@ fn analytic_analytic_intersection(
     Ok(results)
 }
 
-/// Plane-NURBS intersection.
+/// A planar profile translated along the linear u direction has an exact
+/// constant-u section. Certify the two rows algebraically, then interpolate
+/// their control points instead of marching a zero crossing at a cap seam.
+/// Equal paired weights make the extrusion parameter affine even for a
+/// rational profile. Other surfaces retain the general intersection path.
+#[allow(clippy::float_cmp)] // Knot and weight identity is an algebraic precondition.
+fn exact_ruled_plane_section(
+    normal: Vec3,
+    d: f64,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let points = surface.control_points();
+    let weights = surface.weights();
+    if surface.degree_u() != 1 || points.len() != 2 || weights[0] != weights[1] {
+        return Ok(None);
+    }
+    let knots = surface.knots_u();
+    if knots.len() != 4 || knots[0] != knots[1] || knots[2] != knots[3] {
+        return Ok(None);
+    }
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let distance = |p: Point3| normal.dot(p - origin) - d;
+    let h0 = distance(points[0][0]);
+    let h1 = distance(points[1][0]);
+    let scale = points.iter().flatten().fold(d.abs().max(1.0), |s, p| {
+        s.max(p.x().abs()).max(p.y().abs()).max(p.z().abs())
+    });
+    let roundoff = (32.0 * f64::EPSILON * scale).min(tol.linear);
+    if points[0]
+        .iter()
+        .any(|&p| (distance(p) - h0).abs() > roundoff)
+        || points[1]
+            .iter()
+            .any(|&p| (distance(p) - h1).abs() > roundoff)
+        || (h1 - h0).abs() <= roundoff
+    {
+        return Ok(None);
+    }
+    let fraction = -h0 / (h1 - h0);
+    if fraction < -roundoff / (h1 - h0).abs() || fraction > 1.0 + roundoff / (h1 - h0).abs() {
+        return Ok(Some(Vec::new()));
+    }
+    let control_points: Vec<Point3> = if h0.abs() <= roundoff {
+        points[0].clone()
+    } else if h1.abs() <= roundoff {
+        points[1].clone()
+    } else {
+        points[0]
+            .iter()
+            .zip(&points[1])
+            .map(|(&a, &b)| a + (b - a) * fraction)
+            .collect()
+    };
+    // Positive weights keep the whole rational trace inside this hull;
+    // certify the final rounded coefficients against the original plane.
+    if control_points
+        .iter()
+        .any(|&p| distance(p).abs() > tol.linear)
+    {
+        return Ok(None);
+    }
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(
+        surface.degree_v(),
+        surface.knots_v().to_vec(),
+        control_points,
+        weights[0].clone(),
+    )?;
+    let domain = curve.domain();
+    Ok(Some(vec![RawCurve {
+        bbox: curve.aabb(),
+        p_start: curve.evaluate(domain.0),
+        p_end: curve.evaluate(domain.1),
+        t_range: domain,
+        curve: EdgeCurve::NurbsCurve(curve),
+    }]))
+}
+
+/// General plane-NURBS intersection when no algebraic section is qualified.
 fn plane_nurbs_intersection(
     normal: Vec3,
     d: f64,
@@ -9989,3 +10088,6 @@ mod face_bbox_conic_tests {
 
 #[cfg(test)]
 mod helper_oracle_tests;
+
+#[cfg(test)]
+mod ruled_plane_tests;
