@@ -873,10 +873,10 @@ fn remaining_paths() -> Result<(), Box<dyn Error>> {
     }
 
     // offset_face on a NURBS face: a gentle offset has no self-intersection so
-    // SSI detection finds nothing → grid-sampling trim; a large offset self-
-    // intersects past the limit → trim errors → raw offset surface.
+    // SSI detection finds nothing → grid-sampling trim. Distances follow
+    // the face orientation, including the reversed lateral face of this loft.
     {
-        // A sharply waisted loft (8→1→8) folds under a large inward offset.
+        // A sharply waisted loft (8→1→8) exercises both offset directions.
         let mut topo = Topology::new();
         let p0 = make_square_at(&mut topo, 8.0, 0.0)?;
         let p1 = make_square_at(&mut topo, 1.0, 1.5)?;
