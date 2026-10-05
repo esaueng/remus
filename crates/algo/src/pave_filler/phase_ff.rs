@@ -3788,8 +3788,32 @@ fn snap_to_boundary_junction_band(
         }
     }
     let (_, foot, tm, owner_fid, eid) = best?;
-    // A foot landing weld-close to the boundary edge's own endpoint means
-    // the junction IS that existing vertex — adopt it exactly. The
+    let other = if owner_fid == fa { fb } else { fa };
+    let other_surf = surf_of(other)?;
+    let dist_to_surf = |q: Point3| -> f64 {
+        match &other_surf {
+            FaceSurface::Plane { normal, d } => {
+                let length = normal.length();
+                if length.is_finite() && length > 0.0 {
+                    (normal.dot(q - Point3::new(0.0, 0.0, 0.0)) - d).abs() / length
+                } else {
+                    f64::MAX
+                }
+            }
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => other_surf
+                .project_point(q)
+                .and_then(|(u, v)| other_surf.evaluate(u, v))
+                .map_or(f64::MAX, |s| (s - q).length()),
+        }
+    };
+    // A foot landing weld-close to the boundary edge's own endpoint can
+    // adopt that vertex only if it also lies on the partner surface. The
+    // search band accommodates fit error; it must not consume a distinct
+    // thin band between the section and a nearby cap. The
     // partner-surface refinement below is degenerate when the boundary
     // curve lies IN the partner surface (coincident faces): the distance
     // objective is flat, the ternary search converges on noise, and every
@@ -3804,7 +3828,7 @@ fn snap_to_boundary_junction_band(
         } else {
             ((ep - foot).length(), ep)
         };
-        if dmin <= weld {
+        if dmin <= weld && dist_to_surf(vp) <= tol.linear {
             return Some(vp);
         }
     }
@@ -3813,20 +3837,11 @@ fn snap_to_boundary_junction_band(
     // meets the PARTNER face's surface — refine to it so every section
     // ending here (this one, and the partner-pair sections computed
     // independently) mints the SAME vertex.
-    let other = if owner_fid == fa { fb } else { fa };
-    let (Some(other_surf), Ok(edge)) = (surf_of(other), topo.edge(eid)) else {
-        return Some(foot);
-    };
+    let edge = topo.edge(eid).ok()?;
     let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-        return Some(foot);
+        return None;
     };
     let (sp, ep) = (sv.point(), ev.point());
-    let dist_to_surf = |q: Point3| -> f64 {
-        other_surf
-            .project_point(q)
-            .and_then(|(u, v)| other_surf.evaluate(u, v))
-            .map_or(f64::MAX, |s| (s - q).length())
-    };
     let (d0, d1) =
         super::helpers::authoritative_edge_domain(edge, eid, "boundary-junction refinement")
             .ok()?;
@@ -3850,8 +3865,10 @@ fn snap_to_boundary_junction_band(
     let junction = edge.curve().evaluate_with_endpoints(tj, sp, ep);
     if dist_to_surf(junction) <= tol.linear * 10.0 && (junction - foot).length() <= weld {
         Some(junction)
-    } else {
+    } else if dist_to_surf(foot) <= tol.linear * 10.0 {
         Some(foot)
+    } else {
+        None
     }
 }
 
