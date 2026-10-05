@@ -146,6 +146,21 @@ pub(crate) fn normalize_legacy_edge_domain(
     edge_id: remus_topology::edge::EdgeId,
     context: &str,
 ) -> Result<(f64, f64), OperationsError> {
+    if let Ok(range) = topo.edge(edge_id)?.strict_domain() {
+        return Ok(range);
+    }
+    let range = reconstruct_legacy_edge_domain(topo, edge_id, context)?;
+    topo.edge_mut(edge_id)?.set_trim(Some(range));
+    Ok(range)
+}
+
+/// Read-only legacy range reconstruction with the same certification as the
+/// raw-wire adapter. Measurement needs only the edge and its two vertices.
+pub(crate) fn reconstruct_legacy_edge_domain(
+    topo: &remus_topology::Topology,
+    edge_id: remus_topology::edge::EdgeId,
+    context: &str,
+) -> Result<(f64, f64), OperationsError> {
     use remus_topology::edge::{Edge, EdgeDomainError};
 
     let edge = topo.edge(edge_id)?;
@@ -235,7 +250,6 @@ pub(crate) fn normalize_legacy_edge_domain(
         }
     }
 
-    topo.edge_mut(edge_id)?.set_trim(Some(range));
     Ok(range)
 }
 
