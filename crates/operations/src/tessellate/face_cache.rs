@@ -54,10 +54,20 @@
 //! diagonals). A translated hit is therefore accepted only when the
 //! mesher's chart input is bit-identical (`TranslationRule`): every
 //! boundary sample's `project_point` coordinates on an analytic surface
-//! without pcurves, the `project_by_normal` coordinates on a plane. NURBS
-//! faces chart by Newton projection, which cannot be checked without
-//! re-projecting, so they are reused only exactly. Refused translates are
-//! counted (`FaceMeshCacheStats::translation_refused`) and re-meshed.
+//! without pcurves, the `project_by_normal` coordinates on a plane.
+//!
+//! NURBS faces chart by Newton projection, which cannot be checked without
+//! re-projecting. Instead the CDT mesher charts them in the carrier's own
+//! frame (`NurbsFrame` in `nonplanar.rs`: projection, pcurve lookup, grid
+//! sizing and normals on `control point − anchor`), and edge samples are
+//! formed translation-exactly (`sample_circle_uniform`,
+//! `AnchoredNurbsCurve` in `edge_sampling.rs`). A NURBS face that can only
+//! reach that path (`TranslationRule::NurbsFrame`) is replayed when every
+//! recorded position is an exact translate (two-sum exact, so every
+//! difference of positions is bit-identical) and its capture was meshed by
+//! that path; its chart, grid and normals are then the fresh mesh's bit for
+//! bit. Refused translates are counted
+//! (`FaceMeshCacheStats::translation_refused`) and re-meshed.
 //! Boundary-normal contributions of a translated hit are re-evaluated (the
 //! NURBS normal projection is loose enough to move them by `1e-2`).
 //!
@@ -115,7 +125,7 @@ const TRANSLATION_ULPS: f64 = 1024.0;
 const DIRECTION_ULPS: f64 = 64.0;
 
 /// Key layout version; bump when the recorded content changes.
-const KEY_VERSION: u64 = 1;
+const KEY_VERSION: u64 = 2;
 
 /// Corner flag marking a boundary ordinal (otherwise a local vertex index).
 const BOUNDARY_CORNER: u32 = 1 << 31;
@@ -280,9 +290,11 @@ pub(super) struct FaceKey {
 /// * Planar faces triangulate the boundary projected onto a coordinate
 ///   plane (`project_by_normal`): a translate is replayed only when that
 ///   projection is bit-identical.
-/// * NURBS faces chart the boundary by Newton projection, which is not
-///   bit-reproducible under translation, so they are replayed only when
-///   their content is bit-identical.
+/// * NURBS faces chart the boundary by Newton projection (or a pcurve
+///   search). The CDT mesher does both in the carrier's own frame
+///   (`NurbsFrame`), so a face whose every position is an exact translate
+///   (verified bit for bit) charts identically; faces that could take
+///   another path are replayed only when their content is bit-identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TranslationRule {
     /// Analytic chart; its boundary chart coordinates are in the exact tags.
@@ -290,6 +302,11 @@ enum TranslationRule {
     /// Planar: the two coordinates kept by `project_by_normal` must match
     /// bit for bit (the dropped axis index is recorded).
     PlanarProjection(usize),
+    /// NURBS face that can only reach the frame-charted CDT (non-periodic
+    /// carrier, not a recognized cylinder wall with an outer circle edge):
+    /// replayed when every position is an exact translate and the capture
+    /// took that path.
+    NurbsFrame,
     /// Only bit-identical content may be replayed.
     Refused,
 }
@@ -620,6 +637,10 @@ pub(super) fn face_key(
     // Vertices and chain samples: the points the meshers place in the chart.
     let mut boundary_points: Vec<Point3> = Vec::new();
     let mut has_pcurve = false;
+    // A circle edge in the outer wire of a recognized NURBS cylinder wall
+    // routes the face to the wall-band mesher or the wall-chart projection
+    // (both in world coordinates).
+    let mut outer_circle = false;
 
     let wires: Vec<_> = std::iter::once(face.outer_wire())
         .chain(face.inner_wires().iter().copied())
@@ -643,6 +664,8 @@ pub(super) fn face_key(
                 continue;
             }
             let edge = topo.edge(edge_id)?;
+            outer_circle |=
+                wire_id == face.outer_wire() && matches!(edge.curve(), EdgeCurve::Circle(_));
             for vertex_id in [edge.start(), edge.end()] {
                 let next = vertex_ordinals.len() as u64;
                 let ordinal = *vertex_ordinals.entry(vertex_id.index()).or_insert(next);
@@ -684,9 +707,18 @@ pub(super) fn face_key(
             }
         }
     }
+    // A recognized cylinder wall carried as NURBS charts through the exact
+    // wall chart when its outer wire has a circle (world coordinates).
+    let wall_chart = remus_algo::wall_chart(face.surface()).is_some();
+    b.flag(wall_chart);
     let mut signature = Vec::new();
-    let translation =
-        translation_rule(face.surface(), &boundary_points, has_pcurve, &mut signature);
+    let translation = translation_rule(
+        face.surface(),
+        &boundary_points,
+        has_pcurve,
+        outer_circle && wall_chart,
+        &mut signature,
+    );
     b.surface(face.surface());
 
     let mut by_gid: Vec<(u32, u32)> = gid_ordinals.into_iter().collect();
@@ -712,12 +744,17 @@ pub(super) fn face_key(
 ///   instead and is refused.
 /// * Planes are handled in [`match_keys`] (their projection is the kept pair
 ///   of world coordinates).
-/// * NURBS faces chart the boundary by Newton projection, which is not
-///   reproducible bit for bit under translation: refused.
+/// * NURBS faces chart the boundary in the carrier's own frame when the CDT
+///   meshes them; that is the only path for a non-periodic carrier unless
+///   it is a recognized cylinder wall with an outer circle edge
+///   (`wall_band`; periodic carriers can reach the pole-cap and blend-band
+///   meshers). Those are [`TranslationRule::NurbsFrame`], checked in
+///   [`match_keys`]; anything else is refused.
 fn translation_rule(
     surface: &FaceSurface,
     boundary: &[Point3],
     has_pcurve: bool,
+    wall_band: bool,
     signature: &mut Vec<u64>,
 ) -> TranslationRule {
     let mut chart = |project: &dyn Fn(Point3) -> (f64, f64)| {
@@ -740,6 +777,9 @@ fn translation_rule(
                 0
             };
             TranslationRule::PlanarProjection(dropped)
+        }
+        FaceSurface::Nurbs(s) if !wall_band && !s.is_periodic_u() && !s.is_periodic_v() => {
+            TranslationRule::NurbsFrame
         }
         FaceSurface::Nurbs(_) => TranslationRule::Refused,
         FaceSurface::Cylinder(_)
@@ -818,6 +858,9 @@ fn match_keys(stored: &FaceKey, probe: &FaceKey) -> Option<KeyMatch> {
             .zip(&probe.points)
             .all(|(a, b)| kept(a) == kept(b));
     }
+    if probe.translation == TranslationRule::NurbsFrame && allowed {
+        allowed = exact_translates(stored, probe);
+    }
     let dir_tol = DIRECTION_ULPS * f64::EPSILON;
     if stored
         .dirs
@@ -850,6 +893,44 @@ fn match_keys(stored: &FaceKey, probe: &FaceKey) -> Option<KeyMatch> {
     })
 }
 
+/// Whether every position of `probe` is the matching position of `stored`
+/// moved by one exactly representable translation, with no rounding (so
+/// every difference of two positions is bit-identical), and every unit
+/// vector is bit-identical. This is the premise under which the NURBS
+/// frame chart reproduces bit for bit.
+fn exact_translates(stored: &FaceKey, probe: &FaceKey) -> bool {
+    let (sa, pa) = (stored.anchor(), probe.anchor());
+    let delta = [pa.x() - sa.x(), pa.y() - sa.y(), pa.z() - sa.z()];
+    let shifted = |s: Point3, p: Point3| {
+        [(s.x(), p.x()), (s.y(), p.y()), (s.z(), p.z())]
+            .into_iter()
+            .zip(delta)
+            .all(|((s, p), d)| exact_sum(s, d) == Some(p.to_bits()))
+    };
+    stored.planes.is_empty()
+        && probe.planes.is_empty()
+        && stored
+            .dirs
+            .iter()
+            .zip(&probe.dirs)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
+        && stored
+            .points
+            .iter()
+            .zip(&probe.points)
+            .all(|(s, p)| shifted(*s, *p))
+}
+
+/// Bits of `a + b` when the sum is exact (Knuth's two-sum error is zero),
+/// `None` otherwise.
+fn exact_sum(a: f64, b: f64) -> Option<u64> {
+    let sum = a + b;
+    let bv = sum - a;
+    let av = sum - bv;
+    let err = (a - av) + (b - bv);
+    (sum.is_finite() && err == 0.0).then_some(sum.to_bits())
+}
+
 fn same_point_bits(a: Point3, b: Point3) -> bool {
     a.x().to_bits() == b.x().to_bits()
         && a.y().to_bits() == b.y().to_bits()
@@ -880,6 +961,9 @@ struct CachedFace {
     interned: Vec<bool>,
     corners: Vec<u32>,
     boundary_normals: Vec<NormalSlot>,
+    /// The capture was meshed by the frame-charted NURBS CDT (see
+    /// [`TranslationRule::NurbsFrame`]).
+    nurbs_frame_chart: bool,
     bytes: usize,
 }
 
@@ -930,9 +1014,20 @@ impl FaceMeshCache {
     fn find(&self, key: &FaceKey) -> Option<(u64, KeyMatch)> {
         let mut best: Option<(u64, KeyMatch)> = None;
         for &id in self.buckets.get(&key.hash)? {
-            let Some(kind) = self.entries.get(&id).and_then(|e| match_keys(&e.key, key)) else {
+            let Some(entry) = self.entries.get(&id) else {
                 continue;
             };
+            let Some(mut kind) = match_keys(&entry.key, key) else {
+                continue;
+            };
+            // A NURBS capture that fell back off the frame-charted CDT is
+            // not translation-exact.
+            if kind == KeyMatch::Translated
+                && key.translation == TranslationRule::NurbsFrame
+                && !entry.nurbs_frame_chart
+            {
+                kind = KeyMatch::TranslationRefused;
+            }
             match kind {
                 KeyMatch::Exact => return Some((id, kind)),
                 KeyMatch::Translated => {
@@ -1119,16 +1214,21 @@ impl Session {
     }
 
     /// Capture what the face just appended, when it is safe to replay.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn capture_finish(
         &mut self,
         face_id: FaceId,
         key: FaceKey,
         boundary: FaceBoundary,
         start: &CaptureStart,
+        nurbs_frame_chart: bool,
         merged: &TriangleMesh,
         point_to_global: &DetHashMap<(i64, i64, i64), u32>,
     ) {
-        let pending = capture(key, &boundary, start, merged, point_to_global);
+        let pending = capture(key, &boundary, start, merged, point_to_global).map(|mut entry| {
+            entry.nurbs_frame_chart = nurbs_frame_chart;
+            entry
+        });
         if pending.is_none() {
             FACE_MESH_CACHE.with(|cell| {
                 if let Some(cache) = cell.borrow_mut().as_mut() {
@@ -1248,6 +1348,7 @@ fn capture(
         interned,
         corners,
         boundary_normals: Vec::new(),
+        nurbs_frame_chart: false,
         bytes: 0,
     })
 }

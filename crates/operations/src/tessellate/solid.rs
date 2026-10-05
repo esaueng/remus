@@ -569,7 +569,7 @@ fn tessellate_faces_core(
                         && pts.len() < expected_count
                     {
                         let (t_start, t_end) = circle_param_range(edge_data)?;
-                        let mut new_pts = remus_geometry::sampling::sample_uniform(
+                        let mut new_pts = super::edge_sampling::sample_circle_uniform(
                             circle,
                             t_start,
                             t_end,
@@ -688,8 +688,9 @@ fn tessellate_faces_core(
                     .get(&edge_idx)
                     .is_some_and(|pts| pts.len() < expected);
                 if needs_densify {
-                    let mut new_pts =
-                        remus_geometry::sampling::sample_uniform(circle, t_start, t_end, expected);
+                    let mut new_pts = super::edge_sampling::sample_circle_uniform(
+                        circle, t_start, t_end, expected,
+                    );
                     if let Some(first) = new_pts.first_mut() {
                         first.clone_from(&topo.vertex(edge_data.start())?.point());
                     }
@@ -966,6 +967,8 @@ fn tessellate_faces_core(
             }
         }
 
+        // Built on first use: a body without circle edges never pays for it.
+        let mut pool_index: Option<Option<super::pool_index::PoolIndex>> = None;
         for &edge_idx in &edge_indices {
             let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
                 continue;
@@ -1050,10 +1053,25 @@ fn tessellate_faces_core(
                 plan.edge_chains.get(&edge_idx).cloned().unwrap_or_default();
             let existing_gids: DetHashSet<u32> = existing_gids_vec.iter().copied().collect();
 
+            // PERF-D07: scan only the pool vertices along the arc (in
+            // ascending id order, like the full scan) when the index can
+            // bound them; the acceptance test below is unchanged.
+            let index = pool_index.get_or_insert_with(|| {
+                super::pool_index::PoolIndex::new(&plan.merged.positions, refine_tol)
+            });
+            let range = (!is_closed && t_min < t_max).then_some((t_min - 1e-8, t_max + 1e-8));
+            let candidates = index
+                .as_ref()
+                .and_then(|index| index.circle_candidates(circle, range));
+            #[cfg(test)]
+            let candidates =
+                candidates.filter(|_| !super::tests::mesh_passes::use_reference_passes());
+            #[allow(clippy::cast_possible_truncation)]
+            let candidates: Vec<u32> =
+                candidates.unwrap_or_else(|| (0..plan.merged.positions.len() as u32).collect());
             let mut insertions: Vec<(f64, u32)> = Vec::new();
-            for (gid, pos) in plan.merged.positions.iter().enumerate() {
-                #[allow(clippy::cast_possible_truncation)]
-                let gid32 = gid as u32;
+            for gid32 in candidates {
+                let pos = &plan.merged.positions[gid32 as usize];
                 if existing_gids.contains(&gid32) {
                     continue;
                 }
@@ -1466,7 +1484,7 @@ fn tessellate_faces_core(
                 }
             }
         }
-        tessellate_face_with_shared_edges(
+        let nurbs_frame_chart = tessellate_face_with_shared_edges(
             topo,
             face_id,
             plan.deflection,
@@ -1483,6 +1501,7 @@ fn tessellate_faces_core(
                 key,
                 boundary,
                 &start,
+                nurbs_frame_chart,
                 &plan.merged,
                 &plan.point_to_global,
             );
@@ -1606,16 +1625,18 @@ fn tessellate_faces_core(
         session.commit();
     }
 
-    if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
-        weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
-    }
+    let closed = matches!(boundary_mode, MeshBoundaryMode::ClosedSolid);
+    let had_boundary =
+        closed && weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
 
     // Drop coincident/cancelling triangles left by booleans that
     // produced overlapping coplanar faces (issue #696). Keyed on quantized
     // positions so position-coincident triangles with distinct vertex IDs
     // are still caught.
-    dedupe_coincident_triangles(&mut plan.merged, tri_faces.as_mut());
-    if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
+    let deduped = dedupe_coincident_triangles(&mut plan.merged, tri_faces.as_mut());
+    // Gap fill only acts on boundary half-edges: a mesh the weld found
+    // closed, and that dedupe left unchanged, has none (PERF-D07).
+    if closed && (had_boundary || deduped) {
         fill_sub_deflection_triangular_gaps(&mut plan.merged, plan.deflection, tri_faces.as_mut());
     }
 
@@ -1739,6 +1760,10 @@ pub(super) fn split_triangles_spanning_boundary_splits(
 }
 
 /// Tessellate a single face, reusing shared edge vertices from the global mesh.
+///
+/// Returns whether the face was a NURBS face meshed by the CDT in its own
+/// frame (`NurbsFrame`): the face mesh cache replays a translated copy of
+/// such a face only when its capture took that path.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn tessellate_face_with_shared_edges(
     topo: &Topology,
@@ -1750,7 +1775,8 @@ pub(super) fn tessellate_face_with_shared_edges(
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
-) -> Result<(), crate::OperationsError> {
+) -> Result<bool, crate::OperationsError> {
+    let mut nurbs_frame_chart = false;
     let face_data = topo.face(face_id)?;
     let is_reversed = face_data.is_reversed();
 
@@ -1827,7 +1853,7 @@ pub(super) fn tessellate_face_with_shared_edges(
 
         let n = boundary_global_ids.len();
         if n < 3 {
-            return Ok(());
+            return Ok(false);
         }
 
         let local_positions: Vec<Point3> = boundary_global_ids
@@ -1920,6 +1946,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                 merged,
                 point_to_global,
             );
+            nurbs_frame_chart = cdt_ok.is_ok() && merged.indices.len() > idx_save;
             if cdt_ok.is_err() || merged.indices.len() == idx_save {
                 merged.positions.truncate(pos_save);
                 merged.normals.truncate(nrm_save);
@@ -2198,7 +2225,7 @@ pub(super) fn tessellate_face_with_shared_edges(
         }
     }
 
-    Ok(())
+    Ok(nurbs_frame_chart)
 }
 
 #[cfg(test)]

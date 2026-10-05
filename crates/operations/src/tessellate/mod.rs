@@ -27,6 +27,7 @@ mod mesh_ops;
 mod nonplanar;
 mod nurbs;
 mod planar;
+mod pool_index;
 pub(crate) mod rim_chain;
 mod solid;
 mod sphere_pole_patch;
