@@ -200,3 +200,20 @@ WASM `a_moved_result_volume_survives_checkpoints_and_unrelated_allocations`.
 - **Translated `face_area` and full contributions.** Reported areas and
   moments stay bit-identical; only the probe's volume terms are reused
   across references and translations.
+
+## Amendment, 2026-10-05: the derived volume seed was removed
+
+Review of the integration (#963) made the point that the seeded result
+volume — the source's closed-mesh reading plus the exact swept prism — is
+not the value a fresh measurement of the result returns: it differs by the
+mesh route's own bias (−0.18 mm³, 4.4e-6 relative, on the hammer holder), so
+the same solid read differently with a warm memo than with a cold one, and
+the inspector shows two decimals. The seed, `measured_readings`,
+`seed_solid_volume`, `BlendMoveEntities::volume_seeds` and the `seeded`
+statistics are gone; the memo holds measured readings only. A result's first
+`volume` is a fresh measurement (served by the per-face mesh reuse of
+PERF-D01 where its faces are unchanged or translated) and is bit-identical
+to a cold kernel's; every reading after it is a hit. The remove/rebuild and
+prismatic paths still measure their result themselves, so their readings
+are memoized as before. The "seeded" rows and numbers above describe the
+superseded revision.
