@@ -86,9 +86,12 @@ fn oriented_case(op: BooleanOp, z: f64, height: f64, curved: bool, reverse_splin
     );
     let result = result.unwrap();
     let area = if curved { 96.0 } else { 72.0 };
+    let lo = z.min(z + height).max(0.0);
+    let hi = z.max(z + height).min(10.0);
+    let overlap = (hi - lo).max(0.0);
     let expected = match op {
-        BooleanOp::Cut => 31000.0 - area * (10.0 - (z + height)),
-        BooleanOp::Fuse => 31000.0 + area * (z + height - 10.0),
+        BooleanOp::Cut => 31000.0 - area * overlap,
+        BooleanOp::Fuse => 31000.0 + area * (height.abs() - overlap),
         BooleanOp::Intersect => unreachable!(),
     };
     let volume = remus_check::properties::solid_volume(
@@ -135,6 +138,14 @@ fn coplanar_reversed_bezier_cut() {
 #[test]
 fn coplanar_reversed_bezier_fuse() {
     oriented_case(BooleanOp::Fuse, 10.0, 2.0, true, true);
+}
+#[test]
+fn coplanar_reversed_top_bezier_cut() {
+    oriented_case(BooleanOp::Cut, 8.0, 2.0, true, true);
+}
+#[test]
+fn coplanar_reversed_top_bezier_fuse() {
+    oriented_case(BooleanOp::Fuse, 12.0, -2.0, true, true);
 }
 #[test]
 fn coplanar_bezier_cut() {
