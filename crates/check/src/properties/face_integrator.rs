@@ -5,6 +5,8 @@
 //! (cylinder, cone, sphere, torus, NURBS) use tensor-product Gauss-Legendre
 //! quadrature over the UV domain.
 
+use std::cell::Cell;
+
 use remus_math::nurbs::surface::DerivativeScratch;
 use remus_math::quadrature::gauss_legendre_points;
 use remus_math::traits::ParametricSurface;
@@ -32,6 +34,10 @@ struct IntegrationRule<'a> {
     knots: Option<(&'a [f64], &'a [f64])>,
     /// Point the positional integrands are taken about (B58).
     reference: Point3,
+    /// Where a fixed-rule path records the face's vector area `∫ n dA`, taken
+    /// over exactly the samples (or the closed form) its volume came from;
+    /// see [`integrate_face_fixed_flux_about`]. Adaptive paths leave it unset.
+    flux: Option<&'a Cell<Option<Vec3>>>,
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -58,6 +64,15 @@ impl<'a> IntegrationRule<'a> {
             adaptive: self.requested_refinement(),
             knots: self.knots,
             reference: self.reference,
+            flux: self.flux,
+        }
+    }
+
+    /// Record the vector area a fixed-rule path integrated alongside its
+    /// volume.
+    fn record_flux(self, vector_area: Vec3) {
+        if let Some(sink) = self.flux {
+            sink.set(Some(vector_area));
         }
     }
 }
@@ -185,8 +200,51 @@ pub fn integrate_face_fixed_about(
             adaptive: None,
             knots: None,
             reference,
+            flux: None,
         },
     )
+}
+
+/// [`integrate_face_fixed_about`] that also returns the face's vector area
+/// `∫ n dA`, read from the same Gauss samples (or the same closed form) as
+/// the volume.
+///
+/// The volume term `(1/3) Σ wᵢ (Pᵢ − R) · nᵢ` is affine in the reference, so
+/// with `N = Σ wᵢ nᵢ` the contribution about another reference is
+/// `volume − (1/3)(R' − R) · N` — the same sum regrouped, equal to a fresh
+/// integration about `R'` up to rounding. `None` when the path that measured
+/// the face does not report it (none of the fixed paths do so today).
+///
+/// # Errors
+///
+/// Exactly the errors of [`integrate_face_fixed_about`].
+pub(crate) fn integrate_face_fixed_flux_about(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+    reference: Point3,
+) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
+    if ![reference.x(), reference.y(), reference.z()]
+        .iter()
+        .all(|c| c.is_finite())
+    {
+        return Err(CheckError::IntegrationFailed(
+            "integration reference point must be finite".into(),
+        ));
+    }
+    let flux = Cell::new(None);
+    let contribution = integrate_face_impl::<false>(
+        topo,
+        face_id,
+        IntegrationRule {
+            order: gauss_order,
+            adaptive: None,
+            knots: None,
+            reference,
+            flux: Some(&flux),
+        },
+    )?;
+    Ok((contribution, flux.get()))
 }
 
 /// Integrate a face's area with the same fixed quadrature and trim rule as
@@ -210,6 +268,7 @@ pub fn integrate_face_area(
             adaptive: None,
             knots: None,
             reference: Point3::new(0.0, 0.0, 0.0),
+            flux: None,
         },
     )?
     .area)
@@ -276,6 +335,7 @@ pub fn integrate_face_about(
             adaptive: Some(options),
             knots: None,
             reference,
+            flux: None,
         },
     )
 }
@@ -296,7 +356,16 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
     match face.surface() {
         FaceSurface::Plane { normal, .. } => {
             let effective_normal = if reversed { -*normal } else { *normal };
-            integrate_planar_face(topo, face_id, effective_normal, rule.reference)
+            let contribution =
+                integrate_planar_face(topo, face_id, effective_normal, rule.reference)?;
+            // Both planar paths integrate `(P − reference) · n̂` against the
+            // unit effective normal over a region of `area` (the closed form
+            // reads `n̂ · ∫(P − reference) dA`, the fan `n̂ · centroid · area`),
+            // so the vector area of exactly what they measured is `n̂ · area`.
+            if let Ok(unit) = effective_normal.normalize() {
+                rule.record_flux(unit * contribution.area);
+            }
+            Ok(contribution)
         }
         FaceSurface::Cylinder(s) => {
             let full = (
@@ -771,6 +840,7 @@ pub fn integrate_torus_band_face_about(
             adaptive: None,
             knots: None,
             reference,
+            flux: None,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
@@ -931,6 +1001,9 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
                 }
             }
         }
+    }
+    if !AREA_ONLY {
+        rule.record_flux(acc.flux(sign));
     }
     Ok(Some(acc.finish(sign)))
 }
@@ -2966,6 +3039,13 @@ struct Accumulator {
     cx: f64,
     cy: f64,
     cz: f64,
+    /// Vector area `Σ w · (S_u × S_v)`: the samples' own `∫ n dA`, which the
+    /// volume term `(1/3) Σ w (P − R) · n` is affine in. Kept outside
+    /// [`FaceContribution`]; the fixed rule reports it through
+    /// `IntegrationRule::flux`.
+    nx: f64,
+    ny: f64,
+    nz: f64,
 }
 
 impl Accumulator {
@@ -3008,6 +3088,9 @@ impl Accumulator {
 
         // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
         self.vol += w * p.dot(n) / 3.0;
+        self.nx += w * n.x();
+        self.ny += w * n.y();
+        self.nz += w * n.z();
 
         // Volume moments via divergence theorem:
         // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
@@ -3026,6 +3109,12 @@ impl Accumulator {
         self.cx += w * p.x() * n_len;
         self.cy += w * p.y() * n_len;
         self.cz += w * p.z() * n_len;
+    }
+
+    /// The vector area accumulated so far, with the face's orientation sign
+    /// applied the way [`Self::finish`] applies it to the volume.
+    fn flux(&self, sign: f64) -> Vec3 {
+        Vec3::new(self.nx * sign, self.ny * sign, self.nz * sign)
     }
 
     fn finish(self, sign: f64) -> FaceContribution {
@@ -3286,6 +3375,9 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                 }
             }
         }
+        if !AREA_ONLY {
+            rule.record_flux(acc.flux(sign));
+        }
         return Ok(acc.finish(sign));
     }
 
@@ -3314,6 +3406,9 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                 }
             }
         }
+    }
+    if !AREA_ONLY {
+        rule.record_flux(acc.flux(sign));
     }
     Ok(acc.finish(sign))
 }
