@@ -8,6 +8,7 @@
 //! followed by Newton–Raphson refinement.
 
 use crate::MathError;
+use crate::fma::FusedMulAdd;
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Point3;
@@ -145,7 +146,7 @@ fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, Ma
         // may be sampled twice, matching the old decomposed-curve search.
         for i in 0..=n_samples {
             let t = i as f64 / n_samples as f64;
-            let u = t.mul_add(u_end - u_start, u_start);
+            let u = t.fma(u_end - u_start, u_start);
             let pt = curve.evaluate(u);
             let d_sq = (pt - point).length_squared();
             samples.push((d_sq, u));
@@ -198,7 +199,7 @@ pub fn curve_coarse_seeds_public(curve: &NurbsCurve, point: Point3) -> Vec<f64> 
         }
         for i in 0..=n_samples {
             let t = i as f64 / n_samples as f64;
-            let u = t.mul_add(u_end - u_start, u_start);
+            let u = t.fma(u_end - u_start, u_start);
             let pt = curve.evaluate(u);
             let d_sq = (pt - point).length_squared();
             samples.push((d_sq, u));
@@ -359,10 +360,10 @@ impl SurfaceSeedGrid {
         let mut nodes = Vec::with_capacity((n + 1) * (n + 1));
         for i in 0..=n {
             #[allow(clippy::cast_precision_loss)]
-            let u = (i as f64 / n as f64).mul_add(u_max - u_min, u_min);
+            let u = (i as f64 / n as f64).fma(u_max - u_min, u_min);
             for j in 0..=n {
                 #[allow(clippy::cast_precision_loss)]
-                let v = (j as f64 / n as f64).mul_add(v_max - v_min, v_min);
+                let v = (j as f64 / n as f64).fma(v_max - v_min, v_min);
                 nodes.push((u, v, surface.evaluate(u, v)));
             }
         }
@@ -535,9 +536,9 @@ fn surface_coarse_search(surface: &NurbsSurface, point: Point3) -> (f64, f64) {
 
     let n = SURFACE_GRID_SIZE;
     for i in 0..=n {
-        let u = (i as f64 / n as f64).mul_add(u_max - u_min, u_min);
+        let u = (i as f64 / n as f64).fma(u_max - u_min, u_min);
         for j in 0..=n {
-            let v = (j as f64 / n as f64).mul_add(v_max - v_min, v_min);
+            let v = (j as f64 / n as f64).fma(v_max - v_min, v_min);
             let pt = surface.evaluate(u, v);
             let d_sq = (pt - point).length_squared();
             if d_sq < best_dist_sq {
@@ -626,7 +627,7 @@ fn surface_newton_refine(
         // Solve 2×2 system via Cramer's rule: det = j00*j11 - j01²
         // Use a relative threshold so the singularity test stays meaningful
         // near surface poles / cone apex where both derivatives shrink to zero.
-        let det = j00.mul_add(j11, -(j01 * j01));
+        let det = j00.fma(j11, -(j01 * j01));
         let (delta_u, delta_v) = if det.abs() < (j00 + j11).max(1e-30) * 1e-12 {
             // Near-singular: apply Tikhonov (Levenberg–Marquardt) regularisation
             // by adding λI to the normal equations.  This yields a step biased
@@ -635,7 +636,7 @@ fn surface_newton_refine(
             let lambda = (j00 + j11).max(1e-10) * 1e-4;
             let j00r = j00 + lambda;
             let j11r = j11 + lambda;
-            let det_r = j00r.mul_add(j11r, -(j01 * j01));
+            let det_r = j00r.fma(j11r, -(j01 * j01));
             if det_r.abs() < 1e-30 {
                 // Still singular even after regularisation — fall back to a 1-D
                 // search along whichever parameter axis has more gradient.
@@ -648,14 +649,14 @@ fn surface_newton_refine(
                 }
             } else {
                 (
-                    rhs0.mul_add(j11r, -(rhs1 * j01)) / det_r,
-                    j00r.mul_add(rhs1, -(j01 * rhs0)) / det_r,
+                    rhs0.fma(j11r, -(rhs1 * j01)) / det_r,
+                    j00r.fma(rhs1, -(j01 * rhs0)) / det_r,
                 )
             }
         } else {
             (
-                rhs0.mul_add(j11, -(rhs1 * j01)) / det,
-                j00.mul_add(rhs1, -(j01 * rhs0)) / det,
+                rhs0.fma(j11, -(rhs1 * j01)) / det,
+                j00.fma(rhs1, -(j01 * rhs0)) / det,
             )
         };
 

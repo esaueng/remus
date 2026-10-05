@@ -144,16 +144,46 @@ pub fn ray_nurbs(
     use remus_math::nurbs::intersection::intersect_line_nurbs;
 
     let hits = intersect_line_nurbs(surface, origin, direction, n_samples)?;
+    Ok(forward_nurbs_hits(origin, direction, &hits))
+}
+
+/// [`ray_nurbs`] with the line-intersection seed grid supplied rather than
+/// rebuilt per ray.
+///
+/// Returns exactly what [`ray_nurbs`] would when `grid` was built from
+/// `surface` with the same sample count
+/// ([`remus_math::nurbs::intersection::intersect_line_nurbs_with_grid`]).
+///
+/// # Errors
+/// Propagates math errors from the NURBS intersection routine.
+pub fn ray_nurbs_with_grid(
+    origin: Point3,
+    direction: Vec3,
+    surface: &NurbsSurface,
+    grid: &remus_math::nurbs::intersection::LineSurfaceSeedGrid,
+) -> Result<Vec<(f64, f64, f64)>, CheckError> {
+    use remus_math::nurbs::intersection::intersect_line_nurbs_with_grid;
+
+    let hits = intersect_line_nurbs_with_grid(surface, grid, origin, direction)?;
+    Ok(forward_nurbs_hits(origin, direction, &hits))
+}
+
+/// Forward (`t > RAY_T_MIN`) hits as `(t, u, v)`.
+fn forward_nurbs_hits(
+    origin: Point3,
+    direction: Vec3,
+    hits: &[remus_math::nurbs::intersection::IntersectionPoint],
+) -> Vec<(f64, f64, f64)> {
     let dir_dot_dir = direction.dot(direction);
     let mut results = Vec::new();
-    for hit in &hits {
+    for hit in hits {
         let diff = hit.point - origin;
         let t = diff.dot(direction) / dir_dot_dir;
         if t > RAY_T_MIN {
             results.push((t, hit.param1.0, hit.param1.1));
         }
     }
-    Ok(results)
+    results
 }
 
 // ===========================================================================

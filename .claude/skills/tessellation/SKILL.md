@@ -76,6 +76,10 @@ Structured meshers emit a coherently wound run, then make ONE flip decision for 
 
 A full-revolution periodic wall carrying two hole loops that CROSS each other (figure-eight, pinching at two points; the equal-radius perpendicular cylinder-union wall) is not triangulable by any current path. Two crossing hole loops are invalid hole topology for flat CDT, and the wall is periodic so flat-strip CDT cracks at the seam. Do not grind this blind. Bounded fixes only; details and what a real fix requires are in [reference.md](reference.md), "Crossing seam holes". Note `split_self_intersecting_wires.rs` in heal is a wire-topology cleanup and is NOT the missing geometric face split.
 
+## Per-face mesh cache (PERF-D01)
+
+`tessellate/face_cache.rs` replays a face's stage-D mesh when its content key (surface, wires, final boundary chains, tolerances) matches a previous capture: exactly, or as a rigid translate whose chart input is bit-identical. It is per thread and opt-in (`enable_face_mesh_cache`); `BrepKernel::new` turns it on, so WASM and the wasm crate's tests mesh through it. When chasing a tessellation difference, rule it out first with `disable_face_mesh_cache()` and compare; `face_mesh_cache_stats()` counts hits, misses, refused translates and uncacheable faces. A new mesher must only append to the shared pool (never rewrite boundary normals or weld onto another face's interior vertex) or capture will, correctly, refuse it.
+
 ## GPU path: keep faces analytic
 
 CPU tessellation is not the only consumer of surface parameters. `crates/render/src/compute_mesh.rs` meshes cylinders on the GPU from packed analytic descriptors at screen-space LOD (`CylinderDescriptor`, `screen_space_tess_factor`). Cylinder only at time of writing; verify with `rg -n 'Descriptor' crates/render/src/compute_mesh.rs` before claiming more. Any operation that degrades an analytic face to NURBS or mesh kills this path for that face. See the **analytic-preservation** skill; audit degradations with `cargo run --release --example approx_census -p remus-operations`.
