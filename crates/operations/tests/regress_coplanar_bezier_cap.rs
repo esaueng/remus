@@ -12,7 +12,13 @@ use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
-fn prism(topo: &mut Topology, z: f64, height: f64, curved: bool) -> remus_topology::solid::SolidId {
+fn oriented_prism(
+    topo: &mut Topology,
+    z: f64,
+    height: f64,
+    curved: bool,
+    reverse_spline: bool,
+) -> remus_topology::solid::SolidId {
     let points = [
         Point3::new(10.0, 10.0, z),
         Point3::new(22.0, 10.0, z),
@@ -35,9 +41,22 @@ fn prism(topo: &mut Topology, z: f64, height: f64, curved: bool) -> remus_topolo
             } else {
                 EdgeCurve::Line
             };
-            let mut edge = Edge::new(vertices[i], vertices[(i + 1) % 4], curve);
+            let reversed = reverse_spline && i == 0 && curved;
+            let (start, end, curve) = if reversed {
+                let EdgeCurve::NurbsCurve(c) = curve else {
+                    unreachable!()
+                };
+                (
+                    vertices[1],
+                    vertices[0],
+                    EdgeCurve::NurbsCurve(c.reversed()),
+                )
+            } else {
+                (vertices[i], vertices[(i + 1) % 4], curve)
+            };
+            let mut edge = Edge::new(start, end, curve);
             edge.set_trim(Some((0.0, 1.0)));
-            OrientedEdge::new(topo.add_edge(edge), true)
+            OrientedEdge::new(topo.add_edge(edge), !reversed)
         })
         .collect();
     let wire = topo.add_wire(Wire::new(edges, true).unwrap());
@@ -52,10 +71,14 @@ fn prism(topo: &mut Topology, z: f64, height: f64, curved: bool) -> remus_topolo
 }
 
 fn case(op: BooleanOp, z: f64, height: f64, curved: bool) {
+    oriented_case(op, z, height, curved, false);
+}
+
+fn oriented_case(op: BooleanOp, z: f64, height: f64, curved: bool, reverse_spline: bool) {
     let _ = env_logger::try_init();
     let mut topo = Topology::new();
     let slab = make_box(&mut topo, 62.0, 50.0, 10.0).unwrap();
-    let tool = prism(&mut topo, z, height, curved);
+    let tool = oriented_prism(&mut topo, z, height, curved, reverse_spline);
     let result = boolean(&mut topo, op, slab, tool);
     assert!(
         result.is_ok(),
@@ -105,6 +128,14 @@ fn case(op: BooleanOp, z: f64, height: f64, curved: bool) {
     }
 }
 
+#[test]
+fn coplanar_reversed_bezier_cut() {
+    oriented_case(BooleanOp::Cut, 10.0, -2.0, true, true);
+}
+#[test]
+fn coplanar_reversed_bezier_fuse() {
+    oriented_case(BooleanOp::Fuse, 10.0, 2.0, true, true);
+}
 #[test]
 fn coplanar_bezier_cut() {
     case(BooleanOp::Cut, 10.0, -2.0, true);
