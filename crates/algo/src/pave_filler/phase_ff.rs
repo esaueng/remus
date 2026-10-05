@@ -470,6 +470,8 @@ pub fn perform_with_context(
                 v_range_b,
                 context,
             )?;
+            raw_curves =
+                restrict_exact_ruled_cap_spans(topo, fa, fb, surf_a, surf_b, raw_curves, tol)?;
             // A tangent rim the pair carries exactly replaces any marched
             // trace of the same tangency: the trace is a co-endpoint duplicate
             // of the rim arc that the loop walker orders by a zero angle.
@@ -6320,6 +6322,82 @@ fn analytic_analytic_intersection(
     }
 
     Ok(results)
+}
+
+/// Carry a ruled cap's stored boundary representation and span into its section.
+/// Coefficient identity certifies the carrier; endpoint projection cannot recover
+/// the parameter authority of a trimmed or reversed profile.
+#[allow(clippy::too_many_arguments)]
+fn restrict_exact_ruled_cap_spans(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    raw_curves: Vec<RawCurve>,
+    tol: Tolerance,
+) -> Result<Vec<RawCurve>, AlgoError> {
+    if raw_curves.is_empty() {
+        return Ok(raw_curves);
+    }
+    let (normal, d, surface, face) =
+        if let (FaceSurface::Plane { normal, d }, FaceSurface::Nurbs(surface)) = (surf_a, surf_b) {
+            (*normal, *d, surface, fb)
+        } else if let (FaceSurface::Nurbs(surface), FaceSurface::Plane { normal, d }) =
+            (surf_a, surf_b)
+        {
+            (*normal, *d, surface, fa)
+        } else {
+            return Ok(raw_curves);
+        };
+    let Some(exact) = exact_ruled_plane_section(normal, d, surface, tol)? else {
+        return Ok(raw_curves);
+    };
+    let Some(section) = exact.first() else {
+        return Ok(raw_curves);
+    };
+    let EdgeCurve::NurbsCurve(expected) = &section.curve else {
+        return Ok(raw_curves);
+    };
+    let edges = remus_topology::explorer::face_edges(topo, face)?;
+    let mut out = Vec::new();
+    for raw in raw_curves {
+        if !matches!(&raw.curve, EdgeCurve::NurbsCurve(curve) if curve == expected) {
+            out.push(raw);
+            continue;
+        }
+        let mut spans = Vec::new();
+        for &eid in &edges {
+            let edge = topo.edge(eid)?;
+            let EdgeCurve::NurbsCurve(boundary) = edge.curve() else {
+                continue;
+            };
+            if boundary != expected && *boundary != expected.reversed() {
+                continue;
+            }
+            let span = super::helpers::authoritative_edge_domain(edge, eid, "ruled cap section")?;
+            let span = (span.0.min(span.1), span.0.max(span.1));
+            let candidate = RawCurve {
+                curve: edge.curve().clone(),
+                t_range: span,
+                p_start: boundary.evaluate(span.0),
+                p_end: boundary.evaluate(span.1),
+                bbox: boundary.aabb(),
+            };
+            if !spans.iter().any(|other: &RawCurve| {
+                matches!(&other.curve, EdgeCurve::NurbsCurve(curve) if curve == boundary)
+                    && other.t_range == span
+            }) {
+                spans.push(candidate);
+            }
+        }
+        if spans.is_empty() {
+            out.push(raw);
+        } else {
+            out.extend(spans);
+        }
+    }
+    Ok(out)
 }
 
 /// A planar profile translated along the linear u direction has an exact
