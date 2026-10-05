@@ -216,6 +216,22 @@ pub(crate) fn face_surface_distance(
     point: Point3,
     tolerance: f64,
 ) -> Result<f64, CheckError> {
+    face_surface_distance_cached(topo, fid, point, tolerance, None)
+}
+
+/// [`face_surface_distance`] with an optional prepared face cache, whose NURBS
+/// projection seed grid gives the same Newton start and so the same distance.
+///
+/// # Errors
+///
+/// Returns an error if the face handle is invalid.
+pub(crate) fn face_surface_distance_cached(
+    topo: &Topology,
+    fid: FaceId,
+    point: Point3,
+    tolerance: f64,
+    cache: Option<&boundary::FaceCache>,
+) -> Result<f64, CheckError> {
     let face = topo.face(fid)?;
     match face.surface() {
         FaceSurface::Plane { normal, d } => {
@@ -242,8 +258,19 @@ pub(crate) fn face_surface_distance(
             let on_surface = tor.evaluate(u, v);
             Ok((point - on_surface).length())
         }
-        FaceSurface::Nurbs(nurbs) => {
-            match remus_math::nurbs::projection::project_point_to_surface(nurbs, point, tolerance) {
+        FaceSurface::Nurbs(surface) => {
+            let projection = match cache {
+                Some(cache) => remus_math::nurbs::projection::project_point_to_surface_with_grid(
+                    surface,
+                    point,
+                    tolerance,
+                    cache.projection_grid(surface),
+                ),
+                None => remus_math::nurbs::projection::project_point_to_surface(
+                    surface, point, tolerance,
+                ),
+            };
+            match projection {
                 Ok(proj) => Ok(proj.distance),
                 Err(_) => Ok(f64::INFINITY),
             }

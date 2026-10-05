@@ -184,89 +184,121 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
 /// `tri_faces` is a parallel tri -> face attribution array (one entry per
 /// triangle); entries for removed triangles are filtered alongside so group
 /// offsets recomputed from it stay aligned.
+///
+/// Returns whether any triangle was removed.
 pub(super) fn dedupe_coincident_triangles(
     mesh: &mut TriangleMesh,
     tri_faces: Option<&mut Vec<u32>>,
-) {
-    const POS_GRID: f64 = COINCIDENT_DEDUPE_GRID;
-
-    type TriKey = [(i64, i64, i64); 3];
-    type TriRefs = Vec<(usize, bool)>;
-
+) -> bool {
+    #[cfg(test)]
+    if super::tests::mesh_passes::use_reference_passes() {
+        super::tests::mesh_passes::reference::dedupe_coincident_triangles(mesh, tri_faces);
+        return true;
+    }
     let tri_count = mesh.indices.len() / 3;
     if tri_count < 2 {
-        return;
+        return false;
     }
 
-    #[allow(clippy::cast_possible_truncation)]
-    let quant = |p: Point3| -> (i64, i64, i64) {
-        let s = 1.0 / POS_GRID;
-        (
-            (p.x() * s).round() as i64,
-            (p.y() * s).round() as i64,
-            (p.z() * s).round() as i64,
-        )
+    // PERF-D07: quantize each vertex once and give every distinct quantized
+    // position a compact id, then group triangles by their sorted id
+    // triples with a counting sort on the smallest id. This replaces one
+    // 72-byte hash key (and one heap list) per triangle. The grouping is the
+    // same: two triangles share a key exactly when their quantized corner
+    // positions are equal as sets. Sorting ids instead of quantized tuples
+    // may relabel which winding class of a group counts as "even", but the
+    // removal rule below is symmetric in the two classes, and triangles
+    // within a group stay in index order, so the kept set is unchanged.
+    let Some(ids) = quantized_vertex_ids(mesh) else {
+        return false;
     };
 
-    let mut by_key: DetHashMap<TriKey, TriRefs> = DetHashMap::default();
-    for t in 0..tri_count {
-        let (a, b, c) = (
-            mesh.indices[t * 3] as usize,
-            mesh.indices[t * 3 + 1] as usize,
-            mesh.indices[t * 3 + 2] as usize,
-        );
-        let mut tri_pts = [
-            quant(mesh.positions[a]),
-            quant(mesh.positions[b]),
-            quant(mesh.positions[c]),
+    let mut keys: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
+    let mut parity: Vec<bool> = Vec::with_capacity(tri_count);
+    let mut by_min = vec![0_u32; ids.distinct + 1];
+    for tri in mesh.indices.chunks_exact(3) {
+        let mut k = [
+            ids.of[tri[0] as usize],
+            ids.of[tri[1] as usize],
+            ids.of[tri[2] as usize],
         ];
-        // Sort tri_pts ascending; track parity of the sort permutation.
+        // Sort ascending; track parity of the sort permutation.
         let mut parity_even = true;
-        if tri_pts[0] > tri_pts[1] {
-            tri_pts.swap(0, 1);
+        if k[0] > k[1] {
+            k.swap(0, 1);
             parity_even = !parity_even;
         }
-        if tri_pts[1] > tri_pts[2] {
-            tri_pts.swap(1, 2);
+        if k[1] > k[2] {
+            k.swap(1, 2);
             parity_even = !parity_even;
         }
-        if tri_pts[0] > tri_pts[1] {
-            tri_pts.swap(0, 1);
+        if k[0] > k[1] {
+            k.swap(0, 1);
             parity_even = !parity_even;
         }
-        // Skip degenerate triangles (collapsed to <3 distinct positions).
-        if tri_pts[0] == tri_pts[1] || tri_pts[1] == tri_pts[2] {
-            continue;
+        // Degenerate triangles (collapsed to <3 distinct positions) never
+        // take part.
+        if k[0] == k[1] || k[1] == k[2] {
+            k = [u32::MAX; 3];
+        } else {
+            by_min[k[0] as usize] += 1;
         }
-        by_key.entry(tri_pts).or_default().push((t, parity_even));
+        keys.push(k);
+        parity.push(parity_even);
+    }
+
+    // Counting sort of the non-degenerate triangles by their smallest id;
+    // each bucket keeps triangle index order.
+    let mut start = Vec::with_capacity(by_min.len() + 1);
+    let mut total = 0_u32;
+    start.push(0);
+    for count in &by_min {
+        total += count;
+        start.push(total);
+    }
+    let mut cursor = start.clone();
+    let mut sorted = vec![0_u32; total as usize];
+    for (t, k) in keys.iter().enumerate() {
+        if k[0] != u32::MAX {
+            let slot = &mut cursor[k[0] as usize];
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                sorted[*slot as usize] = t as u32;
+            }
+            *slot += 1;
+        }
     }
 
     let mut keep = vec![true; tri_count];
-    for tris in by_key.values() {
-        if tris.len() < 2 {
+    let mut done = vec![false; sorted.len()];
+    let mut group: Vec<(usize, bool)> = Vec::new();
+    for bucket in start.windows(2) {
+        let (lo, hi) = (bucket[0] as usize, bucket[1] as usize);
+        if hi - lo < 2 {
             continue;
         }
-        let (even, odd): (Vec<_>, Vec<_>) = tris.iter().partition(|&&(_, p)| p);
-        let cancel_pairs = even.len().min(odd.len());
-        for &(t, _) in even.iter().take(cancel_pairs) {
-            keep[t] = false;
-        }
-        for &(t, _) in odd.iter().take(cancel_pairs) {
-            keep[t] = false;
-        }
-        // Of the surviving same-winding triangles, keep only one.
-        let leftover_even: Vec<_> = even.iter().skip(cancel_pairs).copied().collect();
-        let leftover_odd: Vec<_> = odd.iter().skip(cancel_pairs).copied().collect();
-        for &(t, _) in leftover_even.iter().skip(1) {
-            keep[t] = false;
-        }
-        for &(t, _) in leftover_odd.iter().skip(1) {
-            keep[t] = false;
+        for i in lo..hi {
+            if done[i] {
+                continue;
+            }
+            let ti = sorted[i] as usize;
+            group.clear();
+            group.push((ti, parity[ti]));
+            for j in i + 1..hi {
+                let tj = sorted[j] as usize;
+                if !done[j] && keys[tj] == keys[ti] {
+                    done[j] = true;
+                    group.push((tj, parity[tj]));
+                }
+            }
+            if group.len() >= 2 {
+                resolve_coincident_group(&group, &mut keep);
+            }
         }
     }
 
     if keep.iter().all(|&k| k) {
-        return;
+        return false;
     }
 
     let mut new_indices = Vec::with_capacity(mesh.indices.len());
@@ -308,6 +340,60 @@ pub(super) fn dedupe_coincident_triangles(
     mesh.indices = new_indices;
     mesh.positions = new_positions;
     mesh.normals = new_normals;
+    true
+}
+
+/// Removal rule for one group of position-coincident triangles (in index
+/// order, with the parity of their corner sort): opposite windings cancel
+/// pairwise (both removed), and of the survivors of each winding only the
+/// first is kept. Symmetric in the two winding classes.
+fn resolve_coincident_group(tris: &[(usize, bool)], keep: &mut [bool]) {
+    let (even, odd): (Vec<_>, Vec<_>) = tris.iter().partition(|&&(_, p)| p);
+    let cancel_pairs = even.len().min(odd.len());
+    for &(t, _) in even.iter().take(cancel_pairs) {
+        keep[t] = false;
+    }
+    for &(t, _) in odd.iter().take(cancel_pairs) {
+        keep[t] = false;
+    }
+    for &(t, _) in even.iter().skip(cancel_pairs).skip(1) {
+        keep[t] = false;
+    }
+    for &(t, _) in odd.iter().skip(cancel_pairs).skip(1) {
+        keep[t] = false;
+    }
+}
+
+/// Compact ids of the distinct quantized vertex positions (1 µm grid).
+struct QuantizedIds {
+    /// Id of every vertex's quantized position.
+    of: Vec<u32>,
+    /// Number of distinct ids.
+    distinct: usize,
+}
+
+/// Quantize every vertex to the coincident-dedupe grid and number the
+/// distinct cells; `None` when the vertex count does not fit the id type.
+fn quantized_vertex_ids(mesh: &TriangleMesh) -> Option<QuantizedIds> {
+    let s = 1.0 / COINCIDENT_DEDUPE_GRID;
+    let mut cells: DetHashMap<(i64, i64, i64), u32> =
+        DetHashMap::with_capacity_and_hasher(mesh.positions.len(), remus_math::det_hash::DetState);
+    let mut of = Vec::with_capacity(mesh.positions.len());
+    for p in &mesh.positions {
+        #[allow(clippy::cast_possible_truncation)]
+        let key = (
+            (p.x() * s).round() as i64,
+            (p.y() * s).round() as i64,
+            (p.z() * s).round() as i64,
+        );
+        // `u32::MAX` marks a degenerate triangle in the caller.
+        let next = u32::try_from(cells.len()).ok().filter(|&n| n != u32::MAX)?;
+        of.push(*cells.entry(key).or_insert(next));
+    }
+    Some(QuantizedIds {
+        distinct: cells.len(),
+        of,
+    })
 }
 
 /// Edge polyline data for wireframe visualization.
@@ -455,41 +541,51 @@ pub fn sample_solid_edges_filtered(
 /// degenerate triangles (where merged indices create duplicate vertices).
 /// `tri_faces` is the parallel tri -> face attribution array; entries for
 /// removed degenerate triangles are filtered alongside.
+///
+/// Returns `false` only when the mesh had no boundary half-edge (every
+/// directed edge has its reverse), in which case it was left untouched.
 pub(super) fn weld_boundary_vertices(
     mesh: &mut TriangleMesh,
     deflection: f64,
     tri_faces: Option<&mut Vec<u32>>,
-) {
+) -> bool {
+    #[cfg(test)]
+    if super::tests::mesh_passes::use_reference_passes() {
+        super::tests::mesh_passes::reference::weld_boundary_vertices(mesh, deflection, tri_faces);
+        return true;
+    }
     let n_verts = mesh.positions.len();
     if n_verts == 0 || mesh.indices.is_empty() {
-        return;
-    }
-
-    let mut half_edges: DetHashMap<(u32, u32), usize> = DetHashMap::default();
-    for tri in mesh.indices.chunks_exact(3) {
-        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
-        *half_edges.entry((i0, i1)).or_default() += 1;
-        *half_edges.entry((i1, i2)).or_default() += 1;
-        *half_edges.entry((i2, i0)).or_default() += 1;
+        return true;
     }
 
     // Boundary vertices: incident on half-edges without a matching reverse.
-    let mut boundary_set: DetHashSet<u32> = DetHashSet::default();
-    for &(a, b) in half_edges.keys() {
-        if !half_edges.contains_key(&(b, a)) {
-            boundary_set.insert(a);
-            boundary_set.insert(b);
+    // PERF-D07: found through a vertex-indexed half-edge table instead of a
+    // hash map of every half-edge; the set is the same.
+    let Some(table) = HalfEdgeTable::new(&mesh.indices, n_verts) else {
+        return true;
+    };
+    let mut is_boundary = vec![false; n_verts];
+    let mut any_boundary = false;
+    for (a, b, _) in table.edges() {
+        if !table.contains(b, a) {
+            is_boundary[a as usize] = true;
+            is_boundary[b as usize] = true;
+            any_boundary = true;
         }
     }
 
-    if boundary_set.is_empty() {
-        return;
+    if !any_boundary {
+        return false;
     }
 
     // Sorted iteration keeps grid-cell contents and union order independent
     // of DetHashSet iteration order, so welded meshes are reproducible.
-    let mut boundary_verts: Vec<u32> = boundary_set.into_iter().collect();
-    boundary_verts.sort_unstable();
+    #[allow(clippy::cast_possible_truncation)]
+    let boundary_verts: Vec<u32> = (0..n_verts)
+        .filter(|&v| is_boundary[v])
+        .map(|v| v as u32)
+        .collect();
 
     #[allow(clippy::items_after_statements)]
     fn uf_find(parent: &mut [u32], mut x: u32) -> u32 {
@@ -582,6 +678,7 @@ pub(super) fn weld_boundary_vertices(
             *tf = new_tri_faces;
         }
     }
+    true
 }
 
 /// Close a three-edge tessellation gap that is smaller than the requested
@@ -597,34 +694,49 @@ pub(super) fn fill_sub_deflection_triangular_gaps(
     deflection: f64,
     mut tri_faces: Option<&mut Vec<u32>>,
 ) {
+    #[cfg(test)]
+    if super::tests::mesh_passes::use_reference_passes() {
+        return super::tests::mesh_passes::reference::fill_sub_deflection_triangular_gaps(
+            mesh, deflection, tri_faces,
+        );
+    }
     if !deflection.is_finite() || deflection <= 0.0 || mesh.indices.len() < 9 {
         return;
     }
 
-    let mut directed = DetHashMap::<(u32, u32), usize>::default();
-    for (triangle, tri) in mesh.indices.chunks_exact(3).enumerate() {
-        for edge in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
-            directed.entry(edge).or_insert(triangle);
+    // PERF-D07: boundary half-edges (with the first triangle using each) via
+    // a vertex-indexed table instead of a hash map of every half-edge.
+    let Some(table) = HalfEdgeTable::new(&mesh.indices, mesh.positions.len()) else {
+        return;
+    };
+    let mut boundary: Vec<(u32, u32, usize)> = Vec::new();
+    for (a, b, triangle) in table.edges() {
+        if !table.contains(b, a) && table.first_use(a, b) == Some(triangle) {
+            boundary.push((a, b, triangle));
         }
     }
-    let mut boundary: Vec<_> = directed
-        .iter()
-        .filter_map(|(&(a, b), &triangle)| {
-            (!directed.contains_key(&(b, a))).then_some((a, b, triangle))
-        })
-        .collect();
+    if boundary.is_empty() {
+        return;
+    }
     boundary.sort_unstable();
     let boundary_map: DetHashMap<(u32, u32), usize> = boundary
         .iter()
         .map(|&(a, b, triangle)| ((a, b), triangle))
         .collect();
+    // The candidate scan below visits boundary half-edges in `boundary_map`
+    // order; index them by their start vertex once, keeping that order, so
+    // each lookup visits only the half-edges leaving `b`.
+    let mut leaving: DetHashMap<u32, Vec<(u32, usize)>> = DetHashMap::default();
+    for (&(from, to), &triangle) in &boundary_map {
+        leaving.entry(from).or_default().push((to, triangle));
+    }
 
     let face_by_triangle = tri_faces.as_deref();
     let mut fillers = Vec::<([u32; 3], u32)>::new();
     let mut seen = DetHashSet::<[u32; 3]>::default();
     for &(a, b, ab_triangle) in &boundary {
-        for (&(from, c), &bc_triangle) in &boundary_map {
-            if from != b || c == a {
+        for &(c, bc_triangle) in leaving.get(&b).into_iter().flatten() {
+            if c == a {
                 continue;
             }
             let Some(&ca_triangle) = boundary_map.get(&(c, a)) else {
@@ -676,5 +788,72 @@ pub(super) fn fill_sub_deflection_triangular_gaps(
         if let Some(faces) = tri_faces.as_deref_mut() {
             faces.push(face);
         }
+    }
+}
+
+/// Directed half-edges of a triangle list, indexed by start vertex
+/// (compressed rows), each with the triangle that uses it. Rows keep
+/// triangle order. Replaces hash maps keyed by every half-edge in the
+/// whole-mesh passes (PERF-D07).
+struct HalfEdgeTable {
+    /// Row start per vertex (`n + 1` entries).
+    start: Vec<u32>,
+    /// `(end vertex, triangle)` per half-edge, grouped by start vertex.
+    entries: Vec<(u32, u32)>,
+}
+
+impl HalfEdgeTable {
+    /// `None` when an index is out of range or the counts overflow `u32`.
+    fn new(indices: &[u32], n_verts: usize) -> Option<Self> {
+        let tri_count = indices.len() / 3;
+        let total = u32::try_from(tri_count.checked_mul(3)?).ok()?;
+        let mut start = vec![0_u32; n_verts + 1];
+        for &v in &indices[..tri_count * 3] {
+            *start.get_mut(v as usize + 1)? += 1;
+        }
+        for i in 0..n_verts {
+            start[i + 1] += start[i];
+        }
+        debug_assert_eq!(start[n_verts], total);
+        let mut cursor = start.clone();
+        let mut entries = vec![(0_u32, 0_u32); total as usize];
+        for (t, tri) in indices.chunks_exact(3).enumerate() {
+            let t = u32::try_from(t).ok()?;
+            for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                let slot = &mut cursor[a as usize];
+                entries[*slot as usize] = (b, t);
+                *slot += 1;
+            }
+        }
+        Some(Self { start, entries })
+    }
+
+    fn row(&self, a: u32) -> &[(u32, u32)] {
+        let a = a as usize;
+        &self.entries[self.start[a] as usize..self.start[a + 1] as usize]
+    }
+
+    /// Whether some triangle uses the half-edge `a -> b`.
+    fn contains(&self, a: u32, b: u32) -> bool {
+        self.row(a).iter().any(|&(to, _)| to == b)
+    }
+
+    /// The first triangle (lowest index) using `a -> b`.
+    fn first_use(&self, a: u32, b: u32) -> Option<usize> {
+        self.row(a)
+            .iter()
+            .find(|&&(to, _)| to == b)
+            .map(|&(_, t)| t as usize)
+    }
+
+    /// Every half-edge as `(start, end, triangle)`, by start vertex.
+    fn edges(&self) -> impl Iterator<Item = (u32, u32, usize)> + '_ {
+        self.start.windows(2).enumerate().flat_map(move |(a, w)| {
+            #[allow(clippy::cast_possible_truncation)]
+            let a = a as u32;
+            self.entries[w[0] as usize..w[1] as usize]
+                .iter()
+                .map(move |&(b, t)| (a, b, t as usize))
+        })
     }
 }
