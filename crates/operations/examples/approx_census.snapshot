@@ -50,5 +50,5 @@ chamfer	box all edges	faces=26	exact analytic
 fillet-v2	torus (walker) [ERR]	faces=0	FALLBACK x1: err: blend: unsupported vertex blend at Id(_): 2 stripes meet
 chamfer-v2	torus [ERR]	faces=0	FALLBACK x3: chamfer: analytic path unavailable for torus+torus — v1 has no walker fallback, returning UnsupportedSurface | err: chamfer produced a partial result: 0 succeeded, 2 failed
 offset_face	gentle +0.3	faces=1	FALLBACK x1: offset_trim: SSI curve detection found nothing — falling back to grid-sampling trim (20x20)
-offset_face	inward -3.0	faces=1	FALLBACK x2: offset_trim: SSI curve detection found nothing — falling back to grid-sampling trim (20x20) | offset_face: raw-offset-surface fallback (SSI trim failed: invalid input: offset self-intersection covers 100% of the surface (limit: 50%), offset distance may be too large)
+offset_face	inward -3.0	faces=1	FALLBACK x1: offset_trim: SSI curve detection found nothing — falling back to grid-sampling trim (20x20)
 fillet-rb	pyramid (4-valence apex)	faces=18	exact analytic
