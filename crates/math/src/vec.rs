@@ -16,6 +16,7 @@
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use crate::MathError;
+use crate::fma::FusedMulAdd;
 
 // ===========================================================================
 // Vector<N>
@@ -42,7 +43,14 @@ impl<const N: usize> Vector<N> {
         let mut sum = 0.0;
         let mut i = 0;
         while i < N {
-            sum = self.0[i].mul_add(self.0[i], sum);
+            // The first term is fused onto `+0.0`, and `x·x + 0.0` rounded
+            // once is exactly `x * x` (a square is never `-0.0`), so it needs
+            // no fused multiply-add (a software call on `wasm32`).
+            sum = if i == 0 {
+                self.0[i] * self.0[i]
+            } else {
+                self.0[i].fma(self.0[i], sum)
+            };
             i += 1;
         }
         sum
@@ -97,7 +105,7 @@ impl Vector<2> {
     /// Dot product of two 2D vectors.
     #[must_use]
     pub fn dot(self, rhs: Self) -> f64 {
-        self.0[0].mul_add(rhs.0[0], self.0[1] * rhs.0[1])
+        self.0[0].fma(rhs.0[0], self.0[1] * rhs.0[1])
     }
 }
 
@@ -133,16 +141,16 @@ impl Vector<3> {
     /// Dot product of two 3D vectors.
     #[must_use]
     pub fn dot(self, rhs: Self) -> f64 {
-        self.0[0].mul_add(rhs.0[0], self.0[1].mul_add(rhs.0[1], self.0[2] * rhs.0[2]))
+        self.0[0].fma(rhs.0[0], self.0[1].fma(rhs.0[1], self.0[2] * rhs.0[2]))
     }
 
     /// Cross product of two 3D vectors.
     #[must_use]
     pub fn cross(self, rhs: Self) -> Self {
         Self([
-            self.0[1].mul_add(rhs.0[2], -(self.0[2] * rhs.0[1])),
-            self.0[2].mul_add(rhs.0[0], -(self.0[0] * rhs.0[2])),
-            self.0[0].mul_add(rhs.0[1], -(self.0[1] * rhs.0[0])),
+            self.0[1].fma(rhs.0[2], -(self.0[2] * rhs.0[1])),
+            self.0[2].fma(rhs.0[0], -(self.0[0] * rhs.0[2])),
+            self.0[0].fma(rhs.0[1], -(self.0[1] * rhs.0[0])),
         ])
     }
 }
@@ -510,6 +518,43 @@ mod tests {
             prop_assert!((roundtrip.x() - p.x()).abs() < 1e-10);
             prop_assert!((roundtrip.y() - p.y()).abs() < 1e-10);
             prop_assert!((roundtrip.z() - p.z()).abs() < 1e-10);
+        }
+    }
+
+    /// `length_squared` starts with a plain square instead of a fused
+    /// `x·x + 0.0`; it must return the fused fold's exact bits.
+    #[test]
+    fn length_squared_matches_the_fused_fold_bit_for_bit() {
+        let specials = [
+            0.0,
+            -0.0,
+            f64::from_bits(1),
+            -f64::MIN_POSITIVE,
+            1e-170,
+            -3.5,
+            1e154,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut values: Vec<f64> = specials.to_vec();
+        for _ in 0..3_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            values.push(f64::from_bits(state));
+        }
+        for (k, &x) in values.iter().enumerate() {
+            let y = values[(k * 7 + 3) % values.len()];
+            let z = values[(k * 13 + 5) % values.len()];
+            let fused = z.mul_add(z, y.mul_add(y, x.mul_add(x, 0.0)));
+            let got = Vec3::new(x, y, z).length_squared();
+            assert!(
+                got.to_bits() == fused.to_bits() || (got.is_nan() && fused.is_nan()),
+                "({x:e}, {y:e}, {z:e}): {got:e} vs {fused:e}"
+            );
         }
     }
 }
