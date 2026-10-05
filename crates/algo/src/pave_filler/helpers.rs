@@ -53,6 +53,7 @@ pub(super) fn identical_nurbs_span(
 /// Visible to `crate::builder` and `crate::classifier` alongside the other
 /// helpers in this module (see the `redundant_pub_crate` note on `mod helpers`).
 #[allow(clippy::redundant_pub_crate)]
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 pub(crate) fn authoritative_edge_domain(
     edge: &Edge,
     edge_id: EdgeId,

@@ -304,57 +304,32 @@ fn process_coplanar_pair(
     // corner cap defect). Skip the chord when its exact arc section exists.
     // Spline matches require identical coefficients and parameter spans;
     // unresolved spline boundaries refuse instead of becoming chords.
-    for &(b_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_b {
-        if shared_spline_boundary(topo, b_eid, face_a)?
-            || spline_hull_disjoint_from_line_face(topo, b_eid, face_a, tol)?
-            || matching_boundary_section_exists(
-                topo,
-                arena,
-                face_a,
-                face_b,
-                b_eid,
-                tol,
-                qualified_splines.contains(&b_eid),
-            )?
-        {
-            continue;
-        }
-        if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_a, tol.linear) {
-            for (c_start, c_end) in
-                clip_section_to_polygon(p2d_start, p2d_end, p3d_start, p3d_end, &poly_a, tol.linear)
-            {
-                if !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol) {
-                    create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
-                }
-            }
-        }
-    }
-
-    for &(a_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_a {
-        if shared_spline_boundary(topo, a_eid, face_b)?
-            || spline_hull_disjoint_from_line_face(topo, a_eid, face_b, tol)?
-            || matching_boundary_section_exists(
-                topo,
-                arena,
-                face_a,
-                face_b,
-                a_eid,
-                tol,
-                qualified_splines.contains(&a_eid),
-            )?
-        {
-            continue;
-        }
-        if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_b, tol.linear) {
-            for (c_start, c_end) in
-                clip_section_to_polygon(p2d_start, p2d_end, p3d_start, p3d_end, &poly_b, tol.linear)
-            {
-                if !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol) {
-                    create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
-                }
-            }
-        }
-    }
+    create_boundary_sections(
+        topo,
+        arena,
+        (face_a, face_b),
+        &edges_b,
+        CoplanarTarget {
+            face: face_a,
+            edges: &edges_a,
+            polygon: &poly_a,
+        },
+        tol,
+        qualified_splines,
+    )?;
+    create_boundary_sections(
+        topo,
+        arena,
+        (face_a, face_b),
+        &edges_a,
+        CoplanarTarget {
+            face: face_b,
+            edges: &edges_b,
+            polygon: &poly_b,
+        },
+        tol,
+        qualified_splines,
+    )?;
 
     // For each boundary edge of face_b that coincides with a boundary edge
     // of face_a (both endpoints on the SAME target edge), create a CommonBlock
@@ -375,6 +350,58 @@ fn process_coplanar_pair(
         }
     }
 
+    Ok(())
+}
+
+/// Both directed coplanar passes share this code, keeping operand-B then
+/// operand-A traversal and every exclusion/witness check in the same order.
+struct CoplanarTarget<'a> {
+    face: FaceId,
+    edges: &'a [BoundaryEdge],
+    polygon: &'a [Point2],
+}
+
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn create_boundary_sections(
+    topo: &mut Topology,
+    arena: &mut GfaArena,
+    faces: (FaceId, FaceId),
+    edges: &[BoundaryEdge],
+    target: CoplanarTarget<'_>,
+    tol: Tolerance,
+    qualified_splines: &DetHashSet<remus_topology::edge::EdgeId>,
+) -> Result<(), AlgoError> {
+    let (face_a, face_b) = faces;
+    for &(eid, p2d_start, p2d_end, p3d_start, p3d_end) in edges {
+        if shared_spline_boundary(topo, eid, target.face)?
+            || spline_hull_disjoint_from_line_face(topo, eid, target.face, tol)?
+            || matching_boundary_section_exists(
+                topo,
+                arena,
+                face_a,
+                face_b,
+                eid,
+                tol,
+                qualified_splines.contains(&eid),
+            )?
+        {
+            continue;
+        }
+        if !is_shared_boundary_edge(p2d_start, p2d_end, target.edges, tol.linear) {
+            for (c_start, c_end) in clip_section_to_polygon(
+                p2d_start,
+                p2d_end,
+                p3d_start,
+                p3d_end,
+                target.polygon,
+                tol.linear,
+            ) {
+                if !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol) {
+                    create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
