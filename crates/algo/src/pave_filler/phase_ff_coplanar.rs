@@ -258,7 +258,9 @@ fn process_coplanar_pair(
     // Spline matches require identical coefficients and parameter spans;
     // unresolved spline boundaries refuse instead of becoming chords.
     for &(b_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_b {
-        if matching_boundary_section_exists(topo, arena, face_a, face_b, b_eid, tol)? {
+        if spline_hull_disjoint_from_line_face(topo, b_eid, face_a, tol)?
+            || matching_boundary_section_exists(topo, arena, face_a, face_b, b_eid, tol)?
+        {
             continue;
         }
         if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_a, tol.linear) {
@@ -273,7 +275,9 @@ fn process_coplanar_pair(
     }
 
     for &(a_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_a {
-        if matching_boundary_section_exists(topo, arena, face_a, face_b, a_eid, tol)? {
+        if spline_hull_disjoint_from_line_face(topo, a_eid, face_b, tol)?
+            || matching_boundary_section_exists(topo, arena, face_a, face_b, a_eid, tol)?
+        {
             continue;
         }
         if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_b, tol.linear) {
@@ -372,6 +376,40 @@ fn face_boundary_edges_2d(
     }
 
     Ok(edges)
+}
+
+/// Exclude an entire positive-weight spline hull from a polygonal partner.
+/// A distant spline needs no section witness. Endpoint chords cannot establish
+/// this exclusion, and curved partner boundaries retain the refusing path.
+fn spline_hull_disjoint_from_line_face(
+    topo: &Topology,
+    eid: remus_topology::edge::EdgeId,
+    target: FaceId,
+    tol: Tolerance,
+) -> Result<bool, AlgoError> {
+    let EdgeCurve::NurbsCurve(curve) = topo.edge(eid)?.curve() else {
+        return Ok(false);
+    };
+    if curve.validate_weights().is_err() {
+        return Ok(false);
+    }
+    let edges = remus_topology::explorer::face_edges(topo, target)?;
+    let mut points = Vec::with_capacity(edges.len() * 2);
+    for id in edges {
+        let edge = topo.edge(id)?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(false);
+        }
+        points.push(topo.vertex(edge.start())?.point());
+        points.push(topo.vertex(edge.end())?.point());
+    }
+    if points.is_empty() {
+        return Ok(false);
+    }
+    Ok(!curve
+        .aabb()
+        .expanded(tol.linear)
+        .intersects(Aabb3::from_points(points).expanded(tol.linear)))
 }
 
 /// True when a boundary's exact curve already exists as a section.
@@ -796,6 +834,44 @@ fn point_on_segment_2d(pt: Point2, a: Point2, b: Point2, tol: f64) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn spline_exclusion_uses_the_whole_hull_and_a_polygonal_partner() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let mut topo = Topology::new();
+        let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
+        let mut edge = |middle_x| {
+            let a = Point3::new(2.0, 0.0, 0.0);
+            let b = Point3::new(2.0, 1.0, 0.0);
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let curve = remus_topology::edge::EdgeCurve::NurbsCurve(
+                NurbsCurve::new(
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![a, Point3::new(middle_x, 0.5, 0.0), b],
+                    vec![1.0; 3],
+                )
+                .unwrap(),
+            );
+            topo.add_edge(Edge::new(va, vb, curve))
+        };
+        let outside = edge(3.0);
+        let crossing = edge(-2.0);
+        assert!(
+            spline_hull_disjoint_from_line_face(&topo, outside, face, Tolerance::new()).unwrap()
+        );
+        assert!(
+            !spline_hull_disjoint_from_line_face(&topo, crossing, face, Tolerance::new()).unwrap()
+        );
+        // An endpoint box cannot enclose this curved partner boundary.
+        let boundary = remus_topology::explorer::face_edges(&topo, face).unwrap()[0];
+        let replacement = topo.edge(crossing).unwrap().curve().clone();
+        topo.edge_mut(boundary).unwrap().set_curve(replacement);
+        assert!(
+            !spline_hull_disjoint_from_line_face(&topo, outside, face, Tolerance::new()).unwrap()
+        );
+    }
 
     #[test]
     fn spline_chord_is_suppressed_only_with_a_whole_span_coefficient_witness() {
