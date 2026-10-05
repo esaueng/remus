@@ -5,6 +5,8 @@
 //! (cylinder, cone, sphere, torus, NURBS) use tensor-product Gauss-Legendre
 //! quadrature over the UV domain.
 
+use std::cell::Cell;
+
 use remus_math::nurbs::surface::DerivativeScratch;
 use remus_math::quadrature::gauss_legendre_points;
 use remus_math::traits::ParametricSurface;
@@ -17,6 +19,10 @@ use super::PropertiesOptions;
 use crate::CheckError;
 
 mod adaptive;
+mod loop_index;
+
+use loop_index::{IntervalIndex, winding_number_over};
+use remus_math::fma::FusedMulAdd;
 
 #[derive(Clone, Copy)]
 struct IntegrationRule<'a> {
@@ -28,6 +34,10 @@ struct IntegrationRule<'a> {
     knots: Option<(&'a [f64], &'a [f64])>,
     /// Point the positional integrands are taken about (B58).
     reference: Point3,
+    /// Where a fixed-rule path records the face's vector area `∫ n dA`, taken
+    /// over exactly the samples (or the closed form) its volume came from;
+    /// see [`integrate_face_fixed_flux_about`]. Adaptive paths leave it unset.
+    flux: Option<&'a Cell<Option<Vec3>>>,
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -54,6 +64,15 @@ impl<'a> IntegrationRule<'a> {
             adaptive: self.requested_refinement(),
             knots: self.knots,
             reference: self.reference,
+            flux: self.flux,
+        }
+    }
+
+    /// Record the vector area a fixed-rule path integrated alongside its
+    /// volume.
+    fn record_flux(self, vector_area: Vec3) {
+        if let Some(sink) = self.flux {
+            sink.set(Some(vector_area));
         }
     }
 }
@@ -181,8 +200,51 @@ pub fn integrate_face_fixed_about(
             adaptive: None,
             knots: None,
             reference,
+            flux: None,
         },
     )
+}
+
+/// [`integrate_face_fixed_about`] that also returns the face's vector area
+/// `∫ n dA`, read from the same Gauss samples (or the same closed form) as
+/// the volume.
+///
+/// The volume term `(1/3) Σ wᵢ (Pᵢ − R) · nᵢ` is affine in the reference, so
+/// with `N = Σ wᵢ nᵢ` the contribution about another reference is
+/// `volume − (1/3)(R' − R) · N` — the same sum regrouped, equal to a fresh
+/// integration about `R'` up to rounding. `None` when the path that measured
+/// the face does not report it (none of the fixed paths do so today).
+///
+/// # Errors
+///
+/// Exactly the errors of [`integrate_face_fixed_about`].
+pub(crate) fn integrate_face_fixed_flux_about(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+    reference: Point3,
+) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
+    if ![reference.x(), reference.y(), reference.z()]
+        .iter()
+        .all(|c| c.is_finite())
+    {
+        return Err(CheckError::IntegrationFailed(
+            "integration reference point must be finite".into(),
+        ));
+    }
+    let flux = Cell::new(None);
+    let contribution = integrate_face_impl::<false>(
+        topo,
+        face_id,
+        IntegrationRule {
+            order: gauss_order,
+            adaptive: None,
+            knots: None,
+            reference,
+            flux: Some(&flux),
+        },
+    )?;
+    Ok((contribution, flux.get()))
 }
 
 /// Integrate a face's area with the same fixed quadrature and trim rule as
@@ -206,6 +268,7 @@ pub fn integrate_face_area(
             adaptive: None,
             knots: None,
             reference: Point3::new(0.0, 0.0, 0.0),
+            flux: None,
         },
     )?
     .area)
@@ -272,6 +335,7 @@ pub fn integrate_face_about(
             adaptive: Some(options),
             knots: None,
             reference,
+            flux: None,
         },
     )
 }
@@ -292,7 +356,16 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
     match face.surface() {
         FaceSurface::Plane { normal, .. } => {
             let effective_normal = if reversed { -*normal } else { *normal };
-            integrate_planar_face(topo, face_id, effective_normal, rule.reference)
+            let contribution =
+                integrate_planar_face(topo, face_id, effective_normal, rule.reference)?;
+            // Both planar paths integrate `(P − reference) · n̂` against the
+            // unit effective normal over a region of `area` (the closed form
+            // reads `n̂ · ∫(P − reference) dA`, the fan `n̂ · centroid · area`),
+            // so the vector area of exactly what they measured is `n̂ · area`.
+            if let Ok(unit) = effective_normal.normalize() {
+                rule.record_flux(unit * contribution.area);
+            }
+            Ok(contribution)
         }
         FaceSurface::Cylinder(s) => {
             let full = (
@@ -702,7 +775,7 @@ fn face_boundary_v_extent<S: ParametricSurface>(
                 let f = k as f64 / EXTENT_SAMPLES as f64;
                 let p = edge
                     .curve()
-                    .evaluate_with_endpoints((t1 - t0).mul_add(f, t0), start, end);
+                    .evaluate_with_endpoints((t1 - t0).fma(f, t0), start, end);
                 let (_, v) = surface.project_point(p);
                 v_min = v_min.min(v);
                 v_max = v_max.max(v);
@@ -767,6 +840,7 @@ pub fn integrate_torus_band_face_about(
             adaptive: None,
             knots: None,
             reference,
+            flux: None,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
@@ -908,14 +982,14 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
         let v_scale = (interval[1] - interval[0]) / 2.0;
         let v_mid = f64::midpoint(interval[0], interval[1]);
         for gv in gauss {
-            let v = v_scale.mul_add(gv.x, v_mid);
+            let v = v_scale.fma(gv.x, v_mid);
             let (a, span) = sweep(v);
             let patches = patch_count(span.abs(), PatchScale::ANGULAR.u);
             let step = span / patches as f64;
             for patch in 0..patches {
                 let mid = a + (patch as f64 + 0.5) * step;
                 for gu in gauss {
-                    let u = (step / 2.0).mul_add(gu.x, mid);
+                    let u = (step / 2.0).fma(gu.x, mid);
                     acc.add::<_, AREA_ONLY>(
                         torus,
                         u,
@@ -927,6 +1001,9 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
                 }
             }
         }
+    }
+    if !AREA_ONLY {
+        rule.record_flux(acc.flux(sign));
     }
     Ok(Some(acc.finish(sign)))
 }
@@ -1025,9 +1102,72 @@ impl UvLoop {
     }
 
     /// Whether `(u, v)` lies inside the patch this loop encloses.
+    #[cfg(test)]
     fn encloses(&self, u: f64, v: f64, u_periodic: bool) -> bool {
+        self.encloses_with(None, u, v, u_periodic)
+    }
+
+    /// [`Self::encloses`], visiting only the edges `index` (from
+    /// [`Self::edge_v_index`]) files under `v` when one is supplied — the
+    /// same winding number, so the same verdict.
+    fn encloses_with(
+        &self,
+        index: Option<&IntervalIndex>,
+        u: f64,
+        v: f64,
+        u_periodic: bool,
+    ) -> bool {
         use remus_math::predicates::point_in_polygon;
-        point_in_polygon(Point2::new(self.wrap_u(u, u_periodic), v), &self.points)
+        let point = Point2::new(self.wrap_u(u, u_periodic), v);
+        match index {
+            Some(index) => winding_number_over(point, &self.points, index.candidates(v)) != 0,
+            None => point_in_polygon(point, &self.points),
+        }
+    }
+
+    /// Index over the `v` extents of the closed polygon's edges
+    /// `i -> (i + 1) % n`, for [`Self::encloses_with`].
+    fn edge_v_index(&self) -> Option<IntervalIndex> {
+        let n = self.points.len();
+        let intervals: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let (a, b) = (self.points[i].y(), self.points[(i + 1) % n].y());
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        IntervalIndex::build(&intervals)
+    }
+
+    /// Segment `i` as [`Self::for_each_v_crossing`] walks it.
+    fn crossing_segment(&self, i: usize, wraps: bool) -> (Point2, Point2) {
+        let n = self.points.len();
+        let a = self.points[i];
+        let b = if i + 1 < n {
+            self.points[i + 1]
+        } else if wraps {
+            Point2::new(
+                self.points[0].x() + std::f64::consts::TAU,
+                self.points[0].y(),
+            )
+        } else {
+            self.points[0]
+        };
+        (a, b)
+    }
+
+    /// Index over the `u` extents of the segments
+    /// [`Self::for_each_v_crossing`] walks with this `wraps`.
+    fn segment_u_index(&self, wraps: bool) -> Option<IntervalIndex> {
+        if self.points.len() < 2 {
+            return None;
+        }
+        let intervals: Vec<(f64, f64)> = (0..self.points.len())
+            .map(|i| {
+                let (a, b) = self.crossing_segment(i, wraps);
+                (a.x().min(b.x()), a.x().max(b.x()))
+            })
+            .collect();
+        IntervalIndex::build(&intervals)
     }
 
     /// Call `f` with the `v` of every point where the vertical line at `u`
@@ -1037,7 +1177,20 @@ impl UvLoop {
     /// from its last sample back to its first, a period-wrapping loop by the
     /// step to its first sample one whole turn on. Each segment is taken
     /// half-open in `u` so a shared endpoint is reported once.
-    fn for_each_v_crossing(&self, u: f64, u_periodic: bool, wraps: bool, mut f: impl FnMut(f64)) {
+    ///
+    /// With `index` (from [`Self::segment_u_index`] with the same `wraps`),
+    /// visits only the segments it files under the query `u`. Every segment
+    /// that can cross is among them and is tested exactly as the full scan
+    /// tests it; crossings may arrive in a different order, which no caller
+    /// observes (cuts are sorted, strands counted).
+    fn for_each_v_crossing_with(
+        &self,
+        index: Option<&IntervalIndex>,
+        u: f64,
+        u_periodic: bool,
+        wraps: bool,
+        mut f: impl FnMut(f64),
+    ) {
         let tau = std::f64::consts::TAU;
         let n = self.points.len();
         if n < 2 {
@@ -1051,15 +1204,8 @@ impl UvLoop {
             self.wrap_u(u, u_periodic)
         };
 
-        for i in 0..n {
-            let a = self.points[i];
-            let b = if i + 1 < n {
-                self.points[i + 1]
-            } else if wraps {
-                Point2::new(self.points[0].x() + tau, self.points[0].y())
-            } else {
-                self.points[0]
-            };
+        let mut visit = |i: usize| {
+            let (a, b) = self.crossing_segment(i, wraps);
             let (lo, hi) = if a.x() <= b.x() {
                 (a.x(), b.x())
             } else {
@@ -1067,8 +1213,12 @@ impl UvLoop {
             };
             if uq >= lo && uq < hi {
                 let t = (uq - a.x()) / (b.x() - a.x());
-                f((b.y() - a.y()).mul_add(t, a.y()));
+                f((b.y() - a.y()).fma(t, a.y()));
             }
+        };
+        match index {
+            Some(index) => index.candidates(uq).iter().copied().for_each(&mut visit),
+            None => (0..n).for_each(&mut visit),
         }
     }
 
@@ -1089,9 +1239,9 @@ impl UvLoop {
     /// abscissa rather than a polygon crossing number.
     ///
     /// The loop must already be [`Self::oriented_along_u`].
-    fn strands_above(&self, u: f64, v: f64) -> usize {
+    fn strands_above(&self, index: Option<&IntervalIndex>, u: f64, v: f64) -> usize {
         let mut count = 0;
-        self.for_each_v_crossing(u, true, true, |vc| {
+        self.for_each_v_crossing_with(index, u, true, true, |vc| {
             if vc > v {
                 count += 1;
             }
@@ -1215,17 +1365,69 @@ struct UvTrim<'a> {
     bands: &'a [UvLoop],
     /// Whether `u` is periodic on this surface.
     u_periodic: bool,
+    /// Segment indexes for the loops above, built once per trim (O06).
+    index: TrimIndex,
+}
+
+/// [`IntervalIndex`]es for one loop: crossing segments by `u` and winding
+/// edges by `v`. `None` falls back to scanning the loop.
+#[derive(Debug, Default)]
+struct LoopIndex {
+    crossing_u: Option<IntervalIndex>,
+    winding_v: Option<IntervalIndex>,
+}
+
+impl LoopIndex {
+    /// A patch loop: crossed with a closing chord, tested by winding.
+    fn patch(loop_: &UvLoop) -> Self {
+        Self {
+            crossing_u: loop_.segment_u_index(false),
+            winding_v: loop_.edge_v_index(),
+        }
+    }
+
+    /// A period-wrapping band: crossed with the step one turn on, counted.
+    fn band(loop_: &UvLoop) -> Self {
+        Self {
+            crossing_u: loop_.segment_u_index(true),
+            winding_v: None,
+        }
+    }
+}
+
+/// Per-loop indexes of a [`UvTrim`], index-aligned with its loops.
+#[derive(Debug, Default)]
+struct TrimIndex {
+    outer: LoopIndex,
+    pockets: Vec<LoopIndex>,
+    bands: Vec<LoopIndex>,
 }
 
 impl<'a> UvTrim<'a> {
+    /// Assemble a trim and index its loops.
+    fn new(
+        outer: Option<&'a UvLoop>,
+        pockets: &'a [UvLoop],
+        bands: &'a [UvLoop],
+        u_periodic: bool,
+    ) -> Self {
+        let index = TrimIndex {
+            outer: outer.map(LoopIndex::patch).unwrap_or_default(),
+            pockets: pockets.iter().map(LoopIndex::patch).collect(),
+            bands: bands.iter().map(LoopIndex::band).collect(),
+        };
+        Self {
+            outer,
+            pockets,
+            bands,
+            u_periodic,
+            index,
+        }
+    }
+
     /// Keep the whole domain but remove `uv`'s holes.
     fn holes_of(uv: &'a FaceUv) -> Self {
-        Self {
-            outer: None,
-            pockets: &uv.pockets,
-            bands: &uv.bands,
-            u_periodic: uv.u_periodic,
-        }
+        Self::new(None, &uv.pockets, &uv.bands, uv.u_periodic)
     }
 
     /// Keep the whole domain and remove only the holes that enclose a patch.
@@ -1235,38 +1437,36 @@ impl<'a> UvTrim<'a> {
     /// [`full_revolution_hole_vs`]), and counting them again as bands would
     /// reject the very strip they bound.
     fn pockets_of(uv: &'a FaceUv) -> Self {
-        Self {
-            outer: None,
-            pockets: &uv.pockets,
-            bands: &[],
-            u_periodic: uv.u_periodic,
-        }
+        Self::new(None, &uv.pockets, &[], uv.u_periodic)
     }
 
     /// Trim to `uv`'s boundary and remove its holes.
     fn boundary_of(uv: &'a FaceUv) -> Self {
-        Self {
-            outer: Some(&uv.boundary),
-            pockets: &uv.pockets,
-            bands: &uv.bands,
-            u_periodic: uv.u_periodic,
-        }
+        Self::new(Some(&uv.boundary), &uv.pockets, &uv.bands, uv.u_periodic)
     }
 
     fn accepts(&self, u: f64, v: f64) -> bool {
         if let Some(outer) = self.outer
-            && !outer.encloses(u, v, self.u_periodic)
+            && !outer.encloses_with(self.index.outer.winding_v.as_ref(), u, v, self.u_periodic)
         {
             return false;
         }
         if self
             .pockets
             .iter()
-            .any(|hole| hole.encloses(u, v, self.u_periodic))
+            .zip(&self.index.pockets)
+            .any(|(hole, index)| {
+                hole.encloses_with(index.winding_v.as_ref(), u, v, self.u_periodic)
+            })
         {
             return false;
         }
-        let strands: usize = self.bands.iter().map(|b| b.strands_above(u, v)).sum();
+        let strands: usize = self
+            .bands
+            .iter()
+            .zip(&self.index.bands)
+            .map(|(band, index)| band.strands_above(index.crossing_u.as_ref(), u, v))
+            .sum();
         strands.is_multiple_of(2)
     }
 
@@ -1331,13 +1531,31 @@ impl<'a> UvTrim<'a> {
 
         let mut cuts: Vec<f64> = vec![v0, v1];
         if let Some(outer) = self.outer {
-            outer.for_each_v_crossing(u, self.u_periodic, false, |vc| cuts.push(vc));
+            outer.for_each_v_crossing_with(
+                self.index.outer.crossing_u.as_ref(),
+                u,
+                self.u_periodic,
+                false,
+                |vc| cuts.push(vc),
+            );
         }
-        for hole in self.pockets {
-            hole.for_each_v_crossing(u, self.u_periodic, false, |vc| cuts.push(vc));
+        for (hole, index) in self.pockets.iter().zip(&self.index.pockets) {
+            hole.for_each_v_crossing_with(
+                index.crossing_u.as_ref(),
+                u,
+                self.u_periodic,
+                false,
+                |vc| cuts.push(vc),
+            );
         }
-        for band in self.bands {
-            band.for_each_v_crossing(u, self.u_periodic, true, |vc| cuts.push(vc));
+        for (band, index) in self.bands.iter().zip(&self.index.bands) {
+            band.for_each_v_crossing_with(
+                index.crossing_u.as_ref(),
+                u,
+                self.u_periodic,
+                true,
+                |vc| cuts.push(vc),
+            );
         }
         cuts.retain(|c| c.is_finite() && *c >= v0 && *c <= v1);
         cuts.sort_by(f64::total_cmp);
@@ -1770,9 +1988,9 @@ fn triangle_cubic_integral(a: Point3, b: Point3, c: Point3, f: impl Fn(Point3) -
     let area = (b - a).cross(c - a).length() * 0.5;
     let barycentric = |wa: f64, wb: f64, wc: f64| {
         Point3::new(
-            wa.mul_add(a.x(), wb.mul_add(b.x(), wc * c.x())),
-            wa.mul_add(a.y(), wb.mul_add(b.y(), wc * c.y())),
-            wa.mul_add(a.z(), wb.mul_add(b.z(), wc * c.z())),
+            wa.fma(a.x(), wb.fma(b.x(), wc * c.x())),
+            wa.fma(a.y(), wb.fma(b.y(), wc * c.y())),
+            wa.fma(a.z(), wb.fma(b.z(), wc * c.z())),
         )
     };
     let centroid = barycentric(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
@@ -1876,7 +2094,7 @@ fn planar_wire_monomial_moments(
                     (((t1 - t0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
                 let dt = (t1 - t0) / chunks as f64;
                 for i in 0..chunks {
-                    let a = dt.mul_add(i as f64, t0);
+                    let a = dt.fma(i as f64, t0);
                     accumulate_green_segment(
                         &mut moments,
                         (a, a + dt),
@@ -1900,7 +2118,7 @@ fn planar_wire_monomial_moments(
                     (((t1 - t0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
                 let dt = (t1 - t0) / chunks as f64;
                 for i in 0..chunks {
-                    let a = dt.mul_add(i as f64, t0);
+                    let a = dt.fma(i as f64, t0);
                     accumulate_green_segment(
                         &mut moments,
                         (a, a + dt),
@@ -2027,7 +2245,7 @@ fn accumulate_hyperbola_green_segments(
     let dt = span / chunks as f64;
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.mul_add(i as f64, t0);
+        let a = dt.fma(i as f64, t0);
         accumulate_green_segment(
             moments,
             (a, a + dt),
@@ -2252,7 +2470,7 @@ fn nurbs_recognition_verifies(
     let mut worst: f64 = 0.0;
     for k in 0..SAMPLES {
         #[allow(clippy::cast_precision_loss)]
-        let t = (t1 - t0).mul_add(k as f64 / (SAMPLES - 1) as f64, t0);
+        let t = (t1 - t0).fma(k as f64 / (SAMPLES - 1) as f64, t0);
         let p = nc.evaluate(t);
         let q = match recognized {
             RecognizedCurve::Line { origin, direction } => {
@@ -2351,7 +2569,7 @@ fn nurbs_recognition_verifies(
         };
         for k in 0..SAMPLES {
             #[allow(clippy::cast_precision_loss)]
-            let t = (t1 - t0).mul_add(k as f64 / (SAMPLES - 1) as f64, t0);
+            let t = (t1 - t0).fma(k as f64 / (SAMPLES - 1) as f64, t0);
             let p = nc.evaluate(t);
             let q = parabola.evaluate(parabola.project(p));
             if (p - q).length() > extent * 1e-6 {
@@ -2432,7 +2650,7 @@ fn accumulate_recognized_circle_green_segments(
     let r = circle.radius();
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.mul_add(i as f64, 0.0);
+        let a = dt.fma(i as f64, 0.0);
         accumulate_green_segment(
             moments,
             (a, a + dt),
@@ -2511,7 +2729,7 @@ fn accumulate_recognized_periodic_green_segments(
     let dt = span / chunks as f64;
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.mul_add(i as f64, 0.0);
+        let a = dt.fma(i as f64, 0.0);
         accumulate_green_segment(
             moments,
             (a, a + dt),
@@ -2561,7 +2779,7 @@ fn accumulate_green_segment<F>(
     let scale = (range.1 - range.0) / 2.0;
     let mid = f64::midpoint(range.0, range.1);
     for gp in gauss_legendre_points(gauss_order) {
-        let u = scale.mul_add(gp.x, mid);
+        let u = scale.fma(gp.x, mid);
         let (p, dp) = eval(u);
         let rel = p - origin;
         let s = rel.dot(e1);
@@ -2646,7 +2864,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(c.evaluate((to - from).mul_add(f, from)));
+                    pts.push(c.evaluate((to - from).fma(f, from)));
                 }
             }
             EdgeCurve::Ellipse(c) => {
@@ -2656,7 +2874,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(c.evaluate((to - from).mul_add(f, from)));
+                    pts.push(c.evaluate((to - from).fma(f, from)));
                 }
             }
             EdgeCurve::Parabola(p) => {
@@ -2666,7 +2884,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(p.evaluate((to - from).mul_add(f, from)));
+                    pts.push(p.evaluate((to - from).fma(f, from)));
                 }
             }
             EdgeCurve::Hyperbola(h) => {
@@ -2676,7 +2894,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(h.evaluate((to - from).mul_add(f, from)));
+                    pts.push(h.evaluate((to - from).fma(f, from)));
                 }
             }
             // Matches the refusal in `planar_wire_monomial_moments`: the
@@ -2693,7 +2911,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(nc.evaluate((to - from).mul_add(f, from)));
+                    pts.push(nc.evaluate((to - from).fma(f, from)));
                 }
             }
         }
@@ -2821,6 +3039,13 @@ struct Accumulator {
     cx: f64,
     cy: f64,
     cz: f64,
+    /// Vector area `Σ w · (S_u × S_v)`: the samples' own `∫ n dA`, which the
+    /// volume term `(1/3) Σ w (P − R) · n` is affine in. Kept outside
+    /// [`FaceContribution`]; the fixed rule reports it through
+    /// `IntegrationRule::flux`.
+    nx: f64,
+    ny: f64,
+    nz: f64,
 }
 
 impl Accumulator {
@@ -2863,6 +3088,9 @@ impl Accumulator {
 
         // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
         self.vol += w * p.dot(n) / 3.0;
+        self.nx += w * n.x();
+        self.ny += w * n.y();
+        self.nz += w * n.z();
 
         // Volume moments via divergence theorem:
         // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
@@ -2881,6 +3109,12 @@ impl Accumulator {
         self.cx += w * p.x() * n_len;
         self.cy += w * p.y() * n_len;
         self.cz += w * p.z() * n_len;
+    }
+
+    /// The vector area accumulated so far, with the face's orientation sign
+    /// applied the way [`Self::finish`] applies it to the volume.
+    fn flux(&self, sign: f64) -> Vec3 {
+        Vec3::new(self.nx * sign, self.ny * sign, self.nz * sign)
     }
 
     fn finish(self, sign: f64) -> FaceContribution {
@@ -3116,17 +3350,17 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
             let du_patch = (u1 - u0) / nu as f64;
             let u_scale = du_patch / 2.0;
             for iu in 0..nu {
-                let u_mid = du_patch.mul_add(iu as f64, u0) + u_scale;
+                let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
                 for gpu in gauss_pts {
-                    let u = u_scale.mul_add(gpu.x, u_mid);
+                    let u = u_scale.fma(gpu.x, u_mid);
                     for (a, b) in trim.v_spans(u, v_range) {
                         let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
                         let v_scale = dv_patch / 2.0;
                         for iv in 0..nv {
-                            let v_mid = dv_patch.mul_add(iv as f64, a) + v_scale;
+                            let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
                             for gpv in gauss_pts {
-                                let v = v_scale.mul_add(gpv.x, v_mid);
+                                let v = v_scale.fma(gpv.x, v_mid);
                                 acc.add::<_, AREA_ONLY>(
                                     surface,
                                     u,
@@ -3141,6 +3375,9 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                 }
             }
         }
+        if !AREA_ONLY {
+            rule.record_flux(acc.flux(sign));
+        }
         return Ok(acc.finish(sign));
     }
 
@@ -3148,13 +3385,13 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     let dv_patch = (v_range.1 - v_range.0) / nv as f64;
     let v_scale = dv_patch / 2.0;
     for iu in 0..nu {
-        let u_mid = du_patch.mul_add(iu as f64, u_range.0) + u_scale;
+        let u_mid = du_patch.fma(iu as f64, u_range.0) + u_scale;
         for iv in 0..nv {
-            let v_mid = dv_patch.mul_add(iv as f64, v_range.0) + v_scale;
+            let v_mid = dv_patch.fma(iv as f64, v_range.0) + v_scale;
             for gpu in gauss_pts {
-                let u = u_scale.mul_add(gpu.x, u_mid);
+                let u = u_scale.fma(gpu.x, u_mid);
                 for gpv in gauss_pts {
-                    let v = v_scale.mul_add(gpv.x, v_mid);
+                    let v = v_scale.fma(gpv.x, v_mid);
                     if !trim.accepts(u, v) {
                         continue;
                     }
@@ -3169,6 +3406,9 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                 }
             }
         }
+    }
+    if !AREA_ONLY {
+        rule.record_flux(acc.flux(sign));
     }
     Ok(acc.finish(sign))
 }
