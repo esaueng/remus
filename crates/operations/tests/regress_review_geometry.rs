@@ -95,6 +95,34 @@ mod tests {
         );
     }
     #[test]
+    fn reversed_nurbs_face_offset() {
+        let mut t = Topology::new();
+        let f = remus_topology::test_utils::make_unit_square_face(&mut t);
+        let k = vec![0., 0., 1., 1.];
+        let s = NurbsSurface::new(
+            1,
+            1,
+            k.clone(),
+            k,
+            vec![
+                vec![Point3::new(0., 0., 0.), Point3::new(0., 1., 0.)],
+                vec![Point3::new(1., 0., 0.), Point3::new(1., 1., 0.)],
+            ],
+            vec![vec![1.; 2]; 2],
+        )
+        .unwrap();
+        t.face_mut(f).unwrap().set_surface(FaceSurface::Nurbs(s));
+        t.face_mut(f).unwrap().set_reversed(true);
+        let out = offset_face_with_quality(&mut t, f, 0.5, Some(4)).unwrap();
+        let face = t.face(out.face).unwrap();
+        let FaceSurface::Nurbs(surface) = face.surface() else {
+            panic!()
+        };
+        assert!(face.is_reversed());
+        assert!((surface.evaluate(0.5, 0.5).z() + 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn nonunit_nurbs_offset_domain() {
         let mut t = Topology::new();
         let f = remus_topology::test_utils::make_unit_square_face(&mut t);
