@@ -139,13 +139,52 @@ impl ParametricSurface for CylindricalSurface {
     #[inline]
     fn partial_u(&self, u: f64, _v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
-        self.x_axis() * (-self.radius() * sin_u) + self.y_axis() * (self.radius() * cos_u)
+        cylinder_partial_u(self, sin_u, cos_u)
     }
 
     #[inline]
     fn partial_v(&self, _u: f64, _v: f64) -> Vec3 {
         self.axis()
     }
+
+    /// One `u.sin_cos()` serves the position and `∂S/∂u` (the separate
+    /// calls each compute it); every component is the same expression over
+    /// the same values, so the result is bit-identical to the default.
+    #[inline]
+    fn point_and_partials(&self, u: f64, v: f64) -> (Point3, Vec3, Vec3) {
+        cylinder_point_and_partials(self, u.sin_cos(), v)
+    }
+
+    /// [`Self::point_and_partials`] with `u.sin_cos()` remembered in the
+    /// scratch across a quadrature row (exactly the same value).
+    #[inline]
+    fn point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3) {
+        cylinder_point_and_partials(self, scratch.sin_cos_u(u), v)
+    }
+}
+
+#[inline]
+fn cylinder_point_and_partials(
+    s: &CylindricalSurface,
+    (sin_u, cos_u): (f64, f64),
+    v: f64,
+) -> (Point3, Vec3, Vec3) {
+    (
+        s.evaluate_trig(sin_u, cos_u, v),
+        cylinder_partial_u(s, sin_u, cos_u),
+        s.axis(),
+    )
+}
+
+/// `∂S/∂u` of a cylinder from `u.sin_cos()`.
+#[inline]
+fn cylinder_partial_u(s: &CylindricalSurface, sin_u: f64, cos_u: f64) -> Vec3 {
+    s.x_axis() * (-s.radius() * sin_u) + s.y_axis() * (s.radius() * cos_u)
 }
 
 impl ParametricSurface for ConicalSurface {
@@ -199,18 +238,64 @@ impl ParametricSurface for SphericalSurface {
     fn partial_u(&self, u: f64, v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let cos_v = v.cos();
-        self.x_axis() * (-self.radius() * cos_v * sin_u)
-            + self.y_axis() * (self.radius() * cos_v * cos_u)
+        sphere_partial_u(self, sin_u, cos_u, cos_v)
     }
 
     #[inline]
     fn partial_v(&self, u: f64, v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
-        self.x_axis() * (-self.radius() * sin_v * cos_u)
-            + self.y_axis() * (-self.radius() * sin_v * sin_u)
-            + self.z_axis() * (self.radius() * cos_v)
+        sphere_partial_v(self, sin_u, cos_u, sin_v, cos_v)
     }
+
+    /// One `sin_cos` per parameter serves the position and both partials
+    /// (the separate calls compute them up to three times); every component
+    /// is the same expression over the same values, so the result is
+    /// bit-identical to the default.
+    #[inline]
+    fn point_and_partials(&self, u: f64, v: f64) -> (Point3, Vec3, Vec3) {
+        sphere_point_and_partials(self, u.sin_cos(), v)
+    }
+
+    /// [`Self::point_and_partials`] with `u.sin_cos()` remembered in the
+    /// scratch across a quadrature row (exactly the same value).
+    #[inline]
+    fn point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3) {
+        sphere_point_and_partials(self, scratch.sin_cos_u(u), v)
+    }
+}
+
+#[inline]
+fn sphere_point_and_partials(
+    s: &SphericalSurface,
+    (sin_u, cos_u): (f64, f64),
+    v: f64,
+) -> (Point3, Vec3, Vec3) {
+    let (sin_v, cos_v) = v.sin_cos();
+    (
+        s.evaluate_trig(sin_u, cos_u, sin_v, cos_v),
+        sphere_partial_u(s, sin_u, cos_u, cos_v),
+        sphere_partial_v(s, sin_u, cos_u, sin_v, cos_v),
+    )
+}
+
+/// `∂S/∂u` of a sphere from `u.sin_cos()` and `v.cos()`.
+#[inline]
+fn sphere_partial_u(s: &SphericalSurface, sin_u: f64, cos_u: f64, cos_v: f64) -> Vec3 {
+    s.x_axis() * (-s.radius() * cos_v * sin_u) + s.y_axis() * (s.radius() * cos_v * cos_u)
+}
+
+/// `∂S/∂v` of a sphere from `u.sin_cos()` and `v.sin_cos()`.
+#[inline]
+fn sphere_partial_v(s: &SphericalSurface, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Vec3 {
+    s.x_axis() * (-s.radius() * sin_v * cos_u)
+        + s.y_axis() * (-s.radius() * sin_v * sin_u)
+        + s.z_axis() * (s.radius() * cos_v)
 }
 
 impl ParametricSurface for ToroidalSurface {
@@ -233,17 +318,64 @@ impl ParametricSurface for ToroidalSurface {
     fn partial_u(&self, u: f64, v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let cos_v = v.cos();
-        let tube_radius = self.major_radius() + self.minor_radius() * cos_v;
-        self.x_axis() * (-tube_radius * sin_u) + self.y_axis() * (tube_radius * cos_u)
+        torus_partial_u(self, sin_u, cos_u, cos_v)
     }
 
     #[inline]
     fn partial_v(&self, u: f64, v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
-        (self.x_axis() * cos_u + self.y_axis() * sin_u) * (-self.minor_radius() * sin_v)
-            + self.z_axis() * (self.minor_radius() * cos_v)
+        torus_partial_v(self, sin_u, cos_u, sin_v, cos_v)
     }
+
+    /// One `sin_cos` per parameter serves the position and both partials
+    /// (the separate calls compute them up to three times); every component
+    /// is the same expression over the same values, so the result is
+    /// bit-identical to the default.
+    #[inline]
+    fn point_and_partials(&self, u: f64, v: f64) -> (Point3, Vec3, Vec3) {
+        torus_point_and_partials(self, u.sin_cos(), v)
+    }
+
+    /// [`Self::point_and_partials`] with `u.sin_cos()` remembered in the
+    /// scratch across a quadrature row (exactly the same value).
+    #[inline]
+    fn point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3) {
+        torus_point_and_partials(self, scratch.sin_cos_u(u), v)
+    }
+}
+
+#[inline]
+fn torus_point_and_partials(
+    s: &ToroidalSurface,
+    (sin_u, cos_u): (f64, f64),
+    v: f64,
+) -> (Point3, Vec3, Vec3) {
+    let (sin_v, cos_v) = v.sin_cos();
+    (
+        s.evaluate_trig(sin_u, cos_u, sin_v, cos_v),
+        torus_partial_u(s, sin_u, cos_u, cos_v),
+        torus_partial_v(s, sin_u, cos_u, sin_v, cos_v),
+    )
+}
+
+/// `∂S/∂u` of a torus from `u.sin_cos()` and `v.cos()`.
+#[inline]
+fn torus_partial_u(s: &ToroidalSurface, sin_u: f64, cos_u: f64, cos_v: f64) -> Vec3 {
+    let tube_radius = s.major_radius() + s.minor_radius() * cos_v;
+    s.x_axis() * (-tube_radius * sin_u) + s.y_axis() * (tube_radius * cos_u)
+}
+
+/// `∂S/∂v` of a torus from `u.sin_cos()` and `v.sin_cos()`.
+#[inline]
+fn torus_partial_v(s: &ToroidalSurface, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Vec3 {
+    (s.x_axis() * cos_u + s.y_axis() * sin_u) * (-s.minor_radius() * sin_v)
+        + s.z_axis() * (s.minor_radius() * cos_v)
 }
 
 impl ParametricSurface for NurbsSurface {
@@ -594,5 +726,85 @@ mod tests {
         )
         .unwrap();
         assert_derivative_pair(&nurbs, &[0.1, 0.35, 0.5, 0.8], "nurbs");
+    }
+
+    /// The analytic `point_and_partials` overrides share one `sin_cos` per
+    /// parameter; they must return exactly the separate calls' bits.
+    fn assert_point_and_partials_match_separate_calls<S: ParametricSurface>(
+        surface: &S,
+        name: &str,
+    ) {
+        let mut state = 0x1234_5678_9ABC_DEF0_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            // Mostly in-domain angles, with large arguments mixed in so the
+            // trig reduction's slow path is covered too.
+            #[allow(clippy::cast_precision_loss)]
+            let unit = (state >> 11) as f64 / (1_u64 << 53) as f64;
+            if state.is_multiple_of(16) {
+                (unit - 0.5) * 1e6
+            } else {
+                (unit - 0.5) * 20.0
+            }
+        };
+        let mut scratch = crate::nurbs::surface::DerivativeScratch::new();
+        for _ in 0..20_000 {
+            let (u, v) = (next(), next());
+            let (p, du, dv) = surface.point_and_partials(u, v);
+            let bits = |x: Vec3| [x.x().to_bits(), x.y().to_bits(), x.z().to_bits()];
+            let separate = surface.evaluate(u, v);
+            assert_eq!(
+                [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()],
+                [
+                    separate.x().to_bits(),
+                    separate.y().to_bits(),
+                    separate.z().to_bits()
+                ],
+                "{name}: position at ({u}, {v})"
+            );
+            assert_eq!(
+                bits(du),
+                bits(surface.partial_u(u, v)),
+                "{name}: du at ({u}, {v})"
+            );
+            assert_eq!(
+                bits(dv),
+                bits(surface.partial_v(u, v)),
+                "{name}: dv at ({u}, {v})"
+            );
+            // The scratch path remembers `u.sin_cos()`: a row of `v` at the
+            // same `u`, then the next `u`, must all match too.
+            for v in [v, next(), v] {
+                let (p2, du2, dv2) = surface.point_and_partials_with_scratch(u, v, &mut scratch);
+                let (p1, du1, dv1) = surface.point_and_partials(u, v);
+                assert_eq!(
+                    [
+                        bits(Vec3::new(p2.x(), p2.y(), p2.z())),
+                        bits(du2),
+                        bits(dv2)
+                    ],
+                    [
+                        bits(Vec3::new(p1.x(), p1.y(), p1.z())),
+                        bits(du1),
+                        bits(dv1)
+                    ],
+                    "{name}: scratch path at ({u}, {v})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn analytic_point_and_partials_match_separate_calls_bit_for_bit() {
+        let axis = Vec3::new(0.3, -0.5, 0.81).normalize().unwrap();
+        let center = Point3::new(12.5, -3.25, 101.0);
+        let cylinder = CylindricalSurface::new(center, axis, 7.3).unwrap();
+        assert_point_and_partials_match_separate_calls(&cylinder, "cylinder");
+        let sphere = SphericalSurface::with_axis(center, 4.1, axis).unwrap();
+        assert_point_and_partials_match_separate_calls(&sphere, "sphere");
+        let torus = ToroidalSurface::with_axis(center, 9.0, 2.5, axis).unwrap();
+        assert_point_and_partials_match_separate_calls(&torus, "torus");
     }
 }

@@ -20,6 +20,7 @@ mod adaptive;
 mod loop_index;
 
 use loop_index::{IntervalIndex, winding_number_over};
+use remus_math::fma::FusedMulAdd;
 
 #[derive(Clone, Copy)]
 struct IntegrationRule<'a> {
@@ -705,7 +706,7 @@ fn face_boundary_v_extent<S: ParametricSurface>(
                 let f = k as f64 / EXTENT_SAMPLES as f64;
                 let p = edge
                     .curve()
-                    .evaluate_with_endpoints((t1 - t0).mul_add(f, t0), start, end);
+                    .evaluate_with_endpoints((t1 - t0).fma(f, t0), start, end);
                 let (_, v) = surface.project_point(p);
                 v_min = v_min.min(v);
                 v_max = v_max.max(v);
@@ -911,14 +912,14 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
         let v_scale = (interval[1] - interval[0]) / 2.0;
         let v_mid = f64::midpoint(interval[0], interval[1]);
         for gv in gauss {
-            let v = v_scale.mul_add(gv.x, v_mid);
+            let v = v_scale.fma(gv.x, v_mid);
             let (a, span) = sweep(v);
             let patches = patch_count(span.abs(), PatchScale::ANGULAR.u);
             let step = span / patches as f64;
             for patch in 0..patches {
                 let mid = a + (patch as f64 + 0.5) * step;
                 for gu in gauss {
-                    let u = (step / 2.0).mul_add(gu.x, mid);
+                    let u = (step / 2.0).fma(gu.x, mid);
                     acc.add::<_, AREA_ONLY>(
                         torus,
                         u,
@@ -1139,7 +1140,7 @@ impl UvLoop {
             };
             if uq >= lo && uq < hi {
                 let t = (uq - a.x()) / (b.x() - a.x());
-                f((b.y() - a.y()).mul_add(t, a.y()));
+                f((b.y() - a.y()).fma(t, a.y()));
             }
         };
         match index {
@@ -1914,9 +1915,9 @@ fn triangle_cubic_integral(a: Point3, b: Point3, c: Point3, f: impl Fn(Point3) -
     let area = (b - a).cross(c - a).length() * 0.5;
     let barycentric = |wa: f64, wb: f64, wc: f64| {
         Point3::new(
-            wa.mul_add(a.x(), wb.mul_add(b.x(), wc * c.x())),
-            wa.mul_add(a.y(), wb.mul_add(b.y(), wc * c.y())),
-            wa.mul_add(a.z(), wb.mul_add(b.z(), wc * c.z())),
+            wa.fma(a.x(), wb.fma(b.x(), wc * c.x())),
+            wa.fma(a.y(), wb.fma(b.y(), wc * c.y())),
+            wa.fma(a.z(), wb.fma(b.z(), wc * c.z())),
         )
     };
     let centroid = barycentric(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
@@ -2020,7 +2021,7 @@ fn planar_wire_monomial_moments(
                     (((t1 - t0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
                 let dt = (t1 - t0) / chunks as f64;
                 for i in 0..chunks {
-                    let a = dt.mul_add(i as f64, t0);
+                    let a = dt.fma(i as f64, t0);
                     accumulate_green_segment(
                         &mut moments,
                         (a, a + dt),
@@ -2044,7 +2045,7 @@ fn planar_wire_monomial_moments(
                     (((t1 - t0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
                 let dt = (t1 - t0) / chunks as f64;
                 for i in 0..chunks {
-                    let a = dt.mul_add(i as f64, t0);
+                    let a = dt.fma(i as f64, t0);
                     accumulate_green_segment(
                         &mut moments,
                         (a, a + dt),
@@ -2171,7 +2172,7 @@ fn accumulate_hyperbola_green_segments(
     let dt = span / chunks as f64;
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.mul_add(i as f64, t0);
+        let a = dt.fma(i as f64, t0);
         accumulate_green_segment(
             moments,
             (a, a + dt),
@@ -2396,7 +2397,7 @@ fn nurbs_recognition_verifies(
     let mut worst: f64 = 0.0;
     for k in 0..SAMPLES {
         #[allow(clippy::cast_precision_loss)]
-        let t = (t1 - t0).mul_add(k as f64 / (SAMPLES - 1) as f64, t0);
+        let t = (t1 - t0).fma(k as f64 / (SAMPLES - 1) as f64, t0);
         let p = nc.evaluate(t);
         let q = match recognized {
             RecognizedCurve::Line { origin, direction } => {
@@ -2495,7 +2496,7 @@ fn nurbs_recognition_verifies(
         };
         for k in 0..SAMPLES {
             #[allow(clippy::cast_precision_loss)]
-            let t = (t1 - t0).mul_add(k as f64 / (SAMPLES - 1) as f64, t0);
+            let t = (t1 - t0).fma(k as f64 / (SAMPLES - 1) as f64, t0);
             let p = nc.evaluate(t);
             let q = parabola.evaluate(parabola.project(p));
             if (p - q).length() > extent * 1e-6 {
@@ -2576,7 +2577,7 @@ fn accumulate_recognized_circle_green_segments(
     let r = circle.radius();
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.mul_add(i as f64, 0.0);
+        let a = dt.fma(i as f64, 0.0);
         accumulate_green_segment(
             moments,
             (a, a + dt),
@@ -2655,7 +2656,7 @@ fn accumulate_recognized_periodic_green_segments(
     let dt = span / chunks as f64;
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.mul_add(i as f64, 0.0);
+        let a = dt.fma(i as f64, 0.0);
         accumulate_green_segment(
             moments,
             (a, a + dt),
@@ -2705,7 +2706,7 @@ fn accumulate_green_segment<F>(
     let scale = (range.1 - range.0) / 2.0;
     let mid = f64::midpoint(range.0, range.1);
     for gp in gauss_legendre_points(gauss_order) {
-        let u = scale.mul_add(gp.x, mid);
+        let u = scale.fma(gp.x, mid);
         let (p, dp) = eval(u);
         let rel = p - origin;
         let s = rel.dot(e1);
@@ -2790,7 +2791,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(c.evaluate((to - from).mul_add(f, from)));
+                    pts.push(c.evaluate((to - from).fma(f, from)));
                 }
             }
             EdgeCurve::Ellipse(c) => {
@@ -2800,7 +2801,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(c.evaluate((to - from).mul_add(f, from)));
+                    pts.push(c.evaluate((to - from).fma(f, from)));
                 }
             }
             EdgeCurve::Parabola(p) => {
@@ -2810,7 +2811,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(p.evaluate((to - from).mul_add(f, from)));
+                    pts.push(p.evaluate((to - from).fma(f, from)));
                 }
             }
             EdgeCurve::Hyperbola(h) => {
@@ -2820,7 +2821,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(h.evaluate((to - from).mul_add(f, from)));
+                    pts.push(h.evaluate((to - from).fma(f, from)));
                 }
             }
             // Matches the refusal in `planar_wire_monomial_moments`: the
@@ -2837,7 +2838,7 @@ fn wire_newell_normal(
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
-                    pts.push(nc.evaluate((to - from).mul_add(f, from)));
+                    pts.push(nc.evaluate((to - from).fma(f, from)));
                 }
             }
         }
@@ -3260,17 +3261,17 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
             let du_patch = (u1 - u0) / nu as f64;
             let u_scale = du_patch / 2.0;
             for iu in 0..nu {
-                let u_mid = du_patch.mul_add(iu as f64, u0) + u_scale;
+                let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
                 for gpu in gauss_pts {
-                    let u = u_scale.mul_add(gpu.x, u_mid);
+                    let u = u_scale.fma(gpu.x, u_mid);
                     for (a, b) in trim.v_spans(u, v_range) {
                         let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
                         let v_scale = dv_patch / 2.0;
                         for iv in 0..nv {
-                            let v_mid = dv_patch.mul_add(iv as f64, a) + v_scale;
+                            let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
                             for gpv in gauss_pts {
-                                let v = v_scale.mul_add(gpv.x, v_mid);
+                                let v = v_scale.fma(gpv.x, v_mid);
                                 acc.add::<_, AREA_ONLY>(
                                     surface,
                                     u,
@@ -3292,13 +3293,13 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     let dv_patch = (v_range.1 - v_range.0) / nv as f64;
     let v_scale = dv_patch / 2.0;
     for iu in 0..nu {
-        let u_mid = du_patch.mul_add(iu as f64, u_range.0) + u_scale;
+        let u_mid = du_patch.fma(iu as f64, u_range.0) + u_scale;
         for iv in 0..nv {
-            let v_mid = dv_patch.mul_add(iv as f64, v_range.0) + v_scale;
+            let v_mid = dv_patch.fma(iv as f64, v_range.0) + v_scale;
             for gpu in gauss_pts {
-                let u = u_scale.mul_add(gpu.x, u_mid);
+                let u = u_scale.fma(gpu.x, u_mid);
                 for gpv in gauss_pts {
-                    let v = v_scale.mul_add(gpv.x, v_mid);
+                    let v = v_scale.fma(gpv.x, v_mid);
                     if !trim.accepts(u, v) {
                         continue;
                     }

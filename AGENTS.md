@@ -135,6 +135,7 @@ Quick reference — find the right file for any task:
 | Hand-placed oracles for intersection-point chaining: grid walk, adjacency (tests) | `nurbs/intersection/chaining/mutation_oracle_tests.rs` |
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
+| Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
 | CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, adjacency, tests, tests/off_axis_cap, tests/u_bracket_floor) |
@@ -157,6 +158,7 @@ Quick reference — find the right file for any task:
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
+| Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
 | Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
 | Qualified intersection results (contact kind, quality) | `intersect.rs` |
 | 2D polygon booleans (union, intersection, difference) | `polygon_boolean.rs` |
