@@ -69,6 +69,7 @@ impl BrepKernel {
         // copy, and every hit is bit-identical to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
+        remus_operations::tessellate::enable_face_mesh_cache();
         Self {
             topo: Rc::new(Topology::new()),
             assemblies: HandleStore::default(),
