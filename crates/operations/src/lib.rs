@@ -105,6 +105,7 @@ fn dot_normal_point(n: Vec3, p: Point3) -> f64 {
 
 /// Resolve an edge's stored parameter authority without reconstructing it
 /// from endpoint projection.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 pub(crate) fn authoritative_edge_domain(
     edge: &remus_topology::edge::Edge,
     context: &str,
