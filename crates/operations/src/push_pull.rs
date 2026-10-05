@@ -218,7 +218,6 @@ pub(crate) fn move_faces_with_entity_evolution(
             }
             .into());
         }
-
         Ok((result, boundary_pairs))
     })();
 

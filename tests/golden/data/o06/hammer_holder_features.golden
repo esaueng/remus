@@ -1,0 +1,70 @@
+features=69
+fillet_like face=0 area=18.849555915886427
+fillet_like face=2 area=14.136812105149307
+fillet_like face=3 area=7.068478639805154
+fillet_like face=5 area=7.0684060557266895
+fillet_like face=7 area=14.136812105149277
+fillet_like face=11 area=8.281360661156851
+fillet_like face=13 area=18.84955591588693
+fillet_like face=15 area=8.281360661156803
+fillet_like face=17 area=15.138026431857803
+fillet_like face=18 area=15.138026435090119
+fillet_like face=30 area=18.849555915885883
+fillet_like face=31 area=7.068406055631844
+fillet_like face=32 area=14.13681210514934
+fillet_like face=34 area=14.136812105149335
+fillet_like face=36 area=7.0684786398051385
+fillet_like face=38 area=18.84955591588693
+fillet_like face=40 area=15.138026428351264
+fillet_like face=42 area=8.281360661157017
+fillet_like face=49 area=8.281360661156699
+fillet_like face=51 area=15.138026435090003
+fillet_like face=74 area=3.9000828762226236
+fillet_like face=79 area=9.194091367207438
+fillet_like face=85 area=9.194091859423985
+fillet_like face=88 area=3.900082829163358
+fillet_like face=92 area=0.1667500056103168
+fillet_like face=94 area=0.6849698564503279
+fillet_like face=96 area=2.5161289765028902
+fillet_like face=98 area=1.0138790260801382
+fillet_like face=100 area=0.5385319623680276
+fillet_like face=101 area=2.790619861815468
+fillet_like face=102 area=0.9747694636779021
+fillet_like face=103 area=0.30802962528615113
+fillet_like face=104 area=0.33690390207954923
+fillet_like face=106 area=0.26314351889996257
+fillet_like face=107 area=0.22270073506554178
+fillet_like face=108 area=0.06587109056173755
+fillet_like face=111 area=3.611824593219502
+fillet_like face=112 area=1.7867460986467651
+fillet_like face=113 area=1.7843893390596086
+fillet_like face=114 area=3.06156522973964
+fillet_like face=117 area=0.8668397889451117
+fillet_like face=118 area=0.19451606271692273
+fillet_like face=119 area=0.2765787197837742
+fillet_like face=120 area=0.9174129053538065
+fillet_like face=122 area=2.979393951262386
+fillet_like face=123 area=1.172901086425223
+fillet_like face=124 area=0.2453345961995589
+fillet_like face=125 area=0.8051656318274151
+fillet_like face=127 area=2.862430270850255
+fillet_like face=130 area=2.8895238922892093
+fillet_like face=132 area=5.772824296824292
+fillet_like face=142 area=1.979096079368715
+fillet_like face=146 area=1.972275988156872
+fillet_like face=150 area=2.0343239193270493
+fillet_like face=152 area=1.2336275382217061
+fillet_like face=154 area=1.0111519416810129
+fillet_like face=155 area=0.3822401210503608
+fillet_like face=157 area=4.101274909261636
+hole faces=[13] diameter=6.0 through=false
+hole faces=[38] diameter=6.0 through=false
+hole faces=[67] diameter=5.0 through=false
+hole faces=[70] diameter=5.0 through=false
+hole faces=[80] diameter=10.0 through=false
+hole faces=[71,83] diameter=16.0 through=false
+hole faces=[84] diameter=10.0 through=false
+pocket floor=57 walls=[92,93,94,95,96,97,98,99,100,101,108,111,114,117,118,119,120,121,122,123,124,125,126,127,129,130,131,132,134,135,136,137,139,140,141,142,143,144,145,146,147,148,150,151,152,153,157]
+pocket floor=110 walls=[102,103,104,105,106,107]
+pocket floor=116 walls=[112,113]
+pocket floor=156 walls=[154,155,159]

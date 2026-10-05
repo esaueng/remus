@@ -135,6 +135,7 @@ Quick reference — find the right file for any task:
 | Hand-placed oracles for intersection-point chaining: grid walk, adjacency (tests) | `nurbs/intersection/chaining/mutation_oracle_tests.rs` |
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
+| Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
 | CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, adjacency, tests, tests/off_axis_cap, tests/u_bracket_floor) |
@@ -157,6 +158,7 @@ Quick reference — find the right file for any task:
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
+| Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
 | Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
 | Qualified intersection results (contact kind, quality) | `intersect.rs` |
 | 2D polygon booleans (union, intersection, difference) | `polygon_boolean.rs` |
@@ -347,7 +349,9 @@ Quick reference — find the right file for any task:
 | AABB computation | `properties/bbox.rs` |
 | Face Gauss integration | `properties/face_integrator.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
+| Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
+| Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
@@ -419,9 +423,13 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
+| Opt-in per-thread `solid_volume` memo keyed by topology cache identity | `measure/volume_memo.rs` |
 | Distance queries | `distance.rs` |
-| Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/mesh_oracles, tests/mutation_oracles) |
+| Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
+| Content-keyed per-face mesh reuse across edits (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
+| Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
 | Offset wire | `offset_wire.rs` |
