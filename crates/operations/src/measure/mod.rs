@@ -6,6 +6,7 @@ mod bounding_box;
 mod edge_length;
 pub(crate) mod helpers;
 mod volume;
+mod volume_memo;
 
 pub use area::{
     body_surface_area, face_area, sheet_center_of_area, sheet_surface_area, solid_surface_area,
@@ -17,6 +18,10 @@ pub(crate) use volume::{gauss_unqualified_face, negligible_volume, shell_signed_
 pub use volume::{
     mass_properties, oriented_solid_volume, solid_center_of_mass, solid_is_inverted, solid_volume,
     solid_volume_from_faces,
+};
+pub use volume_memo::{
+    DEFAULT_VOLUME_MEMO_CAPACITY, VolumeMemoStats, clear_thread_volume_memo,
+    enable_thread_volume_memo, set_thread_volume_memo_capacity, thread_volume_memo_stats,
 };
 
 /// Gauss order [`mass_properties`] integrates at.

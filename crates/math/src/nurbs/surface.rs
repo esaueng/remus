@@ -31,6 +31,13 @@ pub struct NurbsSurface {
     /// stale; it is filled in `new` and lazily after deserialization.
     #[cfg_attr(feature = "serde", serde(skip))]
     max_weight: std::sync::OnceLock<f64>,
+    /// Whether every weight carries the same bits, cached like `max_weight`.
+    /// Then each normalized weight `w / max_weight` is exactly `1.0`, so the
+    /// first-order solve may skip the per-term weight division and product
+    /// without changing a bit (see [`Self::point_and_partials_with_spans`]).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "simd", allow(dead_code))]
+    uniform_weights: std::sync::OnceLock<bool>,
 }
 
 impl PartialEq for NurbsSurface {
@@ -70,6 +77,83 @@ pub struct DerivativeScratch {
     /// `sin_cos` of, and that value. Quadrature walks a whole row of `v`
     /// abscissae at one `u`, so the row pays for the trig once.
     last_sin_cos_u: Option<(u64, (f64, f64))>,
+    /// The u-direction basis of the last first-order solve, reused while the
+    /// abscissa repeats (see [`UBasisMemo`]).
+    u_memo: UBasisMemo,
+}
+
+/// Highest u degree whose first-order basis [`UBasisMemo`] retains.
+const MEMO_MAX_DEGREE: usize = basis::MAX_STACK_OUTPUT;
+
+/// The first-order u-direction basis of the previous solve, with everything
+/// it was computed from.
+///
+/// Tensor-product quadrature walks every `v` abscissa at one `u` before it
+/// moves on, and the first-order basis (`ders_basis_funs_first_into`, the
+/// `n_derivs = 1` case of `ders_basis_funs_into`) is a pure function of the
+/// clamped `u`, the span, the degree and the `2p` knots
+/// `knots[span + 1 - p..=span + p]`. The memo stores exactly those inputs
+/// (bit patterns, not tolerances) and is reused only when all of them match,
+/// so a hit returns the very values a fresh call would and the solve stays
+/// bit-identical — including when one scratch is handed a different surface,
+/// whose knots then fail the comparison.
+///
+/// The `simd` feature keeps the general 4-lane solve, which never consults it.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "simd", allow(dead_code))]
+struct UBasisMemo {
+    valid: bool,
+    u_bits: u64,
+    span: usize,
+    degree: usize,
+    knots: [u64; 2 * MEMO_MAX_DEGREE],
+    ders: [f64; 2 * (MEMO_MAX_DEGREE + 1)],
+}
+
+impl Default for UBasisMemo {
+    fn default() -> Self {
+        Self {
+            valid: false,
+            u_bits: 0,
+            span: 0,
+            degree: 0,
+            knots: [0; 2 * MEMO_MAX_DEGREE],
+            ders: [0.0; 2 * (MEMO_MAX_DEGREE + 1)],
+        }
+    }
+}
+
+impl UBasisMemo {
+    /// The memoized `[N; N']` rows (stride `degree + 1`) for these inputs,
+    /// computing and storing them on a miss. `None` when the degree is above
+    /// [`MEMO_MAX_DEGREE`]; the caller then solves without the memo.
+    #[cfg_attr(feature = "simd", allow(dead_code))]
+    fn ders(&mut self, span: usize, u: f64, degree: usize, knots: &[f64]) -> Option<&[f64]> {
+        if degree > MEMO_MAX_DEGREE {
+            return None;
+        }
+        let local = &knots[span + 1 - degree..=span + degree];
+        let hit = self.valid
+            && self.u_bits == u.to_bits()
+            && self.span == span
+            && self.degree == degree
+            && local
+                .iter()
+                .zip(&self.knots)
+                .all(|(k, stored)| k.to_bits() == *stored);
+        let len = 2 * (degree + 1);
+        if !hit {
+            basis::ders_basis_funs_first_into(span, u, degree, knots, &mut self.ders[..len]);
+            for (stored, k) in self.knots.iter_mut().zip(local) {
+                *stored = k.to_bits();
+            }
+            self.u_bits = u.to_bits();
+            self.span = span;
+            self.degree = degree;
+            self.valid = true;
+        }
+        Some(&self.ders[..len])
+    }
 }
 
 impl DerivativeScratch {
@@ -176,12 +260,13 @@ impl DerivativeScratch {
             last_span_u,
             last_span_v,
             last_sin_cos_u: _,
+            u_memo,
         } = self;
         let (span_u, hit_u) = surface.find_span_hinted_u(u, last_span_u.unwrap_or(usize::MAX));
         let (span_v, hit_v) = surface.find_span_hinted_v(v, last_span_v.unwrap_or(usize::MAX));
         *last_span_u = Some(span_u);
         *last_span_v = Some(span_v);
-        surface.derivatives_into_with_spans(u, v, 1, span_u, span_v, basis, sk, out);
+        surface.first_order_into(u, v, span_u, span_v, basis, sk, u_memo, out);
         (out[0][0], out[1][0], out[0][1], hit_u, hit_v)
     }
 
@@ -215,12 +300,13 @@ impl DerivativeScratch {
             last_span_u,
             last_span_v,
             last_sin_cos_u: _,
+            u_memo,
         } = self;
         let (span_u, _) = surface.find_span_hinted_u(u, last_span_u.unwrap_or(usize::MAX));
         let (span_v, _) = surface.find_span_hinted_v(v, last_span_v.unwrap_or(usize::MAX));
         *last_span_u = Some(span_u);
         *last_span_v = Some(span_v);
-        surface.derivatives_into_with_spans(u, v, 1, span_u, span_v, basis, sk, out);
+        surface.first_order_into(u, v, span_u, span_v, basis, sk, u_memo, out);
         (out[1][0], out[0][1])
     }
 
@@ -357,6 +443,21 @@ impl NurbsSurface {
         })
     }
 
+    /// Whether every weight is one finite, positive value with the same bit
+    /// pattern (cached once). Then `w / max_weight` is exactly `1.0` for
+    /// every weight: IEEE division of a finite non-zero value by itself is
+    /// exact.
+    #[cfg_attr(feature = "simd", allow(dead_code))]
+    fn has_uniform_weights(&self) -> bool {
+        *self.uniform_weights.get_or_init(|| {
+            let mut weights = self.weights.iter().flatten();
+            weights.next().is_some_and(|first| {
+                let bits = first.to_bits();
+                first.is_finite() && *first > 0.0 && weights.all(|w| w.to_bits() == bits)
+            })
+        })
+    }
+
     /// Construct a new NURBS surface with validation.
     ///
     /// # Errors
@@ -459,6 +560,7 @@ impl NurbsSurface {
             control_points,
             weights,
             max_weight: std::sync::OnceLock::new(),
+            uniform_weights: std::sync::OnceLock::new(),
         };
         let _ = surface.max_weight();
         Ok(surface)
@@ -793,6 +895,134 @@ impl NurbsSurface {
             basis::find_span(n_cols, self.degree_v, v, &self.knots_v),
             false,
         )
+    }
+
+    /// The `d = 1` solve of [`Self::derivatives_into_with_spans`] for the
+    /// scratch entry points, writing `out[0][0]`, `out[1][0]` and `out[0][1]`.
+    ///
+    /// Default builds take [`Self::point_and_partials_with_spans`], which is
+    /// bit-identical to the general solve; the `simd` feature keeps the
+    /// general solve and its 4-lane contraction unchanged.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(feature = "simd", allow(clippy::needless_pass_by_ref_mut))]
+    fn first_order_into(
+        &self,
+        u: f64,
+        v: f64,
+        span_u: usize,
+        span_v: usize,
+        basis_buf: &mut [f64],
+        sk_buf: &mut [Vec3],
+        u_memo: &mut UBasisMemo,
+        out: &mut [Vec<Vec3>],
+    ) {
+        #[cfg(not(feature = "simd"))]
+        if let Some((p, du, dv)) =
+            self.point_and_partials_with_spans(u, v, span_u, span_v, basis_buf, u_memo)
+        {
+            out[0][0] = p;
+            out[1][0] = du;
+            out[0][1] = dv;
+            return;
+        }
+        #[cfg(feature = "simd")]
+        let _ = u_memo;
+        self.derivatives_into_with_spans(u, v, 1, span_u, span_v, basis_buf, sk_buf, out);
+    }
+
+    /// Position and first partials with pre-resolved spans: the `d = 1` case
+    /// of [`Self::derivatives_into_with_spans`] with the same arithmetic in the
+    /// same order, so every output is bit-identical to it.
+    ///
+    /// Three things differ, none of which changes a value:
+    ///
+    /// * the u-direction basis comes from `u_memo` when the abscissa, span,
+    ///   degree and local knots repeat (a pure function of exactly those),
+    ///   and both bases come from [`basis::ders_basis_funs_first_into`],
+    ///   which is bit-identical to the general A2.3 routine at `n_derivs = 1`;
+    /// * the homogeneous contraction accumulates the three cells `(0,0)`,
+    ///   `(0,1)` and `(1,0)` in one pass over the control net — each cell
+    ///   still sums its terms `i`-major, `j`-minor from `0.0`, as the scalar
+    ///   nest does;
+    /// * when every weight has the same bits each normalized weight is exactly
+    ///   `1.0`, and `(c * x) * 1.0 == c * x` and `c * 1.0 == c` in IEEE
+    ///   arithmetic, so the per-term division and product are skipped.
+    ///
+    /// The quotient rule keeps the general solve's operations: `bin = 1`
+    /// multiplies exactly, and the `(1,0)` cell's `- bin * 0.0` term is an
+    /// exact no-op (`x - 0.0 == x` for every `x`, signed zeros included).
+    ///
+    /// Returns `None` (nothing written) for a u degree above
+    /// [`MEMO_MAX_DEGREE`]; the caller then runs the general solve.
+    #[allow(clippy::many_single_char_names)]
+    #[cfg_attr(feature = "simd", allow(dead_code))]
+    fn point_and_partials_with_spans(
+        &self,
+        u: f64,
+        v: f64,
+        span_u: usize,
+        span_v: usize,
+        basis_buf: &mut [f64],
+        u_memo: &mut UBasisMemo,
+    ) -> Option<(Vec3, Vec3, Vec3)> {
+        let pu = self.degree_u;
+        let pv = self.degree_v;
+        let u = u.clamp(self.knots_u[pu], self.knots_u[self.control_points.len()]);
+        let v = v.clamp(self.knots_v[pv], self.knots_v[self.control_points[0].len()]);
+        let ders_u = u_memo.ders(span_u, u, pu, &self.knots_u)?;
+        let stride_u = pu + 1;
+        let stride_v = pv + 1;
+        let ders_v = &mut basis_buf[..2 * stride_v];
+        basis::ders_basis_funs_first_into(span_v, v, pv, &self.knots_v, ders_v);
+        let (nu, nu1) = ders_u.split_at(stride_u);
+        let (nv, nv1) = ders_v.split_at(stride_v);
+
+        let weight_scale = self.max_weight();
+        debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
+        let uniform = self.has_uniform_weights();
+        let (mut a00, mut a01, mut a10) = ([0.0f64; 4], [0.0f64; 4], [0.0f64; 4]);
+        for i in 0..=pu {
+            let u_idx = span_u - pu + i;
+            let row = &self.control_points[u_idx][span_v - pv..=span_v];
+            let weights = &self.weights[u_idx][span_v - pv..=span_v];
+            let (n_i, n1_i) = (nu[i], nu1[i]);
+            for j in 0..=pv {
+                let pt = row[j];
+                let (c00, c01, c10) = (n_i * nv[j], n_i * nv1[j], n1_i * nv[j]);
+                if uniform {
+                    for (cell, c) in [(&mut a00, c00), (&mut a01, c01), (&mut a10, c10)] {
+                        cell[0] += c * pt.x();
+                        cell[1] += c * pt.y();
+                        cell[2] += c * pt.z();
+                        cell[3] += c;
+                    }
+                } else {
+                    let w = weights[j] / weight_scale;
+                    for (cell, c) in [(&mut a00, c00), (&mut a01, c01), (&mut a10, c10)] {
+                        cell[0] += c * pt.x() * w;
+                        cell[1] += c * pt.y() * w;
+                        cell[2] += c * pt.z() * w;
+                        cell[3] += c * w;
+                    }
+                }
+            }
+        }
+
+        let w0 = a00[3];
+        debug_assert!(w0.is_finite() && w0 > 0.0);
+        let p = Vec3::new(a00[0] / w0, a00[1] / w0, a00[2] / w0);
+        let (wv, wu) = (a01[3], a10[3]);
+        let dv = Vec3::new(
+            (a01[0] - wv * p.x()) / w0,
+            (a01[1] - wv * p.y()) / w0,
+            (a01[2] - wv * p.z()) / w0,
+        );
+        let du = Vec3::new(
+            (a10[0] - wu * p.x()) / w0,
+            (a10[1] - wu * p.y()) / w0,
+            (a10[2] - wu * p.z()) / w0,
+        );
+        Some((p, du, dv))
     }
 
     /// [`Self::derivatives_into_with_buffers`] with pre-resolved knot spans.
@@ -2989,5 +3219,209 @@ mod normal_semantic_tests {
             1e-9,
             "reuse sphere",
         );
+    }
+}
+
+/// The first-order scratch solve (`point_and_partials_with_spans`: memoized
+/// u basis, fused three-cell contraction, uniform-weight shortcut) against
+/// the general `derivatives(u, v, 1)` solve, bit for bit.
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::cast_precision_loss,
+    clippy::suboptimal_flops
+)]
+mod first_order_fast_path_tests {
+    use super::*;
+
+    fn bits(v: Vec3) -> [u64; 3] {
+        [v.x().to_bits(), v.y().to_bits(), v.z().to_bits()]
+    }
+
+    fn clamped(degree: usize, interior: &[f64]) -> Vec<f64> {
+        [
+            vec![0.0; degree + 1],
+            interior.to_vec(),
+            vec![1.0; degree + 1],
+        ]
+        .concat()
+    }
+
+    fn surface(
+        degree_u: usize,
+        degree_v: usize,
+        interior_u: &[f64],
+        interior_v: &[f64],
+        weight: impl Fn(usize, usize) -> f64,
+    ) -> NurbsSurface {
+        let rows = degree_u + 1 + interior_u.len();
+        let cols = degree_v + 1 + interior_v.len();
+        let cps = (0..rows)
+            .map(|i| {
+                (0..cols)
+                    .map(|j| {
+                        let (x, y) = (i as f64, j as f64);
+                        Point3::new(x * 1.7 - 3.0, y * 0.9 + 0.25 * x, (0.6 * x + 1.1 * y).sin())
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights = (0..rows)
+            .map(|i| (0..cols).map(|j| weight(i, j)).collect())
+            .collect();
+        NurbsSurface::new(
+            degree_u,
+            degree_v,
+            clamped(degree_u, interior_u),
+            clamped(degree_v, interior_v),
+            cps,
+            weights,
+        )
+        .expect("valid fixture surface")
+    }
+
+    fn fixtures() -> Vec<(&'static str, NurbsSurface)> {
+        let interior = [0.25, 0.5, 0.5, 0.8];
+        vec![
+            (
+                "bicubic multi-span, unit weights",
+                surface(3, 3, &interior, &[0.3, 0.7], |_, _| 1.0),
+            ),
+            (
+                "bicubic, uniform non-unit weights",
+                surface(3, 3, &interior, &[0.4], |_, _| 2.5),
+            ),
+            (
+                "uniform tiny weights",
+                surface(3, 2, &[0.5], &[0.5], |_, _| 1e-300),
+            ),
+            (
+                "rational",
+                surface(3, 3, &interior, &[0.6], |i, j| {
+                    1.0 + 0.3 * ((i * 7 + j * 3) % 5) as f64
+                }),
+            ),
+            (
+                "one weight one ulp off",
+                surface(3, 3, &[0.5], &[0.5], |i, j| {
+                    if (i, j) == (2, 3) {
+                        f64::from_bits(1.0f64.to_bits() + 1)
+                    } else {
+                        1.0
+                    }
+                }),
+            ),
+            ("ruled 3 x 1", surface(3, 1, &interior, &[], |_, _| 1.0)),
+            ("bilinear", surface(1, 1, &[0.5], &[], |_, _| 1.0)),
+            (
+                "degree 9 (above the memo bound)",
+                surface(9, 2, &[], &[0.5], |i, j| 1.0 + 0.01 * (i + j) as f64),
+            ),
+        ]
+    }
+
+    /// Quadrature-like walks (one `u`, many `v`: memo hits), the same walk
+    /// reversed and interleaved (memo misses), knots, domain ends and
+    /// out-of-domain parameters, through every first-order entry point.
+    #[test]
+    fn first_order_scratch_solve_matches_general_solve_bitwise() {
+        for (label, s) in fixtures() {
+            let mut us: Vec<f64> = (0..23).map(|k| k as f64 / 22.0).collect();
+            us.extend(s.knots_u().iter().copied());
+            us.extend([-0.25, 1.25, 0.5 - 1e-17, 0.5 + 1e-16]);
+            let vs: Vec<f64> = (0..17)
+                .map(|k| (k as f64 * 0.618_033_988_7) % 1.0)
+                .chain(s.knots_v().iter().copied())
+                .chain([-0.5, 1.5])
+                .collect();
+            let mut walk: Vec<(f64, f64)> = us
+                .iter()
+                .flat_map(|&u| vs.iter().map(move |&v| (u, v)))
+                .collect();
+            let reversed: Vec<(f64, f64)> = walk.iter().rev().copied().collect();
+            let interleaved: Vec<(f64, f64)> = walk
+                .iter()
+                .zip(&reversed)
+                .flat_map(|(&a, &b)| [a, b])
+                .collect();
+            walk.extend(reversed);
+            walk.extend(interleaved);
+            let mut hinted = DerivativeScratch::new();
+            let mut plain = DerivativeScratch::new();
+            let mut partials = DerivativeScratch::new();
+            for &(u, v) in &walk {
+                let general = s.derivatives(u, v, 1);
+                let (p, du, dv, _, _) = hinted.span_hinted_point_and_partials_from(&s, u, v);
+                assert_eq!(bits(p), bits(general[0][0]), "{label}: p at ({u}, {v})");
+                assert_eq!(bits(du), bits(general[1][0]), "{label}: du at ({u}, {v})");
+                assert_eq!(bits(dv), bits(general[0][1]), "{label}: dv at ({u}, {v})");
+                let (p2, du2, dv2) = plain.point_and_partials_from(&s, u, v);
+                assert_eq!(
+                    [bits(p2), bits(du2), bits(dv2)],
+                    [bits(p), bits(du), bits(dv)],
+                    "{label}: point_and_partials_from at ({u}, {v})"
+                );
+                let (du3, dv3) = partials.partials_from(&s, u, v);
+                assert_eq!(
+                    [bits(du3), bits(dv3)],
+                    [bits(du), bits(dv)],
+                    "{label}: partials_from at ({u}, {v})"
+                );
+            }
+        }
+    }
+
+    /// One scratch handed a second surface whose u knots differ only in
+    /// value — same degree, same span index, same `u` bits — must not reuse
+    /// the first surface's basis.
+    #[test]
+    fn u_memo_rejects_another_surfaces_knots() {
+        let a = surface(3, 3, &[0.5], &[0.5], |_, _| 1.0);
+        let b = surface(3, 3, &[0.6], &[0.5], |_, _| 1.0);
+        let (u, v) = (0.3, 0.4);
+        let mut scratch = DerivativeScratch::new();
+        let from_a = scratch.span_hinted_point_and_partials_from(&a, u, v);
+        let from_b = scratch.span_hinted_point_and_partials_from(&b, u, v);
+        let general_a = a.derivatives(u, v, 1);
+        let general_b = b.derivatives(u, v, 1);
+        assert_ne!(
+            bits(general_a[1][0]),
+            bits(general_b[1][0]),
+            "the fixture must tell the two bases apart"
+        );
+        assert_eq!(bits(from_a.1), bits(general_a[1][0]));
+        assert_eq!(bits(from_b.0), bits(general_b[0][0]));
+        assert_eq!(bits(from_b.1), bits(general_b[1][0]));
+        assert_eq!(bits(from_b.2), bits(general_b[0][1]));
+    }
+
+    /// The weight shortcut is taken only when every weight carries the same
+    /// finite, positive bits, which is exactly when each normalized weight is
+    /// exactly one.
+    #[test]
+    fn uniform_weight_flag_requires_identical_bits() {
+        let cases = [
+            ("unit", surface(2, 2, &[], &[], |_, _| 1.0), true),
+            ("uniform 2.5", surface(2, 2, &[], &[], |_, _| 2.5), true),
+            (
+                "one ulp off",
+                surface(2, 2, &[], &[], |i, j| {
+                    if (i, j) == (1, 1) {
+                        f64::from_bits(2.5f64.to_bits() + 1)
+                    } else {
+                        2.5
+                    }
+                }),
+                false,
+            ),
+        ];
+        for (label, s, uniform) in cases {
+            assert_eq!(s.has_uniform_weights(), uniform, "{label}");
+            if uniform {
+                for w in s.weights().iter().flatten() {
+                    assert_eq!((w / s.max_weight()).to_bits(), 1.0f64.to_bits(), "{label}");
+                }
+            }
+        }
     }
 }

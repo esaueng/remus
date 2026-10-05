@@ -640,6 +640,74 @@ mod tests {
         assert_eq!(classify(&k, solid, 5.0, 5.0, 5.0), "outside");
     }
 
+    /// The kernel enables the content-keyed face-integral cache and the
+    /// identity-keyed volume memo on construction. Repeats are answered from
+    /// them — also for a deserialized copy in a second kernel — with the
+    /// uncached readings, and an in-place transform or a checkpoint restore
+    /// retires a memoized volume instead of serving it stale.
+    #[test]
+    fn measurement_memos_hit_repeats_and_never_serve_stale_readings() {
+        use remus_check::properties::face_cache::thread_face_cache_stats;
+        use remus_operations::measure::thread_volume_memo_stats;
+
+        let mut k = BrepKernel::new();
+        assert!(thread_face_cache_stats().capacity > 0);
+        assert!(thread_volume_memo_stats().capacity > 0);
+        let cylinder = k.make_cylinder_solid(1.0, 2.0).unwrap();
+        let faces = k.get_solid_faces(cylinder).unwrap();
+
+        let before = thread_face_cache_stats();
+        let verdict = k.validate_solid(cylinder).unwrap();
+        let areas: Vec<u64> = faces
+            .iter()
+            .map(|&f| k.face_area(f, DEFLECTION).unwrap().to_bits())
+            .collect();
+        let cold = thread_face_cache_stats();
+        assert!(cold.misses > before.misses);
+        assert_eq!(k.validate_solid(cylinder).unwrap(), verdict);
+        for (&f, &area) in faces.iter().zip(&areas) {
+            assert_eq!(k.face_area(f, DEFLECTION).unwrap().to_bits(), area);
+        }
+        let warm = thread_face_cache_stats();
+        assert_eq!(warm.misses, cold.misses, "repeats must hit");
+        assert!(warm.hits > cold.hits);
+
+        // A short-lived second kernel validating a deserialized copy.
+        let bytes = k.serialize_solids(&[cylinder]).unwrap();
+        let mut probe = BrepKernel::new();
+        let copy = probe.deserialize_solids(&bytes).unwrap()[0];
+        assert_eq!(probe.validate_solid(copy).unwrap(), verdict);
+        assert_eq!(
+            thread_face_cache_stats().misses,
+            warm.misses,
+            "the copy must hit"
+        );
+
+        let v0 = volume(&k, cylinder);
+        let stats = thread_volume_memo_stats();
+        assert_eq!(volume(&k, cylinder).to_bits(), v0.to_bits());
+        assert_eq!(thread_volume_memo_stats().hits, stats.hits + 1);
+
+        let cp = k.checkpoint().unwrap();
+        let double = vec![
+            2.0, 0.0, 0.0, 0.0, //
+            0.0, 2.0, 0.0, 0.0, //
+            0.0, 0.0, 2.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        k.transform_solid_binding(cylinder, double).unwrap();
+        let stats = thread_volume_memo_stats();
+        let doubled = volume(&k, cylinder);
+        assert_eq!(thread_volume_memo_stats().misses, stats.misses + 1);
+        assert!((doubled - 8.0 * v0).abs() <= v0 * 1e-9, "{doubled} vs {v0}");
+
+        k.restore(cp).unwrap();
+        let stats = thread_volume_memo_stats();
+        let restored = volume(&k, cylinder);
+        assert_eq!(thread_volume_memo_stats().misses, stats.misses + 1);
+        assert_eq!(restored.to_bits(), v0.to_bits());
+    }
+
     /// PERF-Q02: direct and batch `classifyPoint` agree, including after a
     /// restore that rewinds the journal tick (ABA).
     #[test]
