@@ -62,6 +62,13 @@ impl BrepKernel {
     #[must_use]
     pub fn new() -> Self {
         crate::panics::install_hook();
+        // Content-keyed face integrals and identity-keyed volume readings
+        // (both off in the library by default). Module-wide on purpose: the
+        // face cache is keyed by content, so a body validated in one kernel
+        // is a hit when a short-lived probe kernel validates its deserialized
+        // copy, and every hit is bit-identical to recomputing. Idempotent.
+        remus_check::properties::face_cache::enable_thread_face_cache();
+        remus_operations::measure::enable_thread_volume_memo();
         Self {
             topo: Rc::new(Topology::new()),
             assemblies: HandleStore::default(),
