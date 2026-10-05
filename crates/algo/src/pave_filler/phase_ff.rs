@@ -6423,6 +6423,7 @@ fn restrict_exact_ruled_cap_spans(
 /// Equal paired weights make the extrusion parameter affine even for a
 /// rational profile. Other surfaces retain the general intersection path.
 #[allow(clippy::float_cmp)] // Knot and weight identity is an algebraic precondition.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 fn exact_ruled_plane_section(
     normal: Vec3,
     d: f64,

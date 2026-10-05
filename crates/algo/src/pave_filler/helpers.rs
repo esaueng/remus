@@ -24,6 +24,7 @@ const WALL_KNOTS_V: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 /// representation produced by extrusion. Coefficients and parameter spans
 /// must agree algebraically; co-endpoint lenses and partial spans do not match.
 #[allow(clippy::float_cmp)]
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 pub(super) fn identical_nurbs_span(
     a: &remus_math::nurbs::curve::NurbsCurve,
     span_a: (f64, f64),

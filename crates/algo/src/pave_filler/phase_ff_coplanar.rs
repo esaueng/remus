@@ -7,6 +7,7 @@
 //! interior.
 
 use remus_math::aabb::Aabb3;
+use remus_math::det_hash::DetHashSet;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -37,6 +38,7 @@ pub fn perform(
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
+    let qualified_splines = ruled_profile_edges(topo, faces_a.iter().chain(&faces_b).copied())?;
     let planes_a = collect_plane_faces(topo, &faces_a)?;
     let planes_b = collect_plane_faces(topo, &faces_b)?;
 
@@ -82,11 +84,55 @@ pub fn perform(
                 continue;
             }
 
-            process_coplanar_pair(topo, fa, na, fb, tol, arena)?;
+            process_coplanar_pair(topo, fa, na, fb, tol, arena, &qualified_splines)?;
         }
     }
 
     Ok(())
+}
+
+/// Strict whole-span witnesses belong to the single-span Bezier ruled-profile cell.
+/// Fitted edges from general surface intersections use the established dispatch.
+#[allow(clippy::float_cmp)] // Degree, knot, weight and coefficient identities qualify the cell.
+fn ruled_profile_edges(
+    topo: &Topology,
+    faces: impl Iterator<Item = FaceId>,
+) -> Result<DetHashSet<remus_topology::edge::EdgeId>, AlgoError> {
+    let mut qualified = DetHashSet::default();
+    for fid in faces {
+        let FaceSurface::Nurbs(surface) = topo.face(fid)?.surface() else {
+            continue;
+        };
+        let points = surface.control_points();
+        let weights = surface.weights();
+        let knots = surface.knots_u();
+        if surface.degree_u() != 1
+            || points.len() != 2
+            || points[0].len() != surface.degree_v() + 1
+            || weights[0] != weights[1]
+            || knots.len() != 4
+            || knots[0] != knots[1]
+            || knots[2] != knots[3]
+        {
+            continue;
+        }
+        for eid in remus_topology::explorer::face_edges(topo, fid)? {
+            let EdgeCurve::NurbsCurve(curve) = topo.edge(eid)?.curve() else {
+                continue;
+            };
+            let matches_row = |curve: &remus_math::nurbs::curve::NurbsCurve| {
+                curve.degree() == surface.degree_v()
+                    && curve.knots() == surface.knots_v()
+                    && (0..2).any(|row| {
+                        curve.control_points() == points[row] && curve.weights() == weights[row]
+                    })
+            };
+            if matches_row(curve) || matches_row(&curve.reversed()) {
+                qualified.insert(eid);
+            }
+        }
+    }
+    Ok(qualified)
 }
 
 /// Collect `(FaceId, normal, d)` for all plane faces in the list.
@@ -229,6 +275,7 @@ fn process_coplanar_pair(
     face_b: FaceId,
     tol: Tolerance,
     arena: &mut GfaArena,
+    qualified_splines: &DetHashSet<remus_topology::edge::EdgeId>,
 ) -> Result<(), AlgoError> {
     let origin = first_wire_vertex(topo, face_a)?;
     let frame = PlaneFrame2D::new(normal, origin);
@@ -260,7 +307,15 @@ fn process_coplanar_pair(
     for &(b_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_b {
         if shared_spline_boundary(topo, b_eid, face_a)?
             || spline_hull_disjoint_from_line_face(topo, b_eid, face_a, tol)?
-            || matching_boundary_section_exists(topo, arena, face_a, face_b, b_eid, tol)?
+            || matching_boundary_section_exists(
+                topo,
+                arena,
+                face_a,
+                face_b,
+                b_eid,
+                tol,
+                qualified_splines.contains(&b_eid),
+            )?
         {
             continue;
         }
@@ -278,7 +333,15 @@ fn process_coplanar_pair(
     for &(a_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_a {
         if shared_spline_boundary(topo, a_eid, face_b)?
             || spline_hull_disjoint_from_line_face(topo, a_eid, face_b, tol)?
-            || matching_boundary_section_exists(topo, arena, face_a, face_b, a_eid, tol)?
+            || matching_boundary_section_exists(
+                topo,
+                arena,
+                face_a,
+                face_b,
+                a_eid,
+                tol,
+                qualified_splines.contains(&a_eid),
+            )?
         {
             continue;
         }
@@ -304,7 +367,9 @@ fn process_coplanar_pair(
             && si == ei
         {
             let a_eid = edges_a[si].0;
-            if spline_pair_compatible(topo, a_eid, b_eid)? {
+            if (!qualified_splines.contains(&a_eid) && !qualified_splines.contains(&b_eid))
+                || spline_pair_compatible(topo, a_eid, b_eid)?
+            {
                 create_coplanar_common_block(arena, a_eid, b_eid);
             }
         }
@@ -580,6 +645,7 @@ fn matching_boundary_section_exists(
     face_b: FaceId,
     eid: remus_topology::edge::EdgeId,
     tol: Tolerance,
+    require_exact_witness: bool,
 ) -> Result<bool, AlgoError> {
     let edge = topo.edge(eid)?;
     if let EdgeCurve::NurbsCurve(boundary) = edge.curve() {
@@ -593,12 +659,12 @@ fn matching_boundary_section_exists(
                 && matches!(&section.curve, EdgeCurve::NurbsCurve(existing)
                     if super::helpers::identical_nurbs_span(existing, section.t_range, boundary, domain))
         });
-        if !matched {
+        if !matched && require_exact_witness {
             return Err(AlgoError::IntersectionFailed(
                 "coplanar spline boundary has no certified whole-span section".into(),
             ));
         }
-        return Ok(true);
+        return Ok(matched);
     }
     let EdgeCurve::Circle(circle) = edge.curve() else {
         return Ok(false);
@@ -1110,6 +1176,7 @@ mod tests {
             partner,
             Tolerance::new(),
             &mut arena,
+            &DetHashSet::default(),
         )
         .unwrap();
         let a = Point3::new(0., 0., 0.);
@@ -1176,6 +1243,70 @@ mod tests {
     }
 
     #[test]
+    fn strict_profile_guard_qualifies_bezier_rows_but_not_fitted_multispans() {
+        use remus_math::nurbs::{NurbsCurve, NurbsSurface};
+        for (knots, count, expected) in [
+            (vec![0., 0., 0., 0., 1., 1., 1., 1.], 4, true),
+            (vec![0., 0., 0., 0., 0.5, 1., 1., 1., 1.], 5, false),
+        ] {
+            let mut topo = Topology::new();
+            let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
+            let edge = remus_topology::explorer::face_edges(&topo, face).unwrap()[0];
+            let row: Vec<_> = (0..count)
+                .map(|i| Point3::new(f64::from(i), 0., 0.))
+                .collect();
+            let translated = row.iter().map(|&p| p + Vec3::new(0., 0., 2.)).collect();
+            let curve =
+                NurbsCurve::new(3, knots.clone(), row.clone(), vec![1.; row.len()]).unwrap();
+            topo.edge_mut(edge)
+                .unwrap()
+                .set_curve(EdgeCurve::NurbsCurve(curve.clone()));
+            let surface = NurbsSurface::new(
+                1,
+                3,
+                vec![0., 0., 1., 1.],
+                knots,
+                vec![row, translated],
+                vec![vec![1.; count as usize]; 2],
+            )
+            .unwrap();
+            topo.face_mut(face)
+                .unwrap()
+                .set_surface(FaceSurface::Nurbs(surface));
+            assert_eq!(
+                ruled_profile_edges(&topo, std::iter::once(face))
+                    .unwrap()
+                    .contains(&edge),
+                expected
+            );
+            topo.edge_mut(edge)
+                .unwrap()
+                .set_curve(EdgeCurve::NurbsCurve(curve.reversed()));
+            assert_eq!(
+                ruled_profile_edges(&topo, std::iter::once(face))
+                    .unwrap()
+                    .contains(&edge),
+                expected
+            );
+            topo.edge_mut(edge).unwrap().set_trim(Some(curve.domain()));
+            let no_sections = GfaArena::new();
+            assert!(
+                matching_boundary_section_exists(
+                    &topo,
+                    &no_sections,
+                    face,
+                    face,
+                    edge,
+                    Tolerance::new(),
+                    expected
+                )
+                .is_err()
+                    == expected
+            );
+        }
+    }
+
+    #[test]
     fn spline_chord_is_suppressed_only_with_a_whole_span_coefficient_witness() {
         use remus_math::nurbs::curve::NurbsCurve;
         use remus_topology::wire::{OrientedEdge, Wire};
@@ -1220,8 +1351,16 @@ mod tests {
         let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
         let mut arena = GfaArena::new();
         assert!(
-            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
-                .is_err()
+            matching_boundary_section_exists(
+                &topo,
+                &arena,
+                face,
+                face,
+                eid,
+                Tolerance::new(),
+                true
+            )
+            .is_err()
         );
         arena.curves.push(IntersectionCurveDS {
             curve: EdgeCurve::NurbsCurve(spline(1.0)),
@@ -1232,31 +1371,71 @@ mod tests {
             t_range: (0.0, 1.0),
         });
         assert!(
-            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
-                .is_err(),
+            matching_boundary_section_exists(
+                &topo,
+                &arena,
+                face,
+                face,
+                eid,
+                Tolerance::new(),
+                true
+            )
+            .is_err(),
             "co-endpoint lens is a different curve"
         );
         arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary.clone());
         arena.curves[0].t_range = (0.25, 0.75);
         assert!(
-            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
-                .is_err(),
+            matching_boundary_section_exists(
+                &topo,
+                &arena,
+                face,
+                face,
+                eid,
+                Tolerance::new(),
+                true
+            )
+            .is_err(),
             "a subspan cannot replace the whole boundary"
         );
         arena.curves[0].t_range = (0.0, 1.0);
         assert!(
-            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
-                .unwrap()
+            matching_boundary_section_exists(
+                &topo,
+                &arena,
+                face,
+                face,
+                eid,
+                Tolerance::new(),
+                true
+            )
+            .unwrap()
         );
         arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary.reversed());
         assert!(
-            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
-                .unwrap()
+            matching_boundary_section_exists(
+                &topo,
+                &arena,
+                face,
+                face,
+                eid,
+                Tolerance::new(),
+                true
+            )
+            .unwrap()
         );
         arena.curves[0].t_range = (0.75, 0.25);
         assert!(
-            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
-                .is_err()
+            matching_boundary_section_exists(
+                &topo,
+                &arena,
+                face,
+                face,
+                eid,
+                Tolerance::new(),
+                true
+            )
+            .is_err()
         );
     }
 
