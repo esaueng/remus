@@ -222,3 +222,29 @@ fn brep_exporters_emit_only_finite_nonzero_area_facets() {
     let volume = signed_volume(mesh).abs();
     assert!((volume - 24.0).abs() < 1e-9, "3MF volume {volume}");
 }
+
+#[test]
+fn mesh_threemf_remaps_vertices_after_discarding_nonfinite_facets() {
+    let (vertices, indices) = tetrahedron();
+    let mut positions = vec![Point3::new(f64::NAN, 0., 0.)];
+    positions.extend(vertices);
+    let expected: Vec<_> = indices.iter().map(|i| i + 1).collect();
+    let mut source_indices = expected;
+    source_indices.extend([0, 1, 2]);
+    let source = TriangleMesh {
+        positions,
+        normals: Vec::new(),
+        indices: source_indices.clone(),
+    };
+    let bytes = remus_io::threemf::write_mesh_threemf(std::slice::from_ref(&source)).unwrap();
+    let read = remus_io::threemf::read_threemf(&bytes).unwrap();
+    assert_eq!(read[0].positions.len(), 4);
+    assert_eq!(read[0].indices, indices);
+    assert_no_degenerate_facets(&read[0], "finite 3MF vertices");
+    assert!((signed_volume(&read[0]) - 1000. / 6.).abs() < 1e-9);
+    assert!(source.positions[0].x().is_nan());
+    assert_eq!(
+        source.indices, source_indices,
+        "borrowed input must remain unchanged"
+    );
+}
