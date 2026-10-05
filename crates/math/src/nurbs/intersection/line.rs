@@ -5,6 +5,7 @@ use crate::nurbs::surface::{DerivativeScratch, NurbsSurface};
 use crate::vec::{Point3, Vec3};
 
 use super::{IntersectionPoint, MAX_NEWTON_ITER};
+use crate::fma::FusedMulAdd;
 
 /// Intersect a line (ray) with a NURBS surface.
 ///
@@ -174,6 +175,8 @@ pub fn intersect_line_nurbs_with_grid(
 
             // Project onto ray.
             let t = diff_vec.dot(ray_dir) / dir_len_sq;
+            // `mul_add` by one, not `fma`: LLVM folds it to the plain
+            // (exact) addition, which an out-of-line `fma` call would hide.
             let closest_on_ray = Point3::new(
                 ray_origin.x().mul_add(1.0, ray_dir.x() * t),
                 ray_origin.y().mul_add(1.0, ray_dir.y() * t),
@@ -270,9 +273,9 @@ fn refine_line_surface_point(
         // Closest t on ray.
         let t = diff_vec.dot(ray_dir) / ray_dir.dot(ray_dir);
         let ray_pt = Point3::new(
-            ray_dir.x().mul_add(t, ray_origin.x()),
-            ray_dir.y().mul_add(t, ray_origin.y()),
-            ray_dir.z().mul_add(t, ray_origin.z()),
+            ray_dir.x().fma(t, ray_origin.x()),
+            ray_dir.y().fma(t, ray_origin.y()),
+            ray_dir.z().fma(t, ray_origin.z()),
         );
 
         let residual = pt - ray_pt;
@@ -316,7 +319,7 @@ fn refine_line_surface_point(
         let b1 = ju.dot(r);
         let b2 = jv.dot(r);
 
-        let det = a11.mul_add(a22, -(a12 * a12));
+        let det = a11.fma(a22, -(a12 * a12));
         // Relative singularity threshold -- catches surface poles/apex where
         // derivatives shrink to zero (making absolute 1e-20 too lenient).
         let (du, dv) = if det.abs() < (a11 + a22).max(1e-30) * 1e-12 {
@@ -324,7 +327,7 @@ fn refine_line_surface_point(
             let lambda = (a11 + a22).max(1e-10) * 1e-4;
             let a11r = a11 + lambda;
             let a22r = a22 + lambda;
-            let det_r = a11r.mul_add(a22r, -(a12 * a12));
+            let det_r = a11r.fma(a22r, -(a12 * a12));
             if det_r.abs() < 1e-30 {
                 // Truly singular -- step along the non-degenerate direction only.
                 if a11 > a22 {
@@ -336,14 +339,14 @@ fn refine_line_surface_point(
                 }
             } else {
                 (
-                    b1.mul_add(a22r, -(b2 * a12)) / det_r,
-                    a11r.mul_add(b2, -(a12 * b1)) / det_r,
+                    b1.fma(a22r, -(b2 * a12)) / det_r,
+                    a11r.fma(b2, -(a12 * b1)) / det_r,
                 )
             }
         } else {
             (
-                b1.mul_add(a22, -(b2 * a12)) / det,
-                a11.mul_add(b2, -(a12 * b1)) / det,
+                b1.fma(a22, -(b2 * a12)) / det,
+                a11.fma(b2, -(a12 * b1)) / det,
             )
         };
 
@@ -369,9 +372,9 @@ fn refine_line_surface_point(
     let diff_vec = Vec3::new(diff.x(), diff.y(), diff.z());
     let t = diff_vec.dot(ray_dir) / ray_dir.dot(ray_dir);
     let ray_pt = Point3::new(
-        ray_dir.x().mul_add(t, ray_origin.x()),
-        ray_dir.y().mul_add(t, ray_origin.y()),
-        ray_dir.z().mul_add(t, ray_origin.z()),
+        ray_dir.x().fma(t, ray_origin.x()),
+        ray_dir.y().fma(t, ray_origin.y()),
+        ray_dir.z().fma(t, ray_origin.z()),
     );
 
     if (pt - ray_pt).length() < 1e-5 {
