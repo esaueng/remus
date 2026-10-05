@@ -425,3 +425,70 @@ fn boa_small_offset_bezier_cuts() {
 fn boa_polyline_fuse_control() {
     boa_case(BooleanOp::Fuse, 10.0, 2.0, 1.0, true);
 }
+
+#[test]
+fn trimmed_bezier_coplanar_cap_preserves_authoritative_span() {
+    for reverse in [false, true] {
+        let mut topo = Topology::new();
+        let z = 10.0;
+        let carrier = NurbsCurve::new(
+            2,
+            vec![0., 0., 0., 1., 1., 1.],
+            vec![
+                Point3::new(10., 10., z),
+                Point3::new(16., 4., z),
+                Point3::new(22., 10., z),
+            ],
+            vec![1.; 3],
+        )
+        .unwrap();
+        let points = [
+            carrier.evaluate(0.2),
+            carrier.evaluate(0.8),
+            Point3::new(19.6, 16., z),
+            Point3::new(12.4, 16., z),
+        ];
+        let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let mut edges = Vec::new();
+        for i in 0..4 {
+            let reversed = i == 0 && reverse;
+            let curve = if i == 0 {
+                EdgeCurve::NurbsCurve(if reverse {
+                    carrier.reversed()
+                } else {
+                    carrier.clone()
+                })
+            } else {
+                EdgeCurve::Line
+            };
+            let (a, b) = if reversed {
+                (vertices[1], vertices[0])
+            } else {
+                (vertices[i], vertices[(i + 1) % 4])
+            };
+            let mut edge = Edge::new(a, b, curve);
+            edge.set_trim(Some(if i == 0 { (0.2, 0.8) } else { (0., 1.) }));
+            edges.push(OrientedEdge::new(topo.add_edge(edge), !reversed));
+        }
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
+        let tool = extrude(&mut topo, face, Vec3::new(0., 0., -1.), 2.).unwrap();
+        let slab = make_box(&mut topo, 62., 50., 10.).unwrap();
+        let result = boolean(&mut topo, BooleanOp::Cut, slab, tool).unwrap();
+        let volume = remus_check::properties::solid_volume(
+            &topo,
+            result,
+            &remus_check::properties::PropertiesOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            (volume - (31000. - 2. * 62.208)).abs() < 0.03,
+            "trimmed profile volume {volume}"
+        );
+        assert!(
+            remus_topology::adjacency::AdjacencyIndex::build(&topo, result)
+                .unwrap()
+                .is_manifold()
+        );
+    }
+}
