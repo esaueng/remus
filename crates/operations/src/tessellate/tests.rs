@@ -17,7 +17,9 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use super::nurbs::tessellate_nurbs;
 use super::*;
 
+mod face_cache;
 mod mesh_oracles;
+pub(super) mod mesh_passes;
 mod mutation_oracles;
 
 #[test]
