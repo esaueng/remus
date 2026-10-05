@@ -10,77 +10,67 @@ use remus_topology::{BodyClass, BodyId, Topology};
 ///
 /// # Errors
 ///
-/// Returns an error if the edge lookup fails.
+/// Returns an error if the edge lookup fails or a stored trim is invalid.
+/// Legacy edges without stored trims retain endpoint-based reconstruction.
 pub fn edge_length(
     topo: &Topology,
     edge_id: remus_topology::edge::EdgeId,
 ) -> Result<f64, crate::OperationsError> {
     let edge = topo.edge(edge_id)?;
+    let (t0, t1) =
+        if edge.trim().is_some() || matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+            crate::authoritative_edge_domain(edge, "edge length")?
+        } else {
+            // Compatibility adapter for legacy public-API edges. Stored authority
+            // always takes precedence and invalid stored ranges never fall back.
+            // Normalize in a private copy: measurement is read-only, and the
+            // shared adapter validates the reconstructed range and endpoints.
+            crate::normalize_legacy_edge_domain(&mut topo.clone(), edge_id, "edge length")?
+        };
     match edge.curve() {
         remus_topology::edge::EdgeCurve::Line => {
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             Ok((end - start).length())
         }
-        remus_topology::edge::EdgeCurve::NurbsCurve(curve) => Ok(curve.arc_length(50)),
-        remus_topology::edge::EdgeCurve::Circle(circle) => {
-            if edge.is_closed() {
-                Ok(circle.circumference())
-            } else {
-                let start = topo.vertex(edge.start())?.point();
-                let end = topo.vertex(edge.end())?.point();
-                let t0 = circle.project(start);
-                let t1 = circle.project(end);
-                let mut angle = t1 - t0;
-                if angle < 0.0 {
-                    angle += std::f64::consts::TAU;
-                }
-                Ok(angle * circle.radius())
+        remus_topology::edge::EdgeCurve::NurbsCurve(curve) => {
+            // Integrate only the authoritative edge span. Splits can share a
+            // carrier, and descending trims trace the same length backwards.
+            let intervals = 50;
+            let lo = t0.min(t1);
+            let dt = (t1 - t0).abs() / f64::from(intervals);
+            let mut length = 0.0;
+            for i in 0..intervals {
+                let a = f64::from(i).mul_add(dt, lo);
+                let b = a + dt;
+                let mid = f64::midpoint(a, b);
+                let va = curve.derivatives(a, 1)[1].length();
+                let vm = curve.derivatives(mid, 1)[1].length();
+                let vb = curve.derivatives(b, 1)[1].length();
+                length += (dt / 6.0) * vm.mul_add(4.0, va + vb);
             }
+            Ok(length)
         }
+        remus_topology::edge::EdgeCurve::Circle(circle) => Ok((t1 - t0).abs() * circle.radius()),
         remus_topology::edge::EdgeCurve::Ellipse(ellipse) => {
             if edge.is_closed() {
                 Ok(ellipse.approximate_circumference())
             } else {
-                // Approximate arc length via sampling
-                let start = topo.vertex(edge.start())?.point();
-                let end = topo.vertex(edge.end())?.point();
-                let t0 = ellipse.project(start);
-                let t1 = ellipse.project(end);
-                let mut angle = t1 - t0;
-                if angle < 0.0 {
-                    angle += std::f64::consts::TAU;
-                }
-                let n = 50;
-                let dt = angle / n as f64;
+                // Keep the existing chord approximation, on the stored span.
+                let intervals = 50;
+                let dt = (t1 - t0) / f64::from(intervals);
                 let mut length = 0.0;
                 let mut prev = ellipse.evaluate(t0);
-                for i in 1..=n {
-                    let t = t0 + dt * i as f64;
-                    let curr = ellipse.evaluate(t);
+                for i in 1..=intervals {
+                    let curr = ellipse.evaluate(f64::from(i).mul_add(dt, t0));
                     length += (curr - prev).length();
                     prev = curr;
                 }
                 Ok(length)
             }
         }
-        // Unbounded branches: the vertices are the only trim, and both
-        // projections invert the parameterization exactly. The parabola
-        // length is the analytic integral of `sqrt(1 + (t/2f)²)`; the
-        // hyperbola length is Gauss quadrature of an elliptic integrand
-        // (documented as such on `Hyperbola3D::arc_length`). Neither is a
-        // chord sum, so neither under-reports the way the ellipse arm above
-        // does.
-        remus_topology::edge::EdgeCurve::Hyperbola(h) => {
-            let start = topo.vertex(edge.start())?.point();
-            let end = topo.vertex(edge.end())?.point();
-            Ok(h.arc_length(h.project(start), h.project(end)))
-        }
-        remus_topology::edge::EdgeCurve::Parabola(p) => {
-            let start = topo.vertex(edge.start())?.point();
-            let end = topo.vertex(edge.end())?.point();
-            Ok(p.arc_length(p.project(start), p.project(end)))
-        }
+        remus_topology::edge::EdgeCurve::Hyperbola(h) => Ok(h.arc_length(t0, t1)),
+        remus_topology::edge::EdgeCurve::Parabola(p) => Ok(p.arc_length(t0, t1)),
     }
 }
 
