@@ -303,6 +303,134 @@ pub fn edge_param_span(
     }
 }
 
+/// Translation-exact uniform samples of a circle (PERF-D01).
+///
+/// Same parameters as `sample_uniform` (`t_start + i·step`, the last one
+/// pinned to `t_end`), but each point is evaluated as
+/// `center + (u·r·cos t + v·r·sin t)`: the offset is formed in the circle's
+/// own frame and added to the centre once. A rigid translation of the
+/// circle by `δ` therefore moves every sample by exactly `δ` whenever the
+/// translated coordinates stay in the same binade (one rounding at world
+/// magnitude instead of two), which is what lets a translated face's chart
+/// input stay bit-identical.
+pub(super) fn sample_circle_uniform(
+    circle: &remus_math::curves::Circle3D,
+    t_start: f64,
+    t_end: f64,
+    n: usize,
+) -> Vec<Point3> {
+    let (u, v, r, c) = (
+        circle.u_axis(),
+        circle.v_axis(),
+        circle.radius(),
+        circle.center(),
+    );
+    uniform_params_like_sampler(t_start, t_end, n)
+        .map(|t| c + (u * (r * t.cos()) + v * (r * t.sin())))
+        .collect()
+}
+
+/// Translation-exact uniform samples of an ellipse (see
+/// [`sample_circle_uniform`]).
+pub(super) fn sample_ellipse_uniform(
+    ellipse: &remus_math::curves::Ellipse3D,
+    t_start: f64,
+    t_end: f64,
+    n: usize,
+) -> Vec<Point3> {
+    let (u, v, c) = (ellipse.u_axis(), ellipse.v_axis(), ellipse.center());
+    let (a, b) = (ellipse.semi_major(), ellipse.semi_minor());
+    uniform_params_like_sampler(t_start, t_end, n)
+        .map(|t| c + (u * (a * t.cos()) + v * (b * t.sin())))
+        .collect()
+}
+
+/// The parameters `remus_geometry::sampling::sample_uniform` evaluates.
+fn uniform_params_like_sampler(t_start: f64, t_end: f64, n: usize) -> impl Iterator<Item = f64> {
+    #[allow(clippy::cast_precision_loss)]
+    let step = if n >= 2 {
+        (t_end - t_start) / (n - 1) as f64
+    } else {
+        0.0
+    };
+    #[allow(clippy::cast_precision_loss)]
+    (0..n).map(move |i| {
+        if n >= 2 && i == n - 1 {
+            t_end
+        } else {
+            t_start + i as f64 * step
+        }
+    })
+}
+
+/// A NURBS curve re-expressed relative to its first control point, for
+/// translation-exact evaluation: `anchor + rel.evaluate(t)` moves by exactly
+/// `δ` under a rigid translation of the control points whenever the
+/// translated coordinates stay in the same binade (see
+/// [`sample_circle_uniform`]).
+pub(super) struct AnchoredNurbsCurve {
+    anchor: Point3,
+    rel: remus_math::nurbs::curve::NurbsCurve,
+}
+
+impl AnchoredNurbsCurve {
+    pub(super) fn new(curve: &remus_math::nurbs::curve::NurbsCurve) -> Option<Self> {
+        let anchor = *curve.control_points().first()?;
+        let rel_points: Vec<Point3> = curve
+            .control_points()
+            .iter()
+            .map(|&p| Point3::new(p.x() - anchor.x(), p.y() - anchor.y(), p.z() - anchor.z()))
+            .collect();
+        let rel = remus_math::nurbs::curve::NurbsCurve::new(
+            curve.degree(),
+            curve.knots().to_vec(),
+            rel_points,
+            curve.weights().to_vec(),
+        )
+        .ok()?;
+        Some(Self { anchor, rel })
+    }
+
+    pub(super) fn evaluate(&self, t: f64) -> Point3 {
+        let r = self.rel.evaluate(t);
+        Point3::new(
+            self.anchor.x() + r.x(),
+            self.anchor.y() + r.y(),
+            self.anchor.z() + r.z(),
+        )
+    }
+
+    /// Project `p` onto the curve in the anchor's frame.
+    fn project(&self, p: Point3, tol: f64) -> Option<f64> {
+        let rel = Point3::new(
+            p.x() - self.anchor.x(),
+            p.y() - self.anchor.y(),
+            p.z() - self.anchor.z(),
+        );
+        remus_math::nurbs::projection::project_point_to_curve(&self.rel, rel, tol)
+            .ok()
+            .map(|proj| proj.parameter)
+    }
+}
+
+/// Curve parameter of a closed NURBS edge's start vertex, where its
+/// full-period sampling begins; projected in the curve's own frame when the
+/// anchored copy exists (translation-exact, see [`AnchoredNurbsCurve`]).
+fn closed_start_param(
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
+    anchored: Option<&AnchoredNurbsCurve>,
+    start: Point3,
+    fallback: f64,
+) -> f64 {
+    match anchored {
+        Some(a) => a.project(start, 1e-9),
+        None => remus_math::nurbs::projection::project_point_to_curve(nurbs, start, 1e-9)
+            .ok()
+            .map(|proj| proj.parameter),
+    }
+    .unwrap_or(fallback)
+}
+
 /// Sample an edge curve to produce a list of 3D points in stored start-to-end order.
 ///
 /// # Errors
@@ -358,7 +486,6 @@ pub(super) fn sample_edge_with_params(
     angular_tol: f64,
     circle_floor: bool,
 ) -> Result<(Vec<Point3>, Vec<Option<f64>>), crate::OperationsError> {
-    use remus_geometry::sampling::sample_uniform;
     use remus_topology::edge::EdgeCurve;
 
     let n = edge_sample_count(edge, deflection, angular_tol, circle_floor)?;
@@ -373,11 +500,11 @@ pub(super) fn sample_edge_with_params(
         }
         EdgeCurve::Circle(circle) => {
             let (t_start, t_end) = circle_param_range(edge)?;
-            sample_uniform(circle, t_start, t_end, n)
+            sample_circle_uniform(circle, t_start, t_end, n)
         }
         EdgeCurve::Ellipse(ellipse) => {
             let (t_start, t_end) = edge_param_span(topo, edge)?;
-            sample_uniform(ellipse, t_start, t_end, n)
+            sample_ellipse_uniform(ellipse, t_start, t_end, n)
         }
         EdgeCurve::Hyperbola(h) => {
             let (t0, t1) = crate::authoritative_edge_domain(edge, "hyperbola sampling")?;
@@ -408,6 +535,12 @@ pub(super) fn sample_edge_with_params(
             let (t0, t1) = crate::authoritative_edge_domain(edge, "NURBS sampling")?;
             let (u0, u1) = nurbs.domain();
             let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
+            let anchored = AnchoredNurbsCurve::new(nurbs);
+            let eval = |t: f64| {
+                anchored
+                    .as_ref()
+                    .map_or_else(|| nurbs.evaluate(t), |a| a.evaluate(t))
+            };
             if !is_subspan && edge.is_closed() {
                 // A CLOSED NURBS edge still has a start vertex, and the
                 // polyline has to begin there (the circle arm's
@@ -420,19 +553,18 @@ pub(super) fn sample_edge_with_params(
                 // Rotate the sampling to start at the vertex's parameter and
                 // walk one full period, wrapping at the knot-domain seam.
                 let width = u1 - u0;
-                let t_v = remus_math::nurbs::projection::project_point_to_curve(nurbs, sp, 1e-9)
-                    .map(|proj| proj.parameter)
-                    .unwrap_or(t0);
+                let t_v = closed_start_param(nurbs, anchored.as_ref(), sp, t0);
                 #[allow(clippy::cast_precision_loss)]
                 (0..n)
                     .map(|i| {
                         let offset = width * (i as f64) / ((n - 1).max(1) as f64);
                         let t = u0 + (t_v - u0 + offset).rem_euclid(width.max(1e-300));
-                        nurbs.evaluate(t)
+                        eval(t)
                     })
                     .collect()
             } else {
-                let mut pts = sample_uniform(nurbs, t0, t1, n);
+                let mut pts: Vec<Point3> =
+                    uniform_params_like_sampler(t0, t1, n).map(eval).collect();
                 // Normalize to edge (start→end vertex) order so every
                 // consumer's `is_forward` walk holds even for section edges
                 // whose stored curve runs end→start. Sub-spans are already
@@ -479,9 +611,8 @@ pub(super) fn sample_edge_with_params(
             if !is_subspan && edge.is_closed() {
                 let sp = topo.vertex(edge.start())?.point();
                 let width = u1 - u0;
-                let t_v = remus_math::nurbs::projection::project_point_to_curve(nurbs, sp, 1e-9)
-                    .map(|proj| proj.parameter)
-                    .unwrap_or(t0);
+                let t_v =
+                    closed_start_param(nurbs, AnchoredNurbsCurve::new(nurbs).as_ref(), sp, t0);
                 (0..points.len())
                     .map(|i| {
                         #[allow(clippy::cast_precision_loss)]

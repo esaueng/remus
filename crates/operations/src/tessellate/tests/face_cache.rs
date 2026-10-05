@@ -528,3 +528,129 @@ fn bounds_evict_fifo_and_refuse_oversized_entries() {
     grouped(&topo, solid, DEFLECTION);
     assert_eq!(stats().entries, 0);
 }
+
+/// A square-to-square smooth loft through a wider middle section: four
+/// curved, non-periodic NURBS side faces without pcurves, placed so that
+/// every coordinate stays in its binade under the test's +8 X translation.
+fn lofted_bulge(topo: &mut Topology) -> SolidId {
+    let square = |topo: &mut Topology, half: f64, z: f64| {
+        let (cx, cy) = (45.0, 45.0);
+        let wire = remus_topology::builder::make_polygon_wire(
+            topo,
+            &[
+                Point3::new(cx - half, cy - half, z),
+                Point3::new(cx + half, cy - half, z),
+                Point3::new(cx + half, cy + half, z),
+                Point3::new(cx - half, cy + half, z),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        topo.add_face(remus_topology::face::Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: z,
+            },
+        ))
+    };
+    let profiles = [
+        square(topo, 3.0, 40.0),
+        square(topo, 4.5, 44.0),
+        square(topo, 2.5, 50.0),
+    ];
+    crate::loft::loft_smooth(topo, &profiles).unwrap()
+}
+
+/// Count of faces of `solid` whose carrier is NURBS.
+fn nurbs_faces(topo: &Topology, solid: SolidId) -> u64 {
+    solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .count() as u64
+}
+
+#[test]
+fn translated_nurbs_faces_are_reused_exactly() {
+    let _guard = CacheGuard::enabled();
+    let mut topo = Topology::new();
+    // Curved NURBS (smooth loft) and bilinear NURBS (converted box) carriers.
+    let loft = lofted_bulge(&mut topo);
+    let bar = crate::primitives::make_box(&mut topo, 10.0, 6.0, 4.0).unwrap();
+    crate::transform::transform_solid(&mut topo, bar, &Mat4::translation(36.0, 40.0, 40.0))
+        .unwrap();
+    assert!(crate::heal::convert_to_bspline(&mut topo, bar).unwrap() > 0);
+
+    for (label, body, deflection) in [
+        ("loft", loft, DEFLECTION),
+        ("loft fine", loft, 0.01),
+        ("converted box", bar, DEFLECTION),
+    ] {
+        let nurbs = nurbs_faces(&topo, body);
+        assert!(nurbs >= 4, "{label}: {nurbs} NURBS faces");
+        let source = grouped(&topo, body, deflection);
+
+        // Translate the body in place by an exactly representable step that
+        // keeps every coordinate in its binade: every carrier, vertex and
+        // boundary sample moves by exactly (8, 0, 0).
+        let mut moved_topo = topo.clone();
+        crate::transform::transform_solid(&mut moved_topo, body, &Mat4::translation(8.0, 0.0, 0.0))
+            .unwrap();
+        let reference = fresh(&moved_topo, body, deflection);
+        let s0 = stats();
+        let reused = grouped(&moved_topo, body, deflection);
+        let d = delta(s0, stats());
+
+        // The NURBS faces are served by translation (planar caps facing the
+        // translation re-mesh: their projection keeps the moved X).
+        assert!(
+            d.translated >= nurbs,
+            "{label}: only {} of {nurbs} NURBS faces translated: {d:?}",
+            d.translated
+        );
+        assert_eq!(d.conflicts, 0, "{label}: {d:?}");
+        assert_eq!(d.uncacheable, 0, "{label}: {d:?}");
+        // Connectivity and normals are the fresh mesh's exactly; positions
+        // within a few units of roundoff of the body scale.
+        assert_reproduces(&reused, &reference, 4.0, label);
+        assert_watertight(&reused.0, label);
+        assert_eq!(reused.0.indices.len(), source.0.indices.len(), "{label}");
+    }
+}
+
+#[test]
+fn inexact_nurbs_translates_are_refused() {
+    let _guard = CacheGuard::enabled();
+    let mut topo = Topology::new();
+    let loft = lofted_bulge(&mut topo);
+    grouped(&topo, loft, DEFLECTION);
+
+    // Moving by (20, 20, 0) carries part of every side face across 64 in X
+    // or Y, where the unit of roundoff doubles: those coordinates round, so
+    // the faces are translates within roundoff but not exact ones. They
+    // must be re-meshed (refused), and the result is then the fresh mesh.
+    let mut moved_topo = topo.clone();
+    crate::transform::transform_solid(&mut moved_topo, loft, &Mat4::translation(20.0, 20.0, 0.0))
+        .unwrap();
+    let reference = fresh(&moved_topo, loft, DEFLECTION);
+    let s0 = stats();
+    let reused = grouped(&moved_topo, loft, DEFLECTION);
+    let d = delta(s0, stats());
+    assert!(d.refused >= 1, "{d:?}");
+    assert_eq!(d.refused + d.translated, 6, "{d:?}");
+    assert_reproduces(&reused, &reference, 64.0, "translate across a binade");
+
+    // An inexact step within one binade is still an exact translate (by the
+    // rounded step), and is reused.
+    let mut nudged = topo.clone();
+    crate::transform::transform_solid(&mut nudged, loft, &Mat4::translation(0.1, 0.0, 0.0))
+        .unwrap();
+    let reference = fresh(&nudged, loft, DEFLECTION);
+    let s0 = stats();
+    let reused = grouped(&nudged, loft, DEFLECTION);
+    let d = delta(s0, stats());
+    assert_eq!(d.translated, nurbs_faces(&topo, loft), "{d:?}");
+    assert_reproduces(&reused, &reference, 4.0, "translate by a rounded step");
+}
