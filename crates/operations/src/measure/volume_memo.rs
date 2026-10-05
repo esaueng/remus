@@ -44,15 +44,16 @@
 //! bit. Errors are never memoized, and a poisoned identity (generation
 //! overflow) bypasses the identity test.
 //!
-//! # Seeded readings
+//! # Measured readings only
 //!
-//! An operation that already knows its result's volume may record it
-//! ([`seed_solid_volume`]). Readings it took with `solid_volume` itself are
-//! memoized like any other; a value it derived instead — the rigid blend move
-//! adds the exact swept prism to its source's reading — is marked as seeded,
-//! is never used to seed another value, and is replaced by nothing but a
-//! measurement. Each seeding call site states how its value relates to a
-//! fresh reading.
+//! Every memoized value was produced by `solid_volume` itself. No operation
+//! records a value it derived instead (an earlier revision let the rigid
+//! blend move seed its result with the source's reading plus the exact
+//! swept prism; that reading differed from a fresh measurement of the result
+//! by the mesh route's own bias, so the same solid read differently with a
+//! warm memo than with a cold one, and it was removed). A result's first
+//! reading is a measurement, served by the per-face mesh reuse where that
+//! applies; every reading after it is a hit.
 //!
 //! # Bounds
 //!
@@ -98,12 +99,8 @@ pub struct VolumeMemoStats {
     pub hits: u64,
     /// Of `hits`: found by content after the topology identity had moved on.
     pub content_hits: u64,
-    /// Of `hits`: answered by a seeded reading.
-    pub seeded_hits: u64,
     /// Readings that ran the computation while the memo was enabled.
     pub misses: u64,
-    /// Seeded readings recorded.
-    pub seeded: u64,
     /// Readings currently retained.
     pub len: usize,
     /// Bound on retained readings; zero disables the memo.
@@ -137,7 +134,6 @@ struct Entry {
     effective: u64,
     content: Option<ContentKey>,
     volume: f64,
-    seeded: bool,
 }
 
 impl Entry {
@@ -157,9 +153,7 @@ struct VolumeMemo {
     retained_bytes: usize,
     hits: u64,
     content_hits: u64,
-    seeded_hits: u64,
     misses: u64,
-    seeded: u64,
 }
 
 /// Which entry answered, and how it was found.
@@ -191,7 +185,6 @@ impl VolumeMemo {
         }
         self.hits += 1;
         self.content_hits += u64::from(by_content);
-        self.seeded_hits += u64::from(entry.seeded);
         Some(entry.volume)
     }
 
@@ -302,9 +295,7 @@ pub fn thread_volume_memo_stats() -> VolumeMemoStats {
             .map(|memo| VolumeMemoStats {
                 hits: memo.hits,
                 content_hits: memo.content_hits,
-                seeded_hits: memo.seeded_hits,
                 misses: memo.misses,
-                seeded: memo.seeded,
                 len: memo.entries.len(),
                 capacity: memo.capacity,
                 retained_bytes: memo.retained_bytes,
@@ -403,78 +394,11 @@ pub(super) fn memoized(
                     effective,
                     content,
                     volume,
-                    seeded: false,
                 });
             }
         });
     }
     Ok(volume)
-}
-
-/// The measured readings this thread's memo holds for `solid`'s current
-/// content, as `(requested deflection, volume)` pairs. Seeded readings are
-/// left out, so a value derived from one is never derived again. Empty while
-/// the memo is disabled.
-pub fn measured_readings(topo: &Topology, solid: SolidId) -> Vec<(f64, f64)> {
-    if !memo_enabled() {
-        return Vec::new();
-    }
-    let Some(content) = solid_content_key(topo, solid) else {
-        return Vec::new();
-    };
-    MEMO.with(|memo| {
-        memo.try_borrow()
-            .map(|memo| {
-                memo.entries
-                    .iter()
-                    .filter(|e| !e.seeded && e.content.as_ref() == Some(&content))
-                    .map(|e| (f64::from_bits(e.requested), e.volume))
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
-}
-
-/// Record `volume` as `solid`'s reading at `deflection` without measuring
-/// it. A measured reading of the same content at the same clamped
-/// deflection is kept instead. Does nothing while the memo is disabled.
-///
-/// The caller vouches for the value: see the module docs.
-pub fn seed_solid_volume(topo: &Topology, solid: SolidId, deflection: f64, volume: f64) {
-    if !memo_enabled() || !volume.is_finite() {
-        return;
-    }
-    let Some(content) = solid_content_key(topo, solid) else {
-        return;
-    };
-    let effective =
-        super::volume::volume_tessellation_deflection(topo, solid, deflection).to_bits();
-    let identity = if topo.is_cache_poisoned() {
-        NO_IDENTITY
-    } else {
-        topo.cache_identity()
-    };
-    MEMO.with(|memo| {
-        if let Ok(mut memo) = memo.try_borrow_mut() {
-            if memo
-                .entries
-                .iter()
-                .any(|e| e.content.as_ref() == Some(&content) && e.effective == effective)
-            {
-                return;
-            }
-            memo.seeded += 1;
-            memo.insert(Entry {
-                identity,
-                solid: solid.index(),
-                requested: deflection.to_bits(),
-                effective,
-                content: Some(content),
-                volume,
-                seeded: true,
-            });
-        }
-    });
 }
 
 /// Word sink for a solid content key.

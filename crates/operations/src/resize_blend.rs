@@ -794,11 +794,6 @@ pub(crate) struct BlendMoveEntities {
     pub solid: SolidId,
     pub evolution: EvolutionMap,
     pub boundary_pairs: Vec<(EntityKey, EntityKey)>,
-    /// `(requested deflection, volume)` readings of `solid` the move derived
-    /// without measuring them, for the caller to seed into the volume memo
-    /// once the result has passed its final validation (see
-    /// [`move_translation_invariant_blend_region`]).
-    pub volume_seeds: Vec<(f64, f64)>,
 }
 
 /// Exact construction data for a caller-proven explicit blend-face union.
@@ -1106,7 +1101,6 @@ fn move_planar_faces_with_blends_remove_rebuild(
         solid: current_solid,
         evolution,
         boundary_pairs,
-        volume_seeds: Vec::new(),
     }))
 }
 
@@ -1822,9 +1816,6 @@ fn move_translation_invariant_blend_region(
 
     let region = translation_invariant_blend_region(topo, solid, faces, direction)?;
     let delta = direction * distance;
-    // Volumes already measured of the source as it stands (empty unless the
-    // application enabled the volume memo); see the seeding below.
-    let source_readings = crate::measure::measured_readings(topo, solid);
     let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
     let mut work = topo.clone();
     let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
@@ -1914,11 +1905,9 @@ fn move_translation_invariant_blend_region(
     // negligible next to its area, is refused, independent of body size. A
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
-    let mut prism = None;
     let (volume_change, volume_slack) = if let Some(read) =
         translated_faces_volume_change(topo, &work, solid, &moved_faces, delta)?
     {
-        prism = Some(read.volume);
         (
             read.volume,
             (read.area * 1e-9).mul_add(distance.abs(), 1e-7),
@@ -1942,33 +1931,6 @@ fn move_translation_invariant_blend_region(
     let copied = crate::copy::copy_solid_between_with_entity_map(&work, topo, solid)?;
     let result = copied.solid;
     validate_exact_result(topo, result, "accepted blend-aware planar move")?;
-    // The result's volume, for the caller to leave where its next reading
-    // finds it once the result has passed strict validation.
-    //
-    // The memo's reading of the source is `solid_volume` at the source's
-    // clamped deflection; `prism` is the exact volume the move sweeps, read
-    // from the moved faces alone (above). Every face the move did not touch
-    // is the same face in the result, so on an exact route (closed form or
-    // boundary-trimmed quadrature) the sum is the result's volume to that
-    // route's accuracy. On the closed-mesh route the source reading carries
-    // the mesh's inscribed bias — its whole error — and a fresh reading of
-    // the result carries the same bias on every face the move left alone,
-    // plus the bias of the swept band on the carriers that grew or shrank
-    // and the small change from meshing at the result's clamp (its bounding
-    // box moved by at most `|delta|`): both are below the chord error the
-    // route already admits (deflection × area), which is the tolerance the
-    // tests pin. Only measured source readings are used, so derived values
-    // never compound across edits, and none is seeded when the integral
-    // could not vouch for the move (the whole-body fallback above).
-    // Seeding waits for the caller's strict validation because the sum
-    // assumes an outward-wound body: `solid_volume` is a magnitude, `prism` a
-    // signed change.
-    let volume_seeds = prism.map_or_else(Vec::new, |prism| {
-        source_readings
-            .into_iter()
-            .map(|(deflection, volume)| (deflection, volume + prism))
-            .collect()
-    });
     let boundary_pairs =
         copied
             .edge_map
@@ -1987,7 +1949,6 @@ fn move_translation_invariant_blend_region(
             copied.face_map,
         )?,
         boundary_pairs,
-        volume_seeds,
     })
 }
 
@@ -6001,78 +5962,6 @@ mod tests {
         }
     }
 
-    /// The chord bound of `solid_volume`'s closed-mesh route on `solid` for
-    /// `requested`: every point of the mesh lies within the clamped
-    /// deflection of the surface, so the enclosed volume differs from the
-    /// surface's by at most that deflection times the surface area. Exact
-    /// routes are far inside it.
-    fn mesh_route_bound(topo: &Topology, solid: SolidId, requested: f64) -> f64 {
-        let bbox = crate::measure::solid_bounding_box(topo, solid).unwrap();
-        let clamp = requested.min(((bbox.max - bbox.min).length() * 5e-5).max(1e-9));
-        clamp * crate::measure::solid_surface_area(topo, solid, clamp).unwrap()
-    }
-
-    /// With the volume memo on and the source's volume already read, the
-    /// rigid blend move hands back `source + prism` for its result, which
-    /// the caller seeds; the next reading is that value, and it agrees with
-    /// a fresh reading of the result within the route's own chord bound
-    /// (this body integrates exactly, so far inside it; the hammer holder's
-    /// closed-mesh route is pinned in `remus-io`). Without a source reading
-    /// nothing is derived.
-    #[test]
-    fn translation_move_seeds_its_result_volume() {
-        use crate::measure::{
-            enable_thread_volume_memo, seed_solid_volume, set_thread_volume_memo_capacity,
-            solid_volume, thread_volume_memo_stats,
-        };
-        let _off = MemosOff::new();
-        let label = "filleted box";
-        for distance in [1.0, -0.5] {
-            let (mut topo, solid, support, _, _) = filleted_cube_support_and_band();
-            set_thread_volume_memo_capacity(0);
-            let unread =
-                move_translation_invariant_blend_region(&mut topo, solid, &[support], distance)
-                    .unwrap();
-            assert!(unread.volume_seeds.is_empty(), "{label}: memo off");
-
-            let (mut topo, solid, support, _, _) = filleted_cube_support_and_band();
-            enable_thread_volume_memo();
-            let source = solid_volume(&topo, solid, 0.08).unwrap();
-            let moved =
-                move_translation_invariant_blend_region(&mut topo, solid, &[support], distance)
-                    .unwrap();
-            assert_eq!(moved.volume_seeds.len(), 1, "{label}");
-            let (deflection, seeded) = moved.volume_seeds[0];
-            assert_eq!(deflection.to_bits(), 0.08_f64.to_bits());
-            let prism = seeded - source;
-            assert!(
-                (prism - 100.0 * distance).abs() <= 1e-6 * 100.0 * distance.abs(),
-                "{label}: prism {prism} for a 10 × 10 support moved by {distance}"
-            );
-            seed_solid_volume(&topo, moved.solid, deflection, seeded);
-            let stats = thread_volume_memo_stats();
-            let read = solid_volume(&topo, moved.solid, 0.08).unwrap();
-            assert_eq!(read.to_bits(), seeded.to_bits(), "{label}");
-            assert_eq!(
-                thread_volume_memo_stats().seeded_hits,
-                stats.seeded_hits + 1
-            );
-
-            set_thread_volume_memo_capacity(0);
-            let fresh = solid_volume(&topo, moved.solid, 0.08).unwrap();
-            let bound = mesh_route_bound(&topo, moved.solid, 0.08);
-            assert!(
-                (read - fresh).abs() <= bound,
-                "{label}, moved by {distance}: seeded {read} vs fresh {fresh} (bound {bound})"
-            );
-            // This body integrates exactly: the two agree to quadrature.
-            assert!(
-                (read - fresh).abs() <= fresh * 1e-9,
-                "{label}, moved by {distance}: seeded {read} vs fresh {fresh}"
-            );
-        }
-    }
-
     /// The remove/rebuild path measures its result with `solid_volume`, so
     /// with the memo on that reading is what the next request — at any
     /// deflection clamping to the same mesh — returns, bit for bit.
@@ -6088,7 +5977,6 @@ mod tests {
         let moved = move_planar_faces_with_blends_remove_rebuild(&mut topo, solid, &[support], 1.0)
             .unwrap()
             .unwrap();
-        assert!(moved.volume_seeds.is_empty());
         let stats = thread_volume_memo_stats();
         let read = solid_volume(&topo, moved.solid, 0.08).unwrap();
         assert_eq!(thread_volume_memo_stats().hits, stats.hits + 1);
