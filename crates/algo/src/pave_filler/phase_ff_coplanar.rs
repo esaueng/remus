@@ -246,7 +246,7 @@ fn process_coplanar_pair(
     // edge is kept whole. Skip true shared-boundary edges (both endpoints on the
     // same target edge) and edges already sectioned by the regular FF phase.
     //
-    // A CIRCLE boundary edge projects here as its straight CHORD — wrong
+    // A curved boundary edge projects here as its straight CHORD — wrong
     // geometry whenever the sagitta exceeds tolerance. When the true arc is
     // already present as a section (the barrel face sharing that arc meets
     // the coplanar partner plane in exactly this circle, so the regular FF
@@ -255,8 +255,12 @@ fn process_coplanar_pair(
     // endpoint-keyed edge merge cannot reconcile — the weave then routes the
     // face boundary along the chord and orphans the true arc (the rounded-
     // corner cap defect). Skip the chord when its exact arc section exists.
+    // Spline matches require identical coefficients and parameter spans;
+    // unresolved spline boundaries refuse instead of becoming chords.
     for &(b_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_b {
-        if matching_arc_section_exists(topo, arena, face_a, face_b, b_eid, tol)? {
+        if spline_hull_disjoint_from_line_face(topo, b_eid, face_a, tol)?
+            || matching_boundary_section_exists(topo, arena, face_a, face_b, b_eid, tol)?
+        {
             continue;
         }
         if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_a, tol.linear) {
@@ -271,7 +275,9 @@ fn process_coplanar_pair(
     }
 
     for &(a_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_a {
-        if matching_arc_section_exists(topo, arena, face_a, face_b, a_eid, tol)? {
+        if spline_hull_disjoint_from_line_face(topo, a_eid, face_b, tol)?
+            || matching_boundary_section_exists(topo, arena, face_a, face_b, a_eid, tol)?
+        {
             continue;
         }
         if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_b, tol.linear) {
@@ -372,7 +378,44 @@ fn face_boundary_edges_2d(
     Ok(edges)
 }
 
-/// True when `eid` is a Circle boundary edge whose exact arc already exists as
+/// Exclude an entire positive-weight spline hull from a polygonal partner.
+/// A distant spline needs no section witness. Endpoint chords cannot establish
+/// this exclusion, and curved partner boundaries retain the refusing path.
+fn spline_hull_disjoint_from_line_face(
+    topo: &Topology,
+    eid: remus_topology::edge::EdgeId,
+    target: FaceId,
+    tol: Tolerance,
+) -> Result<bool, AlgoError> {
+    let EdgeCurve::NurbsCurve(curve) = topo.edge(eid)?.curve() else {
+        return Ok(false);
+    };
+    if curve.validate_weights().is_err() {
+        return Ok(false);
+    }
+    let edges = remus_topology::explorer::face_edges(topo, target)?;
+    let mut points = Vec::with_capacity(edges.len() * 2);
+    for id in edges {
+        let edge = topo.edge(id)?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(false);
+        }
+        points.push(topo.vertex(edge.start())?.point());
+        points.push(topo.vertex(edge.end())?.point());
+    }
+    if points.is_empty() {
+        return Ok(false);
+    }
+    Ok(!curve
+        .aabb()
+        .expanded(tol.linear)
+        .intersects(Aabb3::from_points(points).expanded(tol.linear)))
+}
+
+/// True when a boundary's exact curve already exists as a section.
+/// Spline identity requires equal coefficients and parameter spans; a missing
+/// spline witness refuses because endpoint chords are not exact sections.
+/// A Circle boundary edge matches its exact arc as
 /// a section curve involving either face of the coplanar pair: same circle
 /// (center + radius within tolerance) and same endpoints (either orientation).
 ///
@@ -382,7 +425,7 @@ fn face_boundary_edges_2d(
 /// boundary edges always return `false`; a co-endpoint line/arc pair can be a
 /// genuine lens with material between the two (the in-tube torus-box case) and
 /// must keep both curves.
-fn matching_arc_section_exists(
+fn matching_boundary_section_exists(
     topo: &Topology,
     arena: &GfaArena,
     face_a: FaceId,
@@ -391,6 +434,24 @@ fn matching_arc_section_exists(
     tol: Tolerance,
 ) -> Result<bool, AlgoError> {
     let edge = topo.edge(eid)?;
+    if let EdgeCurve::NurbsCurve(boundary) = edge.curve() {
+        let domain =
+            super::helpers::authoritative_edge_domain(edge, eid, "coplanar spline section")?;
+        let matched = arena.curves.iter().any(|section| {
+            (section.face_a == face_a
+                || section.face_a == face_b
+                || section.face_b == face_a
+                || section.face_b == face_b)
+                && matches!(&section.curve, EdgeCurve::NurbsCurve(existing)
+                    if super::helpers::identical_nurbs_span(existing, section.t_range, boundary, domain))
+        });
+        if !matched {
+            return Err(AlgoError::IntersectionFailed(
+                "coplanar spline boundary has no certified whole-span section".into(),
+            ));
+        }
+        return Ok(true);
+    }
     let EdgeCurve::Circle(circle) = edge.curve() else {
         return Ok(false);
     };
@@ -773,6 +834,129 @@ fn point_on_segment_2d(pt: Point2, a: Point2, b: Point2, tol: f64) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn spline_exclusion_uses_the_whole_hull_and_a_polygonal_partner() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let mut topo = Topology::new();
+        let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
+        let mut edge = |middle_x| {
+            let a = Point3::new(2.0, 0.0, 0.0);
+            let b = Point3::new(2.0, 1.0, 0.0);
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let curve = remus_topology::edge::EdgeCurve::NurbsCurve(
+                NurbsCurve::new(
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![a, Point3::new(middle_x, 0.5, 0.0), b],
+                    vec![1.0; 3],
+                )
+                .unwrap(),
+            );
+            topo.add_edge(Edge::new(va, vb, curve))
+        };
+        let outside = edge(3.0);
+        let crossing = edge(-2.0);
+        assert!(
+            spline_hull_disjoint_from_line_face(&topo, outside, face, Tolerance::new()).unwrap()
+        );
+        assert!(
+            !spline_hull_disjoint_from_line_face(&topo, crossing, face, Tolerance::new()).unwrap()
+        );
+        // An endpoint box cannot enclose this curved partner boundary.
+        let boundary = remus_topology::explorer::face_edges(&topo, face).unwrap()[0];
+        let replacement = topo.edge(crossing).unwrap().curve().clone();
+        topo.edge_mut(boundary).unwrap().set_curve(replacement);
+        assert!(
+            !spline_hull_disjoint_from_line_face(&topo, outside, face, Tolerance::new()).unwrap()
+        );
+    }
+
+    #[test]
+    fn spline_chord_is_suppressed_only_with_a_whole_span_coefficient_witness() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+        ];
+        let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let spline = |y| {
+            NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![points[0], Point3::new(1.0, y, 0.0), points[1]],
+                vec![1.0; 3],
+            )
+            .unwrap()
+        };
+        let boundary = spline(-1.0);
+        let mut boundary_edge = Edge::new(
+            vertices[0],
+            vertices[1],
+            EdgeCurve::NurbsCurve(boundary.clone()),
+        );
+        boundary_edge.set_trim(Some((0.0, 1.0)));
+        let eid = topo.add_edge(boundary_edge);
+        let mut edges = vec![OrientedEdge::new(eid, true)];
+        for i in 1..4 {
+            edges.push(OrientedEdge::new(
+                topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % 4],
+                    EdgeCurve::Line,
+                )),
+                true,
+            ));
+        }
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
+        let mut arena = GfaArena::new();
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .is_err()
+        );
+        arena.curves.push(IntersectionCurveDS {
+            curve: EdgeCurve::NurbsCurve(spline(1.0)),
+            face_a: face,
+            face_b: face,
+            bbox: boundary.aabb(),
+            pave_blocks: vec![],
+            t_range: (0.0, 1.0),
+        });
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .is_err(),
+            "co-endpoint lens is a different curve"
+        );
+        arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary.clone());
+        arena.curves[0].t_range = (0.25, 0.75);
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .is_err(),
+            "a subspan cannot replace the whole boundary"
+        );
+        arena.curves[0].t_range = (0.0, 1.0);
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .unwrap()
+        );
+        arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary.reversed());
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .unwrap()
+        );
+        arena.curves[0].t_range = (0.75, 0.25);
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .is_err()
+        );
+    }
 
     #[test]
     fn concave_clipping_preserves_disconnected_intervals() {
