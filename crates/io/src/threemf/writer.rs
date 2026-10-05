@@ -141,7 +141,9 @@ fn validate_solid_mesh(mesh: &TriangleMesh, index: usize) -> Result<(), IoError>
 /// zero-area or non-finite triangles are dropped, every finite nonzero-area
 /// triangle is kept) — then validated the same way [`write_threemf`]
 /// validates its tessellation (at least one triangle, index count a
-/// multiple of three) and serialized verbatim. This is the mesh-level seam
+/// multiple of three). Unused non-finite vertices are omitted and indices
+/// remapped; finite vertices and triangle winding retain their stored order.
+/// This is the mesh-level seam
 /// of [`write_threemf`]: it exists so the export contract (no exact
 /// zero-area facet reaches a serialized file) can be exercised on
 /// controlled meshes without a B-rep in the loop.
@@ -319,7 +321,7 @@ fn tessellate_solid(
 ///
 /// The mesh is already filtered (solid path) or is written via
 /// [`write_object_filtered`] (borrowed-mesh path); indices are serialized
-/// verbatim in stored order, preserving winding.
+/// in stored order, preserving winding; non-finite unused vertices are omitted.
 fn write_object<W: std::io::Write>(
     writer: &mut Writer<W>,
     index: usize,
@@ -334,22 +336,14 @@ fn write_object<W: std::io::Write>(
 
     writer.write_event(Event::Start(BytesStart::new("mesh")))?;
 
-    writer.write_event(Event::Start(BytesStart::new("vertices")))?;
-    for pos in &mesh.positions {
-        let mut vertex = BytesStart::new("vertex");
-        vertex.push_attribute(("x", format_f64(pos.x()).as_str()));
-        vertex.push_attribute(("y", format_f64(pos.y()).as_str()));
-        vertex.push_attribute(("z", format_f64(pos.z()).as_str()));
-        writer.write_event(Event::Empty(vertex))?;
-    }
-    writer.write_event(Event::End(BytesEnd::new("vertices")))?;
+    let omitted = write_finite_vertices(writer, mesh)?;
 
     writer.write_event(Event::Start(BytesStart::new("triangles")))?;
     for tri in mesh.indices.chunks_exact(3) {
         let mut triangle = BytesStart::new("triangle");
-        triangle.push_attribute(("v1", tri[0].to_string().as_str()));
-        triangle.push_attribute(("v2", tri[1].to_string().as_str()));
-        triangle.push_attribute(("v3", tri[2].to_string().as_str()));
+        triangle.push_attribute(("v1", remap_vertex(tri[0], &omitted).to_string().as_str()));
+        triangle.push_attribute(("v2", remap_vertex(tri[1], &omitted).to_string().as_str()));
+        triangle.push_attribute(("v3", remap_vertex(tri[2], &omitted).to_string().as_str()));
         writer.write_event(Event::Empty(triangle))?;
     }
     writer.write_event(Event::End(BytesEnd::new("triangles")))?;
@@ -364,10 +358,9 @@ fn write_object<W: std::io::Write>(
 /// Write a single `<object>` from a borrowed caller mesh, keeping only the
 /// triangles the provider filter keeps.
 ///
-/// Positions are serialized verbatim (including any unused vertices, as the
-/// historic writer did); triangle indices are serialized verbatim in stored
-/// order for kept triangles, preserving winding. The caller mesh is only
-/// borrowed.
+/// Finite positions retain their stored order, including unused vertices.
+/// Non-finite vertices are omitted and kept triangle indices are remapped,
+/// preserving winding. The caller mesh is only borrowed.
 fn write_object_filtered<W: std::io::Write>(
     writer: &mut Writer<W>,
     index: usize,
@@ -382,15 +375,7 @@ fn write_object_filtered<W: std::io::Write>(
 
     writer.write_event(Event::Start(BytesStart::new("mesh")))?;
 
-    writer.write_event(Event::Start(BytesStart::new("vertices")))?;
-    for pos in &mesh.positions {
-        let mut vertex = BytesStart::new("vertex");
-        vertex.push_attribute(("x", format_f64(pos.x()).as_str()));
-        vertex.push_attribute(("y", format_f64(pos.y()).as_str()));
-        vertex.push_attribute(("z", format_f64(pos.z()).as_str()));
-        writer.write_event(Event::Empty(vertex))?;
-    }
-    writer.write_event(Event::End(BytesEnd::new("vertices")))?;
+    let omitted = write_finite_vertices(writer, mesh)?;
 
     writer.write_event(Event::Start(BytesStart::new("triangles")))?;
     for tri in mesh.indices.chunks_exact(3) {
@@ -399,9 +384,9 @@ fn write_object_filtered<W: std::io::Write>(
             continue;
         }
         let mut triangle = BytesStart::new("triangle");
-        triangle.push_attribute(("v1", tri[0].to_string().as_str()));
-        triangle.push_attribute(("v2", tri[1].to_string().as_str()));
-        triangle.push_attribute(("v3", tri[2].to_string().as_str()));
+        triangle.push_attribute(("v1", remap_vertex(tri[0], &omitted).to_string().as_str()));
+        triangle.push_attribute(("v2", remap_vertex(tri[1], &omitted).to_string().as_str()));
+        triangle.push_attribute(("v3", remap_vertex(tri[2], &omitted).to_string().as_str()));
         writer.write_event(Event::Empty(triangle))?;
     }
     writer.write_event(Event::End(BytesEnd::new("triangles")))?;
@@ -411,6 +396,35 @@ fn write_object_filtered<W: std::io::Write>(
     writer.write_event(Event::End(BytesEnd::new("object")))?;
 
     Ok(())
+}
+
+/// Retain finite vertices and record only removed slots for index remapping.
+/// Valid meshes need no additional index storage; malformed vertices cannot
+/// remain in the XML after their incident triangles have been filtered out.
+fn write_finite_vertices<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    mesh: &TriangleMesh,
+) -> Result<Vec<usize>, IoError> {
+    let mut omitted = Vec::new();
+    writer.write_event(Event::Start(BytesStart::new("vertices")))?;
+    for (index, pos) in mesh.positions.iter().enumerate() {
+        if !pos.0.iter().all(|v| v.is_finite()) {
+            omitted.push(index);
+            continue;
+        }
+        let mut vertex = BytesStart::new("vertex");
+        vertex.push_attribute(("x", format_f64(pos.x()).as_str()));
+        vertex.push_attribute(("y", format_f64(pos.y()).as_str()));
+        vertex.push_attribute(("z", format_f64(pos.z()).as_str()));
+        writer.write_event(Event::Empty(vertex))?;
+    }
+    writer.write_event(Event::End(BytesEnd::new("vertices")))?;
+    Ok(omitted)
+}
+
+fn remap_vertex(index: u32, omitted: &[usize]) -> usize {
+    let index = index as usize;
+    index - omitted.partition_point(|&slot| slot < index)
 }
 
 /// Format a float for XML output (enough precision, no trailing noise).
