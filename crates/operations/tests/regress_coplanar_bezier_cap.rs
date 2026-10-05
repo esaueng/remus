@@ -310,6 +310,17 @@ fn boa_case(op: BooleanOp, z: f64, height: f64, scale: f64, flattened: bool) {
             adj.boundary_edges(),
             adj.non_manifold_edges()
         );
+        let top = if op == BooleanOp::Cut {
+            10.0
+        } else {
+            z + height
+        };
+        for vertex in remus_topology::explorer::solid_vertices(&topo, slab).unwrap() {
+            assert!(
+                topo.vertex(vertex).unwrap().point().z() <= top + 1e-7,
+                "glyph {i}: result extends above its exact top plane {top}"
+            );
+        }
     }
     let depth = if op == BooleanOp::Cut {
         z.min(10.0) - (z + height)
@@ -361,7 +372,8 @@ fn boa_large_bezier_cut() {
 }
 
 #[test]
-fn unresolved_one_micron_wall_band_refuses_atomically() {
+fn one_micron_wall_band_preserves_operands() {
+    let _ = env_logger::try_init();
     let commands: serde_json::Value =
         serde_json::from_str(include_str!("data/issue_953_boa.json")).unwrap();
     let mut topo = Topology::new();
@@ -369,12 +381,33 @@ fn unresolved_one_micron_wall_band_refuses_atomically() {
     let face = glyph_face(&mut topo, &commands[0], 10.001, 1.0, false);
     let tool = extrude(&mut topo, face, Vec3::new(0.0, 0.0, -1.0), 2.001).unwrap();
     let before = remus_io::arena_io::serialize_solids(&topo, &[slab, tool]).unwrap();
-    assert!(matches!(
-        boolean(&mut topo, BooleanOp::Cut, slab, tool),
-        Err(remus_operations::OperationsError::ExactOnlyUnattainable)
-    ));
+    let result = boolean(&mut topo, BooleanOp::Cut, slab, tool).unwrap();
+    let adj = remus_topology::adjacency::AdjacencyIndex::build(&topo, result).unwrap();
+    assert!(adj.is_manifold());
     let after = remus_io::arena_io::serialize_solids(&topo, &[slab, tool]).unwrap();
-    assert_eq!(before, after, "refusal must preserve operands");
+    assert_eq!(before, after, "boolean must preserve operands");
+}
+
+#[test]
+fn boa_one_micron_bezier_cut() {
+    boa_case(BooleanOp::Cut, 10.001, -2.001, 1.0, false);
+}
+
+#[test]
+fn boa_one_micron_bezier_fuse() {
+    boa_case(BooleanOp::Fuse, 9.999, 2.001, 1.0, false);
+}
+
+#[test]
+fn boa_large_one_micron_bezier_deep_cut() {
+    boa_case(BooleanOp::Cut, 10.001, -5.001, 2.5, false);
+}
+
+#[test]
+fn boa_small_offset_bezier_cuts() {
+    for offset in [0.0001, 0.0005, 0.002] {
+        boa_case(BooleanOp::Cut, 10.0 + offset, -2.0 - offset, 1.0, false);
+    }
 }
 
 #[test]
