@@ -22,10 +22,12 @@
 pub(crate) mod boundary_plan;
 pub(crate) mod edge_sampling;
 mod face;
+mod face_cache;
 mod mesh_ops;
 mod nonplanar;
 mod nurbs;
 mod planar;
+mod pool_index;
 pub(crate) mod rim_chain;
 mod solid;
 mod sphere_pole_patch;
@@ -39,6 +41,11 @@ use remus_topology::face::FaceId;
 // Re-export all public items.
 pub use edge_sampling::edge_param_span;
 pub use face::{tessellate_with_uvs, tessellate_with_uvs_a};
+pub use face_cache::{
+    DEFAULT_FACE_MESH_CACHE_BYTES, DEFAULT_FACE_MESH_CACHE_ENTRIES, FaceMeshCacheStats,
+    clear_face_mesh_cache, disable_face_mesh_cache, enable_face_mesh_cache,
+    enable_face_mesh_cache_with_limits, face_mesh_cache_stats,
+};
 pub(crate) use mesh_ops::COINCIDENT_DEDUPE_GRID;
 pub use mesh_ops::{
     EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
