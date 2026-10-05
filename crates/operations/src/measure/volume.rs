@@ -1932,6 +1932,13 @@ pub(super) fn volume_tessellation_deflection(
 ///
 /// Returns `None` when any face fails to integrate, which is a "cannot say"
 /// rather than a verdict: callers must not read that as "correctly wound".
+///
+/// With the thread's face-integral cache enabled (off by default; the WASM
+/// kernel enables it), faces whose content — or a rigid translation of it —
+/// was integrated before are re-expressed about this shell's reference
+/// instead of integrated again. The sum then differs from an uncached one by
+/// rounding (~1e-15 of the shell's own scale), never by a sign the probe
+/// could read.
 pub fn shell_signed_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -1976,8 +1983,11 @@ pub fn shell_signed_volume(
     for &fid in &faces {
         // Orientation probes need fixed-order signs, not adaptive moment
         // convergence. Through the thread's face-integral cache when an
-        // application enabled it: a hit is bit-identical to integrating.
-        total += remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
+        // application enabled it: a face integrated before — about another
+        // reference, or before a rigid move translated it — is re-expressed
+        // about this one from its vector area, equal to integrating afresh
+        // up to rounding (see `remus_check::properties::face_cache`).
+        total += remus_check::properties::face_cache::integrate_face_volume_about_memoized(
             topo,
             fid,
             gauss_order,
