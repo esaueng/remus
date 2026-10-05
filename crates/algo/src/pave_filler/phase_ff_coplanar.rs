@@ -404,8 +404,8 @@ fn matching_boundary_section_exists(
                 || section.face_a == face_b
                 || section.face_b == face_a
                 || section.face_b == face_b)
-                && section.t_range == domain
-                && matches!(&section.curve, EdgeCurve::NurbsCurve(existing) if existing == boundary)
+                && matches!(&section.curve, EdgeCurve::NurbsCurve(existing)
+                    if super::helpers::identical_nurbs_span(existing, section.t_range, boundary, domain))
         });
         if !matched {
             return Err(AlgoError::IntersectionFailed(
@@ -858,7 +858,7 @@ mod tests {
                 .is_err(),
             "co-endpoint lens is a different curve"
         );
-        arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary);
+        arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary.clone());
         arena.curves[0].t_range = (0.25, 0.75);
         assert!(
             matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
@@ -869,6 +869,16 @@ mod tests {
         assert!(
             matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
                 .unwrap()
+        );
+        arena.curves[0].curve = EdgeCurve::NurbsCurve(boundary.reversed());
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .unwrap()
+        );
+        arena.curves[0].t_range = (0.75, 0.25);
+        assert!(
+            matching_boundary_section_exists(&topo, &arena, face, face, eid, Tolerance::new())
+                .is_err()
         );
     }
 
