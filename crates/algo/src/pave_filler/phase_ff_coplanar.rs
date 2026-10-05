@@ -258,7 +258,8 @@ fn process_coplanar_pair(
     // Spline matches require identical coefficients and parameter spans;
     // unresolved spline boundaries refuse instead of becoming chords.
     for &(b_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_b {
-        if spline_hull_disjoint_from_line_face(topo, b_eid, face_a, tol)?
+        if shared_spline_boundary(topo, b_eid, face_a)?
+            || spline_hull_disjoint_from_line_face(topo, b_eid, face_a, tol)?
             || matching_boundary_section_exists(topo, arena, face_a, face_b, b_eid, tol)?
         {
             continue;
@@ -275,7 +276,8 @@ fn process_coplanar_pair(
     }
 
     for &(a_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_a {
-        if spline_hull_disjoint_from_line_face(topo, a_eid, face_b, tol)?
+        if shared_spline_boundary(topo, a_eid, face_b)?
+            || spline_hull_disjoint_from_line_face(topo, a_eid, face_b, tol)?
             || matching_boundary_section_exists(topo, arena, face_a, face_b, a_eid, tol)?
         {
             continue;
@@ -302,7 +304,9 @@ fn process_coplanar_pair(
             && si == ei
         {
             let a_eid = edges_a[si].0;
-            create_coplanar_common_block(arena, a_eid, b_eid);
+            if spline_pair_compatible(topo, a_eid, b_eid)? {
+                create_coplanar_common_block(arena, a_eid, b_eid);
+            }
         }
     }
 
@@ -378,6 +382,74 @@ fn face_boundary_edges_2d(
     Ok(edges)
 }
 
+/// A shared spline seam is certified by both boundary carriers and spans.
+fn shared_spline_boundary(
+    topo: &Topology,
+    eid: remus_topology::edge::EdgeId,
+    target: FaceId,
+) -> Result<bool, AlgoError> {
+    if !matches!(topo.edge(eid)?.curve(), EdgeCurve::NurbsCurve(_)) {
+        return Ok(false);
+    }
+    for other in remus_topology::explorer::face_edges(topo, target)? {
+        if matches!(topo.edge(other)?.curve(), EdgeCurve::NurbsCurve(_))
+            && spline_pair_compatible(topo, eid, other)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Endpoint matches alone must not join a spline to a chord or another lens.
+fn spline_pair_compatible(
+    topo: &Topology,
+    a: remus_topology::edge::EdgeId,
+    b: remus_topology::edge::EdgeId,
+) -> Result<bool, AlgoError> {
+    let a_edge = topo.edge(a)?;
+    let b_edge = topo.edge(b)?;
+    match (a_edge.curve(), b_edge.curve()) {
+        (EdgeCurve::NurbsCurve(a_curve), EdgeCurve::NurbsCurve(b_curve)) => {
+            let a_span =
+                super::helpers::authoritative_edge_domain(a_edge, a, "shared spline seam")?;
+            let b_span =
+                super::helpers::authoritative_edge_domain(b_edge, b, "shared spline seam")?;
+            Ok(super::helpers::identical_nurbs_span(
+                a_curve, a_span, b_curve, b_span,
+            ))
+        }
+        (
+            EdgeCurve::NurbsCurve(_),
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        )
+        | (
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+            EdgeCurve::NurbsCurve(_),
+        ) => Ok(false),
+        (
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        ) => Ok(true),
+    }
+}
+
 /// Exclude an entire positive-weight spline hull from a polygonal partner.
 /// A distant spline needs no section witness. Endpoint chords cannot establish
 /// this exclusion, and curved partner boundaries retain the refusing path.
@@ -406,10 +478,86 @@ fn spline_hull_disjoint_from_line_face(
     if points.is_empty() {
         return Ok(false);
     }
-    Ok(!curve
+    if !curve
         .aabb()
         .expanded(tol.linear)
-        .intersects(Aabb3::from_points(points).expanded(tol.linear)))
+        .intersects(Aabb3::from_points(points).expanded(tol.linear))
+    {
+        return Ok(true);
+    }
+    let FaceSurface::Plane { normal, .. } = topo.face(target)?.surface() else {
+        return Ok(false);
+    };
+    let normal = normal.normalize()?;
+    let frame = PlaneFrame2D::new(normal, curve.control_points()[0]);
+    let mut min = Point2::new(f64::INFINITY, f64::INFINITY);
+    let mut max = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &p in curve.control_points() {
+        let q = frame.project(p);
+        min = Point2::new(min.x().min(q.x()), min.y().min(q.y()));
+        max = Point2::new(max.x().max(q.x()), max.y().max(q.y()));
+    }
+    min = Point2::new(min.x() - tol.linear, min.y() - tol.linear);
+    max = Point2::new(max.x() + tol.linear, max.y() + tol.linear);
+    let face = topo.face(target)?;
+    let mut polygons = Vec::new();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        let mut polygon = Vec::with_capacity(wire.edges().len());
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let a = frame.project(topo.vertex(oe.oriented_start(edge))?.point());
+            let b = frame.project(topo.vertex(oe.oriented_end(edge))?.point());
+            if segment_intersects_box(a, b, min, max) {
+                return Ok(false);
+            }
+            polygon.push(a);
+        }
+        if polygon.len() < 3 {
+            return Ok(false);
+        }
+        polygons.push(polygon);
+    }
+    // No boundary crosses the hull box, so its region membership is constant.
+    let center = Point2::new(0.5 * (min.x() + max.x()), 0.5 * (min.y() + max.y()));
+    Ok(!point_in_line_polygon_exact(center, &polygons[0])
+        || polygons[1..]
+            .iter()
+            .any(|p| point_in_line_polygon_exact(center, p)))
+}
+
+/// Separating axes for a segment and the expanded convex hull box.
+/// Exact orientation signs avoid rounded slab-division exclusions at corners.
+fn segment_intersects_box(a: Point2, b: Point2, min: Point2, max: Point2) -> bool {
+    if a.x().max(b.x()) < min.x()
+        || a.x().min(b.x()) > max.x()
+        || a.y().max(b.y()) < min.y()
+        || a.y().min(b.y()) > max.y()
+    {
+        return false;
+    }
+    let corners = [
+        min,
+        Point2::new(max.x(), min.y()),
+        max,
+        Point2::new(min.x(), max.y()),
+    ];
+    let signs = corners.map(|p| remus_math::predicates::orient2d(a, b, p));
+    !(signs.iter().all(|&s| s > 0.) || signs.iter().all(|&s| s < 0.))
+}
+
+fn point_in_line_polygon_exact(point: Point2, polygon: &[Point2]) -> bool {
+    let mut inside = false;
+    for i in 0..polygon.len() {
+        let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+        let sign = remus_math::predicates::orient2d(a, b, point);
+        if (a.y() <= point.y() && b.y() > point.y() && sign > 0.)
+            || (b.y() <= point.y() && a.y() > point.y() && sign < 0.)
+        {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 /// True when a boundary's exact curve already exists as a section.
@@ -834,6 +982,160 @@ fn point_on_segment_2d(pt: Point2, a: Point2, b: Point2, tol: f64) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    fn oracle_polygon(topo: &mut Topology, coordinates: &[(f64, f64)]) -> FaceId {
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let vertices: Vec<_> = coordinates
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.), 1e-7)))
+            .collect();
+        let edges = (0..vertices.len())
+            .map(|i| {
+                OrientedEdge::new(
+                    topo.add_edge(Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % vertices.len()],
+                        EdgeCurve::Line,
+                    )),
+                    true,
+                )
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        remus_topology::builder::make_planar_face_from_wire(topo, wire).unwrap()
+    }
+
+    fn oracle_spline(topo: &mut Topology, points: [Point3; 3]) -> remus_topology::edge::EdgeId {
+        let a = topo.add_vertex(Vertex::new(points[0], 1e-7));
+        let b = topo.add_vertex(Vertex::new(points[2], 1e-7));
+        let curve = remus_math::nurbs::curve::NurbsCurve::new(
+            2,
+            vec![0., 0., 0., 1., 1., 1.],
+            points.to_vec(),
+            vec![1.; 3],
+        )
+        .unwrap();
+        let mut edge = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+        edge.set_trim(Some((0., 1.)));
+        topo.add_edge(edge)
+    }
+
+    #[test]
+    fn concave_face_exclusion_never_uses_a_spline_chord() {
+        let mut topo = Topology::new();
+        let target = oracle_polygon(
+            &mut topo,
+            &[
+                (0., 0.),
+                (4., 0.),
+                (4., 4.),
+                (3., 4.),
+                (3., 1.),
+                (1., 1.),
+                (1., 4.),
+                (0., 4.),
+            ],
+        );
+        let outside = oracle_spline(
+            &mut topo,
+            [
+                Point3::new(1.5, 2., 0.),
+                Point3::new(2., 3., 0.),
+                Point3::new(2.5, 2., 0.),
+            ],
+        );
+        let possible_crossing = oracle_spline(
+            &mut topo,
+            [
+                Point3::new(1.5, 2., 0.),
+                Point3::new(2., -1., 0.),
+                Point3::new(2.5, 2., 0.),
+            ],
+        );
+        assert!(
+            spline_hull_disjoint_from_line_face(&topo, outside, target, Tolerance::new()).unwrap()
+        );
+        assert!(
+            !spline_hull_disjoint_from_line_face(
+                &topo,
+                possible_crossing,
+                target,
+                Tolerance::new()
+            )
+            .unwrap()
+        );
+        let square = oracle_polygon(&mut topo, &[(0., 0.), (4., 0.), (4., 4.), (0., 4.)]);
+        let hole = oracle_polygon(&mut topo, &[(1., 1.), (3., 1.), (3., 3.5), (1., 3.5)]);
+        let inner = topo.face(hole).unwrap().outer_wire();
+        let outer = topo.face(square).unwrap().outer_wire();
+        topo.set_face_boundary_wires(square, outer, vec![inner])
+            .unwrap();
+        assert!(
+            spline_hull_disjoint_from_line_face(&topo, outside, square, Tolerance::new()).unwrap()
+        );
+        assert!(
+            !spline_hull_disjoint_from_line_face(
+                &topo,
+                possible_crossing,
+                square,
+                Tolerance::new()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn shared_spline_caps_need_no_regular_ff_section_witness() {
+        let mut topo = Topology::new();
+        let face = oracle_polygon(&mut topo, &[(0., 0.), (2., 0.), (2., 2.), (0., 2.)]);
+        let boundary = remus_topology::explorer::face_edges(&topo, face).unwrap()[0];
+        let curved = oracle_spline(
+            &mut topo,
+            [
+                Point3::new(0., 0., 0.),
+                Point3::new(1., -1., 0.),
+                Point3::new(2., 0., 0.),
+            ],
+        );
+        let curve = topo.edge(curved).unwrap().curve().clone();
+        topo.edge_mut(boundary).unwrap().set_curve(curve);
+        topo.edge_mut(boundary).unwrap().set_trim(Some((0., 1.)));
+        let partner = topo.add_face(topo.face(face).unwrap().clone());
+        assert!(shared_spline_boundary(&topo, boundary, partner).unwrap());
+        let mut arena = GfaArena::new();
+        process_coplanar_pair(
+            &mut topo,
+            face,
+            Vec3::new(0., 0., 1.),
+            partner,
+            Tolerance::new(),
+            &mut arena,
+        )
+        .unwrap();
+        let a = Point3::new(0., 0., 0.);
+        let b = Point3::new(2., 0., 0.);
+        assert!(
+            arena.curves.iter().all(|section| {
+                (section.bbox.min - a).length() > 1e-7 || (section.bbox.max - b).length() > 1e-7
+            }),
+            "a shared spline seam must not mint its chord"
+        );
+        let lens = oracle_spline(
+            &mut topo,
+            [
+                Point3::new(0., 0., 0.),
+                Point3::new(1., 1., 0.),
+                Point3::new(2., 0., 0.),
+            ],
+        );
+        assert!(!spline_pair_compatible(&topo, boundary, lens).unwrap());
+        let line = topo.add_edge(Edge::new(
+            topo.edge(boundary).unwrap().start(),
+            topo.edge(boundary).unwrap().end(),
+            EdgeCurve::Line,
+        ));
+        assert!(!spline_pair_compatible(&topo, boundary, line).unwrap());
+    }
 
     #[test]
     fn spline_exclusion_uses_the_whole_hull_and_a_polygonal_partner() {
