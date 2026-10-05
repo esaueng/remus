@@ -1,10 +1,10 @@
 //! Edit-aware measurement on the Shapr3D hammer holder (PERF-V02 / Q02 /
 //! O07): with both measurement memos on — as the WASM kernel runs them — the
 //! −6 mm move of the 1045.93 mm² +X face reads every face it did not
-//! re-limit from the face-integral cache, and leaves its result's volume
-//! (the source's reading plus the exact swept prism) where the application's
-//! next reading finds it, after a copy-on-write clone and an unrelated
-//! allocation.
+//! re-limit from the face-integral cache; the application's first reading of
+//! the result's volume, after a copy-on-write clone and an unrelated
+//! allocation, is a measurement bit-identical to a cold kernel's, and every
+//! reading after it is a hit.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::cast_precision_loss)]
 
@@ -13,8 +13,8 @@ use remus_check::properties::face_cache::{
 };
 use remus_io::step::reader::read_step;
 use remus_operations::measure::{
-    enable_thread_volume_memo, face_area, set_thread_volume_memo_capacity, solid_bounding_box,
-    solid_surface_area, solid_volume, thread_volume_memo_stats,
+    enable_thread_volume_memo, face_area, set_thread_volume_memo_capacity, solid_volume,
+    thread_volume_memo_stats,
 };
 use remus_operations::primitives::make_box;
 use remus_operations::push_pull::move_faces;
@@ -69,16 +69,8 @@ fn probe(topo: &Topology, solid: SolidId) -> (bool, f64) {
     (report.is_valid(), probes.shells[0].signed_volume)
 }
 
-/// The chord bound of the closed-mesh route `solid_volume` measures this
-/// body on: the clamped deflection times the surface area.
-fn mesh_route_bound(topo: &Topology, solid: SolidId, requested: f64) -> f64 {
-    let bbox = solid_bounding_box(topo, solid).unwrap();
-    let clamp = requested.min(((bbox.max - bbox.min).length() * 5e-5).max(1e-9));
-    clamp * solid_surface_area(topo, solid, clamp).unwrap()
-}
-
 #[test]
-fn hammer_move_reads_its_unchanged_faces_and_seeds_its_volume() {
+fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     let _off = MemosOff::new();
     let mut topo = Topology::new();
     let solid = read_step(HAMMER_HOLDER, &mut topo).expect("import")[0];
@@ -114,7 +106,6 @@ fn hammer_move_reads_its_unchanged_faces_and_seeds_its_volume() {
         "unchanged faces are re-expressed about the result's reference"
     );
     assert_eq!(during.1.misses, before.1.misses, "no whole-body volume");
-    assert_eq!(during.1.seeded - before.1.seeded, 1, "one derived reading");
 
     // What the application does next, on a checkpoint clone and after an
     // unrelated allocation.
@@ -128,13 +119,14 @@ fn hammer_move_reads_its_unchanged_faces_and_seeds_its_volume() {
     assert_eq!(end.0.misses, start.0.misses, "the result's probe only hits");
     assert_eq!(end.0.hits - start.0.hits, faces);
     assert_eq!(
-        (
-            end.1.hits - start.1.hits,
-            end.1.seeded_hits - start.1.seeded_hits
-        ),
-        (1, 1),
-        "the volume is the seeded reading"
+        (end.1.misses - start.1.misses, end.1.hits - start.1.hits),
+        (1, 0),
+        "the result's first volume is a measurement, not a derived value"
     );
+    let again = solid_volume(&after, moved, 0.08).unwrap();
+    let repeat = thread_volume_memo_stats();
+    assert_eq!(again.to_bits(), read.to_bits());
+    assert_eq!(repeat.hits - end.1.hits, 1, "the second reading is a hit");
 
     // Against fresh readings with the memos off.
     set_thread_face_cache_limits(0, 0);
@@ -146,12 +138,12 @@ fn hammer_move_reads_its_unchanged_faces_and_seeds_its_volume() {
         "probe {signed} vs fresh {fresh_signed}"
     );
     let fresh = solid_volume(&after, moved, 0.08).unwrap();
-    let bound = mesh_route_bound(&after, moved, 0.08);
-    assert!(
-        (read - fresh).abs() <= bound,
-        "seeded {read} vs fresh {fresh}: beyond the mesh route's chord bound {bound}"
+    assert_eq!(
+        read.to_bits(),
+        fresh.to_bits(),
+        "a warm memo must read exactly what a cold kernel reads: {read} vs {fresh}"
     );
-    // The source reading plus the swept prism of a 1045.93 mm² face pushed
-    // in by 6 mm (its blends and carriers included).
+    // The swept prism of a 1045.93 mm² face pushed in by 6 mm (its blends
+    // and carriers included).
     assert!(read < source - 6.0 * 1045.93 * 0.9 && read > source - 6.0 * 1045.93 * 1.7);
 }

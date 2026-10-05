@@ -24,7 +24,6 @@ pub use volume_memo::{
     clear_thread_volume_memo, enable_thread_volume_memo, set_thread_volume_memo_capacity,
     set_thread_volume_memo_limits, thread_volume_memo_stats,
 };
-pub(crate) use volume_memo::{measured_readings, seed_solid_volume};
 
 /// Gauss order [`mass_properties`] integrates at.
 ///

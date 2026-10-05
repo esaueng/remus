@@ -250,14 +250,13 @@ fn edit_with_memos(
         })?;
         let during = (thread_face_cache_stats(), thread_volume_memo_stats());
         println!(
-            "  move: faces hit {} (re-referenced {}, translated {}), integrated {}; volumes hit {}, measured {}, seeded {}",
+            "  move: faces hit {} (re-referenced {}, translated {}), integrated {}; volumes hit {}, measured {}",
             during.0.hits - before.0.hits,
             during.0.rereferenced - before.0.rereferenced,
             during.0.translated - before.0.translated,
             during.0.misses - before.0.misses,
             during.1.hits - before.1.hits,
             during.1.misses - before.1.misses,
-            during.1.seeded - before.1.seeded,
         );
         // What the application does next, on a clone (its checkpoint).
         let after = edit.clone();
@@ -269,12 +268,12 @@ fn edit_with_memos(
         })?;
         let end = (thread_face_cache_stats(), thread_volume_memo_stats());
         println!(
-            "  after: valid={} faces hit {} integrated {}; volume hit {} (seeded {})",
+            "  after: valid={} faces hit {} integrated {}; volume hit {} measured {}",
             report.is_valid(),
             end.0.hits - during.0.hits,
             end.0.misses - during.0.misses,
             end.1.hits - during.1.hits,
-            end.1.seeded_hits - during.1.seeded_hits,
+            end.1.misses - during.1.misses,
         );
         println!(
             "  retained: face cache {} entries / {} KB, volume memo {} readings / {} KB",
