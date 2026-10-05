@@ -16,6 +16,29 @@ mod tests {
     };
 
     #[test]
+    fn legacy_length_normalizes_privately_and_rejects_invalid_authority() {
+        let mut t = Topology::new();
+        let c = Circle3D::new(Point3::new(0., 0., 0.), Vec3::new(0., 0., 1.), 2.).unwrap();
+        let a = t.add_vertex(Vertex::new(c.evaluate(0.), 1e-7));
+        let b = t.add_vertex(Vertex::new(c.evaluate(std::f64::consts::FRAC_PI_2), 1e-7));
+        let id = t.add_edge(Edge::new(a, b, EdgeCurve::Circle(c)));
+        let identity = t.cache_identity();
+        assert!((edge_length(&t, id).unwrap() - std::f64::consts::PI).abs() < 1e-9);
+        assert_eq!(t.cache_identity(), identity);
+        assert_eq!(t.edge(id).unwrap().trim(), None);
+        t.edge_mut(id)
+            .unwrap()
+            .set_trim(Some((0., std::f64::consts::TAU + 1.)));
+        assert!(edge_length(&t, id).is_err());
+        t.edge_mut(id).unwrap().set_trim(None);
+        t.vertex_mut(b).unwrap().set_point(Point3::new(0., 3., 0.));
+        assert!(
+            edge_length(&t, id).is_err(),
+            "off-carrier endpoints must refuse"
+        );
+    }
+
+    #[test]
     fn trimmed_nurbs_length() {
         let mut t = Topology::new();
         let c = NurbsCurve::new(

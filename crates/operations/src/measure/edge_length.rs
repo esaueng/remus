@@ -23,9 +23,9 @@ pub fn edge_length(
         } else {
             // Compatibility adapter for legacy public-API edges. Stored authority
             // always takes precedence and invalid stored ranges never fall back.
-            let start = topo.vertex(edge.start())?.point();
-            let end = topo.vertex(edge.end())?.point();
-            edge.domain_with_endpoints(start, end)
+            // Normalize in a private copy: measurement is read-only, and the
+            // shared adapter validates the reconstructed range and endpoints.
+            crate::normalize_legacy_edge_domain(&mut topo.clone(), edge_id, "edge length")?
         };
     match edge.curve() {
         remus_topology::edge::EdgeCurve::Line => {
