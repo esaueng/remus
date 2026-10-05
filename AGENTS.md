@@ -426,8 +426,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity | `measure/volume_memo.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
+| Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
 | Offset wire | `offset_wire.rs` |
