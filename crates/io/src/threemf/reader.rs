@@ -17,6 +17,7 @@ use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 /// Read a 3MF file from raw bytes and return one [`TriangleMesh`] per object.
 ///
 /// Each `<object>` in the model XML becomes a separate mesh.
+/// Coordinates are normalized from the model's declared unit to millimeters.
 ///
 /// # Errors
 ///
@@ -91,6 +92,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     let mut total_vertices = 0usize;
     let mut total_triangles = 0usize;
     let mut total_objects = 0usize;
+    let mut unit_scale = 1.0;
 
     loop {
         match reader.read_event() {
@@ -99,6 +101,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                 let name = local.as_ref();
 
                 match name {
+                    "model" => unit_scale = model_unit_scale(e)?,
                     "object" => {
                         in_object = true;
                         total_objects = total_objects.saturating_add(1);
@@ -117,7 +120,17 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
 
                 match name {
                     "vertex" if in_vertices => {
-                        let pt = parse_vertex_attributes(e)?;
+                        let point = parse_vertex_attributes(e)?;
+                        let pt = Point3::new(
+                            point.x() * unit_scale,
+                            point.y() * unit_scale,
+                            point.z() * unit_scale,
+                        );
+                        if pt.0.iter().any(|coordinate| !coordinate.is_finite()) {
+                            return Err(IoError::ParseError {
+                                reason: "3MF vertex exceeds the finite millimeter range".into(),
+                            });
+                        }
                         current_vertices.push(pt);
                         total_vertices = total_vertices.saturating_add(1);
                         ensure_limit("3MF vertices", total_vertices, limits.max_model_entities)?;
@@ -165,6 +178,34 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     }
 
     Ok(meshes)
+}
+
+/// The core format defaults to millimeters when `unit` is omitted.
+fn model_unit_scale(model: &quick_xml::events::BytesStart<'_>) -> Result<f64, IoError> {
+    for attribute in model.attributes() {
+        let attribute = attribute.map_err(|error| IoError::ParseError {
+            reason: format!("invalid 3MF model attribute: {error}"),
+        })?;
+        if attribute.key.as_ref() == "unit" {
+            let unit = attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|error| IoError::ParseError {
+                    reason: format!("invalid 3MF unit: {error}"),
+                })?;
+            return match unit.as_ref() {
+                "micron" => Ok(0.001),
+                "millimeter" => Ok(1.0),
+                "centimeter" => Ok(10.0),
+                "inch" => Ok(25.4),
+                "foot" => Ok(304.8),
+                "meter" => Ok(1000.0),
+                _ => Err(IoError::ParseError {
+                    reason: format!("unsupported 3MF model unit: {unit}"),
+                }),
+            };
+        }
+    }
+    Ok(1.0)
 }
 
 /// Parse `x`, `y`, `z` attributes from a `<vertex>` element.
@@ -528,5 +569,48 @@ mod tests {
             result.is_ok(),
             "read_threemf_solid should return Ok: {result:?}"
         );
+    }
+
+    fn unit_model(unit: Option<&str>, coordinate: &str) -> String {
+        let unit = unit.map_or_else(String::new, |unit| format!(" unit=\"{unit}\""));
+        format!(
+            r#"<model{unit}><resources><object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="{coordinate}" y="0" z="0"/><vertex x="0" y="{coordinate}" z="0"/><vertex x="0" y="0" z="{coordinate}"/></vertices><triangles><triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/><triangle v1="0" v2="3" v3="2"/><triangle v1="1" v2="2" v3="3"/></triangles></mesh></object></resources><build><item objectid="1"/></build></model>"#
+        )
+    }
+
+    #[test]
+    fn model_units_are_normalized_to_millimeters() {
+        for (unit, scale) in [
+            (None, 1.0),
+            (Some("micron"), 0.001),
+            (Some("millimeter"), 1.0),
+            (Some("centimeter"), 10.0),
+            (Some("inch"), 25.4),
+            (Some("in&#99;h"), 25.4),
+            (Some("foot"), 304.8),
+            (Some("meter"), 1000.0),
+        ] {
+            let xml = unit_model(unit, "1");
+            let meshes = parse_model_xml(&xml, ImportLimits::default()).unwrap();
+            assert_eq!(meshes[0].positions[1], Point3::new(scale, 0.0, 0.0));
+            assert_eq!(meshes[0].positions[2], Point3::new(0.0, scale, 0.0));
+            assert_eq!(meshes[0].positions[3], Point3::new(0.0, 0.0, scale));
+            assert!(
+                meshes[0]
+                    .normals
+                    .iter()
+                    .all(|normal| normal.0.iter().all(|value| value.is_finite()))
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_units_and_scaled_coordinate_overflow_are_refused() {
+        for (unit, coordinate) in [("unknown", "1"), ("meter", "1e308")] {
+            assert!(matches!(
+                parse_model_xml(&unit_model(Some(unit), coordinate), ImportLimits::default()),
+                Err(IoError::ParseError { .. })
+            ));
+        }
     }
 }
