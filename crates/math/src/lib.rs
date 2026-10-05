@@ -132,6 +132,7 @@ pub mod curves2d;
 pub mod det_hash;
 pub mod diagnostic;
 pub mod filtered;
+pub mod fma;
 pub mod frame;
 pub mod intersect;
 pub mod mat;

@@ -13,7 +13,7 @@ use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::boolean::{face_polygon, wire_polygon};
-use crate::classify::{PointClassification, classify_point, classify_point_robust};
+use crate::classify::{PointClassification, classify_point_robust};
 use crate::measure::face_area;
 
 /// An opposing pair of parallel planar faces with a non-zero projected overlap.
@@ -531,12 +531,15 @@ fn edge_curve_span(topo: &Topology, edge: EdgeId) -> Result<f64, OperationsError
     Ok(bounds.map_or(0.0, |(lo, hi)| (hi - lo).length()))
 }
 
+/// One interior edge sample with both faces' effective outward normals.
+type NormalSample = (Point3, Vec3, Vec3);
+
 fn sampled_normals(
     topo: &Topology,
     edge: EdgeId,
     face_a: FaceId,
     face_b: FaceId,
-) -> Result<Vec<(Point3, Vec3, Vec3)>, OperationsError> {
+) -> Result<Vec<NormalSample>, OperationsError> {
     let mut samples = Vec::new();
     for point in edge_samples(topo, edge)? {
         if let (Some(na), Some(nb)) = (
@@ -547,6 +550,24 @@ fn sampled_normals(
         }
     }
     Ok(samples)
+}
+
+/// The [`edge_is_g1`] verdict over already-sampled normals.
+fn samples_are_g1(samples: &[NormalSample]) -> bool {
+    samples.len() == 3 && samples.iter().all(|(_, a, b)| 1.0 - a.dot(*b) <= 1.0e-10)
+}
+
+/// The [`edge_normal_angle`] mean over already-sampled normals.
+#[allow(clippy::cast_precision_loss)]
+fn samples_normal_angle(samples: &[NormalSample]) -> Option<f64> {
+    if samples.len() != 3 {
+        return None;
+    }
+    let sum = samples
+        .iter()
+        .map(|(_, a, b)| a.cross(*b).length().atan2(a.dot(*b)))
+        .sum::<f64>();
+    Some(sum / samples.len() as f64)
 }
 
 /// Whether two distinct faces meet with aligned effective outward normals
@@ -568,7 +589,7 @@ pub fn edge_is_g1(
         return Ok(false);
     }
     let samples = sampled_normals(topo, edge, face_a, face_b)?;
-    Ok(samples.len() == 3 && samples.iter().all(|(_, a, b)| 1.0 - a.dot(*b) <= 1.0e-10))
+    Ok(samples_are_g1(&samples))
 }
 
 /// Angle between the effective outward normals, sampled along the edge and
@@ -587,14 +608,7 @@ pub fn edge_normal_angle(
         return Ok(None);
     }
     let samples = sampled_normals(topo, edge, face_a, face_b)?;
-    if samples.len() != 3 {
-        return Ok(None);
-    }
-    let sum = samples
-        .iter()
-        .map(|(_, a, b)| a.cross(*b).length().atan2(a.dot(*b)))
-        .sum::<f64>();
-    Ok(Some(sum / samples.len() as f64))
+    Ok(samples_normal_angle(&samples))
 }
 
 /// Classify the geometric relation between the two distinct faces at `edge`.
@@ -627,14 +641,19 @@ pub fn edge_concavity(
         return Ok(EdgeConcavity::Unknown);
     }
     let (face_a, face_b) = (faces[0], faces[1]);
-    edge_concavity_with_faces(topo, solid, edge, face_a, face_b, probe, true)
+    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
+        classify_point_robust(topo, solid, point, 0.01, 1.0e-7)
+    })
 }
 
-/// Bulk variant for callers that already built edge-to-face adjacency.
+/// One-shot variant for callers that already built edge-to-face adjacency.
 ///
-/// Feature recognition invokes this for every manifold edge, so it uses the
-/// analytic classifier rather than rebuilding a full-solid tessellation for
-/// each probe. The supplied faces must be the two incident faces of `edge`.
+/// Uses the analytic classifier rather than rebuilding a full-solid
+/// tessellation for each probe. The supplied faces must be the two incident
+/// faces of `edge`. Callers that classify many edges of one solid should use
+/// [`EdgeRelationContext`], which prepares the classifier once and reaches
+/// the same verdicts.
 pub(crate) fn edge_concavity_from_faces(
     topo: &Topology,
     solid: SolidId,
@@ -651,23 +670,109 @@ pub(crate) fn edge_concavity_from_faces(
     if face_a == face_b {
         return Ok(EdgeConcavity::Unknown);
     }
-    edge_concavity_with_faces(topo, solid, edge, face_a, face_b, probe, false)
+    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
+        crate::classify::classify_point(topo, solid, point, 0.01, 1.0e-7)
+    })
 }
 
-fn edge_concavity_with_faces(
+/// Operation-local context for classifying many edges of one solid.
+///
+/// Feature recognition and the bulk edge-relation queries classify four
+/// quadrant probes per manifold edge. The one-shot `classify_point` rebuilt
+/// every face bound, the face BVH and the candidate trim polygons for every
+/// ray of every probe, which made a 400-edge import pay ~1 600 full-solid
+/// preparations. This context prepares the solid once
+/// ([`remus_check::classify::PreparedSolid`], PERF-Q01) and runs the same
+/// shared ray-vote loop over the same faces, bounds and trims, so every probe
+/// reaches the verdict the one-shot path reached (O06).
+///
+/// It also samples each edge's normals once and derives the G1 test, the
+/// normal angle and the concavity probe point from that one sample set, where
+/// the separate helpers used to project the same three points onto both faces
+/// three times.
+///
+/// The borrow on the topology does the invalidation: the context cannot
+/// outlive the state it was prepared from.
+pub(crate) struct EdgeRelationContext<'a> {
+    topo: &'a Topology,
+    prepared: remus_check::classify::PreparedSolid<'a>,
+}
+
+impl<'a> EdgeRelationContext<'a> {
+    /// Prepare `solid` for repeated edge classification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle or its faces are invalid.
+    pub(crate) fn prepare(topo: &'a Topology, solid: SolidId) -> Result<Self, OperationsError> {
+        Ok(Self {
+            topo,
+            prepared: remus_check::classify::PreparedSolid::prepare(topo, solid)?,
+        })
+    }
+
+    /// Concavity plus the `[0, pi]` normal angle of one manifold edge.
+    ///
+    /// Same verdict as the analytic-classifier bulk path and the same angle as
+    /// [`edge_normal_angle`]. `face_a` and `face_b` must be the two incident
+    /// faces of `edge`; equal faces are a self-seam and report
+    /// [`EdgeConcavity::Unknown`] with no angle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for a non-positive or non-finite probe, or
+    /// propagates topology and classification errors.
+    pub(crate) fn concavity_and_angle(
+        &self,
+        edge: EdgeId,
+        face_a: FaceId,
+        face_b: FaceId,
+        probe: f64,
+    ) -> Result<(EdgeConcavity, Option<f64>), OperationsError> {
+        if !probe.is_finite() || probe <= 0.0 {
+            return Err(OperationsError::InvalidInput {
+                reason: "edge concavity probe must be positive and finite".into(),
+            });
+        }
+        if face_a == face_b {
+            return Ok((EdgeConcavity::Unknown, None));
+        }
+        let samples = sampled_normals(self.topo, edge, face_a, face_b)?;
+        let options = remus_check::classify::ClassifyOptions {
+            tolerance: 1.0e-7,
+            ..Default::default()
+        };
+        let concavity = edge_concavity_with_samples(
+            self.topo,
+            edge,
+            face_a,
+            face_b,
+            probe,
+            &samples,
+            |point| Ok(self.prepared.classify_point(point, &options)?.into()),
+        )?;
+        Ok((concavity, samples_normal_angle(&samples)))
+    }
+}
+
+/// Concavity of a non-self-seam edge from its already-sampled normals.
+///
+/// `classify` answers one quadrant probe; the robust single-call path and the
+/// prepared bulk path differ only there.
+fn edge_concavity_with_samples(
     topo: &Topology,
-    solid: SolidId,
     edge: EdgeId,
     face_a: FaceId,
     face_b: FaceId,
     probe: f64,
-    robust: bool,
+    samples: &[NormalSample],
+    mut classify: impl FnMut(Point3) -> Result<PointClassification, OperationsError>,
 ) -> Result<EdgeConcavity, OperationsError> {
-    if edge_is_g1(topo, edge, face_a, face_b)? {
+    if samples_are_g1(samples) {
         return Ok(EdgeConcavity::Tangent);
     }
 
-    let samples = sampled_normals(topo, edge, face_a, face_b)?;
     let Some(&(point, normal_a, normal_b)) = samples.get(1).or_else(|| samples.first()) else {
         return Ok(EdgeConcavity::Unknown);
     };
@@ -681,13 +786,6 @@ fn edge_concavity_with_faces(
     // without depending on face orientation bookkeeping: a convex edge is an
     // intersection of inward halfspaces (exactly one quadrant is material),
     // while a concave edge is their union (exactly three quadrants are).
-    let classify = |offset: Vec3| {
-        if robust {
-            classify_point_robust(topo, solid, point + offset, 0.01, 1.0e-7)
-        } else {
-            classify_point(topo, solid, point + offset, 0.01, 1.0e-7)
-        }
-    };
     let inward_a = -normal_a * probe;
     let inward_b = -normal_b * probe;
     let quadrants = [
@@ -698,7 +796,7 @@ fn edge_concavity_with_faces(
     ];
     let mut inside = 0;
     for offset in quadrants {
-        match classify(offset)? {
+        match classify(point + offset)? {
             PointClassification::Inside => inside += 1,
             PointClassification::Outside => {}
             PointClassification::OnBoundary => return Ok(EdgeConcavity::Unknown),
@@ -941,15 +1039,13 @@ fn signed_dihedral(concavity: EdgeConcavity, angle: Option<f64>) -> Option<f64> 
 }
 
 fn edge_relation_with_faces_and_probe(
-    topo: &Topology,
-    solid: SolidId,
+    context: &EdgeRelationContext<'_>,
     edge: EdgeId,
     face_a: FaceId,
     face_b: FaceId,
     probe: f64,
 ) -> Result<EdgeRelation, OperationsError> {
-    let concavity = edge_concavity_from_faces(topo, solid, edge, face_a, face_b, probe)?;
-    let angle = edge_normal_angle(topo, edge, face_a, face_b)?;
+    let (concavity, angle) = context.concavity_and_angle(edge, face_a, face_b, probe)?;
     Ok(EdgeRelation {
         edge,
         concavity,
@@ -960,8 +1056,8 @@ fn edge_relation_with_faces_and_probe(
 /// Classify one edge of `solid`, with an optional caller probe.
 ///
 /// This is the single-edge bulk path: adjacency is built once for the lookup
-/// and the non-robust `edge_concavity_from_faces` classifier runs, so a
-/// per-edge loop over [`solid_edge_relations`] stays consistent with this
+/// and the bulk classifier (one prepared point classifier per call) runs, so
+/// a per-edge loop over [`solid_edge_relations`] stays consistent with this
 /// call. `probe = None` selects [`default_concavity_probe`]
 /// (`0.05 * local_scale`); `Some(p)` must be positive and finite. A
 /// non-manifold edge, a self-seam, or a probe above 25 % of the local scale
@@ -1015,18 +1111,19 @@ pub fn edge_relation(
             dihedral_angle: None,
         });
     };
-    edge_relation_with_faces_and_probe(topo, solid, edge, face_a, face_b, probe_eff)
+    let context = EdgeRelationContext::prepare(topo, solid)?;
+    edge_relation_with_faces_and_probe(&context, edge, face_a, face_b, probe_eff)
 }
 
 /// Classify every edge of `solid` in one pass.
 ///
-/// Adjacency is built once and the bulk `edge_concavity_from_faces`
-/// classifier runs per edge, so a 2 000-edge import costs one adjacency plus
-/// one classification per edge — never the quadratic rebuild a per-edge loop
-/// over the single-edge binding would pay. `probe = None` selects the
-/// per-edge [`default_concavity_probe`] (`0.05 * local_scale`, documented
-/// there); `Some(p)` applies one caller probe to every edge and must be
-/// positive and finite. Edges that are non-manifold, self-seams, degenerate,
+/// Adjacency and the point classifier are prepared once and reused for every
+/// edge, so a 2 000-edge import costs one adjacency and one classifier
+/// preparation plus one classification per edge — never the quadratic
+/// rebuild a per-edge loop over the single-edge binding would pay.
+/// `probe = None` selects the per-edge [`default_concavity_probe`]
+/// (`0.05 * local_scale`, documented there); `Some(p)` applies one caller
+/// probe to every edge and must be positive and finite. Edges that are non-manifold, self-seams, degenerate,
 /// or probed above 25 % of their local scale report
 /// [`EdgeConcavity::Unknown`] with no dihedral rather than a guess.
 ///
@@ -1046,6 +1143,7 @@ pub fn solid_edge_relations(
     }
     let adjacency = topo.build_adjacency(solid)?;
     let edges = remus_topology::explorer::solid_edges(topo, solid)?;
+    let context = EdgeRelationContext::prepare(topo, solid)?;
     let mut out = Vec::with_capacity(edges.len());
     for edge in edges {
         let faces = adjacency.faces_for_edge(edge);
@@ -1071,7 +1169,7 @@ pub fn solid_edge_relations(
             continue;
         };
         out.push(edge_relation_with_faces_and_probe(
-            topo, solid, edge, face_a, face_b, probe_eff,
+            &context, edge, face_a, face_b, probe_eff,
         )?);
     }
     Ok(out)
