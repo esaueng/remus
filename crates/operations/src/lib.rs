@@ -105,6 +105,7 @@ fn dot_normal_point(n: Vec3, p: Point3) -> f64 {
 
 /// Resolve an edge's stored parameter authority without reconstructing it
 /// from endpoint projection.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 pub(crate) fn authoritative_edge_domain(
     edge: &remus_topology::edge::Edge,
     context: &str,
@@ -143,6 +144,21 @@ pub(crate) fn preflight_face_edge_domains(
 /// replaced.
 pub(crate) fn normalize_legacy_edge_domain(
     topo: &mut remus_topology::Topology,
+    edge_id: remus_topology::edge::EdgeId,
+    context: &str,
+) -> Result<(f64, f64), OperationsError> {
+    if let Ok(range) = topo.edge(edge_id)?.strict_domain() {
+        return Ok(range);
+    }
+    let range = reconstruct_legacy_edge_domain(topo, edge_id, context)?;
+    topo.edge_mut(edge_id)?.set_trim(Some(range));
+    Ok(range)
+}
+
+/// Read-only legacy range reconstruction with the same certification as the
+/// raw-wire adapter. Measurement needs only the edge and its two vertices.
+pub(crate) fn reconstruct_legacy_edge_domain(
+    topo: &remus_topology::Topology,
     edge_id: remus_topology::edge::EdgeId,
     context: &str,
 ) -> Result<(f64, f64), OperationsError> {
@@ -235,7 +251,6 @@ pub(crate) fn normalize_legacy_edge_domain(
         }
     }
 
-    topo.edge_mut(edge_id)?.set_trim(Some(range));
     Ok(range)
 }
 

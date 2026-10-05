@@ -94,6 +94,69 @@ fn polygon_face(topo: &mut Topology, corners: &[Point3], normal: Vec3) -> FaceId
     topo.add_face(Face::new(wire, vec![], plane_surface(normal, corners[0])))
 }
 
+#[test]
+fn boundary_junction_keeps_a_nearby_cap_separate() {
+    for scale in [0.1, 1.0, 100.0] {
+        for normal in [Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)] {
+            let mut topo = Topology::new();
+            let (u, v) = plane_basis(normal);
+            let n = normal.normalize().unwrap();
+            let origin = Point3::new(7.0, -11.0, 13.0);
+            let p = |a: f64, b: f64| origin + (u * a + v * b) * scale;
+            let wall = polygon_face(
+                &mut topo,
+                &[p(0.0, 0.0), p(4.0, 0.0), p(4.0, 2.0), p(0.0, 2.0)],
+                normal,
+            );
+            // Both sections lie within the search band of the wall's cap
+            // vertex. Only the section at height 2 may adopt that vertex.
+            for height in [1.999, 2.0] {
+                let expected = p(0.0, height);
+                let section = polygon_face(
+                    &mut topo,
+                    &[
+                        p(-1.0, height) - n * scale,
+                        p(5.0, height) - n * scale,
+                        p(5.0, height) + n * scale,
+                        p(-1.0, height) + n * scale,
+                    ],
+                    v,
+                );
+                for (a, b) in [(wall, section), (section, wall)] {
+                    if height < 2.0
+                        && let Some(candidate) = super::snap_to_boundary_junction_band(
+                            &topo,
+                            a,
+                            b,
+                            p(0.0, 2.0),
+                            Tolerance::new(),
+                            scale * 0.002,
+                        )
+                    {
+                        assert!(
+                            (v.dot(candidate - origin) - height * scale).abs() < 1e-7,
+                            "an off-surface registry candidate must not validate"
+                        );
+                    }
+                    let actual = super::snap_to_boundary_junction_band(
+                        &topo,
+                        a,
+                        b,
+                        expected + u * (scale * 1e-5),
+                        Tolerance::new(),
+                        scale * 0.002,
+                    )
+                    .unwrap();
+                    assert!(
+                        (actual - expected).length() < 1e-7,
+                        "scale {scale}, height {height}: {actual:?}, expected {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn raw_line(p: Point3, q: Point3) -> RawCurve {
     RawCurve {
         curve: EdgeCurve::Line,

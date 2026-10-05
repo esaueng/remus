@@ -475,7 +475,7 @@ fn refuse_material_overlap(
     let tolerance = Tolerance::new();
     let boxes = solids
         .iter()
-        .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+        .map(|&solid| crate::measure::conservative_solid_bounding_box(topo, solid))
         .collect::<Result<Vec<_>, _>>()?;
     let mut sweep_order = (0..solids.len()).collect::<Vec<_>>();
     sweep_order.sort_by(|&left, &right| {
