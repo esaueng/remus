@@ -24,6 +24,11 @@ use super::helpers::{collect_solid_face_ids, collect_wire_positions};
 /// tessellation and the sampled planar fallback; both are documented at the
 /// functions that own them.
 ///
+/// The two quadrature paths go through the thread's face-integral cache
+/// (`remus_check::properties::face_cache`, off unless an application enables
+/// it), which returns a previous reading of the same face content bit for
+/// bit.
+///
 /// # Errors
 ///
 /// Returns an error if the face is missing or tessellation fails.
@@ -37,10 +42,16 @@ pub fn face_area(
     match face.surface() {
         FaceSurface::Plane { .. } => {
             if planar_boundary_needs_curve_integral(topo, face_id)? {
+                // `integrate_face` is the fixed rule about the origin.
                 Ok(
-                    remus_check::properties::face_integrator::integrate_face(topo, face_id, 5)?
-                        .area
-                        .abs(),
+                    remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
+                        topo,
+                        face_id,
+                        5,
+                        Point3::new(0.0, 0.0, 0.0),
+                    )?
+                    .area
+                    .abs(),
                 )
             } else {
                 planar_face_area(topo, face_id)
@@ -53,7 +64,8 @@ pub fn face_area(
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_) => Ok(
-            remus_check::properties::face_integrator::integrate_face_area(topo, face_id, 8)?.abs(),
+            remus_check::properties::face_cache::integrate_face_area_memoized(topo, face_id, 8)?
+                .abs(),
         ),
         FaceSurface::Nurbs(_) => {
             let mesh = tessellate::tessellate(topo, face_id, deflection)?;
