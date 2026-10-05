@@ -5,8 +5,13 @@
 //! for analytic surfaces and 3D polygon containment for surfaces with
 //! pole singularities (spheres).
 
+use std::sync::OnceLock;
+
 use smallvec::SmallVec;
 
+use remus_math::nurbs::intersection::LineSurfaceSeedGrid;
+use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
+use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::predicates::point_in_polygon;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
@@ -539,6 +544,190 @@ impl FaceTrimData {
     }
 }
 
+/// Seed-grid resolution for ray-NURBS crossings (`ray_nurbs`'s `n_samples`).
+const NURBS_RAY_SAMPLES: usize = 20;
+
+/// Ray- and point-independent work for one face, computed at most once per
+/// prepared face and then shared by every later query (O06).
+///
+/// Each value is a pure function of the face's support surface and its trim
+/// polygons, so a cached value is bit-for-bit what the one-shot path
+/// recomputes on every ray: for a NURBS face the line-intersection seed grid
+/// behind `ray_nurbs` ([`LineSurfaceSeedGrid`]), the point-projection seed
+/// grid behind `project_point_to_surface` ([`SurfaceSeedGrid`]) and the UV
+/// images of the trim polygons; for a cylinder, cone or torus face the UV
+/// images of its trim polygons. A cache belongs to exactly one face of one
+/// frozen topology. `OnceLock` keeps the owning context `Send + Sync`.
+#[derive(Debug, Clone, Default)]
+pub struct FaceCache {
+    line_grid: OnceLock<LineSurfaceSeedGrid>,
+    projection_grid: OnceLock<SurfaceSeedGrid>,
+    uv_trim: OnceLock<NurbsUvTrim>,
+    analytic_uv_trim: OnceLock<AnalyticUvTrim>,
+}
+
+/// UV images of a cylinder, cone or torus face's trim polygons, as
+/// [`count_analytic_crossings_with_trim`] builds them.
+#[derive(Debug, Clone)]
+struct AnalyticUvTrim {
+    /// The outer loop in UV, or `None` for a full-surface face.
+    uv_boundary: Option<Vec<(f64, f64)>>,
+    /// Hole loops in UV.
+    holes: Vec<Vec<(f64, f64)>>,
+    /// Whether some loop wraps a period of a doubly periodic surface, so
+    /// containment is decided by orientation rather than parity.
+    wraps: bool,
+}
+
+impl AnalyticUvTrim {
+    fn build<F>(
+        trim_data: &FaceTrimData,
+        project: &F,
+        v_periodic: bool,
+        u_pole: Option<f64>,
+    ) -> Self
+    where
+        F: Fn(Point3) -> (f64, f64),
+    {
+        let verts = &trim_data.outer;
+
+        // Detect degenerate boundary: a "full-surface" face whose wire has
+        // fewer than 3 distinct vertices. Every positive-t root outside a hole
+        // counts.
+        let is_full_surface = verts.len() < 3 || {
+            let ref_pt = verts[0];
+            verts
+                .iter()
+                .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
+        };
+        // Every analytic surface here parameterizes u as an angle with period
+        // 2pi; v is angular only for the torus.
+        let u_period = Some(std::f64::consts::TAU);
+        let v_period = v_periodic.then_some(std::f64::consts::TAU);
+        let uv_boundary = (!is_full_surface)
+            .then(|| build_uv_boundary(verts, project, u_period, v_period, u_pole));
+        let holes =
+            hole_uv_boundaries_from_cached(&trim_data.holes, project, u_period, v_period, u_pole);
+
+        // A loop that wraps a period bounds no polygon: decide by orientation.
+        // Only on the torus. Booleans bound cylinder and cone walls with
+        // doubled seams, whose loops close in `(u, v)`, so parity stays exact
+        // there; a seamless two-ring wall (outer rim, inner rim) still reads
+        // as empty.
+        let wraps = v_periodic
+            && uv_boundary
+                .iter()
+                .chain(&holes)
+                .any(|uv_loop| uv_loop_wraps(uv_loop, u_period, v_period));
+        Self {
+            uv_boundary,
+            holes,
+            wraps,
+        }
+    }
+}
+
+impl FaceCache {
+    /// The projection seed grid for `surface` (the face's support surface).
+    pub fn projection_grid(&self, surface: &NurbsSurface) -> &SurfaceSeedGrid {
+        self.projection_grid
+            .get_or_init(|| SurfaceSeedGrid::for_surface(surface))
+    }
+
+    fn line_grid(&self, surface: &NurbsSurface) -> &LineSurfaceSeedGrid {
+        self.line_grid
+            .get_or_init(|| LineSurfaceSeedGrid::for_surface(surface, NURBS_RAY_SAMPLES))
+    }
+}
+
+/// `ParametricSurface::project_point` for a NURBS surface, optionally seeded
+/// from a prebuilt grid: the same Newton start, so the same `(u, v)`, and the
+/// same domain-midpoint fallback when Newton fails.
+fn nurbs_project_uv(
+    surface: &NurbsSurface,
+    point: Point3,
+    grid: Option<&SurfaceSeedGrid>,
+) -> (f64, f64) {
+    let Some(grid) = grid else {
+        return surface.project_point(point);
+    };
+    if let Ok(proj) = project_point_to_surface_with_grid(surface, point, 1e-7, grid) {
+        (proj.u, proj.v)
+    } else {
+        let (u0, u1) = surface.domain_u();
+        let (v0, v1) = surface.domain_v();
+        ((u0 + u1) * 0.5, (v0 + v1) * 0.5)
+    }
+}
+
+/// UV images of a NURBS face's trim polygons, as [`count_nurbs_hits_with_trim`]
+/// builds them.
+#[derive(Debug, Clone)]
+struct NurbsUvTrim {
+    /// The surface's `u` period when it closes in `u` (its knot span).
+    u_period: Option<f64>,
+    /// The surface's `v` period when it closes in `v` (its knot span).
+    v_period: Option<f64>,
+    /// The outer loop in UV, or `None` for a full-surface face.
+    uv_boundary: Option<Vec<(f64, f64)>>,
+    /// Whether `uv_boundary` encloses no UV area.
+    degenerate: bool,
+    /// Hole loops in UV; built only for a non-degenerate boundary, exactly
+    /// when the one-shot path builds them.
+    holes: Vec<Vec<(f64, f64)>>,
+}
+
+impl NurbsUvTrim {
+    fn build(surface: &NurbsSurface, trim: &FaceTrimData, grid: Option<&SurfaceSeedGrid>) -> Self {
+        let verts = &trim.outer;
+        let project = |p: Point3| -> (f64, f64) { nurbs_project_uv(surface, p, grid) };
+        // A full-surface face counts every forward hit that does not land in
+        // a hole. `count_analytic_crossings` tests this two ways -- too few
+        // boundary points, OR every boundary point coincident -- and only the
+        // first test was made here. A doubly-periodic face (a full torus) has
+        // a boundary of exactly its seam endpoints: four vertices, all at one
+        // place. That passes `len() >= 3`, so a degenerate polygon was built
+        // and every hit on the face was then trimmed away against it.
+        let is_full_surface = verts.len() < 3 || {
+            let ref_pt = verts[0];
+            verts
+                .iter()
+                .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
+        };
+        // A NURBS u/v are knot parameters, not angles. Unwrapping them by 2pi
+        // is meaningless -- and actively wrong, since a b-spline domain
+        // routinely spans more than pi (a converted box face spans 12.0), so
+        // consecutive boundary vertices get shifted by a spurious 2pi. When
+        // the surface really does close in a direction, the period is that
+        // direction's knot span: without it the seam projects onto the wrong
+        // branch and the trim polygon collapses, rejecting every hit on the
+        // face.
+        let u_period = surface
+            .is_periodic_u()
+            .then(|| surface.domain_u().1 - surface.domain_u().0);
+        let v_period = surface
+            .is_periodic_v()
+            .then(|| surface.domain_v().1 - surface.domain_v().0);
+        let uv_boundary = (!is_full_surface)
+            .then(|| build_uv_boundary(verts, &project, u_period, v_period, None));
+        let degenerate = uv_boundary
+            .as_deref()
+            .is_some_and(uv_boundary_is_degenerate);
+        let holes = if degenerate {
+            Vec::new()
+        } else {
+            hole_uv_boundaries_from_cached(&trim.holes, &project, u_period, v_period, None)
+        };
+        Self {
+            u_period,
+            v_period,
+            uv_boundary,
+            degenerate,
+            holes,
+        }
+    }
+}
+
 /// True when a hit lands in one of the face's holes (3D polygon variant).
 fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
     holes
@@ -569,17 +758,20 @@ fn count_analytic_crossings<F>(
 where
     F: Fn(Point3) -> (f64, f64),
 {
-    count_analytic_crossings_with_trim(topo, face_id, None, hits, project, v_periodic, u_pole)
+    count_analytic_crossings_with_trim(topo, face_id, None, None, hits, project, v_periodic, u_pole)
 }
 
-/// [`count_analytic_crossings`] with caller-supplied trim data.
+/// [`count_analytic_crossings`] with caller-supplied trim data and an optional
+/// prepared cache for the trim's UV images.
 ///
 /// `trim` carries the prepared polygons; `None` builds them on demand exactly
 /// as the one-shot path always has (preserving its early-outs and errors).
+#[allow(clippy::too_many_arguments)]
 fn count_analytic_crossings_with_trim<F>(
     topo: &Topology,
     face_id: FaceId,
     trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
     hits: &[Point3],
     project: F,
     v_periodic: bool,
@@ -599,40 +791,23 @@ where
         owned_trim = FaceTrimData::build(topo, face_id)?;
         &owned_trim
     };
-    let verts = &trim_data.outer;
-
-    // Detect degenerate boundary: a "full-surface" face whose wire has fewer
-    // than 3 distinct vertices. Every positive-t root outside a hole counts.
-    let is_full_surface = verts.len() < 3 || {
-        let ref_pt = verts[0];
-        verts
-            .iter()
-            .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
+    let owned_uv;
+    let uv = if let Some(cache) = cache {
+        cache
+            .analytic_uv_trim
+            .get_or_init(|| AnalyticUvTrim::build(trim_data, &project, v_periodic, u_pole))
+    } else {
+        owned_uv = AnalyticUvTrim::build(trim_data, &project, v_periodic, u_pole);
+        &owned_uv
     };
-    // Every analytic surface here parameterizes u as an angle with period 2pi;
-    // v is angular only for the torus.
     let u_period = Some(std::f64::consts::TAU);
     let v_period = v_periodic.then_some(std::f64::consts::TAU);
-    let uv_boundary =
-        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period, u_pole));
-    let holes =
-        hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period, u_pole);
+    let uv_boundary = &uv.uv_boundary;
+    let holes = &uv.holes;
 
-    // A loop that wraps a period bounds no polygon: decide by orientation.
-    // Only on the torus. Booleans bound cylinder and cone walls with doubled
-    // seams, whose loops close in `(u, v)`, so parity stays exact there; a
-    // seamless two-ring wall (outer rim, inner rim) still reads as empty.
-    if v_periodic
-        && uv_boundary
-            .iter()
-            .chain(&holes)
-            .any(|uv_loop| uv_loop_wraps(uv_loop, u_period, v_period))
-    {
-        let loops: Vec<&[(f64, f64)]> = uv_boundary
-            .iter()
-            .chain(&holes)
-            .map(Vec::as_slice)
-            .collect();
+    if uv.wraps {
+        let loops: Vec<&[(f64, f64)]> =
+            uv_boundary.iter().chain(holes).map(Vec::as_slice).collect();
         let mut crossings = 0u32;
         for &hit in hits {
             let (hit_u, hit_v) = project(hit);
@@ -648,13 +823,13 @@ where
     for &hit in hits {
         let (hit_u, hit_v) = project(hit);
 
-        if let Some(boundary) = &uv_boundary
+        if let Some(boundary) = uv_boundary
             && !point_in_uv_boundary(hit_u, hit_v, boundary, u_period, v_period)
         {
             continue;
         }
         // The trimmed face carries no material inside its inner wires.
-        if hit_in_hole_uv(&holes, hit_u, hit_v, u_period, v_period) {
+        if hit_in_hole_uv(holes, hit_u, hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
@@ -1005,6 +1180,26 @@ pub fn count_face_ray_crossings_with_trim(
     origin: Point3,
     direction: Vec3,
 ) -> Result<u32, CheckError> {
+    count_face_ray_crossings_cached(topo, face_id, trim, None, origin, direction)
+}
+
+/// [`count_face_ray_crossings_with_trim`] with an optional per-face cache
+/// from a prepared context.
+///
+/// Every cached value equals what `None` recomputes, so the count is
+/// identical.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups or intersection computations fail.
+pub fn count_face_ray_crossings_cached(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
+    origin: Point3,
+    direction: Vec3,
+) -> Result<u32, CheckError> {
     let face = topo.face(face_id)?;
     match face.surface() {
         FaceSurface::Plane { normal, d } => {
@@ -1017,6 +1212,7 @@ pub fn count_face_ray_crossings_with_trim(
                 topo,
                 face_id,
                 trim,
+                cache,
                 &ray_hit_points(origin, direction, &roots),
                 |p| cyl.project_point(p),
                 false,
@@ -1030,6 +1226,7 @@ pub fn count_face_ray_crossings_with_trim(
                 topo,
                 face_id,
                 trim,
+                cache,
                 &ray_hit_points(origin, direction, &roots),
                 |p| cone.project_point(p),
                 false,
@@ -1075,6 +1272,7 @@ pub fn count_face_ray_crossings_with_trim(
                 topo,
                 face_id,
                 trim,
+                cache,
                 &ray_hit_points(origin, direction, &roots),
                 |p| tor.project_point(p),
                 true,
@@ -1082,7 +1280,7 @@ pub fn count_face_ray_crossings_with_trim(
             )
         }
         FaceSurface::Nurbs(surface) => {
-            ray_crossings_nurbs_with_trim(topo, face_id, trim, origin, direction, surface)
+            ray_crossings_nurbs_with_trim(topo, face_id, trim, cache, origin, direction, surface)
         }
     }
 }
@@ -1155,11 +1353,17 @@ fn ray_crossings_nurbs_with_trim(
     topo: &Topology,
     face_id: FaceId,
     trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
     origin: Point3,
     direction: Vec3,
-    surface: &remus_math::nurbs::surface::NurbsSurface,
+    surface: &NurbsSurface,
 ) -> Result<u32, CheckError> {
-    let hits = ray_surface::ray_nurbs(origin, direction, surface, 20)?;
+    let hits = match cache {
+        Some(cache) => {
+            ray_surface::ray_nurbs_with_grid(origin, direction, surface, cache.line_grid(surface))?
+        }
+        None => ray_surface::ray_nurbs(origin, direction, surface, NURBS_RAY_SAMPLES)?,
+    };
     if hits.is_empty() {
         return Ok(0);
     }
@@ -1175,7 +1379,7 @@ fn ray_crossings_nurbs_with_trim(
         .iter()
         .map(|&(t, u, v)| (origin + direction * t, u, v))
         .collect();
-    count_nurbs_hits_with_trim(topo, face_id, Some(trim_data), surface, &points)
+    count_nurbs_hits_with_trim(topo, face_id, Some(trim_data), cache, surface, &points)
 }
 
 /// Certify a complete NURBS cap bounded by one planar periodic rim.
@@ -1251,12 +1455,14 @@ fn full_nurbs_cap_inward_normal(
 }
 
 /// UV-trimmed NURBS hit counting with caller-supplied trim data (`None`
-/// builds it on demand, exactly as the one-shot path always has).
+/// builds it on demand, exactly as the one-shot path always has) and an
+/// optional prepared cache for the trim's UV images.
 fn count_nurbs_hits_with_trim(
     topo: &Topology,
     face_id: FaceId,
     trim: Option<&FaceTrimData>,
-    surface: &remus_math::nurbs::surface::NurbsSurface,
+    cache: Option<&FaceCache>,
+    surface: &NurbsSurface,
     hits: &[(Point3, f64, f64)],
 ) -> Result<u32, CheckError> {
     let owned_trim;
@@ -1266,36 +1472,17 @@ fn count_nurbs_hits_with_trim(
         owned_trim = FaceTrimData::build(topo, face_id)?;
         &owned_trim
     };
-    let verts = &trim_data.outer;
-    let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
-    // A full-surface face counts every forward hit that does not land in a
-    // hole. `count_analytic_crossings` tests this two ways -- too few boundary
-    // points, OR every boundary point coincident -- and only the first test was
-    // made here. A doubly-periodic face (a full torus) has a boundary of
-    // exactly its seam endpoints: four vertices, all at one place. That passes
-    // `len() >= 3`, so a degenerate polygon was built and every hit on the face
-    // was then trimmed away against it.
-    let is_full_surface = verts.len() < 3 || {
-        let ref_pt = verts[0];
-        verts
-            .iter()
-            .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
+    let owned_uv;
+    let uv = if let Some(cache) = cache {
+        cache.uv_trim.get_or_init(|| {
+            NurbsUvTrim::build(surface, trim_data, Some(cache.projection_grid(surface)))
+        })
+    } else {
+        owned_uv = NurbsUvTrim::build(surface, trim_data, None);
+        &owned_uv
     };
-    // A NURBS u/v are knot parameters, not angles. Unwrapping them by 2pi is
-    // meaningless -- and actively wrong, since a b-spline domain routinely
-    // spans more than pi (a converted box face spans 12.0), so consecutive
-    // boundary vertices get shifted by a spurious 2pi. When the surface really
-    // does close in a direction, the period is that direction's knot span:
-    // without it the seam projects onto the wrong branch and the trim polygon
-    // collapses, rejecting every hit on the face.
-    let u_period = surface
-        .is_periodic_u()
-        .then(|| surface.domain_u().1 - surface.domain_u().0);
-    let v_period = surface
-        .is_periodic_v()
-        .then(|| surface.domain_v().1 - surface.domain_v().0);
-    let uv_boundary =
-        (!is_full_surface).then(|| build_uv_boundary(verts, &project, u_period, v_period, None));
+    let (u_period, v_period) = (uv.u_period, uv.v_period);
+    let uv_boundary = &uv.uv_boundary;
 
     // A boundary that encloses no UV area does not bound a patch -- it splits
     // the surface, and which half this face takes is carried by the WINDING of
@@ -1310,8 +1497,8 @@ fn count_nurbs_hits_with_trim(
     // boundary would not be handled correctly here, though it is no worse off
     // than under the UV test, which credits it with no crossings at all.
     // A certified full NURBS cap uses its exact half-space before this fallback.
-    if let Some(boundary) = &uv_boundary
-        && uv_boundary_is_degenerate(boundary)
+    if let Some(boundary) = uv_boundary
+        && uv.degenerate
     {
         if let Some(inward) =
             full_nurbs_cap_inward_normal(surface, trim_data, boundary, u_period, v_period)
@@ -1327,17 +1514,16 @@ fn count_nurbs_hits_with_trim(
         return count_3d_polygon_crossings_with_trim(topo, face_id, Some(trim_data), &points);
     }
 
-    let holes =
-        hole_uv_boundaries_from_cached(&trim_data.holes, &project, u_period, v_period, None);
+    let holes = &uv.holes;
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in hits {
-        if let Some(boundary) = &uv_boundary
+        if let Some(boundary) = uv_boundary
             && !point_in_uv_boundary(*hit_u, *hit_v, boundary, u_period, v_period)
         {
             continue;
         }
-        if hit_in_hole_uv(&holes, *hit_u, *hit_v, u_period, v_period) {
+        if hit_in_hole_uv(holes, *hit_u, *hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
@@ -1411,7 +1597,7 @@ pub fn surface_point_in_face(
         }
         FaceSurface::Nurbs(surface) => {
             let (u, v) = surface.project_point(point);
-            count_nurbs_hits_with_trim(topo, face_id, None, surface, &[(point, u, v)])?
+            count_nurbs_hits_with_trim(topo, face_id, None, None, surface, &[(point, u, v)])?
         }
     };
     Ok(count > 0)
