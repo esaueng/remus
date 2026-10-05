@@ -543,7 +543,7 @@ fn open_mesh_exact_volume(
 /// Planes (Green's theorem on the real boundary), NURBS patches, closing
 /// quadric trims — NURBS-trimmed countersink cones and cross-drilled bores
 /// among them — and holed cylinder/cone walls integrate on their outline.
-fn gauss_unqualified_face(
+pub fn gauss_unqualified_face(
     topo: &Topology,
     fid: FaceId,
 ) -> Result<Option<&'static str>, crate::OperationsError> {
@@ -1932,6 +1932,13 @@ pub(super) fn volume_tessellation_deflection(
 ///
 /// Returns `None` when any face fails to integrate, which is a "cannot say"
 /// rather than a verdict: callers must not read that as "correctly wound".
+///
+/// With the thread's face-integral cache enabled (off by default; the WASM
+/// kernel enables it), faces whose content — or a rigid translation of it —
+/// was integrated before are re-expressed about this shell's reference
+/// instead of integrated again. The sum then differs from an uncached one by
+/// rounding (~1e-15 of the shell's own scale), never by a sign the probe
+/// could read.
 pub fn shell_signed_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -1974,8 +1981,13 @@ pub fn shell_signed_volume(
     };
     let mut total = 0.0;
     for &fid in &faces {
-        // Orientation probes need fixed-order signs, not adaptive moment convergence.
-        total += remus_check::properties::face_integrator::integrate_face_fixed_about(
+        // Orientation probes need fixed-order signs, not adaptive moment
+        // convergence. Through the thread's face-integral cache when an
+        // application enabled it: a face integrated before — about another
+        // reference, or before a rigid move translated it — is re-expressed
+        // about this one from its vector area, equal to integrating afresh
+        // up to rounding (see `remus_check::properties::face_cache`).
+        total += remus_check::properties::face_cache::integrate_face_volume_about_memoized(
             topo,
             fid,
             gauss_order,
@@ -2101,7 +2113,24 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// on its closed mesh tessellates open, carries a face the exact Gauss
 /// integrator does not measure either, and has no closed mesh at the clamp to
 /// fall back on (see above).
+///
+/// # Memo
+///
+/// With this thread's volume memo enabled (see
+/// [`super::enable_thread_volume_memo`]; off by default), a repeated reading
+/// of the same solid at the same deflection on an unchanged topology returns
+/// the previous result, bit for bit.
 pub fn solid_volume(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    super::volume_memo::memoized(topo, solid, deflection, || {
+        solid_volume_uncached(topo, solid, deflection)
+    })
+}
+
+fn solid_volume_uncached(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
