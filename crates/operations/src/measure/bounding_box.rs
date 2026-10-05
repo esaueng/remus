@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use remus_math::aabb::Aabb3;
+use remus_math::nurbs::knot_ops::{surface_knot_insert_u, surface_knot_insert_v};
 use remus_math::nurbs::projection::{project_point_to_surface, project_point_to_surface_seeded};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::{SphericalSurface, ToroidalSurface};
@@ -19,9 +20,11 @@ use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 ///
 /// Uses vertex positions as the base AABB, then expands for non-planar
 /// surfaces by sampling edge midpoints on the surface. This captures
-/// curvature without over-expanding (unlike projecting the surface's
-/// full theoretical extent): every expansion is bounded by the region the
-/// face actually occupies, never the whole surface its geometry sits on.
+/// curvature over the region recovered from the face boundary. NURBS patches
+/// use a refined control hull instead of sampled extrema; an unresolved patch
+/// falls back to its whole carrier hull. NURBS trim domains are recovered
+/// numerically; use the internal conservative bound for decisions that must
+/// prove two solids disjoint.
 ///
 /// # Errors
 ///
@@ -52,6 +55,51 @@ pub fn solid_bounding_box(
     Ok(aabb)
 }
 
+/// Bounds for rejection/partition decisions must not depend on numerically
+/// recovered NURBS trim domains. Cover the whole positive-weight carrier and
+/// every authoritative boundary span instead of sampled surface extrema.
+pub fn conservative_solid_bounding_box(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Aabb3, crate::OperationsError> {
+    conservative_face_set_bounding_box(topo, &remus_topology::explorer::solid_faces(topo, solid)?)
+}
+
+/// Conservative carrier/boundary bounds for a connected face component.
+pub fn conservative_face_set_bounding_box(
+    topo: &Topology,
+    faces: &[FaceId],
+) -> Result<Aabb3, crate::OperationsError> {
+    let mut bounds = face_set_vertex_bounding_box(topo, faces)?;
+    for &face_id in faces {
+        let face = topo.face(face_id)?;
+        if let FaceSurface::Nurbs(surface) = face.surface() {
+            bounds = bounds.union(
+                remus_geometry::bounds::surface::nurbs_surface_bounds(surface, None, None).aabb(),
+            );
+        } else {
+            expand_aabb_for_face(topo, &mut bounds, face_id, face.surface());
+        }
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let bound =
+                    remus_check::distance::face_bounds::edge_span_bound(topo, oriented.edge())?;
+                if bound.is_prunable() {
+                    bounds = bounds.union(bound.aabb());
+                } else {
+                    // Unknown bounds cannot authorize rejection.
+                    return Ok(remus_geometry::bounds::FiniteBound::infinite_unknown(
+                        "unknown_boundary_span",
+                    )
+                    .aabb());
+                }
+            }
+        }
+    }
+    Ok(bounds)
+}
+
 /// Compute the axis-aligned bounding box of a first-class sheet body.
 ///
 /// # Errors
@@ -78,7 +126,7 @@ pub fn sheet_bounding_box(
 ///
 /// Like [`solid_bounding_box`], the box starts from the faces' vertex
 /// positions and is then expanded for surface curvature, so the returned box
-/// is a conservative *outer* bound of every face in the set. Used by the
+/// encloses each resolved patch; NURBS trim recovery is numerical. Used by the
 /// disjoint-fuse fast path to test whether two operands' components are
 /// spatially separated.
 ///
@@ -87,6 +135,17 @@ pub fn sheet_bounding_box(
 /// Returns an error if the face set is empty (no vertices) or a topology
 /// lookup fails.
 pub fn face_set_bounding_box(
+    topo: &Topology,
+    faces: &[FaceId],
+) -> Result<Aabb3, crate::OperationsError> {
+    let mut aabb = face_set_vertex_bounding_box(topo, faces)?;
+    for &fid in faces {
+        expand_aabb_for_face(topo, &mut aabb, fid, topo.face(fid)?.surface());
+    }
+    Ok(aabb)
+}
+
+fn face_set_vertex_bounding_box(
     topo: &Topology,
     faces: &[FaceId],
 ) -> Result<Aabb3, crate::OperationsError> {
@@ -109,19 +168,11 @@ pub fn face_set_bounding_box(
     for vid in vertex_ids {
         points.push(topo.vertex(vid)?.point());
     }
-    let mut aabb = Aabb3::try_from_points(points.iter().copied()).ok_or_else(|| {
+    Aabb3::try_from_points(points.iter().copied()).ok_or_else(|| {
         crate::OperationsError::InvalidInput {
             reason: "face set has no vertices".into(),
         }
-    })?;
-
-    for &fid in faces {
-        if let Ok(face) = topo.face(fid) {
-            expand_aabb_for_face(topo, &mut aabb, fid, face.surface());
-        }
-    }
-
-    Ok(aabb)
+    })
 }
 
 /// Expand an AABB to include a point.
@@ -136,8 +187,8 @@ fn aabb_include(aabb: &mut Aabb3, p: Point3) {
 ///   region, recovered from its boundary (see [`ring_patch_box`])
 /// - **Cylinder/Cone**: wire-bounded expansion (sample edge midpoints
 ///   to avoid over-expanding for partial arcs like fillets)
-/// - **NURBS**: sparse interior grid sampling, over the face's *trimmed*
-///   parameter box (see [`nurbs_patch_domain`])
+/// - **NURBS**: refined control hull over the recovered trim rectangle
+///   (see [`nurbs_patch_domain`])
 /// - **Plane**: no expansion needed
 #[allow(clippy::too_many_lines)]
 fn expand_aabb_for_face(
@@ -199,7 +250,7 @@ fn expand_aabb_for_face(
             expand_cone_patch(topo, aabb, face_id, c);
         }
 
-        // NURBS: grid-sample the surface over the region the face is trimmed
+        // NURBS: bound the surface over the region the face is trimmed
         // to, not the whole knot domain — a face cut from the corner of a big
         // patch must not report the rest of the patch, same as the analytic
         // arms above.
@@ -213,23 +264,59 @@ fn expand_aabb_for_face(
                 return;
             }
             let dom = nurbs_patch_domain(topo, face_id, nurbs);
-            let ((u_min, u_max), (v_min, v_max)) = (dom.u, dom.v);
-            // Sampled closed, endpoints included: the extremes of a region sit
-            // anywhere in its parameter box, commonly on an edge of it, and
-            // that box is now the face's own rather than the whole surface's.
-            // Interior-only sampling was tuned for the full domain, where the
-            // boundary edges covered the rim; on a trimmed region it misses.
-            let n_samples = 4;
-            #[allow(clippy::cast_precision_loss)]
-            for iu in 0..=n_samples {
-                let u = u_min + (u_max - u_min) * (f64::from(iu) / f64::from(n_samples));
-                for iv in 0..=n_samples {
-                    let v = v_min + (v_max - v_min) * (f64::from(iv) / f64::from(n_samples));
-                    aabb_include(aabb, nurbs.evaluate(u, v));
-                }
-            }
+            *aabb = aabb.union(nurbs_patch_hull(nurbs, dom));
         }
     }
+}
+
+/// Knot insertion at the recovered trim rectangle restricts the active
+/// control hull without losing extrema between samples. If refinement cannot
+/// be represented safely, the whole carrier hull remains a sound fallback.
+fn nurbs_patch_hull(nurbs: &NurbsSurface, domain: PatchDomain) -> Aabb3 {
+    let refine = || -> Result<NurbsSurface, remus_math::MathError> {
+        let mut refined = nurbs.clone();
+        for u in [domain.u.0, domain.u.1] {
+            let (lo, hi) = nurbs.domain_u();
+            if u > lo + 1e-15 && u < hi - 1e-15 {
+                refined = surface_knot_insert_u(&refined, u, nurbs.degree_u())?;
+            }
+        }
+        for v in [domain.v.0, domain.v.1] {
+            let (lo, hi) = nurbs.domain_v();
+            if v > lo + 1e-15 && v < hi - 1e-15 {
+                refined = surface_knot_insert_v(&refined, v, nurbs.degree_v())?;
+            }
+        }
+        Ok(refined)
+    };
+    if let Ok(refined) = refine() {
+        // The span finder selects the right span at a knot. At a continuous
+        // upper trim, use its left span: its closed control hull already
+        // contains the endpoint, without the next patch's unrelated points.
+        // Keep both sides of a discontinuity (multiplicity degree + 1).
+        let hull_span = |span: (f64, f64), knots: &[f64], degree: usize| {
+            if span.0 < span.1
+                && knots
+                    .iter()
+                    .filter(|&&k| k.partial_cmp(&span.1) == Some(std::cmp::Ordering::Equal))
+                    .count()
+                    <= degree
+            {
+                (span.0, span.1.next_down())
+            } else {
+                span
+            }
+        };
+        let bound = remus_geometry::bounds::surface::nurbs_surface_bounds(
+            &refined,
+            Some(hull_span(domain.u, refined.knots_u(), refined.degree_u())),
+            Some(hull_span(domain.v, refined.knots_v(), refined.degree_v())),
+        );
+        if bound.is_prunable() {
+            return bound.aabb();
+        }
+    }
+    remus_geometry::bounds::surface::nurbs_surface_bounds(nurbs, None, None).aabb()
 }
 
 /// Samples taken along each boundary edge when recovering a face's trimmed
