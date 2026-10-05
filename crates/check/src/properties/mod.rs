@@ -3,6 +3,7 @@
 pub mod accumulator;
 pub mod analytic;
 pub mod bbox;
+pub mod face_cache;
 pub mod face_integrator;
 
 pub use accumulator::GProps;

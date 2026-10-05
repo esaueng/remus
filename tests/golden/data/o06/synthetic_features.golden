@@ -1,0 +1,16 @@
+fixture=two_hole_plate
+features=2
+hole faces=[24] diameter=0.3999999999999999 through=true
+hole faces=[25] diameter=0.3999999999999999 through=true
+fixture=pocketed_box
+features=1
+pocket floor=22 walls=[18,19,20,21]
+fixture=blind_hole_plate
+features=1
+hole faces=[15] diameter=6.0 through=false
+fixture=chamfered_box
+features=1
+chamfer face=12 adjacent=[8,11] angle=0.7853981633974483
+fixture=filleted_box
+features=1
+fillet_like face=6 area=15.707963267946676
