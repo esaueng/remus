@@ -20,6 +20,28 @@ const WALL_KNOTS_U: [f64; 12] = [
 ];
 const WALL_KNOTS_V: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 
+/// Certify the same complete spline trace, including the exact reversed
+/// representation produced by extrusion. Coefficients and parameter spans
+/// must agree algebraically; co-endpoint lenses and partial spans do not match.
+#[allow(clippy::float_cmp)]
+pub(super) fn identical_nurbs_span(
+    a: &remus_math::nurbs::curve::NurbsCurve,
+    span_a: (f64, f64),
+    b: &remus_math::nurbs::curve::NurbsCurve,
+    span_b: (f64, f64),
+) -> bool {
+    let same_span = |x: (f64, f64), y: (f64, f64)| x == y || x == (y.1, y.0);
+    if a == b && same_span(span_a, span_b) {
+        return true;
+    }
+    let mirrored = |curve: &remus_math::nurbs::curve::NurbsCurve, span: (f64, f64)| {
+        let sum = curve.knots()[0] + curve.knots()[curve.knots().len() - 1];
+        (sum - span.0, sum - span.1)
+    };
+    (a.reversed() == *b && same_span(mirrored(a, span_a), span_b))
+        || (b.reversed() == *a && same_span(span_a, mirrored(b, span_b)))
+}
+
 /// Resolve the stored parameter authority for a topology edge.
 ///
 /// PaveFiller must never reconstruct a curved edge's branch from its endpoint
