@@ -2316,11 +2316,26 @@ fn accumulate_recognized_nurbs_green_segment(
             );
             Ok(true)
         }
-        RecognizedCurve::Circle { center, radius, .. } => {
-            accumulate_recognized_circle_green_segments(
-                moments, center, radius, nc, edge, dir_sign, origin, e1, e2,
-            );
-            Ok(true)
+        RecognizedCurve::Circle {
+            center,
+            normal,
+            radius,
+        } => {
+            let circle =
+                remus_math::curves::Circle3D::new(center, normal, radius).map_err(|_| {
+                    CheckError::IntegrationFailed("recognized circle is degenerate".into())
+                })?;
+            Ok(accumulate_recognized_arc_green_segments(
+                moments,
+                &|p| circle.project(p),
+                &|u| (circle.evaluate(u), circle.tangent(u) * radius),
+                nc,
+                edge,
+                dir_sign,
+                origin,
+                e1,
+                e2,
+            ))
         }
         RecognizedCurve::Ellipse {
             center,
@@ -2340,8 +2355,9 @@ fn accumulate_recognized_nurbs_green_segment(
             .map_err(|_| {
                 CheckError::IntegrationFailed("recognized ellipse is degenerate".into())
             })?;
-            accumulate_recognized_periodic_green_segments(
+            Ok(accumulate_recognized_arc_green_segments(
                 moments,
+                &|p| ellipse.project(p),
                 &|u| (ellipse.evaluate(u), ellipse.tangent(u)),
                 nc,
                 edge,
@@ -2349,8 +2365,7 @@ fn accumulate_recognized_nurbs_green_segment(
                 origin,
                 e1,
                 e2,
-            );
-            Ok(true)
+            ))
         }
         RecognizedCurve::Hyperbola {
             center,
@@ -2580,104 +2595,24 @@ fn nurbs_recognition_verifies(
     Ok(true)
 }
 
-/// Integrate a NURBS edge recognized as a circle.
+/// Integrate a NURBS edge recognized as a circle or an ellipse along the arc
+/// the edge actually traces.
 ///
-/// The recognized circle fixes the center and radius; the NURBS parameter
-/// range trims the arc. Endpoints are projected onto the circle for the
-/// angular span (a closed edge takes the full turn), chunked to ≤ π/2 per
-/// chunk exactly like the native circle arm.
-#[allow(clippy::too_many_arguments)]
-fn accumulate_recognized_circle_green_segments(
-    moments: &mut [f64; 10],
-    center: Point3,
-    radius: f64,
-    nc: &remus_math::nurbs::curve::NurbsCurve,
-    edge: &remus_topology::edge::Edge,
-    dir_sign: f64,
-    origin: Point3,
-    e1: Vec3,
-    e2: Vec3,
-) {
-    use remus_math::curves::Circle3D;
-    // Closed edge (coincident vertices): the full turn. The span is the
-    // edge's stored trim, not the NURBS full domain: a closed edge on a
-    // shared curve traces the trim, and sampling the domain instead would
-    // integrate the wrong arc.
-    let closed = edge.start() == edge.end();
-    let (a0, span) = if closed {
-        (0.0, std::f64::consts::TAU)
-    } else {
-        // Angular span of the edge's own trim about the recognized center,
-        // measured at the edge endpoints in the circle's own plane, in the
-        // Green's angle convention `atan2(v·e2, v·e1)` the rebuilt circle
-        // integrates in. The endpoints (not the NURBS domain ends) bound
-        // the traced arc.
-        let Ok((s0, s1)) = edge.strict_domain() else {
-            return;
-        };
-        let p0 = nc.evaluate(s0);
-        let p1 = nc.evaluate(s1);
-        let angle = |p: Point3| {
-            let v = p - center;
-            v.dot(e2).atan2(v.dot(e1))
-        };
-        let span = (angle(p1) - angle(p0)).rem_euclid(std::f64::consts::TAU);
-        let span = if span < 1e-12 {
-            std::f64::consts::TAU
-        } else {
-            span
-        };
-        (angle(p0), span)
-    };
-    // Rebuild a circle on the recognized center/radius in the face plane
-    // (`e1 × e2` is the plane normal by construction of the caller frame).
-    let normal = e1.cross(e2);
-    let Ok(circle) = Circle3D::new(center, normal, radius) else {
-        return;
-    };
-    // Rotate the evaluation phase so `a0` is the start: `Circle3D` starts at
-    // its own `u_axis`, which need not coincide with `e1`. The circle is
-    // rebuilt CCW about `normal = e1 × e2`, so its angle increases with the
-    // Green's angle `atan2(v·e2, v·e1)` and the shift is a rigid rotation.
-    let phase = {
-        let v = circle.evaluate(0.0) - center;
-        v.dot(e2).atan2(v.dot(e1))
-    };
-    let shift = a0 - phase;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let chunks = ((span / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
-    let dt = span / chunks as f64;
-    let r = circle.radius();
-    for i in 0..chunks {
-        #[allow(clippy::cast_precision_loss)]
-        let a = dt.fma(i as f64, 0.0);
-        accumulate_green_segment(
-            moments,
-            (a, a + dt),
-            16,
-            dir_sign,
-            |u| {
-                let t = u + shift;
-                (circle.evaluate(t), circle.tangent(t) * r)
-            },
-            origin,
-            e1,
-            e2,
-        );
-    }
-}
-
-/// Integrate a NURBS edge recognized as an ellipse (or any periodic form
-/// evaluated through closures): chunk the edge's own trim span and evaluate
-/// the recognized curve at phase-matched parameters.
+/// `project` maps a point on the recognized curve to its own angle parameter
+/// and `eval` returns the curve point and `dP/dt` there. The span is measured
+/// in that parameter between the NURBS points at the edge's trim ends, so the
+/// integral runs from the start vertex to the end vertex like the native conic
+/// arms. Which way round the curve that is cannot be read off the endpoints:
+/// an arc traced clockwise in the face frame, or by a reversed trim, would
+/// otherwise integrate its complement. The traced NURBS midpoint (a quarter
+/// point for a closed edge) picks the direction.
 ///
-/// The edge trim (not the NURBS full domain) bounds the traced arc;
-/// endpoints are phase-matched onto the recognized periodic curve by
-/// nearest-angle projection, so the span is the arc the edge actually
-/// traces rather than a complement.
+/// Returns `false` when the edge has no usable trim; the caller then refuses
+/// the exact path rather than dropping the edge's contribution.
 #[allow(clippy::too_many_arguments)]
-fn accumulate_recognized_periodic_green_segments(
+fn accumulate_recognized_arc_green_segments(
     moments: &mut [f64; 10],
+    project: &dyn Fn(Point3) -> f64,
     eval: &dyn Fn(f64) -> (Point3, Vec3),
     nc: &remus_math::nurbs::curve::NurbsCurve,
     edge: &remus_topology::edge::Edge,
@@ -2685,62 +2620,45 @@ fn accumulate_recognized_periodic_green_segments(
     origin: Point3,
     e1: Vec3,
     e2: Vec3,
-) {
+) -> bool {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
     let closed = edge.start() == edge.end();
-    let (a0, span) = if closed {
-        (0.0, std::f64::consts::TAU)
-    } else {
-        let Ok((s0, s1)) = edge.strict_domain() else {
-            return;
-        };
-        let p0 = nc.evaluate(s0);
-        let p1 = nc.evaluate(s1);
-        let angle = |p: Point3| {
-            let v = p - origin;
-            v.dot(e1).atan2(v.dot(e2))
-        };
-        let span = (angle(p1) - angle(p0)).rem_euclid(std::f64::consts::TAU);
-        let span = if span < 1e-12 {
-            std::f64::consts::TAU
-        } else {
-            span
-        };
-        (angle(p0), span)
+    // `strict_domain` refuses equal or non-finite ends; a NURBS domain is a
+    // non-empty finite interval.
+    let (s0, s1) = match edge.strict_domain() {
+        Ok(span) => span,
+        Err(_) if closed => nc.domain(),
+        Err(_) => return false,
     };
-    // Phase-match: find the recognized-curve parameter whose in-plane angle
-    // is `a0` by scanning one turn (monotone angle for ellipse/circle).
-    let mut best = 0.0;
-    let mut best_err = f64::INFINITY;
-    for k in 0..1024 {
-        #[allow(clippy::cast_precision_loss)]
-        let t = std::f64::consts::TAU * k as f64 / 1024.0;
-        let (p, _) = eval(t);
-        let v = p - origin;
-        let err = (v.dot(e1).atan2(v.dot(e2)) - a0)
-            .rem_euclid(std::f64::consts::TAU)
-            .min((a0 - v.dot(e1).atan2(v.dot(e2))).rem_euclid(std::f64::consts::TAU));
-        if err < best_err {
-            best_err = err;
-            best = t;
+    let at = |f: f64| project(nc.evaluate((s1 - s0).mul_add(f, s0)));
+    let t0 = at(0.0);
+    // Forward (increasing-parameter) offset of `t` from the start, in [0, 2pi).
+    let ahead = |t: f64| (t - t0).rem_euclid(TAU);
+    let span = if closed {
+        if ahead(at(0.25)) < PI { TAU } else { -TAU }
+    } else {
+        let end = ahead(at(1.0));
+        let mid = ahead(at(0.5));
+        if end < 1e-12 {
+            // Endpoints coincide on the curve: a full turn either way.
+            if mid < PI { TAU } else { -TAU }
+        } else if mid <= end {
+            end
+        } else {
+            end - TAU
         }
-    }
+    };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let chunks = ((span / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
+    let chunks = ((span.abs() / FRAC_PI_2).ceil() as usize).clamp(1, 8);
+    #[allow(clippy::cast_precision_loss)]
     let dt = span / chunks as f64;
     for i in 0..chunks {
         #[allow(clippy::cast_precision_loss)]
-        let a = dt.fma(i as f64, 0.0);
-        accumulate_green_segment(
-            moments,
-            (a, a + dt),
-            16,
-            dir_sign,
-            |u| eval(u + best),
-            origin,
-            e1,
-            e2,
-        );
+        let a = dt.fma(i as f64, t0);
+        accumulate_green_segment(moments, (a, a + dt), 16, dir_sign, eval, origin, e1, e2);
     }
+    true
 }
 
 /// Accumulate one boundary segment's Green's-theorem contribution to the
