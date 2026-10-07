@@ -10,7 +10,7 @@ use crate::vec::{Point3, Vec3};
 ///
 /// The surface is defined by degrees in the u and v directions, two knot
 /// vectors, a 2D grid of control points, and matching weights.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NurbsSurface {
     /// Polynomial degree in the u direction.
@@ -18,13 +18,13 @@ pub struct NurbsSurface {
     /// Polynomial degree in the v direction.
     degree_v: usize,
     /// Knot vector in the u direction.
-    knots_u: Vec<f64>,
+    knots_u: std::sync::Arc<Vec<f64>>,
     /// Knot vector in the v direction.
-    knots_v: Vec<f64>,
+    knots_v: std::sync::Arc<Vec<f64>>,
     /// Control point grid indexed as `control_points[row_u][col_v]`.
-    control_points: Vec<Vec<Point3>>,
+    control_points: std::sync::Arc<Vec<Vec<Point3>>>,
     /// Weight grid matching `control_points` dimensions.
-    weights: Vec<Vec<f64>>,
+    weights: std::sync::Arc<Vec<Vec<f64>>>,
     /// Largest weight, cached: `derivatives` divides every weight by it so a
     /// common factor (e.g. 1e-300) cannot destabilize the perspective divide.
     /// The struct is immutable after construction, so the cache never goes
@@ -38,6 +38,23 @@ pub struct NurbsSurface {
     #[cfg_attr(feature = "serde", serde(skip))]
     #[cfg_attr(feature = "simd", allow(dead_code))]
     uniform_weights: std::sync::OnceLock<bool>,
+}
+
+impl Clone for NurbsSurface {
+    // Avoid duplicating reference-count and cache-copy code in modeling paths.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            degree_u: self.degree_u,
+            degree_v: self.degree_v,
+            knots_u: self.knots_u.clone(),
+            knots_v: self.knots_v.clone(),
+            control_points: self.control_points.clone(),
+            weights: self.weights.clone(),
+            max_weight: self.max_weight.clone(),
+            uniform_weights: self.uniform_weights.clone(),
+        }
+    }
 }
 
 impl PartialEq for NurbsSurface {
@@ -555,10 +572,10 @@ impl NurbsSurface {
         let surface = Self {
             degree_u,
             degree_v,
-            knots_u,
-            knots_v,
-            control_points,
-            weights,
+            knots_u: knots_u.into(),
+            knots_v: knots_v.into(),
+            control_points: control_points.into(),
+            weights: weights.into(),
             max_weight: std::sync::OnceLock::new(),
             uniform_weights: std::sync::OnceLock::new(),
         };
@@ -670,6 +687,37 @@ impl NurbsSurface {
         &self.weights
     }
 
+    /// Visit immutable shared allocations for process-local memory accounting.
+    /// Includes row capacities; identities never enter serialized geometry.
+    pub fn visit_shared_storage(&self, mut visit: impl FnMut(usize, usize)) {
+        for knots in [&self.knots_u, &self.knots_v] {
+            visit(
+                std::sync::Arc::as_ptr(knots) as usize,
+                std::mem::size_of::<Vec<f64>>() + knots.capacity() * std::mem::size_of::<f64>(),
+            );
+        }
+        visit(
+            std::sync::Arc::as_ptr(&self.control_points) as usize,
+            std::mem::size_of::<Vec<Vec<Point3>>>()
+                + self.control_points.capacity() * std::mem::size_of::<Vec<Point3>>()
+                + self
+                    .control_points
+                    .iter()
+                    .map(|row| row.capacity() * std::mem::size_of::<Point3>())
+                    .sum::<usize>(),
+        );
+        visit(
+            std::sync::Arc::as_ptr(&self.weights) as usize,
+            std::mem::size_of::<Vec<Vec<f64>>>()
+                + self.weights.capacity() * std::mem::size_of::<Vec<f64>>()
+                + self
+                    .weights
+                    .iter()
+                    .map(|row| row.capacity() * std::mem::size_of::<f64>())
+                    .sum::<usize>(),
+        );
+    }
+
     /// Validate the stored rational weights after construction or
     /// deserialization.
     ///
@@ -693,10 +741,10 @@ impl NurbsSurface {
         Self::new(
             self.degree_u,
             self.degree_v,
-            self.knots_u.clone(),
-            self.knots_v.clone(),
-            self.control_points.clone(),
-            self.weights.clone(),
+            self.knots_u.as_ref().clone(),
+            self.knots_v.as_ref().clone(),
+            self.control_points.as_ref().clone(),
+            self.weights.as_ref().clone(),
         )?;
         Ok(())
     }

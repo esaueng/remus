@@ -9,17 +9,17 @@ use crate::vec::{Point3, Vec3};
 ///
 /// The curve is defined by its degree, a knot vector, control points, and
 /// per-control-point weights (1.0 for non-rational curves).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NurbsCurve {
     /// Polynomial degree of the basis functions.
     degree: usize,
     /// Knot vector (non-decreasing, length = n + degree + 1).
-    knots: Vec<f64>,
+    knots: std::sync::Arc<Vec<f64>>,
     /// Control points in 3D.
-    control_points: Vec<Point3>,
+    control_points: std::sync::Arc<Vec<Point3>>,
     /// Weights for rational curves (same length as `control_points`).
-    weights: Vec<f64>,
+    weights: std::sync::Arc<Vec<f64>>,
     /// Largest weight, cached: `derivatives` divides every weight by it so a
     /// common factor cannot destabilize the perspective divide. The curve is
     /// immutable after construction, so the cache never goes stale; it is
@@ -34,6 +34,20 @@ impl PartialEq for NurbsCurve {
             && self.knots == other.knots
             && self.control_points == other.control_points
             && self.weights == other.weights
+    }
+}
+
+impl Clone for NurbsCurve {
+    // Keep shared-allocation bookkeeping in one place across topology clones.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            degree: self.degree,
+            knots: self.knots.clone(),
+            control_points: self.control_points.clone(),
+            weights: self.weights.clone(),
+            max_weight: self.max_weight.clone(),
+        }
     }
 }
 
@@ -94,9 +108,9 @@ impl NurbsCurve {
         validate_weight_values(&weights)?;
         let curve = Self {
             degree,
-            knots,
-            control_points,
-            weights,
+            knots: knots.into(),
+            control_points: control_points.into(),
+            weights: weights.into(),
             max_weight: std::sync::OnceLock::new(),
         };
         let _ = curve.max_weight();
@@ -196,6 +210,24 @@ impl NurbsCurve {
         &self.weights
     }
 
+    /// Visit immutable shared allocations for process-local memory accounting.
+    /// Identities are runtime addresses, never persistent geometry keys.
+    pub fn visit_shared_storage(&self, mut visit: impl FnMut(usize, usize)) {
+        visit(
+            std::sync::Arc::as_ptr(&self.knots) as usize,
+            std::mem::size_of::<Vec<f64>>() + self.knots.capacity() * std::mem::size_of::<f64>(),
+        );
+        visit(
+            std::sync::Arc::as_ptr(&self.control_points) as usize,
+            std::mem::size_of::<Vec<Point3>>()
+                + self.control_points.capacity() * std::mem::size_of::<Point3>(),
+        );
+        visit(
+            std::sync::Arc::as_ptr(&self.weights) as usize,
+            std::mem::size_of::<Vec<f64>>() + self.weights.capacity() * std::mem::size_of::<f64>(),
+        );
+    }
+
     /// The same curve traced the other way round.
     ///
     /// Control points and weights are reversed and the knot vector is
@@ -224,9 +256,21 @@ impl NurbsCurve {
         }
         Self {
             degree: self.degree,
-            knots,
-            control_points: self.control_points.iter().rev().copied().collect(),
-            weights: self.weights.iter().rev().copied().collect(),
+            knots: knots.into(),
+            control_points: self
+                .control_points
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .into(),
+            weights: self
+                .weights
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .into(),
             max_weight: self.max_weight.clone(),
         }
     }
@@ -255,9 +299,9 @@ impl NurbsCurve {
     pub fn validate(&self) -> Result<(), MathError> {
         Self::new(
             self.degree,
-            self.knots.clone(),
-            self.control_points.clone(),
-            self.weights.clone(),
+            self.knots.as_ref().clone(),
+            self.control_points.as_ref().clone(),
+            self.weights.as_ref().clone(),
         )?;
         Ok(())
     }

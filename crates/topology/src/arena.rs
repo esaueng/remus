@@ -197,6 +197,17 @@ impl<T> Arena<T> {
         self.items.len()
     }
 
+    pub(crate) fn storage_bytes(&self) -> usize {
+        self.items
+            .capacity()
+            .saturating_mul(std::mem::size_of::<T>())
+            .saturating_add(self.live.capacity())
+    }
+
+    pub(crate) fn retained_items(&self) -> impl Iterator<Item = &T> {
+        self.items.iter()
+    }
+
     /// Returns `true` if the arena contains no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {

@@ -190,6 +190,29 @@ pub fn tessellate_solid_with_tolerance(
         .map(|(mesh, _, _)| mesh)
 }
 
+/// The quantity path reads positions and indices, never shading normals.
+/// Skip only boundary normal reconstruction: welding, dedupe and gap fill
+/// depend exclusively on positions/indices and retain their usual policy.
+/// Face meshes remain compatible with the display cache; uncached normals
+/// stay Unknown and a later display replay computes them normally.
+pub fn tessellate_solid_for_measurement(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    tessellate_faces_core(
+        topo,
+        &faces,
+        deflection,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        MeshBoundaryMode::ClosedMeasurement,
+        false,
+        false,
+    )
+    .map(|(mesh, _, _)| mesh)
+}
+
 /// Tessellate a first-class sheet body into a merged, boundary-preserving
 /// triangle mesh using the default angular tolerance.
 ///
@@ -399,6 +422,7 @@ fn tessellate_solid_core(
 enum MeshBoundaryMode {
     ClosedSolid,
     OpenSheet,
+    ClosedMeasurement,
 }
 
 #[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
@@ -411,6 +435,8 @@ fn tessellate_faces_core(
     track_faces: bool,
     circle_floor: bool,
 ) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
+    let _total = crate::performance::span("mesh.total");
+    let sampling = crate::performance::span("mesh.boundary-sampling");
     let edge_face_map = remus_topology::explorer::edge_to_face_map_for_faces(topo, all_faces)?;
 
     // The map is a std `HashMap`, so sort its keys into ID order before use —
@@ -1159,6 +1185,8 @@ fn tessellate_faces_core(
     let mut cdt_jobs: Vec<CdtJob> = Vec::new();
     let mut other_face_indices: Vec<usize> = Vec::new();
 
+    drop(sampling);
+    let planar = crate::performance::span("mesh.planar-cdt");
     // Stage B (PERF-D03): local triangulation. Holed-planar faces snapshot
     // the plan's chains into independent CDT jobs; every other face waits
     // for stage C. Job construction only reads the plan — collecting a job
@@ -1427,6 +1455,8 @@ fn tessellate_faces_core(
         );
     }
 
+    drop(planar);
+    let curved = crate::performance::span("mesh.curved-faces");
     // Stage D (PERF-D03): every remaining face triangulates directly
     // against the final reconciled chains, so neighbours of a Steiner-split
     // segment pick up the same vertices the repair above gave the staged
@@ -1514,118 +1544,128 @@ fn tessellate_faces_core(
         }
     }
 
-    let n_verts = plan.merged.positions.len();
-    let tri_count = plan.merged.indices.len() / 3;
+    drop(curved);
+    if !matches!(boundary_mode, MeshBoundaryMode::ClosedMeasurement) {
+        let normals = crate::performance::span("mesh.boundary-normals");
+        let n_verts = plan.merged.positions.len();
+        let tri_count = plan.merged.indices.len() / 3;
 
-    let mut needs_normal = vec![false; n_verts];
-    for i in 0..n_verts {
-        let n = &plan.merged.normals[i];
-        if n.x().abs() < 1e-30 && n.y().abs() < 1e-30 && n.z().abs() < 1e-30 {
-            needs_normal[i] = true;
-        }
-    }
-
-    {
-        let mut vertex_faces: DetHashMap<usize, DetHashSet<FaceId>> = DetHashMap::default();
-        for (&edge_idx, global_ids) in &plan.edge_chains {
-            if let Some(face_ids) = edge_face_map.get(&edge_idx) {
-                for &gid in global_ids {
-                    let gi = gid as usize;
-                    if gi < n_verts && needs_normal[gi] {
-                        let entry = vertex_faces.entry(gi).or_default();
-                        for &fid in face_ids {
-                            entry.insert(fid);
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut fallback_needed = vec![false; n_verts];
+        let mut needs_normal = vec![false; n_verts];
         for i in 0..n_verts {
-            if !needs_normal[i] {
-                continue;
+            let n = &plan.merged.normals[i];
+            if n.x().abs() < 1e-30 && n.y().abs() < 1e-30 && n.z().abs() < 1e-30 {
+                needs_normal[i] = true;
             }
-            let pos = plan.merged.positions[i];
-            let mut normal_sum = Vec3::new(0.0, 0.0, 0.0);
-            let mut count = 0_u32;
-            if let Some(faces) = vertex_faces.get(&i) {
-                for &fid in faces {
-                    if let Ok(face_data) = topo.face(fid) {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let gid = i as u32;
-                        // A replayed face supplies its cached oriented
-                        // contribution; the summation order is unchanged.
-                        let cached = cache_session
-                            .as_ref()
-                            .map_or(face_cache::NormalSlot::Unknown, |session| {
-                                session.cached_normal(fid, gid)
-                            });
-                        let contribution = match cached {
-                            face_cache::NormalSlot::Known(normal) => normal,
-                            face_cache::NormalSlot::Unknown => {
-                                let surf = face_data.surface();
-                                let fresh =
-                                    crate::fillet::face_surface_normal_at(surf, pos).map(|n| {
-                                        if face_data.is_reversed() {
-                                            Vec3::new(-n.x(), -n.y(), -n.z())
-                                        } else {
-                                            n
-                                        }
-                                    });
-                                if let Some(session) = cache_session.as_mut() {
-                                    session.record_normal(fid, gid, fresh);
-                                }
-                                fresh
+        }
+
+        {
+            let mut vertex_faces: DetHashMap<usize, DetHashSet<FaceId>> = DetHashMap::default();
+            for (&edge_idx, global_ids) in &plan.edge_chains {
+                if let Some(face_ids) = edge_face_map.get(&edge_idx) {
+                    for &gid in global_ids {
+                        let gi = gid as usize;
+                        if gi < n_verts && needs_normal[gi] {
+                            let entry = vertex_faces.entry(gi).or_default();
+                            for &fid in face_ids {
+                                entry.insert(fid);
                             }
-                        };
-                        if let Some(oriented) = contribution {
-                            normal_sum += oriented;
-                            count += 1;
                         }
                     }
                 }
             }
-            if count > 0 {
-                plan.merged.normals[i] = normal_sum.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-            } else {
-                fallback_needed[i] = true;
-            }
-        }
 
-        if fallback_needed.iter().any(|&f| f) {
-            let mut accum: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); n_verts];
-            for t in 0..tri_count {
-                let i0 = plan.merged.indices[t * 3] as usize;
-                let i1 = plan.merged.indices[t * 3 + 1] as usize;
-                let i2 = plan.merged.indices[t * 3 + 2] as usize;
-                let a = plan.merged.positions[i1] - plan.merged.positions[i0];
-                let b = plan.merged.positions[i2] - plan.merged.positions[i0];
-                let face_normal = a.cross(b);
-                if fallback_needed.get(i0).copied().unwrap_or(false) {
-                    accum[i0] += face_normal;
-                }
-                if fallback_needed.get(i1).copied().unwrap_or(false) {
-                    accum[i1] += face_normal;
-                }
-                if fallback_needed.get(i2).copied().unwrap_or(false) {
-                    accum[i2] += face_normal;
-                }
-            }
+            let mut fallback_needed = vec![false; n_verts];
             for i in 0..n_verts {
-                if fallback_needed[i] {
+                if !needs_normal[i] {
+                    continue;
+                }
+                let pos = plan.merged.positions[i];
+                let mut normal_sum = Vec3::new(0.0, 0.0, 0.0);
+                let mut count = 0_u32;
+                if let Some(faces) = vertex_faces.get(&i) {
+                    for &fid in faces {
+                        if let Ok(face_data) = topo.face(fid) {
+                            #[allow(clippy::cast_possible_truncation)]
+                            let gid = i as u32;
+                            // A replayed face supplies its cached oriented
+                            // contribution; the summation order is unchanged.
+                            let cached = cache_session
+                                .as_ref()
+                                .map_or(face_cache::NormalSlot::Unknown, |session| {
+                                    session.cached_normal(fid, gid)
+                                });
+                            let contribution = match cached {
+                                face_cache::NormalSlot::Known(normal) => normal,
+                                face_cache::NormalSlot::Unknown => {
+                                    let surf = face_data.surface();
+                                    let fresh = crate::fillet::face_surface_normal_at(surf, pos)
+                                        .map(|n| {
+                                            if face_data.is_reversed() {
+                                                Vec3::new(-n.x(), -n.y(), -n.z())
+                                            } else {
+                                                n
+                                            }
+                                        });
+                                    if let Some(session) = cache_session.as_mut() {
+                                        session.record_normal(fid, gid, fresh);
+                                    }
+                                    fresh
+                                }
+                            };
+                            if let Some(oriented) = contribution {
+                                normal_sum += oriented;
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+                if count > 0 {
                     plan.merged.normals[i] =
-                        accum[i].normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                        normal_sum.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                } else {
+                    fallback_needed[i] = true;
+                }
+            }
+
+            if fallback_needed.iter().any(|&f| f) {
+                let mut accum: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); n_verts];
+                for t in 0..tri_count {
+                    let i0 = plan.merged.indices[t * 3] as usize;
+                    let i1 = plan.merged.indices[t * 3 + 1] as usize;
+                    let i2 = plan.merged.indices[t * 3 + 2] as usize;
+                    let a = plan.merged.positions[i1] - plan.merged.positions[i0];
+                    let b = plan.merged.positions[i2] - plan.merged.positions[i0];
+                    let face_normal = a.cross(b);
+                    if fallback_needed.get(i0).copied().unwrap_or(false) {
+                        accum[i0] += face_normal;
+                    }
+                    if fallback_needed.get(i1).copied().unwrap_or(false) {
+                        accum[i1] += face_normal;
+                    }
+                    if fallback_needed.get(i2).copied().unwrap_or(false) {
+                        accum[i2] += face_normal;
+                    }
+                }
+                for i in 0..n_verts {
+                    if fallback_needed[i] {
+                        plan.merged.normals[i] =
+                            accum[i].normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                    }
                 }
             }
         }
-    }
 
+        drop(normals);
+    }
+    let _post = crate::performance::span("mesh.weld-dedupe-gap-fill");
     if let Some(session) = cache_session {
         session.commit();
     }
 
-    let closed = matches!(boundary_mode, MeshBoundaryMode::ClosedSolid);
+    let closed = matches!(
+        boundary_mode,
+        MeshBoundaryMode::ClosedSolid | MeshBoundaryMode::ClosedMeasurement
+    );
     let had_boundary =
         closed && weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
 
