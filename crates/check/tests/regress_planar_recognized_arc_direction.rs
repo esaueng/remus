@@ -268,3 +268,105 @@ fn ellipse_bite_integrates_the_bitten_segment() {
         assert_face("ellipse bite", &place, &ellipse_bite(&place));
     }
 }
+
+/// A full circle whose NURBS parameterization crowds three quadrants into the
+/// first fifth of its domain: the knot values move, the Bezier segments (and
+/// so the geometry) do not.
+fn skewed_full_circle(circle: &Circle3D, reverse: bool) -> NurbsCurve {
+    let turn = if reverse { -2.0 * PI } else { 2.0 * PI };
+    let uniform = circle_to_nurbs(circle, 0.0, turn).unwrap();
+    let (d0, d1) = uniform.domain();
+    let remap = |u: f64| {
+        let f = (u - d0) / (d1 - d0);
+        let g = if f <= 0.75 {
+            f * (0.2 / 0.75)
+        } else {
+            0.2 + (f - 0.75) * (0.8 / 0.25)
+        };
+        d0 + g * (d1 - d0)
+    };
+    let knots = uniform.knots().iter().map(|&u| remap(u)).collect();
+    NurbsCurve::new(
+        uniform.degree(),
+        knots,
+        uniform.control_points().to_vec(),
+        uniform.weights().to_vec(),
+    )
+    .unwrap()
+}
+
+/// A square with a slit from its right side to a circular hole: one wire that
+/// walks in along the slit, round the hole clockwise on a single closed NURBS
+/// edge, and back out. The hole's direction comes from that edge alone (the
+/// wire's other edges fix the winding), so a full turn taken the wrong way
+/// round adds the disc instead of removing it.
+#[test]
+fn closed_circle_in_a_keyhole_wire_turns_the_traced_way() {
+    const SIDE: f64 = 4.0;
+    for place in placements() {
+        for reverse in [false, true] {
+            let mut topo = Topology::new();
+            let circle = Circle3D::new(place.at(2.0, 2.0), place.normal(), place.scale).unwrap();
+            let nurbs = skewed_full_circle(&circle, reverse);
+            // The discriminating premise: a quarter of the domain is already
+            // past halfway round, in the direction the NURBS runs.
+            let (d0, d1) = nurbs.domain();
+            let quarter = circle.project(nurbs.evaluate(0.75f64.mul_add(d0, 0.25 * d1)));
+            let quarter = if reverse { -quarter } else { quarter }.rem_euclid(2.0 * PI);
+            assert!(quarter > PI, "skew too weak: {quarter}");
+
+            let v = |topo: &mut Topology, x: f64, y: f64| {
+                topo.add_vertex(Vertex::new(place.at(x, y), 1e-7))
+            };
+            let (a, b, s, c, d) = (
+                v(&mut topo, 0.0, 0.0),
+                v(&mut topo, SIDE, 0.0),
+                v(&mut topo, SIDE, 2.0),
+                v(&mut topo, SIDE, SIDE),
+                v(&mut topo, 0.0, SIDE),
+            );
+            let seam = v(&mut topo, 3.0, 2.0);
+            let line = |topo: &mut Topology, s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+            let ab = line(&mut topo, a, b);
+            let bs = line(&mut topo, b, s);
+            let slit = line(&mut topo, s, seam);
+            let sc = line(&mut topo, s, c);
+            let cd = line(&mut topo, c, d);
+            let da = line(&mut topo, d, a);
+            let mut hole = Edge::new(seam, seam, EdgeCurve::NurbsCurve(nurbs));
+            hole.set_trim(Some((d0, d1)));
+            let hole = topo.add_edge(hole);
+            // The circle runs counter-clockwise unless `reverse`; the hole
+            // must be walked clockwise.
+            let wire = Wire::new(
+                vec![
+                    OrientedEdge::new(ab, true),
+                    OrientedEdge::new(bs, true),
+                    OrientedEdge::new(slit, true),
+                    OrientedEdge::new(hole, reverse),
+                    OrientedEdge::new(slit, false),
+                    OrientedEdge::new(sc, true),
+                    OrientedEdge::new(cd, true),
+                    OrientedEdge::new(da, true),
+                ],
+                true,
+            )
+            .unwrap();
+            let wire = topo.add_wire(wire);
+            let normal = place.normal();
+            let dist = normal.dot(place.origin - Point3::new(0.0, 0.0, 0.0));
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane { normal, d: dist },
+            ));
+            let area = integrate_face(&topo, face, 8).unwrap().area;
+            let expected = (SIDE * SIDE - PI) * place.scale * place.scale;
+            assert!(
+                (area - expected).abs() <= expected * 1e-9,
+                "reverse {reverse} scale {}: area {area} vs closed form {expected}",
+                place.scale,
+            );
+        }
+    }
+}

@@ -2604,8 +2604,8 @@ fn nurbs_recognition_verifies(
 /// integral runs from the start vertex to the end vertex like the native conic
 /// arms. Which way round the curve that is cannot be read off the endpoints:
 /// an arc traced clockwise in the face frame, or by a reversed trim, would
-/// otherwise integrate its complement. The traced NURBS midpoint (a quarter
-/// point for a closed edge) picks the direction.
+/// otherwise integrate its complement. The traced NURBS midpoint picks the
+/// direction of an arc, and the traced start tangent that of a full turn.
 ///
 /// Returns `false` when the edge has no usable trim; the caller then refuses
 /// the exact path rather than dropping the edge's contribution.
@@ -2635,14 +2635,30 @@ fn accumulate_recognized_arc_green_segments(
     let t0 = at(0.0);
     // Forward (increasing-parameter) offset of `t` from the start, in [0, 2pi).
     let ahead = |t: f64| (t - t0).rem_euclid(TAU);
+    // A full turn's direction, from the traced tangent at the start: a sample
+    // at a fixed fraction of the trim can lie past halfway round when the
+    // NURBS parameterization is far from uniform. The quarter point is only
+    // the fallback for a vanishing start tangent.
+    let full_turn = || {
+        let traced = nc.derivatives(s0, 1)[1] * (s1 - s0).signum();
+        let curve = eval(t0).1;
+        let along = traced.dot(curve);
+        if along.abs() > traced.length() * curve.length() * 1e-9 {
+            TAU.copysign(along)
+        } else if ahead(at(0.25)) < PI {
+            TAU
+        } else {
+            -TAU
+        }
+    };
     let span = if closed {
-        if ahead(at(0.25)) < PI { TAU } else { -TAU }
+        full_turn()
     } else {
         let end = ahead(at(1.0));
         let mid = ahead(at(0.5));
         if end < 1e-12 {
             // Endpoints coincide on the curve: a full turn either way.
-            if mid < PI { TAU } else { -TAU }
+            full_turn()
         } else if mid <= end {
             end
         } else {
