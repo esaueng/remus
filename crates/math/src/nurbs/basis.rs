@@ -42,11 +42,12 @@ pub fn find_span(n: usize, degree: usize, u: f64, knots: &[f64]) -> usize {
     mid
 }
 
-/// O(1) span lookup for uniform knot vectors.
+/// Span lookup with an O(1) hint for uniform knot vectors.
 ///
 /// `step` is the constant spacing between internal knots (as returned by
 /// [`uniform_knot_step`]). The caller must verify the knot vector is uniform
-/// before using this — passing an incorrect `step` gives wrong results.
+/// before using this. The hinted interval is checked against the stored knots;
+/// roundoff near a knot falls back to binary search.
 #[must_use]
 pub fn find_span_uniform(n: usize, degree: usize, u: f64, knots: &[f64], step: f64) -> usize {
     if u >= knots[n] {
@@ -55,14 +56,20 @@ pub fn find_span_uniform(n: usize, degree: usize, u: f64, knots: &[f64], step: f
     if u <= knots[degree] {
         return degree;
     }
-    let span = degree + ((u - knots[degree]) / step) as usize;
-    span.min(n - 1)
+    let span = (degree + ((u - knots[degree]) / step) as usize).min(n - 1);
+    // Rounded division can put an otherwise uniform hint on the wrong side
+    // of a knot. A hint can only replace binary search inside its interval.
+    if knots[span] <= u && u < knots[span + 1] {
+        span
+    } else {
+        find_span(n, degree, u, knots)
+    }
 }
 
 /// Check if internal knots are uniformly spaced.
 ///
 /// Returns the step size if the internal knots `knots[degree..=n]` are
-/// equidistant (within 1e-12), or `None` otherwise.
+/// equidistant to floating-point precision, or `None` otherwise.
 #[must_use]
 pub fn uniform_knot_step(knots: &[f64], degree: usize) -> Option<f64> {
     let n = knots.len() - degree - 1; // number of control points
@@ -80,11 +87,19 @@ pub fn uniform_knot_step(knots: &[f64], degree: usize) -> Option<f64> {
     }
     for i in (first_internal + 1)..last_internal {
         let actual_step = knots[i + 1] - knots[i];
-        if (actual_step - step).abs() > 1e-12 {
+        if (actual_step - step).abs() > 16.0 * f64::EPSILON * actual_step.abs().max(step) {
             return None;
         }
     }
     Some(step)
+}
+
+/// Binomial coefficients for rational derivative recurrences. Computing in
+/// floating point avoids overflowing an integer at high requested orders.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn binomial_f64(n: usize, k: usize) -> f64 {
+    let k = k.min(n - k);
+    (1..=k).fold(1.0, |value, i| value * (n - k + i) as f64 / i as f64)
 }
 
 /// Maximum output degree for stack-allocated caller buffers.

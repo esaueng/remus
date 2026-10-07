@@ -123,22 +123,40 @@ impl<'a> SurfaceEvaluator<'a> {
 
         let cps = self.surface.control_points();
         let ws = self.surface.weights();
-        let weight_scale = ws.iter().flatten().copied().fold(0.0_f64, f64::max);
+        // Normalize only the contributing control patch. A remote large
+        // weight must not underflow every weight in the active patch, and a
+        // query must not scan the entire surface's weight net.
+        let weight_scale = nu
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| **value != 0.0)
+            .flat_map(|(i, _)| {
+                nv.iter()
+                    .enumerate()
+                    .filter(|(_, value)| **value != 0.0)
+                    .map(move |(j, _)| ws[span_u - pu + i][span_v - pv + j])
+            })
+            .fold(0.0_f64, f64::max);
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
 
-        // Tensor-product contraction: v first per u-row, then u. Scale all
-        // homogeneous terms first so a harmless common weight factor cannot
-        // underflow the perspective divide.
+        // Use the same normalized weights for the local scale and sums.
+        // Form the whole basis product before dividing by the scale: scaling
+        // a row first can overflow even when its final contribution is small.
         let scale = nu
             .iter()
             .enumerate()
             .take(pu + 1)
+            .filter(|(_, value)| **value != 0.0)
             .flat_map(|(i, &nu_i)| {
-                nv.iter().enumerate().take(pv + 1).map(move |(j, &nv_j)| {
-                    let u_idx = span_u - pu + i;
-                    let v_idx = span_v - pv + j;
-                    (nu_i * nv_j * ws[u_idx][v_idx]).abs()
-                })
+                nv.iter()
+                    .enumerate()
+                    .take(pv + 1)
+                    .filter(|(_, value)| **value != 0.0)
+                    .map(move |(j, &nv_j)| {
+                        let u_idx = span_u - pu + i;
+                        let v_idx = span_v - pv + j;
+                        (nu_i * nv_j * (ws[u_idx][v_idx] / weight_scale)).abs()
+                    })
             })
             .fold(0.0_f64, f64::max);
         let mut wx = 0.0;
@@ -147,25 +165,23 @@ impl<'a> SurfaceEvaluator<'a> {
         let mut ww = 0.0;
 
         for (i, &nu_i) in nu.iter().enumerate().take(pu + 1) {
+            if nu_i == 0.0 {
+                continue;
+            }
             let u_idx = span_u - pu + i;
-            let mut row_x = 0.0;
-            let mut row_y = 0.0;
-            let mut row_z = 0.0;
-            let mut row_w = 0.0;
             for (j, &nv_j) in nv.iter().enumerate().take(pv + 1) {
+                if nv_j == 0.0 {
+                    continue;
+                }
                 let v_idx = span_v - pv + j;
                 let pt = &cps[u_idx][v_idx];
                 let w = ws[u_idx][v_idx] / weight_scale;
-                let bw = nv_j * w / scale;
-                row_x += bw * pt.x();
-                row_y += bw * pt.y();
-                row_z += bw * pt.z();
-                row_w += bw;
+                let bw = (nu_i * nv_j * w) / scale;
+                wx += bw * pt.x();
+                wy += bw * pt.y();
+                wz += bw * pt.z();
+                ww += bw;
             }
-            wx += nu_i * row_x;
-            wy += nu_i * row_y;
-            wz += nu_i * row_z;
-            ww += nu_i * row_w;
         }
 
         debug_assert!(scale.is_finite() && scale > 0.0);
@@ -185,6 +201,10 @@ impl<'a> SurfaceEvaluator<'a> {
 
         let pu = self.surface.degree_u();
         let pv = self.surface.degree_v();
+        let u_domain = self.surface.domain_u();
+        let v_domain = self.surface.domain_v();
+        let u = u.clamp(u_domain.0, u_domain.1);
+        let v = v.clamp(v_domain.0, v_domain.1);
         let span_u = self.find_span_u(u);
         let span_v = self.find_span_v(v);
 
@@ -230,6 +250,10 @@ impl<'a> SurfaceEvaluator<'a> {
 
         let cps = self.surface.control_points();
         let ws = self.surface.weights();
+        let weight_scale = ws[span_u - pu..=span_u]
+            .iter()
+            .flat_map(|row| row[span_v - pv..=span_v].iter().copied())
+            .fold(0.0_f64, f64::max);
 
         // Compute homogeneous sums for position and partial derivatives.
         let mut s0 = [0.0_f64; 3]; // sum(nu * nv * w * P)
@@ -244,7 +268,7 @@ impl<'a> SurfaceEvaluator<'a> {
             for (j, (&nv_j, &dnv_j)) in nv.iter().zip(dnv.iter()).enumerate().take(pv + 1) {
                 let v_idx = span_v - pv + j;
                 let pt = &cps[u_idx][v_idx];
-                let w = ws[u_idx][v_idx];
+                let w = ws[u_idx][v_idx] / weight_scale;
                 let px = pt.x();
                 let py = pt.y();
                 let pz = pt.z();

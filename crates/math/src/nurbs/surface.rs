@@ -803,7 +803,8 @@ impl NurbsSurface {
     /// storage: `out[k][l]` receives `∂^(k+l)S / ∂u^k ∂v^l`.
     ///
     /// `out` must have at least `d + 1` rows of at least `d + 1` entries; only
-    /// entries with `k + l <= d` (clamped by each axis degree) are written.
+    /// entries with `k + l <= d` are written. Rational derivatives can be
+    /// nonzero above either polynomial degree.
     /// `scratch` carries the reusable basis/homogeneous buffers so repeated
     /// calls (e.g. per quadrature abscissa) perform no allocation for the
     /// orders every hot path uses; larger orders take a heap path sized by the
@@ -1128,15 +1129,12 @@ impl NurbsSurface {
         let skl = |sk: &[Vec3], k: usize, l: usize| sk[k * n + l];
         let w0 = aw[0][3];
 
-        for k in 0..=du {
-            for l in 0..=dv {
-                if k + l > d {
-                    continue;
-                }
+        for k in 0..=d {
+            for l in 0..=d - k {
                 let mut v3 = [aw[k * n + l][0], aw[k * n + l][1], aw[k * n + l][2]];
 
-                for j in 1..=l {
-                    let bin = binomial(l, j) as f64;
+                for j in 1..=l.min(dv) {
+                    let bin = binomial_f64(l, j);
                     let wj = aw[j][3];
                     let s = skl(sk, k, l - j);
                     v3[0] -= bin * wj * s.x();
@@ -1144,8 +1142,8 @@ impl NurbsSurface {
                     v3[2] -= bin * wj * s.z();
                 }
 
-                for i in 1..=k {
-                    let bin = binomial(k, i) as f64;
+                for i in 1..=k.min(du) {
+                    let bin = binomial_f64(k, i);
                     let wi = aw[i * n][3];
                     let s = skl(sk, k - i, l);
                     v3[0] -= bin * wi * s.x();
@@ -1153,8 +1151,8 @@ impl NurbsSurface {
                     v3[2] -= bin * wi * s.z();
 
                     let mut v2 = [0.0f64; 3];
-                    for j in 1..=l {
-                        let bin2 = binomial(l, j) as f64;
+                    for j in 1..=l.min(dv) {
+                        let bin2 = binomial_f64(l, j);
                         let wij = aw[i * n + j][3];
                         let s = skl(sk, k - i, l - j);
                         v2[0] += bin2 * wij * s.x();
@@ -1171,11 +1169,8 @@ impl NurbsSurface {
             }
         }
 
-        for k in 0..=du {
-            for l in 0..=dv {
-                if k + l > d {
-                    continue;
-                }
+        for k in 0..=d {
+            for l in 0..=d - k {
                 out[k][l] = sk[k * n + l];
             }
         }
@@ -1229,7 +1224,7 @@ fn validate_weight_values(weights: &[Vec<f64>]) -> Result<(), MathError> {
     Ok(())
 }
 
-use super::basis::binomial;
+use super::basis::binomial_f64;
 
 /// Scalar homogeneous contraction: the original `(k, l, i, j)` nest of
 /// `derivatives_into_with_spans`, factored out unchanged so the `simd`
