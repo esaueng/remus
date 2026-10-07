@@ -109,6 +109,42 @@ fn batch_section_miss_returns_empty() {
     assert!(faces.is_empty(), "miss must be an empty success");
 }
 
+#[test]
+fn direct_and_batch_cylinder_sections_outside_caps_are_empty() {
+    let mut kernel = BrepKernel::new();
+    let solid = kernel.make_cylinder_solid(1.0, 2.0).unwrap();
+    assert!(
+        kernel
+            .section_solid(solid, 0., 0., 3., 0., 0., 1.)
+            .unwrap()
+            .is_empty()
+    );
+    let program = serde_json::json!([
+        {"op":"makeCylinder","args":{"radius":1.0,"height":2.0}},
+        {"op":"section","args":{"solid":0,"px":0.0,"py":0.0,"pz":-1.0,"nx":0.0,"ny":0.0,"nz":1.0}},
+        {"op":"section","args":{"solid":0,"px":0.0,"py":0.0,"pz":1.0,"nx":0.0,"ny":0.0,"nz":1.0}}
+    ])
+    .to_string();
+    let result = parse(&kernel.execute_batch_v2(&program));
+    assert!(result[1]["ok"].as_array().unwrap().is_empty());
+    assert_eq!(result[2]["ok"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn batch_cylinder_cap_crossing_has_explicit_refusal() {
+    let mut kernel = BrepKernel::new();
+    let program = serde_json::json!([
+        {"op":"makeCylinder","args":{"radius":1.0,"height":2.0}},
+        {"op":"section","args":{"solid":0,"px":0.0,"py":0.0,"pz":0.1,"nx":1.0,"ny":0.0,"nz":1.0}}
+    ])
+    .to_string();
+    let result = parse(&kernel.execute_batch_v2(&program));
+    assert!(
+        result[1]["error"].to_string().contains("cap clipping"),
+        "{result}"
+    );
+}
+
 /// Batch edge-touch section refuses typed (`InvalidInput`, no closed wire).
 #[test]
 fn batch_section_edge_touch_refuses_typed() {

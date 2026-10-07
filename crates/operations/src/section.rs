@@ -21,6 +21,8 @@ use std::collections::{HashMap, HashSet};
 use crate::boolean::face_polygon;
 use crate::dot_normal_point;
 
+mod cylinder;
+
 /// Chain intersection curve points into consecutive segment pairs.
 ///
 /// Instead of connecting only the first and last point (chord approximation),
@@ -63,7 +65,10 @@ pub struct Section {
 ///
 /// Returns an error if NURBS intersection computation fails, or if
 /// intersection segments exist but cannot be assembled into a closed
-/// cross-section wire.
+/// cross-section wire. Cylindrical faces must have a complete two-rim band;
+/// cuts through its rims or parallel to its axis return `Unsupported` until
+/// authoritative cap clipping is available. Contained cylindrical sections
+/// retain the existing 64-segment polygon approximation.
 pub fn section(
     topo: &mut Topology,
     solid: SolidId,
@@ -113,11 +118,7 @@ pub fn section(
                 }
             }
             FaceSurface::Cylinder(cyl) => {
-                let curves =
-                    remus_math::analytic_intersection::intersect_plane_cylinder(cyl, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                cylinder::append_section(topo, face, cyl, plane_point, normal, tol, &mut segments)?;
             }
             FaceSurface::Cone(cone) => {
                 let curves =

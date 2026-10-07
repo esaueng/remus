@@ -338,7 +338,9 @@ impl NurbsCurve {
         basis::ders_basis_funs_into(span, u, p, du, &self.knots, ders_bf);
 
         // Compute homogeneous derivatives: Aw[k] = (Aw_x, Aw_y, Aw_z, w) for k-th deriv.
-        let mut aw = vec![[0.0f64; 4]; du + 1];
+        // Homogeneous derivatives vanish above the polynomial degree, but
+        // derivatives of the rational quotient need not vanish there.
+        let mut aw = vec![[0.0f64; 4]; d + 1];
         let weight_scale = self.max_weight();
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
         for (k, aw_k) in aw.iter_mut().enumerate().take(du + 1) {
@@ -356,11 +358,10 @@ impl NurbsCurve {
 
         // Apply rational quotient rule (A4.2).
         let mut ck = vec![Vec3::new(0.0, 0.0, 0.0); d + 1];
-        for k in 0..=du {
+        for k in 0..=d {
             let mut v = [aw[k][0], aw[k][1], aw[k][2]];
-            for i in 1..=k {
-                #[allow(clippy::cast_precision_loss)]
-                let bin = binomial(k, i) as f64;
+            for i in 1..=k.min(du) {
+                let bin = binomial_f64(k, i);
                 v[0] -= bin * aw[i][3] * ck[k - i].x();
                 v[1] -= bin * aw[i][3] * ck[k - i].y();
                 v[2] -= bin * aw[i][3] * ck[k - i].z();
@@ -369,7 +370,6 @@ impl NurbsCurve {
             debug_assert!(w0.is_finite() && w0 > 0.0);
             ck[k] = Vec3::new(v[0] / w0, v[1] / w0, v[2] / w0);
         }
-        // Higher derivatives beyond degree are zero (already initialized).
         ck
     }
 
@@ -404,12 +404,13 @@ fn validate_weight_values(weights: &[f64]) -> Result<(), MathError> {
     Ok(())
 }
 
-use super::basis::binomial;
+use super::basis::binomial_f64;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+    use crate::nurbs::basis::binomial;
 
     #[test]
     fn rejects_degree_zero() {
