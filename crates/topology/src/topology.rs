@@ -32,6 +32,10 @@ pub(crate) mod undo_log;
 
 use undo_log::{ArenaTag, UndoBase, UndoLog};
 
+#[path = "memory.rs"]
+mod memory;
+pub use memory::MemoryEstimate;
+
 /// Dimensional class of a topological body.
 ///
 /// `General` reserves the future mixed-dimensional body model. No current

@@ -1162,6 +1162,15 @@ export class BrepKernel {
      */
     checkpointCount(): number;
     /**
+     * Accounted live/retained topology bytes and unique NURBS payload bytes.
+     * Excludes allocator overhead, session sketches, pcurves, journals, caches
+     * and GPU data. Includes retired slots. Values are estimates, not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     */
+    checkpointMemoryStats(): string;
+    /**
      * Create a circular pattern of a solid around an axis.
      *
      * Returns a compound handle.
@@ -1546,6 +1555,13 @@ export class BrepKernel {
      * complete incidence correspondence; ambiguous boundaries stay unresolved.
      */
     draftJournaled(solid: number, faces: Uint32Array, pull_direction: Float64Array, neutral_point: Float64Array, angle_degrees: number): string;
+    /**
+     * Drain up to 4096 completed phase events as JSON.
+     *
+     * # Errors
+     * Returns an error if events cannot be serialized.
+     */
+    drainPerformanceTrace(): string;
     /**
      * Classify one manifold edge of a solid as convex, concave, tangent,
      * or unknown.
@@ -3768,6 +3784,11 @@ export class BrepKernel {
      */
     setFaceName(face: number, name?: string | null): void;
     /**
+     * Enable bounded module-local timings; disabled by default. This does
+     * not change tolerances, cache admission or numerical policy.
+     */
+    setPerformanceTracing(enabled: boolean): void;
+    /**
      * Sew loose faces into a connected solid.
      *
      * `face_handles` is an array of face handles. Returns a solid handle.
@@ -3913,6 +3934,14 @@ export class BrepKernel {
      * probe, or a topology or classification failure.
      */
     solidEdgeRelations(solid: number, probe?: number | null): any;
+    /**
+     * Batch the edges needed by a selected feature proof. Classification
+     * still uses the entire solid and the ordinary per-edge default probe.
+     *
+     * # Errors
+     * Refuses duplicate, foreign/deleted edges, invalid probes and query errors.
+     */
+    solidEdgeRelationsSubset(solid: number, edges: Uint32Array, probe?: number | null): string;
     /**
      * Create a solid from a shell.
      *
@@ -4383,6 +4412,18 @@ export class JsGroupedMesh {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Move face offsets out once; subsequent getters return an empty array.
+     */
+    takeFaceOffsets(): Uint32Array;
+    /**
+     * Move triangle indices out once without cloning their Rust allocation.
+     */
+    takeIndices(): Uint32Array;
+    /**
+     * Move positions out once; returned JS storage remains owned after free.
+     */
+    takePositions(): Float32Array;
     /**
      * Per-face start offsets into `indices`: `faceOffsets[i]` is the start of
      * face `i`, and the final element equals `indices.length`.

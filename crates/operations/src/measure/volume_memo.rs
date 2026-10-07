@@ -612,6 +612,7 @@ impl ContentWriter {
 /// module docs. `None` when an entity is missing (the reading itself then
 /// fails and is not memoized).
 fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+    let _key = crate::performance::span("volume.content-key");
     let mut w = ContentWriter { words: Vec::new() };
     w.word(KEY_VERSION);
     w.count(solid.index());

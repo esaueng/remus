@@ -23,6 +23,8 @@ pub(crate) mod boundary_plan;
 pub(crate) mod edge_sampling;
 mod face;
 mod face_cache;
+#[cfg(test)]
+mod measurement_tests;
 mod mesh_ops;
 mod nonplanar;
 mod nurbs;
@@ -51,12 +53,12 @@ pub use mesh_ops::{
     EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
     sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
 };
-pub(crate) use solid::tessellate_closed_face_set;
 pub use solid::{
     tessellate_body_with_tolerance, tessellate_sheet, tessellate_sheet_with_tolerance,
     tessellate_solid, tessellate_solid_for_boolean, tessellate_solid_grouped_with_tolerance,
     tessellate_solid_with_tolerance,
 };
+pub(crate) use solid::{tessellate_closed_face_set, tessellate_solid_for_measurement};
 
 /// Merge-grid cell size for tolerance-based vertex deduplication.
 ///

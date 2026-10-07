@@ -708,7 +708,9 @@ impl<'a> EdgeRelationContext<'a> {
     pub(crate) fn prepare(topo: &'a Topology, solid: SolidId) -> Result<Self, OperationsError> {
         Ok(Self {
             topo,
-            prepared: remus_check::classify::PreparedSolid::prepare(topo, solid)?,
+            prepared: crate::performance::timed("relations.preparation", || {
+                remus_check::classify::PreparedSolid::prepare(topo, solid)
+            })?,
         })
     }
 
@@ -1141,11 +1143,59 @@ pub fn solid_edge_relations(
             reason: "edge concavity probe must be positive and finite".into(),
         });
     }
-    let adjacency = topo.build_adjacency(solid)?;
     let edges = remus_topology::explorer::solid_edges(topo, solid)?;
+    edge_relations_for(topo, solid, &edges, probe)
+}
+
+/// Query only selected edges while classifying against the entire solid.
+///
+/// Default probes and verdicts are identical to [`solid_edge_relations`].
+/// Preparation is shared across the batch; no per-edge topology rebuild.
+///
+/// # Errors
+/// Refuses duplicate, foreign or retired edges, invalid probes and topology
+/// or classification errors. Output follows the caller's edge order.
+pub fn solid_edge_relations_subset(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    probe: Option<f64>,
+) -> Result<Vec<EdgeRelation>, OperationsError> {
+    let members: std::collections::BTreeSet<_> =
+        remus_topology::explorer::solid_edges(topo, solid)?
+            .into_iter()
+            .collect();
+    let unique: std::collections::BTreeSet<_> = edges.iter().copied().collect();
+    if unique.len() != edges.len() || !unique.is_subset(&members) {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge relation batch must contain unique live edges of the selected solid"
+                .into(),
+        });
+    }
+    edge_relations_for(topo, solid, edges, probe)
+}
+
+// The full and selected entry points share one classifier in release builds.
+#[inline(never)]
+fn edge_relations_for(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    probe: Option<f64>,
+) -> Result<Vec<EdgeRelation>, OperationsError> {
+    if probe.is_some_and(|p| !p.is_finite() || p <= 0.0) {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
+    if edges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let _total = crate::performance::span("relations.total");
+    let adjacency = topo.build_adjacency(solid)?;
     let context = EdgeRelationContext::prepare(topo, solid)?;
     let mut out = Vec::with_capacity(edges.len());
-    for edge in edges {
+    for &edge in edges {
         let faces = adjacency.faces_for_edge(edge);
         if faces.len() != 2 || faces[0] == faces[1] {
             out.push(EdgeRelation {

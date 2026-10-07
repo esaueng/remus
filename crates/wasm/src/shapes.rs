@@ -196,6 +196,23 @@ impl JsGroupedMesh {
     pub fn face_offsets(&self) -> Vec<u32> {
         self.face_offsets.clone()
     }
+    /// Move positions out once; returned JS storage remains owned after free.
+    #[wasm_bindgen(js_name = "takePositions")]
+    pub fn take_positions(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.positions)
+    }
+
+    /// Move triangle indices out once without cloning their Rust allocation.
+    #[wasm_bindgen(js_name = "takeIndices")]
+    pub fn take_indices(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.indices)
+    }
+
+    /// Move face offsets out once; subsequent getters return an empty array.
+    #[wasm_bindgen(js_name = "takeFaceOffsets")]
+    pub fn take_face_offsets(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.face_offsets)
+    }
 }
 
 impl JsGroupedMesh {
