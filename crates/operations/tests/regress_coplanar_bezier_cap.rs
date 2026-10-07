@@ -314,6 +314,11 @@ fn boa_case(op: BooleanOp, z: f64, height: f64, scale: f64, flattened: bool) {
         );
         slab = result.unwrap();
 
+        if op == BooleanOp::Fuse {
+            let strict = remus_operations::validate::validate_solid(&topo, slab).unwrap();
+            assert!(strict.is_valid(), "glyph {i}: {strict:?}");
+        }
+
         let adj = remus_topology::adjacency::AdjacencyIndex::build(&topo, slab).unwrap();
         assert!(
             adj.is_manifold(),

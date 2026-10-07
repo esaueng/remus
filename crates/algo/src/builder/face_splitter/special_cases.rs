@@ -3237,6 +3237,22 @@ pub(super) fn split_face_with_internal_loops(
         }
     }
 
+    // Nested section contours are adjacent material regions, not independent
+    // holes in the remainder. A glyph counter, for example, bounds an island
+    // on the slab inside the glyph's contact footprint. Attach each contour
+    // to its immediate enclosing region, preserving the exact curve uses.
+    if let FaceSurface::Plane { normal, .. } = surface
+        && result.len() > 1
+        && all_holes.len() == result.len()
+    {
+        nest_internal_plane_regions(
+            &mut result,
+            &mut all_holes,
+            &PlaneFrame::from_plane_face(*normal, wire_pts),
+            if reversed { -*normal } else { *normal },
+        );
+    }
+
     // For all-Line hole loops, compute the frame interior point in 3D:
     // midway between the longest outer boundary edge's midpoint and its
     // projection onto the hole polyline. The UV-based hole avoidance in
@@ -3523,6 +3539,62 @@ fn torus_remainder_seams(
     boundary.extend(reverse_loop(&rings[0]));
     boundary.extend(reverse_loop(&rings[1]));
     Ok(Some(boundary))
+}
+
+/// Partition nested planar contours into their immediate enclosing regions.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn nest_internal_plane_regions(
+    regions: &mut [SplitSubFace],
+    remainder_holes: &mut Vec<Vec<OrientedPCurveEdge>>,
+    frame: &PlaneFrame,
+    effective_normal: remus_math::vec::Vec3,
+) {
+    let polygons: Vec<_> = regions
+        .iter()
+        .map(|region| super::sampling::sample_wire_loop_uv_via_frame(&region.outer_wire, frame))
+        .collect();
+    let areas: Vec<_> = polygons
+        .iter()
+        .map(|polygon| super::super::classify_2d::signed_area_2d(polygon).abs())
+        .collect();
+    let parents: Vec<_> = polygons
+        .iter()
+        .enumerate()
+        .map(|(child, polygon)| {
+            polygons
+                .iter()
+                .enumerate()
+                .filter(|(parent, outer)| {
+                    areas[*parent] > areas[child]
+                        && super::loop_containment(polygon, outer) == super::LoopContainment::Nested
+                })
+                .min_by(|(a, _), (b, _)| areas[*a].total_cmp(&areas[*b]))
+                .map(|(parent, _)| parent)
+        })
+        .collect();
+    for (child, parent) in parents.iter().enumerate() {
+        if let Some(parent) = parent {
+            regions[*parent]
+                .inner_wires
+                .push(remainder_holes[child].clone());
+        }
+    }
+    for (index, region) in regions.iter_mut().enumerate() {
+        if parents.contains(&Some(index)) {
+            region.precomputed_interior = annulus_interior_3d(
+                &region.outer_wire,
+                &region.inner_wires.iter().collect::<Vec<_>>(),
+                frame,
+            )
+            .map(|point| point - effective_normal * 1e-6);
+        }
+    }
+    let mut index = 0;
+    remainder_holes.retain(|_| {
+        let root = parents[index].is_none();
+        index += 1;
+        root
+    });
 }
 
 /// True when an internal section loop and a pre-existing inner wire (both
