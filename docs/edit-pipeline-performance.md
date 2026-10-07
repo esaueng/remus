@@ -52,10 +52,19 @@ ordinary `cargo xtask wasm-build` validation and shared-version guard. The
 kernel optimizer runs `-Oz --enable-simd`; consumer size thresholds
 remain unchanged.
 
-The optimized kernel is 10,474,693 raw bytes, 6,027 bytes smaller than the
+The optimized kernel is 10,478,269 raw bytes, 2,451 bytes smaller than the
 10,480,720-byte committed base. It fits the existing 10 MiB hard limit and
 still crosses the existing 9 MiB advisory review threshold. Numerical policy
 and the build optimizer flags remain unchanged.
+
+Consumer qualification also requires valid on-face text embosses. The paired
+package update includes a planar face-splitter repair: nested section contours
+belong to their immediate enclosing region, while only outermost contours
+remain holes in the remainder. Exact curve uses, containment policy and
+numerical tolerances are preserved. Coplanar glyph fuse regressions now check
+strict orientation as well as the existing volume/topology/trim assertions.
+OpenZCAD keeps strict union acceptance and checks existing holes independently
+with closed-form volume and exported point classification.
 
 Consumer timings and full application gate results belong to the coordinated
 OpenZCAD implementation plan. A single WASM call is still synchronous; this

@@ -189,6 +189,7 @@ Quick reference — find the right file for any task:
 |------|---------|
 | Arena & typed `Id<T>` handles | `arena.rs` |
 | `Topology` struct (the arena owner) | `topology.rs` |
+| Accounted topology and shared NURBS allocation estimates | `memory.rs` |
 | Vertex, Edge, Wire, Face, Shell, Solid | `vertex.rs`, `edge.rs`, `wire.rs`, `face.rs`, `shell.rs`, `solid.rs` |
 | Compound, CompSolid | `compound.rs`, `compsolid.rs` |
 | Adjacency index (edge-to-face, face neighbors) | `adjacency.rs` |
@@ -424,8 +425,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity | `measure/volume_memo.rs` |
+| Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
@@ -520,6 +523,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
+| Accounted checkpoint storage, allocated WASM pages and phase timing bindings | `bindings/performance.rs` |
 | Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
 | Directional curve projection (P-Class 7.4 direct + batch, `project-curve:<code>` refusals) | `bindings/project_curve.rs` |
