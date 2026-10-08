@@ -535,14 +535,28 @@ fn expand_aabb_for_curve(aabb: &mut Aabb3, curve: &EdgeCurve, start: Point3, end
 pub fn face_aabb(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> {
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
-    let mut points = Vec::new();
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge())?;
-        points.push(topo.vertex(edge.start())?.point());
-        points.push(topo.vertex(edge.end())?.point());
+    // Every edge's start and end, looked up as the box takes them rather
+    // than collected first. The walk stops at the first missing entity,
+    // whose error then wins over the partial box.
+    let mut missing = None;
+    let points = wire
+        .edges()
+        .iter()
+        .map(|oe| -> Result<[Point3; 2], CheckError> {
+            let edge = topo.edge(oe.edge())?;
+            Ok([
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+            ])
+        })
+        .map_while(|ends| ends.map_err(|error| missing = Some(error)).ok())
+        .flatten();
+    let aabb = Aabb3::try_from_points(points);
+    if let Some(error) = missing {
+        return Err(error);
     }
-    let mut aabb = Aabb3::try_from_points(points.iter().copied())
-        .ok_or_else(|| CheckError::ClassificationFailed("face has no vertices".into()))?;
+    let mut aabb =
+        aabb.ok_or_else(|| CheckError::ClassificationFailed("face has no vertices".into()))?;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
         expand_aabb_for_curve(
@@ -873,6 +887,227 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// [`face_aabb`] as it stood before the vertices were folded into the box
+    /// without collecting them first, kept verbatim as the oracle.
+    fn legacy_face_aabb(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> {
+        let face = topo.face(face_id)?;
+        let wire = topo.wire(face.outer_wire())?;
+        let mut points = Vec::new();
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            points.push(topo.vertex(edge.start())?.point());
+            points.push(topo.vertex(edge.end())?.point());
+        }
+        let mut aabb = Aabb3::try_from_points(points.iter().copied())
+            .ok_or_else(|| CheckError::ClassificationFailed("face has no vertices".into()))?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            expand_aabb_for_curve(
+                &mut aabb,
+                edge.curve(),
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+            );
+        }
+        expand_aabb_for_surface(&mut aabb, face.surface());
+        Ok(aabb)
+    }
+
+    fn assert_face_aabb_matches_legacy(topo: &Topology, face: FaceId, what: &str) {
+        match (face_aabb(topo, face), legacy_face_aabb(topo, face)) {
+            (Ok(now), Ok(before)) => assert_eq!(
+                bits(&[now.min, now.max]),
+                bits(&[before.min, before.max]),
+                "{what}"
+            ),
+            (now, before) => assert_eq!(format!("{now:?}"), format!("{before:?}"), "{what}"),
+        }
+    }
+
+    /// A face on `surface` whose outer wire is the closed polygon `points`
+    /// (repeats allowed) joined by lines.
+    fn polygon_face(topo: &mut Topology, points: &[Point3], surface: FaceSurface) -> FaceId {
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        let edges = (0..vertices.len())
+            .map(|i| {
+                let e = topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % vertices.len()],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(e, true)
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        topo.add_face(remus_topology::face::Face::new(wire, vec![], surface))
+    }
+
+    /// The box comes out bit for bit as it did when the wire's vertices were
+    /// collected first — on every surface kind, with signed zeros, repeated
+    /// points and a NaN coordinate — and so does the error for a dangling
+    /// edge or vertex, on the first edge or a later one.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn face_aabb_matches_collected_vertices() {
+        use remus_math::surfaces::{
+            ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
+        };
+        use remus_topology::test_utils::make_unit_cube_manifold;
+
+        let mut topo = Topology::new();
+        let cube = make_unit_cube_manifold(&mut topo);
+        let mut faces: Vec<(FaceId, String)> = remus_topology::explorer::solid_faces(&topo, cube)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f, "cube face".to_owned()))
+            .collect();
+
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let cylinder = CylindricalSurface::new(origin, z, 2.0).unwrap();
+        let cone = ConicalSurface::new(origin, z, 0.4).unwrap();
+        let sphere = SphericalSurface::new(origin, 3.0).unwrap();
+        let torus = ToroidalSurface::new(origin, 5.0, 1.5).unwrap();
+        let nurbs = remus_geometry::convert::surface_to_nurbs::torus_to_nurbs(&torus).unwrap();
+
+        // Closed circle rims: one vertex, start == end.
+        for (surface, rim, what) in [
+            (
+                FaceSurface::Cylinder(cylinder),
+                Circle3D::new(Point3::new(0.0, 0.0, 1.0), z, 2.0).unwrap(),
+                "cylinder rim",
+            ),
+            (
+                FaceSurface::Cone(cone),
+                Circle3D::new(Point3::new(0.0, 0.0, 2.0), z, 2.0 * 0.4_f64.tan()).unwrap(),
+                "cone rim",
+            ),
+            (
+                FaceSurface::Torus(torus),
+                Circle3D::new(origin, z, 6.5).unwrap(),
+                "torus rim",
+            ),
+            (
+                FaceSurface::Nurbs(nurbs),
+                Circle3D::new(origin, z, 3.5).unwrap(),
+                "NURBS rim",
+            ),
+        ] {
+            let v = topo.add_vertex(Vertex::new(rim.evaluate(0.3), 1e-7));
+            let e = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(rim)));
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
+            let face = topo.add_face(remus_topology::face::Face::new(wire, vec![], surface));
+            faces.push((face, what.to_owned()));
+        }
+
+        // A 32-gon on the sphere's equator: 64 points through the fold.
+        #[allow(clippy::cast_precision_loss)]
+        let equator: Vec<Point3> = (0..32)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / 32.0;
+                Point3::new(3.0 * t.cos(), 3.0 * t.sin(), 0.0)
+            })
+            .collect();
+        faces.push((
+            polygon_face(&mut topo, &equator, FaceSurface::Sphere(sphere)),
+            "sphere 32-gon".to_owned(),
+        ));
+
+        // Signed zeros, repeated points and a NaN: the strict comparisons
+        // keep the first of equal values and never take a NaN.
+        let plane = || FaceSurface::Plane { normal: z, d: 0.0 };
+        for (points, what) in [
+            (
+                vec![
+                    Point3::new(-0.0, 0.0, -0.0),
+                    Point3::new(0.0, -0.0, 0.0),
+                    Point3::new(1.0, -0.0, 0.0),
+                    Point3::new(1.0, -0.0, 0.0),
+                    Point3::new(0.0, 1.0, -0.0),
+                ],
+                "signed zeros",
+            ),
+            (
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(f64::NAN, 2.0, 0.0),
+                    Point3::new(-1.0, f64::NAN, 0.0),
+                    Point3::new(2.0, 1.0, f64::NAN),
+                ],
+                "NaN coordinates",
+            ),
+            (
+                vec![
+                    Point3::new(f64::NAN, f64::NAN, f64::NAN),
+                    Point3::new(1.0, 1.0, 0.0),
+                    Point3::new(-1.0, 1.0, 0.0),
+                ],
+                "NaN first",
+            ),
+        ] {
+            faces.push((polygon_face(&mut topo, &points, plane()), what.to_owned()));
+        }
+
+        // Handles this topology does not hold, minted by a larger one.
+        let mut other = Topology::new();
+        for _ in 0..64 {
+            other.add_vertex(Vertex::new(origin, 1e-7));
+        }
+        let foreign_vertex = other.add_vertex(Vertex::new(origin, 1e-7));
+        let mut foreign_edge = None;
+        for _ in 0..64 {
+            foreign_edge =
+                Some(other.add_edge(Edge::new(foreign_vertex, foreign_vertex, EdgeCurve::Line)));
+        }
+        let foreign_edge = foreign_edge.unwrap();
+        let mut p = |x: f64, y: f64| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7));
+        let (a, b, c) = (p(0.0, 0.0), p(1.0, 0.0), p(0.0, 1.0));
+        let line = |topo: &mut Topology, s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+        let (ab, bc, ca) = (
+            line(&mut topo, a, b),
+            line(&mut topo, b, c),
+            line(&mut topo, c, a),
+        );
+        let dangling_start = line(&mut topo, foreign_vertex, b);
+        let dangling_end = line(&mut topo, b, foreign_vertex);
+        for (edges, what) in [
+            (vec![foreign_edge, bc, ca], "dangling first edge"),
+            (vec![ab, bc, foreign_edge], "dangling last edge"),
+            (vec![dangling_start, bc, ca], "dangling start vertex"),
+            (
+                vec![ab, dangling_end, ca],
+                "dangling end vertex on a later edge",
+            ),
+            (
+                vec![ab, bc, dangling_start],
+                "dangling start vertex on the last edge",
+            ),
+        ] {
+            let wire = topo.add_wire(
+                Wire::new(
+                    edges
+                        .into_iter()
+                        .map(|e| OrientedEdge::new(e, true))
+                        .collect(),
+                    true,
+                )
+                .unwrap(),
+            );
+            let face = topo.add_face(remus_topology::face::Face::new(wire, vec![], plane()));
+            // The face and its wire resolve: the error is the edge walk's.
+            assert!(topo.wire(topo.face(face).unwrap().outer_wire()).is_ok());
+            assert!(face_aabb(&topo, face).is_err(), "{what}");
+            faces.push((face, what.to_owned()));
+        }
+
+        for (face, what) in &faces {
+            assert_face_aabb_matches_legacy(&topo, *face, what);
         }
     }
 }
