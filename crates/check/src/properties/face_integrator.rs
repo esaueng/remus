@@ -2595,6 +2595,32 @@ fn nurbs_recognition_verifies(
     Ok(true)
 }
 
+/// The signed span (`2pi` or `-2pi`) of a full turn starting at fraction 0 of
+/// an edge's trim.
+///
+/// `along` is the traced start tangent dotted with the recognized curve's
+/// tangent there and `scale` the product of their lengths; `ahead(f)` is the
+/// curve-parameter advance in `[0, 2pi)` reached at fraction `f` of the trim.
+/// A sample at a fixed fraction can lie past halfway round when the NURBS
+/// parameterization is far from uniform, so the start tangent decides. When
+/// it vanishes (an endpoint-stationary parameterization), the first fraction
+/// at which the curve has visibly moved decides instead: the advance there is
+/// small whichever way it runs.
+fn full_turn_direction(along: f64, scale: f64, ahead: &dyn Fn(f64) -> f64) -> f64 {
+    use std::f64::consts::{PI, TAU};
+
+    if along.abs() > scale * 1e-9 {
+        return TAU.copysign(along);
+    }
+    for k in (1..=30).rev() {
+        let advance = ahead(2f64.powi(-k));
+        if advance.min(TAU - advance) > 1e-9 {
+            return if advance < PI { TAU } else { -TAU };
+        }
+    }
+    TAU
+}
+
 /// Integrate a NURBS edge recognized as a circle or an ellipse along the arc
 /// the edge actually traces.
 ///
@@ -2621,7 +2647,7 @@ fn accumulate_recognized_arc_green_segments(
     e1: Vec3,
     e2: Vec3,
 ) -> bool {
-    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    use std::f64::consts::{FRAC_PI_2, TAU};
 
     let closed = edge.start() == edge.end();
     // `strict_domain` refuses equal or non-finite ends; a NURBS domain is a
@@ -2635,21 +2661,12 @@ fn accumulate_recognized_arc_green_segments(
     let t0 = at(0.0);
     // Forward (increasing-parameter) offset of `t` from the start, in [0, 2pi).
     let ahead = |t: f64| (t - t0).rem_euclid(TAU);
-    // A full turn's direction, from the traced tangent at the start: a sample
-    // at a fixed fraction of the trim can lie past halfway round when the
-    // NURBS parameterization is far from uniform. The quarter point is only
-    // the fallback for a vanishing start tangent.
     let full_turn = || {
         let traced = nc.derivatives(s0, 1)[1] * (s1 - s0).signum();
         let curve = eval(t0).1;
-        let along = traced.dot(curve);
-        if along.abs() > traced.length() * curve.length() * 1e-9 {
-            TAU.copysign(along)
-        } else if ahead(at(0.25)) < PI {
-            TAU
-        } else {
-            -TAU
-        }
+        full_turn_direction(traced.dot(curve), traced.length() * curve.length(), &|f| {
+            ahead(at(f))
+        })
     };
     let span = if closed {
         full_turn()
@@ -3498,6 +3515,32 @@ mod tests {
 
     use super::*;
     use remus_math::vec::{Point3, Vec3};
+
+    /// A full turn whose parameterization is stationary at its start and
+    /// crowded past halfway round by the quarter point: the start tangent
+    /// vanishes, and a fixed quarter-domain sample would read it backwards.
+    #[test]
+    fn full_turn_direction_reads_the_first_visible_advance() {
+        use std::f64::consts::TAU;
+        // Forward profile: g(0) = 0, g'(0) = 0, g(0.25) = 0.6 of a turn.
+        let forward = |f: f64| {
+            let g = if f <= 0.25 {
+                0.6 * (f / 0.25).powi(2)
+            } else {
+                0.6 + 0.4 * (f - 0.25) / 0.75
+            };
+            (TAU * g).rem_euclid(TAU)
+        };
+        let backward = |f: f64| (TAU - forward(f)).rem_euclid(TAU);
+        assert!(
+            forward(0.25) > std::f64::consts::PI,
+            "premise: quarter point past halfway"
+        );
+        assert!((full_turn_direction(0.0, 1.0, &forward) - TAU).abs() < 1e-12);
+        assert!((full_turn_direction(0.0, 1.0, &backward) + TAU).abs() < 1e-12);
+        // A usable tangent still decides on its own.
+        assert!((full_turn_direction(-0.5, 1.0, &forward) + TAU).abs() < 1e-12);
+    }
 
     /// A torus band whose `v` extent crosses the period seam must trim in the
     /// same branch the integration range lives in.
