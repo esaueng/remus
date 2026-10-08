@@ -39,10 +39,17 @@
 //! | `ef_analytic_pair_scans` | EF sampled scan | analytic pairs that reached the scan |
 //! | `ef_analytic_pairs_gated` | EF analytic gates | pairs a gate proved crossing-free |
 //!
+//! A fourth family, `RayWorkCounts`, counts the planar work of the ray-cast
+//! vote loop (`classifier::ray_cast`, PERF-Q07 subset): votes, polygon tests,
+//! polygon tests the face's bounding box settles outright, exact point-segment
+//! distances and exact winding numbers.
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
 //! cost. The scaling guard enables the feature only for its own test build.
+//! The ray-work counters also count in this crate's own tests: their oracles
+//! pin work the bounding-box gate skips without changing any result.
 
 #[cfg(feature = "perf-counters")]
 use std::cell::Cell;
@@ -65,6 +72,67 @@ std::thread_local! {
     static JUNCTION_SEEDS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIR_SCANS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIRS_GATED: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(any(test, feature = "perf-counters"))]
+std::thread_local! {
+    static RAY_WORK: std::cell::Cell<[u64; 5]> = const { std::cell::Cell::new([0; 5]) };
+}
+
+/// One unit of the ray-cast vote loop's planar work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RayWork {
+    Vote,
+    PolygonTest,
+    FaceSkip,
+    SegmentEval,
+    Winding,
+}
+
+/// Count one unit of ray-cast planar work. Crate-internal.
+#[inline]
+pub(crate) fn bump_ray_work(kind: RayWork) {
+    #[cfg(any(test, feature = "perf-counters"))]
+    RAY_WORK.with(|work| {
+        let mut counts = work.get();
+        counts[kind as usize] = counts[kind as usize].saturating_add(1);
+        work.set(counts);
+    });
+    #[cfg(not(any(test, feature = "perf-counters")))]
+    let _ = kind;
+}
+
+/// Ray-cast vote-loop work on this thread (see [`take_ray_work`]).
+#[cfg(any(test, feature = "perf-counters"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RayWorkCounts {
+    /// Three-ray votes (a cardinal or a generic triple).
+    pub votes: u64,
+    /// Face polygons tested against a plane hit ahead of the ray origin.
+    pub polygon_tests: u64,
+    /// Polygon tests the face's bounding box settled with no segment or
+    /// winding work.
+    pub face_skips: u64,
+    /// Exact point-segment distances.
+    pub segment_evals: u64,
+    /// Exact winding numbers.
+    pub windings: u64,
+}
+
+/// This thread's ray-cast vote-loop work since the previous call, resetting
+/// it. Available in this crate's tests and with `perf-counters`.
+#[cfg(any(test, feature = "perf-counters"))]
+#[must_use]
+pub fn take_ray_work() -> RayWorkCounts {
+    let [votes, polygon_tests, face_skips, segment_evals, windings] =
+        RAY_WORK.with(|work| work.replace([0; 5]));
+    RayWorkCounts {
+        votes,
+        polygon_tests,
+        face_skips,
+        segment_evals,
+        windings,
+    }
 }
 
 #[cfg(feature = "perf-counters")]

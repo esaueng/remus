@@ -243,6 +243,7 @@ Quick reference — find the right file for any task:
 | Interference indexing | `ds/interference.rs`, `ds/shape_index.rs` |
 | Analytic classifier (7 variants) | `classifier/analytic.rs` |
 | Ray-cast classifier | `classifier/ray_cast.rs` |
+| Closed-form and differential oracles for the ray-cast polygon gate (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |

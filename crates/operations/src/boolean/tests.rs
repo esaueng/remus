@@ -10464,3 +10464,31 @@ fn raycast_vote_workloads_keep_their_fingerprints() {
         .collect();
     assert_eq!(got.as_slice(), expected.as_slice());
 }
+
+/// Complexity guard for the ray-cast polygon gate (PERF-Q07 subset): a vote
+/// measures a point-segment distance only for segments its plane hits come
+/// within the graze margin of. Before the gate every hit measured every edge
+/// of the face (and its holes), about 1,100 distances per vote on the 91-box
+/// honeycomb and 770 on the strut lattice. Runs only with
+/// `--features perf-counters`.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_raycast_votes_measure_few_segments() {
+    for (name, run) in RAYCAST_VOTE_WORKLOADS {
+        let _ = remus_algo::perf::take_ray_work();
+        run();
+        let w = remus_algo::perf::take_ray_work();
+        eprintln!(
+            "{name}: {} votes, {} polygon tests ({} settled by the face box), \
+             {} segment distances, {} windings",
+            w.votes, w.polygon_tests, w.face_skips, w.segment_evals, w.windings,
+        );
+        assert!(w.votes > 0, "{name} cast no ray-cast votes");
+        assert!(
+            w.segment_evals <= 50 * w.votes,
+            "{name}: {} segment distances over {} votes",
+            w.segment_evals,
+            w.votes,
+        );
+    }
+}
