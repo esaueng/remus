@@ -65,10 +65,10 @@ pub struct Section {
 ///
 /// Returns an error if NURBS intersection computation fails, or if
 /// intersection segments exist but cannot be assembled into a closed
-/// cross-section wire. Cylindrical faces must have a complete two-rim band;
-/// cuts through its rims or parallel to its axis return `Unsupported` until
-/// authoritative cap clipping is available. Contained cylindrical sections
-/// retain the existing 64-segment polygon approximation.
+/// cross-section wire. Intersecting cylindrical faces must have a complete
+/// two-rim band; cuts through its rims or parallel to its axis return
+/// `Unsupported` until authoritative cap clipping is available. Contained
+/// cylindrical sections retain the existing 64-segment polygon approximation.
 pub fn section(
     topo: &mut Topology,
     solid: SolidId,
@@ -1082,13 +1082,7 @@ mod cylinder {
     ) -> Result<(f64, f64), OperationsError> {
         let refuse =
             || unsupported("cylindrical section requires a complete two-rim band without holes");
-        if !face.inner_wires().is_empty()
-            || !cylinder.radius().is_finite()
-            || cylinder.radius() <= 0.0
-            || cylinder.origin().0.iter().any(|x| !x.is_finite())
-            || cylinder.axis().0.iter().any(|x| !x.is_finite())
-            || (cylinder.axis().length_squared() - 1.0).abs() > tol.angular
-        {
+        if !face.inner_wires().is_empty() {
             return Err(refuse());
         }
         let wire = topo.wire(face.outer_wire())?;
@@ -1176,7 +1170,11 @@ mod cylinder {
     /// Append a contained plane/cylinder loop, or prove a finite-band miss.
     /// The complete carrier's axial sinusoid is bounded analytically; a sampled
     /// point or a midpoint cannot admit a loop crossing either authoritative rim.
-    #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::cast_precision_loss,
+        clippy::float_cmp
+    )]
     pub(super) fn append_section(
         topo: &Topology,
         face: &Face,
@@ -1186,12 +1184,28 @@ mod cylinder {
         tol: Tolerance,
         segments: &mut Vec<(Point3, Point3)>,
     ) -> Result<(), OperationsError> {
-        let (low, high) = axial_band(topo, face, cylinder, tol)?;
+        if !cylinder.radius().is_finite()
+            || cylinder.radius() <= 0.0
+            || cylinder.origin().0.iter().any(|x| !x.is_finite())
+            || cylinder.axis().0.iter().any(|x| !x.is_finite())
+            || (cylinder.axis().length_squared() - 1.0).abs() > tol.angular
+        {
+            return Err(unsupported(
+                "cylindrical section requires a finite unit-axis carrier",
+            ));
+        }
         let axial = normal.dot(cylinder.axis());
         let radial_x = cylinder.radius() * normal.dot(cylinder.x_axis());
         let radial_y = cylinder.radius() * normal.dot(cylinder.y_axis());
         let amplitude = radial_x.hypot(radial_y);
         let offset = normal.dot(plane_point - cylinder.origin());
+        // Only an exactly zero axial component proves a miss of the entire
+        // unbounded carrier. A merely small component can intersect far along
+        // the axis, so it still needs authoritative finite-boundary evidence.
+        if axial == 0.0 && offset.is_finite() && offset.abs() > amplitude + tol.linear {
+            return Ok(());
+        }
+        let (low, high) = axial_band(topo, face, cylinder, tol)?;
         let first = axial * low;
         let last = axial * high;
         if offset < first.min(last) - amplitude - tol.linear

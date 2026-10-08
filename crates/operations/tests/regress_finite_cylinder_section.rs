@@ -156,3 +156,85 @@ fn cylindrical_band_with_a_hole_refuses() {
         Err(OperationsError::Unsupported { .. })
     ));
 }
+
+#[test]
+fn carrier_misses_do_not_require_qualified_cylindrical_trims() {
+    for scale in [1e-3, 1., 1e3] {
+        for with_hole in [false, true] {
+            let mut topo = Topology::new();
+            let solid = make_cylinder(&mut topo, scale, 2. * scale).unwrap();
+            let lateral = solid_faces(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&id| matches!(topo.face(id).unwrap().surface(), FaceSurface::Cylinder(_)))
+                .unwrap();
+            let boundary = topo.face(lateral).unwrap().outer_wire();
+            if with_hole {
+                topo.set_face_boundary_wires(lateral, boundary, vec![boundary])
+                    .unwrap();
+            } else {
+                let rim = topo.wire(boundary).unwrap().edges()[0].edge();
+                let trim = topo.edge(rim).unwrap().trim().unwrap();
+                topo.edge_mut(rim)
+                    .unwrap()
+                    .set_trim(Some((trim.0, trim.0 + std::f64::consts::PI)));
+            }
+            let counts = (
+                topo.vertices().len(),
+                topo.edges().len(),
+                topo.wires().len(),
+                topo.faces().len(),
+            );
+            for sense in [-1., 1.] {
+                let result = section(
+                    &mut topo,
+                    solid,
+                    Point3::new(2. * scale, 0., scale),
+                    Vec3::new(sense, 0., 0.),
+                )
+                .unwrap();
+                assert!(result.faces.is_empty());
+                assert_eq!(
+                    counts,
+                    (
+                        topo.vertices().len(),
+                        topo.edges().len(),
+                        topo.wires().len(),
+                        topo.faces().len()
+                    )
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn nearly_parallel_planes_still_require_qualified_trims() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 1., 2.).unwrap();
+    let lateral = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&id| matches!(topo.face(id).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap();
+    let rim = topo
+        .wire(topo.face(lateral).unwrap().outer_wire())
+        .unwrap()
+        .edges()[0]
+        .edge();
+    let trim = topo.edge(rim).unwrap().trim().unwrap();
+    topo.edge_mut(rim)
+        .unwrap()
+        .set_trim(Some((trim.0, trim.0 + std::f64::consts::PI)));
+    // A nonzero axial component can reach the infinite carrier arbitrarily
+    // far along its axis, even below the ordinary angular tolerance.
+    assert!(
+        section(
+            &mut topo,
+            solid,
+            Point3::new(2., 0., 1.),
+            Vec3::new(1., 0., 5e-13)
+        )
+        .is_err()
+    );
+}
