@@ -3,6 +3,7 @@
 use super::*;
 
 mod collinear_index;
+mod flood_batch;
 mod hole_grid;
 mod off_axis_cap;
 mod u_bracket_floor;
