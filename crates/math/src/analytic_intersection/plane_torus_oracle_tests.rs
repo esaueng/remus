@@ -250,7 +250,8 @@ fn case(label: &str, torus: &ToroidalSurface, normal: Vec3, d: f64) -> Case {
 /// Hand-picked planes: the three box faces of `torus_notch_*` that reach the
 /// torus (and three that miss it), equatorial and near-equatorial-tangent
 /// planes, meridians, the inner/outer tangents (the inner one cuts a
-/// figure-eight), and a spindle torus.
+/// figure-eight), a spindle torus, and inputs outside the range the line
+/// certificates accept.
 fn named_cases() -> Vec<Case> {
     let bench = axis_torus(10.0, 3.0);
     let (x, y, z) = (
@@ -293,6 +294,14 @@ fn named_cases() -> Vec<Case> {
         Vec3::new(0.6, 0.0, 0.8),
         1.2,
     ));
+    cases.push(case(
+        "subnormal normal component",
+        &bench,
+        Vec3::new(-1.0, 1e-310, 0.0),
+        -6.0,
+    ));
+    cases.push(case("tiny torus", &axis_torus(1e-59, 3e-60), -x, -6e-60));
+    cases.push(case("huge torus", &axis_torus(1e59, 3e58), -x, -6e58));
     cases
 }
 
@@ -444,11 +453,102 @@ fn grid_crossings_match_the_pre_change_scan() {
     let mut hits = 0;
     for c in named_cases().iter().chain(&random) {
         let want = crossing_bits(&ref_grid_crossings(&c.torus, c.normal, c.d));
-        let grid = plane_torus_grid_crossings(&c.torus, c.normal, c.d);
-        assert_eq!(crossing_bits(&grid.crossings), want, "{}", c.label);
+        for certify in [false, true] {
+            let grid = plane_torus_grid_crossings(&c.torus, c.normal, c.d, certify);
+            assert_eq!(
+                crossing_bits(&grid.crossings),
+                want,
+                "{} (certify: {certify})",
+                c.label
+            );
+        }
         hits += usize::from(!want.is_empty());
     }
     assert!(hits >= 60, "only {hits} cases crossed the torus");
+}
+
+/// Every computed sample on a certified line has the certified sign. The
+/// samples come from the oracle's own formula, which matches the scan's
+/// bit for bit (`evaluate_matches_the_pre_change_formula`).
+#[test]
+fn certified_lines_hold_on_every_sample() {
+    let (mut certified, mut lines) = (0, 0);
+    for c in named_cases().iter().chain(&random_cases(64)) {
+        let nodes: Vec<GridNode> = plane_torus_grid_nodes(&c.torus, c.normal, c.d, true)
+            .into_iter()
+            .flat_map(|(lo, hi)| [lo, hi])
+            .collect();
+        for u in &nodes {
+            for v in &nodes {
+                let f = dot_np(c.normal, ref_evaluate(&c.torus, u.angle, v.angle)) - c.d;
+                for sign in [u.col, v.row] {
+                    assert!(
+                        sign == 0 || f * f64::from(sign) > 0.0,
+                        "{}: f={f} at u={} v={} certified {sign}",
+                        c.label,
+                        u.angle,
+                        v.angle
+                    );
+                }
+            }
+        }
+        lines += 2 * nodes.len();
+        certified += nodes
+            .iter()
+            .map(|n| usize::from(n.col != 0) + usize::from(n.row != 0))
+            .sum::<usize>();
+    }
+    assert!(
+        certified * 3 >= lines,
+        "only {certified} of {lines} lines certified"
+    );
+}
+
+#[test]
+fn bounds_refuse_inputs_outside_their_error_budget() {
+    let bench = axis_torus(10.0, 3.0);
+    let x = Vec3::new(1.0, 0.0, 0.0);
+    let nodes = plane_torus_grid_nodes(&bench, -x, -6.0, false);
+    assert!(GridLineBounds::new(&bench, -x, -6.0, &nodes).is_some());
+    for (torus, normal, d) in [
+        (&bench, Vec3::new(-1.0, 1e-310, 0.0), -6.0),
+        (&bench, Vec3::new(-1.0, 1e-51, 0.0), -6.0),
+        (&bench, Vec3::new(-1e51, 0.0, 0.0), -6.0),
+        (&bench, -x, f64::INFINITY),
+        (&bench, Vec3::new(f64::NAN, 0.0, 0.0), -6.0),
+        (&axis_torus(1e-59, 3e-60), -x, -6e-60),
+        (&axis_torus(1e59, 3e58), -x, -6e58),
+        // In range term by term, but `S = 0`.
+        (&bench, Vec3::new(0.0, 0.0, 0.0), 0.0),
+    ] {
+        assert!(
+            GridLineBounds::new(torus, normal, d, &nodes).is_none(),
+            "normal={normal:?} d={d}"
+        );
+    }
+    // A table whose trig left the unit circle.
+    let mut off_circle = nodes;
+    off_circle[7].1.cos *= 1.000_001;
+    assert!(GridLineBounds::new(&bench, -x, -6.0, &off_circle).is_none());
+}
+
+/// Work guard: the certificates leave under a quarter of the cells to
+/// sample on the `torus_notch_*` box faces, and the trig is tabulated.
+#[test]
+fn certificates_skip_most_cells_of_the_notch_planes() {
+    for c in &named_cases()[..3] {
+        let grid = plane_torus_grid_crossings(&c.torus, c.normal, c.d, true);
+        assert!(
+            grid.sampled_cells * 4 <= 128 * 128,
+            "{}: {} cells sampled",
+            c.label,
+            grid.sampled_cells
+        );
+        // Both ends of each of the 128 cells; `u` and `v` share the table.
+        assert_eq!(grid.grid_sin_cos, 2 * 128);
+        let full = plane_torus_grid_crossings(&c.torus, c.normal, c.d, false);
+        assert_eq!(full.sampled_cells, 128 * 128);
+    }
 }
 
 #[test]
@@ -461,12 +561,4 @@ fn intersect_plane_torus_matches_the_pre_change_pipeline() {
         nonempty += usize::from(!want.is_empty());
     }
     assert!(nonempty >= 20, "only {nonempty} cases produced curves");
-}
-
-#[test]
-fn grid_trig_is_tabulated() {
-    let c = &named_cases()[0];
-    let grid = plane_torus_grid_crossings(&c.torus, c.normal, c.d);
-    // Both ends of each of the 128 cells; `u` and `v` share the table.
-    assert_eq!(grid.grid_sin_cos, 2 * 128);
 }
