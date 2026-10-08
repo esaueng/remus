@@ -434,6 +434,32 @@ fn aabb_include(aabb: &mut Aabb3, p: Point3) {
     *aabb = aabb.union(Aabb3 { min: p, max: p });
 }
 
+/// Include a wire vertex with the strict per-coordinate `<` / `>` of
+/// [`Aabb3::try_from_points`], not [`aabb_include`]'s union: an equal value
+/// (`-0.0` against `0.0`) keeps the coordinate already held, and a NaN on
+/// either side never moves it.
+#[inline]
+fn include_vertex(aabb: &mut Aabb3, p: Point3) {
+    if p.x() < aabb.min.x() {
+        aabb.min.0[0] = p.x();
+    }
+    if p.y() < aabb.min.y() {
+        aabb.min.0[1] = p.y();
+    }
+    if p.z() < aabb.min.z() {
+        aabb.min.0[2] = p.z();
+    }
+    if p.x() > aabb.max.x() {
+        aabb.max.0[0] = p.x();
+    }
+    if p.y() > aabb.max.y() {
+        aabb.max.0[1] = p.y();
+    }
+    if p.z() > aabb.max.z() {
+        aabb.max.0[2] = p.z();
+    }
+}
+
 /// Squared distance below which the seam vertex counts as coincident with
 /// the curve's domain start (linear tolerance 1e-7, squared).
 const SEAM_COINCIDENT_SQ: f64 = 1e-14;
@@ -535,30 +561,34 @@ fn expand_aabb_for_curve(aabb: &mut Aabb3, curve: &EdgeCurve, start: Point3, end
 pub fn face_aabb(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> {
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
-    // Every edge's start and end, looked up as the box takes them rather
-    // than collected first. The walk stops at the first missing entity,
-    // whose error then wins over the partial box.
-    let mut missing = None;
-    let points = wire
-        .edges()
-        .iter()
-        .map(|oe| -> Result<[Point3; 2], CheckError> {
-            let edge = topo.edge(oe.edge())?;
-            Ok([
-                topo.vertex(edge.start())?.point(),
-                topo.vertex(edge.end())?.point(),
-            ])
-        })
-        .map_while(|ends| ends.map_err(|error| missing = Some(error)).ok())
-        .flatten();
-    let aabb = Aabb3::try_from_points(points);
-    if let Some(error) = missing {
-        return Err(error);
+    // Every edge's start then end, in wire order, folded into a box seeded
+    // from the first start: the point sequence `Aabb3::try_from_points` took
+    // when they were collected first. The first missing entity's error wins.
+    let mut edges = wire.edges().iter();
+    let Some(first) = edges.next() else {
+        return Err(CheckError::ClassificationFailed(
+            "face has no vertices".into(),
+        ));
+    };
+    let edge = topo.edge(first.edge())?;
+    let start = topo.vertex(edge.start())?.point();
+    let mut aabb = Aabb3 {
+        min: start,
+        max: start,
+    };
+    include_vertex(&mut aabb, topo.vertex(edge.end())?.point());
+    for oe in edges {
+        let edge = topo.edge(oe.edge())?;
+        include_vertex(&mut aabb, topo.vertex(edge.start())?.point());
+        include_vertex(&mut aabb, topo.vertex(edge.end())?.point());
     }
-    let mut aabb =
-        aabb.ok_or_else(|| CheckError::ClassificationFailed("face has no vertices".into()))?;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
+        // A line reaches no further than its endpoints, whose lookups the
+        // walk above already passed on this same topology.
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
         expand_aabb_for_curve(
             &mut aabb,
             edge.curve(),
@@ -1102,6 +1132,232 @@ mod tests {
             let face = topo.add_face(remus_topology::face::Face::new(wire, vec![], plane()));
             // The face and its wire resolve: the error is the edge walk's.
             assert!(topo.wire(topo.face(face).unwrap().outer_wire()).is_ok());
+            assert!(face_aabb(&topo, face).is_err(), "{what}");
+            faces.push((face, what.to_owned()));
+        }
+
+        for (face, what) in &faces {
+            assert_face_aabb_matches_legacy(&topo, *face, what);
+        }
+    }
+
+    /// Lines mixed with every curved kind, at every wire position: the curve
+    /// pass skipping the lines leaves the box bit for bit as before, still
+    /// widens it for the curves after them, and a dangling entity on a later
+    /// line (or on a curved edge after lines) errors exactly as before.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn face_aabb_mixed_line_and_curved_edges_matches_legacy() {
+        use remus_math::curves::{Ellipse3D, Hyperbola3D, Parabola3D};
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_topology::edge::EdgeId;
+
+        let mut topo = Topology::new();
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let plane = || FaceSurface::Plane { normal: z, d: 0.0 };
+        let vertex = |topo: &mut Topology, p: Point3| topo.add_vertex(Vertex::new(p, 1e-7));
+        let face_of = |topo: &mut Topology, edges: &[(EdgeId, bool)], surface: FaceSurface| {
+            let edges = edges
+                .iter()
+                .map(|&(e, forward)| OrientedEdge::new(e, forward))
+                .collect();
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            topo.add_face(remus_topology::face::Face::new(wire, vec![], surface))
+        };
+        let mut faces: Vec<(FaceId, String)> = Vec::new();
+
+        // Half disc: a diameter and the arc over it, in both orders and
+        // orientations. The circle's extent reaches past both vertices in
+        // y, so the box spans it only if the arc was expanded.
+        let rim = Circle3D::new(origin, z, 2.0).unwrap();
+        let a = vertex(&mut topo, rim.evaluate(std::f64::consts::PI));
+        let b = vertex(&mut topo, rim.evaluate(0.0));
+        let diameter = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let arc = topo.add_edge(Edge::new(b, a, EdgeCurve::Circle(rim.clone())));
+        for (edges, what) in [
+            ([(diameter, true), (arc, true)], "line then arc"),
+            ([(arc, true), (diameter, true)], "arc then line"),
+            ([(arc, false), (diameter, false)], "reversed arc then line"),
+        ] {
+            let face = face_of(&mut topo, &edges, plane());
+            let aabb = face_aabb(&topo, face).unwrap();
+            assert!(
+                aabb.min.y() < -1.9 && aabb.max.y() > 1.9,
+                "{what}: {aabb:?}"
+            );
+            faces.push((face, what.to_owned()));
+        }
+
+        // A chain of every curve kind joined by lines. Every rotation puts
+        // the lines first, last and between curves; the hyperbola and
+        // parabola read their vertices in the curve pass.
+        let parabola = Parabola3D::with_axes(
+            Point3::new(0.0, -6.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            0.5,
+        )
+        .unwrap();
+        let hyperbola = Hyperbola3D::new(Point3::new(8.0, 0.0, 0.0), z, 1.0, 0.75).unwrap();
+        let ellipse = Ellipse3D::new(Point3::new(0.0, 7.0, 0.0), z, 3.0, 1.25).unwrap();
+        let nurbs_arc = circle_to_nurbs(
+            &Circle3D::new(Point3::new(-7.0, 0.0, 0.0), z, 1.5).unwrap(),
+            0.3,
+            2.5,
+        )
+        .unwrap();
+        let (t0, t1) = nurbs_arc.domain();
+        let (n0, n1) = (nurbs_arc.evaluate(t0), nurbs_arc.evaluate(t1));
+        let v0 = vertex(&mut topo, Point3::new(-3.0, -3.0, 0.0));
+        let p0 = vertex(&mut topo, parabola.evaluate(-1.0));
+        let p1 = vertex(&mut topo, parabola.evaluate(1.5));
+        let h0 = vertex(&mut topo, hyperbola.evaluate(-0.5));
+        let h1 = vertex(&mut topo, hyperbola.evaluate(0.8));
+        let e0 = vertex(&mut topo, ellipse.evaluate(0.2));
+        let e1 = vertex(&mut topo, ellipse.evaluate(2.0));
+        let n0 = vertex(&mut topo, n0);
+        let n1 = vertex(&mut topo, n1);
+        let mut edge = |s, e, curve| (topo.add_edge(Edge::new(s, e, curve)), true);
+        let chain = [
+            edge(v0, p0, EdgeCurve::Line),
+            edge(p0, p1, EdgeCurve::Parabola(parabola)),
+            edge(p1, h0, EdgeCurve::Line),
+            edge(h0, h1, EdgeCurve::Hyperbola(hyperbola)),
+            edge(h1, e0, EdgeCurve::Line),
+            edge(e0, e1, EdgeCurve::Ellipse(ellipse)),
+            edge(e1, n0, EdgeCurve::Line),
+            edge(n0, n1, EdgeCurve::NurbsCurve(nurbs_arc)),
+            edge(n1, v0, EdgeCurve::Line),
+        ];
+        for k in 0..chain.len() {
+            let mut rotated = chain;
+            rotated.rotate_left(k);
+            let face = face_of(&mut topo, &rotated, plane());
+            faces.push((face, format!("conic chain rotated by {k}")));
+        }
+        let reversed: Vec<_> = chain.iter().rev().map(|&(e, _)| (e, false)).collect();
+        faces.push((
+            face_of(&mut topo, &reversed, plane()),
+            "reversed chain".to_owned(),
+        ));
+        let curves_only: Vec<_> = chain.iter().copied().skip(1).step_by(2).collect();
+        faces.push((
+            face_of(&mut topo, &curves_only, plane()),
+            "curves without lines".to_owned(),
+        ));
+        let cylinder = CylindricalSurface::new(origin, z, 9.0).unwrap();
+        faces.push((
+            face_of(&mut topo, &chain, FaceSurface::Cylinder(cylinder)),
+            "conic chain on a cylinder".to_owned(),
+        ));
+        // Each curved edge closed by one line: its expansion alone carries
+        // the box past its two vertices, so skipping that kind would show.
+        for &(curved, _) in chain.iter().skip(1).step_by(2) {
+            let (s, e) = {
+                let edge = topo.edge(curved).unwrap();
+                (edge.start(), edge.end())
+            };
+            let closing = topo.add_edge(Edge::new(e, s, EdgeCurve::Line));
+            let face = face_of(&mut topo, &[(closing, true), (curved, true)], plane());
+            let ends = [
+                topo.vertex(s).unwrap().point(),
+                topo.vertex(e).unwrap().point(),
+            ];
+            let ends = Aabb3::try_from_points(ends).unwrap();
+            let aabb = face_aabb(&topo, face).unwrap();
+            let what = format!("line closing {curved:?}");
+            assert_ne!(
+                bits(&[aabb.min, aabb.max]),
+                bits(&[ends.min, ends.max]),
+                "{what}"
+            );
+            faces.push((face, what));
+        }
+
+        // A zero-length line, a NaN and signed zeros on line endpoints
+        // shared with curved edges.
+        let pinch = topo.add_edge(Edge::new(a, a, EdgeCurve::Line));
+        let nan = vertex(&mut topo, Point3::new(f64::NAN, 1.0, -0.0));
+        let to_nan = topo.add_edge(Edge::new(b, nan, EdgeCurve::Line));
+        let from_nan = topo.add_edge(Edge::new(nan, a, EdgeCurve::Circle(rim.clone())));
+        let neg = vertex(&mut topo, Point3::new(-0.0, 0.0, -0.0));
+        let pos = vertex(&mut topo, Point3::new(0.0, -0.0, 0.0));
+        let zero_line = topo.add_edge(Edge::new(neg, pos, EdgeCurve::Line));
+        let zero_line_back = topo.add_edge(Edge::new(pos, neg, EdgeCurve::Line));
+        let zero_arc = topo.add_edge(Edge::new(
+            pos,
+            neg,
+            EdgeCurve::Ellipse(Ellipse3D::new(Point3::new(0.0, 1.25, 0.0), z, 3.0, 1.25).unwrap()),
+        ));
+        for (edges, what) in [
+            (
+                vec![(pinch, true), (diameter, true), (arc, true)],
+                "zero-length line",
+            ),
+            (
+                vec![(diameter, true), (to_nan, true), (from_nan, true)],
+                "NaN between a line and an arc",
+            ),
+            // Lone lines: no later point restores a zero the box took.
+            (vec![(zero_line, true)], "lone line from -0 to +0"),
+            (vec![(zero_line_back, true)], "lone line from +0 to -0"),
+            (
+                vec![(zero_line, true), (zero_arc, true)],
+                "signed zeros on a line and an arc",
+            ),
+            (
+                vec![(zero_arc, false), (zero_line, false)],
+                "signed zeros on an arc and a line",
+            ),
+        ] {
+            faces.push((face_of(&mut topo, &edges, plane()), what.to_owned()));
+        }
+
+        // Handles this topology does not hold, minted by a larger one.
+        let mut other = Topology::new();
+        for _ in 0..1000 {
+            other.add_vertex(Vertex::new(origin, 1e-7));
+        }
+        let foreign_vertex = other.add_vertex(Vertex::new(origin, 1e-7));
+        for _ in 0..1000 {
+            other.add_edge(Edge::new(foreign_vertex, foreign_vertex, EdgeCurve::Line));
+        }
+        let foreign_edge =
+            other.add_edge(Edge::new(foreign_vertex, foreign_vertex, EdgeCurve::Line));
+        assert!(topo.vertex(foreign_vertex).is_err() && topo.edge(foreign_edge).is_err());
+        let dangling_line_end = topo.add_edge(Edge::new(b, foreign_vertex, EdgeCurve::Line));
+        let dangling_line_start = topo.add_edge(Edge::new(foreign_vertex, a, EdgeCurve::Line));
+        let dangling_arc_end = topo.add_edge(Edge::new(b, foreign_vertex, EdgeCurve::Circle(rim)));
+        let dangling_after_parabola = topo.add_edge(Edge::new(p1, foreign_vertex, EdgeCurve::Line));
+        let parabola_edge = chain[1].0;
+        for (edges, what) in [
+            (
+                vec![(arc, true), (dangling_line_end, true)],
+                "dangling end vertex on a line after an arc",
+            ),
+            (
+                vec![(diameter, true), (arc, true), (dangling_line_start, true)],
+                "dangling start vertex on the last line",
+            ),
+            (
+                vec![(arc, true), (foreign_edge, true), (diameter, true)],
+                "dangling edge between an arc and a line",
+            ),
+            (
+                vec![(diameter, true), (dangling_arc_end, true)],
+                "dangling end vertex on an arc after a line",
+            ),
+            (
+                vec![(parabola_edge, true), (dangling_after_parabola, true)],
+                "dangling line after a parabola",
+            ),
+            (
+                vec![(dangling_line_start, true), (arc, true)],
+                "dangling start vertex on the first line",
+            ),
+        ] {
+            let face = face_of(&mut topo, &edges, plane());
             assert!(face_aabb(&topo, face).is_err(), "{what}");
             faces.push((face, what.to_owned()));
         }
