@@ -10077,3 +10077,51 @@ fn scaling_nway_ff_seeds_junctions_once_per_run() {
          seeds (once per run ≈ 2.8x, per pair ≈ 23x)"
     );
 }
+
+/// The holed plate of the boolean bench (`single_boolean_at_face_count`,
+/// F~54): a 100 x 100 x 10 box cut by sixteen r = 2 cylinders on a 20 mm
+/// grid, each spanning z = -5..15, plus one more such tool at `(x, y)`.
+#[cfg(feature = "perf-counters")]
+fn bench_holed_plate_and_tool(topo: &mut Topology, x: f64, y: f64) -> (SolidId, SolidId) {
+    use remus_math::mat::Mat4;
+
+    let tool_at = |topo: &mut Topology, x: f64, y: f64| {
+        let tool = crate::primitives::make_cylinder(topo, 2.0, 20.0).unwrap();
+        crate::transform::transform_solid(topo, tool, &Mat4::translation(x, y, -5.0)).unwrap();
+        tool
+    };
+    let mut plate = crate::primitives::make_box(topo, 100.0, 100.0, 10.0).unwrap();
+    for i in 0..16_u32 {
+        let tool = tool_at(
+            topo,
+            20.0 * f64::from(i % 4 + 1),
+            20.0 * f64::from(i / 4 + 1),
+        );
+        plate = boolean(topo, BooleanOp::Cut, plate, tool).unwrap();
+    }
+    (plate, tool_at(topo, x, y))
+}
+
+/// Vertex-on-edge work for one more cut of the bench's holed plate (the
+/// curved-edge half of PERF-B02). Every vertex x circle pair is at least
+/// 5 mm out of plane (plate vertices at z = 0 / 10, tool rims at z = -5 /
+/// 15) or 18 mm apart in plan, so the circle boxes prune all 16 + 8 * 16 =
+/// 144 of them; before, each ran the 73-evaluation sampled projection. That
+/// the box changes no result is proven bit-exactly by
+/// `broad_phases_leave_the_intersection_state_bit_identical` in `remus-algo`.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_ve_curved_edge_box_prunes_far_circle_pairs() {
+    let mut topo = Topology::new();
+    let (plate, tool) = bench_holed_plate_and_tool(&mut topo, 50.0, 95.0);
+    remus_algo::perf::reset();
+    let result = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    let probes = remus_algo::perf::snapshot().ve_sampled_probes;
+    eprintln!("ve curved guard: sampled projections={probes}");
+    assert!(
+        probes <= 8,
+        "curved-edge VE box regressed: {probes} sampled projections (ungated: 144)"
+    );
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+}

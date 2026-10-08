@@ -2401,3 +2401,364 @@ fn ef_grazing_contact_reuses_the_edges_own_on_wall_extra_pave() {
         .collect();
     assert_eq!(on_wall, vec![Some(contact)]);
 }
+
+// ── Broad-phase equivalence: gated vs ungated VE ─────────────────────────
+
+/// A closed cylinder of `radius` from `base` along `axis` for `height`. Its
+/// rims are exact circles, or their rational quadratic NURBS images when
+/// `nurbs_rims` is set.
+fn make_axis_cylinder(
+    topo: &mut Topology,
+    base: Point3,
+    axis: Vec3,
+    radius: f64,
+    height: f64,
+    nurbs_rims: bool,
+) -> remus_topology::solid::SolidId {
+    use remus_math::curves::Circle3D;
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::surfaces::CylindricalSurface;
+
+    let surface = CylindricalSurface::new(base, axis, radius).unwrap();
+    let (x, y, n) = (surface.x_axis(), surface.y_axis(), surface.axis());
+    let top = base + n * height;
+    let rim = |topo: &mut Topology, center: Point3| {
+        let vertex = topo.add_vertex(Vertex::new(center + x * radius, 1e-7));
+        let (curve, trim) = if nurbs_rims {
+            let w = std::f64::consts::FRAC_1_SQRT_2;
+            let points = [
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (-1.0, 1.0),
+                (-1.0, 0.0),
+                (-1.0, -1.0),
+                (0.0, -1.0),
+                (1.0, -1.0),
+                (1.0, 0.0),
+            ]
+            .iter()
+            .map(|&(a, b)| center + x * (radius * a) + y * (radius * b))
+            .collect();
+            let weights = (0..9).map(|i| if i % 2 == 0 { 1.0 } else { w }).collect();
+            let knots = vec![
+                0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+            ];
+            let nurbs = NurbsCurve::new(2, knots, points, weights).unwrap();
+            (EdgeCurve::NurbsCurve(nurbs), (0.0, 1.0))
+        } else {
+            let circle = Circle3D::with_axes(center, n, radius, x, y).unwrap();
+            (EdgeCurve::Circle(circle), (0.0, std::f64::consts::TAU))
+        };
+        let mut edge = Edge::with_tolerance(vertex, vertex, curve, Some(1e-7));
+        edge.set_trim(Some(trim));
+        (vertex, topo.add_edge(edge))
+    };
+    let (v_bot, e_bot) = rim(topo, base);
+    let (v_top, e_top) = rim(topo, top);
+    let e_seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
+
+    let lateral = Wire::new(
+        vec![
+            OrientedEdge::new(e_bot, true),
+            OrientedEdge::new(e_seam, true),
+            OrientedEdge::new(e_top, false),
+            OrientedEdge::new(e_seam, false),
+        ],
+        true,
+    )
+    .unwrap();
+    let lateral = topo.add_wire(lateral);
+    let lateral = topo.add_face(Face::new(lateral, vec![], FaceSurface::Cylinder(surface)));
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let bottom = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, false)], true).unwrap());
+    let bottom = topo.add_face(Face::new(
+        bottom,
+        vec![],
+        FaceSurface::Plane {
+            normal: -n,
+            d: -n.dot(base - origin),
+        },
+    ));
+    let cap = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, true)], true).unwrap());
+    let cap = topo.add_face(Face::new(
+        cap,
+        vec![],
+        FaceSurface::Plane {
+            normal: n,
+            d: n.dot(top - origin),
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![lateral, bottom, cap]).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+/// Two spherical hemispheres sharing an equatorial polygon of line edges,
+/// the shape `remus-operations` builds for a sphere.
+fn make_sphere(
+    topo: &mut Topology,
+    center: Point3,
+    radius: f64,
+    segments: u32,
+) -> remus_topology::solid::SolidId {
+    use remus_math::surfaces::SphericalSurface;
+
+    let equator: Vec<_> = (0..segments)
+        .map(|i| {
+            let a = std::f64::consts::TAU * f64::from(i) / f64::from(segments);
+            let p = center + Vec3::new(radius * a.cos(), radius * a.sin(), 0.0);
+            topo.add_vertex(Vertex::new(p, 1e-7))
+        })
+        .collect();
+    let edges: Vec<_> = (0..equator.len())
+        .map(|i| {
+            let next = equator[(i + 1) % equator.len()];
+            topo.add_edge(Edge::new(equator[i], next, EdgeCurve::Line))
+        })
+        .collect();
+    let surface = SphericalSurface::new(center, radius).unwrap();
+    let north = edges.iter().map(|&e| OrientedEdge::new(e, true)).collect();
+    let south = edges
+        .iter()
+        .rev()
+        .map(|&e| OrientedEdge::new(e, false))
+        .collect();
+    let faces = [north, south].map(|edges| {
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Sphere(surface.clone()),
+        ))
+    });
+    let shell = topo.add_shell(Shell::new(faces.to_vec()).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+/// Cut vertical through-holes of `radius` at `centers` from `target`, one
+/// boolean at a time, spanning `z` in `[z0, z0 + height]`.
+fn drill(
+    topo: &mut Topology,
+    mut target: remus_topology::solid::SolidId,
+    centers: &[(f64, f64)],
+    radius: f64,
+    z0: f64,
+    height: f64,
+) -> remus_topology::solid::SolidId {
+    for &(x, y) in centers {
+        let tool = make_axis_cylinder(
+            topo,
+            Point3::new(x, y, z0),
+            Vec3::new(0.0, 0.0, 1.0),
+            radius,
+            height,
+            false,
+        );
+        target = crate::gfa::boolean(topo, crate::bop::BooleanOp::Cut, target, tool).unwrap();
+    }
+    target
+}
+
+/// Operand sets whose VE and EF phases mix pairs the broad phases prune with
+/// genuine contacts: the boolean bench's holed plate (with a 17th tool near
+/// its edge and one inside the grid), a cylinder whose axis runs along a box
+/// edge, blind gridfinity holes, a counterbore and a same-radius re-drill, a
+/// line grazing a cylinder wall at exactly the radius, spheres inside and
+/// through a box, a tilted cylinder, NURBS-rimmed cylinders 1e9 and 1e12 out,
+/// a sphere-in-cylinder cavity 1e13 out, and a three-solid N-way set.
+fn broad_phase_corpus() -> Vec<(&'static str, Topology, Vec<remus_topology::solid::SolidId>)> {
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let mut corpus = Vec::new();
+
+    let mut topo = Topology::new();
+    let plate = make_box(&mut topo, [0.0, 0.0, 0.0], [100.0, 100.0, 10.0]);
+    let grid: Vec<(f64, f64)> = (0..16)
+        .map(|i| (20.0 * f64::from(i % 4 + 1), 20.0 * f64::from(i / 4 + 1)))
+        .collect();
+    let holed = drill(&mut topo, plate, &grid, 2.0, -5.0, 20.0);
+    for (name, x, y) in [
+        ("grid16 + edge tool", 50.0, 95.0),
+        ("grid16 + inner tool", 30.0, 30.0),
+    ] {
+        let mut topo = topo.clone();
+        let tool = make_axis_cylinder(&mut topo, Point3::new(x, y, -5.0), z, 2.0, 20.0, false);
+        corpus.push((name, topo, vec![holed, tool]));
+    }
+
+    let mut topo = Topology::new();
+    let cube = make_box(&mut topo, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+    let tool = make_axis_cylinder(&mut topo, Point3::new(0.0, 0.0, -1.0), z, 3.0, 12.0, false);
+    corpus.push(("axis on a box edge", topo, vec![cube, tool]));
+
+    let mut topo = Topology::new();
+    let bin = make_box(&mut topo, [0.0, 0.0, 0.0], [42.0, 42.0, 4.65]);
+    let bin = drill(
+        &mut topo,
+        bin,
+        &[(4.0, 4.0), (38.0, 4.0), (4.0, 38.0)],
+        3.0,
+        -0.5,
+        5.0,
+    );
+    let tool = make_axis_cylinder(&mut topo, Point3::new(38.0, 38.0, -0.5), z, 3.0, 5.0, false);
+    corpus.push(("blind gridfinity hole", topo, vec![bin, tool]));
+
+    let mut topo = Topology::new();
+    let cube = make_box(&mut topo, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+    let bored = drill(&mut topo, cube, &[(5.0, 5.0)], 2.0, -1.0, 12.0);
+    for (name, radius, z0, height) in [
+        ("counterbore", 3.0, 6.0, 6.0),
+        ("re-drill", 2.0, -1.0, 12.0),
+    ] {
+        let mut topo = topo.clone();
+        let tool = make_axis_cylinder(
+            &mut topo,
+            Point3::new(5.0, 5.0, z0),
+            z,
+            radius,
+            height,
+            false,
+        );
+        corpus.push((name, topo, vec![bored, tool]));
+    }
+
+    let mut topo = Topology::new();
+    let slab = make_box(&mut topo, [0.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+    let tool = make_axis_cylinder(&mut topo, Point3::new(1.0, -1.0, -1.0), z, 1.0, 3.0, false);
+    corpus.push(("grazing wall", topo, vec![slab, tool]));
+
+    for (name, center, radius) in [
+        ("sphere inside a box", Point3::new(5.0, 5.0, 5.0), 3.0),
+        ("sphere through a box", Point3::new(5.0, 5.0, 8.0), 4.0),
+    ] {
+        let mut topo = Topology::new();
+        let cube = make_box(&mut topo, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+        let ball = make_sphere(&mut topo, center, radius, 16);
+        corpus.push((name, topo, vec![cube, ball]));
+    }
+
+    let mut topo = Topology::new();
+    let cube = make_box(&mut topo, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+    let axis = Vec3::new(1.0, 0.3, 2.0);
+    let tool = make_axis_cylinder(
+        &mut topo,
+        Point3::new(2.0, 4.0, -3.0),
+        axis,
+        1.5,
+        16.0,
+        false,
+    );
+    corpus.push(("tilted cylinder", topo, vec![cube, tool]));
+
+    for (name, offset) in [("NURBS rims at 1e9", 1e9), ("NURBS rims at 1e12", 1e12)] {
+        let mut topo = Topology::new();
+        let o = [offset, -offset, offset];
+        let cube = make_box(&mut topo, o, [o[0] + 10.0, o[1] + 10.0, o[2] + 10.0]);
+        let base = Point3::new(offset + 5.0, 2.0 - offset, offset - 1.0);
+        let tool = make_axis_cylinder(&mut topo, base, z, 2.0, 12.0, true);
+        let far = Point3::new(offset + 30.0, 30.0 - offset, offset - 1.0);
+        let clear = make_axis_cylinder(&mut topo, far, z, 2.0, 12.0, true);
+        corpus.push((name, topo, vec![cube, tool, clear]));
+    }
+
+    let mut topo = Topology::new();
+    let far = Vec3::new(1e13, -1e13, 1e13);
+    let origin = Point3::new(0.0, 0.0, 0.0) + far;
+    let can = make_axis_cylinder(&mut topo, origin, z, 10.0, 20.0, false);
+    let ball = make_sphere(&mut topo, Point3::new(1.9, 0.0, 10.0) + far, 8.0, 32);
+    corpus.push(("sphere in cylinder at 1e13", topo, vec![can, ball]));
+
+    let mut topo = Topology::new();
+    let cube = make_box(&mut topo, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]);
+    let a = make_axis_cylinder(&mut topo, Point3::new(3.0, 3.0, -1.0), z, 1.0, 12.0, false);
+    let b = make_axis_cylinder(&mut topo, Point3::new(7.0, 7.0, 2.0), z, 2.0, 12.0, false);
+    corpus.push(("three-solid N-way", topo, vec![cube, a, b]));
+    corpus
+}
+
+/// The phases' work counters, where the `perf-counters` feature records them.
+fn ve_work() -> u64 {
+    #[cfg(feature = "perf-counters")]
+    return crate::perf::snapshot().ve_sampled_probes;
+    #[cfg(not(feature = "perf-counters"))]
+    0
+}
+
+/// Run stage one of the pave filler over `sources` (the two-solid
+/// initialisation for two, the N-way one for more) and, at each gated
+/// phase, also run it from the same state with its broad phase off: the
+/// gated run must leave the topology and arena bit-identical. `Debug` prints
+/// floats shortest-round-trip, so equal text is equal bits, across the
+/// interference lists, every pave block's extra paves, the face info and
+/// every topology entity, in order. Returns the (gated, ungated) work.
+fn assert_broad_phases_change_nothing(
+    name: &str,
+    mut topo: Topology,
+    sources: &[remus_topology::solid::SolidId],
+) -> (u64, u64) {
+    use remus_math::tolerance::Tolerance;
+    let tol = Tolerance::default();
+    let context = OperationContext::new().with_tolerance(tol);
+    let mut arena = GfaArena::new();
+    if let [a, b] = *sources {
+        PaveFiller::new(&mut topo, a, b)
+            .init_pave_blocks(&mut arena)
+            .unwrap();
+    } else {
+        super::init_pave_blocks_n(&topo, sources, &mut arena).unwrap();
+    }
+    let pairs = super::source_pairs(sources);
+    let mut budget = super::phase_vv::VertexPairBudget::new(context.budgets.vertex_pairs);
+    for &(i, j) in &pairs {
+        super::phase_vv::perform_with_context(
+            &topo,
+            sources[i],
+            sources[j],
+            &context,
+            &mut arena,
+            &mut budget,
+        )
+        .unwrap();
+    }
+    arena.build_pave_vertex_index(&topo, tol.linear).unwrap();
+
+    let mut ungated = arena.clone();
+    #[cfg(feature = "perf-counters")]
+    crate::perf::reset();
+    for &(i, j) in &pairs {
+        super::phase_ve::perform_with(&topo, sources[i], sources[j], tol, &mut arena, true)
+            .unwrap();
+    }
+    let gated_work = ve_work();
+    #[cfg(feature = "perf-counters")]
+    crate::perf::reset();
+    for &(i, j) in &pairs {
+        super::phase_ve::perform_with(&topo, sources[i], sources[j], tol, &mut ungated, false)
+            .unwrap();
+    }
+    let ungated_work = ve_work();
+    assert_eq!(
+        format!("{arena:?}"),
+        format!("{ungated:?}"),
+        "{name}: the VE curved-edge box changed the intersection state"
+    );
+    (gated_work, ungated_work)
+}
+
+#[test]
+fn broad_phases_leave_the_intersection_state_bit_identical() {
+    let mut gated = 0;
+    let mut ungated = 0;
+    for (name, topo, sources) in broad_phase_corpus() {
+        let (g, u) = assert_broad_phases_change_nothing(name, topo, &sources);
+        eprintln!("{name}: VE sampled projections gated {g}, ungated {u}");
+        gated += g;
+        ungated += u;
+    }
+    if cfg!(feature = "perf-counters") {
+        assert!(
+            gated < ungated,
+            "the curved-edge box pruned nothing: {gated} vs {ungated}"
+        );
+    }
+}
