@@ -29,7 +29,7 @@ permissions:
 # Keep the callee commit when merging so this pin remains on main.
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded.yml@09dbbb05bb88c28646b81b74e958f97e1153bcb7
+    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded.yml@2e1f4b8fc43ad958cce47088739ebd03b52ba755
     permissions:
       contents: read
       pull-requests: read
