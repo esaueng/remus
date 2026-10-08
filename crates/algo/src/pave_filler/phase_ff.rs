@@ -7,6 +7,8 @@
 //! Each raw curve also gets a pave block spanning its full parameter
 //! range, with topology vertices and an edge created at the endpoints.
 
+use std::borrow::Cow;
+
 use remus_math::aabb::Aabb3;
 use remus_math::analytic_intersection;
 use remus_math::context::OperationContext;
@@ -82,7 +84,7 @@ fn ff_trace_x() -> Option<f64> {
 /// junction point per corner, first refiner wins. Pairwise refinement alone
 /// gives each pair its own solution (~1e-5 apart at a lattice corner where
 /// four faces meet), and the disagreeing copies mint micro-sliver free edges.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct JunctionRegistry {
     cells: std::collections::HashMap<(i64, i64, i64), JunctionEntry>,
     /// Characteristic size per face pair, so the snap bands below track the
@@ -120,6 +122,37 @@ impl JunctionRegistry {
     /// grown to a significant fraction of the geometry it searches. Any pair
     /// whose extent exceeds 0.1 keeps the historical band bit-for-bit.
     const BOUNDARY_TRIGGER_EXTENT_FRACTION: f64 = 0.01;
+
+    /// Every cell in key order with bitwise points: a hash-order-independent
+    /// view for comparing two registries exactly.
+    #[allow(clippy::type_complexity)]
+    fn cell_snapshot(
+        &self,
+    ) -> Vec<(
+        (i64, i64, i64),
+        [u64; 3],
+        Option<(FaceId, FaceId)>,
+        Option<remus_topology::edge::EdgeId>,
+    )> {
+        let mut cells: Vec<_> = self
+            .cells
+            .iter()
+            .map(|(&key, entry)| {
+                (
+                    key,
+                    [
+                        entry.point.x().to_bits(),
+                        entry.point.y().to_bits(),
+                        entry.point.z().to_bits(),
+                    ],
+                    entry.faces,
+                    entry.source_edge,
+                )
+            })
+            .collect();
+        cells.sort_unstable_by_key(|cell| cell.0);
+        cells
+    }
 
     fn key(p: Point3) -> (i64, i64, i64) {
         #[allow(clippy::cast_possible_truncation)]
@@ -271,6 +304,7 @@ impl JunctionRegistry {
     }
 
     fn seed(&mut self, p: Point3, source_edge: remus_topology::edge::EdgeId) {
+        crate::perf::bump_junction_seed();
         if self.lookup(p, 1e-4).is_none() {
             self.cells.insert(
                 Self::key(p),
@@ -313,34 +347,104 @@ pub fn perform_with_context(
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
     context.check_cancelled()?;
-    let tol = context.tolerance;
-    let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
-    let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
+    let seeds = seed_junctions(topo, arena);
+    perform_seeded(
+        topo,
+        solid_a,
+        solid_b,
+        context,
+        arena,
+        Cow::Owned(seeds.registry),
+    )
+}
 
-    let mut junction_registry = JunctionRegistry::default();
-    // Seed prior pave endpoints so a boundary junction computed here can
-    // reuse the exact vertex already minted by VE/EE/VF/EF. Resolve never
-    // snaps to these raw points directly: it first derives a validated
-    // junction from the current face pair and only then performs a narrow
-    // lookup, so unrelated operand vertices cannot become section anchors.
+/// The junction registry every FF solid pair starts from, seeded from all
+/// prior pave endpoints.
+///
+/// The N-way driver builds this once and gives each solid pair a private
+/// copy instead of re-seeding per pair: the per-pair rebuild was
+/// Θ(pairs × paves) and dominated balanced `fuse_all`. Sharing it is sound
+/// only while nothing writes the seed inputs between FF pairs; see
+/// [`seeds_match_fresh`].
+pub(super) struct JunctionSeeds {
+    registry: JunctionRegistry,
+}
+
+/// Seed prior pave endpoints so a boundary junction computed in FF can reuse
+/// the exact vertex already minted by VE/EE/VF/EF. Resolve never snaps to
+/// these raw points directly: it first derives a validated junction from the
+/// current face pair and only then performs a narrow lookup, so unrelated
+/// operand vertices cannot become section anchors.
+///
+/// Reads only `edge_pave_blocks`, their pave blocks' start/end/extra paves,
+/// `same_domain_vertices` (via `resolve_vertex`) and existing vertex points.
+pub(super) fn seed_junctions(topo: &Topology, arena: &GfaArena) -> JunctionSeeds {
+    let mut registry = JunctionRegistry::default();
     for pbs in arena.edge_pave_blocks.values() {
         for &pb_id in pbs {
             if let Some(pb) = arena.pave_blocks.get(pb_id) {
                 for vid in [pb.start.vertex, pb.end.vertex] {
                     let resolved = arena.resolve_vertex(vid);
                     if let Ok(v) = topo.vertex(resolved) {
-                        junction_registry.seed(v.point(), pb.original_edge);
+                        registry.seed(v.point(), pb.original_edge);
                     }
                 }
                 for pave in &pb.extra_paves {
                     let resolved = arena.resolve_vertex(pave.vertex);
                     if let Ok(v) = topo.vertex(resolved) {
-                        junction_registry.seed(v.point(), pb.original_edge);
+                        registry.seed(v.point(), pb.original_edge);
                     }
                 }
             }
         }
     }
+    JunctionSeeds { registry }
+}
+
+/// Whether `seeds` still equals a fresh [`seed_junctions`] over the current
+/// arena: the invariant that lets the N-way driver share one seeding across
+/// all FF solid pairs. Compares every cell bitwise, independent of hash
+/// order.
+pub(super) fn seeds_match_fresh(seeds: &JunctionSeeds, topo: &Topology, arena: &GfaArena) -> bool {
+    seeds.registry.cell_snapshot() == seed_junctions(topo, arena).registry.cell_snapshot()
+}
+
+/// [`perform_with_context`] starting from a shared [`seed_junctions`] result.
+/// The pair works on a private copy, made only once one of its face pairs
+/// survives the broad phase, so FF-minted junctions never leak across solid
+/// pairs and the shared seeds are never written.
+pub(super) fn perform_with_junction_seeds(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+    arena: &mut GfaArena,
+    seeds: &JunctionSeeds,
+) -> Result<(), AlgoError> {
+    context.check_cancelled()?;
+    perform_seeded(
+        topo,
+        solid_a,
+        solid_b,
+        context,
+        arena,
+        Cow::Borrowed(&seeds.registry),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn perform_seeded(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+    arena: &mut GfaArena,
+    mut junction_seeds: Cow<'_, JunctionRegistry>,
+) -> Result<(), AlgoError> {
+    let tol = context.tolerance;
+    let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
+    let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
+
     // Pre-compute face AABBs for rejection
     let bboxes_a = compute_face_bboxes(topo, &faces_a, tol)?;
     let bboxes_b = compute_face_bboxes(topo, &faces_b, tol)?;
@@ -450,6 +554,10 @@ pub fn perform_with_context(
             if torus_cylinder_faces_have_only_point_contact(topo, fa, fb, tol)? {
                 continue;
             }
+            // First surviving face pair of this solid pair: take the private
+            // copy of shared seeds (free when already owned). Later face
+            // pairs keep accumulating into the same copy.
+            let junction_registry = junction_seeds.to_mut();
             // A NURBS carrier whose control net is coplanar IS a plane, and
             // the analytic arm cuts it exactly: a plane converted to a
             // bilinear patch met a peg cylinder through the marcher in an arc
@@ -871,7 +979,7 @@ pub fn perform_with_context(
                 v_range_b,
                 raw_curves,
                 tol,
-                &mut junction_registry,
+                junction_registry,
             )?;
             validate_raw_curve_collection("phase_ff face restriction", &raw_curves)?;
             if traced {

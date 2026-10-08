@@ -1251,103 +1251,24 @@ pub fn intersect_plane_cone(
 ///
 /// Returns an error if curve fitting fails or the plane frame cannot be
 /// built (a zero plane normal).
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::too_many_lines,
-    clippy::unnecessary_wraps
-)]
+#[allow(clippy::too_many_lines, clippy::unnecessary_wraps)]
 pub fn intersect_plane_torus(
     torus: &ToroidalSurface,
     normal: Vec3,
     d: f64,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
-    let n_grid = 128_usize;
-
-    // Signed distance to plane for a torus point.
-    let sdf = |u: f64, v: f64| -> f64 { dot_np(normal, torus.evaluate(u, v)) - d };
-
-    // Collect zero-crossing points by scanning edges of a (u,v) grid.
-    let mut crossing_pts: Vec<(f64, f64, Point3)> = Vec::new();
-
-    let du = TAU / (n_grid as f64);
-    let dv = TAU / (n_grid as f64);
-
-    // Offset grid by half a cell to avoid landing exactly on zero crossings
-    // (e.g. sin(0) = 0.0 exactly in IEEE 754, which defeats sign-change detection).
-    let u_off = du * 0.5;
-    let v_off = dv * 0.5;
-
-    for iu in 0..n_grid {
-        for iv in 0..n_grid {
-            let u0 = (iu as f64).fma(du, u_off);
-            let v0 = (iv as f64).fma(dv, v_off);
-            let u1 = u0 + du;
-            let v1 = v0 + dv;
-
-            let f00 = sdf(u0, v0);
-            let f10 = sdf(u1, v0);
-            let f01 = sdf(u0, v1);
-
-            // Check horizontal edge (u0,v0)-(u1,v0).
-            if f00 * f10 < 0.0 {
-                let t = f00 / (f00 - f10);
-                let u = t.fma(u1 - u0, u0);
-                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u, v0);
-                crossing_pts.push((u_r, v_r, torus.evaluate(u_r, v_r)));
-            }
-
-            // Check vertical edge (u0,v0)-(u0,v1).
-            if f00 * f01 < 0.0 {
-                let t = f00 / (f00 - f01);
-                let v = t.fma(v1 - v0, v0);
-                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u0, v);
-                crossing_pts.push((u_r, v_r, torus.evaluate(u_r, v_r)));
-            }
-        }
-    }
+    let crossing_pts = plane_torus_grid_crossings(torus, normal, d, true).crossings;
 
     if crossing_pts.is_empty() {
         return Ok(vec![]);
     }
 
     // Group nearby points into connected curves via greedy chaining.
-    let mut used = vec![false; crossing_pts.len()];
     let mut curves = Vec::new();
 
-    for start in 0..crossing_pts.len() {
-        if used[start] {
-            continue;
-        }
-        used[start] = true;
-        let mut chain = vec![start];
-
-        loop {
-            let last = chain[chain.len() - 1];
-            let last_pt = crossing_pts[last].2;
-            let mut best_idx = None;
-            // The grid is angular: its physical spacing scales with the tube.
-            // A fixed length joins separate small lobes and fragments large ones.
-            let mut best_dist = torus.minor_radius() / 3.0;
-
-            for (j, &is_used) in used.iter().enumerate() {
-                if is_used {
-                    continue;
-                }
-                let dist = (crossing_pts[j].2 - last_pt).length();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_idx = Some(j);
-                }
-            }
-
-            if let Some(j) = best_idx {
-                used[j] = true;
-                chain.push(j);
-            } else {
-                break;
-            }
-        }
-
+    // The grid is angular: its physical spacing scales with the tube.
+    // A fixed length joins separate small lobes and fragments large ones.
+    for mut chain in greedy_chains(&crossing_pts, torus.minor_radius() / 3.0) {
         if chain.len() >= 4 {
             // The walk has no direction yet at its start. A grid corner the
             // curve passes close to yields two crossings (one per adjacent grid
@@ -1412,6 +1333,334 @@ pub fn intersect_plane_torus(
     }
 
     Ok(curves)
+}
+
+/// Greedy nearest-neighbour chains over `pts`, every chain in start order.
+///
+/// Each point not yet used starts a chain, in index order. The chain then
+/// keeps taking the unused point nearest its last one, if closer than
+/// `radius`, with ties going to the lowest index.
+fn greedy_chains(pts: &[(f64, f64, Point3)], radius: f64) -> Vec<Vec<usize>> {
+    let mut used = vec![false; pts.len()];
+    let mut chains = Vec::new();
+
+    for start in 0..pts.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut chain = vec![start];
+
+        loop {
+            let last = chain[chain.len() - 1];
+            let last_pt = pts[last].2;
+            let mut best_idx = None;
+            let mut best_dist = radius;
+
+            for (j, &is_used) in used.iter().enumerate() {
+                if is_used {
+                    continue;
+                }
+                let q = pts[j].2;
+                // `length` rounds a sum of non-negative squares that is at
+                // least the rounded square of the largest coordinate
+                // difference `m` (rounding is monotone), then rounds its
+                // root, so it is at least `m·(1 − eps)^1.5` while `m²` is
+                // normal. Once `m` reaches the gate, `dist > best_dist` (or
+                // is NaN) and the `<` below would reject `j` anyway. Below
+                // `1e-140` the gate could let `m²` go subnormal, so it is
+                // not applied.
+                let gate = best_dist * (1.0 + 1e-12);
+                if gate > 1e-140
+                    && ((q.x() - last_pt.x()).abs() >= gate
+                        || (q.y() - last_pt.y()).abs() >= gate
+                        || (q.z() - last_pt.z()).abs() >= gate)
+                {
+                    continue;
+                }
+                let dist = (q - last_pt).length();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(j);
+                }
+            }
+
+            if let Some(j) = best_idx {
+                used[j] = true;
+                chain.push(j);
+            } else {
+                break;
+            }
+        }
+        chains.push(chain);
+    }
+    chains
+}
+
+/// One end of a cell edge of the plane × torus scan grid, with its trig.
+///
+/// A cell spans `lo ..= lo + step`, and `lo + step` can differ by an ulp from
+/// the next cell's `lo`, so both ends are tabulated: every sample sees
+/// exactly the angle the per-cell scan computed.
+#[derive(Clone, Copy)]
+struct GridNode {
+    angle: f64,
+    sin: f64,
+    cos: f64,
+    /// [`ToroidalSurface::tube_terms`] of the angle taken as `v`.
+    tube: (f64, f64),
+    /// Sign every sample on the grid column `u = angle` is proven to have,
+    /// `0` if none.
+    col: i8,
+    /// The same for the grid row `v = angle`.
+    row: i8,
+}
+
+/// Sign certificates for whole lines of the plane × torus scan grid.
+///
+/// With `nx, ny, nz` the normal along the torus frame and
+/// `k = n · centre − d`, a sample built from tabulated trig and tube terms
+/// `(tube, height)` is, in real arithmetic, `k + tube·a + height·nz` with
+/// `a = cos u·nx + sin u·ny`. On a column (fixed `u`, `tube ≈ R + r·cos v`,
+/// `height ≈ r·sin v`) that lies within `k + R·a ± |r|·hypot(a, nz)`; on a row
+/// (fixed `v`, the tabulated `tube` and `height` themselves) within
+/// `k + height·nz ± |tube|·hypot(nx, ny)`. Both are Cauchy–Schwarz with
+/// `sin² + cos² ≤ 1 + 1e-12`, which [`Self::new`] checks on the table.
+///
+/// Every rounding of a sample (tube terms, products, the point's sums, the
+/// dot product, `− d`) and of a bound (`nx, ny, nz`, `k`, the `fma`s,
+/// `hypot`'s ulp, the rounding of `tube` and `height` away from their real
+/// values), carried through to the result, is at most `eps·S` with
+/// `S = |d| + Σᵢ |nᵢ|·(|cᵢ| + (|R| + |r|)·(|xᵢ| + |yᵢ|) + |r|·|zᵢ|)`: fewer
+/// than `100·eps·S` in all, plus `1e-12·S` for the trig norm. A line is
+/// certified only when its bound clears zero by `slop = 1e-9·S`, so every
+/// computed sample on it is nonzero with that sign. That holds only while
+/// nothing overflows and an underflow's absolute error (`2⁻¹⁰⁷⁴`, scaled by
+/// at most two later factors) stays far below `slop`, so every component of
+/// the normal, centre and frame, both radii and `d` must be `0` or of
+/// magnitude in `[1e-50, 1e50]`, and `S` must lie in `(1e-150, 1e150)`;
+/// otherwise nothing is certified.
+struct GridLineBounds {
+    nx: f64,
+    ny: f64,
+    nz: f64,
+    k: f64,
+    major: f64,
+    minor: f64,
+    slop: f64,
+}
+
+impl GridLineBounds {
+    fn new(
+        torus: &ToroidalSurface,
+        normal: Vec3,
+        d: f64,
+        nodes: &[(GridNode, GridNode)],
+    ) -> Option<Self> {
+        let (center, x, y, z) = (
+            torus.center(),
+            torus.x_axis(),
+            torus.y_axis(),
+            torus.z_axis(),
+        );
+        let (major, minor) = (torus.major_radius(), torus.minor_radius());
+        let in_range = |v: &f64| *v == 0.0 || (1e-50..=1e50).contains(&v.abs());
+        let inputs_in_range = [normal.0, center.0, x.0, y.0, z.0]
+            .iter()
+            .flatten()
+            .chain(&[major, minor, d])
+            .all(in_range);
+        let unit_trig = nodes
+            .iter()
+            .flat_map(|(lo, hi)| [lo, hi])
+            .all(|n| n.sin.fma(n.sin, n.cos * n.cos) <= 1.0 + 1e-12);
+        if !(inputs_in_range && unit_trig) {
+            return None;
+        }
+
+        let reach = major.abs() + minor.abs();
+        let mut scale = d.abs();
+        for i in 0..3 {
+            let frame = x.0[i].abs() + y.0[i].abs();
+            let coordinate = minor
+                .abs()
+                .fma(z.0[i].abs(), reach.fma(frame, center.0[i].abs()));
+            scale = normal.0[i].abs().fma(coordinate, scale);
+        }
+        (1e-150..1e150).contains(&scale).then(|| Self {
+            nx: normal.dot(x),
+            ny: normal.dot(y),
+            nz: normal.dot(z),
+            k: dot_np(normal, center) - d,
+            major,
+            minor,
+            slop: 1e-9 * scale,
+        })
+    }
+
+    /// `±1` if every value within `mid ± amp` has that sign by more than
+    /// the slop, else `0`.
+    fn sign(&self, mid: f64, amp: f64) -> i8 {
+        if !(mid.is_finite() && amp.is_finite()) {
+            0
+        } else if mid - amp > self.slop {
+            1
+        } else if mid + amp < -self.slop {
+            -1
+        } else {
+            0
+        }
+    }
+
+    /// Certified sign of the grid column `u = node.angle`.
+    fn column(&self, node: &GridNode) -> i8 {
+        let a = node.cos.fma(self.nx, node.sin * self.ny);
+        self.sign(
+            self.major.fma(a, self.k),
+            self.minor.abs() * a.hypot(self.nz),
+        )
+    }
+
+    /// Certified sign of the grid row `v = node.angle`.
+    fn row(&self, node: &GridNode) -> i8 {
+        let (tube, height) = node.tube;
+        self.sign(
+            height.fma(self.nz, self.k),
+            tube.abs() * self.nx.hypot(self.ny),
+        )
+    }
+}
+
+/// Newton-refined zero crossings of `normal · P(u, v) − d` on the cell edges
+/// of a 128 × 128 `(u, v)` grid, in scan order (`u`-major, each cell's `u`
+/// edge before its `v` edge).
+struct PlaneTorusGrid {
+    crossings: Vec<(f64, f64, Point3)>,
+    /// `sin_cos` calls made for the grid samples (Newton excluded).
+    #[cfg_attr(not(test), allow(dead_code))]
+    grid_sin_cos: usize,
+    /// Cells whose three corners were sampled.
+    #[cfg_attr(not(test), allow(dead_code))]
+    sampled_cells: usize,
+}
+
+/// The `(lo, hi)` ends of the 128 cells of the plane × torus scan grid,
+/// shared by `u` and `v` (the grid is square), with line signs certified by
+/// [`GridLineBounds`] when `certify` holds and the bounds apply.
+#[allow(clippy::cast_precision_loss)]
+fn plane_torus_grid_nodes(
+    torus: &ToroidalSurface,
+    normal: Vec3,
+    d: f64,
+    certify: bool,
+) -> Vec<(GridNode, GridNode)> {
+    let n_grid = 128_usize;
+    let step = TAU / (n_grid as f64);
+    // Offset grid by half a cell to avoid landing exactly on zero crossings
+    // (e.g. sin(0) = 0.0 exactly in IEEE 754, which defeats sign-change detection).
+    let offset = step * 0.5;
+
+    let node = |angle: f64| {
+        let (sin, cos) = angle.sin_cos();
+        GridNode {
+            angle,
+            sin,
+            cos,
+            tube: torus.tube_terms(sin, cos),
+            col: 0,
+            row: 0,
+        }
+    };
+    let mut nodes: Vec<(GridNode, GridNode)> = (0..n_grid)
+        .map(|i| {
+            let lo = (i as f64).fma(step, offset);
+            (node(lo), node(lo + step))
+        })
+        .collect();
+    let bounds = if certify {
+        GridLineBounds::new(torus, normal, d, &nodes)
+    } else {
+        None
+    };
+    if let Some(bounds) = bounds {
+        for node in nodes.iter_mut().flat_map(|(lo, hi)| [lo, hi]) {
+            node.col = bounds.column(node);
+            node.row = bounds.row(node);
+        }
+    }
+    nodes
+}
+
+/// The sampling scan of [`intersect_plane_torus`].
+///
+/// Each sample is `torus.evaluate(u, v)` bit for bit: the trig and
+/// [`ToroidalSurface::tube_terms`] come from [`plane_torus_grid_nodes`]
+/// instead of two `sin_cos` per sample. With `certify`, a cell is skipped
+/// when its line signs prove both of its tested edges keep one sign, which
+/// the scan's own sign test would have found too: the crossings are the
+/// same either way.
+fn plane_torus_grid_crossings(
+    torus: &ToroidalSurface,
+    normal: Vec3,
+    d: f64,
+    certify: bool,
+) -> PlaneTorusGrid {
+    let nodes = plane_torus_grid_nodes(torus, normal, d, certify);
+    let grid_sin_cos = 2 * nodes.len();
+
+    // Signed distance to plane for a torus point.
+    let sdf = |u: &GridNode, v: &GridNode| -> f64 {
+        dot_np(
+            normal,
+            torus.evaluate_tube(v.tube.0, v.tube.1, u.sin, u.cos),
+        ) - d
+    };
+
+    // Collect zero-crossing points by scanning edges of a (u,v) grid.
+    let mut crossings: Vec<(f64, f64, Point3)> = Vec::new();
+    let mut sampled_cells = 0;
+    for (u0_node, u1_node) in &nodes {
+        // Both edges of every cell end on columns u0 and u1, proven to share
+        // one sign: no crossing in the whole column of cells.
+        if u0_node.col != 0 && u0_node.col == u1_node.col {
+            continue;
+        }
+        for (v0_node, v1_node) in &nodes {
+            // The u edge lies on row v0. The v edge lies on column u0 and
+            // ends on rows v0 and v1. Skip when both keep a proven sign.
+            if v0_node.row != 0 && (u0_node.col != 0 || v0_node.row == v1_node.row) {
+                continue;
+            }
+            sampled_cells += 1;
+            let f00 = sdf(u0_node, v0_node);
+            let f10 = sdf(u1_node, v0_node);
+            let f01 = sdf(u0_node, v1_node);
+            let (u0, u1) = (u0_node.angle, u1_node.angle);
+            let (v0, v1) = (v0_node.angle, v1_node.angle);
+
+            // Check horizontal edge (u0,v0)-(u1,v0).
+            if f00 * f10 < 0.0 {
+                let t = f00 / (f00 - f10);
+                let u = t.fma(u1 - u0, u0);
+                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u, v0);
+                crossings.push((u_r, v_r, torus.evaluate(u_r, v_r)));
+            }
+
+            // Check vertical edge (u0,v0)-(u0,v1).
+            if f00 * f01 < 0.0 {
+                let t = f00 / (f00 - f01);
+                let v = t.fma(v1 - v0, v0);
+                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u0, v);
+                crossings.push((u_r, v_r, torus.evaluate(u_r, v_r)));
+            }
+        }
+    }
+
+    PlaneTorusGrid {
+        crossings,
+        grid_sin_cos,
+        sampled_cells,
+    }
 }
 
 /// Newton-refine a torus parameter to lie on the cutting plane.
@@ -4140,6 +4389,9 @@ fn surface_closures<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod plane_torus_oracle_tests;
 
 #[cfg(test)]
 mod quartic_cycle_tests;

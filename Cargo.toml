@@ -20,7 +20,7 @@ env_logger = "0.11"
 log = "0.4"
 
 # Serialization
-serde = {version = "1", features = ["derive"]}
+serde = {version = "1", features = ["derive", "rc"]}
 serde_json = {version = "1", features = ["float_roundtrip"]}
 sha2 = "0.11"
 
@@ -120,6 +120,10 @@ codegen-units = 1
 lto = true
 opt-level = 3
 overflow-checks = true
+
+# Keep the JS binding layer compact while kernel crates retain speed optimization.
+[profile.release.package.remus-wasm]
+opt-level = "s"
 
 [profile.profiling]
 debug = true

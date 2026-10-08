@@ -96,6 +96,8 @@ impl BrepKernel {
     /// Returns a mutable reference to the topology, cloning if shared
     /// with any checkpoints (copy-on-write).
     pub(crate) fn topo_mut(&mut self) -> &mut Topology {
+        let _copy = (Rc::strong_count(&self.topo) > 1)
+            .then(|| remus_operations::performance::span("checkpoint.first-mutation-clone"));
         Rc::make_mut(&mut self.topo)
     }
 

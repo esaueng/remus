@@ -78,5 +78,4 @@ crates/operations/src/sketch.rs
 crates/operations/src/tessellate/nonplanar.rs
 crates/operations/src/tessellate/nurbs.rs
 crates/operations/src/tessellate/rim_chain.rs
-crates/operations/src/transform.rs
 crates/operations/src/validate.rs

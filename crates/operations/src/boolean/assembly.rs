@@ -1504,11 +1504,12 @@ fn build_manifold_shell(
 /// - No edges or vertices (empty topology)
 /// - Unclosed wires and non-manifold edges (hard errors)
 /// - Euler characteristic, boundary edges, degenerate faces, and face area
-///   via [`crate::validate::validate_solid`] (logged as warnings)
+///   via [`crate::validate::validate_solid`] (logged as warnings, and only
+///   computed when warn logging is enabled)
 ///
 /// This is the strict acceptance gate for results that still have a fallback
 /// available (the GFA pipeline). The mesh fallback's terminal sanity check is
-/// [`validate_boolean_result_lenient`].
+/// [`validate_boolean_result_lenient_with_tolerance`].
 pub(super) fn validate_boolean_result(
     topo: &Topology,
     solid: SolidId,
@@ -1650,8 +1651,9 @@ pub(super) fn validate_boolean_result_with_tolerance(
     // sample chords) should gate here once it separates the two cases.
     //
     // What DOES catch orientation problems today: `validate_solid` (winding
-    // Warning + Euler Warning fire on the H-9b shape post-hoc) and the
-    // signed-volume orientation probes. Neither refuses — that refusal is
+    // Warning + Euler Warning fire on the H-9b shape post-hoc; on this path
+    // only while a Warn listener is live) and the signed-volume orientation
+    // probes. Neither refuses — that refusal is
     // the missing piece, tracked by H-9b rather than implemented here.
 
     Ok(())
@@ -1697,29 +1699,37 @@ fn validate_boolean_result_lenient_with_tolerance(
     // keeps the coverage at a fraction of the cost. Callers that ACT on the
     // report — defeature, draft, split, chamfer, and `validateSolid` in the
     // app — keep the default order.
-    let options = crate::validate::ValidationOptions {
-        tolerance_scale: tolerance.linear / remus_math::tolerance::Tolerance::new().linear,
-        orientation: crate::validate::OrientationCheck::Order(1),
-        ..crate::validate::ValidationOptions::default()
-    };
-    match crate::validate::validate_solid_with_options(topo, solid, &options) {
-        Ok(report) if !report.is_valid() => {
-            let errors: Vec<_> = report
-                .issues
-                .iter()
-                .filter(|i| i.severity == crate::validate::Severity::Error)
-                .map(|i| i.description.as_str())
-                .collect();
-            log::warn!(
-                "boolean result has {} validation error(s): {}",
-                errors.len(),
-                errors.join("; ")
-            );
+    //
+    // The report never gates acceptance, so it is built only when its warning
+    // can be emitted. The gate is exactly the level check `log::warn!` itself
+    // performs; with no logger (native default) or the WASM default level
+    // "off" it skips a whole-solid quadrature pass that was a third of a
+    // sequential cylinder cut.
+    if log::Level::Warn <= log::STATIC_MAX_LEVEL && log::Level::Warn <= log::max_level() {
+        let options = crate::validate::ValidationOptions {
+            tolerance_scale: tolerance.linear / remus_math::tolerance::Tolerance::new().linear,
+            orientation: crate::validate::OrientationCheck::Order(1),
+            ..crate::validate::ValidationOptions::default()
+        };
+        match crate::validate::validate_solid_with_options(topo, solid, &options) {
+            Ok(report) if !report.is_valid() => {
+                let errors: Vec<_> = report
+                    .issues
+                    .iter()
+                    .filter(|i| i.severity == crate::validate::Severity::Error)
+                    .map(|i| i.description.as_str())
+                    .collect();
+                log::warn!(
+                    "boolean result has {} validation error(s): {}",
+                    errors.len(),
+                    errors.join("; ")
+                );
+            }
+            Err(e) => {
+                log::warn!("validate_solid failed (skipping validation): {e}");
+            }
+            Ok(_) => {}
         }
-        Err(e) => {
-            log::warn!("validate_solid failed (skipping validation): {e}");
-        }
-        Ok(_) => {}
     }
 
     Ok(())

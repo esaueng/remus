@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod collinear_index;
+mod flood_batch;
+mod hole_grid;
 mod off_axis_cap;
 mod u_bracket_floor;
 
@@ -277,6 +280,22 @@ fn shoelace_area(poly: &[Point2]) -> f64 {
         a += poly[i].x() * poly[j].y() - poly[j].x() * poly[i].y();
     }
     a.abs() / 2.0
+}
+
+/// CDT bounds as `run_planar_cdt` computes them: the points' box grown by a
+/// tenth of its larger side.
+fn planar_bounds(pts: &[Point2]) -> (Point2, Point2) {
+    let mut lo = Point2::new(f64::MAX, f64::MAX);
+    let mut hi = Point2::new(f64::MIN, f64::MIN);
+    for p in pts {
+        lo = Point2::new(lo.x().min(p.x()), lo.y().min(p.y()));
+        hi = Point2::new(hi.x().max(p.x()), hi.y().max(p.y()));
+    }
+    let margin = (hi.x() - lo.x()).max(hi.y() - lo.y()) * 0.1 + 1e-6;
+    (
+        Point2::new(lo.x() - margin, lo.y() - margin),
+        Point2::new(hi.x() + margin, hi.y() + margin),
+    )
 }
 
 // -----------------------------------------------------------------------

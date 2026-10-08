@@ -21,6 +21,7 @@ pub mod modifier_detailed;
 pub mod naming;
 pub mod nurbs;
 pub mod operations;
+pub mod performance;
 pub mod polygon2d;
 pub mod primitives;
 pub mod project_curve;

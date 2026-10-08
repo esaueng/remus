@@ -4,14 +4,18 @@
 //! (shells, faces, wires, edges, vertices) in the arena.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::ops::Range;
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
+use remus_topology::attributes::EntityAttributes;
 use remus_topology::coedge::{CoedgeId, PeriodicWinding};
-use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
-use remus_topology::shell::Shell;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
@@ -39,25 +43,92 @@ struct WireSnap {
     closed: bool,
 }
 
-struct FaceSnap {
-    old_index: usize,
-    outer_wire_index: usize,
-    inner_wire_indices: Vec<usize>,
-    surface: FaceSurface,
-    reversed: bool,
-    attributes: Option<remus_topology::attributes::EntityAttributes>,
-}
-
-struct ShellSnap {
-    faces: Vec<FaceSnap>,
-}
-
 struct CoedgeAuthoritySnap {
     face_index: usize,
     edge_index: usize,
     forward: bool,
     pcurve: Option<PCurve>,
     periodic_winding: PeriodicWinding,
+}
+
+/// An edge of a [`CopyPlan`], its endpoints named by vertex ordinal.
+struct PlanEdge {
+    old_index: usize,
+    start: usize,
+    end: usize,
+    curve: EdgeCurve,
+    tolerance: Option<f64>,
+    trim: Option<(f64, f64)>,
+}
+
+/// A wire of a [`CopyPlan`]: one `(edge ordinal, forward)` per use.
+struct PlanWire {
+    edges: Vec<(usize, bool)>,
+    closed: bool,
+}
+
+/// One visit of a source face, its wires named by wire ordinal.
+struct PlanFace {
+    old_index: usize,
+    outer: usize,
+    inner: Vec<usize>,
+    surface: FaceSurface,
+    reversed: bool,
+    attributes: Option<EntityAttributes>,
+    /// This visit's snapshots in [`CopyPlan::authority`].
+    authority: Range<usize>,
+}
+
+/// Read-phase snapshot of one solid for the solid copy paths.
+///
+/// Vertices, edges and wires are numbered by dense first-seen ordinal in
+/// the traversal and faces by visit, so the write phase indexes vectors of
+/// new handles instead of hashing source indices.
+struct CopyPlan {
+    vertices: Vec<VertexSnap>,
+    edges: Vec<PlanEdge>,
+    wires: Vec<PlanWire>,
+    shells: Vec<Vec<PlanFace>>,
+    /// Every visit's coedge authority, in snapshot (loop) order.
+    authority: Vec<CoedgeAuthoritySnap>,
+    /// The edge ordinal of each `authority` entry.
+    authority_edges: Vec<usize>,
+    /// Source edge index to edge ordinal.
+    edge_ordinals: DetHashMap<usize, usize>,
+    solid_attributes: Option<EntityAttributes>,
+}
+
+/// Copies minted from a [`CopyPlan`], each paired with its source index:
+/// one per vertex and edge ordinal, and one per face visit.
+struct CopyIds {
+    solid: SolidId,
+    vertices: Vec<(usize, VertexId)>,
+    edges: Vec<(usize, EdgeId)>,
+    faces: Vec<(usize, FaceId)>,
+}
+
+impl CopyIds {
+    fn into_entities(self) -> CopiedSolidEntities {
+        CopiedSolidEntities {
+            solid: self.solid,
+            // Visit order: a face listed twice maps to its last copy.
+            face_map: self.faces.into_iter().collect(),
+            edge_map: self.edges.into_iter().collect(),
+            vertex_map: self.vertices.into_iter().collect(),
+        }
+    }
+}
+
+fn plan_error(reason: String) -> crate::OperationsError {
+    remus_topology::TopologyError::NonManifold { reason }.into()
+}
+
+/// The entry minted for plan ordinal `ordinal`.
+fn planned<T: Copy>(copies: &[T], ordinal: usize) -> Result<T, crate::OperationsError> {
+    copies
+        .get(ordinal)
+        .copied()
+        .ok_or_else(|| plan_error(format!("copy plan has no target for ordinal {ordinal}")))
 }
 
 fn face_coedges(topo: &Topology, face_id: FaceId) -> Result<Vec<CoedgeId>, crate::OperationsError> {
@@ -75,35 +146,35 @@ fn snapshot_face_coedge_authority(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Vec<CoedgeAuthoritySnap>, crate::OperationsError> {
-    remus_topology::validation::validate_face_loops(topo, face_id)?;
     let mut snapshots = Vec::new();
-    for coedge_id in face_coedges(topo, face_id)? {
-        let coedge = topo.coedge(coedge_id)?;
-        snapshots.push(CoedgeAuthoritySnap {
-            face_index: face_id.index(),
-            edge_index: coedge.edge().index(),
-            forward: coedge.is_forward(),
-            pcurve: coedge.pcurve().cloned(),
-            periodic_winding: coedge.periodic_winding(),
-        });
-    }
+    snapshot_face_coedge_authority_into(topo, face_id, &mut snapshots)?;
     Ok(snapshots)
 }
 
-fn remapped_authority_face(
-    face_map: &HashMap<usize, FaceId>,
-    snapshot: &CoedgeAuthoritySnap,
-) -> Result<FaceId, crate::OperationsError> {
-    face_map
-        .get(&snapshot.face_index)
-        .copied()
-        .ok_or_else(|| remus_topology::TopologyError::NonManifold {
-            reason: format!(
-                "copy plan has no target face for authoritative source face index {}",
-                snapshot.face_index
-            ),
-        })
-        .map_err(Into::into)
+fn snapshot_face_coedge_authority_into(
+    topo: &Topology,
+    face_id: FaceId,
+    snapshots: &mut Vec<CoedgeAuthoritySnap>,
+) -> Result<(), crate::OperationsError> {
+    remus_topology::validation::validate_face_loops(topo, face_id)?;
+    let loop_ids = topo
+        .loops_of_face(face_id)
+        .ok_or(remus_topology::TopologyError::LoopWireMismatch { face: face_id })?;
+    // Validation resolved every loop and coedge, so walking loop by loop
+    // cannot surface a different error than collecting all loops first.
+    for &loop_id in loop_ids {
+        for &coedge_id in topo.face_loop(loop_id)?.coedges() {
+            let coedge = topo.coedge(coedge_id)?;
+            snapshots.push(CoedgeAuthoritySnap {
+                face_index: face_id.index(),
+                edge_index: coedge.edge().index(),
+                forward: coedge.is_forward(),
+                pcurve: coedge.pcurve().cloned(),
+                periodic_winding: coedge.periodic_winding(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn remapped_authority_edge(
@@ -156,6 +227,433 @@ fn restore_face_coedge_authority(
     Ok(())
 }
 
+/// Snapshots `solid_id` for copying, with every lookup in the order the
+/// copy paths have always made them (so the first error is unchanged).
+fn build_copy_plan(
+    source: &Topology,
+    solid_id: SolidId,
+) -> Result<CopyPlan, crate::OperationsError> {
+    let solid = source.solid(solid_id)?;
+    let mut plan = CopyPlan {
+        vertices: Vec::new(),
+        edges: Vec::new(),
+        wires: Vec::new(),
+        shells: Vec::new(),
+        authority: Vec::new(),
+        authority_edges: Vec::new(),
+        edge_ordinals: DetHashMap::default(),
+        solid_attributes: source.attributes().solid(solid_id).cloned(),
+    };
+    let mut vertex_ordinals = DetHashMap::default();
+    let mut wire_ordinals = DetHashMap::default();
+    for shell_id in std::iter::once(solid.outer_shell()).chain(solid.inner_shells().iter().copied())
+    {
+        let shell = source.shell(shell_id)?;
+        let face_count = shell.faces().len();
+        wire_ordinals.reserve(face_count);
+        plan.edge_ordinals.reserve(face_count.saturating_mul(2));
+        vertex_ordinals.reserve(face_count.saturating_mul(2));
+        let mut faces = Vec::with_capacity(face_count);
+        for &face_id in shell.faces() {
+            let face = source.face(face_id)?;
+            let authority_start = plan.authority.len();
+            snapshot_face_coedge_authority_into(source, face_id, &mut plan.authority)?;
+            let outer = plan_wire_ordinal(
+                source,
+                face.outer_wire(),
+                &mut plan,
+                &mut wire_ordinals,
+                &mut vertex_ordinals,
+            )?;
+            let mut inner = Vec::with_capacity(face.inner_wires().len());
+            for &wire_id in face.inner_wires() {
+                inner.push(plan_wire_ordinal(
+                    source,
+                    wire_id,
+                    &mut plan,
+                    &mut wire_ordinals,
+                    &mut vertex_ordinals,
+                )?);
+            }
+            // `validate_face_loops` matched coedge k of loop j to edge k of
+            // wire j, so each snapshot's edge ordinal follows by position.
+            for wire in std::iter::once(outer).chain(inner.iter().copied()) {
+                let wire = plan
+                    .wires
+                    .get(wire)
+                    .ok_or_else(|| plan_error(format!("copy plan has no wire {wire}")))?;
+                plan.authority_edges
+                    .extend(wire.edges.iter().map(|&(edge, _)| edge));
+            }
+            if plan.authority_edges.len() != plan.authority.len() {
+                return Err(
+                    remus_topology::TopologyError::LoopWireMismatch { face: face_id }.into(),
+                );
+            }
+            faces.push(PlanFace {
+                old_index: face_id.index(),
+                outer,
+                inner,
+                surface: face.surface().clone(),
+                reversed: face.is_reversed(),
+                attributes: source.attributes().face(face_id).cloned(),
+                authority: authority_start..plan.authority.len(),
+            });
+        }
+        plan.shells.push(faces);
+    }
+    Ok(plan)
+}
+
+/// The ordinal of `wire_id`, snapshotting it (and its unseen edges and
+/// vertices) on first sight.
+fn plan_wire_ordinal(
+    source: &Topology,
+    wire_id: WireId,
+    plan: &mut CopyPlan,
+    wire_ordinals: &mut DetHashMap<usize, usize>,
+    vertex_ordinals: &mut DetHashMap<usize, usize>,
+) -> Result<usize, crate::OperationsError> {
+    let slot = match wire_ordinals.entry(wire_id.index()) {
+        Entry::Occupied(seen) => return Ok(*seen.get()),
+        Entry::Vacant(slot) => slot,
+    };
+    let ordinal = plan.wires.len();
+    slot.insert(ordinal);
+    let wire = source.wire(wire_id)?;
+    let mut edges = Vec::with_capacity(wire.edges().len());
+    for oriented in wire.edges() {
+        let edge_ordinal = match plan.edge_ordinals.entry(oriented.edge().index()) {
+            Entry::Occupied(seen) => *seen.get(),
+            Entry::Vacant(slot) => {
+                let edge_ordinal = plan.edges.len();
+                slot.insert(edge_ordinal);
+                let edge = source.edge(oriented.edge())?;
+                let start =
+                    plan_vertex_ordinal(source, edge.start(), &mut plan.vertices, vertex_ordinals)?;
+                let end =
+                    plan_vertex_ordinal(source, edge.end(), &mut plan.vertices, vertex_ordinals)?;
+                plan.edges.push(PlanEdge {
+                    old_index: oriented.edge().index(),
+                    start,
+                    end,
+                    curve: edge.curve().clone(),
+                    tolerance: edge.tolerance(),
+                    trim: edge.trim(),
+                });
+                edge_ordinal
+            }
+        };
+        edges.push((edge_ordinal, oriented.is_forward()));
+    }
+    plan.wires.push(PlanWire {
+        edges,
+        closed: wire.is_closed(),
+    });
+    Ok(ordinal)
+}
+
+/// The ordinal of `vertex_id`, snapshotting it on first sight.
+fn plan_vertex_ordinal(
+    source: &Topology,
+    vertex_id: VertexId,
+    vertices: &mut Vec<VertexSnap>,
+    vertex_ordinals: &mut DetHashMap<usize, usize>,
+) -> Result<usize, crate::OperationsError> {
+    match vertex_ordinals.entry(vertex_id.index()) {
+        Entry::Occupied(seen) => Ok(*seen.get()),
+        Entry::Vacant(slot) => {
+            let ordinal = vertices.len();
+            slot.insert(ordinal);
+            let vertex = source.vertex(vertex_id)?;
+            vertices.push(VertexSnap {
+                old_index: vertex_id.index(),
+                point: vertex.point(),
+                tol: vertex.tolerance(),
+            });
+            Ok(ordinal)
+        }
+    }
+}
+
+fn add_planned_wires(
+    topo: &mut Topology,
+    wires: Vec<PlanWire>,
+    edges: &[(usize, EdgeId)],
+) -> Result<Vec<WireId>, crate::OperationsError> {
+    let mut new_wires = Vec::with_capacity(wires.len());
+    for wire in wires {
+        let oriented = wire
+            .edges
+            .into_iter()
+            .map(|(edge, forward)| Ok(OrientedEdge::new(planned(edges, edge)?.1, forward)))
+            .collect::<Result<Vec<_>, crate::OperationsError>>()?;
+        let wire = Wire::new(oriented, wire.closed).map_err(crate::OperationsError::Topology)?;
+        new_wires.push(topo.add_wire(wire));
+    }
+    Ok(new_wires)
+}
+
+fn add_planned_face(
+    topo: &mut Topology,
+    (outer, inner): (usize, &[usize]),
+    surface: FaceSurface,
+    reversed: bool,
+    wires: &[WireId],
+) -> Result<FaceId, crate::OperationsError> {
+    let outer = planned(wires, outer)?;
+    let inner = inner
+        .iter()
+        .map(|&wire| planned(wires, wire))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(topo.add_face(if reversed {
+        Face::new_reversed(outer, inner, surface)
+    } else {
+        Face::new(outer, inner, surface)
+    }))
+}
+
+fn add_planned_solid(
+    topo: &mut Topology,
+    shells: &[ShellId],
+    attributes: Option<EntityAttributes>,
+) -> Result<SolidId, crate::OperationsError> {
+    let (&outer, inner) = shells
+        .split_first()
+        .ok_or_else(|| plan_error("copy plan has no outer shell".to_owned()))?;
+    let solid = topo.add_solid(Solid::new(outer, inner.to_vec()));
+    if let Some(attributes) = attributes {
+        topo.set_solid_attributes(solid, attributes)?;
+    }
+    Ok(solid)
+}
+
+/// For each face visit, the copy a source-index face map names: the copy
+/// made at the last visit of the same source face.
+fn last_visit_targets(faces: &[(usize, FaceId)]) -> Vec<FaceId> {
+    let mut targets: Vec<FaceId> = faces.iter().map(|&(_, face)| face).collect();
+    let mut visits: Vec<(usize, usize)> = faces
+        .iter()
+        .enumerate()
+        .map(|(visit, &(source, _))| (source, visit))
+        .collect();
+    visits.sort_unstable();
+    for run in visits.chunk_by(|a, b| a.0 == b.0) {
+        if let [.., (_, last)] = run
+            && run.len() > 1
+            && let Some(&face) = targets.get(*last)
+        {
+            for &(_, visit) in run {
+                if let Some(target) = targets.get_mut(visit) {
+                    *target = face;
+                }
+            }
+        }
+    }
+    targets
+}
+
+/// Whether coedge `k` of `coedges` is the one use of `(edges[k], forward)`
+/// for every snapshot `k`. Then the map-based search for each snapshot
+/// can only find the coedge at the same position.
+fn matches_by_position(
+    topo: &Topology,
+    coedges: &[CoedgeId],
+    snapshots: &[CoedgeAuthoritySnap],
+    snapshot_edges: &[usize],
+    edges: &[(usize, EdgeId)],
+) -> bool {
+    if coedges.len() != snapshots.len() || snapshot_edges.len() != snapshots.len() {
+        return false;
+    }
+    for ((&coedge, snapshot), &edge) in coedges.iter().zip(snapshots).zip(snapshot_edges) {
+        let (Some(&(_, edge)), Ok(coedge)) = (edges.get(edge), topo.coedge(coedge)) else {
+            return false;
+        };
+        if coedge.edge() != edge || coedge.is_forward() != snapshot.forward {
+            return false;
+        }
+    }
+    let keys = || {
+        snapshot_edges
+            .iter()
+            .copied()
+            .zip(snapshots.iter().map(|snapshot| snapshot.forward))
+    };
+    if snapshots.len() <= 16 {
+        keys()
+            .enumerate()
+            .all(|(i, key)| keys().take(i).all(|other| other != key))
+    } else {
+        let mut sorted: Vec<_> = keys().collect();
+        sorted.sort_unstable();
+        sorted.windows(2).all(|pair| pair[0] != pair[1])
+    }
+}
+
+/// Restores every face visit's coedge authority, in snapshot order, onto
+/// the copy a source-index face map names (see [`last_visit_targets`]).
+///
+/// A visit whose copied coedges match its snapshots by position writes
+/// them directly; any other visit replays the per-snapshot search, with its
+/// `NonManifold` refusal for an ambiguous `(edge, orientation)`.
+fn restore_planned_authority(
+    topo: &mut Topology,
+    faces: &[(usize, FaceId)],
+    ranges: &[Range<usize>],
+    mut authority: Vec<CoedgeAuthoritySnap>,
+    authority_edges: &[usize],
+    edges: &[(usize, EdgeId)],
+) -> Result<(), crate::OperationsError> {
+    for (range, target) in ranges.iter().zip(last_visit_targets(faces)) {
+        let (Some(snapshots), Some(snapshot_edges)) = (
+            authority.get_mut(range.clone()),
+            authority_edges.get(range.clone()),
+        ) else {
+            return Err(plan_error(format!(
+                "copy plan has no authority snapshots {range:?}"
+            )));
+        };
+        if snapshots.is_empty() {
+            continue;
+        }
+        let coedges = face_coedges(topo, target)?;
+        if matches_by_position(topo, &coedges, snapshots, snapshot_edges, edges) {
+            for (&coedge, snapshot) in coedges.iter().zip(snapshots) {
+                topo.set_coedge_periodic_winding(coedge, snapshot.periodic_winding)?;
+                if let Some(pcurve) = snapshot.pcurve.take() {
+                    topo.set_coedge_pcurve(coedge, pcurve)?;
+                }
+            }
+        } else {
+            for (snapshot, &edge) in snapshots.iter_mut().zip(snapshot_edges) {
+                let (_, edge) = planned(edges, edge)?;
+                let snapshot = CoedgeAuthoritySnap {
+                    face_index: snapshot.face_index,
+                    edge_index: snapshot.edge_index,
+                    forward: snapshot.forward,
+                    pcurve: snapshot.pcurve.take(),
+                    periodic_winding: snapshot.periodic_winding,
+                };
+                restore_face_coedge_authority(topo, target, edge, snapshot)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Writes a plan into `destination`: vertices, edges, wires, then each
+/// shell's faces (with attributes) and the shell, then coedge authority,
+/// then the solid. `face_count` is the caller's face reservation.
+fn materialize_copy(
+    destination: &mut Topology,
+    plan: CopyPlan,
+    face_count: usize,
+) -> Result<CopyIds, crate::OperationsError> {
+    let CopyPlan {
+        vertices,
+        edges,
+        wires,
+        shells,
+        authority,
+        authority_edges,
+        edge_ordinals: _,
+        solid_attributes,
+    } = plan;
+    destination.reserve(
+        vertices.len(),
+        edges.len(),
+        wires.len(),
+        face_count,
+        shells.len(),
+        1,
+    );
+    let vertices: Vec<_> = vertices
+        .into_iter()
+        .map(|vertex| {
+            let copy = destination.add_vertex(Vertex::new(vertex.point, vertex.tol));
+            (vertex.old_index, copy)
+        })
+        .collect();
+    let mut new_edges = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let mut copied = Edge::with_tolerance(
+            planned(&vertices, edge.start)?.1,
+            planned(&vertices, edge.end)?.1,
+            edge.curve,
+            edge.tolerance,
+        );
+        copied.set_trim(edge.trim);
+        new_edges.push((edge.old_index, destination.add_edge(copied)));
+    }
+    let new_wires = add_planned_wires(destination, wires, &new_edges)?;
+    let mut new_shells = Vec::with_capacity(shells.len());
+    let mut new_faces = Vec::with_capacity(face_count);
+    let mut ranges = Vec::with_capacity(face_count);
+    for shell in shells {
+        let mut shell_faces = Vec::with_capacity(shell.len());
+        for face in shell {
+            let new_face = add_planned_face(
+                destination,
+                (face.outer, &face.inner),
+                face.surface,
+                face.reversed,
+                &new_wires,
+            )?;
+            if let Some(attributes) = face.attributes {
+                destination.set_face_attributes(new_face, attributes)?;
+            }
+            new_faces.push((face.old_index, new_face));
+            ranges.push(face.authority);
+            shell_faces.push(new_face);
+        }
+        new_shells.push(
+            destination
+                .add_shell(Shell::new(shell_faces).map_err(crate::OperationsError::Topology)?),
+        );
+    }
+    restore_planned_authority(
+        destination,
+        &new_faces,
+        &ranges,
+        authority,
+        &authority_edges,
+        &new_edges,
+    )?;
+    let solid = add_planned_solid(destination, &new_shells, solid_attributes)?;
+    Ok(CopyIds {
+        solid,
+        vertices,
+        edges: new_edges,
+        faces: new_faces,
+    })
+}
+
+/// Copies a solid within one arena.
+fn copy_solid_ids(
+    topo: &mut Topology,
+    solid_id: SolidId,
+) -> Result<CopyIds, crate::OperationsError> {
+    let plan = build_copy_plan(topo, solid_id)?;
+    let face_count = plan
+        .shells
+        .iter()
+        .map(Vec::len)
+        .fold(0usize, usize::saturating_add);
+    materialize_copy(topo, plan, face_count)
+}
+
+/// Copies a solid between independent arenas.
+fn copy_solid_between_ids(
+    source: &Topology,
+    destination: &mut Topology,
+    solid_id: SolidId,
+) -> Result<CopyIds, crate::OperationsError> {
+    let plan = build_copy_plan(source, solid_id)?;
+    let face_count = plan.shells.iter().map(Vec::len).sum();
+    materialize_copy(destination, plan, face_count)
+}
+
 /// Copy one solid between independent topology arenas.
 ///
 /// This is used by speculative operations that run in a cloned topology: only
@@ -166,17 +664,7 @@ pub(crate) fn copy_solid_between(
     destination: &mut Topology,
     solid_id: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    copy_solid_between_with_face_map(source, destination, solid_id).map(|(solid, _)| solid)
-}
-
-/// [`copy_solid_between`], with the exact source-index to copied-face map.
-pub(crate) fn copy_solid_between_with_face_map(
-    source: &Topology,
-    destination: &mut Topology,
-    solid_id: SolidId,
-) -> Result<(SolidId, HashMap<usize, FaceId>), crate::OperationsError> {
-    let copied = copy_solid_between_with_entity_map(source, destination, solid_id)?;
-    Ok((copied.solid, copied.face_map))
+    copy_solid_between_ids(source, destination, solid_id).map(|copied| copied.solid)
 }
 
 pub(crate) struct CopiedSolidEntities {
@@ -191,167 +679,7 @@ pub(crate) fn copy_solid_between_with_entity_map(
     destination: &mut Topology,
     solid_id: SolidId,
 ) -> Result<CopiedSolidEntities, crate::OperationsError> {
-    let solid = source.solid(solid_id)?;
-    let solid_attributes = source.attributes().solid(solid_id).cloned();
-    let shell_ids: Vec<_> = std::iter::once(solid.outer_shell())
-        .chain(solid.inner_shells().iter().copied())
-        .collect();
-    let mut vertices = Vec::new();
-    let mut edges = Vec::new();
-    let mut wires = Vec::new();
-    let mut shells = Vec::new();
-    let mut coedge_authority = Vec::new();
-    let mut seen_vertices = std::collections::HashSet::new();
-    let mut seen_edges = std::collections::HashSet::new();
-    let mut seen_wires = std::collections::HashSet::new();
-
-    for shell_id in shell_ids {
-        let shell = source.shell(shell_id)?;
-        let mut faces = Vec::new();
-        for &face_id in shell.faces() {
-            let face = source.face(face_id)?;
-            coedge_authority.extend(snapshot_face_coedge_authority(source, face_id)?);
-            for wire_id in
-                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            {
-                if !seen_wires.insert(wire_id.index()) {
-                    continue;
-                }
-                let wire = source.wire(wire_id)?;
-                let mut edge_refs = Vec::new();
-                for oriented in wire.edges() {
-                    let edge_id = oriented.edge();
-                    edge_refs.push((edge_id.index(), oriented.is_forward()));
-                    if !seen_edges.insert(edge_id.index()) {
-                        continue;
-                    }
-                    let edge = source.edge(edge_id)?;
-                    for vertex_id in [edge.start(), edge.end()] {
-                        if seen_vertices.insert(vertex_id.index()) {
-                            let vertex = source.vertex(vertex_id)?;
-                            vertices.push(VertexSnap {
-                                old_index: vertex_id.index(),
-                                point: vertex.point(),
-                                tol: vertex.tolerance(),
-                            });
-                        }
-                    }
-                    edges.push(EdgeSnap {
-                        old_index: edge_id.index(),
-                        start_index: edge.start().index(),
-                        end_index: edge.end().index(),
-                        curve: edge.curve().clone(),
-                        tolerance: edge.tolerance(),
-                        trim: edge.trim(),
-                    });
-                }
-                wires.push(WireSnap {
-                    old_index: wire_id.index(),
-                    edges: edge_refs,
-                    closed: wire.is_closed(),
-                });
-            }
-            faces.push(FaceSnap {
-                old_index: face_id.index(),
-                outer_wire_index: face.outer_wire().index(),
-                inner_wire_indices: face.inner_wires().iter().map(|wire| wire.index()).collect(),
-                surface: face.surface().clone(),
-                reversed: face.is_reversed(),
-                attributes: source.attributes().face(face_id).cloned(),
-            });
-        }
-        shells.push(ShellSnap { faces });
-    }
-
-    destination.reserve(
-        vertices.len(),
-        edges.len(),
-        wires.len(),
-        shells.iter().map(|shell| shell.faces.len()).sum(),
-        shells.len(),
-        1,
-    );
-    let mut vertex_map = HashMap::new();
-    for vertex in vertices {
-        vertex_map.insert(
-            vertex.old_index,
-            destination.add_vertex(Vertex::new(vertex.point, vertex.tol)),
-        );
-    }
-    let mut edge_map = HashMap::new();
-    for edge in edges {
-        edge_map.insert(
-            edge.old_index,
-            destination.add_edge({
-                let mut copied = Edge::with_tolerance(
-                    vertex_map[&edge.start_index],
-                    vertex_map[&edge.end_index],
-                    edge.curve,
-                    edge.tolerance,
-                );
-                copied.set_trim(edge.trim);
-                copied
-            }),
-        );
-    }
-    let mut wire_map = HashMap::new();
-    for wire in wires {
-        let oriented = wire
-            .edges
-            .into_iter()
-            .map(|(edge, forward)| OrientedEdge::new(edge_map[&edge], forward))
-            .collect();
-        wire_map.insert(
-            wire.old_index,
-            destination.add_wire(
-                Wire::new(oriented, wire.closed).map_err(crate::OperationsError::Topology)?,
-            ),
-        );
-    }
-    let mut new_shells = Vec::new();
-    let mut face_map = HashMap::new();
-    for shell in shells {
-        let mut new_faces = Vec::new();
-        for face in shell.faces {
-            let outer = wire_map[&face.outer_wire_index];
-            let inner = face
-                .inner_wire_indices
-                .iter()
-                .map(|index| wire_map[index])
-                .collect();
-            let new_face = if face.reversed {
-                Face::new_reversed(outer, inner, face.surface)
-            } else {
-                Face::new(outer, inner, face.surface)
-            };
-            let new_face_id = destination.add_face(new_face);
-            if let Some(attributes) = face.attributes {
-                destination.set_face_attributes(new_face_id, attributes)?;
-            }
-            face_map.insert(face.old_index, new_face_id);
-            new_faces.push(new_face_id);
-        }
-        new_shells.push(
-            destination.add_shell(Shell::new(new_faces).map_err(crate::OperationsError::Topology)?),
-        );
-    }
-    for snapshot in coedge_authority {
-        let face = remapped_authority_face(&face_map, &snapshot)?;
-        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
-        restore_face_coedge_authority(destination, face, edge, snapshot)?;
-    }
-    let outer = new_shells[0];
-    let inner = new_shells[1..].to_vec();
-    let copied = destination.add_solid(Solid::new(outer, inner));
-    if let Some(attributes) = solid_attributes {
-        destination.set_solid_attributes(copied, attributes)?;
-    }
-    Ok(CopiedSolidEntities {
-        solid: copied,
-        face_map,
-        edge_map,
-        vertex_map,
-    })
+    copy_solid_between_ids(source, destination, solid_id).map(CopyIds::into_entities)
 }
 
 /// Create a deep copy of a solid and all its topology.
@@ -367,7 +695,7 @@ pub fn copy_solid(
     topo: &mut Topology,
     solid_id: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    copy_solid_with_face_map(topo, solid_id).map(|(id, _)| id)
+    copy_solid_ids(topo, solid_id).map(|copied| copied.solid)
 }
 
 /// [`copy_solid`], additionally reporting which copied face came from which
@@ -382,212 +710,26 @@ pub fn copy_solid(
 /// # Errors
 ///
 /// Returns an error if any topology lookup fails.
-#[allow(clippy::too_many_lines)]
 pub fn copy_solid_with_face_map(
     topo: &mut Topology,
     solid_id: SolidId,
 ) -> Result<(SolidId, HashMap<usize, usize>), crate::OperationsError> {
-    let copied = copy_solid_with_entity_map(topo, solid_id)?;
+    let copied = copy_solid_ids(topo, solid_id)?;
     Ok((
         copied.solid,
         copied
-            .face_map
+            .faces
             .into_iter()
             .map(|(source, face)| (source, face.index()))
             .collect(),
     ))
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn copy_solid_with_entity_map(
     topo: &mut Topology,
     solid_id: SolidId,
 ) -> Result<CopiedSolidEntities, crate::OperationsError> {
-    let solid = topo.solid(solid_id)?;
-    let solid_attributes = topo.attributes().solid(solid_id).cloned();
-    let outer_shell_id = solid.outer_shell();
-    let inner_shell_ids: Vec<_> = solid.inner_shells().to_vec();
-
-    let all_shell_ids: Vec<_> = std::iter::once(outer_shell_id)
-        .chain(inner_shell_ids.iter().copied())
-        .collect();
-
-    let mut vertex_snaps: Vec<VertexSnap> = Vec::new();
-    let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
-    let mut wire_snaps: Vec<WireSnap> = Vec::new();
-    let mut shell_snaps: Vec<ShellSnap> = Vec::new();
-    let mut coedge_authority_snaps = Vec::new();
-
-    let mut seen_vertices = std::collections::HashSet::new();
-    let mut seen_edges = std::collections::HashSet::new();
-    let mut seen_wires = std::collections::HashSet::new();
-
-    for &shell_id in &all_shell_ids {
-        let shell = topo.shell(shell_id)?;
-        let mut face_snaps = Vec::new();
-
-        for &face_id in shell.faces() {
-            let face = topo.face(face_id)?;
-            coedge_authority_snaps.extend(snapshot_face_coedge_authority(topo, face_id)?);
-            let surface = face.surface().clone();
-            let outer_wire_index = face.outer_wire().index();
-            let inner_wire_indices: Vec<usize> =
-                face.inner_wires().iter().map(|w| w.index()).collect();
-
-            for wire_id_val in
-                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            {
-                if !seen_wires.insert(wire_id_val.index()) {
-                    continue;
-                }
-                let wire = topo.wire(wire_id_val)?;
-                let mut edge_refs = Vec::new();
-
-                for oe in wire.edges() {
-                    let edge_idx = oe.edge().index();
-                    edge_refs.push((edge_idx, oe.is_forward()));
-
-                    if !seen_edges.insert(edge_idx) {
-                        continue;
-                    }
-                    let edge = topo.edge(oe.edge())?;
-                    let start_idx = edge.start().index();
-                    let end_idx = edge.end().index();
-
-                    for &vid_idx in &[start_idx, end_idx] {
-                        if seen_vertices.insert(vid_idx) {
-                            let vid = if vid_idx == start_idx {
-                                edge.start()
-                            } else {
-                                edge.end()
-                            };
-                            let v = topo.vertex(vid)?;
-                            vertex_snaps.push(VertexSnap {
-                                old_index: vid_idx,
-                                point: v.point(),
-                                tol: v.tolerance(),
-                            });
-                        }
-                    }
-
-                    edge_snaps.push(EdgeSnap {
-                        old_index: edge_idx,
-                        start_index: start_idx,
-                        end_index: end_idx,
-                        curve: edge.curve().clone(),
-                        tolerance: edge.tolerance(),
-                        trim: edge.trim(),
-                    });
-                }
-
-                wire_snaps.push(WireSnap {
-                    old_index: wire_id_val.index(),
-                    edges: edge_refs,
-                    closed: wire.is_closed(),
-                });
-            }
-
-            face_snaps.push(FaceSnap {
-                old_index: face_id.index(),
-                outer_wire_index,
-                inner_wire_indices,
-                surface,
-                reversed: face.is_reversed(),
-                attributes: topo.attributes().face(face_id).cloned(),
-            });
-        }
-
-        shell_snaps.push(ShellSnap { faces: face_snaps });
-    }
-
-    topo.reserve(
-        vertex_snaps.len(),
-        edge_snaps.len(),
-        wire_snaps.len(),
-        shell_snaps
-            .iter()
-            .map(|s| s.faces.len())
-            .fold(0usize, usize::saturating_add),
-        shell_snaps.len(),
-        1,
-    );
-
-    let mut vertex_map: HashMap<usize, VertexId> = HashMap::new();
-    for vsnap in &vertex_snaps {
-        let new_vid = topo.add_vertex(Vertex::new(vsnap.point, vsnap.tol));
-        vertex_map.insert(vsnap.old_index, new_vid);
-    }
-
-    let mut edge_map: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::new();
-    for esnap in &edge_snaps {
-        let new_start = vertex_map[&esnap.start_index];
-        let new_end = vertex_map[&esnap.end_index];
-        let copied_edge = topo.add_edge({
-            let mut copied =
-                Edge::with_tolerance(new_start, new_end, esnap.curve.clone(), esnap.tolerance);
-            copied.set_trim(esnap.trim);
-            copied
-        });
-        edge_map.insert(esnap.old_index, copied_edge);
-    }
-
-    let mut wire_map: HashMap<usize, WireId> = HashMap::new();
-    for wsnap in &wire_snaps {
-        let new_edges: Vec<OrientedEdge> = wsnap
-            .edges
-            .iter()
-            .map(|&(edge_idx, fwd)| OrientedEdge::new(edge_map[&edge_idx], fwd))
-            .collect();
-        let new_wire =
-            Wire::new(new_edges, wsnap.closed).map_err(crate::OperationsError::Topology)?;
-        wire_map.insert(wsnap.old_index, topo.add_wire(new_wire));
-    }
-
-    let mut new_shell_ids = Vec::new();
-    let mut copied_face_ids: HashMap<usize, FaceId> = HashMap::new();
-    for ssnap in &shell_snaps {
-        let mut new_face_ids = Vec::new();
-        for fsnap in &ssnap.faces {
-            let new_outer = wire_map[&fsnap.outer_wire_index];
-            let new_inner: Vec<WireId> = fsnap
-                .inner_wire_indices
-                .iter()
-                .map(|idx| wire_map[idx])
-                .collect();
-            let new_face = if fsnap.reversed {
-                Face::new_reversed(new_outer, new_inner, fsnap.surface.clone())
-            } else {
-                Face::new(new_outer, new_inner, fsnap.surface.clone())
-            };
-            let new_fid = topo.add_face(new_face);
-            if let Some(attributes) = fsnap.attributes.clone() {
-                topo.set_face_attributes(new_fid, attributes)?;
-            }
-            copied_face_ids.insert(fsnap.old_index, new_fid);
-            new_face_ids.push(new_fid);
-        }
-        let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
-        new_shell_ids.push(topo.add_shell(new_shell));
-    }
-    for snapshot in coedge_authority_snaps {
-        let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
-        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
-        restore_face_coedge_authority(topo, face, edge, snapshot)?;
-    }
-
-    let new_outer = new_shell_ids[0];
-    let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
-
-    let new_solid = topo.add_solid(Solid::new(new_outer, new_inner));
-    if let Some(attributes) = solid_attributes {
-        topo.set_solid_attributes(new_solid, attributes)?;
-    }
-    Ok(CopiedSolidEntities {
-        solid: new_solid,
-        face_map: copied_face_ids,
-        edge_map,
-        vertex_map,
-    })
+    copy_solid_ids(topo, solid_id).map(CopyIds::into_entities)
 }
 
 /// Create a deep copy of a solid with a simultaneous affine transform.
@@ -615,11 +757,11 @@ pub fn copy_and_transform_solid(
     matrix: &remus_math::mat::Mat4,
 ) -> Result<SolidId, crate::OperationsError> {
     crate::transform::reject_degenerate_transform(matrix)?;
-    let _ = matrix.inverse()?.transpose();
+    let normal_matrix = matrix.inverse()?.transpose();
     let mut recorder =
         TransformRecorder::new(crate::transform::linear_determinant(matrix) < 0.0, true);
     remus_topology::transaction::run_transacted(topo, |live| {
-        copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
+        copy_and_transform_solid_impl(live, solid_id, matrix, &normal_matrix, &mut recorder)
     })
 }
 
@@ -662,7 +804,7 @@ pub fn copy_and_transform_solid_detailed_with_refusal(
 ) -> Result<(SolidId, TransformReport), crate::OperationsError> {
     *refused_face = None;
     crate::transform::reject_degenerate_transform(matrix)?;
-    let _ = matrix.inverse()?.transpose();
+    let normal_matrix = matrix.inverse()?.transpose();
     if matches!(policy, TransformPolicy::ExactOnly) {
         let plans = crate::transform::preflight_solid_transform(topo, solid_id, matrix)?;
         crate::transform::refuse_unless_exact(&plans)?;
@@ -675,7 +817,7 @@ pub fn copy_and_transform_solid_detailed_with_refusal(
         matches!(policy, TransformPolicy::AllowApproximate),
     );
     let result = remus_topology::transaction::run_transacted(topo, |live| {
-        copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
+        copy_and_transform_solid_impl(live, solid_id, matrix, &normal_matrix, &mut recorder)
     });
     *refused_face = recorder.refused_face();
     let copied = result?;
@@ -687,240 +829,150 @@ fn copy_and_transform_solid_impl(
     topo: &mut Topology,
     solid_id: SolidId,
     matrix: &remus_math::mat::Mat4,
+    normal_matrix: &remus_math::mat::Mat4,
     recorder: &mut TransformRecorder,
 ) -> Result<SolidId, crate::OperationsError> {
-    let normal_matrix = matrix.inverse()?.transpose();
     let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
     let certificates = crate::transform::translation_edge_certificates(
         topo,
-        &remus_topology::explorer::solid_edges(topo, solid_id)?
-            .into_iter()
-            .collect(),
+        &remus_topology::explorer::solid_edges(topo, solid_id)?,
         matrix,
     )?;
 
     // Read phase mirrors copy_solid.
-    let solid = topo.solid(solid_id)?;
-    let solid_attributes = topo.attributes().solid(solid_id).cloned();
-    let outer_shell_id = solid.outer_shell();
-    let inner_shell_ids: Vec<_> = solid.inner_shells().to_vec();
-
-    let all_shell_ids: Vec<_> = std::iter::once(outer_shell_id)
-        .chain(inner_shell_ids.iter().copied())
-        .collect();
-
-    let mut vertex_snaps: Vec<VertexSnap> = Vec::new();
-    let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
-    let mut wire_snaps: Vec<WireSnap> = Vec::new();
-    let mut shell_snaps: Vec<ShellSnap> = Vec::new();
-    let mut coedge_authority_snaps = Vec::new();
-
-    let mut seen_vertices = std::collections::HashSet::new();
-    let mut seen_edges = std::collections::HashSet::new();
-    let mut seen_wires = std::collections::HashSet::new();
-
-    for &shell_id in &all_shell_ids {
-        let shell = topo.shell(shell_id)?;
-        let mut face_snaps = Vec::new();
-
-        for &face_id in shell.faces() {
-            let face = topo.face(face_id)?;
-            coedge_authority_snaps.extend(snapshot_face_coedge_authority(topo, face_id)?);
-            let surface = face.surface().clone();
-            let outer_wire_index = face.outer_wire().index();
-            let inner_wire_indices: Vec<usize> =
-                face.inner_wires().iter().map(|w| w.index()).collect();
-
-            for wire_id_val in
-                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            {
-                if !seen_wires.insert(wire_id_val.index()) {
-                    continue;
-                }
-                let wire = topo.wire(wire_id_val)?;
-                let mut edge_refs = Vec::new();
-
-                for oe in wire.edges() {
-                    let edge_idx = oe.edge().index();
-                    edge_refs.push((edge_idx, oe.is_forward()));
-
-                    if !seen_edges.insert(edge_idx) {
-                        continue;
-                    }
-                    let edge = topo.edge(oe.edge())?;
-                    let start_idx = edge.start().index();
-                    let end_idx = edge.end().index();
-
-                    for &vid_idx in &[start_idx, end_idx] {
-                        if seen_vertices.insert(vid_idx) {
-                            let vid = if vid_idx == start_idx {
-                                edge.start()
-                            } else {
-                                edge.end()
-                            };
-                            let v = topo.vertex(vid)?;
-                            vertex_snaps.push(VertexSnap {
-                                old_index: vid_idx,
-                                point: v.point(),
-                                tol: v.tolerance(),
-                            });
-                        }
-                    }
-
-                    edge_snaps.push(EdgeSnap {
-                        old_index: edge_idx,
-                        start_index: start_idx,
-                        end_index: end_idx,
-                        curve: edge.curve().clone(),
-                        tolerance: edge.tolerance(),
-                        trim: edge.trim(),
-                    });
-                }
-
-                wire_snaps.push(WireSnap {
-                    old_index: wire_id_val.index(),
-                    edges: edge_refs,
-                    closed: wire.is_closed(),
-                });
-            }
-
-            face_snaps.push(FaceSnap {
-                old_index: face_id.index(),
-                outer_wire_index,
-                inner_wire_indices,
-                surface,
-                reversed: face.is_reversed(),
-                attributes: topo.attributes().face(face_id).cloned(),
-            });
-        }
-
-        shell_snaps.push(ShellSnap { faces: face_snaps });
-    }
+    let CopyPlan {
+        vertices,
+        edges,
+        wires,
+        shells,
+        authority,
+        authority_edges,
+        edge_ordinals,
+        solid_attributes,
+    } = build_copy_plan(topo, solid_id)?;
 
     topo.reserve(
-        vertex_snaps.len(),
-        edge_snaps.len(),
-        wire_snaps.len(),
-        shell_snaps
+        vertices.len(),
+        edges.len(),
+        wires.len(),
+        shells
             .iter()
-            .map(|s| s.faces.len())
+            .map(Vec::len)
             .fold(0usize, usize::saturating_add),
-        shell_snaps.len(),
+        shells.len(),
         1,
     );
 
-    let mut vertex_map: HashMap<usize, VertexId> = HashMap::new();
-    for vsnap in &vertex_snaps {
-        let new_point = matrix.mul_point(vsnap.point);
-        let new_vid = topo.add_vertex(Vertex::new(new_point, vsnap.tol));
-        vertex_map.insert(vsnap.old_index, new_vid);
-    }
+    let vertices: Vec<_> = vertices
+        .into_iter()
+        .map(|vertex| {
+            let new_point = matrix.mul_point(vertex.point);
+            (
+                vertex.old_index,
+                topo.add_vertex(Vertex::new(new_point, vertex.tol)),
+            )
+        })
+        .collect();
 
-    let mut edge_map: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::new();
-    for esnap in &edge_snaps {
-        let new_start = vertex_map[&esnap.start_index];
-        let new_end = vertex_map[&esnap.end_index];
+    let mut new_edges = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let (_, new_start) = planned(&vertices, edge.start)?;
+        let (_, new_end) = planned(&vertices, edge.end)?;
         // Shared with `transform::transform_edges` — including its exact trim
         // policy: retain where the map provably preserves the
         // parameterization, remap the handled Circle→Ellipse axis swap,
         // drop otherwise (RFC 0002).
-        let from = esnap.curve.type_tag();
+        let from = edge.curve.type_tag();
         let (new_curve, new_trim) =
-            crate::transform::transform_edge_curve_with_trim(&esnap.curve, esnap.trim, matrix)?;
+            crate::transform::transform_edge_curve_with_trim(&edge.curve, edge.trim, matrix)?;
         let to = new_curve.as_ref().map_or(from, |curve| curve.type_tag());
         let mut copied_edge = Edge::with_tolerance(
             new_start,
             new_end,
             new_curve.unwrap_or(EdgeCurve::Line),
-            esnap.tolerance,
+            edge.tolerance,
         );
         copied_edge.set_trim(new_trim);
         let copied = topo.add_edge(copied_edge);
         recorder.record_edge(copied, from, to);
-        edge_map.insert(esnap.old_index, copied);
+        new_edges.push((edge.old_index, copied));
     }
 
     crate::transform::restore_translation_certificates(
         topo,
         certificates
             .into_iter()
-            .map(|(id, tolerance, budget)| (edge_map[&id.index()], tolerance, budget))
-            .collect(),
+            .map(|(id, tolerance, budget)| {
+                let ordinal = edge_ordinals
+                    .get(&id.index())
+                    .copied()
+                    .ok_or_else(|| plan_error(format!("copy plan has no edge {}", id.index())))?;
+                Ok((planned(&new_edges, ordinal)?.1, tolerance, budget))
+            })
+            .collect::<Result<_, crate::OperationsError>>()?,
     )?;
 
     // Wires carry no geometry to transform.
-    let mut wire_map: HashMap<usize, WireId> = HashMap::new();
-    for wsnap in &wire_snaps {
-        let new_edges: Vec<OrientedEdge> = wsnap
-            .edges
-            .iter()
-            .map(|&(edge_idx, fwd)| OrientedEdge::new(edge_map[&edge_idx], fwd))
-            .collect();
-        let new_wire =
-            Wire::new(new_edges, wsnap.closed).map_err(crate::OperationsError::Topology)?;
-        wire_map.insert(wsnap.old_index, topo.add_wire(new_wire));
-    }
+    let new_wires = add_planned_wires(topo, wires, &new_edges)?;
 
-    let mut new_shell_ids = Vec::new();
-    let mut copied_face_ids = HashMap::new();
+    let mut new_shell_ids = Vec::with_capacity(shells.len());
+    let mut new_faces = Vec::new();
+    let mut ranges = Vec::new();
     let mut chart_replaced_faces = Vec::new();
-    for ssnap in &shell_snaps {
-        let mut new_face_ids = Vec::new();
-        for fsnap in &ssnap.faces {
-            let new_outer = wire_map[&fsnap.outer_wire_index];
-            let new_inner: Vec<WireId> = fsnap
-                .inner_wire_indices
-                .iter()
-                .map(|idx| wire_map[idx])
-                .collect();
-
+    for shell in shells {
+        let mut new_face_ids = Vec::with_capacity(shell.len());
+        for face in shell {
             // Copy the surface verbatim; the shared transformer below rewrites
             // it once the face exists. The old inline math here diverged from
             // `transform_solid` — it never scaled cylinder/sphere/torus radii
             // and had no anisotropic-scale handling at all, so "equivalent to
             // copy_solid followed by transform_solid" was untrue for any
             // scaling matrix.
-            let new_surface = fsnap.surface.clone();
-
-            let new_face = if fsnap.reversed {
-                Face::new_reversed(new_outer, new_inner, new_surface)
-            } else {
-                Face::new(new_outer, new_inner, new_surface)
-            };
-            let new_fid = topo.add_face(new_face);
+            let source_is_nurbs = matches!(face.surface, FaceSurface::Nurbs(_));
+            let new_fid = add_planned_face(
+                topo,
+                (face.outer, &face.inner),
+                face.surface,
+                face.reversed,
+                &new_wires,
+            )?;
             // Vertices and edge curves were written at their transformed
             // positions above, which is exactly the state
             // `transform_face_surface` expects (its non-uniform branches map
             // boundary probes back through the inverse).
-            recorder.set_refusal_origin(topo.face_id_from_index(fsnap.old_index));
+            recorder.set_refusal_origin(topo.face_id_from_index(face.old_index));
             crate::transform::transform_face_surface_recorded(
                 topo,
                 new_fid,
                 matrix,
-                &normal_matrix,
+                normal_matrix,
                 recorder,
             )?;
             recorder.set_refusal_origin(None);
             if matches!(topo.face(new_fid)?.surface(), FaceSurface::Nurbs(_))
-                && (!matches!(&fsnap.surface, FaceSurface::Nurbs(_)) || chart_reversing)
+                && (!source_is_nurbs || chart_reversing)
             {
                 chart_replaced_faces.push(new_fid);
             }
-            if let Some(attributes) = fsnap.attributes.clone() {
+            if let Some(attributes) = face.attributes {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
-            copied_face_ids.insert(fsnap.old_index, new_fid);
+            new_faces.push((face.old_index, new_fid));
+            ranges.push(face.authority);
             new_face_ids.push(new_fid);
         }
         let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
         new_shell_ids.push(topo.add_shell(new_shell));
     }
 
-    for snapshot in coedge_authority_snaps {
-        let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
-        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
-        restore_face_coedge_authority(topo, face, edge, snapshot)?;
-    }
+    restore_planned_authority(
+        topo,
+        &new_faces,
+        &ranges,
+        authority,
+        &authority_edges,
+        &new_edges,
+    )?;
     for face in chart_replaced_faces {
         let uses: Vec<_> = topo
             .pcurves_for_face(face)
@@ -932,14 +984,7 @@ fn copy_and_transform_solid_impl(
         }
     }
 
-    let new_outer = new_shell_ids[0];
-    let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
-
-    let copied = topo.add_solid(Solid::new(new_outer, new_inner));
-    if let Some(attributes) = solid_attributes {
-        topo.set_solid_attributes(copied, attributes)?;
-    }
-    Ok(copied)
+    add_planned_solid(topo, &new_shell_ids, solid_attributes)
 }
 
 /// Create a deep copy of a wire and all its sub-entities.
@@ -1173,6 +1218,8 @@ mod tests {
     use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
+
+    mod legacy_oracle;
 
     fn assert_single_lifted_pcurve(topo: &Topology, face: FaceId) {
         let pcurves = topo.pcurves_for_face(face);

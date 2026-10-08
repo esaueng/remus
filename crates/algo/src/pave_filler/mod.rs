@@ -347,10 +347,26 @@ pub fn run_pave_filler_n_with_context(
         context.check_cancelled()?;
         phase_ef::perform(topo, sources[i], sources[j], tol, arena)?;
     }
+    // Every FF pair starts from the same seeded junction registry, so seed it
+    // once. Its inputs (edge pave blocks and their paves, same-domain
+    // vertices, vertex points) are written only by VV/VE/EE/EF above and by
+    // coplanar FF and make_blocks below, never by FF itself.
+    let junction_seeds = phase_ff::seed_junctions(topo, arena);
     for &(i, j) in &pairs {
         context.check_cancelled()?;
-        phase_ff::perform_with_context(topo, sources[i], sources[j], context, arena)?;
+        phase_ff::perform_with_junction_seeds(
+            topo,
+            sources[i],
+            sources[j],
+            context,
+            arena,
+            &junction_seeds,
+        )?;
     }
+    debug_assert!(
+        phase_ff::seeds_match_fresh(&junction_seeds, topo, arena),
+        "phase FF wrote a junction seed input; shared seeding is stale"
+    );
     for &(i, j) in &pairs {
         context.check_cancelled()?;
         phase_ff_coplanar::perform(topo, sources[i], sources[j], tol, arena)?;

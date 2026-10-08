@@ -15,6 +15,7 @@ use remus_topology::solid::SolidId;
 
 use crate::builder::FaceClass;
 use crate::error::AlgoError;
+use crate::perf::RayWork;
 
 /// Per-face geometry used for ray crossing tests.
 enum FaceGeom {
@@ -23,13 +24,14 @@ enum FaceGeom {
         surface: remus_math::surfaces::ToroidalSurface,
         trim: super::torus_patch::TorusTrim,
     },
-    /// A planar (or planar-approximated) face: boundary polygon, hole
-    /// polygons, and the supporting plane.
+    /// A planar (or planar-approximated) face: the supporting plane, and the
+    /// boundary and hole polygons projected into it.
     Planar {
-        verts: Vec<Point3>,
-        holes: Vec<Vec<Point3>>,
         normal: Vec3,
         d: f64,
+        /// Projection plane of the polygons, chosen from `normal`.
+        axis: Axis,
+        face: PlanarFace,
     },
     /// A full-period cylindrical face (e.g. a bore lateral). Crossings are
     /// computed analytically — a flat polygon approximation counts one
@@ -77,6 +79,375 @@ enum FaceGeom {
         /// Major-angle band; None denotes a full revolution.
         u_band: Option<(f64, f64)>,
     },
+}
+
+impl FaceGeom {
+    /// A planar face with outer polygon `verts`, hole polygons `holes`, and the
+    /// supporting plane `normal · x = d`.
+    fn planar(verts: Vec<Point3>, holes: Vec<Vec<Point3>>, normal: Vec3, d: f64) -> Self {
+        let axis = Axis::of(normal);
+        Self::Planar {
+            normal,
+            d,
+            axis,
+            face: PlanarFace::new(verts, holes, axis),
+        }
+    }
+}
+
+/// The coordinate plane a planar face's polygons are projected into: the one
+/// most nearly parallel to the face, chosen exactly as [`point_in_face_3d`]
+/// chooses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    Xy,
+    Xz,
+    Yz,
+}
+
+impl Axis {
+    fn of(normal: Vec3) -> Self {
+        let ax = normal.x().abs();
+        let ay = normal.y().abs();
+        let az = normal.z().abs();
+        if az >= ax && az >= ay {
+            Self::Xy
+        } else if ay >= ax {
+            Self::Xz
+        } else {
+            Self::Yz
+        }
+    }
+
+    fn project(self, p: Point3) -> Point2 {
+        match self {
+            Self::Xy => Point2::new(p.x(), p.y()),
+            Self::Xz => Point2::new(p.x(), p.z()),
+            Self::Yz => Point2::new(p.y(), p.z()),
+        }
+    }
+}
+
+/// Smallest nonzero magnitude of a [`gate_coord`].
+const GATE_MIN: f64 = 1e-140;
+/// Largest magnitude of a [`gate_coord`].
+const GATE_MAX: f64 = 1e100;
+
+/// A coordinate the polygon gate reasons about: zero, or a magnitude in
+/// `[GATE_MIN, GATE_MAX]`. Such coordinates are multiples of 2^-518 below
+/// 2^333, so every product `orient2d` forms from them stays finite and is
+/// exact or rounds with a relative error (a product below the normal range
+/// is a multiple of 2^-1036, exactly representable), which is what its exact
+/// sign rests on.
+fn gate_coord(c: f64) -> bool {
+    c == 0.0 || (GATE_MIN..=GATE_MAX).contains(&c.abs())
+}
+
+/// Whether the polygon gate may settle a hit projecting to `p` with grazing
+/// distance `near` (see [`PlanarFace`]).
+fn gate_applies(near: f64, p: Point2) -> bool {
+    (GATE_MIN..=GATE_MAX).contains(&near) && gate_coord(p.x()) && gate_coord(p.y())
+}
+
+/// Whether `p` lies outside the bounds `[min_u, min_v, max_u, max_v]` grown by
+/// `margin`. Only definite comparisons report outside, so a NaN coordinate,
+/// bound or margin never does.
+fn outside(p: Point2, bounds: [f64; 4], margin: f64) -> bool {
+    p.x() < bounds[0] - margin
+        || p.y() < bounds[1] - margin
+        || p.x() > bounds[2] + margin
+        || p.y() > bounds[3] + margin
+}
+
+/// Bounds `[min_u, min_v, max_u, max_v]` of `pts`.
+fn bounds_of(pts: &[Point2]) -> [f64; 4] {
+    pts.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |b, p| {
+            [
+                b[0].min(p.x()),
+                b[1].min(p.y()),
+                b[2].max(p.x()),
+                b[3].max(p.y()),
+            ]
+        },
+    )
+}
+
+/// A planar face's boundary prepared for the polygon test.
+///
+/// For a plane hit `hit` projecting to `p`, the test reports whether the face
+/// counts a crossing (`p` inside the outer loop and outside every hole) and
+/// whether the hit grazes the boundary (some segment within `near` of it).
+/// Most faces a ray's plane hit lands on are far from it, so a gate settles
+/// them from bounding boxes in the projection plane, without distance or
+/// winding work. Every answer the gate gives is the one the exact test gives:
+///
+/// - Containment. A point strictly outside a loop's bounding box has winding
+///   number 0: north or south of it no edge passes the half-open crossing
+///   test; east of it every upward edge has the point on its right and every
+///   downward edge on its left, so none counts; west of it the loop's upward
+///   and downward crossings cancel. This rests on exact `orient2d` signs,
+///   which every [`gate_coord`] input guarantees.
+/// - Graze. Dropping a coordinate never lengthens a vector, so the 3D
+///   distance to a segment is at least the projected point's gap to the
+///   segment's projected bounds. The computed foot point leaves those bounds
+///   by at most about `3u·scale` (`u` = 2^-53, `scale` = the face's largest
+///   |coordinate|) and the rest of the distance rounds monotonically, so a
+///   gap above `2·near + 16ε·scale` computes to a distance above `near`.
+///   `near ≥ GATE_MIN` keeps every square involved a normal number.
+///
+/// Faces with any other coordinate, and hits or a `near` [`gate_applies`]
+/// rejects, take the exact test.
+struct PlanarFace {
+    /// Bounds of every loop's projection.
+    union_box: [f64; 4],
+    /// `16ε · scale`, the rounding allowance of the graze margin.
+    slack: f64,
+    /// Every coordinate of every loop is a [`gate_coord`].
+    cullable: bool,
+    loops: Box<PlanarLoops>,
+}
+
+/// The outer loop and the hole loops of a planar face.
+struct PlanarLoops {
+    outer: Loop,
+    holes: Vec<Loop>,
+}
+
+/// A boundary loop: its vertices, their projection, and its projected bounds.
+struct Loop {
+    pts: Vec<Point3>,
+    flat: Vec<Point2>,
+    bounds: [f64; 4],
+}
+
+impl Loop {
+    fn new(pts: Vec<Point3>, axis: Axis) -> Self {
+        let flat: Vec<Point2> = pts.iter().map(|&p| axis.project(p)).collect();
+        let bounds = bounds_of(&flat);
+        Self { pts, flat, bounds }
+    }
+
+    /// Whether some segment lies within `near` of `hit`, computing the
+    /// distance only to segments whose projected bounds `p` comes within
+    /// `margin` of. Equals `dist_to_polygon_boundary(hit, pts) <= near` under
+    /// the gate's conditions (finite `near`, so `min ≤ near` is `any ≤ near`).
+    fn grazes(&self, hit: Point3, p: Point2, near: f64, margin: f64) -> bool {
+        let n = self.pts.len();
+        !outside(p, self.bounds, margin)
+            && (0..n).any(|i| {
+                let j = (i + 1) % n;
+                let (a, b) = (self.flat[i], self.flat[j]);
+                let bounds = [
+                    a.x().min(b.x()),
+                    a.y().min(b.y()),
+                    a.x().max(b.x()),
+                    a.y().max(b.y()),
+                ];
+                !outside(p, bounds, margin)
+                    && segment_distance(hit, self.pts[i], self.pts[j]) <= near
+            })
+    }
+}
+
+impl PlanarFace {
+    fn new(verts: Vec<Point3>, holes: Vec<Vec<Point3>>, axis: Axis) -> Self {
+        let mut scale = 0.0_f64;
+        let mut cullable = true;
+        for p in verts.iter().chain(holes.iter().flatten()) {
+            for c in [p.x(), p.y(), p.z()] {
+                cullable &= gate_coord(c);
+                scale = scale.max(c.abs());
+            }
+        }
+        let outer = Loop::new(verts, axis);
+        let holes: Vec<Loop> = holes.into_iter().map(|h| Loop::new(h, axis)).collect();
+        let union_box = holes.iter().fold(outer.bounds, |u, h| {
+            [
+                u[0].min(h.bounds[0]),
+                u[1].min(h.bounds[1]),
+                u[2].max(h.bounds[2]),
+                u[3].max(h.bounds[3]),
+            ]
+        });
+        Self {
+            union_box,
+            slack: 16.0 * f64::EPSILON * scale,
+            cullable,
+            loops: Box::new(PlanarLoops { outer, holes }),
+        }
+    }
+
+    /// The `RAYTRACE` label of the face.
+    fn kind(&self) -> String {
+        format!("Planar({})", self.loops.outer.pts.len())
+    }
+
+    /// Crossing count and graze flag of a ray whose plane hit `hit` (with
+    /// projection `p`) lies ahead of its origin: hits inside a hole do not
+    /// count, and a hit within `near` of any boundary segment grazes.
+    fn polygon_hit(&self, hit: Point3, p: Point2, near: f64) -> (i32, bool) {
+        crate::perf::bump_ray_work(RayWork::PolygonTest);
+        let PlanarLoops { outer, holes } = &*self.loops;
+        let (graze, inside) = if self.cullable && gate_applies(near, p) {
+            let margin = 2.0 * near + self.slack;
+            if outside(p, self.union_box, margin) {
+                crate::perf::bump_ray_work(RayWork::FaceSkip);
+                return (0, false);
+            }
+            let graze = std::iter::once(outer)
+                .chain(holes)
+                .any(|l| l.grazes(hit, p, near, margin));
+            let inside = |l: &Loop| !outside(p, l.bounds, 0.0) && winds(p, &l.flat);
+            (graze, inside(outer) && !holes.iter().any(inside))
+        } else {
+            let graze = dist_to_polygon_boundary(hit, &outer.pts) <= near
+                || holes
+                    .iter()
+                    .any(|h| dist_to_polygon_boundary(hit, &h.pts) <= near);
+            let inside = |l: &Loop| winds(p, &l.flat);
+            (graze, inside(outer) && !holes.iter().any(inside))
+        };
+        (i32::from(inside), graze)
+    }
+}
+
+/// `p` has a nonzero winding number about the projected loop `flat`.
+fn winds(p: Point2, flat: &[Point2]) -> bool {
+    crate::perf::bump_ray_work(RayWork::Winding);
+    point_in_polygon(p, flat)
+}
+
+/// The cardinal ray directions (`RAY_DIRS[..3]`), then the generic ones a
+/// vote re-casts with (`RAY_DIRS[3..]`, see `votes_from_geoms`): normalized
+/// √-prime component vectors that never run parallel to an axis-aligned
+/// plane.
+const RAY_DIRS: [Vec3; 6] = [
+    Vec3::new(0.0, 0.0, 1.0),
+    Vec3::new(1.0, 0.0, 0.0),
+    Vec3::new(0.0, 1.0, 0.0),
+    Vec3::new(
+        0.447_213_595_499_957_9,
+        0.547_722_557_505_166_1,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+    Vec3::new(-0.5, 0.763_762_615_825_973_4, 0.408_248_290_463_863),
+    Vec3::new(
+        0.597_614_304_667_196_8,
+        -0.377_964_473_009_227_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+];
+
+/// Planar faces that share one supporting plane, bit for bit.
+///
+/// A ray's plane hit (`plane_hit`) reads only the ray and the plane
+/// `(normal, d)`, so every face of a group gets the same one: it is computed
+/// once per group and ray, and a ray parallel to the plane or meeting it
+/// behind its origin skips the group's faces outright.
+struct PlaneGroup {
+    normal: Vec3,
+    d: f64,
+    /// Projection plane of the faces' polygons, chosen from `normal`.
+    axis: Axis,
+    /// `normal · RAY_DIRS[k]`, the plane-hit denominator of each ray.
+    denoms: [f64; 6],
+    faces: Vec<PlanarFace>,
+}
+
+/// A solid's ray-cast geometry: its planar faces grouped by supporting plane,
+/// and every other face.
+struct FaceGeoms {
+    /// Groups in the order their first face was collected; faces keep their
+    /// collection order within a group.
+    planes: Vec<PlaneGroup>,
+    others: Vec<FaceGeom>,
+}
+
+impl FaceGeoms {
+    /// Group the planar faces of `geoms` by the exact bits of their plane
+    /// `(normal, d)`. Planes equal only up to rounding, or up to the sign of
+    /// a zero, stay apart: their hits may differ.
+    fn new(geoms: Vec<FaceGeom>) -> Self {
+        let mut planes: Vec<PlaneGroup> = Vec::new();
+        let mut others = Vec::new();
+        let mut index: std::collections::BTreeMap<[u64; 4], usize> =
+            std::collections::BTreeMap::new();
+        for geom in geoms {
+            let FaceGeom::Planar {
+                normal,
+                d,
+                axis,
+                face,
+            } = geom
+            else {
+                others.push(geom);
+                continue;
+            };
+            crate::perf::bump_ray_work(RayWork::PlanarFace);
+            let key = [
+                normal.x().to_bits(),
+                normal.y().to_bits(),
+                normal.z().to_bits(),
+                d.to_bits(),
+            ];
+            let slot = *index.entry(key).or_insert_with(|| {
+                crate::perf::bump_ray_work(RayWork::PlaneGroup);
+                planes.push(PlaneGroup {
+                    normal,
+                    d,
+                    axis,
+                    denoms: RAY_DIRS.map(|dir| normal.dot(dir)),
+                    faces: Vec::new(),
+                });
+                planes.len() - 1
+            });
+            planes[slot].faces.push(face);
+        }
+        Self { planes, others }
+    }
+
+    /// Number of faces.
+    fn len(&self) -> usize {
+        self.planes.iter().map(|g| g.faces.len()).sum::<usize>() + self.others.len()
+    }
+}
+
+/// Where a ray meets a face's supporting plane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PlaneHit {
+    /// The ray runs parallel to the plane; `true` when its origin lies in it
+    /// (within the grazing distance), which makes the ray's parity unreliable.
+    Parallel(bool),
+    /// The plane lies behind the origin, or within `tol.linear` ahead of it.
+    Behind,
+    /// The plane is hit ahead of the origin, at this point.
+    Ahead(Point3),
+}
+
+/// The hit of the ray `origin + t·ray_dir` on the plane `normal · x = d`,
+/// given `denom = normal · ray_dir` and `numer = d − normal · origin`.
+fn plane_hit(origin: Point3, ray_dir: Vec3, denom: f64, numer: f64, tol: Tolerance) -> PlaneHit {
+    crate::perf::bump_ray_work(RayWork::PlaneEval);
+    let near = 10.0 * tol.linear;
+    if denom.abs() < tol.angular {
+        return PlaneHit::Parallel(numer.abs() <= near);
+    }
+    let t = numer / denom;
+    if t <= tol.linear {
+        return PlaneHit::Behind;
+    }
+    PlaneHit::Ahead(Point3::new(
+        origin.x() + ray_dir.x() * t,
+        origin.y() + ray_dir.y() * t,
+        origin.z() + ray_dir.z() * t,
+    ))
 }
 
 /// Classify a point by ray casting against the solid's faces.
@@ -144,7 +515,7 @@ pub fn ray_cast_inside_votes_with_tolerance(
     point: Point3,
     tolerance: Tolerance,
 ) -> Result<u8, AlgoError> {
-    let face_data = collect_face_geoms(topo, solid)?;
+    let face_data = FaceGeoms::new(collect_face_geoms(topo, solid)?);
     votes_from_geoms(&face_data, point, tolerance)
 }
 
@@ -157,7 +528,7 @@ pub fn ray_cast_inside_votes_with_tolerance(
 /// against the opposing solid — rebuilding it per point is O(faces) × O(points).
 /// Building it once turns that into a single O(faces) pass.
 pub struct RayCastGeoms {
-    faces: Vec<FaceGeom>,
+    faces: FaceGeoms,
 }
 
 impl RayCastGeoms {
@@ -168,7 +539,7 @@ impl RayCastGeoms {
     /// Returns [`AlgoError`] if a topology lookup fails.
     pub fn new(topo: &Topology, solid: SolidId) -> Result<Self, AlgoError> {
         Ok(Self {
-            faces: collect_face_geoms(topo, solid)?,
+            faces: FaceGeoms::new(collect_face_geoms(topo, solid)?),
         })
     }
 }
@@ -250,23 +621,15 @@ fn ray_trace_target() -> Option<(Point3, f64)> {
 /// Count the inside votes (of three rays) for a point against pre-collected
 /// face geometry: cardinal rays first, re-cast with fixed generic directions
 /// only when every cardinal ray grazed degenerate structure.
-fn votes_from_geoms(
-    face_data: &[FaceGeom],
-    point: Point3,
-    tol: Tolerance,
-) -> Result<u8, AlgoError> {
-    if face_data.is_empty() {
+fn votes_from_geoms(face_data: &FaceGeoms, point: Point3, tol: Tolerance) -> Result<u8, AlgoError> {
+    let faces = face_data.len();
+    if faces == 0 {
         return Err(AlgoError::ClassificationFailed(
             "no face polygons collected for ray-cast".into(),
         ));
     }
 
-    let cardinal_dirs = [
-        Vec3::new(0.0, 0.0, 1.0),
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-    ];
-    // Escalation directions (normalized √-prime component vectors). CAD models
+    // Escalation directions (`RAY_DIRS[3..]`). CAD models
     // are dominated by axis-aligned feature planes, and a sample point lying ON
     // such a plane sends a cardinal ray along every edge, seam, and tangency in
     // that plane — the crossing parity of that ray is meaningless (a
@@ -278,19 +641,6 @@ fn votes_from_geoms(
     // fixed generic directions that never run parallel to axis-aligned planes.
     // Any clean cardinal ray keeps the historical verdict, deterministically
     // (coincident-contact landscapes are calibrated against those results).
-    let generic_dirs = [
-        Vec3::new(
-            0.447_213_595_499_957_9,
-            0.547_722_557_505_166_1,
-            std::f64::consts::FRAC_1_SQRT_2,
-        ),
-        Vec3::new(-0.5, 0.763_762_615_825_973_4, 0.408_248_290_463_863),
-        Vec3::new(
-            0.597_614_304_667_196_8,
-            -0.377_964_473_009_227_2,
-            std::f64::consts::FRAC_1_SQRT_2,
-        ),
-    ];
 
     // `BK_RAY_POINT=x,y,z[,radius]`: dump this vote when the classified point is
     // near the given one. The verdict alone cannot say WHY a point classified
@@ -299,49 +649,9 @@ fn votes_from_geoms(
     // fires when ALL THREE cardinal rays are suspicious.
     let traced = ray_trace_target().is_some_and(|(t, r)| (point - t).length() <= r);
 
-    let vote = |dirs: &[Vec3; 3], label: &str| -> [(bool, bool); 3] {
-        let mut rays = [(false, false); 3];
-        for (i, ray_dir) in dirs.iter().enumerate() {
-            let mut crossings = 0i32;
-            let mut suspicious = false;
-            for geom in face_data {
-                let (c, s) = ray_geom_crossings(point, *ray_dir, geom, tol);
-                if traced {
-                    let kind = match geom {
-                        FaceGeom::Planar { verts, .. } => format!("Planar({})", verts.len()),
-                        FaceGeom::Cylinder { v_min, v_max, .. } => {
-                            format!("Cylinder(v {v_min:.2}..{v_max:.2})")
-                        }
-                        FaceGeom::Cone { .. } => "Cone".into(),
-                        FaceGeom::Torus { .. } => "Torus".into(),
-                        FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
-                    };
-                    log::debug!(
-                        "RAYTRACE   {label} dir=({:.1},{:.1},{:.1}) geom={kind} c={c} s={s}",
-                        ray_dir.x(),
-                        ray_dir.y(),
-                        ray_dir.z()
-                    );
-                }
-                crossings += c;
-                suspicious |= s;
-            }
-            rays[i] = (crossings % 2 != 0, suspicious);
-            if traced {
-                log::debug!(
-                    "RAYTRACE {label} dir=({:.3},{:.3},{:.3}) crossings={crossings} parity={} suspicious={suspicious}",
-                    ray_dir.x(),
-                    ray_dir.y(),
-                    ray_dir.z(),
-                    crossings % 2
-                );
-            }
-        }
-        rays
-    };
     let count_inside = |rays: &[(bool, bool); 3]| rays.iter().filter(|r| r.0).count() as u8;
 
-    let rays = vote(&cardinal_dirs, "cardinal");
+    let rays = cast_rays(face_data, point, 0, tol, traced);
     let cardinal = count_inside(&rays);
     let suspicious = rays.iter().filter(|r| r.1).count() as u8;
     // Clean/suspicious conflict: a clean ray's parity is trustworthy while a
@@ -372,11 +682,11 @@ fn votes_from_geoms(
             point.x(),
             point.y(),
             point.z(),
-            face_data.len(),
+            faces,
         );
     }
     if clean_vs_suspicious_conflict {
-        let generic = vote(&generic_dirs, "generic");
+        let generic = cast_rays(face_data, point, 3, tol, traced);
         let inside = count_inside(&generic);
         if std::env::var("BK_CONFLICT").is_ok() {
             log::debug!(
@@ -400,8 +710,103 @@ fn votes_from_geoms(
     // when both instruments graze degenerate structure there is no cleaner
     // signal left, and the generic directions are still the less-aligned,
     // better-conditioned of the two.
-    let generic = vote(&generic_dirs, "generic");
+    let generic = cast_rays(face_data, point, 3, tol, traced);
     Ok(count_inside(&generic))
+}
+
+/// Crossing parity and suspicion of the three rays `RAY_DIRS[base..base + 3]`
+/// from `point`, one vote. With `traced`, logs every face's contribution.
+fn cast_rays(
+    face_data: &FaceGeoms,
+    point: Point3,
+    base: usize,
+    tol: Tolerance,
+    traced: bool,
+) -> [(bool, bool); 3] {
+    crate::perf::bump_ray_work(RayWork::Vote);
+    let label = if base == 0 { "cardinal" } else { "generic" };
+    let near = 10.0 * tol.linear;
+    let mut crossings = [0i32; 3];
+    let mut suspicious = [false; 3];
+    for group in &face_data.planes {
+        let numer = group.d - dot_normal_point(group.normal, point);
+        for i in 0..3 {
+            let ray_dir = RAY_DIRS[base + i];
+            match plane_hit(point, ray_dir, group.denoms[base + i], numer, tol) {
+                PlaneHit::Ahead(hit) => {
+                    let p = group.axis.project(hit);
+                    for face in &group.faces {
+                        let (c, s) = face.polygon_hit(hit, p, near);
+                        crossings[i] += c;
+                        suspicious[i] |= s;
+                        if traced {
+                            trace_face(label, ray_dir, &face.kind(), (c, s));
+                        }
+                    }
+                }
+                // Every face of the group misses alike, so the group adds
+                // what one face adds (a group is never empty).
+                miss => {
+                    let s = miss == PlaneHit::Parallel(true);
+                    suspicious[i] |= s;
+                    if traced {
+                        for face in &group.faces {
+                            trace_face(label, ray_dir, &face.kind(), (0, s));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for geom in &face_data.others {
+        for i in 0..3 {
+            let ray_dir = RAY_DIRS[base + i];
+            let (c, s) = ray_geom_crossings(point, ray_dir, geom, tol);
+            crossings[i] += c;
+            suspicious[i] |= s;
+            if traced {
+                trace_face(label, ray_dir, &geom_kind(geom), (c, s));
+            }
+        }
+    }
+    let mut rays = [(false, false); 3];
+    for (i, ray) in rays.iter_mut().enumerate() {
+        *ray = (crossings[i] % 2 != 0, suspicious[i]);
+        if traced {
+            let ray_dir = RAY_DIRS[base + i];
+            log::debug!(
+                "RAYTRACE {label} dir=({:.3},{:.3},{:.3}) crossings={} parity={} suspicious={}",
+                ray_dir.x(),
+                ray_dir.y(),
+                ray_dir.z(),
+                crossings[i],
+                crossings[i] % 2,
+                suspicious[i]
+            );
+        }
+    }
+    rays
+}
+
+/// Log one face's contribution to a traced ray.
+fn trace_face(label: &str, ray_dir: Vec3, kind: &str, (c, s): (i32, bool)) {
+    log::debug!(
+        "RAYTRACE   {label} dir=({:.1},{:.1},{:.1}) geom={kind} c={c} s={s}",
+        ray_dir.x(),
+        ray_dir.y(),
+        ray_dir.z()
+    );
+}
+
+/// The `RAYTRACE` label of a face geometry.
+fn geom_kind(geom: &FaceGeom) -> String {
+    match geom {
+        FaceGeom::Planar { face, .. } => face.kind(),
+        FaceGeom::Cylinder { v_min, v_max, .. } => format!("Cylinder(v {v_min:.2}..{v_max:.2})"),
+        FaceGeom::Cone { .. } => "Cone".into(),
+        FaceGeom::Torus { .. } => "Torus".into(),
+        FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
+    }
 }
 
 /// Distance from a point to the closed polyline through `verts`.
@@ -409,23 +814,27 @@ fn dist_to_polygon_boundary(p: Point3, verts: &[Point3]) -> f64 {
     let mut best = f64::INFINITY;
     let n = verts.len();
     for i in 0..n {
-        let a = verts[i];
-        let b = verts[(i + 1) % n];
-        let ab = b - a;
-        let len2 = ab.dot(ab);
-        let t = if len2 > 0.0 {
-            ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let foot = Point3::new(
-            ab.x().mul_add(t, a.x()),
-            ab.y().mul_add(t, a.y()),
-            ab.z().mul_add(t, a.z()),
-        );
-        best = best.min((p - foot).length());
+        best = best.min(segment_distance(p, verts[i], verts[(i + 1) % n]));
     }
     best
+}
+
+/// Distance from a point to the segment `a`–`b`.
+fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
+    crate::perf::bump_ray_work(RayWork::SegmentEval);
+    let ab = b - a;
+    let len2 = ab.dot(ab);
+    let t = if len2 > 0.0 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let foot = Point3::new(
+        ab.x().mul_add(t, a.x()),
+        ab.y().mul_add(t, a.y()),
+        ab.z().mul_add(t, a.z()),
+    );
+    (p - foot).length()
 }
 
 /// Sample a wire into a polygon by geometrically chaining its edges.
@@ -879,12 +1288,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                 raw_normal
             };
             let d = dot_normal_point(normal, wall_verts[0]);
-            result.push(FaceGeom::Planar {
-                verts: wall_verts,
-                holes: wall_holes,
-                normal,
-                d,
-            });
+            result.push(FaceGeom::planar(wall_verts, wall_holes, normal, d));
             continue;
         }
 
@@ -909,12 +1313,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
         };
 
         let d = dot_normal_point(normal, verts[0]);
-        result.push(FaceGeom::Planar {
-            verts,
-            holes,
-            normal,
-            d,
-        });
+        result.push(FaceGeom::planar(verts, holes, normal, d));
     }
 
     Ok(result)
@@ -975,11 +1374,11 @@ fn ray_geom_crossings(
 ) -> (i32, bool) {
     match geom {
         FaceGeom::Planar {
-            verts,
-            holes,
             normal,
             d,
-        } => ray_face_crossing(origin, ray_dir, verts, holes, *normal, *d, tol),
+            axis,
+            face,
+        } => ray_face_crossing(origin, ray_dir, face, *axis, *normal, *d, tol),
         FaceGeom::Cylinder {
             surface,
             v_min,
@@ -1050,42 +1449,20 @@ fn ray_geom_crossings(
 fn ray_face_crossing(
     origin: Point3,
     ray_dir: Vec3,
-    verts: &[Point3],
-    holes: &[Vec<Point3>],
+    face: &PlanarFace,
+    axis: Axis,
     normal: Vec3,
     d: f64,
     tol: Tolerance,
 ) -> (i32, bool) {
-    let near = 10.0 * tol.linear;
-    let denom = normal.dot(ray_dir);
-    if denom.abs() < tol.angular {
-        // Ray parallel to the plane. If the origin also LIES in the plane the
-        // ray travels inside the face's plane — edges and seams there make its
-        // parity unreliable.
-        let numer = d - dot_normal_point(normal, origin);
-        return (0, numer.abs() <= near);
-    }
     let numer = d - dot_normal_point(normal, origin);
-    let t = numer / denom;
-    if t <= tol.linear {
-        return (0, false);
+    match plane_hit(origin, ray_dir, normal.dot(ray_dir), numer, tol) {
+        // A ray parallel to the plane and starting IN it travels inside the
+        // face's plane — edges and seams there make its parity unreliable.
+        PlaneHit::Parallel(in_plane) => (0, in_plane),
+        PlaneHit::Behind => (0, false),
+        PlaneHit::Ahead(hit) => face.polygon_hit(hit, axis.project(hit), 10.0 * tol.linear),
     }
-    let hit = Point3::new(
-        origin.x() + ray_dir.x() * t,
-        origin.y() + ray_dir.y() * t,
-        origin.z() + ray_dir.z() * t,
-    );
-    let boundary_graze = dist_to_polygon_boundary(hit, verts) <= near
-        || holes
-            .iter()
-            .any(|h| dist_to_polygon_boundary(hit, h) <= near);
-    if !point_in_face_3d(hit, verts, &normal) {
-        return (0, boundary_graze);
-    }
-    if holes.iter().any(|h| point_in_face_3d(hit, h, &normal)) {
-        return (0, boundary_graze);
-    }
-    (1, boundary_graze)
 }
 
 /// Count ray crossings with a bounded full-period cylindrical face.
@@ -1725,7 +2102,10 @@ mod tests {
     /// single full-circle edges starting at `seam` radians. The lateral face's
     /// outer wire is the bottom rim, the seam generator, the top rim, and the
     /// generator back.
-    fn make_seamed_cylinder(topo: &mut Topology, seam: f64) -> remus_topology::solid::SolidId {
+    pub(super) fn make_seamed_cylinder(
+        topo: &mut Topology,
+        seam: f64,
+    ) -> remus_topology::solid::SolidId {
         use remus_math::curves::Circle3D;
         use remus_math::surfaces::CylindricalSurface;
         let (cx, cy, r) = (0.5, -1.5, 2.0);
@@ -1809,7 +2189,7 @@ mod tests {
     }
 
     /// Build a unit box for classification tests.
-    fn make_box(
+    pub(super) fn make_box(
         topo: &mut Topology,
         min: [f64; 3],
         max: [f64; 3],
@@ -1931,3 +2311,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod gate_oracle_tests;
