@@ -923,7 +923,6 @@ proptest! {
 
 /// Every face carries every loop's cuts. With the gate, L disjoint loops
 /// project 3 cuts each — 3L — instead of all 3L cuts each — 3L².
-#[cfg(feature = "perf-counters")]
 #[test]
 fn scaling_winding_cut_projections_stay_linear_in_the_loop_count() {
     let weights = [1.0, 0.6, 1.4, 1.0, 0.8, 1.2, 1.0];
@@ -937,7 +936,7 @@ fn scaling_winding_cut_projections_stay_linear_in_the_loop_count() {
             cuts.extend([0.2, 0.5, 0.8].iter().map(|&t| curve.evaluate(t)));
             sections.push(closed_section(curve));
         }
-        crate::perf::reset();
+        let _ = crate::perf::take_winding_cut_projections();
         let out = presplit_closed_winding_loops(
             &sections,
             &cuts,
@@ -949,7 +948,7 @@ fn scaling_winding_cut_projections_stay_linear_in_the_loop_count() {
         .unwrap();
         assert_eq!(out.len(), 4 * loops);
         assert_eq!(
-            crate::perf::snapshot().winding_cut_projections,
+            crate::perf::take_winding_cut_projections(),
             3 * loops as u64
         );
     }

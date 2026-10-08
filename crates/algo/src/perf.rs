@@ -54,8 +54,8 @@
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
 //! cost. The scaling guard enables the feature only for its own test build.
-//! The ray-work counters also count in this crate's own tests: their oracles
-//! pin work the bounding-box gate skips without changing any result.
+//! The ray-work and winding-cut counters also count in this crate's own
+//! tests: their oracles pin work a gate skips without changing any result.
 
 #[cfg(feature = "perf-counters")]
 use std::cell::Cell;
@@ -78,12 +78,12 @@ std::thread_local! {
     static JUNCTION_SEEDS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIR_SCANS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIRS_GATED: Cell<u64> = const { Cell::new(0) };
-    static WINDING_CUT_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
 std::thread_local! {
     static RAY_WORK: std::cell::Cell<[u64; 8]> = const { std::cell::Cell::new([0; 8]) };
+    static WINDING_CUT_PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// One unit of the ray-cast vote loop's planar work.
@@ -298,8 +298,17 @@ pub(crate) fn bump_ef_analytic_pair_gated() {
 /// that survived the loop's reach-box gate). Crate-internal.
 #[inline]
 pub(crate) fn bump_winding_cut_projection() {
-    #[cfg(feature = "perf-counters")]
-    increment(&WINDING_CUT_PROJECTIONS);
+    #[cfg(any(test, feature = "perf-counters"))]
+    WINDING_CUT_PROJECTIONS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+/// This thread's winding-loop cut projections since the previous call,
+/// resetting the count. Available in this crate's tests and with
+/// `perf-counters`.
+#[cfg(any(test, feature = "perf-counters"))]
+#[must_use]
+pub fn take_winding_cut_projections() -> u64 {
+    WINDING_CUT_PROJECTIONS.with(|count| count.replace(0))
 }
 
 /// A snapshot of every work counter since the last [`reset`]. Only available

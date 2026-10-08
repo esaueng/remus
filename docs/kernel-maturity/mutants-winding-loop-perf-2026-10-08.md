@@ -6,7 +6,7 @@ sample reuse in the meridian bracket scan, reach-box gate on the presplit
 projections) put 81 `remus-algo` mutants into the weekly in-diff set
 (`cargo mutants --list --in-diff`, cargo-mutants 27.0.0, diff against
 `f23349a`). This note says which test is expected to kill each, and proves
-the three that cannot be killed under the weekly run's default features.
+the two that cannot be killed under the weekly run's default features.
 
 A fast path that falls back to an exact general case normally leaves
 equivalent mutants: narrowing the fast range only sends more inputs to the
@@ -20,9 +20,10 @@ A local in-place run of the 81 under the committed profile was started and
 aborted after 16 mutants: the shared build disk filled, 15 of those 16
 were reported unviable, and the build log inspected failed with "No space
 left on device". Those 15 are not evidence either way. The one mutant that ran to completion,
-`replace bump_winding_cut_projection with ()`, was MISSED, as predicted
-below. The kills in the table are read from the tests, not measured. Three
-were confirmed by hand mutation:
+`replace bump_winding_cut_projection with ()`, was MISSED while the counter
+compiled out under default features; it now counts in this crate's own
+tests (see below). The kills in the table are read from the tests, not
+measured. Three were confirmed by hand mutation:
 
 - `offset.abs() <= SEAM_DEGENERATE_TOL` changed to `>` fails
   `winding_loops_are_cut_on_the_seam_and_two_more_meridians`, so that fixture
@@ -45,22 +46,24 @@ Tests are in `builder/fill_images_faces/helper_oracle_tests.rs` unless noted.
 | `compute_winding_loop_cuts` | 8 | caught | `winding_loops_are_cut_on_the_seam_and_two_more_meridians` (the seam is not at `u = 0`, so `u - target` → `u + target` moves every cut) |
 | `presplit_closed_winding_loops` | 3 | caught or unviable | `far_cuts_are_skipped_and_the_split_is_unchanged` (deleting the gate's `!` drops the loops' own cuts) |
 | `weld_reach_box` | 19 | caught or unviable | `weld_reach_box_is_the_control_box_grown_by_two_welds_and_rounding_slack` (box compared bit for bit), `weld_reach_box_refuses_weight_ratios_past_1e100` |
-| `perf.rs` counters | 3 | (b) equivalent | none under default features |
+| `bump_winding_cut_projection` | 1 | caught | `scaling_winding_cut_projections_stay_linear_in_the_loop_count` (the count stays 0) |
+| `take_winding_cut_projections` | 2 | caught | same test (a constant `0` or `1` misses `3·L`); added after the list above was taken |
+| `perf.rs` `reset`, `snapshot` | 2 | (b) equivalent | none under default features |
 
 ## (b) Equivalent under default features
 
-The weekly run builds without `perf-counters`, so these bodies compile out.
-The same holds for every other counter in `crates/algo/src/perf.rs`.
+The weekly run builds without `perf-counters`, so these items compile out.
+The same holds for the feature-only counters elsewhere in
+`crates/algo/src/perf.rs`. The winding-cut counter is not one of them: like
+`RAY_WORK`, it also counts under `cfg(test)`, so the algo scaling test runs
+in the default workspace job and kills `bump_winding_cut_projection`.
 
 | Mutant | Proof |
 | --- | --- |
-| `perf.rs`: replace `bump_winding_cut_projection` with `()` | With the feature off the body is empty, so the mutant is the original function. |
 | `perf.rs`: replace `reset` with `()` | `reset` is `#[cfg(feature = "perf-counters")]`; the mutated item is not compiled. |
 | `perf.rs`: replace `snapshot -> PerfSnapshot` with `Default::default()` | Same: `snapshot` and `PerfSnapshot` are compiled out, so nothing type-checks the replacement. |
 
-With `perf-counters` on, `scaling_winding_cut_projections_stay_linear_in_the_loop_count`
-(algo) catches the first two: the count stays 0, or accumulates across its
-loop sizes. The third does not compile there (`PerfSnapshot` has no
-`Default`). `scaling_winding_cut_projections_skip_the_other_loop`
+With `perf-counters` on, the mutated `snapshot` does not compile
+(`PerfSnapshot` has no `Default`). `scaling_winding_cut_projections_skip_the_other_loop`
 (`crates/operations/src/boolean/tests.rs`, run by CI's `scaling_` step)
-also catches the first.
+also catches `bump_winding_cut_projection` → `()` there.
