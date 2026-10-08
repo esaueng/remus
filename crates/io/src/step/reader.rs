@@ -7126,6 +7126,10 @@ impl<'a> StepBuilder<'a> {
 
     fn build_cartesian_point(&self, cp_ref: u64) -> Result<Point3, IoError> {
         let attrs = &self.get_entity(cp_ref)?.attrs;
+        if let Some([x, y, z]) = real_triple_attribute(attrs) {
+            let s = self.units.length;
+            return Ok(Point3::new(x * s, y * s, z * s));
+        }
         let slots = split_attr_slots(attrs);
         let coords =
             exact_real_attribute_list("CARTESIAN_POINT", cp_ref, &slots, 1, "coordinates")?;
@@ -7143,6 +7147,9 @@ impl<'a> StepBuilder<'a> {
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
         let attrs = &self.get_entity(dir_ref)?.attrs;
+        if let Some([x, y, z]) = real_triple_attribute(attrs) {
+            return Ok(Vec3::new(x, y, z));
+        }
         let slots = split_attr_slots(attrs);
         let coords =
             exact_real_attribute_list("DIRECTION", dir_ref, &slots, 1, "direction_ratios")?;
@@ -9991,55 +9998,122 @@ fn describe_slot(slot: Option<&AttrSlot<'_>>) -> String {
 /// ends the list rather than opening a slot. Whitespace and the newlines
 /// STEP writers use to wrap long statements are trimmed off each slot.
 fn split_attr_slots(attrs: &str) -> Vec<AttrSlot<'_>> {
-    let bytes = attrs.as_bytes();
-    let mut slots = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    let mut end = bytes.len();
-    let mut in_string = false;
-    let mut i = 0usize;
+    AttrSlotSpans::new(attrs).map(classify_attr_slot).collect()
+}
 
-    while i < bytes.len() {
-        let byte = bytes[i];
-        if in_string {
-            // Two quotes in a row are STEP's escape for one literal
-            // apostrophe, not the end of the string.
-            if byte == b'\'' {
-                if bytes.get(i + 1) == Some(&b'\'') {
-                    i += 2;
-                    continue;
-                }
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        match byte {
-            b'\'' => in_string = true,
-            b'(' => depth += 1,
-            b')' => {
-                if depth == 0 {
-                    end = i;
-                    break;
-                }
-                depth -= 1;
-            }
-            b',' if depth == 0 => {
-                slots.push(classify_attr_slot(&attrs[start..i]));
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
+/// The raw, untrimmed text of each slot [`split_attr_slots`] returns, in
+/// order and without allocating.
+struct AttrSlotSpans<'a> {
+    attrs: &'a str,
+    start: usize,
+    cursor: usize,
+    depth: usize,
+    in_string: bool,
+    emitted: bool,
+    finished: bool,
+}
 
-    let tail = &attrs[start..end];
-    // An entity with no attributes at all has no trailing slot; one that
-    // ends in a comma keeps the empty slot the comma implies.
-    if !slots.is_empty() || !tail.trim().is_empty() {
-        slots.push(classify_attr_slot(tail));
+impl<'a> AttrSlotSpans<'a> {
+    const fn new(attrs: &'a str) -> Self {
+        Self {
+            attrs,
+            start: 0,
+            cursor: 0,
+            depth: 0,
+            in_string: false,
+            emitted: false,
+            finished: false,
+        }
     }
-    slots
+}
+
+impl<'a> Iterator for AttrSlotSpans<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        if self.finished {
+            return None;
+        }
+        let bytes = self.attrs.as_bytes();
+        let mut end = bytes.len();
+        while self.cursor < bytes.len() {
+            let byte = bytes[self.cursor];
+            if self.in_string {
+                // Two quotes in a row are STEP's escape for one literal
+                // apostrophe, not the end of the string.
+                if byte == b'\'' {
+                    if bytes.get(self.cursor + 1) == Some(&b'\'') {
+                        self.cursor += 2;
+                        continue;
+                    }
+                    self.in_string = false;
+                }
+                self.cursor += 1;
+                continue;
+            }
+            match byte {
+                b'\'' => self.in_string = true,
+                b'(' => self.depth += 1,
+                b')' => {
+                    if self.depth == 0 {
+                        end = self.cursor;
+                        break;
+                    }
+                    self.depth -= 1;
+                }
+                b',' if self.depth == 0 => {
+                    let slot = &self.attrs[self.start..self.cursor];
+                    self.cursor += 1;
+                    self.start = self.cursor;
+                    self.emitted = true;
+                    return Some(slot);
+                }
+                _ => {}
+            }
+            self.cursor += 1;
+        }
+
+        self.finished = true;
+        let tail = &self.attrs[self.start..end];
+        // An entity with no attributes at all has no trailing slot; one that
+        // ends in a comma keeps the empty slot the comma implies.
+        (self.emitted || !tail.trim().is_empty()).then_some(tail)
+    }
+}
+
+/// `exact_real_attribute_list(.., 1, ..)` for the common statement whose
+/// slot 1 is an aggregate of exactly three finite reals (`CARTESIAN_POINT`,
+/// `DIRECTION`), without its two slot vectors and its value vector.
+///
+/// It reads the same slot span, through the same classification, trims and
+/// `f64` parses, so a `Some` holds exactly the general path's values. Every
+/// other input, valid or not, returns `None` and is left to the general path
+/// and its diagnostics.
+fn real_triple_attribute(attrs: &str) -> Option<[f64; 3]> {
+    let mut slots = AttrSlotSpans::new(attrs);
+    slots.next()?;
+    let AttrSlot::List(list) = classify_attr_slot(slots.next()?) else {
+        return None;
+    };
+    let inner = list.strip_prefix('(')?.strip_suffix(')')?;
+    // With no quote or paren inside, the general path's member split is a
+    // plain comma split.
+    if inner
+        .bytes()
+        .any(|byte| matches!(byte, b'\'' | b'(' | b')'))
+    {
+        return None;
+    }
+    let mut members = inner.split(',');
+    let mut values = [0.0; 3];
+    for value in &mut values {
+        let AttrSlot::Other(raw) = classify_attr_slot(members.next()?) else {
+            return None;
+        };
+        *value = raw.parse::<f64>().ok().filter(|value| value.is_finite())?;
+    }
+    // The general path validates a fourth member too, so none is dropped.
+    members.next().is_none().then_some(values)
 }
 
 /// Classify one already-split attribute slot.
@@ -18203,6 +18277,381 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             .normalize_planar_inner_winding(42, &plane, outer, &inner, &candidates, None)
             .unwrap();
         assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), candidates.len());
+    }
+
+    // ── Allocation-free coordinate triples ─────────────────────────────
+
+    /// `split_attr_slots` as it was before [`AttrSlotSpans`]: the oracle
+    /// for that refactor.
+    fn split_attr_slots_previous(attrs: &str) -> Vec<AttrSlot<'_>> {
+        let bytes = attrs.as_bytes();
+        let mut slots = Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        let mut end = bytes.len();
+        let mut in_string = false;
+        let mut i = 0usize;
+
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if in_string {
+                if byte == b'\'' {
+                    if bytes.get(i + 1) == Some(&b'\'') {
+                        i += 2;
+                        continue;
+                    }
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            match byte {
+                b'\'' => in_string = true,
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b',' if depth == 0 => {
+                    slots.push(classify_attr_slot(&attrs[start..i]));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let tail = &attrs[start..end];
+        if !slots.is_empty() || !tail.trim().is_empty() {
+            slots.push(classify_attr_slot(tail));
+        }
+        slots
+    }
+
+    /// What `build_cartesian_point` and `build_direction` read when
+    /// [`real_triple_attribute`] declines.
+    fn general_real_triple(attrs: &str) -> Result<Vec<f64>, IoError> {
+        let slots = split_attr_slots(attrs);
+        exact_real_attribute_list("CARTESIAN_POINT", 7, &slots, 1, "coordinates")
+    }
+
+    /// When the fast path answers, the general path yields the same three
+    /// values bit for bit.
+    fn assert_real_triple_matches_general_path(attrs: &str) {
+        match (real_triple_attribute(attrs), general_real_triple(attrs)) {
+            (Some(fast), Ok(general)) => {
+                assert_eq!(general.len(), 3, "{attrs:?}");
+                for (fast, general) in fast.iter().zip(&general) {
+                    assert_eq!(fast.to_bits(), general.to_bits(), "{attrs:?}");
+                }
+            }
+            (Some(fast), Err(error)) => panic!("{attrs:?}: fast {fast:?}, general {error}"),
+            (None, Ok(general)) => {
+                // Declining is always safe, since the caller then runs the
+                // general path itself. With three values it happens only
+                // where a quote or paren inside the aggregate makes the
+                // general member split differ from a comma split: the general
+                // path reads `(1.,2.,3.)(4.)` as three members.
+                if general.len() == 3 {
+                    let Some(AttrSlot::List(list)) = split_attr_slots(attrs).get(1).copied() else {
+                        panic!("{attrs:?}: three values without an aggregate");
+                    };
+                    assert!(
+                        list[1..list.len() - 1].contains(['\'', '(', ')']),
+                        "{attrs:?}"
+                    );
+                }
+            }
+            (None, Err(_)) => {}
+        }
+        assert_eq!(
+            split_attr_slots(attrs),
+            split_attr_slots_previous(attrs),
+            "{attrs:?}"
+        );
+    }
+
+    /// Attribute text as `parse_step_entities` stores it, closing paren
+    /// retained.
+    const REAL_TRIPLE_CASES: &[&str] = &[
+        "'',(1.,2.,3.))",
+        "'',(0.,0.,0.))",
+        "'Origin',(-1.5E2,2.25,3.))",
+        "'', (1.00000000000000000E0, -2.50000000000000000E-1, 0.))",
+        "'',(1.,2.,3.)",
+        "'',(1.,2.,3.))extra",
+        "'',\n  (1.,\n   2., 3.)\n)",
+        "  '' , ( 1. , 2. , 3. ) )",
+        "'',(1.,2.,3.\n))",
+        // Names: escapes, unterminated strings, syntax inside strings, and
+        // structure in the name slot.
+        "'O''Brien',(1.,2.,3.))",
+        "'''',(1.,2.,3.))",
+        "'a''b',(1.,2.,3.))",
+        "''',(1.,2.,3.))",
+        "'abc,(1.,2.,3.))",
+        "'a,(b',(1.,2.,3.))",
+        "'(x)',(1.,2.,3.))",
+        "$,(1.,2.,3.))",
+        "*,(1.,2.,3.))",
+        "(),(1.,2.,3.))",
+        "('a',(1.)),(1.,2.,3.))",
+        "),(1.,2.,3.))",
+        // Member counts and member kinds.
+        "'',(1.,2.))",
+        "'',(1.,2.,3.,4.))",
+        "'',(1.,2.,3.,#5))",
+        "'',(#12,2.,3.))",
+        "'',(1.,$,3.))",
+        "'',(1.,*,3.))",
+        "'',(.T.,2.,3.))",
+        "'',(.5.,2.,3.))",
+        "'',('1',2.,3.))",
+        "'',(1.,(2.),3.))",
+        "'',((1.,2.,3.)))",
+        "'',(1.,2.,3.,))",
+        "'',(1.,,3.))",
+        "'',(,2.,3.))",
+        "'',())",
+        "'',( ))",
+        "'',(1 .,2.,3.))",
+        "'',(1.;2.;3.))",
+        // Number forms, including ones `f64::from_str` accepts and
+        // non-finite ones it accepts but the reader refuses.
+        "'',(1.E-3,-0.,+1.))",
+        "'',(.5,5.,-.25e+2))",
+        "'',(1.7976931348623157E308,4.9E-324,-0.0))",
+        "'',(1e400,2.,3.))",
+        "'',(NaN,2.,3.))",
+        "'',(inf,2.,3.))",
+        "'',(1.,-inf,3.))",
+        // Text after the aggregate, and later slots.
+        "'',(1.,2.,3.)x)",
+        "'',(1.,2.,3.)(4.))",
+        "'',(1.,2.,3.) x,#5)",
+        "'',(1.,2.,3.),#5)",
+        // Unicode whitespace the general path's `str::trim` also strips.
+        "'',\u{a0}(1.,2.,3.)\u{a0})",
+        "'',(\u{a0}1.,2.,3.\u{a0}))",
+        "'',\u{b}(1.,2.,3.)\u{b})",
+        "'',(\u{b}1.,2.,3.\u{b}))",
+        // No aggregate at all.
+        "'')",
+        "",
+        ")",
+        "'',#5)",
+        "'',1.)",
+    ];
+
+    #[test]
+    fn real_triple_attribute_matches_the_general_path() {
+        for attrs in REAL_TRIPLE_CASES {
+            assert_real_triple_matches_general_path(attrs);
+        }
+    }
+
+    #[test]
+    fn real_triple_attribute_takes_every_canonical_point_and_direction() {
+        for attrs in [
+            "'',(0.,0.,0.))",
+            "'', (1.00000000000000000E0, -2.50000000000000000E-1, 0.))",
+            "'O''Brien',(-1.5E2,2.25,3.))",
+            "'',\n  (1.,\n   2., 3.)\n)",
+            "'',\u{a0}(1.,2.,3.)\u{a0})",
+        ] {
+            assert!(real_triple_attribute(attrs).is_some(), "{attrs:?}");
+        }
+
+        let mut topo = Topology::new();
+        let cube = make_unit_cube_non_manifold(&mut topo);
+        let written = writer::write_step(&topo, &[cube]).unwrap();
+        let hammer = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/shapr3d_hammer_holder.step"
+        ))
+        .unwrap();
+        for (file, minimum) in [(&written, 10), (&hammer, 10_000)] {
+            let entities = parse_step_entities(file, ImportLimits::default()).unwrap();
+            let mut taken = 0;
+            for entity in entities.values() {
+                if matches!(
+                    entity.kind,
+                    EntityKind::CartesianPoint | EntityKind::Direction
+                ) {
+                    assert!(
+                        real_triple_attribute(entity.attrs_str()).is_some(),
+                        "{:?}",
+                        entity.attrs_str()
+                    );
+                    taken += 1;
+                }
+            }
+            assert!(taken >= minimum, "{taken} points and directions");
+        }
+    }
+
+    fn general_cartesian_point(builder: &StepBuilder<'_>, cp_ref: u64) -> Result<Point3, IoError> {
+        let attrs = &builder.get_entity(cp_ref)?.attrs;
+        let slots = split_attr_slots(attrs);
+        let coords =
+            exact_real_attribute_list("CARTESIAN_POINT", cp_ref, &slots, 1, "coordinates")?;
+        if coords.len() < 3 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "CARTESIAN_POINT #{cp_ref} needs 3 coordinates, got {}",
+                    coords.len()
+                ),
+            });
+        }
+        let s = builder.units.length;
+        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
+    }
+
+    fn general_direction(builder: &StepBuilder<'_>, dir_ref: u64) -> Result<Vec3, IoError> {
+        let attrs = &builder.get_entity(dir_ref)?.attrs;
+        let slots = split_attr_slots(attrs);
+        let coords =
+            exact_real_attribute_list("DIRECTION", dir_ref, &slots, 1, "direction_ratios")?;
+        if coords.len() < 3 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "DIRECTION #{dir_ref} needs 3 components, got {}",
+                    coords.len()
+                ),
+            });
+        }
+        Ok(Vec3::new(coords[0], coords[1], coords[2]))
+    }
+
+    #[test]
+    fn point_and_direction_builders_match_the_general_path() {
+        let bits = |values: [f64; 3]| values.map(f64::to_bits);
+        let cases = u64::try_from(REAL_TRIPLE_CASES.len()).unwrap();
+        let mut entities = HashMap::new();
+        for (id, attrs) in (1..).zip(REAL_TRIPLE_CASES) {
+            for (entity_ref, kind, type_raw) in [
+                (id, EntityKind::CartesianPoint, "CARTESIAN_POINT"),
+                (id + cases, EntityKind::Direction, "DIRECTION"),
+            ] {
+                entities.insert(
+                    entity_ref,
+                    StepEntity {
+                        kind,
+                        type_raw: std::borrow::Cow::Borrowed(type_raw),
+                        attrs: std::borrow::Cow::Borrowed(attrs),
+                        pos: 0,
+                    },
+                );
+            }
+        }
+        let units = UnitScale {
+            length: 25.4,
+            angle: 1.0,
+        };
+        let mut topo = Topology::new();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+        let mut built = 0;
+        // Each case as a point and as a direction, then an id with no entity.
+        for (point_ref, direction_ref) in (1..=cases)
+            .map(|id| (id, id + cases))
+            .chain([(3 * cases, 3 * cases)])
+        {
+            match (
+                builder.build_cartesian_point(point_ref),
+                general_cartesian_point(&builder, point_ref),
+            ) {
+                (Ok(point), Ok(general)) => {
+                    built += 1;
+                    assert_eq!(
+                        bits([point.x(), point.y(), point.z()]),
+                        bits([general.x(), general.y(), general.z()]),
+                        "#{point_ref}"
+                    );
+                }
+                (Err(error), Err(general)) => assert_eq!(error.to_string(), general.to_string()),
+                (point, general) => panic!("#{point_ref}: {point:?} vs {general:?}"),
+            }
+            match (
+                builder.build_direction(direction_ref),
+                general_direction(&builder, direction_ref),
+            ) {
+                (Ok(direction), Ok(general)) => assert_eq!(
+                    bits([direction.x(), direction.y(), direction.z()]),
+                    bits([general.x(), general.y(), general.z()]),
+                    "#{direction_ref}"
+                ),
+                (Err(error), Err(general)) => assert_eq!(error.to_string(), general.to_string()),
+                (direction, general) => panic!("#{direction_ref}: {direction:?} vs {general:?}"),
+            }
+        }
+        assert!(built >= 20, "{built} points built");
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4_000))]
+
+        #[test]
+        fn real_triple_attribute_matches_the_general_path_on_any_text(
+            attrs in "[',()#$*.0-9eE+ \n\u{a0}\u{b}a-]{0,24}"
+        ) {
+            assert_real_triple_matches_general_path(&attrs);
+        }
+
+        #[test]
+        fn real_triple_attribute_matches_the_general_path_on_point_shaped_text(
+            attrs in "('[a-z',()]{0,3}'?|\\$|\\*|)[ \n]?,[ \n\u{a0}]?\\(([ 0-9.eE+#$*'()\u{a0}-]{0,6},){0,4}[ 0-9.eE+\u{a0}-]{0,6}\\)[ \u{b}]?[)x,#5(]{0,3}"
+        ) {
+            assert_real_triple_matches_general_path(&attrs);
+        }
+
+        #[test]
+        fn real_triple_attribute_matches_the_general_path_on_numeric_members(
+            name in "'[a-z' ,()]{0,4}'|\\$|\\*",
+            members in proptest::collection::vec(
+                "[ \n\u{a0}]{0,2}[+-]?([0-9]{1,3}\\.?[0-9]{0,3}|\\.[0-9]{1,3})([eE][+-]?[0-9]{1,3})?[ \n\u{b}]{0,2}",
+                2..=4,
+            ),
+            tail in "[)x,#5( ]{0,3}",
+        ) {
+            assert_real_triple_matches_general_path(&format!("{name},({}){tail}", members.join(",")));
+        }
+
+        #[test]
+        fn writer_formatted_triples_take_the_fast_path(
+            coordinates in proptest::array::uniform3(any::<f64>()),
+            name in "[a-z' ]{0,6}",
+        ) {
+            prop_assume!(coordinates.iter().all(|value| value.is_finite()));
+            // The writer's literal: `0.` for zero, else 17 decimals in E form.
+            let literal = |value: f64| {
+                if value == 0.0 {
+                    "0.".to_string()
+                } else {
+                    format!("{value:.17E}")
+                }
+            };
+            let attrs = format!(
+                "'{}', ({}, {}, {}))",
+                name.replace('\'', "''"),
+                literal(coordinates[0]),
+                literal(coordinates[1]),
+                literal(coordinates[2])
+            );
+            let fast = real_triple_attribute(&attrs);
+            prop_assert!(fast.is_some(), "{attrs:?}");
+            assert_real_triple_matches_general_path(&attrs);
+            for (fast, value) in fast.unwrap_or_default().iter().zip(coordinates) {
+                if value != 0.0 {
+                    prop_assert_eq!(fast.to_bits(), value.to_bits());
+                }
+            }
+        }
     }
 }
 
