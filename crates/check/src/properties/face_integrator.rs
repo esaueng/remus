@@ -3531,7 +3531,6 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
     scale: PatchScale,
     apex_v: Option<f64>,
 ) -> Result<FaceContribution, CheckError> {
-    let holes_only = UvTrim::holes_of(uv);
     if uv.boundary.points.len() < 3 {
         return integrate_parametric::<_, AREA_ONLY>(
             surface,
@@ -3539,7 +3538,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
             v_range,
             rule,
             sign,
-            &holes_only,
+            &UvTrim::holes_of(uv),
             scale,
         );
     }
@@ -3607,7 +3606,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
             (v_min, v_max),
             rule,
             sign,
-            &holes_only,
+            &UvTrim::holes_of(uv),
             scale,
         )
     } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
@@ -3619,7 +3618,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
             v_range,
             rule,
             sign,
-            &holes_only,
+            &UvTrim::holes_of(uv),
             scale,
         )
     } else {
