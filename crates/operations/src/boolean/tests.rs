@@ -10273,3 +10273,194 @@ fn scaling_ef_analytic_gates_prune_far_pairs() {
         near.ef_analytic_pair_scans,
     );
 }
+
+/// A box of `size` with its minimum corner at `at`.
+#[cfg(test)]
+fn box_at(topo: &mut Topology, size: [f64; 3], at: [f64; 3]) -> SolidId {
+    use remus_math::mat::Mat4;
+    let s = crate::primitives::make_box(topo, size[0], size[1], size[2]).unwrap();
+    crate::transform::transform_solid(topo, s, &Mat4::translation(at[0], at[1], at[2])).unwrap();
+    s
+}
+
+/// `compound_cut_perf`'s `compound_cut_struts/nway_N=14`: a slab cut by a
+/// lattice of 7 + 7 interpenetrating struts.
+#[cfg(test)]
+fn struts_nway_14() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let target = crate::primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
+    let mut tools = Vec::new();
+    for i in 0..7 {
+        let pos = 12.5 * (i + 1) as f64 - 2.0;
+        tools.push(box_at(&mut topo, [100.0, 4.0, 10.0], [0.0, pos, 0.0]));
+        tools.push(box_at(&mut topo, [4.0, 100.0, 10.0], [pos, 0.0, 0.0]));
+    }
+    let r = compound_cut(&mut topo, target, &tools, BooleanOptions::default()).unwrap();
+    (topo, r)
+}
+
+/// `compound_cut_perf`'s `compound_cut_honeycomb/compound_rings=5_N=91`: a
+/// slab cut by 91 boxes on a hexagonal grid.
+#[cfg(test)]
+fn honeycomb_c91() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let target = crate::primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
+    let side = 3.0 * 1.732;
+    let mut tools = vec![box_at(
+        &mut topo,
+        [side, side, 20.0],
+        [50.0 - side / 2.0, 50.0 - side / 2.0, -5.0],
+    )];
+    let dirs: [(f64, f64); 6] = [
+        (1.0, 0.0),
+        (0.5, 0.866_025_403_784_438_6),
+        (-0.5, 0.866_025_403_784_438_6),
+        (-1.0, 0.0),
+        (-0.5, -0.866_025_403_784_438_6),
+        (0.5, -0.866_025_403_784_438_6),
+    ];
+    for n in 1..=5 {
+        for (k, &(dx, dy)) in dirs.iter().enumerate() {
+            let next = dirs[(k + 2) % 6];
+            for step in 0..n {
+                // Unfused, as the bench computes them.
+                let hx = 50.0 + 8.0 * (n as f64 * dx + step as f64 * next.0);
+                let hy = 50.0 + 8.0 * (n as f64 * dy + step as f64 * next.1);
+                if hx > 3.0 && hx < 97.0 && hy > 3.0 && hy < 97.0 {
+                    let at = [hx - side / 2.0, hy - side / 2.0, -5.0];
+                    tools.push(box_at(&mut topo, [side, side, 20.0], at));
+                }
+            }
+        }
+    }
+    assert_eq!(tools.len(), 91);
+    let r = compound_cut(&mut topo, target, &tools, BooleanOptions::default()).unwrap();
+    (topo, r)
+}
+
+/// `fuse_perf`'s `fuse_balanced/sequential_N=25`: a left fold of 5 × 5
+/// slightly overlapping boxes.
+#[cfg(test)]
+fn fuse_seq_25() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let mut acc = None;
+    for row in 0..5 {
+        for col in 0..5 {
+            let s = box_at(&mut topo, [1.01, 1.01, 1.0], [col as f64, row as f64, 0.0]);
+            acc = Some(match acc {
+                None => s,
+                Some(a) => boolean(&mut topo, BooleanOp::Fuse, a, s).unwrap(),
+            });
+        }
+    }
+    (topo, acc.unwrap())
+}
+
+/// `boolean_tracking`'s `boolean/perforated_cut_36`.
+#[cfg(test)]
+fn perforated_36() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let (slab, tool) = build_perforated_panel(&mut topo, 6);
+    let r = boolean(&mut topo, BooleanOp::Cut, slab, tool).unwrap();
+    (topo, r)
+}
+
+/// A boolean workload and the solid it produces.
+#[cfg(test)]
+type Workload = fn() -> (Topology, SolidId);
+
+/// Bench-shaped workloads whose boolean classification runs through the
+/// ray-cast vote loop (`remus_algo::classifier::ray_cast`).
+#[cfg(test)]
+const RAYCAST_VOTE_WORKLOADS: [(&str, Workload); 4] = [
+    ("struts_nway_14", struts_nway_14),
+    ("honeycomb_c91", honeycomb_c91),
+    ("fuse_seq_25", fuse_seq_25),
+    ("perforated_36", perforated_36),
+];
+
+/// `(faces, edges, vertices, FNV-1a of the vertex coordinate bits in
+/// traversal order, volume bits)` of a boolean result.
+#[cfg(test)]
+type Fingerprint = (usize, usize, usize, u64, u64);
+
+#[cfg(test)]
+fn solid_fingerprint(topo: &Topology, solid: SolidId) -> Fingerprint {
+    use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+    let vertices = solid_vertices(topo, solid).unwrap();
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &v in &vertices {
+        let p = topo.vertex(v).unwrap().point();
+        for c in [p.x(), p.y(), p.z()] {
+            for byte in c.to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    let volume = crate::measure::solid_volume(topo, solid, 0.01).unwrap();
+    (
+        solid_faces(topo, solid).unwrap().len(),
+        solid_edges(topo, solid).unwrap().len(),
+        vertices.len(),
+        hash,
+        volume.to_bits(),
+    )
+}
+
+/// Bit-identity pin for the ray-cast vote loop's exact work reductions (the
+/// planar polygon gate and the shared plane evaluation): every workload above
+/// must produce the same solid, bit for bit, as the classifier did before
+/// them. The expected values were recorded on that earlier classifier.
+#[test]
+fn raycast_vote_workloads_keep_their_fingerprints() {
+    let expected: [(&str, Fingerprint); 4] = [
+        (
+            "struts_nway_14",
+            (
+                384,
+                768,
+                512,
+                12_990_291_784_835_671_845,
+                4_677_357_648_931_192_832,
+            ),
+        ),
+        (
+            "honeycomb_c91",
+            (
+                370,
+                1104,
+                736,
+                5_647_678_859_729_609_957,
+                4_679_920_022_395_773_900,
+            ),
+        ),
+        (
+            "fuse_seq_25",
+            (
+                174,
+                356,
+                184,
+                3_991_198_408_618_336_166,
+                4_627_758_267_745_064_011,
+            ),
+        ),
+        (
+            "perforated_36",
+            (
+                150,
+                444,
+                296,
+                10_590_237_501_849_657_077,
+                4_647_371_415_974_764_874,
+            ),
+        ),
+    ];
+    let got: Vec<_> = RAYCAST_VOTE_WORKLOADS
+        .iter()
+        .map(|&(name, run)| {
+            let (topo, solid) = run();
+            (name, solid_fingerprint(&topo, solid))
+        })
+        .collect();
+    assert_eq!(got.as_slice(), expected.as_slice());
+}
