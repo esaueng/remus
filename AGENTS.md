@@ -136,6 +136,7 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
+| Bit-exact oracles for the plane × torus section: the pre-change grid scan and pipeline (tests) | `analytic_intersection/plane_torus_oracle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
 | CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, collinear, adjacency, tests, tests/collinear_index, tests/flood_batch, tests/hole_grid, tests/off_axis_cap, tests/u_bracket_floor) |

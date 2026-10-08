@@ -1251,60 +1251,13 @@ pub fn intersect_plane_cone(
 ///
 /// Returns an error if curve fitting fails or the plane frame cannot be
 /// built (a zero plane normal).
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::too_many_lines,
-    clippy::unnecessary_wraps
-)]
+#[allow(clippy::too_many_lines, clippy::unnecessary_wraps)]
 pub fn intersect_plane_torus(
     torus: &ToroidalSurface,
     normal: Vec3,
     d: f64,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
-    let n_grid = 128_usize;
-
-    // Signed distance to plane for a torus point.
-    let sdf = |u: f64, v: f64| -> f64 { dot_np(normal, torus.evaluate(u, v)) - d };
-
-    // Collect zero-crossing points by scanning edges of a (u,v) grid.
-    let mut crossing_pts: Vec<(f64, f64, Point3)> = Vec::new();
-
-    let du = TAU / (n_grid as f64);
-    let dv = TAU / (n_grid as f64);
-
-    // Offset grid by half a cell to avoid landing exactly on zero crossings
-    // (e.g. sin(0) = 0.0 exactly in IEEE 754, which defeats sign-change detection).
-    let u_off = du * 0.5;
-    let v_off = dv * 0.5;
-
-    for iu in 0..n_grid {
-        for iv in 0..n_grid {
-            let u0 = (iu as f64).fma(du, u_off);
-            let v0 = (iv as f64).fma(dv, v_off);
-            let u1 = u0 + du;
-            let v1 = v0 + dv;
-
-            let f00 = sdf(u0, v0);
-            let f10 = sdf(u1, v0);
-            let f01 = sdf(u0, v1);
-
-            // Check horizontal edge (u0,v0)-(u1,v0).
-            if f00 * f10 < 0.0 {
-                let t = f00 / (f00 - f10);
-                let u = t.fma(u1 - u0, u0);
-                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u, v0);
-                crossing_pts.push((u_r, v_r, torus.evaluate(u_r, v_r)));
-            }
-
-            // Check vertical edge (u0,v0)-(u0,v1).
-            if f00 * f01 < 0.0 {
-                let t = f00 / (f00 - f01);
-                let v = t.fma(v1 - v0, v0);
-                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u0, v);
-                crossing_pts.push((u_r, v_r, torus.evaluate(u_r, v_r)));
-            }
-        }
-    }
+    let crossing_pts = plane_torus_grid_crossings(torus, normal, d).crossings;
 
     if crossing_pts.is_empty() {
         return Ok(vec![]);
@@ -1412,6 +1365,103 @@ pub fn intersect_plane_torus(
     }
 
     Ok(curves)
+}
+
+/// One end of a cell edge of the plane × torus scan grid, with its trig.
+///
+/// A cell spans `lo ..= lo + step`, and `lo + step` can differ by an ulp from
+/// the next cell's `lo`, so both ends are tabulated: every sample sees
+/// exactly the angle the per-cell scan computed.
+#[derive(Clone, Copy)]
+struct GridNode {
+    angle: f64,
+    sin: f64,
+    cos: f64,
+    /// [`ToroidalSurface::tube_terms`] of the angle taken as `v`.
+    tube: (f64, f64),
+}
+
+/// Newton-refined zero crossings of `normal · P(u, v) − d` on the cell edges
+/// of a 128 × 128 `(u, v)` grid, in scan order (`u`-major, each cell's `u`
+/// edge before its `v` edge).
+struct PlaneTorusGrid {
+    crossings: Vec<(f64, f64, Point3)>,
+    /// `sin_cos` calls made for the grid samples (Newton excluded).
+    #[cfg_attr(not(test), allow(dead_code))]
+    grid_sin_cos: usize,
+}
+
+/// The sampling scan of [`intersect_plane_torus`].
+///
+/// Each sample is `torus.evaluate(u, v)` bit for bit: the trig and
+/// [`ToroidalSurface::tube_terms`] come from one table of cell ends instead
+/// of two `sin_cos` per sample.
+#[allow(clippy::cast_precision_loss)]
+fn plane_torus_grid_crossings(torus: &ToroidalSurface, normal: Vec3, d: f64) -> PlaneTorusGrid {
+    let n_grid = 128_usize;
+    // The grid is square, so one table serves `u` and `v`.
+    let step = TAU / (n_grid as f64);
+    // Offset grid by half a cell to avoid landing exactly on zero crossings
+    // (e.g. sin(0) = 0.0 exactly in IEEE 754, which defeats sign-change detection).
+    let offset = step * 0.5;
+
+    let node = |angle: f64| {
+        let (sin, cos) = angle.sin_cos();
+        GridNode {
+            angle,
+            sin,
+            cos,
+            tube: torus.tube_terms(sin, cos),
+        }
+    };
+    let mut grid_sin_cos = 0;
+    let mut nodes: Vec<(GridNode, GridNode)> = Vec::with_capacity(n_grid);
+    for i in 0..n_grid {
+        let lo = (i as f64).fma(step, offset);
+        nodes.push((node(lo), node(lo + step)));
+        grid_sin_cos += 2;
+    }
+
+    // Signed distance to plane for a torus point.
+    let sdf = |u: &GridNode, v: &GridNode| -> f64 {
+        dot_np(
+            normal,
+            torus.evaluate_tube(v.tube.0, v.tube.1, u.sin, u.cos),
+        ) - d
+    };
+
+    // Collect zero-crossing points by scanning edges of a (u,v) grid.
+    let mut crossings: Vec<(f64, f64, Point3)> = Vec::new();
+    for (u0_node, u1_node) in &nodes {
+        for (v0_node, v1_node) in &nodes {
+            let f00 = sdf(u0_node, v0_node);
+            let f10 = sdf(u1_node, v0_node);
+            let f01 = sdf(u0_node, v1_node);
+            let (u0, u1) = (u0_node.angle, u1_node.angle);
+            let (v0, v1) = (v0_node.angle, v1_node.angle);
+
+            // Check horizontal edge (u0,v0)-(u1,v0).
+            if f00 * f10 < 0.0 {
+                let t = f00 / (f00 - f10);
+                let u = t.fma(u1 - u0, u0);
+                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u, v0);
+                crossings.push((u_r, v_r, torus.evaluate(u_r, v_r)));
+            }
+
+            // Check vertical edge (u0,v0)-(u0,v1).
+            if f00 * f01 < 0.0 {
+                let t = f00 / (f00 - f01);
+                let v = t.fma(v1 - v0, v0);
+                let (u_r, v_r) = newton_refine_torus(torus, normal, d, u0, v);
+                crossings.push((u_r, v_r, torus.evaluate(u_r, v_r)));
+            }
+        }
+    }
+
+    PlaneTorusGrid {
+        crossings,
+        grid_sin_cos,
+    }
 }
 
 /// Newton-refine a torus parameter to lie on the cutting plane.
@@ -4140,6 +4190,9 @@ fn surface_closures<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod plane_torus_oracle_tests;
 
 #[cfg(test)]
 mod quartic_cycle_tests;
