@@ -40,9 +40,10 @@
 //! | `ef_analytic_pairs_gated` | EF analytic gates | pairs a gate proved crossing-free |
 //!
 //! A fourth family, `RayWorkCounts`, counts the planar work of the ray-cast
-//! vote loop (`classifier::ray_cast`, PERF-Q07 subset): votes, polygon tests,
-//! polygon tests the face's bounding box settles outright, exact point-segment
-//! distances and exact winding numbers.
+//! vote loop (`classifier::ray_cast`, PERF-Q07 subset): votes, plane hits,
+//! polygon tests, polygon tests the face's bounding box settles outright,
+//! exact point-segment distances and exact winding numbers, plus the planar
+//! faces and distinct planes of each geometry build.
 //!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
@@ -76,17 +77,20 @@ std::thread_local! {
 
 #[cfg(any(test, feature = "perf-counters"))]
 std::thread_local! {
-    static RAY_WORK: std::cell::Cell<[u64; 5]> = const { std::cell::Cell::new([0; 5]) };
+    static RAY_WORK: std::cell::Cell<[u64; 8]> = const { std::cell::Cell::new([0; 8]) };
 }
 
 /// One unit of the ray-cast vote loop's planar work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RayWork {
     Vote,
+    PlaneEval,
     PolygonTest,
     FaceSkip,
     SegmentEval,
     Winding,
+    PlanarFace,
+    PlaneGroup,
 }
 
 /// Count one unit of ray-cast planar work. Crate-internal.
@@ -108,6 +112,8 @@ pub(crate) fn bump_ray_work(kind: RayWork) {
 pub struct RayWorkCounts {
     /// Three-ray votes (a cardinal or a generic triple).
     pub votes: u64,
+    /// Ray hits on a supporting plane, each shared by every face on it.
+    pub plane_evals: u64,
     /// Face polygons tested against a plane hit ahead of the ray origin.
     pub polygon_tests: u64,
     /// Polygon tests the face's bounding box settled with no segment or
@@ -117,6 +123,10 @@ pub struct RayWorkCounts {
     pub segment_evals: u64,
     /// Exact winding numbers.
     pub windings: u64,
+    /// Planar faces collected into ray-cast geometry.
+    pub planar_faces: u64,
+    /// Distinct supporting planes (exact bits) among those faces.
+    pub plane_groups: u64,
 }
 
 /// This thread's ray-cast vote-loop work since the previous call, resetting
@@ -124,14 +134,25 @@ pub struct RayWorkCounts {
 #[cfg(any(test, feature = "perf-counters"))]
 #[must_use]
 pub fn take_ray_work() -> RayWorkCounts {
-    let [votes, polygon_tests, face_skips, segment_evals, windings] =
-        RAY_WORK.with(|work| work.replace([0; 5]));
-    RayWorkCounts {
+    let [
         votes,
+        plane_evals,
         polygon_tests,
         face_skips,
         segment_evals,
         windings,
+        planar_faces,
+        plane_groups,
+    ] = RAY_WORK.with(|work| work.replace([0; 8]));
+    RayWorkCounts {
+        votes,
+        plane_evals,
+        polygon_tests,
+        face_skips,
+        segment_evals,
+        windings,
+        planar_faces,
+        plane_groups,
     }
 }
 

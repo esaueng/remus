@@ -284,6 +284,11 @@ impl PlanarFace {
         }
     }
 
+    /// The `RAYTRACE` label of the face.
+    fn kind(&self) -> String {
+        format!("Planar({})", self.loops.outer.pts.len())
+    }
+
     /// Crossing count and graze flag of a ray whose plane hit `hit` (with
     /// projection `p`) lies ahead of its origin: hits inside a hole do not
     /// count, and a hit within `near` of any boundary segment grazes.
@@ -317,6 +322,132 @@ impl PlanarFace {
 fn winds(p: Point2, flat: &[Point2]) -> bool {
     crate::perf::bump_ray_work(RayWork::Winding);
     point_in_polygon(p, flat)
+}
+
+/// The cardinal ray directions (`RAY_DIRS[..3]`), then the generic ones a
+/// vote re-casts with (`RAY_DIRS[3..]`, see `votes_from_geoms`): normalized
+/// √-prime component vectors that never run parallel to an axis-aligned
+/// plane.
+const RAY_DIRS: [Vec3; 6] = [
+    Vec3::new(0.0, 0.0, 1.0),
+    Vec3::new(1.0, 0.0, 0.0),
+    Vec3::new(0.0, 1.0, 0.0),
+    Vec3::new(
+        0.447_213_595_499_957_9,
+        0.547_722_557_505_166_1,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+    Vec3::new(-0.5, 0.763_762_615_825_973_4, 0.408_248_290_463_863),
+    Vec3::new(
+        0.597_614_304_667_196_8,
+        -0.377_964_473_009_227_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+];
+
+/// Planar faces that share one supporting plane, bit for bit.
+///
+/// A ray's plane hit (`plane_hit`) reads only the ray and the plane
+/// `(normal, d)`, so every face of a group gets the same one: it is computed
+/// once per group and ray, and a ray parallel to the plane or meeting it
+/// behind its origin skips the group's faces outright.
+struct PlaneGroup {
+    normal: Vec3,
+    d: f64,
+    /// Projection plane of the faces' polygons, chosen from `normal`.
+    axis: Axis,
+    /// `normal · RAY_DIRS[k]`, the plane-hit denominator of each ray.
+    denoms: [f64; 6],
+    faces: Vec<PlanarFace>,
+}
+
+/// A solid's ray-cast geometry: its planar faces grouped by supporting plane,
+/// and every other face.
+struct FaceGeoms {
+    /// Groups in the order their first face was collected; faces keep their
+    /// collection order within a group.
+    planes: Vec<PlaneGroup>,
+    others: Vec<FaceGeom>,
+}
+
+impl FaceGeoms {
+    /// Group the planar faces of `geoms` by the exact bits of their plane
+    /// `(normal, d)`. Planes equal only up to rounding, or up to the sign of
+    /// a zero, stay apart: their hits may differ.
+    fn new(geoms: Vec<FaceGeom>) -> Self {
+        let mut planes: Vec<PlaneGroup> = Vec::new();
+        let mut others = Vec::new();
+        let mut index: std::collections::BTreeMap<[u64; 4], usize> =
+            std::collections::BTreeMap::new();
+        for geom in geoms {
+            let FaceGeom::Planar {
+                normal,
+                d,
+                axis,
+                face,
+            } = geom
+            else {
+                others.push(geom);
+                continue;
+            };
+            crate::perf::bump_ray_work(RayWork::PlanarFace);
+            let key = [
+                normal.x().to_bits(),
+                normal.y().to_bits(),
+                normal.z().to_bits(),
+                d.to_bits(),
+            ];
+            let slot = *index.entry(key).or_insert_with(|| {
+                crate::perf::bump_ray_work(RayWork::PlaneGroup);
+                planes.push(PlaneGroup {
+                    normal,
+                    d,
+                    axis,
+                    denoms: RAY_DIRS.map(|dir| normal.dot(dir)),
+                    faces: Vec::new(),
+                });
+                planes.len() - 1
+            });
+            planes[slot].faces.push(face);
+        }
+        Self { planes, others }
+    }
+
+    /// Number of faces.
+    fn len(&self) -> usize {
+        self.planes.iter().map(|g| g.faces.len()).sum::<usize>() + self.others.len()
+    }
+}
+
+/// Where a ray meets a face's supporting plane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PlaneHit {
+    /// The ray runs parallel to the plane; `true` when its origin lies in it
+    /// (within the grazing distance), which makes the ray's parity unreliable.
+    Parallel(bool),
+    /// The plane lies behind the origin, or within `tol.linear` ahead of it.
+    Behind,
+    /// The plane is hit ahead of the origin, at this point.
+    Ahead(Point3),
+}
+
+/// The hit of the ray `origin + t·ray_dir` on the plane `normal · x = d`,
+/// given `denom = normal · ray_dir` and `numer = d − normal · origin`.
+fn plane_hit(origin: Point3, ray_dir: Vec3, denom: f64, numer: f64, tol: Tolerance) -> PlaneHit {
+    crate::perf::bump_ray_work(RayWork::PlaneEval);
+    let near = 10.0 * tol.linear;
+    if denom.abs() < tol.angular {
+        return PlaneHit::Parallel(numer.abs() <= near);
+    }
+    let t = numer / denom;
+    if t <= tol.linear {
+        return PlaneHit::Behind;
+    }
+    PlaneHit::Ahead(Point3::new(
+        origin.x() + ray_dir.x() * t,
+        origin.y() + ray_dir.y() * t,
+        origin.z() + ray_dir.z() * t,
+    ))
 }
 
 /// Classify a point by ray casting against the solid's faces.
@@ -384,7 +515,7 @@ pub fn ray_cast_inside_votes_with_tolerance(
     point: Point3,
     tolerance: Tolerance,
 ) -> Result<u8, AlgoError> {
-    let face_data = collect_face_geoms(topo, solid)?;
+    let face_data = FaceGeoms::new(collect_face_geoms(topo, solid)?);
     votes_from_geoms(&face_data, point, tolerance)
 }
 
@@ -397,7 +528,7 @@ pub fn ray_cast_inside_votes_with_tolerance(
 /// against the opposing solid — rebuilding it per point is O(faces) × O(points).
 /// Building it once turns that into a single O(faces) pass.
 pub struct RayCastGeoms {
-    faces: Vec<FaceGeom>,
+    faces: FaceGeoms,
 }
 
 impl RayCastGeoms {
@@ -408,7 +539,7 @@ impl RayCastGeoms {
     /// Returns [`AlgoError`] if a topology lookup fails.
     pub fn new(topo: &Topology, solid: SolidId) -> Result<Self, AlgoError> {
         Ok(Self {
-            faces: collect_face_geoms(topo, solid)?,
+            faces: FaceGeoms::new(collect_face_geoms(topo, solid)?),
         })
     }
 }
@@ -490,23 +621,15 @@ fn ray_trace_target() -> Option<(Point3, f64)> {
 /// Count the inside votes (of three rays) for a point against pre-collected
 /// face geometry: cardinal rays first, re-cast with fixed generic directions
 /// only when every cardinal ray grazed degenerate structure.
-fn votes_from_geoms(
-    face_data: &[FaceGeom],
-    point: Point3,
-    tol: Tolerance,
-) -> Result<u8, AlgoError> {
-    if face_data.is_empty() {
+fn votes_from_geoms(face_data: &FaceGeoms, point: Point3, tol: Tolerance) -> Result<u8, AlgoError> {
+    let faces = face_data.len();
+    if faces == 0 {
         return Err(AlgoError::ClassificationFailed(
             "no face polygons collected for ray-cast".into(),
         ));
     }
 
-    let cardinal_dirs = [
-        Vec3::new(0.0, 0.0, 1.0),
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-    ];
-    // Escalation directions (normalized √-prime component vectors). CAD models
+    // Escalation directions (`RAY_DIRS[3..]`). CAD models
     // are dominated by axis-aligned feature planes, and a sample point lying ON
     // such a plane sends a cardinal ray along every edge, seam, and tangency in
     // that plane — the crossing parity of that ray is meaningless (a
@@ -518,19 +641,6 @@ fn votes_from_geoms(
     // fixed generic directions that never run parallel to axis-aligned planes.
     // Any clean cardinal ray keeps the historical verdict, deterministically
     // (coincident-contact landscapes are calibrated against those results).
-    let generic_dirs = [
-        Vec3::new(
-            0.447_213_595_499_957_9,
-            0.547_722_557_505_166_1,
-            std::f64::consts::FRAC_1_SQRT_2,
-        ),
-        Vec3::new(-0.5, 0.763_762_615_825_973_4, 0.408_248_290_463_863),
-        Vec3::new(
-            0.597_614_304_667_196_8,
-            -0.377_964_473_009_227_2,
-            std::f64::consts::FRAC_1_SQRT_2,
-        ),
-    ];
 
     // `BK_RAY_POINT=x,y,z[,radius]`: dump this vote when the classified point is
     // near the given one. The verdict alone cannot say WHY a point classified
@@ -539,52 +649,9 @@ fn votes_from_geoms(
     // fires when ALL THREE cardinal rays are suspicious.
     let traced = ray_trace_target().is_some_and(|(t, r)| (point - t).length() <= r);
 
-    let vote = |dirs: &[Vec3; 3], label: &str| -> [(bool, bool); 3] {
-        crate::perf::bump_ray_work(RayWork::Vote);
-        let mut rays = [(false, false); 3];
-        for (i, ray_dir) in dirs.iter().enumerate() {
-            let mut crossings = 0i32;
-            let mut suspicious = false;
-            for geom in face_data {
-                let (c, s) = ray_geom_crossings(point, *ray_dir, geom, tol);
-                if traced {
-                    let kind = match geom {
-                        FaceGeom::Planar { face, .. } => {
-                            format!("Planar({})", face.loops.outer.pts.len())
-                        }
-                        FaceGeom::Cylinder { v_min, v_max, .. } => {
-                            format!("Cylinder(v {v_min:.2}..{v_max:.2})")
-                        }
-                        FaceGeom::Cone { .. } => "Cone".into(),
-                        FaceGeom::Torus { .. } => "Torus".into(),
-                        FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
-                    };
-                    log::debug!(
-                        "RAYTRACE   {label} dir=({:.1},{:.1},{:.1}) geom={kind} c={c} s={s}",
-                        ray_dir.x(),
-                        ray_dir.y(),
-                        ray_dir.z()
-                    );
-                }
-                crossings += c;
-                suspicious |= s;
-            }
-            rays[i] = (crossings % 2 != 0, suspicious);
-            if traced {
-                log::debug!(
-                    "RAYTRACE {label} dir=({:.3},{:.3},{:.3}) crossings={crossings} parity={} suspicious={suspicious}",
-                    ray_dir.x(),
-                    ray_dir.y(),
-                    ray_dir.z(),
-                    crossings % 2
-                );
-            }
-        }
-        rays
-    };
     let count_inside = |rays: &[(bool, bool); 3]| rays.iter().filter(|r| r.0).count() as u8;
 
-    let rays = vote(&cardinal_dirs, "cardinal");
+    let rays = cast_rays(face_data, point, 0, tol, traced);
     let cardinal = count_inside(&rays);
     let suspicious = rays.iter().filter(|r| r.1).count() as u8;
     // Clean/suspicious conflict: a clean ray's parity is trustworthy while a
@@ -615,11 +682,11 @@ fn votes_from_geoms(
             point.x(),
             point.y(),
             point.z(),
-            face_data.len(),
+            faces,
         );
     }
     if clean_vs_suspicious_conflict {
-        let generic = vote(&generic_dirs, "generic");
+        let generic = cast_rays(face_data, point, 3, tol, traced);
         let inside = count_inside(&generic);
         if std::env::var("BK_CONFLICT").is_ok() {
             log::debug!(
@@ -643,8 +710,103 @@ fn votes_from_geoms(
     // when both instruments graze degenerate structure there is no cleaner
     // signal left, and the generic directions are still the less-aligned,
     // better-conditioned of the two.
-    let generic = vote(&generic_dirs, "generic");
+    let generic = cast_rays(face_data, point, 3, tol, traced);
     Ok(count_inside(&generic))
+}
+
+/// Crossing parity and suspicion of the three rays `RAY_DIRS[base..base + 3]`
+/// from `point`, one vote. With `traced`, logs every face's contribution.
+fn cast_rays(
+    face_data: &FaceGeoms,
+    point: Point3,
+    base: usize,
+    tol: Tolerance,
+    traced: bool,
+) -> [(bool, bool); 3] {
+    crate::perf::bump_ray_work(RayWork::Vote);
+    let label = if base == 0 { "cardinal" } else { "generic" };
+    let near = 10.0 * tol.linear;
+    let mut crossings = [0i32; 3];
+    let mut suspicious = [false; 3];
+    for group in &face_data.planes {
+        let numer = group.d - dot_normal_point(group.normal, point);
+        for i in 0..3 {
+            let ray_dir = RAY_DIRS[base + i];
+            match plane_hit(point, ray_dir, group.denoms[base + i], numer, tol) {
+                PlaneHit::Ahead(hit) => {
+                    let p = group.axis.project(hit);
+                    for face in &group.faces {
+                        let (c, s) = face.polygon_hit(hit, p, near);
+                        crossings[i] += c;
+                        suspicious[i] |= s;
+                        if traced {
+                            trace_face(label, ray_dir, &face.kind(), (c, s));
+                        }
+                    }
+                }
+                // Every face of the group misses alike, so the group adds
+                // what one face adds (a group is never empty).
+                miss => {
+                    let s = miss == PlaneHit::Parallel(true);
+                    suspicious[i] |= s;
+                    if traced {
+                        for face in &group.faces {
+                            trace_face(label, ray_dir, &face.kind(), (0, s));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for geom in &face_data.others {
+        for i in 0..3 {
+            let ray_dir = RAY_DIRS[base + i];
+            let (c, s) = ray_geom_crossings(point, ray_dir, geom, tol);
+            crossings[i] += c;
+            suspicious[i] |= s;
+            if traced {
+                trace_face(label, ray_dir, &geom_kind(geom), (c, s));
+            }
+        }
+    }
+    let mut rays = [(false, false); 3];
+    for (i, ray) in rays.iter_mut().enumerate() {
+        *ray = (crossings[i] % 2 != 0, suspicious[i]);
+        if traced {
+            let ray_dir = RAY_DIRS[base + i];
+            log::debug!(
+                "RAYTRACE {label} dir=({:.3},{:.3},{:.3}) crossings={} parity={} suspicious={}",
+                ray_dir.x(),
+                ray_dir.y(),
+                ray_dir.z(),
+                crossings[i],
+                crossings[i] % 2,
+                suspicious[i]
+            );
+        }
+    }
+    rays
+}
+
+/// Log one face's contribution to a traced ray.
+fn trace_face(label: &str, ray_dir: Vec3, kind: &str, (c, s): (i32, bool)) {
+    log::debug!(
+        "RAYTRACE   {label} dir=({:.1},{:.1},{:.1}) geom={kind} c={c} s={s}",
+        ray_dir.x(),
+        ray_dir.y(),
+        ray_dir.z()
+    );
+}
+
+/// The `RAYTRACE` label of a face geometry.
+fn geom_kind(geom: &FaceGeom) -> String {
+    match geom {
+        FaceGeom::Planar { face, .. } => face.kind(),
+        FaceGeom::Cylinder { v_min, v_max, .. } => format!("Cylinder(v {v_min:.2}..{v_max:.2})"),
+        FaceGeom::Cone { .. } => "Cone".into(),
+        FaceGeom::Torus { .. } => "Torus".into(),
+        FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
+    }
 }
 
 /// Distance from a point to the closed polyline through `verts`.
@@ -1293,26 +1455,14 @@ fn ray_face_crossing(
     d: f64,
     tol: Tolerance,
 ) -> (i32, bool) {
-    let near = 10.0 * tol.linear;
-    let denom = normal.dot(ray_dir);
-    if denom.abs() < tol.angular {
-        // Ray parallel to the plane. If the origin also LIES in the plane the
-        // ray travels inside the face's plane — edges and seams there make its
-        // parity unreliable.
-        let numer = d - dot_normal_point(normal, origin);
-        return (0, numer.abs() <= near);
-    }
     let numer = d - dot_normal_point(normal, origin);
-    let t = numer / denom;
-    if t <= tol.linear {
-        return (0, false);
+    match plane_hit(origin, ray_dir, normal.dot(ray_dir), numer, tol) {
+        // A ray parallel to the plane and starting IN it travels inside the
+        // face's plane — edges and seams there make its parity unreliable.
+        PlaneHit::Parallel(in_plane) => (0, in_plane),
+        PlaneHit::Behind => (0, false),
+        PlaneHit::Ahead(hit) => face.polygon_hit(hit, axis.project(hit), 10.0 * tol.linear),
     }
-    let hit = Point3::new(
-        origin.x() + ray_dir.x() * t,
-        origin.y() + ray_dir.y() * t,
-        origin.z() + ray_dir.z() * t,
-    );
-    face.polygon_hit(hit, axis.project(hit), near)
 }
 
 /// Count ray crossings with a bounded full-period cylindrical face.

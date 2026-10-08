@@ -1,12 +1,14 @@
-//! Oracles for the ray-cast polygon gate.
+//! Oracles for the ray-cast vote loop's exact work reductions: the polygon
+//! gate and the plane groups.
 //!
-//! The gate skips segment-distance and winding-number work it can prove
-//! changes no result, so a broken gate shows up either as a different answer
-//! or as different work. The closed-form tests therefore pin the answer and
-//! the work counts ([`crate::perf::take_ray_work`]) on hand-placed hits, each
-//! threshold bracketed by a hit exactly at it and one an ulp beyond. The
-//! differential tests compare every answer with a verbatim copy of the
-//! classifier from before the gate.
+//! Both skip work they can prove changes no result (segment distances and
+//! windings; repeated plane hits), so a broken reduction shows up either as a
+//! different answer or as different work. The closed-form tests therefore pin
+//! the answer and the work counts ([`crate::perf::take_ray_work`]) on
+//! hand-placed hits, each gate threshold bracketed by a hit exactly at it and
+//! one an ulp beyond. The differential tests compare every answer with a
+//! verbatim copy of the classifier from before both, run on the same
+//! collected faces before grouping.
 
 #![allow(
     clippy::unwrap_used,
@@ -114,6 +116,66 @@ fn crossing_reference(
     }
 }
 
+/// The cardinal ray directions before the shared `RAY_DIRS`.
+const CARDINAL_DIRS: [Vec3; 3] = [
+    Vec3::new(0.0, 0.0, 1.0),
+    Vec3::new(1.0, 0.0, 0.0),
+    Vec3::new(0.0, 1.0, 0.0),
+];
+
+/// The generic ray directions before the shared `RAY_DIRS`.
+const GENERIC_DIRS: [Vec3; 3] = [
+    Vec3::new(
+        0.447_213_595_499_957_9,
+        0.547_722_557_505_166_1,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+    Vec3::new(-0.5, 0.763_762_615_825_973_4, 0.408_248_290_463_863),
+    Vec3::new(
+        0.597_614_304_667_196_8,
+        -0.377_964_473_009_227_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ),
+];
+
+/// The `vote` closure of `votes_from_geoms` before the gate, verbatim but
+/// for the trace output: every face, ray by ray.
+fn rays_reference(
+    face_data: &[FaceGeom],
+    point: Point3,
+    dirs: &[Vec3; 3],
+    tol: Tolerance,
+) -> [(bool, bool); 3] {
+    let mut rays = [(false, false); 3];
+    for (i, ray_dir) in dirs.iter().enumerate() {
+        let mut crossings = 0i32;
+        let mut suspicious = false;
+        for geom in face_data {
+            let (c, s) = crossing_reference(point, *ray_dir, geom, tol);
+            crossings += c;
+            suspicious |= s;
+        }
+        rays[i] = (crossings % 2 != 0, suspicious);
+    }
+    rays
+}
+
+/// Whether the reference vote below re-casts with the generic rays after
+/// these cardinal `rays`: on a clean/suspicious conflict, or when every
+/// cardinal ray is suspicious.
+fn recasts(rays: [(bool, bool); 3]) -> bool {
+    let suspicious = rays.iter().filter(|r| r.1).count();
+    let clean_verdicts: Vec<bool> = rays.iter().filter(|r| !r.1).map(|r| r.0).collect();
+    let conflict = suspicious > 0
+        && !clean_verdicts.is_empty()
+        && clean_verdicts.iter().all(|&v| v == clean_verdicts[0])
+        && rays
+            .iter()
+            .filter(|r| r.1)
+            .all(|r| r.0 != clean_verdicts[0]);
+    conflict || suspicious == 3
+}
+
 /// `votes_from_geoms` before the gate, verbatim but for the trace output.
 fn votes_reference(face_data: &[FaceGeom], point: Point3, tol: Tolerance) -> Result<u8, AlgoError> {
     if face_data.is_empty() {
@@ -121,38 +183,9 @@ fn votes_reference(face_data: &[FaceGeom], point: Point3, tol: Tolerance) -> Res
             "no face polygons collected for ray-cast".into(),
         ));
     }
-    let cardinal_dirs = [
-        Vec3::new(0.0, 0.0, 1.0),
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-    ];
-    let generic_dirs = [
-        Vec3::new(
-            0.447_213_595_499_957_9,
-            0.547_722_557_505_166_1,
-            std::f64::consts::FRAC_1_SQRT_2,
-        ),
-        Vec3::new(-0.5, 0.763_762_615_825_973_4, 0.408_248_290_463_863),
-        Vec3::new(
-            0.597_614_304_667_196_8,
-            -0.377_964_473_009_227_2,
-            std::f64::consts::FRAC_1_SQRT_2,
-        ),
-    ];
-    let vote = |dirs: &[Vec3; 3]| -> [(bool, bool); 3] {
-        let mut rays = [(false, false); 3];
-        for (i, ray_dir) in dirs.iter().enumerate() {
-            let mut crossings = 0i32;
-            let mut suspicious = false;
-            for geom in face_data {
-                let (c, s) = crossing_reference(point, *ray_dir, geom, tol);
-                crossings += c;
-                suspicious |= s;
-            }
-            rays[i] = (crossings % 2 != 0, suspicious);
-        }
-        rays
-    };
+    let cardinal_dirs = CARDINAL_DIRS;
+    let generic_dirs = GENERIC_DIRS;
+    let vote = |dirs: &[Vec3; 3]| rays_reference(face_data, point, dirs, tol);
     let count_inside = |rays: &[(bool, bool); 3]| rays.iter().filter(|r| r.0).count() as u8;
     let rays = vote(&cardinal_dirs);
     let cardinal = count_inside(&rays);
@@ -902,19 +935,32 @@ fn probe_points(topo: &Topology, solid: SolidId, count: u64) -> Vec<Point3> {
     pts
 }
 
-/// Votes and every face's crossing for all six ray directions equal the
-/// reference's at every probe point.
-fn assert_votes_match(topo: &Topology, solid: SolidId, count: u64) {
-    let geoms = collect_face_geoms(topo, solid).unwrap();
+/// Votes, both ray triples' parity and suspicion, and every face's crossing
+/// for all six ray directions equal the reference's at every probe point.
+/// The reference runs on the collected faces, the vote on them grouped.
+/// Returns how many probes re-cast with the generic rays.
+fn assert_votes_match(topo: &Topology, solid: SolidId, count: u64) -> usize {
+    let flat = collect_face_geoms(topo, solid).unwrap();
+    let grouped = FaceGeoms::new(collect_face_geoms(topo, solid).unwrap());
+    assert_eq!(grouped.len(), flat.len());
     let tol = Tolerance::default();
+    let mut recast = 0;
     for point in probe_points(topo, solid, count) {
         assert_eq!(
-            votes_from_geoms(&geoms, point, tol).unwrap(),
-            votes_reference(&geoms, point, tol).unwrap(),
+            votes_from_geoms(&grouped, point, tol).unwrap(),
+            votes_reference(&flat, point, tol).unwrap(),
             "votes at {point:?}"
         );
+        let cardinal = rays_reference(&flat, point, &CARDINAL_DIRS, tol);
+        assert_eq!(cast_rays(&grouped, point, 0, tol, false), cardinal);
+        assert_eq!(
+            cast_rays(&grouped, point, 3, tol, false),
+            rays_reference(&flat, point, &GENERIC_DIRS, tol),
+            "generic rays at {point:?}"
+        );
+        recast += usize::from(recasts(cardinal));
         for dir in ray_dirs() {
-            for geom in &geoms {
+            for geom in &flat {
                 assert_eq!(
                     ray_geom_crossings(point, dir, geom, tol),
                     crossing_reference(point, dir, geom, tol),
@@ -923,6 +969,7 @@ fn assert_votes_match(topo: &Topology, solid: SolidId, count: u64) {
             }
         }
     }
+    recast
 }
 
 fn boxes(topo: &mut Topology, specs: &[([f64; 3], [f64; 3])]) -> Vec<SolidId> {
@@ -956,9 +1003,13 @@ fn votes_match_the_reference_on_a_cut_strut_lattice() {
     }
     let struts = boxes(&mut topo, &specs);
     let lattice = crate::gfa::fuse_n(&mut topo, &struts).unwrap();
-    assert_votes_match(&topo, lattice, 300);
+    let a = assert_votes_match(&topo, lattice, 300);
     let cut = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Cut, slab, lattice).unwrap();
-    assert_votes_match(&topo, cut, 300);
+    let b = assert_votes_match(&topo, cut, 300);
+    // Votes re-cast with the generic rays here, so the generic directions'
+    // shared plane denominators decide votes (both triples are also compared
+    // ray by ray at every probe).
+    assert!(a + b > 0, "no probe re-cast with the generic rays");
 }
 
 #[test]
@@ -1018,8 +1069,13 @@ fn a_vote_on_a_box_field_measures_few_segments() {
     }
     let field = boxes(&mut topo, &specs);
     let field = merged(&mut topo, &field);
-    let geoms = collect_face_geoms(&topo, field).unwrap();
     let _ = crate::perf::take_ray_work();
+    let geoms = FaceGeoms::new(collect_face_geoms(&topo, field).unwrap());
+    let build = crate::perf::take_ray_work();
+    // 96 faces on 18 planes: the bottoms (normal −z, d = +0) and the tops
+    // (+z, d = 10) are one plane each, and each of the 4 wall positions per
+    // side of x and y is its own.
+    assert_eq!((build.planar_faces, build.plane_groups), (96, 18));
     let mut votes = 0;
     for i in 1..=64 {
         let p = p3(
@@ -1032,11 +1088,18 @@ fn a_vote_on_a_box_field_measures_few_segments() {
     }
     let crate::perf::RayWorkCounts {
         votes: vote,
+        plane_evals,
         polygon_tests: polygons,
         face_skips: skips,
         segment_evals: segments,
         windings,
+        ..
     } = crate::perf::take_ray_work();
+    assert_eq!(
+        plane_evals,
+        3 * 18 * vote,
+        "one plane hit per plane and ray"
+    );
     assert!(
         vote >= votes,
         "{vote} votes counted for {votes} classifications"
@@ -1054,4 +1117,197 @@ fn a_vote_on_a_box_field_measures_few_segments() {
         "{segments} segment distances over {vote} votes"
     );
     assert!(windings <= polygons - skips, "{windings} windings");
+}
+
+// ---------------------------------------------------------------------------
+// Plane groups.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ray_dirs_are_the_historic_directions() {
+    let bits = |v: Vec3| [v.x().to_bits(), v.y().to_bits(), v.z().to_bits()];
+    for k in 0..3 {
+        assert_eq!(bits(RAY_DIRS[k]), bits(CARDINAL_DIRS[k]), "cardinal {k}");
+        assert_eq!(bits(RAY_DIRS[3 + k]), bits(GENERIC_DIRS[k]), "generic {k}");
+    }
+}
+
+/// Faces share a group only when their `(normal, d)` bits are identical: a
+/// last-ulp difference in `d` or a differently signed zero keeps planes
+/// apart. Groups keep first-seen order, faces their collection order, and
+/// rebuilding gives the same grouping.
+#[test]
+fn plane_groups_share_exact_plane_bits_only() {
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let down = Vec3::new(0.0, 0.0, -1.0);
+    let down_signed = Vec3::new(-0.0, -0.0, -1.0);
+    let tilted = Vec3::new(0.6, 0.0, 0.8);
+    // Each face is tagged by its first vertex's x.
+    let face = |tag: f64, normal: Vec3, d: f64| {
+        FaceGeom::planar(
+            loop_at_z0(&rect(tag, 0.0, tag + 0.5, 1.0)),
+            Vec::new(),
+            normal,
+            d,
+        )
+    };
+    let cylinder = || {
+        let mut topo = Topology::default();
+        let solid = super::tests::make_seamed_cylinder(&mut topo, 0.25);
+        collect_face_geoms(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|g| matches!(g, FaceGeom::Cylinder { .. }))
+            .unwrap()
+    };
+    let build = || {
+        FaceGeoms::new(vec![
+            face(0.0, up, 0.0),
+            face(1.0, down, 0.0),
+            face(2.0, down_signed, 0.0),
+            face(3.0, up, 0.0),
+            face(4.0, up, -0.0),
+            cylinder(),
+            face(5.0, tilted, 1.0),
+            face(6.0, tilted, 1.0_f64.next_up()),
+            face(7.0, down_signed, 0.0),
+            face(8.0, tilted, 1.0),
+        ])
+    };
+    let _ = crate::perf::take_ray_work();
+    let geoms = build();
+    let work = crate::perf::take_ray_work();
+    assert_eq!((work.planar_faces, work.plane_groups), (9, 6));
+    let tags = |g: &FaceGeoms| -> Vec<Vec<f64>> {
+        g.planes
+            .iter()
+            .map(|p| p.faces.iter().map(|f| f.loops.outer.pts[0].x()).collect())
+            .collect()
+    };
+    let want: Vec<Vec<f64>> = vec![
+        vec![0.0, 3.0],
+        vec![1.0],
+        vec![2.0, 7.0],
+        vec![4.0],
+        vec![5.0, 8.0],
+        vec![6.0],
+    ];
+    assert_eq!(tags(&geoms), want);
+    assert_eq!(tags(&build()), want);
+    assert_eq!(geoms.others.len(), 1);
+    assert_eq!(geoms.len(), 10);
+    for group in &geoms.planes {
+        assert_eq!(group.axis, Axis::of(group.normal));
+        for (k, dir) in RAY_DIRS.iter().enumerate() {
+            assert_eq!(group.denoms[k].to_bits(), group.normal.dot(*dir).to_bits());
+        }
+    }
+    assert_eq!(geoms.planes[3].d.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(geoms.planes[5].d, 1.0_f64.next_up());
+}
+
+/// A group's shared plane hit gives each face exactly what the face's own
+/// test gives, for hits ahead, behind, parallel off the plane and parallel in
+/// it, along every ray direction; and a vote costs one plane hit per group
+/// and ray however many faces share the plane.
+#[test]
+fn shared_plane_hits_match_each_face_alone() {
+    let tilted = Vec3::new(0.6, 0.0, 0.8);
+    let flat_faces = || {
+        let mut out = Vec::new();
+        for k in 0..4 {
+            let x = 3.0 * f64::from(k);
+            out.push(flat_face(&rect(x, 0.0, x + 2.0, 2.0), &[]));
+            out.push(flat_face(
+                &rect(x, 4.0, x + 2.0, 6.0),
+                &[rect(x + 0.5, 4.5, x + 1.5, 5.5)],
+            ));
+            let verts = vec![
+                p3(x, 0.0, 0.0),
+                p3(x + 0.8, 0.0, -0.6),
+                p3(x + 0.8, 1.0, -0.6),
+                p3(x, 1.0, 0.0),
+            ];
+            out.push(FaceGeom::planar(verts, Vec::new(), tilted, 0.0));
+        }
+        out
+    };
+    let grouped = FaceGeoms::new(flat_faces());
+    assert_eq!(grouped.planes.len(), 2);
+    let flat = flat_faces();
+    let tol = Tolerance::default();
+    let mut points = Vec::new();
+    for i in 1..=200 {
+        let x = 14.0 * halton(i, 2) - 1.0;
+        let y = 8.0 * halton(i, 3) - 1.0;
+        for z in [-1.0, 0.0, 1e-7, 1.0] {
+            points.push(p3(x, y, z));
+        }
+    }
+    // On a rim, in the plane of the faces.
+    points.extend([p3(1.0, 0.0, 0.0), p3(3.0, 4.5, 0.0), p3(0.0, 0.0, 0.0)]);
+    for point in points {
+        let _ = crate::perf::take_ray_work();
+        for (base, dirs) in [(0, CARDINAL_DIRS), (3, GENERIC_DIRS)] {
+            assert_eq!(
+                cast_rays(&grouped, point, base, tol, false),
+                rays_reference(&flat, point, &dirs, tol),
+                "rays {base} at {point:?}"
+            );
+        }
+        let work = crate::perf::take_ray_work();
+        assert_eq!((work.votes, work.plane_evals), (2, 2 * 3 * 2));
+        assert_eq!(
+            votes_from_geoms(&grouped, point, tol).unwrap(),
+            votes_reference(&flat, point, tol).unwrap(),
+            "votes at {point:?}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_solid_still_fails_the_vote() {
+    let empty = FaceGeoms::new(Vec::new());
+    assert_eq!(empty.len(), 0);
+    assert!(votes_from_geoms(&empty, p3(0.0, 0.0, 0.0), Tolerance::default()).is_err());
+}
+
+/// Each plane-hit threshold, bracketed: a ray parallel to the plane (|denom|
+/// below `tol.angular`) flags its origin in the plane up to exactly `near`;
+/// otherwise the plane counts only beyond `t = tol.linear`.
+#[test]
+fn plane_hit_brackets_its_thresholds() {
+    let near = 2f64.powi(-20);
+    let tol = tol_with_near(near);
+    let (o, up) = (p3(1.0, 2.0, 3.0), Vec3::new(0.0, 0.0, 1.0));
+    assert_eq!(plane_hit(o, up, 0.0, near, tol), PlaneHit::Parallel(true));
+    assert_eq!(plane_hit(o, up, 0.0, -near, tol), PlaneHit::Parallel(true));
+    assert_eq!(
+        plane_hit(o, up, 0.0, near.next_up(), tol),
+        PlaneHit::Parallel(false)
+    );
+    let angular = tol.angular;
+    assert_eq!(
+        plane_hit(o, up, angular.next_down(), 0.0, tol),
+        PlaneHit::Parallel(true)
+    );
+    assert_eq!(
+        plane_hit(o, up, -angular.next_down(), 1.0, tol),
+        PlaneHit::Parallel(false)
+    );
+    assert_eq!(
+        plane_hit(o, up, angular, angular * 4.0, tol),
+        PlaneHit::Ahead(p3(1.0, 2.0, 7.0))
+    );
+    assert_eq!(plane_hit(o, up, 1.0, tol.linear, tol), PlaneHit::Behind);
+    assert_eq!(plane_hit(o, up, -2.0, 4.0, tol), PlaneHit::Behind);
+    let t = tol.linear.next_up();
+    assert_eq!(
+        plane_hit(o, up, 1.0, t, tol),
+        PlaneHit::Ahead(p3(1.0, 2.0, 3.0 + t))
+    );
+    assert_eq!(
+        plane_hit(o, Vec3::new(1.0, -2.0, 0.5), -2.0, -4.0, tol),
+        PlaneHit::Ahead(p3(3.0, -2.0, 4.0))
+    );
 }

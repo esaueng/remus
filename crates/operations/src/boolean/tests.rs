@@ -10465,11 +10465,13 @@ fn raycast_vote_workloads_keep_their_fingerprints() {
     assert_eq!(got.as_slice(), expected.as_slice());
 }
 
-/// Complexity guard for the ray-cast polygon gate (PERF-Q07 subset): a vote
+/// Complexity guard for the ray-cast vote loop (PERF-Q07 subset). A vote
 /// measures a point-segment distance only for segments its plane hits come
-/// within the graze margin of. Before the gate every hit measured every edge
-/// of the face (and its holes), about 1,100 distances per vote on the 91-box
-/// honeycomb and 770 on the strut lattice. Runs only with
+/// within the graze margin of: before the polygon gate every hit measured
+/// every edge of the face (and its holes), about 1,100 distances per vote on
+/// the 91-box honeycomb and 770 on the strut lattice. And faces on one plane
+/// share each ray's plane hit, so these axis-aligned results have far fewer
+/// distinct planes than planar faces. Runs only with
 /// `--features perf-counters`.
 #[cfg(feature = "perf-counters")]
 #[test]
@@ -10479,11 +10481,24 @@ fn scaling_raycast_votes_measure_few_segments() {
         run();
         let w = remus_algo::perf::take_ray_work();
         eprintln!(
-            "{name}: {} votes, {} polygon tests ({} settled by the face box), \
-             {} segment distances, {} windings",
-            w.votes, w.polygon_tests, w.face_skips, w.segment_evals, w.windings,
+            "{name}: {} votes, {} plane hits, {} polygon tests ({} settled by the \
+             face box), {} segment distances, {} windings; {} planar faces on {} planes",
+            w.votes,
+            w.plane_evals,
+            w.polygon_tests,
+            w.face_skips,
+            w.segment_evals,
+            w.windings,
+            w.planar_faces,
+            w.plane_groups,
         );
         assert!(w.votes > 0, "{name} cast no ray-cast votes");
+        assert!(
+            2 * w.plane_groups <= w.planar_faces,
+            "{name}: {} planar faces on {} planes",
+            w.planar_faces,
+            w.plane_groups,
+        );
         assert!(
             w.segment_evals <= 50 * w.votes,
             "{name}: {} segment distances over {} votes",
