@@ -36,7 +36,7 @@ use remus_math::aabb::Aabb2;
 use remus_math::curves::Circle3D;
 use remus_math::curves2d::{Circle2D, Curve2D, Ellipse2D, Line2D, NurbsCurve2D};
 use remus_math::frame::Frame3;
-use remus_math::predicates::point_in_polygon;
+use remus_math::predicates::{orient2d, point_in_polygon, winding_number};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_operations::heal::merge_split_rim_arcs;
@@ -3299,6 +3299,8 @@ impl<'a> StepBuilder<'a> {
 
         let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + tol.linear;
         let mut parents = vec![None; loops.len()];
+        let mut parent_indexes: Vec<Option<IndexedBoundPolygon<'_>>> =
+            std::iter::repeat_with(|| None).take(loops.len()).collect();
         let mut containment_work = 0usize;
         for child_index in 0..loops.len() {
             let child = &loops[child_index];
@@ -3311,6 +3313,8 @@ impl<'a> StepBuilder<'a> {
                 if area_gap <= child.perimeter * tol.linear {
                     continue;
                 }
+                // Still charged at the full-scan cost, so the refusal
+                // threshold is unchanged by the winding index.
                 containment_work = containment_work
                     .saturating_add(parent.polygon.len().saturating_mul(child.polygon.len() + 1));
                 ensure_limit(
@@ -3318,7 +3322,17 @@ impl<'a> StepBuilder<'a> {
                     containment_work,
                     MAX_FACE_BOUND_CONTAINMENT_WORK,
                 )?;
-                if planar_loop_contains(parent, child, margin) {
+                let contains =
+                    planar_loop_contains(parent, &mut parent_indexes[parent_index], child, margin);
+                #[cfg(test)]
+                tests::audit_planar_containment(
+                    contains,
+                    parent,
+                    parent_indexes[parent_index].as_ref(),
+                    child,
+                    margin,
+                );
+                if contains {
                     possible.push(parent_index);
                 }
             }
@@ -3522,7 +3536,12 @@ impl<'a> StepBuilder<'a> {
                     containment_work,
                     MAX_FACE_BOUND_CONTAINMENT_WORK,
                 )?;
-                if periodic_loop_contains(parent, child, margin, u_period, v_period) {
+                let contains = periodic_loop_contains(parent, child, margin, u_period, v_period);
+                #[cfg(test)]
+                tests::audit_periodic_containment(
+                    contains, parent, child, margin, u_period, v_period,
+                );
+                if contains {
                     possible.push(parent_index);
                 }
             }
@@ -7569,12 +7588,185 @@ fn point_segment_distance_2d(point: Point2, start: Point2, end: Point2) -> f64 {
     (point - (start + segment * parameter)).length()
 }
 
-fn point_in_or_on_polygon(point: Point2, polygon: &[Point2], margin: f64) -> bool {
-    point_in_polygon(point, polygon)
-        || polygon
+/// Upper bound on [`EdgeYIndex`] buckets.
+const MAX_EDGE_Y_BUCKETS: usize = 4096;
+
+/// A face-bound polygon prepared for repeated winding-number queries.
+///
+/// Containment tests every child vertex against the whole parent loop, so a
+/// full scan costs `parent × child` edge visits. An edge contributes to
+/// [`remus_math::predicates::winding_number`] only when
+/// `min(y_i, y_j) <= p.y < max(y_i, y_j)`, so visiting just the edges an
+/// [`EdgeYIndex`] files under `p.y`, with the same per-edge test, sums exactly
+/// the contributions the full scan sums.
+struct IndexedBoundPolygon<'a> {
+    polygon: &'a [Point2],
+    index: Option<EdgeYIndex>,
+}
+
+impl<'a> IndexedBoundPolygon<'a> {
+    fn new(polygon: &'a [Point2]) -> Self {
+        Self {
+            polygon,
+            index: EdgeYIndex::build(polygon),
+        }
+    }
+
+    /// [`remus_math::predicates::winding_number`] of `point`.
+    fn winding_number(&self, point: Point2) -> i32 {
+        let Some(index) = &self.index else {
+            return winding_number(point, self.polygon);
+        };
+        let n = self.polygon.len();
+        let mut wn = 0i32;
+        for &edge in index.candidates(point.y()) {
+            let i = edge as usize;
+            let j = (i + 1) % n;
+            let vi = self.polygon[i];
+            let vj = self.polygon[j];
+
+            if vi.y() <= point.y() {
+                if vj.y() > point.y() && orient2d(vi, vj, point) > 0.0 {
+                    wn += 1;
+                }
+            } else if vj.y() <= point.y() && orient2d(vi, vj, point) < 0.0 {
+                wn -= 1;
+            }
+        }
+        wn
+    }
+
+    #[cfg(test)]
+    const fn is_indexed(&self) -> bool {
+        self.index.is_some()
+    }
+
+    #[cfg(test)]
+    fn candidate_count(&self, y: f64) -> Option<usize> {
+        self.index.as_ref().map(|index| index.candidates(y).len())
+    }
+}
+
+/// Polygon edges `i -> (i + 1) % n` filed, in ascending order, under every
+/// bucket their closed `y` interval overlaps.
+///
+/// The bucket map is monotone in `y`, so `lo <= y <= hi` implies
+/// `bucket(lo) <= bucket(y) <= bucket(hi)`, and an edge whose interval holds
+/// `y` is always among `y`'s candidates. A NaN lands in bucket 0 and an
+/// infinity in an end bucket, where the exact per-edge test rejects every
+/// candidate as the full scan rejects every edge.
+struct EdgeYIndex {
+    origin: f64,
+    inv_width: f64,
+    last_bucket: usize,
+    /// Bucket `b` holds `edges[offsets[b]..offsets[b + 1]]`.
+    offsets: Vec<u32>,
+    edges: Vec<u32>,
+}
+
+impl EdgeYIndex {
+    /// Returns `None`, and the caller scans every edge, for fewer than three
+    /// vertices, a non-finite or zero-height loop, or more than
+    /// `8n + buckets` filed entries: a comb of tall edges on an
+    /// attacker-sized loop must not allocate `n × buckets` entries.
+    fn build(polygon: &[Point2]) -> Option<Self> {
+        let n = polygon.len();
+        if n < 3 {
+            return None;
+        }
+        let mut origin = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        for point in polygon {
+            if !point.y().is_finite() {
+                return None;
+            }
+            origin = origin.min(point.y());
+            end = end.max(point.y());
+        }
+        let bucket_count = n.min(MAX_EDGE_Y_BUCKETS);
+        #[allow(clippy::cast_precision_loss)]
+        let width = (end - origin) / bucket_count as f64;
+        let inv_width = width.recip();
+        if !width.is_finite() || width <= 0.0 || !inv_width.is_finite() {
+            return None;
+        }
+        let mut index = Self {
+            origin,
+            inv_width,
+            last_bucket: bucket_count - 1,
+            offsets: Vec::new(),
+            edges: Vec::new(),
+        };
+
+        // Count first, so an over-cap loop is declined before it allocates
+        // its entries.
+        let cap = n.saturating_mul(8).saturating_add(bucket_count);
+        let mut counts = vec![0usize; bucket_count];
+        let mut total = 0usize;
+        for edge in 0..n {
+            let (first, last) = index.edge_buckets(polygon, edge);
+            total = total.saturating_add(last - first + 1);
+            if total > cap {
+                return None;
+            }
+            for count in &mut counts[first..=last] {
+                *count += 1;
+            }
+        }
+
+        let mut offsets = Vec::with_capacity(bucket_count + 1);
+        let mut cursors = Vec::with_capacity(bucket_count);
+        let mut offset = 0usize;
+        offsets.push(0);
+        for count in counts {
+            cursors.push(offset);
+            offset += count;
+            offsets.push(u32::try_from(offset).ok()?);
+        }
+        let mut edges = vec![0u32; total];
+        for edge in 0..n {
+            let (first, last) = index.edge_buckets(polygon, edge);
+            let filed = u32::try_from(edge).ok()?;
+            for cursor in &mut cursors[first..=last] {
+                edges[*cursor] = filed;
+                *cursor += 1;
+            }
+        }
+        index.offsets = offsets;
+        index.edges = edges;
+        Some(index)
+    }
+
+    fn edge_buckets(&self, polygon: &[Point2], edge: usize) -> (usize, usize) {
+        let a = polygon[edge].y();
+        let b = polygon[(edge + 1) % polygon.len()].y();
+        (self.bucket(a.min(b)), self.bucket(a.max(b)))
+    }
+
+    fn bucket(&self, y: f64) -> usize {
+        let position = ((y - self.origin) * self.inv_width).floor();
+        if position >= 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let position = position as usize;
+            position.min(self.last_bucket)
+        } else {
+            0
+        }
+    }
+
+    fn candidates(&self, y: f64) -> &[u32] {
+        let bucket = self.bucket(y);
+        &self.edges[self.offsets[bucket] as usize..self.offsets[bucket + 1] as usize]
+    }
+}
+
+fn point_in_or_on_polygon(point: Point2, polygon: &IndexedBoundPolygon<'_>, margin: f64) -> bool {
+    let vertices = polygon.polygon;
+    polygon.winding_number(point) != 0
+        || vertices
             .iter()
-            .zip(polygon.iter().cycle().skip(1))
-            .take(polygon.len())
+            .zip(vertices.iter().cycle().skip(1))
+            .take(vertices.len())
             .any(|(&start, &end)| point_segment_distance_2d(point, start, end) <= margin)
 }
 
@@ -7585,13 +7777,24 @@ fn bounds_contain(outer: Aabb2, inner: Aabb2, margin: f64) -> bool {
         && outer.max.y() + margin >= inner.max.y()
 }
 
-fn planar_loop_contains(parent: &FaceBoundLoop, child: &FaceBoundLoop, margin: f64) -> bool {
-    bounds_contain(parent.bounds, child.bounds, margin)
-        && point_in_or_on_polygon(child.probe, &parent.polygon, margin)
+/// `parent_index` caches `parent`'s winding index across the children it is
+/// tested against; it is built only once a child passes the bounds gate.
+fn planar_loop_contains<'a>(
+    parent: &'a FaceBoundLoop,
+    parent_index: &mut Option<IndexedBoundPolygon<'a>>,
+    child: &FaceBoundLoop,
+    margin: f64,
+) -> bool {
+    if !bounds_contain(parent.bounds, child.bounds, margin) {
+        return false;
+    }
+    let parent_polygon =
+        parent_index.get_or_insert_with(|| IndexedBoundPolygon::new(&parent.polygon));
+    point_in_or_on_polygon(child.probe, parent_polygon, margin)
         && child
             .polygon
             .iter()
-            .all(|&point| point_in_or_on_polygon(point, &parent.polygon, margin))
+            .all(|&point| point_in_or_on_polygon(point, parent_polygon, margin))
 }
 
 fn translated_point(point: Point2, dx: f64, dy: f64) -> Point2 {
@@ -7673,6 +7876,9 @@ fn periodic_loop_contains(
         max: translated_point(parent.bounds.max, parent_u_shift, parent_v_shift),
     };
     let mut successful_lifts = 0usize;
+    // Indexed over the translated parent, built once the first lift passes
+    // the bounds gate; queries stay the translated child points.
+    let mut indexed_parent = None;
 
     for &child_u_shift in &child_u_shifts {
         for &child_v_shift in &child_v_shifts {
@@ -7683,14 +7889,16 @@ fn periodic_loop_contains(
             if !bounds_contain(parent_bounds, child_bounds, margin) {
                 continue;
             }
+            let indexed_parent =
+                indexed_parent.get_or_insert_with(|| IndexedBoundPolygon::new(&parent_polygon));
             let probe = translated_point(child.probe, child_u_shift, child_v_shift);
-            if !point_in_or_on_polygon(probe, &parent_polygon, margin) {
+            if !point_in_or_on_polygon(probe, indexed_parent, margin) {
                 continue;
             }
             let all_inside = child.polygon.iter().all(|&point| {
                 point_in_or_on_polygon(
                     translated_point(point, child_u_shift, child_v_shift),
-                    &parent_polygon,
+                    indexed_parent,
                     margin,
                 )
             });
@@ -17170,6 +17378,446 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let weights = extract_rational_curve_weights(attrs, 3, 1).unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights[1] - 0.707).abs() < 1e-10);
+    }
+
+    // ── Face-bound containment winding index ───────────────────────────
+
+    #[derive(Debug, Clone, Copy)]
+    struct ContainmentAudit {
+        compared: usize,
+        disagreed: usize,
+        contained: usize,
+        /// Planar pairs past the bounds gate, the only ones that query the
+        /// parent's winding index.
+        queried: usize,
+        indexed: usize,
+    }
+
+    const EMPTY_AUDIT: ContainmentAudit = ContainmentAudit {
+        compared: 0,
+        disagreed: 0,
+        contained: 0,
+        queried: 0,
+        indexed: 0,
+    };
+
+    thread_local! {
+        /// Every containment pair the generic bound resolvers decide on this
+        /// thread, re-decided by the full-scan oracle below.
+        static PLANAR_CONTAINMENT_AUDIT: Cell<ContainmentAudit> = const { Cell::new(EMPTY_AUDIT) };
+        static PERIODIC_CONTAINMENT_AUDIT: Cell<ContainmentAudit> =
+            const { Cell::new(EMPTY_AUDIT) };
+    }
+
+    fn record_containment(
+        audit: &'static std::thread::LocalKey<Cell<ContainmentAudit>>,
+        contains: bool,
+        full_scan: bool,
+        queried_index: Option<bool>,
+    ) {
+        let mut tally = audit.get();
+        tally.compared += 1;
+        tally.disagreed += usize::from(contains != full_scan);
+        tally.contained += usize::from(contains);
+        tally.queried += usize::from(queried_index.is_some());
+        tally.indexed += usize::from(queried_index == Some(true));
+        audit.set(tally);
+    }
+
+    pub(super) fn audit_planar_containment(
+        contains: bool,
+        parent: &FaceBoundLoop,
+        parent_index: Option<&IndexedBoundPolygon<'_>>,
+        child: &FaceBoundLoop,
+        margin: f64,
+    ) {
+        let full_scan = planar_loop_contains_full_scan(parent, child, margin);
+        let queried_index = bounds_contain(parent.bounds, child.bounds, margin)
+            .then(|| parent_index.is_some_and(IndexedBoundPolygon::is_indexed));
+        record_containment(
+            &PLANAR_CONTAINMENT_AUDIT,
+            contains,
+            full_scan,
+            queried_index,
+        );
+    }
+
+    pub(super) fn audit_periodic_containment(
+        contains: bool,
+        parent: &FaceBoundLoop,
+        child: &FaceBoundLoop,
+        margin: f64,
+        u_period: Option<f64>,
+        v_period: Option<f64>,
+    ) {
+        let full_scan = periodic_loop_contains_full_scan(parent, child, margin, u_period, v_period);
+        record_containment(&PERIODIC_CONTAINMENT_AUDIT, contains, full_scan, None);
+    }
+
+    /// The containment predicates as they were before [`EdgeYIndex`], with
+    /// every query scanning every parent edge: the oracle for the indexed
+    /// ones.
+    fn point_in_or_on_polygon_full_scan(point: Point2, polygon: &[Point2], margin: f64) -> bool {
+        point_in_polygon(point, polygon)
+            || polygon
+                .iter()
+                .zip(polygon.iter().cycle().skip(1))
+                .take(polygon.len())
+                .any(|(&start, &end)| point_segment_distance_2d(point, start, end) <= margin)
+    }
+
+    fn planar_loop_contains_full_scan(
+        parent: &FaceBoundLoop,
+        child: &FaceBoundLoop,
+        margin: f64,
+    ) -> bool {
+        bounds_contain(parent.bounds, child.bounds, margin)
+            && point_in_or_on_polygon_full_scan(child.probe, &parent.polygon, margin)
+            && child
+                .polygon
+                .iter()
+                .all(|&point| point_in_or_on_polygon_full_scan(point, &parent.polygon, margin))
+    }
+
+    fn periodic_loop_contains_full_scan(
+        parent: &FaceBoundLoop,
+        child: &FaceBoundLoop,
+        margin: f64,
+        u_period: Option<f64>,
+        v_period: Option<f64>,
+    ) -> bool {
+        let (parent_u_shift, child_u_shifts) = periodic_axis_alignment(
+            parent.bounds.min.x(),
+            parent.bounds.max.x(),
+            parent.seam_flexible_u,
+            child.bounds.min.x(),
+            child.bounds.max.x(),
+            u_period,
+            margin,
+        );
+        let (parent_v_shift, child_v_shifts) = periodic_axis_alignment(
+            parent.bounds.min.y(),
+            parent.bounds.max.y(),
+            parent.seam_flexible_v,
+            child.bounds.min.y(),
+            child.bounds.max.y(),
+            v_period,
+            margin,
+        );
+        let parent_polygon: Vec<Point2> = parent
+            .polygon
+            .iter()
+            .map(|&point| translated_point(point, parent_u_shift, parent_v_shift))
+            .collect();
+        let parent_bounds = Aabb2 {
+            min: translated_point(parent.bounds.min, parent_u_shift, parent_v_shift),
+            max: translated_point(parent.bounds.max, parent_u_shift, parent_v_shift),
+        };
+        let mut successful_lifts = 0usize;
+        for &child_u_shift in &child_u_shifts {
+            for &child_v_shift in &child_v_shifts {
+                let child_bounds = Aabb2 {
+                    min: translated_point(child.bounds.min, child_u_shift, child_v_shift),
+                    max: translated_point(child.bounds.max, child_u_shift, child_v_shift),
+                };
+                if !bounds_contain(parent_bounds, child_bounds, margin) {
+                    continue;
+                }
+                let probe = translated_point(child.probe, child_u_shift, child_v_shift);
+                if !point_in_or_on_polygon_full_scan(probe, &parent_polygon, margin) {
+                    continue;
+                }
+                let all_inside = child.polygon.iter().all(|&point| {
+                    point_in_or_on_polygon_full_scan(
+                        translated_point(point, child_u_shift, child_v_shift),
+                        &parent_polygon,
+                        margin,
+                    )
+                });
+                if all_inside {
+                    successful_lifts += 1;
+                }
+            }
+        }
+        successful_lifts == 1
+    }
+
+    /// Deterministic low-discrepancy sample in `[0, 1)`.
+    fn halton(mut index: u32, base: u32) -> f64 {
+        let (mut f, mut r) = (1.0_f64, 0.0_f64);
+        while index > 0 {
+            f /= f64::from(base);
+            r += f * f64::from(index % base);
+            index /= base;
+        }
+        r
+    }
+
+    /// A spiky non-convex star with a vertical and a horizontal run. Its
+    /// edges span so many buckets that the index declines it past `n = 17`.
+    #[allow(clippy::cast_precision_loss)]
+    fn star_polygon(n: usize) -> Vec<Point2> {
+        let mut points: Vec<Point2> = (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / n as f64;
+                let r = if k % 2 == 0 { 1.0 } else { 0.45 };
+                Point2::new(r * t.cos(), r * t.sin())
+            })
+            .collect();
+        points.extend([
+            Point2::new(1.2, 0.0),
+            Point2::new(1.2, 0.3),
+            Point2::new(0.9, 0.3),
+        ]);
+        points
+    }
+
+    /// A smooth non-convex loop with a vertical and a horizontal run, sparse
+    /// enough to be indexed at every `n`.
+    #[allow(clippy::cast_precision_loss)]
+    fn wavy_polygon(n: usize) -> Vec<Point2> {
+        let mut points: Vec<Point2> = (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / n as f64;
+                let r = 0.25f64.mul_add((5.0 * t).sin(), 1.0);
+                Point2::new(r * t.cos(), r * t.sin())
+            })
+            .collect();
+        points.extend([
+            Point2::new(1.4, 0.0),
+            Point2::new(1.4, 0.3),
+            Point2::new(1.1, 0.3),
+        ]);
+        points
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn circle_polygon(n: usize, radius: f64) -> Vec<Point2> {
+        (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / n as f64;
+                Point2::new(radius * t.cos(), radius * t.sin())
+            })
+            .collect()
+    }
+
+    /// 64 vertices spanning `y` in `[0, 64]`, so 64 buckets of width 1:
+    /// `teeth` full-height teeth, one bump of integer height `bump`, and a
+    /// baseline. The index files `126 * teeth + 2 * bump + 64` entries,
+    /// against a cap of `8 * 64 + 64 = 576`.
+    fn comb_polygon(teeth: usize, bump: f64) -> Vec<Point2> {
+        let mut points = vec![Point2::new(0.0, 0.0)];
+        let mut x = 0.0;
+        for _ in 0..teeth {
+            points.push(Point2::new(x + 0.5, 64.0));
+            points.push(Point2::new(x + 1.0, 0.0));
+            x += 1.0;
+        }
+        points.push(Point2::new(x + 0.5, bump));
+        points.push(Point2::new(x + 1.0, 0.0));
+        while points.len() < 64 {
+            x += 1.0;
+            points.push(Point2::new(x + 1.0, 0.0));
+        }
+        points
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn assert_indexed_winding_matches_full_scan(polygon: &[Point2], label: &str) {
+        let indexed = IndexedBoundPolygon::new(polygon);
+        let mut probes: Vec<Point2> = polygon.to_vec();
+        let mut mid_x = 0.0;
+        if let Some(bounds) = Aabb2::try_from_points(polygon.iter().copied()) {
+            let (min, max) = (bounds.min, bounds.max);
+            let (dx, dy) = (max.x() - min.x(), max.y() - min.y());
+            mid_x = 0.5 * (min.x() + max.x());
+            probes.extend((1..=1_500).map(|i| {
+                Point2::new(
+                    (1.2 * dx).mul_add(halton(i, 2), min.x() - 0.1 * dx),
+                    (1.2 * dy).mul_add(halton(i, 3), min.y() - 0.1 * dy),
+                )
+            }));
+            let buckets = polygon.len().min(MAX_EDGE_Y_BUCKETS);
+            let width = dy / buckets as f64;
+            for k in 0..=buckets {
+                let y = width.mul_add(k as f64, min.y());
+                for y in [y.next_down(), y, y.next_up()] {
+                    probes.push(Point2::new(mid_x, y));
+                    probes.push(Point2::new(min.x() + 0.25 * dx, y));
+                }
+            }
+        }
+        probes.extend(polygon.iter().map(|point| Point2::new(mid_x, point.y())));
+        for y in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            -1e300,
+            -0.0,
+            0.0,
+        ] {
+            probes.push(Point2::new(mid_x, y));
+        }
+        probes.push(Point2::new(f64::NAN, 0.0));
+        for probe in probes {
+            assert_eq!(
+                indexed.winding_number(probe),
+                winding_number(probe, polygon),
+                "{label}: probe {probe:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_bound_winding_matches_full_scan() {
+        let mut polygons: Vec<(String, Vec<Point2>)> = Vec::new();
+        for n in [3, 4, 17, 64, 301, 1288] {
+            polygons.push((format!("star {n}"), star_polygon(n)));
+            polygons.push((format!("wavy {n}"), wavy_polygon(n)));
+        }
+        polygons.push(("circle 512".into(), circle_polygon(512, 4.5)));
+        polygons.push(("circle 1288".into(), circle_polygon(1288, 14.0)));
+        polygons.push((
+            "translated wavy".into(),
+            wavy_polygon(301)
+                .into_iter()
+                .map(|point| Point2::new(point.x() + 1e6, point.y() + 1e6))
+                .collect(),
+        ));
+        polygons.push((
+            "scaled wavy".into(),
+            wavy_polygon(301)
+                .into_iter()
+                .map(|point| Point2::new(point.x() * 1e-3, point.y() * 1e-3))
+                .collect(),
+        ));
+        let mut repeated = wavy_polygon(64);
+        repeated.insert(10, repeated[10]);
+        repeated.insert(30, repeated[30]);
+        repeated.push(repeated[0]);
+        polygons.push(("repeated vertices".into(), repeated));
+        polygons.push(("comb at cap".into(), comb_polygon(4, 4.0)));
+        polygons.push(("comb over cap".into(), comb_polygon(4, 5.0)));
+        polygons.push(("tall comb".into(), comb_polygon(20, 1.0)));
+        let mut indexed = 0;
+        for (label, polygon) in &polygons {
+            assert_indexed_winding_matches_full_scan(polygon, label);
+            indexed += usize::from(IndexedBoundPolygon::new(polygon).is_indexed());
+        }
+        // Every wavy, circle, translated, scaled and repeated loop, the comb
+        // at the cap, and the stars small enough to stay under it.
+        assert!(indexed >= 14, "{indexed} of {} indexed", polygons.len());
+    }
+
+    #[test]
+    fn edge_y_index_is_built_for_sampled_loops_and_stays_sparse() {
+        for polygon in [
+            wavy_polygon(301),
+            wavy_polygon(1288),
+            circle_polygon(512, 4.5),
+            circle_polygon(1288, 14.0),
+        ] {
+            assert!(IndexedBoundPolygon::new(&polygon).is_indexed());
+        }
+        let circle = circle_polygon(1288, 14.0);
+        let indexed = IndexedBoundPolygon::new(&circle);
+        let (mut total, mut most) = (0usize, 0usize);
+        for i in 1..=2_000 {
+            let candidates = indexed
+                .candidate_count(28.0_f64.mul_add(halton(i, 2), -14.0))
+                .unwrap();
+            total += candidates;
+            most = most.max(candidates);
+        }
+        assert!(most < circle.len() / 16, "most candidates {most}");
+        assert!(total < 2_000 * 8, "mean candidates {}", total / 2_000);
+    }
+
+    #[test]
+    fn edge_y_index_declines_degenerate_non_finite_and_over_cap_loops() {
+        let declined = |polygon: &[Point2]| !IndexedBoundPolygon::new(polygon).is_indexed();
+        assert!(declined(&[]));
+        assert!(declined(&[Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)]));
+        let flat = [
+            Point2::new(0.0, 2.0),
+            Point2::new(1.0, 2.0),
+            Point2::new(3.0, 2.0),
+        ];
+        assert!(declined(&flat));
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut polygon = star_polygon(17);
+            polygon[5] = Point2::new(0.3, bad);
+            assert!(declined(&polygon));
+            assert_indexed_winding_matches_full_scan(&polygon, "non-finite y");
+        }
+        let overflowing = [
+            Point2::new(0.0, -1e308),
+            Point2::new(1.0, 1e308),
+            Point2::new(2.0, 0.0),
+        ];
+        assert!(declined(&overflowing));
+        let subnormal = [
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 1e-320),
+            Point2::new(2.0, 0.0),
+        ];
+        assert!(declined(&subnormal));
+
+        // Exactly `8n + buckets` entries is indexed; the next reachable count
+        // (a closed loop files `n` plus an even number) is declined.
+        assert!(IndexedBoundPolygon::new(&comb_polygon(4, 4.0)).is_indexed());
+        assert!(declined(&comb_polygon(4, 5.0)));
+        assert!(declined(&comb_polygon(20, 1.0)));
+    }
+
+    #[test]
+    fn indexed_planar_containment_matches_full_scan_on_hammer_holder() {
+        // All six multi-bound faces of this Shapr3D export are PLANE faces
+        // with generic FACE_BOUNDs only, 20 bounds in all.
+        let data = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/shapr3d_hammer_holder.step"
+        ))
+        .unwrap();
+        PLANAR_CONTAINMENT_AUDIT.set(EMPTY_AUDIT);
+        let mut topo = Topology::new();
+        assert_eq!(read_step(&data, &mut topo).unwrap().len(), 1);
+        let audit = PLANAR_CONTAINMENT_AUDIT.get();
+        assert_eq!(audit.disagreed, 0, "{audit:?}");
+        assert!(audit.contained >= 14, "{audit:?}");
+        assert!(audit.queried >= audit.contained, "{audit:?}");
+        assert_eq!(audit.indexed, audit.queried, "{audit:?}");
+    }
+
+    #[test]
+    fn indexed_periodic_containment_matches_full_scan_on_generic_cylinder() {
+        use remus_math::mat::Mat4;
+        use remus_operations::boolean::{BooleanOp, boolean};
+        use remus_operations::primitives::make_cylinder;
+        use remus_operations::transform::transform_solid;
+
+        let mut source = Topology::new();
+        let shaft = make_cylinder(&mut source, 3.0, 30.0).unwrap();
+        let bore = make_cylinder(&mut source, 2.0, 42.0).unwrap();
+        transform_solid(
+            &mut source,
+            bore,
+            &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+        )
+        .unwrap();
+        transform_solid(&mut source, bore, &Mat4::translation(-21.0, 0.0, 15.0)).unwrap();
+        let drilled = boolean(&mut source, BooleanOp::Cut, shaft, bore).unwrap();
+        let step = writer::write_step(&source, &[drilled])
+            .unwrap()
+            .replace("FACE_OUTER_BOUND", "FACE_BOUND");
+
+        PERIODIC_CONTAINMENT_AUDIT.set(EMPTY_AUDIT);
+        let mut topo = Topology::new();
+        assert_eq!(read_step(&step, &mut topo).unwrap().len(), 1);
+        let audit = PERIODIC_CONTAINMENT_AUDIT.get();
+        assert_eq!(audit.disagreed, 0, "{audit:?}");
+        assert!(audit.contained >= 2, "{audit:?}");
     }
 }
 
