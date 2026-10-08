@@ -1,0 +1,72 @@
+faces=14
+face=48 kind=plane order=1 area_only=1650.9026644707658 area=1650.9026644707658 volume=0.0 digest=ab58a4d0277c4c0a
+face=48 kind=plane order=5 area_only=1650.9026644707658 area=1650.9026644707658 volume=0.0 digest=ab58a4d0277c4c0a
+face=48 kind=plane order=8 area_only=1650.9026644707658 area=1650.9026644707658 volume=0.0 digest=ab58a4d0277c4c0a
+face=48 kind=plane options=default area=1650.9026644707658 volume=0.0 digest=ab58a4d0277c4c0a
+face=48 kind=plane options=refined area=1650.9026644707658 volume=0.0 digest=ab58a4d0277c4c0a
+face=49 kind=plane order=1 area_only=195.29999999999984 area=195.29999999999984 volume=0.0 digest=2c12d869c47fa572
+face=49 kind=plane order=5 area_only=195.29999999999984 area=195.29999999999984 volume=0.0 digest=2c12d869c47fa572
+face=49 kind=plane order=8 area_only=195.29999999999984 area=195.29999999999984 volume=0.0 digest=2c12d869c47fa572
+face=49 kind=plane options=default area=195.29999999999984 volume=0.0 digest=2c12d869c47fa572
+face=49 kind=plane options=refined area=195.29999999999984 volume=0.0 digest=2c12d869c47fa572
+face=50 kind=plane order=1 area_only=195.29999999999984 area=195.29999999999984 volume=0.0 digest=8f806f15743d8b98
+face=50 kind=plane order=5 area_only=195.29999999999984 area=195.29999999999984 volume=0.0 digest=8f806f15743d8b98
+face=50 kind=plane order=8 area_only=195.29999999999984 area=195.29999999999984 volume=0.0 digest=8f806f15743d8b98
+face=50 kind=plane options=default area=195.29999999999984 volume=0.0 digest=8f806f15743d8b98
+face=50 kind=plane options=refined area=195.29999999999984 volume=0.0 digest=8f806f15743d8b98
+face=51 kind=plane order=1 area_only=195.29999999999984 area=195.29999999999984 volume=2734.1999999999975 digest=cb1168d23fd8fd4f
+face=51 kind=plane order=5 area_only=195.29999999999984 area=195.29999999999984 volume=2734.1999999999975 digest=cb1168d23fd8fd4f
+face=51 kind=plane order=8 area_only=195.29999999999984 area=195.29999999999984 volume=2734.1999999999975 digest=cb1168d23fd8fd4f
+face=51 kind=plane options=default area=195.29999999999984 volume=2734.1999999999975 digest=cb1168d23fd8fd4f
+face=51 kind=plane options=refined area=195.29999999999984 volume=2734.1999999999975 digest=cb1168d23fd8fd4f
+face=52 kind=plane order=1 area_only=195.29999999999984 area=195.29999999999984 volume=2734.1999999999975 digest=576243935fe50d8e
+face=52 kind=plane order=5 area_only=195.29999999999984 area=195.29999999999984 volume=2734.1999999999975 digest=576243935fe50d8e
+face=52 kind=plane order=8 area_only=195.29999999999984 area=195.29999999999984 volume=2734.1999999999975 digest=576243935fe50d8e
+face=52 kind=plane options=default area=195.29999999999984 volume=2734.1999999999975 digest=576243935fe50d8e
+face=52 kind=plane options=refined area=195.29999999999984 volume=2734.1999999999975 digest=576243935fe50d8e
+face=53 kind=cylinder order=1 area_only=84.82300164692413 area=84.82300164692413 volume=-84.823001646922 digest=e48c7a85215e4e61
+face=53 kind=cylinder order=5 area_only=84.82300164693744 area=84.82300164693744 volume=-84.82300164692592 digest=a9994612c7bd497c
+face=53 kind=cylinder order=8 area_only=84.82300164690525 area=84.82300164690525 volume=-84.8230016469372 digest=7255d171255848e1
+face=53 kind=cylinder options=default area=84.82300164693744 volume=-84.82300164692592 digest=a9994612c7bd497c
+face=53 kind=cylinder options=refined area=84.82300164692401 volume=-84.82300164692269 digest=63067aaa11cdc511
+face=54 kind=cylinder order=1 area_only=84.82300164692448 area=84.82300164692448 volume=-84.82300164692288 digest=611f253572641d69
+face=54 kind=cylinder order=5 area_only=84.82300164693744 area=84.82300164693744 volume=-84.8230016469353 digest=14f43703ccd32b09
+face=54 kind=cylinder order=8 area_only=84.82300164690531 area=84.82300164690531 volume=-84.82300164692839 digest=5a9368366c3263bf
+face=54 kind=cylinder options=default area=84.82300164693744 volume=-84.8230016469353 digest=14f43703ccd32b09
+face=54 kind=cylinder options=refined area=84.82300164692406 volume=-84.82300164692413 digest=b5cf869fe7fdebbe
+face=55 kind=cylinder order=1 area_only=84.82300164692414 area=84.82300164692414 volume=-84.82300164692455 digest=bf8301e6a9ba504e
+face=55 kind=cylinder order=5 area_only=84.8230016469369 area=84.8230016469369 volume=-84.82300164692684 digest=32d6c81b78d1c474
+face=55 kind=cylinder order=8 area_only=84.8230016469055 area=84.8230016469055 volume=-84.82300164691785 digest=367590afd564790f
+face=55 kind=cylinder options=default area=84.8230016469369 volume=-84.82300164692684 digest=32d6c81b78d1c474
+face=55 kind=cylinder options=refined area=84.82300164692418 volume=-84.8230016469246 digest=f9abd7dc1912ef32
+face=56 kind=cylinder order=1 area_only=84.82300164692442 area=84.82300164692442 volume=-84.82300164692417 digest=f7d4e2d59a56d40a
+face=56 kind=cylinder order=5 area_only=84.8230016469374 area=84.8230016469374 volume=-84.82300164693032 digest=a1e4ae4ab273e049
+face=56 kind=cylinder order=8 area_only=84.82300164690545 area=84.82300164690545 volume=-84.82300164692775 digest=775689cb327047dc
+face=56 kind=cylinder options=default area=84.8230016469374 volume=-84.82300164693032 digest=a1e4ae4ab273e049
+face=56 kind=cylinder options=refined area=84.82300164692415 volume=-84.82300164692407 digest=c275421c9b1a502c
+face=57 kind=plane order=1 area_only=1763.9999999999984 area=1763.9999999999984 volume=2734.1999999999975 digest=1024b5b243adccb9
+face=57 kind=plane order=5 area_only=1763.9999999999984 area=1763.9999999999984 volume=2734.1999999999975 digest=1024b5b243adccb9
+face=57 kind=plane order=8 area_only=1763.9999999999984 area=1763.9999999999984 volume=2734.1999999999975 digest=1024b5b243adccb9
+face=57 kind=plane options=default area=1763.9999999999984 volume=2734.1999999999975 digest=1024b5b243adccb9
+face=57 kind=plane options=refined area=1763.9999999999984 volume=2734.1999999999975 digest=1024b5b243adccb9
+face=58 kind=plane order=1 area_only=28.274333882308188 area=28.274333882308188 volume=-42.41150082346228 digest=73a4ca83e314e41d
+face=58 kind=plane order=5 area_only=28.274333882308188 area=28.274333882308188 volume=-42.41150082346228 digest=73a4ca83e314e41d
+face=58 kind=plane order=8 area_only=28.274333882308188 area=28.274333882308188 volume=-42.41150082346228 digest=73a4ca83e314e41d
+face=58 kind=plane options=default area=28.274333882308188 volume=-42.41150082346228 digest=73a4ca83e314e41d
+face=58 kind=plane options=refined area=28.274333882308188 volume=-42.41150082346228 digest=73a4ca83e314e41d
+face=59 kind=plane order=1 area_only=28.274333882308188 area=28.274333882308188 volume=-42.41150082346228 digest=823b965e5fc1f411
+face=59 kind=plane order=5 area_only=28.274333882308188 area=28.274333882308188 volume=-42.41150082346228 digest=823b965e5fc1f411
+face=59 kind=plane order=8 area_only=28.274333882308188 area=28.274333882308188 volume=-42.41150082346228 digest=823b965e5fc1f411
+face=59 kind=plane options=default area=28.274333882308188 volume=-42.41150082346228 digest=823b965e5fc1f411
+face=59 kind=plane options=refined area=28.274333882308188 volume=-42.41150082346228 digest=823b965e5fc1f411
+face=60 kind=plane order=1 area_only=28.27433388230819 area=28.27433388230819 volume=-42.41150082346228 digest=748a0412b6f6b0df
+face=60 kind=plane order=5 area_only=28.27433388230819 area=28.27433388230819 volume=-42.41150082346228 digest=748a0412b6f6b0df
+face=60 kind=plane order=8 area_only=28.27433388230819 area=28.27433388230819 volume=-42.41150082346228 digest=748a0412b6f6b0df
+face=60 kind=plane options=default area=28.27433388230819 volume=-42.41150082346228 digest=748a0412b6f6b0df
+face=60 kind=plane options=refined area=28.27433388230819 volume=-42.41150082346228 digest=748a0412b6f6b0df
+face=61 kind=plane order=1 area_only=28.27433388230819 area=28.27433388230819 volume=-42.41150082346228 digest=12ed448bbe63c85e
+face=61 kind=plane order=5 area_only=28.27433388230819 area=28.27433388230819 volume=-42.41150082346228 digest=12ed448bbe63c85e
+face=61 kind=plane order=8 area_only=28.27433388230819 area=28.27433388230819 volume=-42.41150082346228 digest=12ed448bbe63c85e
+face=61 kind=plane options=default area=28.27433388230819 volume=-42.41150082346228 digest=12ed448bbe63c85e
+face=61 kind=plane options=refined area=28.27433388230819 volume=-42.41150082346228 digest=12ed448bbe63c85e
+solid volume=7693.661990118454 area=4648.492006587746 measured_volume=7693.661990118454
