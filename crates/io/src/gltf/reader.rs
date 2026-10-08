@@ -139,6 +139,11 @@ pub fn read_glb_with_limits(
     )?;
     let mut decoded_entities = 0usize;
     for prim in &primitives {
+        if prim.invalid_indices {
+            return Err(crate::IoError::ParseError {
+                reason: "GLB indices accessor must be a nonnegative integer".into(),
+            });
+        }
         if prim.mode != Some(4) {
             return Err(crate::IoError::ParseError {
                 reason: "unsupported GLB primitive mode (expected TRIANGLES=4)".into(),
@@ -431,6 +436,7 @@ struct MeshPrimitive {
     position_accessor: Option<usize>,
     normal_accessor: Option<usize>,
     indices_accessor: Option<usize>,
+    invalid_indices: bool,
     // Absent means malformed; glTF's omitted mode defaults to TRIANGLES.
     mode: Option<u64>,
 }
@@ -543,14 +549,17 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
             for prim_obj in split_json_objects(prim_arr_str) {
                 let pos = extract_attribute_accessor(prim_obj, "POSITION");
                 let norm = extract_attribute_accessor(prim_obj, "NORMAL");
-                let idx = extract_int(prim_obj, "indices");
-                let mode = serde_json::from_str::<serde_json::Value>(prim_obj)
-                    .ok()
-                    .and_then(|object| {
-                        object
-                            .get("mode")
-                            .map_or(Some(4), serde_json::Value::as_u64)
-                    });
+                let object = serde_json::from_str::<serde_json::Value>(prim_obj).ok();
+                let index_value = object.as_ref().and_then(|object| object.get("indices"));
+                let idx = index_value
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|index| usize::try_from(index).ok());
+                let invalid_indices = index_value.is_some() && idx.is_none();
+                let mode = object.and_then(|object| {
+                    object
+                        .get("mode")
+                        .map_or(Some(4), serde_json::Value::as_u64)
+                });
 
                 // Only add if at least POSITION is present
                 if pos.is_some() {
@@ -558,6 +567,7 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
                         position_accessor: pos,
                         normal_accessor: norm,
                         indices_accessor: idx,
+                        invalid_indices,
                         mode,
                     });
                 }
@@ -578,6 +588,7 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
                 position_accessor: Some(0),
                 normal_accessor: Some(1),
                 indices_accessor: Some(2),
+                invalid_indices: false,
                 mode: Some(4),
             });
         }
@@ -1469,5 +1480,38 @@ mod tests {
             "accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}]});
         let error = read_glb(&build_glb_bytes(&json.to_string(), &[0; 24])).unwrap_err();
         assert!(error.to_string().contains("multiple of three"), "{error}");
+    }
+
+    #[test]
+    fn malformed_explicit_indices_refuse_before_implicit_index_generation() {
+        let original = shared_accessor_glb(&[1], 0, 5125);
+        let (json, bin) = fixture_parts(&original);
+        for value in [
+            serde_json::json!(-1),
+            serde_json::Value::Null,
+            serde_json::json!("1"),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+        ] {
+            let mut bad = json.clone();
+            bad["meshes"][0]["primitives"][0]["indices"] = value;
+            let error = read_glb(&build_glb_bytes(&bad.to_string(), &bin)).unwrap_err();
+            assert!(
+                matches!(error, crate::IoError::ParseError { .. }),
+                "{error}"
+            );
+            assert!(error.to_string().contains("indices accessor"), "{error}");
+        }
+        let mut unindexed = json;
+        unindexed["meshes"][0]["primitives"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("indices");
+        assert_eq!(
+            read_glb(&build_glb_bytes(&unindexed.to_string(), &bin))
+                .unwrap()
+                .indices,
+            [0, 1, 2]
+        );
     }
 }
