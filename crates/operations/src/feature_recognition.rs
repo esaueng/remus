@@ -164,11 +164,15 @@ pub fn recognize_features(
     solid: SolidId,
     deflection: f64,
 ) -> Result<Vec<Feature>, OperationsError> {
+    let _total = crate::performance::span("recognition.total");
     let face_ids = solid_faces(topo, solid)?;
 
     let mut features = Vec::new();
 
-    let fag = build_face_adjacency_graph(topo, solid, &face_ids, deflection)?;
+    let fag = crate::performance::timed("recognition.graph", || {
+        build_face_adjacency_graph(topo, solid, &face_ids, deflection)
+    })?;
+    let _candidates = crate::performance::span("recognition.candidates");
 
     detect_chamfers_fag(topo, &fag, &mut features)?;
     detect_fillet_like_fag(&fag, &mut features);

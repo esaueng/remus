@@ -1,0 +1,37 @@
+faces=7
+face=9 kind=nurbs order=1 area_only=87.43870844939273 area=87.43870844939273 volume=0.0 digest=c0138cb912736825
+face=9 kind=nurbs order=5 area_only=87.43870844940228 area=87.43870844940228 volume=0.0 digest=c83887d304073572
+face=9 kind=nurbs order=8 area_only=87.43870844940129 area=87.43870844940129 volume=0.0 digest=81d2ab45d2c8fe83
+face=9 kind=nurbs options=default area=87.43870844940228 volume=0.0 digest=c83887d304073572
+face=9 kind=nurbs options=refined area=87.43870844939353 volume=0.0 digest=8a56fdc623f207c6
+face=10 kind=nurbs order=1 area_only=99.99999999999916 area=99.99999999999916 volume=0.0 digest=d72cae94f335e515
+face=10 kind=nurbs order=5 area_only=100.00000000000846 area=100.00000000000846 volume=0.0 digest=4c05c301df8546d3
+face=10 kind=nurbs order=8 area_only=100.00000000002305 area=100.00000000002305 volume=0.0 digest=271c92ffcc47c1e5
+face=10 kind=nurbs options=default area=100.00000000000846 volume=0.0 digest=4c05c301df8546d3
+face=10 kind=nurbs options=refined area=99.99999999999997 volume=0.0 digest=270f74a07997b620
+face=11 kind=nurbs order=1 area_only=99.99999999999925 area=99.99999999999925 volume=0.0 digest=a2eb7817e1ab9191
+face=11 kind=nurbs order=5 area_only=100.00000000000847 area=100.00000000000847 volume=0.0 digest=4b38d02952cfc9a5
+face=11 kind=nurbs order=8 area_only=100.00000000002306 area=100.00000000002306 volume=0.0 digest=8915283e5215a10a
+face=11 kind=nurbs options=default area=100.00000000000847 volume=0.0 digest=4b38d02952cfc9a5
+face=11 kind=nurbs options=refined area=99.99999999999999 volume=0.0 digest=f2b7f783ef3149ce
+face=12 kind=nurbs order=1 area_only=99.99999999999925 area=99.99999999999925 volume=333.3333333333273 digest=a82e56f7710f1287
+face=12 kind=nurbs order=5 area_only=100.00000000000847 area=100.00000000000847 volume=333.33333333332615 digest=3e37a185ec75989b
+face=12 kind=nurbs order=8 area_only=100.00000000002306 area=100.00000000002306 volume=333.33333333332246 digest=83e22f7daa7595f8
+face=12 kind=nurbs options=default area=100.00000000000847 volume=333.33333333332615 digest=3e37a185ec75989b
+face=12 kind=nurbs options=refined area=99.99999999999999 volume=333.33333333333366 digest=b50c4d7a1e93e1f1
+face=13 kind=nurbs order=1 area_only=99.99999999999916 area=99.99999999999916 volume=333.3333333333271 digest=843a9b875127e07b
+face=13 kind=nurbs order=5 area_only=100.00000000000846 area=100.00000000000846 volume=333.33333333332604 digest=c1f94572191c1fe7
+face=13 kind=nurbs order=8 area_only=100.00000000002305 area=100.00000000002305 volume=333.33333333332257 digest=3d312e486e8d9cd5
+face=13 kind=nurbs options=default area=100.00000000000846 volume=333.33333333332604 digest=c1f94572191c1fe7
+face=13 kind=nurbs options=refined area=99.99999999999997 volume=333.33333333333354 digest=4ee74fa11f5e5d80
+face=14 kind=nurbs order=1 area_only=125.09915344416274 area=125.09915344416274 volume=-81.85399628003495 digest=4dd39723794960b3
+face=14 kind=nurbs order=5 area_only=124.77302417665787 area=124.77302417665787 volume=-81.66890476399362 digest=d4614ac8bca611a6
+face=14 kind=nurbs order=8 area_only=124.7710017255257 area=124.7710017255257 volume=-81.65816420473217 digest=d66129370bb0b39b
+face=14 kind=nurbs options=default area=124.77302417665787 volume=-81.66890476399362 digest=d4614ac8bca611a6
+face=14 kind=nurbs options=refined area=124.77180506731965 volume=-81.66205442006088 digest=23a9d094fcf14081
+face=15 kind=nurbs order=1 area_only=87.43870844939241 area=87.43870844939241 volume=291.46236149797613 digest=6418d5c3cc7959f1
+face=15 kind=nurbs order=5 area_only=87.43870844940226 area=87.43870844940226 volume=291.46236149798 digest=650339061ddbad6a
+face=15 kind=nurbs order=8 area_only=87.43870844940128 area=87.43870844940128 volume=291.46236149797676 digest=d43fee969959b062
+face=15 kind=nurbs options=default area=87.43870844940226 volume=291.46236149798 digest=650339061ddbad6a
+face=15 kind=nurbs options=refined area=87.43870844939347 volume=291.4623614979782 digest=d55cb6b51d9f535d
+solid volume=874.9470120468612 area=699.6504410754962 measured_volume=874.3402111286695

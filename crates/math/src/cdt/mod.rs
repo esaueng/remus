@@ -29,6 +29,7 @@
 )]
 
 mod adjacency;
+mod collinear;
 mod constraints;
 mod insert;
 mod locate;
@@ -117,6 +118,9 @@ pub struct Cdt {
     /// Vertex → one incident triangle index for O(1) edge lookups.
     /// Updated on triangle creation/removal.
     vertex_tri: Vec<usize>,
+    /// Coordinate index for [`Cdt::insert_constraint`]'s collinear-vertex
+    /// query, built lazily.
+    collinear_index: collinear::CollinearIndex,
 }
 
 /// Duplicate point detection tolerance.
@@ -182,6 +186,7 @@ impl Cdt {
             dup_grid: std::collections::HashMap::new(),
             last_located: 0,
             vertex_tri,
+            collinear_index: collinear::CollinearIndex::default(),
         }
     }
 
@@ -301,15 +306,10 @@ impl Cdt {
             return Ok(());
         }
 
-        // Scan for existing vertices that lie on the constraint segment.
-        // If found, recursively split the constraint through them so that
+        // Find existing vertices that lie on the constraint segment. If
+        // found, recursively split the constraint through them so that
         // recover_edge never encounters a collinear interior vertex (which
         // causes flip-recovery deadlocks on full-revolution face seams).
-        //
-        // This is an O(V) scan per constraint. For typical tessellation CDTs
-        // (< 10K vertices, < 100 constraints) the cost is negligible. A spatial
-        // index could reduce this to O(k) but dup_grid's 1e-5 cell size makes
-        // AABB iteration pathological for long segments.
         let p0 = self.vertices[v0];
         let p1 = self.vertices[v1];
         let dx = p1.x() - p0.x();
@@ -317,29 +317,9 @@ impl Cdt {
         let seg_len_sq = dx * dx + dy * dy;
 
         if seg_len_sq > 0.0 {
-            let mut collinear: Vec<(f64, usize)> = Vec::new();
-            for vi in self.super_count..self.vertices.len() {
-                if vi == v0 || vi == v1 {
-                    continue;
-                }
-                let px = self.vertices[vi].x() - p0.x();
-                let py = self.vertices[vi].y() - p0.y();
-                let t = (px * dx + py * dy) / seg_len_sq;
-                if t <= 1e-6 || t >= 1.0 - 1e-6 {
-                    continue;
-                }
-                let cross = px * dy - py * dx;
-                let dist_sq = cross * cross / seg_len_sq;
-                // Constraint insertion must not bend a long boundary through
-                // a distinct nearby vertex. Use the same linear resolution as
-                // vertex insertion, independent of the constraint's length.
-                if dist_sq < DUP_TOL * DUP_TOL {
-                    collinear.push((t, vi));
-                }
-            }
+            let mut collinear = self.collinear_vertices(v0, v1, seg_len_sq);
 
             if !collinear.is_empty() {
-                collinear.sort_by(|a, b| a.0.total_cmp(&b.0));
                 collinear.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-8);
                 let mut prev = v0;
                 for &(_, vi) in &collinear {
@@ -449,16 +429,70 @@ impl Cdt {
         seed: Point2,
         constraints: &DetHashSet<(usize, usize)>,
     ) -> bool {
-        // The flood must also respect the CDT's OWN constraints: edge
-        // recovery may have split a caller-known constraint into sub-pairs
-        // (Steiner points), and the caller's set only carries the original
-        // endpoints. Without the union the flood crosses the sub-edges.
-        let barrier: DetHashSet<(usize, usize)> =
-            constraints.union(&self.constraints).copied().collect();
-        let constraints = &barrier;
+        let Some(start) = self.locate_seed(seed) else {
+            return false;
+        };
+        self.flood_from(start, constraints);
+        true
+    }
+
+    /// [`Cdt::flood_remove_from_point`] for each seed in turn, returning
+    /// each seed's result.
+    ///
+    /// The result is the same as those one-seed calls; only the lookups are
+    /// faster. Every seed is first located, before anything is flooded, by a
+    /// walk that accepts only a live triangle strictly containing the seed.
+    /// The one-seed lookup instead runs after the earlier floods, and its
+    /// walk can enter a flooded hole, reset, and retrace its path until its
+    /// step budget runs out and it scans every triangle.
+    ///
+    /// Why the start triangles match: live triangles are counter-clockwise
+    /// with positive area and do not overlap. That invariant comes from the
+    /// triangulation as a whole, not from convexity checks on every flip:
+    /// legalize flips on `fast_in_circle` without one, and that filter's
+    /// error bound is marginally below Shewchuk's proven bound. So a seed
+    /// strictly inside a live triangle `T` lies in the closure of no other
+    /// live triangle. Every way the one-seed lookup can succeed returns a
+    /// live triangle whose closure holds the seed, which must be `T`. Floods
+    /// only mark triangles removed, so `T` is unchanged until it is flooded.
+    /// A seed whose triangle an earlier flood removed, or that sits on an
+    /// edge or vertex, takes the one-seed lookup on the same state.
+    pub fn flood_remove_from_points(
+        &mut self,
+        seeds: &[Point2],
+        constraints: &DetHashSet<(usize, usize)>,
+    ) -> Vec<bool> {
+        // A single seed has no earlier floods to walk into.
+        if seeds.len() < 2 {
+            return seeds
+                .iter()
+                .map(|&seed| self.flood_remove_from_point(seed, constraints))
+                .collect();
+        }
+        let located = self.locate_seeds_strictly_inside(seeds);
+        let mut flooded = Vec::with_capacity(seeds.len());
+        for (&seed, hit) in seeds.iter().zip(located) {
+            let start = match hit {
+                Some(ti) if !self.triangles[ti].removed => Some(ti),
+                _ => self.locate_seed(seed),
+            };
+            if let Some(start) = start {
+                self.flood_from(start, constraints);
+            }
+            flooded.push(start.is_some());
+        }
+        flooded
+    }
+
+    /// The triangle [`Cdt::flood_remove_from_point`] floods from: the one
+    /// `locate_point` finds, else the first live triangle whose closure holds
+    /// `seed`.
+    fn locate_seed(&self, seed: Point2) -> Option<usize> {
+        #[cfg(test)]
+        work::bump(&work::SEED_LOOKUPS);
         // Use the walking point-location search (O(sqrt(n))) instead of
         // linear scan (O(n)) to find the seed triangle.
-        let seed_tri = self.locate_point(seed).ok().map(|(i, _)| i).or_else(|| {
+        self.locate_point(seed).ok().map(|(i, _)| i).or_else(|| {
             // Fallback: linear scan for removed/degenerate cases.
             self.triangles
                 .iter()
@@ -474,12 +508,12 @@ impl Cdt {
                     (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
                 })
                 .map(|(i, _)| i)
-        });
+        })
+    }
 
-        let Some(start) = seed_tri else {
-            return false;
-        };
-
+    /// Mark removed every live triangle reachable from `start` without
+    /// crossing a constraint edge.
+    fn flood_from(&mut self, start: usize, constraints: &DetHashSet<(usize, usize)>) {
         let mut stack = vec![start];
         while let Some(ti) = stack.pop() {
             if self.triangles[ti].removed {
@@ -491,7 +525,12 @@ impl Cdt {
                 let va = self.triangles[ti].v[(local + 1) % 3];
                 let vb = self.triangles[ti].v[(local + 2) % 3];
                 let edge_key = sorted_pair(va, vb);
-                if constraints.contains(&edge_key) {
+                // The flood must also respect the CDT's OWN constraints: edge
+                // recovery may have split a caller-known constraint into
+                // sub-pairs (Steiner points), and the caller's set only
+                // carries the original endpoints. Testing both sets is
+                // testing their union, without building it per seed.
+                if constraints.contains(&edge_key) || self.constraints.contains(&edge_key) {
                     continue;
                 }
                 if let Some(adj) = self.triangles[ti].adj[local]
@@ -501,8 +540,6 @@ impl Cdt {
                 }
             }
         }
-
-        true
     }
 
     /// Partition remaining (non-removed) interior triangles into connected
@@ -764,4 +801,34 @@ fn hilbert_xy_to_d(n: u32, mut x: u32, mut y: u32) -> u64 {
         s /= 2;
     }
     d
+}
+
+/// Test-only work counters, per thread, for the complexity guards in
+/// `tests/`, and a switch that forces the collinear index on or off.
+#[cfg(test)]
+mod work {
+    use std::cell::Cell;
+    use std::thread::LocalKey;
+
+    thread_local! {
+        /// Vertices the collinear-vertex query visits.
+        pub(super) static COLLINEAR_VISITS: Cell<usize> = const { Cell::new(0) };
+        /// Vertices given the collinear-vertex test itself.
+        pub(super) static COLLINEAR_TESTS: Cell<usize> = const { Cell::new(0) };
+        /// `Some(true)` builds the collinear index at the first query,
+        /// `Some(false)` never builds it.
+        pub(super) static INDEX_POLICY: Cell<Option<bool>> = const { Cell::new(None) };
+        /// Steps taken by the batch flood's strict seed walks.
+        pub(super) static SEED_WALK_STEPS: Cell<usize> = const { Cell::new(0) };
+        /// One-seed flood lookups (`locate_point`, then a linear scan).
+        pub(super) static SEED_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn bump(counter: &'static LocalKey<Cell<usize>>) {
+        counter.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn take(counter: &'static LocalKey<Cell<usize>>) -> usize {
+        counter.with(|c| c.replace(0))
+    }
 }

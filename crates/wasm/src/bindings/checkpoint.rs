@@ -21,6 +21,7 @@ impl BrepKernel {
     }
 
     pub(crate) fn restore_checkpoint_impl(&mut self, checkpoint_id: u32) -> Result<(), String> {
+        let _restore = remus_operations::performance::span("checkpoint.restore");
         let idx = checkpoint_id as usize;
         let cp = self
             .checkpoints

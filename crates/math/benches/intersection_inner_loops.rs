@@ -10,12 +10,14 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use remus_math::analytic_intersection::intersect_plane_torus;
 use remus_math::context::{OperationContext, WorkBudgets};
 use remus_math::nurbs::bezier_clip::curve_curve_intersect_full;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::intersection::intersect_nurbs_nurbs_with_context;
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::vec::Point3;
+use remus_math::surfaces::ToroidalSurface;
+use remus_math::vec::{Point3, Vec3};
 
 #[derive(Clone, Copy)]
 enum CylinderAxis {
@@ -178,6 +180,10 @@ fn bench_intersections(c: &mut Criterion) {
     let tilted = tilted_surface();
     let seed_only = seeding_context();
     let march = marching_context();
+    // The `torus_notch_*` boolean's x = 6 box face against its R10 r3 torus.
+    let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 10.0, 3.0)
+        .expect("torus benchmark fixture must build");
+    let notch_normal = Vec3::new(-1.0, 0.0, 0.0);
 
     let quadric_probe =
         intersect_nurbs_nurbs_with_context(&cylinder_z, &cylinder_x, 10, 0.1, &march)
@@ -249,6 +255,14 @@ fn bench_intersections(c: &mut Criterion) {
                         black_box(&march),
                     )
                     .expect("NURBS marching must succeed"),
+                )
+            });
+        });
+        ssi.bench_function("plane_torus_grid", |bencher| {
+            bencher.iter(|| {
+                black_box(
+                    intersect_plane_torus(black_box(&torus), black_box(notch_normal), -6.0)
+                        .expect("plane x torus must succeed"),
                 )
             });
         });

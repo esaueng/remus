@@ -85,7 +85,7 @@ fn shared_fixed_point_joins_nothing() {
 }
 
 #[test]
-fn mutable_fixed_flag_keeps_partition_aligned_with_cached_parameter_map() {
+fn mutable_fixed_flag_rebuilds_parameter_map_and_partition() {
     let mut sys = GcsSystem::new();
     let formerly_free = free_pt(&mut sys, 1.0, 0.0);
     let formerly_fixed = fixed_pt(&mut sys, 2.0, 0.0);
@@ -99,23 +99,31 @@ fn mutable_fixed_flag_keeps_partition_aligned_with_cached_parameter_map() {
     sys.add_constraint(Constraint::FixX(other_free, 3.0))
         .unwrap();
     let cached = param_index_of(&mut sys);
+    assert!(cached.contains_key(&X(formerly_free)));
+    assert!(!cached.contains_key(&X(formerly_fixed)));
     sys.point_mut(formerly_free).unwrap().fixed = true;
     sys.point_mut(formerly_fixed).unwrap().fixed = false;
 
+    let rebuilt = param_index_of(&mut sys);
+    assert!(!rebuilt.contains_key(&X(formerly_free)));
+    assert!(!rebuilt.contains_key(&Y(formerly_free)));
+    assert!(rebuilt.contains_key(&X(formerly_fixed)));
+    assert!(rebuilt.contains_key(&Y(formerly_fixed)));
     let d = decompose(&mut sys);
+    assert_eq!(d.num_params, 4);
     let first_component = d
         .components
         .iter()
         .find(|component| component.constraint_ids.contains(&first))
         .unwrap();
-    assert!(first_component.params.contains(&cached[&X(formerly_free)]));
+    assert!(first_component.is_pinned());
     let pinned_component = d
         .components
         .iter()
         .find(|component| component.constraint_ids.contains(&pinned))
         .unwrap();
-    assert!(pinned_component.is_pinned());
-    assert!(!cached.contains_key(&X(formerly_fixed)));
+    assert!(!pinned_component.is_pinned());
+    assert_eq!(pinned_component.params, vec![rebuilt[&X(formerly_fixed)]]);
 }
 
 #[test]

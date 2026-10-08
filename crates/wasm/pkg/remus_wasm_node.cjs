@@ -762,6 +762,33 @@ class BrepKernel {
         return ret >>> 0;
     }
     /**
+     * Accounted live/retained topology bytes and unique NURBS payload bytes.
+     * Excludes allocator overhead, session sketches, pcurves, journals, caches
+     * and GPU data. Includes retired slots. Values are estimates, not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    checkpointMemoryStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_checkpointMemoryStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Create a circular pattern of a solid around an axis.
      *
      * Returns a compound handle.
@@ -1669,6 +1696,31 @@ class BrepKernel {
             return getStringFromWasm0(ptr4, len4);
         } finally {
             wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * Drain up to 4096 completed phase events as JSON.
+     *
+     * # Errors
+     * Returns an error if events cannot be serialized.
+     * @returns {string}
+     */
+    drainPerformanceTrace() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_drainPerformanceTrace(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**
@@ -6636,6 +6688,14 @@ class BrepKernel {
         }
     }
     /**
+     * Enable bounded module-local timings; disabled by default. This does
+     * not change tolerances, cache admission or numerical policy.
+     * @param {boolean} enabled
+     */
+    setPerformanceTracing(enabled) {
+        wasm.brepkernel_setPerformanceTracing(this.__wbg_ptr, enabled);
+    }
+    /**
      * Sew loose faces into a connected solid.
      *
      * `face_handles` is an array of face handles. Returns a solid handle.
@@ -6975,6 +7035,37 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Batch the edges needed by a selected feature proof. Classification
+     * still uses the entire solid and the ordinary per-edge default probe.
+     *
+     * # Errors
+     * Refuses duplicate, foreign/deleted edges, invalid probes and query errors.
+     * @param {number} solid
+     * @param {Uint32Array} edges
+     * @param {number | null} [probe]
+     * @returns {string}
+     */
+    solidEdgeRelationsSubset(solid, edges, probe) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_solidEdgeRelationsSubset(this.__wbg_ptr, solid, ptr0, len0, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Create a solid from a shell.
@@ -7926,6 +8017,36 @@ class JsGroupedMesh {
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
     }
+    /**
+     * Move face offsets out once; subsequent getters return an empty array.
+     * @returns {Uint32Array}
+     */
+    takeFaceOffsets() {
+        const ret = wasm.jsgroupedmesh_takeFaceOffsets(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Move triangle indices out once without cloning their Rust allocation.
+     * @returns {Uint32Array}
+     */
+    takeIndices() {
+        const ret = wasm.jsgroupedmesh_takeIndices(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Move positions out once; returned JS storage remains owned after free.
+     * @returns {Float32Array}
+     */
+    takePositions() {
+        const ret = wasm.jsgroupedmesh_takePositions(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
 }
 if (Symbol.dispose) JsGroupedMesh.prototype[Symbol.dispose] = JsGroupedMesh.prototype.free;
 exports.JsGroupedMesh = JsGroupedMesh;
@@ -8483,6 +8604,10 @@ function __wbg_get_imports() {
             const ret = arg0.next();
             return ret;
         }, arguments); },
+        __wbg_now_aca6ff702e646588: function() {
+            const ret = performance.now();
+            return ret;
+        },
         __wbg_prototypesetcall_4770620bbe4688a0: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
         },

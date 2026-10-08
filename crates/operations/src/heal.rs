@@ -1486,11 +1486,12 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
 
 /// What [`unify_faces_checked`] learned about the solid while unifying it.
 ///
-/// `unify_faces` already runs the strict validator on its input (to decide
-/// whether a merge may be rejected) and on its merged candidate (to decide
-/// whether to keep it). Callers that need those verdicts — a boolean gate
-/// that would otherwise validate the same solid again — read them here
-/// instead of paying for a third and fourth strict validation.
+/// `unify_faces` needs the strict verdicts on its input and on its merged
+/// candidate to decide whether a merge may be rejected. Callers that need
+/// those verdicts — a boolean gate that would otherwise validate the same
+/// solid again — read them here instead of paying for further strict
+/// validations. The candidate is validated only when a merge happened;
+/// otherwise the solid is the input and so is its verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnifyFacesReport {
     /// Faces removed by unification; zero when nothing merged or the merge
@@ -1510,9 +1511,11 @@ pub struct UnifyFacesReport {
 /// [`unify_faces`] that also reports the strict validations it performs.
 ///
 /// Same merge, same acceptance rule and same tolerances as [`unify_faces`];
-/// the only addition is that an input that already fails strict validation
-/// has its merged result validated too, so `result_errors` is always the
-/// verdict on the solid the caller is left holding.
+/// the only addition is that the input is always strictly validated, and an
+/// input that already fails has its merged result validated too, so
+/// `result_errors` is always the verdict on the solid the caller is left
+/// holding. When nothing merges, that solid is the input and the one
+/// validation answers both counts.
 ///
 /// # Errors
 ///
@@ -1521,8 +1524,19 @@ pub fn unify_faces_checked(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<UnifyFacesReport, crate::OperationsError> {
-    let (_, report) = unify_faces_with_report(topo, solid)?;
-    Ok(report)
+    let input_errors = crate::validate::validate_solid(topo, solid)?.error_count();
+    let plan = plan_unify(topo, solid)?;
+    let (history, verdict) = merge_planned(topo, solid, &plan, input_errors == 0)?;
+    let (result_errors, reverted) = match verdict {
+        MergedVerdict::Input { reverted } => (input_errors, reverted),
+        MergedVerdict::Candidate { error_count } => (error_count, false),
+    };
+    Ok(UnifyFacesReport {
+        faces_merged: history.faces_merged,
+        input_errors,
+        result_errors,
+        reverted,
+    })
 }
 
 /// Construction history for [`unify_faces`].
@@ -1556,26 +1570,57 @@ pub(crate) fn unify_faces_with_history(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<FaceUnifyHistory, crate::OperationsError> {
-    let (history, _) = unify_faces_with_report(topo, solid)?;
+    // Only the revert rule reads the input verdict here, and only after a
+    // merge, so the orientation probe (nearly all of a strict validation on
+    // curved faces) waits for a planned merge on an input that passed
+    // everything else; its issues are all errors. Validating before planning
+    // keeps a malformed input's error, since the probe's only fallible steps
+    // are lookups the rest of the validator has already made.
+    let input = crate::validate::validate_solid_with_options(
+        topo,
+        solid,
+        &crate::validate::ValidationOptions {
+            orientation: crate::validate::OrientationCheck::Skip,
+            ..Default::default()
+        },
+    )?;
+    let plan = plan_unify(topo, solid)?;
+    if plan.merge_groups.is_empty() {
+        return Ok(plan.unchanged());
+    }
+    let input_was_valid =
+        input.is_valid() && crate::validate::orientation_error_count(topo, solid)? == 0;
+    let (history, _) = merge_planned(topo, solid, &plan, input_was_valid)?;
     Ok(history)
 }
 
-/// The shared implementation behind [`unify_faces`],
-/// [`unify_faces_with_history`] and [`unify_faces_checked`]: one strict
-/// validation of the input, the transacted merge, one strict validation of
-/// the candidate, and the revert rule.
-fn unify_faces_with_report(
+/// Which strict verdict describes the solid [`merge_planned`] leaves behind.
+enum MergedVerdict {
+    /// The solid is the input: nothing merged, or the merge was reverted.
+    Input { reverted: bool },
+    /// The merged candidate was kept with this strict error count.
+    Candidate { error_count: usize },
+}
+
+/// The shared tail of [`unify_faces_with_history`] and
+/// [`unify_faces_checked`]: the transacted merge, one strict validation of the
+/// candidate when a merge happened, and the revert rule.
+fn merge_planned<V: std::ops::Deref<Target = [FaceId]>>(
     topo: &mut Topology,
     solid: SolidId,
-) -> Result<(FaceUnifyHistory, UnifyFacesReport), crate::OperationsError> {
-    let input_errors = crate::validate::validate_solid(topo, solid)?.error_count();
-    let input_was_valid = input_errors == 0;
-    let original_faces = {
-        let shell_id = topo.solid(solid)?.outer_shell();
-        topo.shell(shell_id)?.faces().to_vec()
-    };
+    plan: &UnifyPlan<V>,
+    input_was_valid: bool,
+) -> Result<(FaceUnifyHistory, MergedVerdict), crate::OperationsError> {
+    if plan.merge_groups.is_empty() {
+        return Ok((plan.unchanged(), MergedVerdict::Input { reverted: false }));
+    }
     match remus_topology::transaction::run_transacted(topo, |topo| {
-        let result = unify_faces_with_history_impl(topo, solid)?;
+        let result = apply_unify(topo, plan)?;
+        if result.faces_merged == 0 {
+            // Nothing was consumed, so the shell was not rebuilt and the
+            // solid is still the input; only orphan edges were added.
+            return Ok((result, MergedVerdict::Input { reverted: false }));
+        }
         let validation = crate::validate::validate_solid(topo, solid)?;
         if input_was_valid && !validation.is_valid() {
             return Err(UnifyTransactionError::InvalidCandidate {
@@ -1583,17 +1628,10 @@ fn unify_faces_with_report(
                 error_count: validation.error_count(),
             });
         }
-        Ok((result, validation.error_count()))
+        let error_count = validation.error_count();
+        Ok((result, MergedVerdict::Candidate { error_count }))
     }) {
-        Ok((history, result_errors)) => {
-            let report = UnifyFacesReport {
-                faces_merged: history.faces_merged,
-                input_errors,
-                result_errors,
-                reverted: false,
-            };
-            Ok((history, report))
-        }
+        Ok(merged) => Ok(merged),
         Err(UnifyTransactionError::InvalidCandidate {
             faces_merged,
             error_count,
@@ -1603,33 +1641,51 @@ fn unify_faces_with_report(
                 faces_merged,
                 error_count
             );
-            let history = FaceUnifyHistory {
-                faces_merged: 0,
-                modified: original_faces.iter().map(|&face| (face, face)).collect(),
-            };
-            let report = UnifyFacesReport {
-                faces_merged: 0,
-                input_errors,
-                result_errors: input_errors,
-                reverted: true,
-            };
-            Ok((history, report))
+            Ok((plan.unchanged(), MergedVerdict::Input { reverted: true }))
         }
         Err(UnifyTransactionError::Operation(error)) => Err(error),
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// Steps 1–3 of [`unify_faces`]: which faces merge, decided without touching
+/// the topology. It owns everything [`apply_unify`] reads, so the decision is
+/// made before any transaction opens. `V` is the explorer's per-edge face
+/// list, read only as a slice.
+struct UnifyPlan<V> {
+    shell_id: remus_topology::shell::ShellId,
+    all_face_ids: Vec<FaceId>,
+    edge_face_map: std::collections::BTreeMap<usize, V>,
+    /// Positions in `all_face_ids`, each group sorted and the groups ordered
+    /// by their first position.
+    merge_groups: Vec<Vec<usize>>,
+}
+
+impl<V> UnifyPlan<V> {
+    /// The history of a call that leaves every face in place.
+    fn unchanged(&self) -> FaceUnifyHistory {
+        FaceUnifyHistory {
+            faces_merged: 0,
+            modified: self.all_face_ids.iter().map(|&face| (face, face)).collect(),
+        }
+    }
+}
+
+/// The unvalidated, untransacted merge, kept as the stage the scaling guard
+/// and the differential oracle drive directly.
+#[cfg(test)]
 fn unify_faces_with_history_impl(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<FaceUnifyHistory, crate::OperationsError> {
-    /// Maximum boundary edges for a merged face. Groups whose boundary
-    /// exceeds this are skipped to prevent O(N²) slowdowns in subsequent
-    /// boolean intersection computations. 200 edges is generous for any
-    /// practical merged face (a merged rectangle has 4-20 edges).
-    const MAX_BOUNDARY_EDGES: usize = 200;
+    let plan = plan_unify(topo, solid)?;
+    apply_unify(topo, &plan)
+}
 
+#[allow(clippy::too_many_lines)]
+fn plan_unify(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<UnifyPlan<impl std::ops::Deref<Target = [FaceId]> + use<>>, crate::OperationsError> {
     let solid_data = topo.solid(solid)?;
     let shell_id = solid_data.outer_shell();
     let shell = topo.shell(shell_id)?;
@@ -1637,9 +1693,11 @@ fn unify_faces_with_history_impl(
     let original_count = all_face_ids.len();
 
     if original_count < 2 {
-        return Ok(FaceUnifyHistory {
-            faces_merged: 0,
-            modified: all_face_ids.iter().map(|&face| (face, face)).collect(),
+        return Ok(UnifyPlan {
+            shell_id,
+            all_face_ids,
+            edge_face_map: std::collections::BTreeMap::new(),
+            merge_groups: Vec::new(),
         });
     }
 
@@ -1864,11 +1922,34 @@ fn unify_faces_with_history_impl(
     }
     merge_groups.sort_unstable_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
 
+    Ok(UnifyPlan {
+        shell_id,
+        all_face_ids,
+        edge_face_map,
+        merge_groups,
+    })
+}
+
+/// Steps 4–6 of [`unify_faces`]: rebuild the shell from a [`UnifyPlan`].
+/// Adds entities only; the shell is replaced only when a group was consumed.
+#[allow(clippy::too_many_lines)]
+fn apply_unify<V: std::ops::Deref<Target = [FaceId]>>(
+    topo: &mut Topology,
+    plan: &UnifyPlan<V>,
+) -> Result<FaceUnifyHistory, crate::OperationsError> {
+    /// Maximum boundary edges for a merged face. Groups whose boundary
+    /// exceeds this are skipped to prevent O(N²) slowdowns in subsequent
+    /// boolean intersection computations. 200 edges is generous for any
+    /// practical merged face (a merged rectangle has 4-20 edges).
+    const MAX_BOUNDARY_EDGES: usize = 200;
+
+    let shell_id = plan.shell_id;
+    let all_face_ids = &plan.all_face_ids;
+    let merge_groups = &plan.merge_groups;
+    let original_count = all_face_ids.len();
+
     if merge_groups.is_empty() {
-        return Ok(FaceUnifyHistory {
-            faces_merged: 0,
-            modified: all_face_ids.iter().map(|&face| (face, face)).collect(),
-        });
+        return Ok(plan.unchanged());
     }
 
     // Step 4: Pre-compute boundary edges for all merge groups and build
@@ -1896,9 +1977,9 @@ fn unify_faces_with_history_impl(
         }
     }
     let group_edges = index_unify_group_edges(
-        edge_face_map
+        plan.edge_face_map
             .iter()
-            .map(|(&edge, faces)| (edge, faces.as_slice())),
+            .map(|(&edge, faces)| (edge, &**faces)),
         &face_groups,
         merge_groups.len(),
     );

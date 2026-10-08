@@ -1839,7 +1839,8 @@ fn move_translation_invariant_blend_region(
     for &face in &moved_faces {
         moved_vertices.extend(remus_topology::explorer::face_vertices(&work, face)?);
     }
-    let mut translated_edges = HashSet::new();
+    // `solid_edges` yields each edge once, so this stays duplicate-free.
+    let mut translated_edges = Vec::new();
     for edge in remus_topology::explorer::solid_edges(&work, solid)? {
         let edge_data = work.edge(edge)?;
         let start_moves = moved_vertices.contains(&edge_data.start());
@@ -1859,7 +1860,7 @@ fn move_translation_invariant_blend_region(
         }
         match (start_moves, end_moves) {
             (true, true) => {
-                translated_edges.insert(edge);
+                translated_edges.push(edge);
             }
             (true, false) | (false, true) => {
                 if !matches!(edge_data.curve(), EdgeCurve::Line) {
@@ -5360,11 +5361,11 @@ mod tests {
         for &face in faces {
             vertices.extend(remus_topology::explorer::face_vertices(topo, face).unwrap());
         }
-        let mut edges = HashSet::new();
+        let mut edges = Vec::new();
         for edge in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
             let data = topo.edge(edge).unwrap();
             if vertices.contains(&data.start()) && vertices.contains(&data.end()) {
-                edges.insert(edge);
+                edges.push(edge);
             }
         }
         for vertex in vertices {

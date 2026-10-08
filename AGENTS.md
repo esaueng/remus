@@ -125,6 +125,7 @@ Quick reference — find the right file for any task:
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
 | Curve/surface fitting (LSPIA) | `nurbs/fitting.rs`, `nurbs/surface_fitting.rs` |
+| Bit-identity oracle for the cached-basis LSPIA loop against the verbatim old loop (tests) | `nurbs/fitting/lspia_oracle_tests.rs` |
 | Point projection onto curves | `nurbs/projection.rs` |
 | Self-intersection detection | `nurbs/self_intersection.rs` |
 | 3D curves (Line, Circle, Ellipse, Parabola, Hyperbola) | `curves.rs` |
@@ -136,9 +137,10 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
+| Bit-exact oracles for the plane × torus section: the pre-change grid scan, greedy chaining and pipeline, grid line sign certificates (tests) | `analytic_intersection/plane_torus_oracle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
-| CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, adjacency, tests, tests/off_axis_cap, tests/u_bracket_floor) |
+| CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, collinear, adjacency, tests, tests/collinear_index, tests/flood_batch, tests/hole_grid, tests/off_axis_cap, tests/u_bracket_floor) |
 | Convex hull | `convex_hull.rs` |
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
@@ -189,6 +191,7 @@ Quick reference — find the right file for any task:
 |------|---------|
 | Arena & typed `Id<T>` handles | `arena.rs` |
 | `Topology` struct (the arena owner) | `topology.rs` |
+| Accounted topology and shared NURBS allocation estimates | `memory.rs` |
 | Vertex, Edge, Wire, Face, Shell, Solid | `vertex.rs`, `edge.rs`, `wire.rs`, `face.rs`, `shell.rs`, `solid.rs` |
 | Compound, CompSolid | `compound.rs`, `compsolid.rs` |
 | Adjacency index (edge-to-face, face neighbors) | `adjacency.rs` |
@@ -241,6 +244,7 @@ Quick reference — find the right file for any task:
 | Interference indexing | `ds/interference.rs`, `ds/shape_index.rs` |
 | Analytic classifier (7 variants) | `classifier/analytic.rs` |
 | Ray-cast classifier | `classifier/ray_cast.rs` |
+| Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
@@ -422,10 +426,13 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
+| Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity | `measure/volume_memo.rs` |
+| Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
@@ -520,6 +527,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
+| Accounted checkpoint storage, allocated WASM pages and phase timing bindings | `bindings/performance.rs` |
 | Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
 | Directional curve projection (P-Class 7.4 direct + batch, `project-curve:<code>` refusals) | `bindings/project_curve.rs` |

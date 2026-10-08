@@ -39,6 +39,7 @@ type CbEdgeKey = ((i64, i64, i64), (i64, i64, i64));
 /// remain separate.
 const VERTEX_DEDUP_SCALE: f64 = 1e10;
 
+use remus_math::aabb::Aabb3;
 use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
@@ -1521,7 +1522,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
     use std::f64::consts::{PI, TAU};
 
     const SAMPLES: usize = 256;
-    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+    let wrap = wrap_pi_exact;
 
     let mut by_face: BTreeMap<FaceId, Vec<usize>> = BTreeMap::new();
     for (idx, curve_ds) in arena.curves.iter().enumerate() {
@@ -1627,7 +1628,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
             continue;
         }
 
-        for (idx, _) in &loops {
+        for (idx, uv) in &loops {
             let Some(EdgeCurve::NurbsCurve(nurbs)) = arena.curves.get(*idx).map(|c| &c.curve)
             else {
                 continue;
@@ -1644,18 +1645,21 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
                 };
                 #[allow(clippy::cast_precision_loss)]
                 let at = |k: usize| d0 + (d1 - d0) * (k as f64 / SAMPLES as f64);
+                // `f(at(k))` without evaluating again: `uv[k]` is the
+                // projection of this curve at the same `at(k)`.
+                let fk = |k: usize| uv.get(k).map(|&(u, _)| wrap(u - target));
                 // Preserve the established cut whenever consecutive samples
                 // strictly bracket the meridian without crossing wrap's
                 // branch cut at +/-pi.
                 let bracket = (0..SAMPLES).find(|&k| {
-                    let (Some(a), Some(b)) = (f(at(k)), f(at(k + 1))) else {
+                    let (Some(a), Some(b)) = (fk(k), fk(k + 1)) else {
                         return false;
                     };
                     a.abs() > 0.0 && b.abs() > 0.0 && (a > 0.0) != (b > 0.0) && (a - b).abs() < PI
                 });
                 let crossing = if let Some(k) = bracket {
                     let (mut lo, mut hi) = (at(k), at(k + 1));
-                    let Some(f_lo) = f(lo) else { continue };
+                    let Some(f_lo) = fk(k) else { continue };
                     for _ in 0..60 {
                         let tm = f64::midpoint(lo, hi);
                         let Some(fm) = f(tm) else { break };
@@ -1733,23 +1737,69 @@ fn mean_v(samples: &[(f64, f64)]) -> f64 {
 /// so it holds all the way round the period and not just where they happen to
 /// share a sample.
 fn loops_strictly_ordered(lo: &[(f64, f64)], hi: &[(f64, f64)], gap: f64) -> bool {
-    use std::f64::consts::{PI, TAU};
-    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
-    let v_at = |s: &[(f64, f64)], u: f64| -> Option<f64> {
-        s.iter()
-            .min_by(|a, b| {
-                wrap(a.0 - u)
-                    .abs()
-                    .partial_cmp(&wrap(b.0 - u).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|&(_, v)| v)
-    };
     lo.iter()
-        .all(|&(u, v)| v_at(hi, u).is_some_and(|h| h - v > gap))
+        .all(|&(u, v)| nearest_v(hi, u).is_some_and(|h| h - v > gap))
         && hi
             .iter()
-            .all(|&(u, v)| v_at(lo, u).is_some_and(|l| v - l > gap))
+            .all(|&(u, v)| nearest_v(lo, u).is_some_and(|l| v - l > gap))
+}
+
+/// The `v` of the sample whose `u` is nearest `u` round the period; the FIRST
+/// such sample on a tie, and `None` for no samples.
+///
+/// Exactly what `min_by` on the wrapped distance picked (it keeps the earlier
+/// element unless the later one compares `Greater`, and a NaN compares
+/// `Equal`), with each sample's key computed once instead of once per
+/// comparison. The scan is quadratic over two 257-sample loops, so the key is
+/// the hot spot of the whole winding-loop pass.
+fn nearest_v(s: &[(f64, f64)], u: f64) -> Option<f64> {
+    let (first, rest) = s.split_first()?;
+    let mut best_key = wrap_pi_exact(first.0 - u).abs();
+    let mut best_v = first.1;
+    for &(su, sv) in rest {
+        let key = wrap_pi_exact(su - u).abs();
+        if best_key > key {
+            best_key = key;
+            best_v = sv;
+        }
+    }
+    Some(best_v)
+}
+
+/// `(d + PI).rem_euclid(TAU) - PI`, bit for bit: an angle difference wrapped
+/// to `[-PI, PI]`.
+///
+/// `f64` `%` is a libm `fmod` call (software on `wasm32`), so the ranges
+/// angle differences actually produce go through [`rem_tau_fast`] instead.
+/// Anything else, including NaN and the `seam_u + k·TAU/3` offsets that reach
+/// below `-TAU`, takes `rem_euclid` itself.
+fn wrap_pi_exact(d: f64) -> f64 {
+    use std::f64::consts::{PI, TAU};
+    let x = d + PI;
+    rem_tau_fast(x).unwrap_or_else(|| x.rem_euclid(TAU)) - PI
+}
+
+/// `x.rem_euclid(TAU)` without `fmod` where that is exact, `None` elsewhere.
+///
+/// - `(-TAU, 0)`: `x % TAU` is `x`, so `rem_euclid` returns the same rounded
+///   `x + TAU`.
+/// - `[0, TAU)`, with `-0.0`: `x % TAU` is `x`, and so is the result.
+/// - `[TAU, 2·TAU)`: `x % TAU` is `x - TAU` exactly, and so is the float
+///   subtraction (Sterbenz).
+///
+/// `-TAU` itself is left out: `rem_euclid` gives `-0.0` there, not `+0.0`.
+/// NaN fails every comparison.
+fn rem_tau_fast(x: f64) -> Option<f64> {
+    use std::f64::consts::TAU;
+    if x > -TAU && x < 0.0 {
+        Some(x + TAU)
+    } else if (0.0..TAU).contains(&x) {
+        Some(x)
+    } else if (TAU..2.0 * TAU).contains(&x) {
+        Some(x - TAU)
+    } else {
+        None
+    }
 }
 
 /// The `u` of `face`'s seam meridian — the generator a periodic face was cut
@@ -1821,9 +1871,15 @@ fn presplit_closed_winding_loops(
         }
         let (d0, d1) = ParametricCurve::domain(nurbs);
         let margin = (d1 - d0) * 1e-6;
+        // Every face carries every loop's cuts; most belong to other loops.
+        let reach = weld_reach_box(nurbs, weld);
         let mut ts: Vec<f64> = cuts
             .iter()
             .filter_map(|p| {
+                if reach.is_some_and(|b| !b.contains_point(*p)) {
+                    return None;
+                }
+                crate::perf::bump_winding_cut_projection();
                 let hit =
                     remus_math::nurbs::projection::project_point_to_curve(nurbs, *p, 1e-9).ok()?;
                 (hit.distance <= weld && hit.parameter > d0 + margin && hit.parameter < d1 - margin)
@@ -1875,6 +1931,43 @@ fn presplit_closed_winding_loops(
         }
     }
     Ok(out)
+}
+
+/// A box outside which no cut can come within `weld` of `nurbs`, so such a
+/// cut need not be projected; `None` when that is not certified.
+///
+/// Every point `project_point_to_curve` measures from is an `evaluate` or
+/// `derivatives(u, _)[0]` point: positive weights times non-negative basis
+/// values, a convex blend of `p + 1` control points. Rounding moves it off
+/// their box by about `(2p + 7)·ε·max|coord|`, far inside the slack below. So
+/// a cut outside the box grown by `2·weld` plus that slack measures more than
+/// `weld` from anything the projection can return, and the caller's
+/// `distance <= weld` filter drops it either way.
+///
+/// `derivatives` divides by the GLOBAL largest weight, so a weight ratio past
+/// 1e100 could underflow its sums off the hull: such a curve, a NaN weight,
+/// or a non-finite box is not certified.
+fn weld_reach_box(nurbs: &remus_math::nurbs::curve::NurbsCurve, weld: f64) -> Option<Aabb3> {
+    let w_max = nurbs.max_weight();
+    if !nurbs.weights().iter().all(|&w| w >= w_max * 1e-100) {
+        return None;
+    }
+    let bb = Aabb3::try_from_points(nurbs.control_points().iter().copied())?;
+    let corners = [
+        bb.min.x(),
+        bb.min.y(),
+        bb.min.z(),
+        bb.max.x(),
+        bb.max.y(),
+        bb.max.z(),
+    ];
+    if !corners.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let scale = corners.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    #[allow(clippy::cast_precision_loss)]
+    let blend = (nurbs.degree() + 1) as f64;
+    Some(bb.expanded(2.0 * weld + 1e-9 * (1.0 + scale) * blend))
 }
 
 /// Carve `curve` into the sub-curves between consecutive `bounds` (which must

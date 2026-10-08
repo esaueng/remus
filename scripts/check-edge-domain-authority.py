@@ -98,7 +98,7 @@ REMAINING_MISSING_TRIM_PATHS: tuple[str, ...] = ()
 # mapping is the sole registration point for post-baseline required writers;
 # each tuple length must match the pinned path weight.
 FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
-    "phase_ff::perform_with_context": ("f2c1c0502a6555dd",),
+    "phase_ff::perform_with_context": ("ae74656113fafcf9",),
     "phase_ff::emit_exact_arc": ("c4f42adb4b69bf8b",),
     "phase_ff::emit_split_circle_arcs": ("17f3591d66b9ff10",),
     "boolean::assembly::SphereCapFace": ("6f986f643cea279c",),

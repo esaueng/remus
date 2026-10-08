@@ -246,6 +246,10 @@ impl GcsSystem {
 
     /// Get a mutable reference to a point.
     pub fn point_mut(&mut self, id: PointId) -> Option<&mut PointData> {
+        // The caller can change `fixed`, which changes parameter ownership.
+        // Invalidate before handing out the reference, including cached
+        // component layouts used by the next solve or DOF analysis.
+        self.dirty = true;
         self.points.get_mut(id)
     }
 

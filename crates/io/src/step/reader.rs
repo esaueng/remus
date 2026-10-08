@@ -36,7 +36,7 @@ use remus_math::aabb::Aabb2;
 use remus_math::curves::Circle3D;
 use remus_math::curves2d::{Circle2D, Curve2D, Ellipse2D, Line2D, NurbsCurve2D};
 use remus_math::frame::Frame3;
-use remus_math::predicates::point_in_polygon;
+use remus_math::predicates::{orient2d, point_in_polygon, winding_number};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_operations::heal::merge_split_rim_arcs;
@@ -2246,6 +2246,42 @@ struct FaceBoundLoop {
     seam_flexible_v: bool,
 }
 
+/// What inner-winding repair reads of a plane-frame bound polygon.
+#[derive(Debug, Clone, Copy)]
+struct PlanarBoundShape {
+    vertex_count: usize,
+    signed_area: f64,
+    perimeter: f64,
+}
+
+impl PlanarBoundShape {
+    fn of(polygon: &[Point2]) -> Self {
+        Self {
+            vertex_count: polygon.len(),
+            signed_area: polygon_signed_area(polygon),
+            perimeter: polygon_perimeter(polygon),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SampledPlanarBound {
+    shape: PlanarBoundShape,
+    /// Raw samples of each edge, in the order sampling charged them against
+    /// `MAX_FACE_BOUND_SAMPLES`.
+    edge_samples: Vec<usize>,
+}
+
+/// Every bound of one generic planar face as its resolution sampled them,
+/// so inner-winding repair does not resample the same wires in the same
+/// frame. Built and consumed within one `build_face` call.
+#[derive(Debug)]
+struct PlanarBoundSamples {
+    frame: Frame3,
+    /// Indexed by candidate position.
+    bounds: Vec<SampledPlanarBound>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeriodicWindingAxis {
     U,
@@ -2989,9 +3025,16 @@ impl<'a> StepBuilder<'a> {
             }
         }
 
-        let (outer, inner_wires) =
+        let (outer, inner_wires, planar_samples) =
             self.resolve_face_bounds(face_ref, &surface, &candidates, &mut pending_by_wire)?;
-        self.normalize_planar_inner_winding(face_ref, &surface, outer, &inner_wires, &candidates)?;
+        self.normalize_planar_inner_winding(
+            face_ref,
+            &surface,
+            outer,
+            &inner_wires,
+            &candidates,
+            planar_samples.as_ref(),
+        )?;
         let boundary_wires: Vec<WireId> = std::iter::once(outer)
             .chain(inner_wires.iter().copied())
             .collect();
@@ -3037,6 +3080,11 @@ impl<'a> StepBuilder<'a> {
     /// Reversing a closed periodic curve changes its traversal without changing
     /// the shared topological edge use. Multi-edge loops are left unchanged so
     /// the validator can diagnose them without making import destructive.
+    ///
+    /// `presampled` holds the bounds generic planar resolution sampled for
+    /// this face, and the frame it sampled them in. They stand in for
+    /// resampling only until the first edge reversal below; every later bound
+    /// is resampled as the topology then is, exactly as without them.
     fn normalize_planar_inner_winding(
         &mut self,
         face_ref: u64,
@@ -3044,6 +3092,7 @@ impl<'a> StepBuilder<'a> {
         outer: WireId,
         inner_wires: &[WireId],
         candidates: &[FaceBoundCandidate],
+        presampled: Option<&PlanarBoundSamples>,
     ) -> Result<(), IoError> {
         let FaceSurface::Plane { normal, d } = surface else {
             return Ok(());
@@ -3057,31 +3106,41 @@ impl<'a> StepBuilder<'a> {
         if normal_sq <= tol.linear_sq() {
             return Ok(());
         }
-        let origin_vector = *normal * (*d / normal_sq);
-        let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
-        let frame = Frame3::from_normal(origin, *normal).map_err(|error| IoError::ParseError {
-            reason: format!(
-                "ADVANCED_FACE #{face_ref} cannot classify planar bound winding: {error}"
-            ),
-        })?;
+        let frame = match presampled {
+            Some(samples) => samples.frame,
+            None => {
+                planar_bound_frame(*normal, *d, normal_sq).map_err(|error| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} cannot classify planar bound winding: {error}"
+                    ),
+                })?
+            }
+        };
 
-        let candidate_for = |wire| {
+        let candidate_index = |wire| {
             candidates
                 .iter()
-                .find(|candidate| candidate.wire == wire)
-                .copied()
+                .position(|candidate| candidate.wire == wire)
                 .ok_or_else(|| IoError::ParseError {
                     reason: format!(
                         "ADVANCED_FACE #{face_ref} selected an unknown wire while resolving bounds"
                     ),
                 })
         };
+        let presampled_bound =
+            |index: usize| presampled.and_then(|samples| samples.bounds.get(index));
         let mut sampled_points = 0usize;
-        let outer_polygon =
-            self.sample_planar_bound(face_ref, candidate_for(outer)?, &frame, &mut sampled_points)?;
-        let outer_area = polygon_signed_area(&outer_polygon);
-        let outer_perimeter = polygon_perimeter(&outer_polygon);
-        if outer_polygon.len() < 3
+        let outer_index = candidate_index(outer)?;
+        let outer_bound = self.planar_bound_shape(
+            face_ref,
+            candidates[outer_index],
+            &frame,
+            &mut sampled_points,
+            presampled_bound(outer_index),
+        )?;
+        let outer_area = outer_bound.signed_area;
+        let outer_perimeter = outer_bound.perimeter;
+        if outer_bound.vertex_count < 3
             || !outer_area.is_finite()
             || !outer_perimeter.is_finite()
             || outer_area.abs() <= outer_perimeter * tol.linear
@@ -3089,16 +3148,19 @@ impl<'a> StepBuilder<'a> {
             return Ok(());
         }
 
+        let mut reversed_an_edge = false;
         for &inner_wire in inner_wires {
-            let polygon = self.sample_planar_bound(
+            let index = candidate_index(inner_wire)?;
+            let bound = self.planar_bound_shape(
                 face_ref,
-                candidate_for(inner_wire)?,
+                candidates[index],
                 &frame,
                 &mut sampled_points,
+                presampled_bound(index).filter(|_| !reversed_an_edge),
             )?;
-            let area = polygon_signed_area(&polygon);
-            let perimeter = polygon_perimeter(&polygon);
-            if polygon.len() < 3
+            let area = bound.signed_area;
+            let perimeter = bound.perimeter;
+            if bound.vertex_count < 3
                 || !area.is_finite()
                 || !perimeter.is_finite()
                 || area.abs() <= perimeter * tol.linear
@@ -3145,9 +3207,30 @@ impl<'a> StepBuilder<'a> {
                 vertex_tolerance,
             )?;
             *self.topo.edge_mut(edge_id)? = replacement;
+            reversed_an_edge = true;
         }
 
         Ok(())
+    }
+
+    /// The plane-frame polygon shape of `candidate`, charged to
+    /// `sampled_points` edge by edge exactly as sampling it charges.
+    fn planar_bound_shape(
+        &self,
+        face_ref: u64,
+        candidate: FaceBoundCandidate,
+        frame: &Frame3,
+        sampled_points: &mut usize,
+        presampled: Option<&SampledPlanarBound>,
+    ) -> Result<PlanarBoundShape, IoError> {
+        if let Some(bound) = presampled {
+            for &count in &bound.edge_samples {
+                charge_face_bound_samples(sampled_points, count)?;
+            }
+            return Ok(bound.shape);
+        }
+        let polygon = self.sample_planar_bound(face_ref, candidate, frame, sampled_points, None)?;
+        Ok(PlanarBoundShape::of(&polygon))
     }
 
     /// Resolve the semantic perimeter independently of STEP aggregate order.
@@ -3156,13 +3239,17 @@ impl<'a> StepBuilder<'a> {
     /// Generic multi-bound faces are classified in either a stable plane frame
     /// or a seam-aware periodic UV domain.  Non-periodic parametric surfaces
     /// still fail closed rather than falling back to aggregate order.
+    ///
+    /// Generic planar classification also returns the bound samples it took,
+    /// for [`Self::normalize_planar_inner_winding`]; every other path
+    /// returns `None` and leaves that repair to sample for itself.
     fn resolve_face_bounds(
         &mut self,
         face_ref: u64,
         surface: &FaceSurface,
         candidates: &[FaceBoundCandidate],
         pending_by_wire: &mut HashMap<WireId, Vec<PendingPcurveUse>>,
-    ) -> Result<(WireId, Vec<WireId>), IoError> {
+    ) -> Result<(WireId, Vec<WireId>, Option<PlanarBoundSamples>), IoError> {
         if candidates.is_empty() {
             return Err(IoError::ParseError {
                 reason: format!("ADVANCED_FACE #{face_ref} has no bounds"),
@@ -3193,20 +3280,20 @@ impl<'a> StepBuilder<'a> {
                 .enumerate()
                 .filter_map(|(index, candidate)| (index != outer_index).then_some(candidate.wire))
                 .collect();
-            return Ok((outer, inner));
+            return Ok((outer, inner, None));
         }
 
         if candidates.len() == 1 {
-            return Ok((candidates[0].wire, Vec::new()));
+            return Ok((candidates[0].wire, Vec::new(), None));
         }
 
         match surface {
-            FaceSurface::Plane { normal, d } => {
-                self.resolve_generic_planar_bounds(face_ref, candidates, *normal, *d)
-            }
-            _ if periodic_uv_domain(surface).is_some() => {
-                self.resolve_generic_periodic_bounds(face_ref, candidates, surface, pending_by_wire)
-            }
+            FaceSurface::Plane { normal, d } => self
+                .resolve_generic_planar_bounds(face_ref, candidates, *normal, *d)
+                .map(|(outer, inner, samples)| (outer, inner, Some(samples))),
+            _ if periodic_uv_domain(surface).is_some() => self
+                .resolve_generic_periodic_bounds(face_ref, candidates, surface, pending_by_wire)
+                .map(|(outer, inner)| (outer, inner, None)),
             FaceSurface::Nurbs(_)
             | FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
@@ -3228,7 +3315,7 @@ impl<'a> StepBuilder<'a> {
         candidates: &[FaceBoundCandidate],
         normal: Vec3,
         d: f64,
-    ) -> Result<(WireId, Vec<WireId>), IoError> {
+    ) -> Result<(WireId, Vec<WireId>, PlanarBoundSamples), IoError> {
         let normal_sq = normal.dot(normal);
         let tol = Tolerance::new();
         if normal_sq <= tol.linear_sq() {
@@ -3239,20 +3326,27 @@ impl<'a> StepBuilder<'a> {
                 ),
             });
         }
-        let origin_vector = normal * (d / normal_sq);
-        let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
-        let frame = Frame3::from_normal(origin, normal).map_err(|error| IoError::ParseError {
-            reason: format!(
-                "ADVANCED_FACE #{face_ref} cannot build a plane frame for generic FACE_BOUND \
-                 classification: {error}"
-            ),
-        })?;
+        let frame =
+            planar_bound_frame(normal, d, normal_sq).map_err(|error| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} cannot build a plane frame for generic FACE_BOUND \
+                     classification: {error}"
+                ),
+            })?;
 
         let mut loops = Vec::with_capacity(candidates.len());
+        let mut edge_samples = Vec::with_capacity(candidates.len());
         let mut sampled_points = 0;
         for (candidate_index, candidate) in candidates.iter().enumerate() {
-            let polygon =
-                self.sample_planar_bound(face_ref, *candidate, &frame, &mut sampled_points)?;
+            let mut bound_edge_samples = Vec::new();
+            let polygon = self.sample_planar_bound(
+                face_ref,
+                *candidate,
+                &frame,
+                &mut sampled_points,
+                Some(&mut bound_edge_samples),
+            )?;
+            edge_samples.push(bound_edge_samples);
             let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
                 IoError::ParseError {
                     reason: format!(
@@ -3299,6 +3393,8 @@ impl<'a> StepBuilder<'a> {
 
         let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + tol.linear;
         let mut parents = vec![None; loops.len()];
+        let mut parent_indexes: Vec<Option<IndexedBoundPolygon<'_>>> =
+            std::iter::repeat_with(|| None).take(loops.len()).collect();
         let mut containment_work = 0usize;
         for child_index in 0..loops.len() {
             let child = &loops[child_index];
@@ -3311,6 +3407,8 @@ impl<'a> StepBuilder<'a> {
                 if area_gap <= child.perimeter * tol.linear {
                     continue;
                 }
+                // Still charged at the full-scan cost, so the refusal
+                // threshold is unchanged by the winding index.
                 containment_work = containment_work
                     .saturating_add(parent.polygon.len().saturating_mul(child.polygon.len() + 1));
                 ensure_limit(
@@ -3318,7 +3416,17 @@ impl<'a> StepBuilder<'a> {
                     containment_work,
                     MAX_FACE_BOUND_CONTAINMENT_WORK,
                 )?;
-                if planar_loop_contains(parent, child, margin) {
+                let contains =
+                    planar_loop_contains(parent, &mut parent_indexes[parent_index], child, margin);
+                #[cfg(test)]
+                tests::audit_planar_containment(
+                    contains,
+                    parent,
+                    parent_indexes[parent_index].as_ref(),
+                    child,
+                    margin,
+                );
+                if contains {
                     possible.push(parent_index);
                 }
             }
@@ -3358,13 +3466,28 @@ impl<'a> StepBuilder<'a> {
             .collect();
         inner_loops
             .sort_by(|&left, &right| face_bound_loop_geometry_cmp(&loops[left], &loops[right]));
-        Ok((
-            candidates[outer_candidate].wire,
-            inner_loops
-                .into_iter()
-                .map(|index| candidates[loops[index].candidate_index].wire)
+        let inner_wires = inner_loops
+            .into_iter()
+            .map(|index| candidates[loops[index].candidate_index].wire)
+            .collect();
+        // `loops` and `edge_samples` both hold one entry per candidate, in
+        // candidate order.
+        let samples = PlanarBoundSamples {
+            frame,
+            bounds: loops
+                .iter()
+                .zip(edge_samples)
+                .map(|(bound, edge_samples)| SampledPlanarBound {
+                    shape: PlanarBoundShape {
+                        vertex_count: bound.polygon.len(),
+                        signed_area: bound.signed_area,
+                        perimeter: bound.perimeter,
+                    },
+                    edge_samples,
+                })
                 .collect(),
-        ))
+        };
+        Ok((candidates[outer_candidate].wire, inner_wires, samples))
     }
 
     fn resolve_generic_periodic_bounds(
@@ -3522,7 +3645,12 @@ impl<'a> StepBuilder<'a> {
                     containment_work,
                     MAX_FACE_BOUND_CONTAINMENT_WORK,
                 )?;
-                if periodic_loop_contains(parent, child, margin, u_period, v_period) {
+                let contains = periodic_loop_contains(parent, child, margin, u_period, v_period);
+                #[cfg(test)]
+                tests::audit_periodic_containment(
+                    contains, parent, child, margin, u_period, v_period,
+                );
+                if contains {
                     possible.push(parent_index);
                 }
             }
@@ -3992,13 +4120,18 @@ impl<'a> StepBuilder<'a> {
         Ok(domain.scale(Point2::new(u, v)))
     }
 
+    /// `edge_samples`, when given, receives each edge's raw sample count in
+    /// the order they are charged to `sampled_points`.
     fn sample_planar_bound(
         &self,
         face_ref: u64,
         candidate: FaceBoundCandidate,
         frame: &Frame3,
         sampled_points: &mut usize,
+        mut edge_samples: Option<&mut Vec<usize>>,
     ) -> Result<Vec<Point2>, IoError> {
+        #[cfg(test)]
+        tests::count_planar_bound_sampling();
         let wire = self
             .topo
             .wire(candidate.wire)
@@ -4020,12 +4153,10 @@ impl<'a> StepBuilder<'a> {
                     ),
                 })?;
             let mut edge_points = self.sample_bound_edge(edge)?;
-            *sampled_points = sampled_points.saturating_add(edge_points.len());
-            ensure_limit(
-                "sampled points per STEP ADVANCED_FACE",
-                *sampled_points,
-                MAX_FACE_BOUND_SAMPLES,
-            )?;
+            charge_face_bound_samples(sampled_points, edge_points.len())?;
+            if let Some(edge_samples) = edge_samples.as_mut() {
+                edge_samples.push(edge_points.len());
+            }
             if !oriented.is_forward() {
                 edge_points.reverse();
             }
@@ -6995,6 +7126,10 @@ impl<'a> StepBuilder<'a> {
 
     fn build_cartesian_point(&self, cp_ref: u64) -> Result<Point3, IoError> {
         let attrs = &self.get_entity(cp_ref)?.attrs;
+        if let Some([x, y, z]) = real_triple_attribute(attrs) {
+            let s = self.units.length;
+            return Ok(Point3::new(x * s, y * s, z * s));
+        }
         let slots = split_attr_slots(attrs);
         let coords =
             exact_real_attribute_list("CARTESIAN_POINT", cp_ref, &slots, 1, "coordinates")?;
@@ -7012,6 +7147,9 @@ impl<'a> StepBuilder<'a> {
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
         let attrs = &self.get_entity(dir_ref)?.attrs;
+        if let Some([x, y, z]) = real_triple_attribute(attrs) {
+            return Ok(Vec3::new(x, y, z));
+        }
         let slots = split_attr_slots(attrs);
         let coords =
             exact_real_attribute_list("DIRECTION", dir_ref, &slots, 1, "direction_ratios")?;
@@ -7496,6 +7634,30 @@ fn shift_periodic_uv_group(
     }
 }
 
+/// The frame generic bound resolution and inner-winding repair both sample a
+/// `FaceSurface::Plane { normal, d }` bound in.
+fn planar_bound_frame(
+    normal: Vec3,
+    d: f64,
+    normal_sq: f64,
+) -> Result<Frame3, remus_math::MathError> {
+    let origin_vector = normal * (d / normal_sq);
+    let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
+    Frame3::from_normal(origin, normal)
+}
+
+/// Charge one bound edge's raw samples against the per-face sampling cap.
+fn charge_face_bound_samples(sampled_points: &mut usize, count: usize) -> Result<(), IoError> {
+    *sampled_points = sampled_points.saturating_add(count);
+    #[cfg(test)]
+    tests::record_face_bound_sample_charge(*sampled_points);
+    ensure_limit(
+        "sampled points per STEP ADVANCED_FACE",
+        *sampled_points,
+        MAX_FACE_BOUND_SAMPLES,
+    )
+}
+
 fn polygon_signed_area(polygon: &[Point2]) -> f64 {
     if polygon.len() < 3 {
         return 0.0;
@@ -7569,12 +7731,185 @@ fn point_segment_distance_2d(point: Point2, start: Point2, end: Point2) -> f64 {
     (point - (start + segment * parameter)).length()
 }
 
-fn point_in_or_on_polygon(point: Point2, polygon: &[Point2], margin: f64) -> bool {
-    point_in_polygon(point, polygon)
-        || polygon
+/// Upper bound on [`EdgeYIndex`] buckets.
+const MAX_EDGE_Y_BUCKETS: usize = 4096;
+
+/// A face-bound polygon prepared for repeated winding-number queries.
+///
+/// Containment tests every child vertex against the whole parent loop, so a
+/// full scan costs `parent × child` edge visits. An edge contributes to
+/// [`remus_math::predicates::winding_number`] only when
+/// `min(y_i, y_j) <= p.y < max(y_i, y_j)`, so visiting just the edges an
+/// [`EdgeYIndex`] files under `p.y`, with the same per-edge test, sums exactly
+/// the contributions the full scan sums.
+struct IndexedBoundPolygon<'a> {
+    polygon: &'a [Point2],
+    index: Option<EdgeYIndex>,
+}
+
+impl<'a> IndexedBoundPolygon<'a> {
+    fn new(polygon: &'a [Point2]) -> Self {
+        Self {
+            polygon,
+            index: EdgeYIndex::build(polygon),
+        }
+    }
+
+    /// [`remus_math::predicates::winding_number`] of `point`.
+    fn winding_number(&self, point: Point2) -> i32 {
+        let Some(index) = &self.index else {
+            return winding_number(point, self.polygon);
+        };
+        let n = self.polygon.len();
+        let mut wn = 0i32;
+        for &edge in index.candidates(point.y()) {
+            let i = edge as usize;
+            let j = (i + 1) % n;
+            let vi = self.polygon[i];
+            let vj = self.polygon[j];
+
+            if vi.y() <= point.y() {
+                if vj.y() > point.y() && orient2d(vi, vj, point) > 0.0 {
+                    wn += 1;
+                }
+            } else if vj.y() <= point.y() && orient2d(vi, vj, point) < 0.0 {
+                wn -= 1;
+            }
+        }
+        wn
+    }
+
+    #[cfg(test)]
+    const fn is_indexed(&self) -> bool {
+        self.index.is_some()
+    }
+
+    #[cfg(test)]
+    fn candidate_count(&self, y: f64) -> Option<usize> {
+        self.index.as_ref().map(|index| index.candidates(y).len())
+    }
+}
+
+/// Polygon edges `i -> (i + 1) % n` filed, in ascending order, under every
+/// bucket their closed `y` interval overlaps.
+///
+/// The bucket map is monotone in `y`, so `lo <= y <= hi` implies
+/// `bucket(lo) <= bucket(y) <= bucket(hi)`, and an edge whose interval holds
+/// `y` is always among `y`'s candidates. A NaN lands in bucket 0 and an
+/// infinity in an end bucket, where the exact per-edge test rejects every
+/// candidate as the full scan rejects every edge.
+struct EdgeYIndex {
+    origin: f64,
+    inv_width: f64,
+    last_bucket: usize,
+    /// Bucket `b` holds `edges[offsets[b]..offsets[b + 1]]`.
+    offsets: Vec<u32>,
+    edges: Vec<u32>,
+}
+
+impl EdgeYIndex {
+    /// Returns `None`, and the caller scans every edge, for fewer than three
+    /// vertices, a non-finite or zero-height loop, or more than
+    /// `8n + buckets` filed entries: a comb of tall edges on an
+    /// attacker-sized loop must not allocate `n × buckets` entries.
+    fn build(polygon: &[Point2]) -> Option<Self> {
+        let n = polygon.len();
+        if n < 3 {
+            return None;
+        }
+        let mut origin = f64::INFINITY;
+        let mut end = f64::NEG_INFINITY;
+        for point in polygon {
+            if !point.y().is_finite() {
+                return None;
+            }
+            origin = origin.min(point.y());
+            end = end.max(point.y());
+        }
+        let bucket_count = n.min(MAX_EDGE_Y_BUCKETS);
+        #[allow(clippy::cast_precision_loss)]
+        let width = (end - origin) / bucket_count as f64;
+        let inv_width = width.recip();
+        if !width.is_finite() || width <= 0.0 || !inv_width.is_finite() {
+            return None;
+        }
+        let mut index = Self {
+            origin,
+            inv_width,
+            last_bucket: bucket_count - 1,
+            offsets: Vec::new(),
+            edges: Vec::new(),
+        };
+
+        // Count first, so an over-cap loop is declined before it allocates
+        // its entries.
+        let cap = n.saturating_mul(8).saturating_add(bucket_count);
+        let mut counts = vec![0usize; bucket_count];
+        let mut total = 0usize;
+        for edge in 0..n {
+            let (first, last) = index.edge_buckets(polygon, edge);
+            total = total.saturating_add(last - first + 1);
+            if total > cap {
+                return None;
+            }
+            for count in &mut counts[first..=last] {
+                *count += 1;
+            }
+        }
+
+        let mut offsets = Vec::with_capacity(bucket_count + 1);
+        let mut cursors = Vec::with_capacity(bucket_count);
+        let mut offset = 0usize;
+        offsets.push(0);
+        for count in counts {
+            cursors.push(offset);
+            offset += count;
+            offsets.push(u32::try_from(offset).ok()?);
+        }
+        let mut edges = vec![0u32; total];
+        for edge in 0..n {
+            let (first, last) = index.edge_buckets(polygon, edge);
+            let filed = u32::try_from(edge).ok()?;
+            for cursor in &mut cursors[first..=last] {
+                edges[*cursor] = filed;
+                *cursor += 1;
+            }
+        }
+        index.offsets = offsets;
+        index.edges = edges;
+        Some(index)
+    }
+
+    fn edge_buckets(&self, polygon: &[Point2], edge: usize) -> (usize, usize) {
+        let a = polygon[edge].y();
+        let b = polygon[(edge + 1) % polygon.len()].y();
+        (self.bucket(a.min(b)), self.bucket(a.max(b)))
+    }
+
+    fn bucket(&self, y: f64) -> usize {
+        let position = ((y - self.origin) * self.inv_width).floor();
+        if position >= 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let position = position as usize;
+            position.min(self.last_bucket)
+        } else {
+            0
+        }
+    }
+
+    fn candidates(&self, y: f64) -> &[u32] {
+        let bucket = self.bucket(y);
+        &self.edges[self.offsets[bucket] as usize..self.offsets[bucket + 1] as usize]
+    }
+}
+
+fn point_in_or_on_polygon(point: Point2, polygon: &IndexedBoundPolygon<'_>, margin: f64) -> bool {
+    let vertices = polygon.polygon;
+    polygon.winding_number(point) != 0
+        || vertices
             .iter()
-            .zip(polygon.iter().cycle().skip(1))
-            .take(polygon.len())
+            .zip(vertices.iter().cycle().skip(1))
+            .take(vertices.len())
             .any(|(&start, &end)| point_segment_distance_2d(point, start, end) <= margin)
 }
 
@@ -7585,13 +7920,24 @@ fn bounds_contain(outer: Aabb2, inner: Aabb2, margin: f64) -> bool {
         && outer.max.y() + margin >= inner.max.y()
 }
 
-fn planar_loop_contains(parent: &FaceBoundLoop, child: &FaceBoundLoop, margin: f64) -> bool {
-    bounds_contain(parent.bounds, child.bounds, margin)
-        && point_in_or_on_polygon(child.probe, &parent.polygon, margin)
+/// `parent_index` caches `parent`'s winding index across the children it is
+/// tested against; it is built only once a child passes the bounds gate.
+fn planar_loop_contains<'a>(
+    parent: &'a FaceBoundLoop,
+    parent_index: &mut Option<IndexedBoundPolygon<'a>>,
+    child: &FaceBoundLoop,
+    margin: f64,
+) -> bool {
+    if !bounds_contain(parent.bounds, child.bounds, margin) {
+        return false;
+    }
+    let parent_polygon =
+        parent_index.get_or_insert_with(|| IndexedBoundPolygon::new(&parent.polygon));
+    point_in_or_on_polygon(child.probe, parent_polygon, margin)
         && child
             .polygon
             .iter()
-            .all(|&point| point_in_or_on_polygon(point, &parent.polygon, margin))
+            .all(|&point| point_in_or_on_polygon(point, parent_polygon, margin))
 }
 
 fn translated_point(point: Point2, dx: f64, dy: f64) -> Point2 {
@@ -7673,6 +8019,9 @@ fn periodic_loop_contains(
         max: translated_point(parent.bounds.max, parent_u_shift, parent_v_shift),
     };
     let mut successful_lifts = 0usize;
+    // Indexed over the translated parent, built once the first lift passes
+    // the bounds gate; queries stay the translated child points.
+    let mut indexed_parent = None;
 
     for &child_u_shift in &child_u_shifts {
         for &child_v_shift in &child_v_shifts {
@@ -7683,14 +8032,16 @@ fn periodic_loop_contains(
             if !bounds_contain(parent_bounds, child_bounds, margin) {
                 continue;
             }
+            let indexed_parent =
+                indexed_parent.get_or_insert_with(|| IndexedBoundPolygon::new(&parent_polygon));
             let probe = translated_point(child.probe, child_u_shift, child_v_shift);
-            if !point_in_or_on_polygon(probe, &parent_polygon, margin) {
+            if !point_in_or_on_polygon(probe, indexed_parent, margin) {
                 continue;
             }
             let all_inside = child.polygon.iter().all(|&point| {
                 point_in_or_on_polygon(
                     translated_point(point, child_u_shift, child_v_shift),
-                    &parent_polygon,
+                    indexed_parent,
                     margin,
                 )
             });
@@ -9647,55 +9998,122 @@ fn describe_slot(slot: Option<&AttrSlot<'_>>) -> String {
 /// ends the list rather than opening a slot. Whitespace and the newlines
 /// STEP writers use to wrap long statements are trimmed off each slot.
 fn split_attr_slots(attrs: &str) -> Vec<AttrSlot<'_>> {
-    let bytes = attrs.as_bytes();
-    let mut slots = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    let mut end = bytes.len();
-    let mut in_string = false;
-    let mut i = 0usize;
+    AttrSlotSpans::new(attrs).map(classify_attr_slot).collect()
+}
 
-    while i < bytes.len() {
-        let byte = bytes[i];
-        if in_string {
-            // Two quotes in a row are STEP's escape for one literal
-            // apostrophe, not the end of the string.
-            if byte == b'\'' {
-                if bytes.get(i + 1) == Some(&b'\'') {
-                    i += 2;
-                    continue;
-                }
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        match byte {
-            b'\'' => in_string = true,
-            b'(' => depth += 1,
-            b')' => {
-                if depth == 0 {
-                    end = i;
-                    break;
-                }
-                depth -= 1;
-            }
-            b',' if depth == 0 => {
-                slots.push(classify_attr_slot(&attrs[start..i]));
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
+/// The raw, untrimmed text of each slot [`split_attr_slots`] returns, in
+/// order and without allocating.
+struct AttrSlotSpans<'a> {
+    attrs: &'a str,
+    start: usize,
+    cursor: usize,
+    depth: usize,
+    in_string: bool,
+    emitted: bool,
+    finished: bool,
+}
 
-    let tail = &attrs[start..end];
-    // An entity with no attributes at all has no trailing slot; one that
-    // ends in a comma keeps the empty slot the comma implies.
-    if !slots.is_empty() || !tail.trim().is_empty() {
-        slots.push(classify_attr_slot(tail));
+impl<'a> AttrSlotSpans<'a> {
+    const fn new(attrs: &'a str) -> Self {
+        Self {
+            attrs,
+            start: 0,
+            cursor: 0,
+            depth: 0,
+            in_string: false,
+            emitted: false,
+            finished: false,
+        }
     }
-    slots
+}
+
+impl<'a> Iterator for AttrSlotSpans<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        if self.finished {
+            return None;
+        }
+        let bytes = self.attrs.as_bytes();
+        let mut end = bytes.len();
+        while self.cursor < bytes.len() {
+            let byte = bytes[self.cursor];
+            if self.in_string {
+                // Two quotes in a row are STEP's escape for one literal
+                // apostrophe, not the end of the string.
+                if byte == b'\'' {
+                    if bytes.get(self.cursor + 1) == Some(&b'\'') {
+                        self.cursor += 2;
+                        continue;
+                    }
+                    self.in_string = false;
+                }
+                self.cursor += 1;
+                continue;
+            }
+            match byte {
+                b'\'' => self.in_string = true,
+                b'(' => self.depth += 1,
+                b')' => {
+                    if self.depth == 0 {
+                        end = self.cursor;
+                        break;
+                    }
+                    self.depth -= 1;
+                }
+                b',' if self.depth == 0 => {
+                    let slot = &self.attrs[self.start..self.cursor];
+                    self.cursor += 1;
+                    self.start = self.cursor;
+                    self.emitted = true;
+                    return Some(slot);
+                }
+                _ => {}
+            }
+            self.cursor += 1;
+        }
+
+        self.finished = true;
+        let tail = &self.attrs[self.start..end];
+        // An entity with no attributes at all has no trailing slot; one that
+        // ends in a comma keeps the empty slot the comma implies.
+        (self.emitted || !tail.trim().is_empty()).then_some(tail)
+    }
+}
+
+/// `exact_real_attribute_list(.., 1, ..)` for the common statement whose
+/// slot 1 is an aggregate of exactly three finite reals (`CARTESIAN_POINT`,
+/// `DIRECTION`), without its two slot vectors and its value vector.
+///
+/// It reads the same slot span, through the same classification, trims and
+/// `f64` parses, so a `Some` holds exactly the general path's values. Every
+/// other input, valid or not, returns `None` and is left to the general path
+/// and its diagnostics.
+fn real_triple_attribute(attrs: &str) -> Option<[f64; 3]> {
+    let mut slots = AttrSlotSpans::new(attrs);
+    slots.next()?;
+    let AttrSlot::List(list) = classify_attr_slot(slots.next()?) else {
+        return None;
+    };
+    let inner = list.strip_prefix('(')?.strip_suffix(')')?;
+    // With no quote or paren inside, the general path's member split is a
+    // plain comma split.
+    if inner
+        .bytes()
+        .any(|byte| matches!(byte, b'\'' | b'(' | b')'))
+    {
+        return None;
+    }
+    let mut members = inner.split(',');
+    let mut values = [0.0; 3];
+    for value in &mut values {
+        let AttrSlot::Other(raw) = classify_attr_slot(members.next()?) else {
+            return None;
+        };
+        *value = raw.parse::<f64>().ok().filter(|value| value.is_finite())?;
+    }
+    // The general path validates a fourth member too, so none is dropped.
+    members.next().is_none().then_some(values)
 }
 
 /// Classify one already-split attribute slot.
@@ -11524,17 +11942,24 @@ mod tests {
             )
             .unwrap();
             builder
-                .normalize_planar_inner_winding(42, &plane, outer_wire, &[inner_wire], &candidates)
+                .normalize_planar_inner_winding(
+                    42,
+                    &plane,
+                    outer_wire,
+                    &[inner_wire],
+                    &candidates,
+                    None,
+                )
                 .unwrap();
 
             let frame =
                 Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
             let mut sampled_points = 0;
             let outer = builder
-                .sample_planar_bound(42, candidates[0], &frame, &mut sampled_points)
+                .sample_planar_bound(42, candidates[0], &frame, &mut sampled_points, None)
                 .unwrap();
             let inner = builder
-                .sample_planar_bound(42, candidates[1], &frame, &mut sampled_points)
+                .sample_planar_bound(42, candidates[1], &frame, &mut sampled_points, None)
                 .unwrap();
             assert_ne!(
                 polygon_signed_area(&outer).is_sign_positive(),
@@ -17170,6 +17595,1063 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let weights = extract_rational_curve_weights(attrs, 3, 1).unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights[1] - 0.707).abs() < 1e-10);
+    }
+
+    // ── Face-bound containment winding index ───────────────────────────
+
+    #[derive(Debug, Clone, Copy)]
+    struct ContainmentAudit {
+        compared: usize,
+        disagreed: usize,
+        contained: usize,
+        /// Planar pairs past the bounds gate, the only ones that query the
+        /// parent's winding index.
+        queried: usize,
+        indexed: usize,
+    }
+
+    const EMPTY_AUDIT: ContainmentAudit = ContainmentAudit {
+        compared: 0,
+        disagreed: 0,
+        contained: 0,
+        queried: 0,
+        indexed: 0,
+    };
+
+    thread_local! {
+        /// Every containment pair the generic bound resolvers decide on this
+        /// thread, re-decided by the full-scan oracle below.
+        static PLANAR_CONTAINMENT_AUDIT: Cell<ContainmentAudit> = const { Cell::new(EMPTY_AUDIT) };
+        static PERIODIC_CONTAINMENT_AUDIT: Cell<ContainmentAudit> =
+            const { Cell::new(EMPTY_AUDIT) };
+    }
+
+    fn record_containment(
+        audit: &'static std::thread::LocalKey<Cell<ContainmentAudit>>,
+        contains: bool,
+        full_scan: bool,
+        queried_index: Option<bool>,
+    ) {
+        let mut tally = audit.get();
+        tally.compared += 1;
+        tally.disagreed += usize::from(contains != full_scan);
+        tally.contained += usize::from(contains);
+        tally.queried += usize::from(queried_index.is_some());
+        tally.indexed += usize::from(queried_index == Some(true));
+        audit.set(tally);
+    }
+
+    pub(super) fn audit_planar_containment(
+        contains: bool,
+        parent: &FaceBoundLoop,
+        parent_index: Option<&IndexedBoundPolygon<'_>>,
+        child: &FaceBoundLoop,
+        margin: f64,
+    ) {
+        let full_scan = planar_loop_contains_full_scan(parent, child, margin);
+        let queried_index = bounds_contain(parent.bounds, child.bounds, margin)
+            .then(|| parent_index.is_some_and(IndexedBoundPolygon::is_indexed));
+        record_containment(
+            &PLANAR_CONTAINMENT_AUDIT,
+            contains,
+            full_scan,
+            queried_index,
+        );
+    }
+
+    pub(super) fn audit_periodic_containment(
+        contains: bool,
+        parent: &FaceBoundLoop,
+        child: &FaceBoundLoop,
+        margin: f64,
+        u_period: Option<f64>,
+        v_period: Option<f64>,
+    ) {
+        let full_scan = periodic_loop_contains_full_scan(parent, child, margin, u_period, v_period);
+        record_containment(&PERIODIC_CONTAINMENT_AUDIT, contains, full_scan, None);
+    }
+
+    /// The containment predicates as they were before [`EdgeYIndex`], with
+    /// every query scanning every parent edge: the oracle for the indexed
+    /// ones.
+    fn point_in_or_on_polygon_full_scan(point: Point2, polygon: &[Point2], margin: f64) -> bool {
+        point_in_polygon(point, polygon)
+            || polygon
+                .iter()
+                .zip(polygon.iter().cycle().skip(1))
+                .take(polygon.len())
+                .any(|(&start, &end)| point_segment_distance_2d(point, start, end) <= margin)
+    }
+
+    fn planar_loop_contains_full_scan(
+        parent: &FaceBoundLoop,
+        child: &FaceBoundLoop,
+        margin: f64,
+    ) -> bool {
+        bounds_contain(parent.bounds, child.bounds, margin)
+            && point_in_or_on_polygon_full_scan(child.probe, &parent.polygon, margin)
+            && child
+                .polygon
+                .iter()
+                .all(|&point| point_in_or_on_polygon_full_scan(point, &parent.polygon, margin))
+    }
+
+    fn periodic_loop_contains_full_scan(
+        parent: &FaceBoundLoop,
+        child: &FaceBoundLoop,
+        margin: f64,
+        u_period: Option<f64>,
+        v_period: Option<f64>,
+    ) -> bool {
+        let (parent_u_shift, child_u_shifts) = periodic_axis_alignment(
+            parent.bounds.min.x(),
+            parent.bounds.max.x(),
+            parent.seam_flexible_u,
+            child.bounds.min.x(),
+            child.bounds.max.x(),
+            u_period,
+            margin,
+        );
+        let (parent_v_shift, child_v_shifts) = periodic_axis_alignment(
+            parent.bounds.min.y(),
+            parent.bounds.max.y(),
+            parent.seam_flexible_v,
+            child.bounds.min.y(),
+            child.bounds.max.y(),
+            v_period,
+            margin,
+        );
+        let parent_polygon: Vec<Point2> = parent
+            .polygon
+            .iter()
+            .map(|&point| translated_point(point, parent_u_shift, parent_v_shift))
+            .collect();
+        let parent_bounds = Aabb2 {
+            min: translated_point(parent.bounds.min, parent_u_shift, parent_v_shift),
+            max: translated_point(parent.bounds.max, parent_u_shift, parent_v_shift),
+        };
+        let mut successful_lifts = 0usize;
+        for &child_u_shift in &child_u_shifts {
+            for &child_v_shift in &child_v_shifts {
+                let child_bounds = Aabb2 {
+                    min: translated_point(child.bounds.min, child_u_shift, child_v_shift),
+                    max: translated_point(child.bounds.max, child_u_shift, child_v_shift),
+                };
+                if !bounds_contain(parent_bounds, child_bounds, margin) {
+                    continue;
+                }
+                let probe = translated_point(child.probe, child_u_shift, child_v_shift);
+                if !point_in_or_on_polygon_full_scan(probe, &parent_polygon, margin) {
+                    continue;
+                }
+                let all_inside = child.polygon.iter().all(|&point| {
+                    point_in_or_on_polygon_full_scan(
+                        translated_point(point, child_u_shift, child_v_shift),
+                        &parent_polygon,
+                        margin,
+                    )
+                });
+                if all_inside {
+                    successful_lifts += 1;
+                }
+            }
+        }
+        successful_lifts == 1
+    }
+
+    /// Deterministic low-discrepancy sample in `[0, 1)`.
+    fn halton(mut index: u32, base: u32) -> f64 {
+        let (mut f, mut r) = (1.0_f64, 0.0_f64);
+        while index > 0 {
+            f /= f64::from(base);
+            r += f * f64::from(index % base);
+            index /= base;
+        }
+        r
+    }
+
+    /// A spiky non-convex star with a vertical and a horizontal run. Its
+    /// edges span so many buckets that the index declines it past `n = 17`.
+    #[allow(clippy::cast_precision_loss)]
+    fn star_polygon(n: usize) -> Vec<Point2> {
+        let mut points: Vec<Point2> = (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / n as f64;
+                let r = if k % 2 == 0 { 1.0 } else { 0.45 };
+                Point2::new(r * t.cos(), r * t.sin())
+            })
+            .collect();
+        points.extend([
+            Point2::new(1.2, 0.0),
+            Point2::new(1.2, 0.3),
+            Point2::new(0.9, 0.3),
+        ]);
+        points
+    }
+
+    /// A smooth non-convex loop with a vertical and a horizontal run, sparse
+    /// enough to be indexed at every `n`.
+    #[allow(clippy::cast_precision_loss)]
+    fn wavy_polygon(n: usize) -> Vec<Point2> {
+        let mut points: Vec<Point2> = (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / n as f64;
+                let r = 0.25f64.mul_add((5.0 * t).sin(), 1.0);
+                Point2::new(r * t.cos(), r * t.sin())
+            })
+            .collect();
+        points.extend([
+            Point2::new(1.4, 0.0),
+            Point2::new(1.4, 0.3),
+            Point2::new(1.1, 0.3),
+        ]);
+        points
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn circle_polygon(n: usize, radius: f64) -> Vec<Point2> {
+        (0..n)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / n as f64;
+                Point2::new(radius * t.cos(), radius * t.sin())
+            })
+            .collect()
+    }
+
+    /// 64 vertices spanning `y` in `[0, 64]`, so 64 buckets of width 1:
+    /// `teeth` full-height teeth, one bump of integer height `bump`, and a
+    /// baseline. The index files `126 * teeth + 2 * bump + 64` entries,
+    /// against a cap of `8 * 64 + 64 = 576`.
+    fn comb_polygon(teeth: usize, bump: f64) -> Vec<Point2> {
+        let mut points = vec![Point2::new(0.0, 0.0)];
+        let mut x = 0.0;
+        for _ in 0..teeth {
+            points.push(Point2::new(x + 0.5, 64.0));
+            points.push(Point2::new(x + 1.0, 0.0));
+            x += 1.0;
+        }
+        points.push(Point2::new(x + 0.5, bump));
+        points.push(Point2::new(x + 1.0, 0.0));
+        while points.len() < 64 {
+            x += 1.0;
+            points.push(Point2::new(x + 1.0, 0.0));
+        }
+        points
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn assert_indexed_winding_matches_full_scan(polygon: &[Point2], label: &str) {
+        let indexed = IndexedBoundPolygon::new(polygon);
+        let mut probes: Vec<Point2> = polygon.to_vec();
+        let mut mid_x = 0.0;
+        if let Some(bounds) = Aabb2::try_from_points(polygon.iter().copied()) {
+            let (min, max) = (bounds.min, bounds.max);
+            let (dx, dy) = (max.x() - min.x(), max.y() - min.y());
+            mid_x = 0.5 * (min.x() + max.x());
+            probes.extend((1..=1_500).map(|i| {
+                Point2::new(
+                    (1.2 * dx).mul_add(halton(i, 2), min.x() - 0.1 * dx),
+                    (1.2 * dy).mul_add(halton(i, 3), min.y() - 0.1 * dy),
+                )
+            }));
+            let buckets = polygon.len().min(MAX_EDGE_Y_BUCKETS);
+            let width = dy / buckets as f64;
+            for k in 0..=buckets {
+                let y = width.mul_add(k as f64, min.y());
+                for y in [y.next_down(), y, y.next_up()] {
+                    probes.push(Point2::new(mid_x, y));
+                    probes.push(Point2::new(min.x() + 0.25 * dx, y));
+                }
+            }
+        }
+        probes.extend(polygon.iter().map(|point| Point2::new(mid_x, point.y())));
+        for y in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            -1e300,
+            -0.0,
+            0.0,
+        ] {
+            probes.push(Point2::new(mid_x, y));
+        }
+        probes.push(Point2::new(f64::NAN, 0.0));
+        for probe in probes {
+            assert_eq!(
+                indexed.winding_number(probe),
+                winding_number(probe, polygon),
+                "{label}: probe {probe:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_bound_winding_matches_full_scan() {
+        let mut polygons: Vec<(String, Vec<Point2>)> = Vec::new();
+        for n in [3, 4, 17, 64, 301, 1288] {
+            polygons.push((format!("star {n}"), star_polygon(n)));
+            polygons.push((format!("wavy {n}"), wavy_polygon(n)));
+        }
+        polygons.push(("circle 512".into(), circle_polygon(512, 4.5)));
+        polygons.push(("circle 1288".into(), circle_polygon(1288, 14.0)));
+        polygons.push((
+            "translated wavy".into(),
+            wavy_polygon(301)
+                .into_iter()
+                .map(|point| Point2::new(point.x() + 1e6, point.y() + 1e6))
+                .collect(),
+        ));
+        polygons.push((
+            "scaled wavy".into(),
+            wavy_polygon(301)
+                .into_iter()
+                .map(|point| Point2::new(point.x() * 1e-3, point.y() * 1e-3))
+                .collect(),
+        ));
+        let mut repeated = wavy_polygon(64);
+        repeated.insert(10, repeated[10]);
+        repeated.insert(30, repeated[30]);
+        repeated.push(repeated[0]);
+        polygons.push(("repeated vertices".into(), repeated));
+        polygons.push(("comb at cap".into(), comb_polygon(4, 4.0)));
+        polygons.push(("comb over cap".into(), comb_polygon(4, 5.0)));
+        polygons.push(("tall comb".into(), comb_polygon(20, 1.0)));
+        let mut indexed = 0;
+        for (label, polygon) in &polygons {
+            assert_indexed_winding_matches_full_scan(polygon, label);
+            indexed += usize::from(IndexedBoundPolygon::new(polygon).is_indexed());
+        }
+        // Every wavy, circle, translated, scaled and repeated loop, the comb
+        // at the cap, and the stars small enough to stay under it.
+        assert!(indexed >= 14, "{indexed} of {} indexed", polygons.len());
+    }
+
+    #[test]
+    fn edge_y_index_is_built_for_sampled_loops_and_stays_sparse() {
+        for polygon in [
+            wavy_polygon(301),
+            wavy_polygon(1288),
+            circle_polygon(512, 4.5),
+            circle_polygon(1288, 14.0),
+        ] {
+            assert!(IndexedBoundPolygon::new(&polygon).is_indexed());
+        }
+        let circle = circle_polygon(1288, 14.0);
+        let indexed = IndexedBoundPolygon::new(&circle);
+        let (mut total, mut most) = (0usize, 0usize);
+        for i in 1..=2_000 {
+            let candidates = indexed
+                .candidate_count(28.0_f64.mul_add(halton(i, 2), -14.0))
+                .unwrap();
+            total += candidates;
+            most = most.max(candidates);
+        }
+        assert!(most < circle.len() / 16, "most candidates {most}");
+        assert!(total < 2_000 * 8, "mean candidates {}", total / 2_000);
+    }
+
+    #[test]
+    fn edge_y_index_declines_degenerate_non_finite_and_over_cap_loops() {
+        let declined = |polygon: &[Point2]| !IndexedBoundPolygon::new(polygon).is_indexed();
+        assert!(declined(&[]));
+        assert!(declined(&[Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)]));
+        let flat = [
+            Point2::new(0.0, 2.0),
+            Point2::new(1.0, 2.0),
+            Point2::new(3.0, 2.0),
+        ];
+        assert!(declined(&flat));
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut polygon = star_polygon(17);
+            polygon[5] = Point2::new(0.3, bad);
+            assert!(declined(&polygon));
+            assert_indexed_winding_matches_full_scan(&polygon, "non-finite y");
+        }
+        let overflowing = [
+            Point2::new(0.0, -1e308),
+            Point2::new(1.0, 1e308),
+            Point2::new(2.0, 0.0),
+        ];
+        assert!(declined(&overflowing));
+        let subnormal = [
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 1e-320),
+            Point2::new(2.0, 0.0),
+        ];
+        assert!(declined(&subnormal));
+
+        // Exactly `8n + buckets` entries is indexed; the next reachable count
+        // (a closed loop files `n` plus an even number) is declined.
+        assert!(IndexedBoundPolygon::new(&comb_polygon(4, 4.0)).is_indexed());
+        assert!(declined(&comb_polygon(4, 5.0)));
+        assert!(declined(&comb_polygon(20, 1.0)));
+    }
+
+    #[test]
+    fn indexed_planar_containment_matches_full_scan_on_hammer_holder() {
+        // All six multi-bound faces of this Shapr3D export are PLANE faces
+        // with generic FACE_BOUNDs only, 20 bounds in all.
+        let data = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/shapr3d_hammer_holder.step"
+        ))
+        .unwrap();
+        PLANAR_CONTAINMENT_AUDIT.set(EMPTY_AUDIT);
+        let mut topo = Topology::new();
+        assert_eq!(read_step(&data, &mut topo).unwrap().len(), 1);
+        let audit = PLANAR_CONTAINMENT_AUDIT.get();
+        assert_eq!(audit.disagreed, 0, "{audit:?}");
+        assert!(audit.contained >= 14, "{audit:?}");
+        assert!(audit.queried >= audit.contained, "{audit:?}");
+        assert_eq!(audit.indexed, audit.queried, "{audit:?}");
+    }
+
+    #[test]
+    fn indexed_periodic_containment_matches_full_scan_on_generic_cylinder() {
+        use remus_math::mat::Mat4;
+        use remus_operations::boolean::{BooleanOp, boolean};
+        use remus_operations::primitives::make_cylinder;
+        use remus_operations::transform::transform_solid;
+
+        let mut source = Topology::new();
+        let shaft = make_cylinder(&mut source, 3.0, 30.0).unwrap();
+        let bore = make_cylinder(&mut source, 2.0, 42.0).unwrap();
+        transform_solid(
+            &mut source,
+            bore,
+            &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+        )
+        .unwrap();
+        transform_solid(&mut source, bore, &Mat4::translation(-21.0, 0.0, 15.0)).unwrap();
+        let drilled = boolean(&mut source, BooleanOp::Cut, shaft, bore).unwrap();
+        let step = writer::write_step(&source, &[drilled])
+            .unwrap()
+            .replace("FACE_OUTER_BOUND", "FACE_BOUND");
+
+        PERIODIC_CONTAINMENT_AUDIT.set(EMPTY_AUDIT);
+        let mut topo = Topology::new();
+        assert_eq!(read_step(&step, &mut topo).unwrap().len(), 1);
+        let audit = PERIODIC_CONTAINMENT_AUDIT.get();
+        assert_eq!(audit.disagreed, 0, "{audit:?}");
+        assert!(audit.contained >= 2, "{audit:?}");
+    }
+
+    // ── Planar inner-winding repair after generic bound resolution ─────
+
+    /// A 4 × 4 generic planar square around unit-circle holes that all run
+    /// along one closed circle edge, forward (`true`) or reversed (`false`).
+    /// No bound is a FACE_OUTER_BOUND. Candidates list the square first.
+    fn generic_planar_holes(
+        hole_senses: &[bool],
+    ) -> (
+        Topology,
+        Vec<FaceBoundCandidate>,
+        remus_topology::edge::EdgeId,
+    ) {
+        let mut topo = Topology::new();
+        let corners: Vec<_> = [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
+            .into_iter()
+            .map(|(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .collect();
+        let square_edges = (0..corners.len())
+            .map(|index| {
+                let edge = topo.add_edge(Edge::new(
+                    corners[index],
+                    corners[(index + 1) % corners.len()],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        let square = topo.add_wire(Wire::new(square_edges, true).unwrap());
+
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut circle_edge =
+            Edge::with_tolerance(seam, seam, EdgeCurve::Circle(circle), Some(1e-7));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let circle_edge = topo.add_edge(circle_edge);
+
+        let mut candidates = vec![FaceBoundCandidate {
+            bound_ref: 1,
+            wire: square,
+            explicit_outer: false,
+            source_position: 0,
+        }];
+        for (position, &forward) in hole_senses.iter().enumerate() {
+            let wire = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(circle_edge, forward)], true).unwrap());
+            candidates.push(FaceBoundCandidate {
+                bound_ref: 2 + position as u64,
+                wire,
+                explicit_outer: false,
+                source_position: position + 1,
+            });
+        }
+        (topo, candidates, circle_edge)
+    }
+
+    thread_local! {
+        static PLANAR_BOUND_SAMPLINGS: Cell<usize> = const { Cell::new(0) };
+        /// The running per-face sample total after every planar edge charge.
+        static FACE_BOUND_SAMPLE_CHARGES: std::cell::RefCell<Vec<usize>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn count_planar_bound_sampling() {
+        PLANAR_BOUND_SAMPLINGS.set(PLANAR_BOUND_SAMPLINGS.get() + 1);
+    }
+
+    pub(super) fn record_face_bound_sample_charge(total: usize) {
+        FACE_BOUND_SAMPLE_CHARGES.with_borrow_mut(|charges| charges.push(total));
+    }
+
+    /// `build_face`'s bound resolution followed by its inner-winding repair,
+    /// handing the repair the resolution's samples when `reuse_samples`.
+    /// Returns how many bounds the repair sampled and the running sample
+    /// totals it charged.
+    fn resolve_and_repair_planar_bounds(
+        topo: &mut Topology,
+        candidates: &[FaceBoundCandidate],
+        reuse_samples: bool,
+    ) -> (usize, Vec<usize>) {
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let entities = HashMap::new();
+        let units = UnitScale {
+            length: 1.0,
+            angle: 1.0,
+        };
+        let mut builder =
+            StepBuilder::new(topo, &entities, units, ImportLimits::default()).unwrap();
+        let (outer, inner, samples) = builder
+            .resolve_face_bounds(42, &plane, candidates, &mut HashMap::new())
+            .unwrap();
+        assert_eq!(outer, candidates[0].wire);
+        let samples = samples.expect("generic planar resolution returns its samples");
+        assert_eq!(samples.bounds.len(), candidates.len());
+
+        PLANAR_BOUND_SAMPLINGS.set(0);
+        FACE_BOUND_SAMPLE_CHARGES.with_borrow_mut(Vec::clear);
+        builder
+            .normalize_planar_inner_winding(
+                42,
+                &plane,
+                outer,
+                &inner,
+                candidates,
+                reuse_samples.then_some(&samples),
+            )
+            .unwrap();
+        (
+            PLANAR_BOUND_SAMPLINGS.get(),
+            FACE_BOUND_SAMPLE_CHARGES.take(),
+        )
+    }
+
+    /// The shared circle edge after `reversals` repairs, built the way the
+    /// repair builds them, rendered bit-exactly.
+    fn circle_after_reversals(hole_senses: &[bool], reversals: usize) -> String {
+        let (topo, _, circle_edge) = generic_planar_holes(hole_senses);
+        let mut edge = topo.edge(circle_edge).unwrap().clone();
+        let seam = topo.vertex(edge.start()).unwrap();
+        for _ in 0..reversals {
+            edge = reversed_closed_edge_with_authority(
+                42,
+                &edge,
+                seam.point(),
+                seam.point(),
+                seam.tolerance(),
+            )
+            .unwrap();
+        }
+        format!("{edge:?}")
+    }
+
+    #[test]
+    fn generic_planar_hole_repair_reverses_each_shared_edge_as_pinned() {
+        // (hole senses, reversals of the shared circle edge, bounds the
+        // repair still samples given the resolution's samples). Reversals
+        // are pinned on the repair that resampled every bound: a same-wound
+        // hole is reversed once; a later use of the same edge is resampled
+        // after that reversal and judged by the edge as it now is, so a
+        // forward and a reversed use reverse it twice, restoring the carrier
+        // bit for bit. The samples serve only the bounds met before the
+        // first reversal.
+        for (hole_senses, reversals, resampled) in [
+            (&[true][..], 1, 0),
+            (&[false][..], 0, 0),
+            (&[true, true][..], 1, 1),
+            (&[true, false][..], 2, 1),
+            (&[false, true][..], 2, 1),
+        ] {
+            assert_ne!(
+                circle_after_reversals(hole_senses, 0),
+                circle_after_reversals(hole_senses, 1)
+            );
+            let mut charges = Vec::new();
+            for reuse_samples in [false, true] {
+                let (mut topo, candidates, circle_edge) = generic_planar_holes(hole_senses);
+                let (samplings, charged) =
+                    resolve_and_repair_planar_bounds(&mut topo, &candidates, reuse_samples);
+                let label = format!("holes {hole_senses:?}, reuse {reuse_samples}");
+                assert_eq!(
+                    format!("{:?}", topo.edge(circle_edge).unwrap()),
+                    circle_after_reversals(hole_senses, reversals),
+                    "{label}"
+                );
+                for (candidate, &forward) in candidates[1..].iter().zip(hole_senses) {
+                    let [oriented] = topo.wire(candidate.wire).unwrap().edges() else {
+                        panic!("one-edge hole");
+                    };
+                    assert_eq!(oriented.edge(), circle_edge, "{label}");
+                    assert_eq!(oriented.is_forward(), forward, "{label}");
+                }
+                let expected = if reuse_samples {
+                    resampled
+                } else {
+                    candidates.len()
+                };
+                assert_eq!(samplings, expected, "{label}");
+                charges.push(charged);
+            }
+            // The cap sees the same running totals in the same order, so a
+            // MAX_FACE_BOUND_SAMPLES refusal would trip at the same edge with
+            // the same `actual`.
+            assert_eq!(charges[0], charges[1], "holes {hole_senses:?}");
+            assert_eq!(charges[0].len(), 4 + hole_senses.len());
+        }
+    }
+
+    #[test]
+    fn generic_planar_faces_sample_each_bound_once_on_hammer_holder() {
+        // Six multi-bound PLANE faces with 20 generic FACE_BOUNDs in all, none
+        // with a same-wound hole; resolution samples each bound once and the
+        // winding repair reuses those samples.
+        let data = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/shapr3d_hammer_holder.step"
+        ))
+        .unwrap();
+        PLANAR_BOUND_SAMPLINGS.set(0);
+        let mut topo = Topology::new();
+        let solids = read_step(&data, &mut topo).unwrap();
+        assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), 20);
+        assert_eq!(solids.len(), 1);
+        assert_eq!(topo.num_faces(), 160);
+    }
+
+    #[test]
+    fn explicit_outer_planar_repair_still_samples_every_bound() {
+        // Sampling in the repair is the plane-residual and sampling-limit
+        // gate for faces whose outer bound is explicit.
+        let (mut topo, mut candidates, _) = generic_planar_holes(&[true, false]);
+        candidates[0].explicit_outer = true;
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let entities = HashMap::new();
+        let units = UnitScale {
+            length: 1.0,
+            angle: 1.0,
+        };
+        let mut builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+        PLANAR_BOUND_SAMPLINGS.set(0);
+        let (outer, inner, samples) = builder
+            .resolve_face_bounds(42, &plane, &candidates, &mut HashMap::new())
+            .unwrap();
+        assert!(samples.is_none());
+        assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), 0);
+        builder
+            .normalize_planar_inner_winding(42, &plane, outer, &inner, &candidates, None)
+            .unwrap();
+        assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), candidates.len());
+    }
+
+    // ── Allocation-free coordinate triples ─────────────────────────────
+
+    /// `split_attr_slots` as it was before [`AttrSlotSpans`]: the oracle
+    /// for that refactor.
+    fn split_attr_slots_previous(attrs: &str) -> Vec<AttrSlot<'_>> {
+        let bytes = attrs.as_bytes();
+        let mut slots = Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        let mut end = bytes.len();
+        let mut in_string = false;
+        let mut i = 0usize;
+
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if in_string {
+                if byte == b'\'' {
+                    if bytes.get(i + 1) == Some(&b'\'') {
+                        i += 2;
+                        continue;
+                    }
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            match byte {
+                b'\'' => in_string = true,
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b',' if depth == 0 => {
+                    slots.push(classify_attr_slot(&attrs[start..i]));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let tail = &attrs[start..end];
+        if !slots.is_empty() || !tail.trim().is_empty() {
+            slots.push(classify_attr_slot(tail));
+        }
+        slots
+    }
+
+    /// What `build_cartesian_point` and `build_direction` read when
+    /// [`real_triple_attribute`] declines.
+    fn general_real_triple(attrs: &str) -> Result<Vec<f64>, IoError> {
+        let slots = split_attr_slots(attrs);
+        exact_real_attribute_list("CARTESIAN_POINT", 7, &slots, 1, "coordinates")
+    }
+
+    /// When the fast path answers, the general path yields the same three
+    /// values bit for bit.
+    fn assert_real_triple_matches_general_path(attrs: &str) {
+        match (real_triple_attribute(attrs), general_real_triple(attrs)) {
+            (Some(fast), Ok(general)) => {
+                assert_eq!(general.len(), 3, "{attrs:?}");
+                for (fast, general) in fast.iter().zip(&general) {
+                    assert_eq!(fast.to_bits(), general.to_bits(), "{attrs:?}");
+                }
+            }
+            (Some(fast), Err(error)) => panic!("{attrs:?}: fast {fast:?}, general {error}"),
+            (None, Ok(general)) => {
+                // Declining is always safe, since the caller then runs the
+                // general path itself. With three values it happens only
+                // where a quote or paren inside the aggregate makes the
+                // general member split differ from a comma split: the general
+                // path reads `(1.,2.,3.)(4.)` as three members.
+                if general.len() == 3 {
+                    let Some(AttrSlot::List(list)) = split_attr_slots(attrs).get(1).copied() else {
+                        panic!("{attrs:?}: three values without an aggregate");
+                    };
+                    assert!(
+                        list[1..list.len() - 1].contains(['\'', '(', ')']),
+                        "{attrs:?}"
+                    );
+                }
+            }
+            (None, Err(_)) => {}
+        }
+        assert_eq!(
+            split_attr_slots(attrs),
+            split_attr_slots_previous(attrs),
+            "{attrs:?}"
+        );
+    }
+
+    /// Attribute text as `parse_step_entities` stores it, closing paren
+    /// retained.
+    const REAL_TRIPLE_CASES: &[&str] = &[
+        "'',(1.,2.,3.))",
+        "'',(0.,0.,0.))",
+        "'Origin',(-1.5E2,2.25,3.))",
+        "'', (1.00000000000000000E0, -2.50000000000000000E-1, 0.))",
+        "'',(1.,2.,3.)",
+        "'',(1.,2.,3.))extra",
+        "'',\n  (1.,\n   2., 3.)\n)",
+        "  '' , ( 1. , 2. , 3. ) )",
+        "'',(1.,2.,3.\n))",
+        // Names: escapes, unterminated strings, syntax inside strings, and
+        // structure in the name slot.
+        "'O''Brien',(1.,2.,3.))",
+        "'''',(1.,2.,3.))",
+        "'a''b',(1.,2.,3.))",
+        "''',(1.,2.,3.))",
+        "'abc,(1.,2.,3.))",
+        "'a,(b',(1.,2.,3.))",
+        "'(x)',(1.,2.,3.))",
+        "$,(1.,2.,3.))",
+        "*,(1.,2.,3.))",
+        "(),(1.,2.,3.))",
+        "('a',(1.)),(1.,2.,3.))",
+        "),(1.,2.,3.))",
+        // Member counts and member kinds.
+        "'',(1.,2.))",
+        "'',(1.,2.,3.,4.))",
+        "'',(1.,2.,3.,#5))",
+        "'',(#12,2.,3.))",
+        "'',(1.,$,3.))",
+        "'',(1.,*,3.))",
+        "'',(.T.,2.,3.))",
+        "'',(.5.,2.,3.))",
+        "'',('1',2.,3.))",
+        "'',(1.,(2.),3.))",
+        "'',((1.,2.,3.)))",
+        "'',(1.,2.,3.,))",
+        "'',(1.,,3.))",
+        "'',(,2.,3.))",
+        "'',())",
+        "'',( ))",
+        "'',(1 .,2.,3.))",
+        "'',(1.;2.;3.))",
+        // Number forms, including ones `f64::from_str` accepts and
+        // non-finite ones it accepts but the reader refuses.
+        "'',(1.E-3,-0.,+1.))",
+        "'',(.5,5.,-.25e+2))",
+        "'',(1.7976931348623157E308,4.9E-324,-0.0))",
+        "'',(1e400,2.,3.))",
+        "'',(NaN,2.,3.))",
+        "'',(inf,2.,3.))",
+        "'',(1.,-inf,3.))",
+        // Text after the aggregate, and later slots.
+        "'',(1.,2.,3.)x)",
+        "'',(1.,2.,3.)(4.))",
+        "'',(1.,2.,3.) x,#5)",
+        "'',(1.,2.,3.),#5)",
+        // Unicode whitespace the general path's `str::trim` also strips.
+        "'',\u{a0}(1.,2.,3.)\u{a0})",
+        "'',(\u{a0}1.,2.,3.\u{a0}))",
+        "'',\u{b}(1.,2.,3.)\u{b})",
+        "'',(\u{b}1.,2.,3.\u{b}))",
+        // No aggregate at all.
+        "'')",
+        "",
+        ")",
+        "'',#5)",
+        "'',1.)",
+    ];
+
+    #[test]
+    fn real_triple_attribute_matches_the_general_path() {
+        for attrs in REAL_TRIPLE_CASES {
+            assert_real_triple_matches_general_path(attrs);
+        }
+    }
+
+    #[test]
+    fn real_triple_attribute_takes_every_canonical_point_and_direction() {
+        for attrs in [
+            "'',(0.,0.,0.))",
+            "'', (1.00000000000000000E0, -2.50000000000000000E-1, 0.))",
+            "'O''Brien',(-1.5E2,2.25,3.))",
+            "'',\n  (1.,\n   2., 3.)\n)",
+            "'',\u{a0}(1.,2.,3.)\u{a0})",
+        ] {
+            assert!(real_triple_attribute(attrs).is_some(), "{attrs:?}");
+        }
+
+        let mut topo = Topology::new();
+        let cube = make_unit_cube_non_manifold(&mut topo);
+        let written = writer::write_step(&topo, &[cube]).unwrap();
+        let hammer = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/shapr3d_hammer_holder.step"
+        ))
+        .unwrap();
+        for (file, minimum) in [(&written, 10), (&hammer, 10_000)] {
+            let entities = parse_step_entities(file, ImportLimits::default()).unwrap();
+            let mut taken = 0;
+            for entity in entities.values() {
+                if matches!(
+                    entity.kind,
+                    EntityKind::CartesianPoint | EntityKind::Direction
+                ) {
+                    assert!(
+                        real_triple_attribute(entity.attrs_str()).is_some(),
+                        "{:?}",
+                        entity.attrs_str()
+                    );
+                    taken += 1;
+                }
+            }
+            assert!(taken >= minimum, "{taken} points and directions");
+        }
+    }
+
+    fn general_cartesian_point(builder: &StepBuilder<'_>, cp_ref: u64) -> Result<Point3, IoError> {
+        let attrs = &builder.get_entity(cp_ref)?.attrs;
+        let slots = split_attr_slots(attrs);
+        let coords =
+            exact_real_attribute_list("CARTESIAN_POINT", cp_ref, &slots, 1, "coordinates")?;
+        if coords.len() < 3 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "CARTESIAN_POINT #{cp_ref} needs 3 coordinates, got {}",
+                    coords.len()
+                ),
+            });
+        }
+        let s = builder.units.length;
+        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
+    }
+
+    fn general_direction(builder: &StepBuilder<'_>, dir_ref: u64) -> Result<Vec3, IoError> {
+        let attrs = &builder.get_entity(dir_ref)?.attrs;
+        let slots = split_attr_slots(attrs);
+        let coords =
+            exact_real_attribute_list("DIRECTION", dir_ref, &slots, 1, "direction_ratios")?;
+        if coords.len() < 3 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "DIRECTION #{dir_ref} needs 3 components, got {}",
+                    coords.len()
+                ),
+            });
+        }
+        Ok(Vec3::new(coords[0], coords[1], coords[2]))
+    }
+
+    #[test]
+    fn point_and_direction_builders_match_the_general_path() {
+        let bits = |values: [f64; 3]| values.map(f64::to_bits);
+        let cases = u64::try_from(REAL_TRIPLE_CASES.len()).unwrap();
+        let mut entities = HashMap::new();
+        for (id, attrs) in (1..).zip(REAL_TRIPLE_CASES) {
+            for (entity_ref, kind, type_raw) in [
+                (id, EntityKind::CartesianPoint, "CARTESIAN_POINT"),
+                (id + cases, EntityKind::Direction, "DIRECTION"),
+            ] {
+                entities.insert(
+                    entity_ref,
+                    StepEntity {
+                        kind,
+                        type_raw: std::borrow::Cow::Borrowed(type_raw),
+                        attrs: std::borrow::Cow::Borrowed(attrs),
+                        pos: 0,
+                    },
+                );
+            }
+        }
+        let units = UnitScale {
+            length: 25.4,
+            angle: 1.0,
+        };
+        let mut topo = Topology::new();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+        let mut built = 0;
+        // Each case as a point and as a direction, then an id with no entity.
+        for (point_ref, direction_ref) in (1..=cases)
+            .map(|id| (id, id + cases))
+            .chain([(3 * cases, 3 * cases)])
+        {
+            match (
+                builder.build_cartesian_point(point_ref),
+                general_cartesian_point(&builder, point_ref),
+            ) {
+                (Ok(point), Ok(general)) => {
+                    built += 1;
+                    assert_eq!(
+                        bits([point.x(), point.y(), point.z()]),
+                        bits([general.x(), general.y(), general.z()]),
+                        "#{point_ref}"
+                    );
+                }
+                (Err(error), Err(general)) => assert_eq!(error.to_string(), general.to_string()),
+                (point, general) => panic!("#{point_ref}: {point:?} vs {general:?}"),
+            }
+            match (
+                builder.build_direction(direction_ref),
+                general_direction(&builder, direction_ref),
+            ) {
+                (Ok(direction), Ok(general)) => assert_eq!(
+                    bits([direction.x(), direction.y(), direction.z()]),
+                    bits([general.x(), general.y(), general.z()]),
+                    "#{direction_ref}"
+                ),
+                (Err(error), Err(general)) => assert_eq!(error.to_string(), general.to_string()),
+                (direction, general) => panic!("#{direction_ref}: {direction:?} vs {general:?}"),
+            }
+        }
+        assert!(built >= 20, "{built} points built");
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4_000))]
+
+        #[test]
+        fn real_triple_attribute_matches_the_general_path_on_any_text(
+            attrs in "[',()#$*.0-9eE+ \n\u{a0}\u{b}a-]{0,24}"
+        ) {
+            assert_real_triple_matches_general_path(&attrs);
+        }
+
+        #[test]
+        fn real_triple_attribute_matches_the_general_path_on_point_shaped_text(
+            attrs in "('[a-z',()]{0,3}'?|\\$|\\*|)[ \n]?,[ \n\u{a0}]?\\(([ 0-9.eE+#$*'()\u{a0}-]{0,6},){0,4}[ 0-9.eE+\u{a0}-]{0,6}\\)[ \u{b}]?[)x,#5(]{0,3}"
+        ) {
+            assert_real_triple_matches_general_path(&attrs);
+        }
+
+        #[test]
+        fn real_triple_attribute_matches_the_general_path_on_numeric_members(
+            name in "'[a-z' ,()]{0,4}'|\\$|\\*",
+            members in proptest::collection::vec(
+                "[ \n\u{a0}]{0,2}[+-]?([0-9]{1,3}\\.?[0-9]{0,3}|\\.[0-9]{1,3})([eE][+-]?[0-9]{1,3})?[ \n\u{b}]{0,2}",
+                2..=4,
+            ),
+            tail in "[)x,#5( ]{0,3}",
+        ) {
+            assert_real_triple_matches_general_path(&format!("{name},({}){tail}", members.join(",")));
+        }
+
+        #[test]
+        fn writer_formatted_triples_take_the_fast_path(
+            coordinates in proptest::array::uniform3(any::<f64>()),
+            name in "[a-z' ]{0,6}",
+        ) {
+            prop_assume!(coordinates.iter().all(|value| value.is_finite()));
+            // The writer's literal: `0.` for zero, else 17 decimals in E form.
+            let literal = |value: f64| {
+                if value == 0.0 {
+                    "0.".to_string()
+                } else {
+                    format!("{value:.17E}")
+                }
+            };
+            let attrs = format!(
+                "'{}', ({}, {}, {}))",
+                name.replace('\'', "''"),
+                literal(coordinates[0]),
+                literal(coordinates[1]),
+                literal(coordinates[2])
+            );
+            let fast = real_triple_attribute(&attrs);
+            prop_assert!(fast.is_some(), "{attrs:?}");
+            assert_real_triple_matches_general_path(&attrs);
+            for (fast, value) in fast.unwrap_or_default().iter().zip(coordinates) {
+                if value != 0.0 {
+                    prop_assert_eq!(fast.to_bits(), value.to_bits());
+                }
+            }
+        }
     }
 }
 

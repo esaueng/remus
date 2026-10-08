@@ -10,11 +10,12 @@ use smallvec::SmallVec;
 
 use crate::Topology;
 use crate::TopologyError;
+use crate::arena::Id;
 use crate::edge::EdgeId;
 use crate::face::FaceId;
 use crate::solid::SolidId;
 use crate::vertex::VertexId;
-use crate::wire::WireId;
+use crate::wire::{OrientedEdge, WireId};
 
 // ── Solid queries ──────────────────────────────────────────────────
 
@@ -43,18 +44,7 @@ pub fn solid_faces(topo: &Topology, solid: SolidId) -> Result<Vec<FaceId>, Topol
 ///
 /// Returns an error if any topology lookup fails.
 pub fn solid_edges(topo: &Topology, solid: SolidId) -> Result<Vec<EdgeId>, TopologyError> {
-    let mut seen = HashSet::new();
-    let mut edges = Vec::new();
-
-    for face_id in solid_faces(topo, solid)? {
-        for eid in face_edges(topo, face_id)? {
-            if seen.insert(eid.index()) {
-                edges.push(eid);
-            }
-        }
-    }
-
-    Ok(edges)
+    edges_of_faces(topo, &solid_faces(topo, solid)?)
 }
 
 /// Get all unique vertex IDs from a solid.
@@ -63,20 +53,7 @@ pub fn solid_edges(topo: &Topology, solid: SolidId) -> Result<Vec<EdgeId>, Topol
 ///
 /// Returns an error if any topology lookup fails.
 pub fn solid_vertices(topo: &Topology, solid: SolidId) -> Result<Vec<VertexId>, TopologyError> {
-    let mut seen = HashSet::new();
-    let mut vertices = Vec::new();
-
-    for eid in solid_edges(topo, solid)? {
-        let edge = topo.edge(eid)?;
-        if seen.insert(edge.start().index()) {
-            vertices.push(edge.start());
-        }
-        if seen.insert(edge.end().index()) {
-            vertices.push(edge.end());
-        }
-    }
-
-    Ok(vertices)
+    vertices_of_edges(topo, &solid_edges(topo, solid)?)
 }
 
 // ── Face queries ───────────────────────────────────────────────────
@@ -87,22 +64,7 @@ pub fn solid_vertices(topo: &Topology, solid: SolidId) -> Result<Vec<VertexId>, 
 ///
 /// Returns an error if any topology lookup fails.
 pub fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, TopologyError> {
-    let face_data = topo.face(face)?;
-    let mut seen = HashSet::new();
-    let mut edges = Vec::new();
-
-    for wire_id in
-        std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
-    {
-        let wire = topo.wire(wire_id)?;
-        for oe in wire.edges() {
-            if seen.insert(oe.edge().index()) {
-                edges.push(oe.edge());
-            }
-        }
-    }
-
-    Ok(edges)
+    edges_of_faces(topo, &[face])
 }
 
 /// Get all unique vertex IDs from a face.
@@ -111,20 +73,103 @@ pub fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, Topology
 ///
 /// Returns an error if any topology lookup fails.
 pub fn face_vertices(topo: &Topology, face: FaceId) -> Result<Vec<VertexId>, TopologyError> {
-    let mut seen = HashSet::new();
-    let mut vertices = Vec::new();
+    vertices_of_edges(topo, &face_edges(topo, face)?)
+}
 
-    for eid in face_edges(topo, face)? {
-        let edge = topo.edge(eid)?;
-        if seen.insert(edge.start().index()) {
-            vertices.push(edge.start());
-        }
-        if seen.insert(edge.end().index()) {
-            vertices.push(edge.end());
+// ── Deduplicated gathers ───────────────────────────────────────────
+
+/// Unique edges of `faces` in first-use order: faces in slice order, each
+/// face's outer wire then its inner wires, edges in wire order.
+///
+/// The first pass performs every face and wire lookup in that order, so the
+/// first failing lookup is the one a face-by-face walk would hit, and sizes
+/// the gather so it never regrows.
+fn edges_of_faces(topo: &Topology, faces: &[FaceId]) -> Result<Vec<EdgeId>, TopologyError> {
+    let mut uses = 0_usize;
+    for &face_id in faces {
+        let face = topo.face(face_id)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            uses = uses.saturating_add(topo.wire(wire_id)?.edges().len());
         }
     }
 
+    let mut edges = Vec::with_capacity(uses);
+    for &face_id in faces {
+        let face = topo.face(face_id)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            edges.extend(topo.wire(wire_id)?.edges().iter().map(OrientedEdge::edge));
+        }
+    }
+    dedup_first(&mut edges);
+    Ok(edges)
+}
+
+/// Unique endpoints of `edges` in order: each edge's start, then its end.
+fn vertices_of_edges(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<VertexId>, TopologyError> {
+    let mut vertices = Vec::with_capacity(2 * edges.len());
+    for &eid in edges {
+        let edge = topo.edge(eid)?;
+        vertices.push(edge.start());
+        vertices.push(edge.end());
+    }
+    dedup_first(&mut vertices);
     Ok(vertices)
+}
+
+/// Lists at or below this length are deduplicated by scanning the kept prefix.
+const LINEAR_DEDUP_MAX: usize = 32;
+
+/// Drops every repeat of an id, keeping first occurrences in their order.
+///
+/// `Id` equality is arena-index equality, so this keeps exactly what a
+/// `HashSet` filter on `index()` keeps, without hashing on the common paths.
+fn dedup_first<T>(ids: &mut Vec<Id<T>>) {
+    let n = ids.len();
+    if n <= LINEAR_DEDUP_MAX {
+        let mut kept = 0;
+        for read in 0..n {
+            let id = ids[read];
+            if !ids[..kept].contains(&id) {
+                ids[kept] = id;
+                kept += 1;
+            }
+        }
+        ids.truncate(kept);
+        return;
+    }
+
+    let (lo, hi) = ids.iter().fold((usize::MAX, 0), |(lo, hi), id| {
+        (lo.min(id.index()), hi.max(id.index()))
+    });
+    if let Some(words) = bitmap_words(n, lo, hi) {
+        let mut bits = vec![0_u64; words];
+        ids.retain(|id| {
+            let offset = id.index() - lo;
+            // `offset / 64 < words` by construction; never panic on a miss.
+            let Some(word) = bits.get_mut(offset / 64) else {
+                return true;
+            };
+            let mask = 1_u64 << (offset % 64);
+            let fresh = *word & mask == 0;
+            *word |= mask;
+            fresh
+        });
+    } else {
+        let mut seen = HashSet::with_capacity(n);
+        ids.retain(|id| seen.insert(id.index()));
+    }
+}
+
+/// Words of a bitmap over `lo..=hi`, or `None` when it would need more words
+/// than there are ids (`hi - lo >= 64 * n`, written so it cannot overflow).
+const fn bitmap_words(n: usize, lo: usize, hi: usize) -> Option<usize> {
+    let Some(span) = hi.checked_sub(lo) else {
+        return None;
+    };
+    let words = span / 64 + 1;
+    if words <= n { Some(words) } else { None }
 }
 
 // ── Edge queries ───────────────────────────────────────────────────
@@ -266,10 +311,10 @@ pub fn solid_entity_counts(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<(usize, usize, usize), TopologyError> {
-    let faces = solid_faces(topo, solid)?.len();
-    let edges = solid_edges(topo, solid)?.len();
-    let vertices = solid_vertices(topo, solid)?.len();
-    Ok((faces, edges, vertices))
+    let faces = solid_faces(topo, solid)?;
+    let edges = edges_of_faces(topo, &faces)?;
+    let vertices = vertices_of_edges(topo, &edges)?.len();
+    Ok((faces.len(), edges.len(), vertices))
 }
 
 #[cfg(all(test, feature = "test-utils"))]
@@ -404,6 +449,7 @@ mod traversal_tests {
 
     use remus_math::vec::{Point3, Vec3};
 
+    use crate::arena::Arena;
     use crate::edge::{Edge, EdgeCurve};
     use crate::face::{Face, FaceSurface};
     use crate::shell::{Shell, ShellId};
@@ -758,5 +804,434 @@ mod traversal_tests {
             shared_edges(&topo, bottom, top).unwrap().is_empty(),
             "opposing cube faces share no edge"
         );
+    }
+
+    // ── Equality with the HashSet walk the dedup gathers replaced ─────
+
+    fn ref_face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, TopologyError> {
+        let face_data = topo.face(face)?;
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        for wire_id in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            let wire = topo.wire(wire_id)?;
+            for oe in wire.edges() {
+                if seen.insert(oe.edge().index()) {
+                    edges.push(oe.edge());
+                }
+            }
+        }
+        Ok(edges)
+    }
+
+    fn ref_vertices(
+        topo: &Topology,
+        edges: Result<Vec<EdgeId>, TopologyError>,
+    ) -> Result<Vec<VertexId>, TopologyError> {
+        let mut seen = HashSet::new();
+        let mut vertices = Vec::new();
+        for eid in edges? {
+            let edge = topo.edge(eid)?;
+            if seen.insert(edge.start().index()) {
+                vertices.push(edge.start());
+            }
+            if seen.insert(edge.end().index()) {
+                vertices.push(edge.end());
+            }
+        }
+        Ok(vertices)
+    }
+
+    fn ref_solid_edges(topo: &Topology, solid: SolidId) -> Result<Vec<EdgeId>, TopologyError> {
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        for face_id in solid_faces(topo, solid)? {
+            for eid in ref_face_edges(topo, face_id)? {
+                if seen.insert(eid.index()) {
+                    edges.push(eid);
+                }
+            }
+        }
+        Ok(edges)
+    }
+
+    fn ref_solid_entity_counts(
+        topo: &Topology,
+        solid: SolidId,
+    ) -> Result<(usize, usize, usize), TopologyError> {
+        let faces = solid_faces(topo, solid)?.len();
+        let edges = ref_solid_edges(topo, solid)?.len();
+        let vertices = ref_vertices(topo, ref_solid_edges(topo, solid))?.len();
+        Ok((faces, edges, vertices))
+    }
+
+    /// `Ok` values must agree element for element; errors by variant and id.
+    fn assert_same<T: PartialEq + std::fmt::Debug>(
+        got: Result<T, TopologyError>,
+        want: Result<T, TopologyError>,
+        what: &str,
+    ) {
+        match (got, want) {
+            (Ok(got), Ok(want)) => assert_eq!(got, want, "{what}"),
+            (Err(got), Err(want)) => assert_eq!(format!("{got:?}"), format!("{want:?}"), "{what}"),
+            (got, want) => panic!("{what}: got {got:?}, reference {want:?}"),
+        }
+    }
+
+    fn assert_face_matches_reference(topo: &Topology, face: FaceId) {
+        assert_same(
+            face_edges(topo, face),
+            ref_face_edges(topo, face),
+            "face_edges",
+        );
+        assert_same(
+            face_vertices(topo, face),
+            ref_vertices(topo, ref_face_edges(topo, face)),
+            "face_vertices",
+        );
+    }
+
+    fn assert_solid_matches_reference(topo: &Topology, solid: SolidId) {
+        assert_same(
+            solid_edges(topo, solid),
+            ref_solid_edges(topo, solid),
+            "solid_edges",
+        );
+        assert_same(
+            solid_vertices(topo, solid),
+            ref_vertices(topo, ref_solid_edges(topo, solid)),
+            "solid_vertices",
+        );
+        assert_same(
+            solid_entity_counts(topo, solid),
+            ref_solid_entity_counts(topo, solid),
+            "solid_entity_counts",
+        );
+        if let Ok(faces) = solid_faces(topo, solid) {
+            for face in faces {
+                assert_face_matches_reference(topo, face);
+            }
+        }
+    }
+
+    /// Which `dedup_first` branch a raw gather of `ids` takes.
+    fn dedup_path<T>(ids: &[Id<T>]) -> &'static str {
+        if ids.len() <= LINEAR_DEDUP_MAX {
+            return "linear";
+        }
+        let lo = ids.iter().map(|id| id.index()).min().unwrap();
+        let hi = ids.iter().map(|id| id.index()).max().unwrap();
+        if bitmap_words(ids.len(), lo, hi).is_some() {
+            "bitmap"
+        } else {
+            "hash"
+        }
+    }
+
+    /// `count` fresh edges between fresh vertices, with `gap` unrelated edges
+    /// allocated after each so their indices are `gap + 1` apart.
+    fn spaced_edges(topo: &mut Topology, count: usize, gap: usize) -> Vec<EdgeId> {
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let filler = topo.add_vertex(Vertex::new(origin, TOL));
+        let verts: Vec<VertexId> = (0..=count)
+            .map(|_| topo.add_vertex(Vertex::new(origin, TOL)))
+            .collect();
+        let mut edges = Vec::with_capacity(count);
+        for pair in verts.windows(2) {
+            edges.push(topo.add_edge(Edge::new(pair[0], pair[1], EdgeCurve::Line)));
+            for _ in 0..gap {
+                topo.add_edge(Edge::new(filler, filler, EdgeCurve::Line));
+            }
+        }
+        edges
+    }
+
+    fn wire_of(topo: &mut Topology, edges: &[EdgeId]) -> WireId {
+        topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .expect("wire"),
+        )
+    }
+
+    fn plane_face(topo: &mut Topology, outer: WireId, inner: Vec<WireId>) -> FaceId {
+        topo.add_face(Face::new(
+            outer,
+            inner,
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    /// A cylinder-shaped solid: closed rim edges (start == end) and a seam
+    /// used twice, in opposite directions, by the lateral wire.
+    fn seam_solid(topo: &mut Topology) -> (SolidId, [EdgeId; 3], [VertexId; 2]) {
+        let bot = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), TOL));
+        let top = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), TOL));
+        let rim_bot = topo.add_edge(Edge::new(bot, bot, EdgeCurve::Line));
+        let rim_top = topo.add_edge(Edge::new(top, top, EdgeCurve::Line));
+        let seam = topo.add_edge(Edge::new(bot, top, EdgeCurve::Line));
+        let lateral = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(rim_bot, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(rim_top, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .expect("lateral wire"),
+        );
+        let bot_cap = wire_of(topo, &[rim_bot]);
+        let top_cap = wire_of(topo, &[rim_top]);
+        let faces = vec![
+            plane_face(topo, lateral, vec![]),
+            plane_face(topo, bot_cap, vec![]),
+            plane_face(topo, top_cap, vec![]),
+        ];
+        let shell = topo.add_shell(Shell::new(faces).expect("shell"));
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        (solid, [rim_bot, seam, rim_top], [bot, top])
+    }
+
+    #[test]
+    fn explorer_matches_hashset_reference_on_fixtures() {
+        let mut topo = Topology::new();
+        let cube = solid_cube(&mut topo);
+        assert_solid_matches_reference(&topo, cube);
+
+        let (cavity, _, _) = solid_cube_with_cavity(&mut topo);
+        assert_solid_matches_reference(&topo, cavity);
+
+        let holed = holed_face(&mut topo);
+        assert_face_matches_reference(&topo, holed);
+
+        let (seam, [rim_bot, seam_edge, rim_top], [bot, top]) = seam_solid(&mut topo);
+        assert_solid_matches_reference(&topo, seam);
+        let lateral = solid_faces(&topo, seam).unwrap()[0];
+        assert_eq!(
+            face_edges(&topo, lateral).unwrap(),
+            [rim_bot, seam_edge, rim_top]
+        );
+        assert_eq!(face_vertices(&topo, lateral).unwrap(), [bot, top]);
+        assert_eq!(solid_entity_counts(&topo, seam).unwrap(), (3, 3, 2));
+    }
+
+    #[test]
+    fn explorer_matches_hashset_reference_across_dedup_paths() {
+        let mut topo = Topology::new();
+
+        // Linear scan at exactly LINEAR_DEDUP_MAX uses: 31 edges + a repeat.
+        let e = spaced_edges(&mut topo, 31, 0);
+        let mut uses = e.clone();
+        uses.push(e[0]);
+        let w = wire_of(&mut topo, &uses);
+        let linear = plane_face(&mut topo, w, vec![]);
+        assert_eq!(dedup_path(&uses), "linear");
+        assert_face_matches_reference(&topo, linear);
+        assert_eq!(face_edges(&topo, linear).unwrap(), e);
+
+        // One past it, dense indices: the bitmap.
+        let e = spaced_edges(&mut topo, 32, 0);
+        let mut uses = e.clone();
+        uses.push(e[31]);
+        let w = wire_of(&mut topo, &uses);
+        let bitmap = plane_face(&mut topo, w, vec![]);
+        assert_eq!(dedup_path(&uses), "bitmap");
+        assert_face_matches_reference(&topo, bitmap);
+        assert_eq!(face_edges(&topo, bitmap).unwrap(), e);
+
+        // Outer and inner wires repeating each other's edges out of order.
+        let e = spaced_edges(&mut topo, 30, 0);
+        let outer = wire_of(&mut topo, &e[..20]);
+        let inner_uses: Vec<EdgeId> = e[10..].iter().rev().copied().collect();
+        let inner = wire_of(&mut topo, &inner_uses);
+        let mixed = plane_face(&mut topo, outer, vec![inner, outer]);
+        assert_face_matches_reference(&topo, mixed);
+        assert_eq!(face_edges(&topo, mixed).unwrap().len(), 30);
+
+        // ~12k unrelated edges between the uses: span >= 64·n, the hash path.
+        let e = spaced_edges(&mut topo, 39, 300);
+        let mut uses = e.clone();
+        uses.insert(5, e[38]);
+        let w = wire_of(&mut topo, &uses);
+        let sparse = plane_face(&mut topo, w, vec![]);
+        assert_eq!(dedup_path(&uses), "hash");
+        assert_face_matches_reference(&topo, sparse);
+        let mut want = e[..5].to_vec();
+        want.push(e[38]);
+        want.extend_from_slice(&e[5..38]);
+        assert_eq!(face_edges(&topo, sparse).unwrap(), want);
+
+        // A solid over all of them, with faces repeated within and across shells.
+        let all =
+            topo.add_shell(Shell::new(vec![linear, bitmap, mixed, sparse, mixed]).expect("shell"));
+        let again = topo.add_shell(Shell::new(vec![sparse, linear]).expect("shell"));
+        let solid = topo.add_solid(Solid::new(all, vec![again]));
+        assert_solid_matches_reference(&topo, solid);
+        assert_eq!(
+            solid_edges(&topo, solid).unwrap().len(),
+            31 + 32 + 30 + 39,
+            "every edge once, however often it is used"
+        );
+    }
+
+    #[test]
+    fn dedup_first_matches_hashset_filter_at_path_boundaries() {
+        let mut arena: Arena<()> = Arena::new();
+        let ids: Vec<Id<()>> = (0..64 * 33 + 200).map(|_| arena.alloc(())).collect();
+        let reference = |input: &[Id<()>]| -> Vec<Id<()>> {
+            let mut seen = HashSet::new();
+            input
+                .iter()
+                .copied()
+                .filter(|id| seen.insert(id.index()))
+                .collect()
+        };
+        let check = |input: Vec<Id<()>>, path: &str| {
+            assert_eq!(
+                dedup_path(&input),
+                path,
+                "fixture must take the {path} path"
+            );
+            let mut got = input.clone();
+            dedup_first(&mut got);
+            assert_eq!(got, reference(&input), "{path} path, n = {}", input.len());
+        };
+
+        // n = 32 (linear) and n = 33 (bitmap), each with repeats.
+        let mut v: Vec<Id<()>> = ids[7..35].to_vec();
+        v.extend([ids[20], ids[7], ids[34], ids[20]]);
+        assert_eq!(v.len(), 32);
+        check(v.clone(), "linear");
+        v.push(ids[8]);
+        check(v, "bitmap");
+
+        // hi - lo = 64·33 − 1: the widest span the bitmap takes, with both
+        // extreme ids repeated so both end words are exercised.
+        let lo = 100;
+        let mut v: Vec<Id<()>> = (0..29).map(|i| ids[lo + 1 + i * 70]).collect();
+        v.extend([
+            ids[lo + 64 * 33 - 1],
+            ids[lo],
+            ids[lo + 64 * 33 - 1],
+            ids[lo],
+        ]);
+        assert_eq!(v.len(), 33);
+        check(v.clone(), "bitmap");
+
+        // One wider (hi - lo = 64·33): the hash fallback.
+        v[30] = ids[lo + 64 * 33];
+        check(v, "hash");
+
+        // hi - lo an exact multiple of 64, with hi repeated: an off-by-one in
+        // the word count would drop hi into a missing word and keep both.
+        let mut v: Vec<Id<()>> = ids[200..238].to_vec();
+        v.extend([ids[200 + 64 * 5], ids[205], ids[200 + 64 * 5]]);
+        assert_eq!(bitmap_words(v.len(), 200, 200 + 64 * 5), Some(6));
+        check(v, "bitmap");
+    }
+
+    #[test]
+    fn bitmap_words_threshold_and_sizing() {
+        for n in [1, 32, 33, 1000] {
+            assert_eq!(bitmap_words(n, 7, 7 + 64 * n - 1), Some(n), "n = {n}");
+            assert_eq!(bitmap_words(n, 7, 7 + 64 * n), None, "n = {n}");
+        }
+        assert_eq!(bitmap_words(33, 0, 64), Some(2), "offset 64 is in word 1");
+        assert_eq!(bitmap_words(33, 0, 63), Some(1));
+        assert_eq!(bitmap_words(1, 5, 5), Some(1));
+        assert_eq!(
+            bitmap_words(33, 9, 3),
+            None,
+            "lo > hi never takes the bitmap"
+        );
+        assert_eq!(
+            bitmap_words(usize::MAX, 0, usize::MAX),
+            Some(usize::MAX / 64 + 1)
+        );
+        assert_eq!(bitmap_words(2, 0, usize::MAX), None);
+    }
+
+    #[test]
+    fn explorer_errors_match_hashset_reference() {
+        // Ids past the end of every arena in `topo`, minted by a larger donor.
+        let mut donor = Topology::new();
+        let dv = donor.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), TOL));
+        let donor_edges: Vec<EdgeId> = (0..500)
+            .map(|_| donor.add_edge(Edge::new(dv, dv, EdgeCurve::Line)))
+            .collect();
+        let donor_wires: Vec<WireId> = (0..500)
+            .map(|_| wire_of(&mut donor, &donor_edges[..1]))
+            .collect();
+        let donor_faces: Vec<FaceId> = (0..500)
+            .map(|_| plane_face(&mut donor, donor_wires[0], vec![]))
+            .collect();
+        let (missing_e1, missing_e2) = (donor_edges[498], donor_edges[499]);
+        let (missing_w1, missing_w2) = (donor_wires[498], donor_wires[499]);
+        let missing_face = donor_faces[499];
+
+        let mut topo = Topology::new();
+        let e = spaced_edges(&mut topo, 4, 0);
+        let good_wire = wire_of(&mut topo, &e);
+        let good = plane_face(&mut topo, good_wire, vec![]);
+        // The outer wire resolves; only the inner wire is missing.
+        let bad_inner = plane_face(&mut topo, good_wire, vec![missing_w1]);
+        let bad_outer = plane_face(&mut topo, missing_w2, vec![]);
+        // A resolvable wire naming missing edges: the face gathers them, and
+        // vertex lookup fails on the first missing one in gather order.
+        let dangling_wire = wire_of(&mut topo, &[e[0], missing_e2, e[1], missing_e1, missing_e2]);
+        let dangling = plane_face(&mut topo, dangling_wire, vec![]);
+
+        for face in [good, bad_inner, bad_outer, dangling] {
+            assert_face_matches_reference(&topo, face);
+        }
+        assert!(matches!(
+            face_edges(&topo, bad_inner),
+            Err(TopologyError::WireNotFound(id)) if id == missing_w1
+        ));
+        assert!(matches!(
+            face_vertices(&topo, dangling),
+            Err(TopologyError::EdgeNotFound(id)) if id == missing_e2
+        ));
+        assert_eq!(
+            face_edges(&topo, dangling).unwrap(),
+            [e[0], missing_e2, e[1], missing_e1]
+        );
+
+        let solid_of = |topo: &mut Topology, faces: Vec<FaceId>| {
+            let shell = topo.add_shell(Shell::new(faces).expect("shell"));
+            topo.add_solid(Solid::new(shell, vec![]))
+        };
+        // The first failing lookup in traversal order wins.
+        let inner_first = solid_of(&mut topo, vec![good, bad_inner, bad_outer, dangling]);
+        let outer_first = solid_of(&mut topo, vec![good, dangling, bad_outer, bad_inner]);
+        let edge_only = solid_of(&mut topo, vec![good, dangling]);
+        let face_missing = solid_of(&mut topo, vec![good, missing_face, bad_inner]);
+        for solid in [inner_first, outer_first, edge_only, face_missing] {
+            assert_solid_matches_reference(&topo, solid);
+        }
+        assert!(matches!(
+            solid_entity_counts(&topo, inner_first),
+            Err(TopologyError::WireNotFound(id)) if id == missing_w1
+        ));
+        assert!(matches!(
+            solid_vertices(&topo, outer_first),
+            Err(TopologyError::WireNotFound(id)) if id == missing_w2
+        ));
+        assert!(matches!(
+            solid_vertices(&topo, edge_only),
+            Err(TopologyError::EdgeNotFound(id)) if id == missing_e2
+        ));
+        assert!(matches!(
+            solid_entity_counts(&topo, face_missing),
+            Err(TopologyError::FaceNotFound(id)) if id == missing_face
+        ));
     }
 }

@@ -659,6 +659,16 @@
       "reason": "O4.7 twin; the typed surface itself, no further twin required"
     },
     {
+      "js": "extrudeJournaled",
+      "rust": "extrude_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
       "js": "faceFaceBlend",
       "rust": "face_face_blend",
       "file": "bindings/operations.rs",
@@ -1782,16 +1792,6 @@
       "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
     },
     {
-      "js": "extrudeJournaled",
-      "rust": "extrude_journaled_js",
-      "file": "bindings/evolution.rs",
-      "gate": "shipped",
-      "class": "special_case",
-      "coverage": "special",
-      "owner": "B18",
-      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
-    },
-    {
       "js": "offsetSolid",
       "rust": "offset_solid",
       "file": "bindings/operations.rs",
@@ -2312,6 +2312,36 @@
       "coverage": "uncovered",
       "owner": "O4.7",
       "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
+    },
+    {
+      "js": "takeFaceOffsets",
+      "rust": "take_face_offsets",
+      "file": "shapes.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "PERF-D04",
+      "reason": "consume-once mesh-result buffer extraction; does not mutate kernel geometry or session handles, so no solid twin applies"
+    },
+    {
+      "js": "takeIndices",
+      "rust": "take_indices",
+      "file": "shapes.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "PERF-D04",
+      "reason": "consume-once mesh-result buffer extraction; does not mutate kernel geometry or session handles, so no solid twin applies"
+    },
+    {
+      "js": "takePositions",
+      "rust": "take_positions",
+      "file": "shapes.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "PERF-D04",
+      "reason": "consume-once mesh-result buffer extraction; does not mutate kernel geometry or session handles, so no solid twin applies"
     },
     {
       "js": "thicken",

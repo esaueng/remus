@@ -7028,6 +7028,107 @@ fn build_perforated_panel(topo: &mut Topology, g: usize) -> (SolidId, SolidId) {
     (slab, tool)
 }
 
+/// The explorer's dedup gathers must return exactly what the per-call
+/// `HashSet` walk they replaced returned, on real boolean results: a
+/// box-perforated panel (holed caps with well over 32 edge uses) and a
+/// cylinder-perforated slab (seams used twice per wire, closed rims whose
+/// start and end vertex coincide).
+#[test]
+fn explorer_gathers_match_hashset_reference_on_perforated_results() {
+    use std::collections::HashSet;
+
+    use remus_math::mat::Mat4;
+    use remus_topology::TopologyError;
+    use remus_topology::explorer::{
+        face_edges, face_vertices, solid_edges, solid_entity_counts, solid_faces, solid_vertices,
+    };
+    use remus_topology::vertex::VertexId;
+
+    fn ref_face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, TopologyError> {
+        let face_data = topo.face(face)?;
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        for wire_id in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            for oe in topo.wire(wire_id)?.edges() {
+                if seen.insert(oe.edge().index()) {
+                    edges.push(oe.edge());
+                }
+            }
+        }
+        Ok(edges)
+    }
+    fn ref_vertices(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<VertexId>, TopologyError> {
+        let mut seen = HashSet::new();
+        let mut vertices = Vec::new();
+        for &eid in edges {
+            let edge = topo.edge(eid)?;
+            if seen.insert(edge.start().index()) {
+                vertices.push(edge.start());
+            }
+            if seen.insert(edge.end().index()) {
+                vertices.push(edge.end());
+            }
+        }
+        Ok(vertices)
+    }
+    fn ref_solid_edges(topo: &Topology, solid: SolidId) -> Result<Vec<EdgeId>, TopologyError> {
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        for face_id in solid_faces(topo, solid)? {
+            for eid in ref_face_edges(topo, face_id)? {
+                if seen.insert(eid.index()) {
+                    edges.push(eid);
+                }
+            }
+        }
+        Ok(edges)
+    }
+    let check = |topo: &Topology, solid: SolidId| {
+        let faces = solid_faces(topo, solid).unwrap();
+        let edges = ref_solid_edges(topo, solid).unwrap();
+        let vertices = ref_vertices(topo, &edges).unwrap();
+        assert_eq!(solid_edges(topo, solid).unwrap(), edges);
+        assert_eq!(solid_vertices(topo, solid).unwrap(), vertices);
+        assert_eq!(
+            solid_entity_counts(topo, solid).unwrap(),
+            (faces.len(), edges.len(), vertices.len())
+        );
+        for face in faces {
+            let edges = ref_face_edges(topo, face).unwrap();
+            assert_eq!(face_edges(topo, face).unwrap(), edges);
+            assert_eq!(
+                face_vertices(topo, face).unwrap(),
+                ref_vertices(topo, &edges).unwrap()
+            );
+        }
+        (edges.len(), vertices.len())
+    };
+
+    let mut topo = Topology::new();
+    let (slab, tool) = build_perforated_panel(&mut topo, 6);
+    let panel = boolean(&mut topo, BooleanOp::Cut, slab, tool).unwrap();
+    assert_eq!(check(&topo, panel), (12 + 12 * 36, 8 + 8 * 36));
+
+    let mut topo = Topology::new();
+    let mut plate = crate::primitives::make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
+    for (x, y) in [(2.5, 2.5), (7.5, 2.5), (2.5, 7.5), (7.5, 7.5)] {
+        let drill = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
+        crate::transform::transform_solid(&mut topo, drill, &Mat4::translation(x, y, -1.0))
+            .unwrap();
+        plate = boolean(&mut topo, BooleanOp::Cut, plate, drill).unwrap();
+    }
+    let seamed = solid_faces(&topo, plate).unwrap().into_iter().any(|face| {
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        let uses: Vec<usize> = wire.edges().iter().map(|oe| oe.edge().index()).collect();
+        uses.iter()
+            .any(|e| uses.iter().filter(|u| *u == e).count() > 1)
+    });
+    assert!(seamed, "a drilled wall must use its seam twice");
+    check(&topo, plate);
+}
+
 /// Complexity-regression guard (issue #987): the five boolean hot paths that
 /// PR #990 made near-linear must stay sub-quadratic. Counting *work* (not
 /// wall-clock) makes this deterministic — a reintroduced per-item full scan or
@@ -9846,14 +9947,14 @@ fn intersection_audit_uses_the_trimmed_torus_boundary() {
 /// projected onto all six faces. Counts are deterministic work, not time.
 ///
 /// This guards the pruning only. That the gate leaves geometry untouched is
-/// covered by the box-coverage tests in `phase_ef` (every sample the scan
-/// can evaluate lies inside the gate box) and by the Shapr3D hammer fixtures
-/// in `remus-io`, whose exact face counts, volumes and STEP round trips run
-/// through this phase on real NURBS lettering and blends. The raw GFA fuse
-/// on a `convert_to_bspline` bar is used here because the operations-level
-/// boolean recognises those faces back to planes and never reaches the gate;
-/// its result volume is not asserted (a pre-existing, gate-independent
-/// defect on such converted margins is tracked separately).
+/// covered by the box-coverage tests in `pave_filler::helpers` (every sample
+/// the scan can evaluate lies inside the gate box) and by the Shapr3D hammer
+/// fixtures in `remus-io`, whose exact face counts, volumes and STEP round
+/// trips run through this phase on real NURBS lettering and blends. The raw
+/// GFA fuse on a `convert_to_bspline` bar is used here because the
+/// operations-level boolean recognises those faces back to planes and never
+/// reaches the gate; its result volume is not asserted (a pre-existing,
+/// gate-independent defect on such converted margins is tracked separately).
 #[cfg(feature = "perf-counters")]
 #[test]
 fn scaling_ef_curved_edge_gate_prunes_far_nurbs_pairs() {
@@ -9930,6 +10031,44 @@ fn scaling_distance_query_prunes_far_nurbs_faces() {
         probes <= 32,
         "expected box pruning to keep at most 32 probes, got {probes}"
     );
+}
+
+/// A cross-drilled shaft opens the bore lateral's two winding NURBS loops
+/// at three cuts each, and every face's closed sections are offered all six.
+/// The presplit's reach-box gate projects only the cuts that can lie on the
+/// section: 4 closed sections x 3 own cuts = 12, where projecting every cut
+/// would be 24 (and 24·D² for D drills).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_winding_cut_projections_skip_the_other_loop() {
+    use remus_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let shaft = crate::primitives::make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    crate::transform::transform_solid(&mut topo, tool, &Mat4::translation(-5.0, 0.0, 6.0)).unwrap();
+
+    remus_algo::perf::reset();
+    let drilled = boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap();
+    let projections = remus_algo::perf::snapshot().winding_cut_projections;
+    eprintln!("winding cut guard: projections={projections}");
+
+    assert!(
+        projections > 0,
+        "winding cut guard counter was not exercised"
+    );
+    assert!(
+        projections <= 12,
+        "expected each closed section to project only its own loop's cuts, got {projections}"
+    );
+    let report = crate::validate::validate_solid(&topo, drilled).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
 }
 
 /// Vertex-on-edge projection work on a touching-box grid (PERF-M04).
@@ -10019,4 +10158,390 @@ fn scaling_ve_projection_counts_sampled_line_work() {
         "VE broad-phase regressed: {} sampled projections on the 4x4 grid (ungated: ~32k)",
         s4.ve_sampled_probes,
     );
+}
+
+/// Complexity guard for the N-way FF junction seeding (balanced `fuse_all`).
+///
+/// Every FF solid pair starts from a junction registry seeded from all of the
+/// arena's pave endpoints. The N-way driver used to rebuild it per pair —
+/// Θ(pairs × paves), i.e. cubic in the body count: 72% of balanced
+/// `fuse_all` on a 5x5 grid. It now seeds once per run, so the seed count
+/// tracks the paves (≈ bodies): 3x3 → 5x5 grows ≈ 25/9 ≈ 2.8x, against
+/// ≈ (300 · 25) / (36 · 9) ≈ 23x for per-pair seeding.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_ff_seeds_junctions_once_per_run() {
+    use remus_math::mat::Mat4;
+
+    let fuse_grid = |n: usize| -> u64 {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.01, 1.01, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        let fused = crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let seeds = remus_algo::perf::snapshot().junction_seeds;
+        let vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
+        let side = n as f64 + 0.01;
+        let expected = side * side;
+        assert!(
+            (vol - expected).abs() < 1e-9 * expected,
+            "{n}x{n} overlapping grid fuse volume {vol} != {expected}"
+        );
+        let report = crate::validate::validate_solid(&topo, fused).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        seeds
+    };
+
+    let s3 = fuse_grid(3);
+    let s5 = fuse_grid(5);
+    eprintln!("junction seeds @ 3x3 -> 5x5 overlapping grids: {s3} -> {s5}");
+    assert!(
+        s3 > 0,
+        "FF junction seeding was not exercised by the grid fuse"
+    );
+    assert!(
+        s5 < 6 * s3,
+        "N-way FF junction seeding regressed toward per-pair rebuilds: {s3} -> {s5} \
+         seeds (once per run ≈ 2.8x, per pair ≈ 23x)"
+    );
+}
+
+/// The holed plate of the boolean bench (`single_boolean_at_face_count`,
+/// F~54): a 100 x 100 x 10 box cut by sixteen r = 2 cylinders on a 20 mm
+/// grid, each spanning z = -5..15, plus one more such tool at `(x, y)`.
+#[cfg(feature = "perf-counters")]
+fn bench_holed_plate_and_tool(topo: &mut Topology, x: f64, y: f64) -> (SolidId, SolidId) {
+    use remus_math::mat::Mat4;
+
+    let tool_at = |topo: &mut Topology, x: f64, y: f64| {
+        let tool = crate::primitives::make_cylinder(topo, 2.0, 20.0).unwrap();
+        crate::transform::transform_solid(topo, tool, &Mat4::translation(x, y, -5.0)).unwrap();
+        tool
+    };
+    let mut plate = crate::primitives::make_box(topo, 100.0, 100.0, 10.0).unwrap();
+    for i in 0..16_u32 {
+        let tool = tool_at(
+            topo,
+            20.0 * f64::from(i % 4 + 1),
+            20.0 * f64::from(i / 4 + 1),
+        );
+        plate = boolean(topo, BooleanOp::Cut, plate, tool).unwrap();
+    }
+    (plate, tool_at(topo, x, y))
+}
+
+/// Vertex-on-edge work for one more cut of the bench's holed plate (the
+/// curved-edge half of PERF-B02). Every vertex x circle pair is at least
+/// 5 mm out of plane (plate vertices at z = 0 / 10, tool rims at z = -5 /
+/// 15) or 18 mm apart in plan, so the circle boxes prune all 16 + 8 * 16 =
+/// 144 of them; before, each ran the 73-evaluation sampled projection. That
+/// the box changes no result is proven bit-exactly by
+/// `broad_phases_leave_the_intersection_state_bit_identical` in `remus-algo`.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_ve_curved_edge_box_prunes_far_circle_pairs() {
+    let mut topo = Topology::new();
+    let (plate, tool) = bench_holed_plate_and_tool(&mut topo, 50.0, 95.0);
+    remus_algo::perf::reset();
+    let result = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    let probes = remus_algo::perf::snapshot().ve_sampled_probes;
+    eprintln!("ve curved guard: sampled projections={probes}");
+    assert!(
+        probes <= 8,
+        "curved-edge VE box regressed: {probes} sampled projections (ungated: 144)"
+    );
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+}
+
+/// Edge-face work against analytic carriers (the EF slice of PERF-B05).
+/// Ungated, one more cut of the bench's holed plate scans every plate line,
+/// hole rim and seam against the tool wall and every tool edge against each
+/// hole wall (12 + 6 * 16 = 108 sampled scans), plus 76 rim x plane scans,
+/// and none of them can cross: the holes are 18 mm or more from the tool and
+/// the tool rims sit 5 mm off the plate. The planar face box and the
+/// certified cylinder clearance prune them all. `cut(box, cyl)` of the
+/// `cad_operations` bench keeps its genuine crossers (the four box lines
+/// through the tool wall), so an over-eager gate or a deleted counter fails
+/// here too. That the gates change no result is proven bit-exactly by
+/// `broad_phases_leave_the_intersection_state_bit_identical` in `remus-algo`.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_ef_analytic_gates_prune_far_pairs() {
+    let mut topo = Topology::new();
+    let (plate, tool) = bench_holed_plate_and_tool(&mut topo, 50.0, 95.0);
+    remus_algo::perf::reset();
+    let result = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    let far = remus_algo::perf::snapshot();
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+
+    let mut topo = Topology::new();
+    let block = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
+    remus_algo::perf::reset();
+    boolean(&mut topo, BooleanOp::Cut, block, tool).unwrap();
+    let near = remus_algo::perf::snapshot();
+    eprintln!(
+        "ef analytic guard: holed plate scans={} gated={}, cut(box,cyl) scans={} gated={}",
+        far.ef_analytic_pair_scans,
+        far.ef_analytic_pairs_gated,
+        near.ef_analytic_pair_scans,
+        near.ef_analytic_pairs_gated,
+    );
+    assert!(
+        far.ef_analytic_pair_scans <= 4,
+        "EF analytic gates regressed: {} sampled scans on the holed plate (ungated: 184)",
+        far.ef_analytic_pair_scans,
+    );
+    assert!(
+        near.ef_analytic_pair_scans >= 4,
+        "cut(box, cyl) must still scan its four crossing box lines, got {}",
+        near.ef_analytic_pair_scans,
+    );
+}
+
+/// A box of `size` with its minimum corner at `at`.
+#[cfg(test)]
+fn box_at(topo: &mut Topology, size: [f64; 3], at: [f64; 3]) -> SolidId {
+    use remus_math::mat::Mat4;
+    let s = crate::primitives::make_box(topo, size[0], size[1], size[2]).unwrap();
+    crate::transform::transform_solid(topo, s, &Mat4::translation(at[0], at[1], at[2])).unwrap();
+    s
+}
+
+/// `compound_cut_perf`'s `compound_cut_struts/nway_N=14`: a slab cut by a
+/// lattice of 7 + 7 interpenetrating struts.
+#[cfg(test)]
+fn struts_nway_14() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let target = crate::primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
+    let mut tools = Vec::new();
+    for i in 0..7 {
+        let pos = 12.5 * (i + 1) as f64 - 2.0;
+        tools.push(box_at(&mut topo, [100.0, 4.0, 10.0], [0.0, pos, 0.0]));
+        tools.push(box_at(&mut topo, [4.0, 100.0, 10.0], [pos, 0.0, 0.0]));
+    }
+    let r = compound_cut(&mut topo, target, &tools, BooleanOptions::default()).unwrap();
+    (topo, r)
+}
+
+/// `compound_cut_perf`'s `compound_cut_honeycomb/compound_rings=5_N=91`: a
+/// slab cut by 91 boxes on a hexagonal grid.
+#[cfg(test)]
+fn honeycomb_c91() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let target = crate::primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
+    let side = 3.0 * 1.732;
+    let mut tools = vec![box_at(
+        &mut topo,
+        [side, side, 20.0],
+        [50.0 - side / 2.0, 50.0 - side / 2.0, -5.0],
+    )];
+    let dirs: [(f64, f64); 6] = [
+        (1.0, 0.0),
+        (0.5, 0.866_025_403_784_438_6),
+        (-0.5, 0.866_025_403_784_438_6),
+        (-1.0, 0.0),
+        (-0.5, -0.866_025_403_784_438_6),
+        (0.5, -0.866_025_403_784_438_6),
+    ];
+    for n in 1..=5 {
+        for (k, &(dx, dy)) in dirs.iter().enumerate() {
+            let next = dirs[(k + 2) % 6];
+            for step in 0..n {
+                // Unfused, as the bench computes them.
+                let hx = 50.0 + 8.0 * (n as f64 * dx + step as f64 * next.0);
+                let hy = 50.0 + 8.0 * (n as f64 * dy + step as f64 * next.1);
+                if hx > 3.0 && hx < 97.0 && hy > 3.0 && hy < 97.0 {
+                    let at = [hx - side / 2.0, hy - side / 2.0, -5.0];
+                    tools.push(box_at(&mut topo, [side, side, 20.0], at));
+                }
+            }
+        }
+    }
+    assert_eq!(tools.len(), 91);
+    let r = compound_cut(&mut topo, target, &tools, BooleanOptions::default()).unwrap();
+    (topo, r)
+}
+
+/// `fuse_perf`'s `fuse_balanced/sequential_N=25`: a left fold of 5 × 5
+/// slightly overlapping boxes.
+#[cfg(test)]
+fn fuse_seq_25() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let mut acc = None;
+    for row in 0..5 {
+        for col in 0..5 {
+            let s = box_at(&mut topo, [1.01, 1.01, 1.0], [col as f64, row as f64, 0.0]);
+            acc = Some(match acc {
+                None => s,
+                Some(a) => boolean(&mut topo, BooleanOp::Fuse, a, s).unwrap(),
+            });
+        }
+    }
+    (topo, acc.unwrap())
+}
+
+/// `boolean_tracking`'s `boolean/perforated_cut_36`.
+#[cfg(test)]
+fn perforated_36() -> (Topology, SolidId) {
+    let mut topo = Topology::new();
+    let (slab, tool) = build_perforated_panel(&mut topo, 6);
+    let r = boolean(&mut topo, BooleanOp::Cut, slab, tool).unwrap();
+    (topo, r)
+}
+
+/// A boolean workload and the solid it produces.
+#[cfg(test)]
+type Workload = fn() -> (Topology, SolidId);
+
+/// Bench-shaped workloads whose boolean classification runs through the
+/// ray-cast vote loop (`remus_algo::classifier::ray_cast`).
+#[cfg(test)]
+const RAYCAST_VOTE_WORKLOADS: [(&str, Workload); 4] = [
+    ("struts_nway_14", struts_nway_14),
+    ("honeycomb_c91", honeycomb_c91),
+    ("fuse_seq_25", fuse_seq_25),
+    ("perforated_36", perforated_36),
+];
+
+/// `(faces, edges, vertices, FNV-1a of the vertex coordinate bits in
+/// traversal order, volume bits)` of a boolean result.
+#[cfg(test)]
+type Fingerprint = (usize, usize, usize, u64, u64);
+
+#[cfg(test)]
+fn solid_fingerprint(topo: &Topology, solid: SolidId) -> Fingerprint {
+    use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+    let vertices = solid_vertices(topo, solid).unwrap();
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &v in &vertices {
+        let p = topo.vertex(v).unwrap().point();
+        for c in [p.x(), p.y(), p.z()] {
+            for byte in c.to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    let volume = crate::measure::solid_volume(topo, solid, 0.01).unwrap();
+    (
+        solid_faces(topo, solid).unwrap().len(),
+        solid_edges(topo, solid).unwrap().len(),
+        vertices.len(),
+        hash,
+        volume.to_bits(),
+    )
+}
+
+/// Bit-identity pin for the ray-cast vote loop's exact work reductions (the
+/// planar polygon gate and the shared plane evaluation): every workload above
+/// must produce the same solid, bit for bit, as the classifier did before
+/// them. The expected values were recorded on that earlier classifier.
+#[test]
+fn raycast_vote_workloads_keep_their_fingerprints() {
+    let expected: [(&str, Fingerprint); 4] = [
+        (
+            "struts_nway_14",
+            (
+                384,
+                768,
+                512,
+                12_990_291_784_835_671_845,
+                4_677_357_648_931_192_832,
+            ),
+        ),
+        (
+            "honeycomb_c91",
+            (
+                370,
+                1104,
+                736,
+                5_647_678_859_729_609_957,
+                4_679_920_022_395_773_900,
+            ),
+        ),
+        (
+            "fuse_seq_25",
+            (
+                174,
+                356,
+                184,
+                3_991_198_408_618_336_166,
+                4_627_758_267_745_064_011,
+            ),
+        ),
+        (
+            "perforated_36",
+            (
+                150,
+                444,
+                296,
+                10_590_237_501_849_657_077,
+                4_647_371_415_974_764_874,
+            ),
+        ),
+    ];
+    let got: Vec<_> = RAYCAST_VOTE_WORKLOADS
+        .iter()
+        .map(|&(name, run)| {
+            let (topo, solid) = run();
+            (name, solid_fingerprint(&topo, solid))
+        })
+        .collect();
+    assert_eq!(got.as_slice(), expected.as_slice());
+}
+
+/// Complexity guard for the ray-cast vote loop (PERF-Q07 subset). A vote
+/// measures a point-segment distance only for segments its plane hits come
+/// within the graze margin of: before the polygon gate every hit measured
+/// every edge of the face (and its holes), about 1,100 distances per vote on
+/// the 91-box honeycomb and 770 on the strut lattice. And faces on one plane
+/// share each ray's plane hit, so these axis-aligned results have far fewer
+/// distinct planes than planar faces. Runs only with
+/// `--features perf-counters`.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_raycast_votes_measure_few_segments() {
+    for (name, run) in RAYCAST_VOTE_WORKLOADS {
+        let _ = remus_algo::perf::take_ray_work();
+        run();
+        let w = remus_algo::perf::take_ray_work();
+        eprintln!(
+            "{name}: {} votes, {} plane hits, {} polygon tests ({} settled by the \
+             face box), {} segment distances, {} windings; {} planar faces on {} planes",
+            w.votes,
+            w.plane_evals,
+            w.polygon_tests,
+            w.face_skips,
+            w.segment_evals,
+            w.windings,
+            w.planar_faces,
+            w.plane_groups,
+        );
+        assert!(w.votes > 0, "{name} cast no ray-cast votes");
+        assert!(
+            2 * w.plane_groups <= w.planar_faces,
+            "{name}: {} planar faces on {} planes",
+            w.planar_faces,
+            w.plane_groups,
+        );
+        assert!(
+            w.segment_evals <= 50 * w.votes,
+            "{name}: {} segment distances over {} votes",
+            w.segment_evals,
+            w.votes,
+        );
+    }
 }

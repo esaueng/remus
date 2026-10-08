@@ -42,11 +42,12 @@ pub fn find_span(n: usize, degree: usize, u: f64, knots: &[f64]) -> usize {
     mid
 }
 
-/// O(1) span lookup for uniform knot vectors.
+/// Span lookup with an O(1) hint for uniform knot vectors.
 ///
 /// `step` is the constant spacing between internal knots (as returned by
 /// [`uniform_knot_step`]). The caller must verify the knot vector is uniform
-/// before using this — passing an incorrect `step` gives wrong results.
+/// before using this. The hinted interval is checked against the stored knots;
+/// roundoff near a knot falls back to binary search.
 #[must_use]
 pub fn find_span_uniform(n: usize, degree: usize, u: f64, knots: &[f64], step: f64) -> usize {
     if u >= knots[n] {
@@ -55,14 +56,20 @@ pub fn find_span_uniform(n: usize, degree: usize, u: f64, knots: &[f64], step: f
     if u <= knots[degree] {
         return degree;
     }
-    let span = degree + ((u - knots[degree]) / step) as usize;
-    span.min(n - 1)
+    let span = (degree + ((u - knots[degree]) / step) as usize).min(n - 1);
+    // Rounded division can put an otherwise uniform hint on the wrong side
+    // of a knot. A hint can only replace binary search inside its interval.
+    if knots[span] <= u && u < knots[span + 1] {
+        span
+    } else {
+        find_span(n, degree, u, knots)
+    }
 }
 
 /// Check if internal knots are uniformly spaced.
 ///
 /// Returns the step size if the internal knots `knots[degree..=n]` are
-/// equidistant (within 1e-12), or `None` otherwise.
+/// equidistant to floating-point precision, or `None` otherwise.
 #[must_use]
 pub fn uniform_knot_step(knots: &[f64], degree: usize) -> Option<f64> {
     let n = knots.len() - degree - 1; // number of control points
@@ -80,11 +87,19 @@ pub fn uniform_knot_step(knots: &[f64], degree: usize) -> Option<f64> {
     }
     for i in (first_internal + 1)..last_internal {
         let actual_step = knots[i + 1] - knots[i];
-        if (actual_step - step).abs() > 1e-12 {
+        if (actual_step - step).abs() > 16.0 * f64::EPSILON * actual_step.abs().max(step) {
             return None;
         }
     }
     Some(step)
+}
+
+/// Binomial coefficients for rational derivative recurrences. Computing in
+/// floating point avoids overflowing an integer at high requested orders.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn binomial_f64(n: usize, k: usize) -> f64 {
+    let k = k.min(n - k);
+    (1..=k).fold(1.0, |value, i| value * (n - k + i) as f64 / i as f64)
 }
 
 /// Maximum output degree for stack-allocated caller buffers.
@@ -283,7 +298,7 @@ pub fn ders_basis_funs_into(
 /// last two upper-triangle columns (degree `p - 1` and `p` basis functions)
 /// and the last lower-triangle row (knot differences) are ever read, so this
 /// rolls those through three short stack arrays and spells the `k = 1` step
-/// out — same operations, same order, same `mul_add`s, nothing else. The
+/// out — same operations, same order, same fused multiply-adds, nothing else. The
 /// general routine zero-fills a 121-entry table and walks its index
 /// arithmetic per call; a quadrature abscissa calls this twice.
 ///
@@ -304,33 +319,50 @@ pub fn ders_basis_funs_first_into(
         return;
     }
     let stride = p + 1;
+    let out = &mut out[..2 * stride];
     let mut left = [0.0_f64; MAX_STACK_DEGREE + 1];
     let mut right = [0.0_f64; MAX_STACK_DEGREE + 1];
-    // `prev`/`cur`: upper-triangle columns `j - 1` and `j` of `ndu`, i.e.
-    // `ndu[r][j - 1]` and `ndu[r][j]`; `lower`: lower-triangle row `j`,
-    // `ndu[j][r]`. After the loop `prev` is column `p - 1` and `lower` row
-    // `p`, which is all the first derivative reads.
-    let mut prev = [0.0_f64; MAX_STACK_DEGREE + 1];
-    let mut cur = [0.0_f64; MAX_STACK_DEGREE + 1];
+    // `cols[j & 1]` is upper-triangle column `j` of `ndu` (`ndu[r][j]`), so
+    // `prev`/`cur` alternate between the two buffers instead of copying a
+    // column per step, and the last column (`j == p`) is written straight
+    // into `out` (a variable-length copy lowers to a libc `memmove`/`memcpy`
+    // call in this hot loop). Iteration `j` overwrites `cur[0..=j]` and
+    // reads only `prev[0..j]`, so stale entries are never observed.
+    // `lower`: lower-triangle row `j`, `ndu[j][r]`. After the loop column
+    // `p - 1` and row `p` are all the first derivative reads.
+    let mut cols = [[0.0_f64; MAX_STACK_DEGREE + 1]; 2];
     let mut lower = [0.0_f64; MAX_STACK_DEGREE + 1];
-    cur[0] = 1.0;
+    cols[0][0] = 1.0;
+    if p == 0 {
+        out[0] = 1.0;
+    }
     for j in 1..=p {
-        prev[..j].copy_from_slice(&cur[..j]);
+        let [even, odd] = &mut cols;
+        let (prev, col) = if j % 2 == 1 {
+            (&*even, odd)
+        } else {
+            (&*odd, even)
+        };
+        let cur: &mut [f64] = if j == p { &mut out[..stride] } else { col };
         left[j] = u - knots[span + 1 - j];
         right[j] = knots[span + j] - u;
         let mut saved = 0.0;
         for r in 0..j {
             lower[r] = right[r + 1] + left[j - r];
             let temp = prev[r] / lower[r];
-            cur[r] = right[r + 1].mul_add(temp, saved);
+            cur[r] = right[r + 1].fma(temp, saved);
             saved = left[j - r] * temp;
         }
         cur[j] = saved;
     }
-    out[..stride].copy_from_slice(&cur[..stride]);
+    // Column `p - 1` shares the parity of `p + 1`, which also stays in range
+    // at `p == 0`, where `prev` is never read.
+    let prev = &cols[(p + 1) & 1];
 
     // A2.3 at k = 1 with a[s1][0] = 1: the leading term exists for r >= 1,
-    // the trailing one for r <= p - 1, and the middle loop is empty.
+    // the trailing one for r <= p - 1, and the middle loop is empty. The
+    // `* factor` is A2.3's final scaling pass, applied at the store.
+    let factor = p as f64;
     for r in 0..=p {
         let mut d = if r >= 1 {
             let a0 = 1.0 / lower[r - 1];
@@ -342,11 +374,7 @@ pub fn ders_basis_funs_first_into(
             let a1 = -1.0 / lower[r];
             d += a1 * prev[r];
         }
-        out[stride + r] = d;
-    }
-    let factor = p as f64;
-    for value in &mut out[stride..2 * stride] {
-        *value *= factor;
+        out[stride + r] = d * factor;
     }
 }
 
@@ -519,6 +547,39 @@ mod tests {
                         bits(&first),
                         bits(&general),
                         "degree {degree} repeated {repeated} u {u} span {span}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn first_order_basis_matches_general_bitwise_off_domain_and_offset() {
+        // Knot vectors shifted to large coordinates and to straddle zero,
+        // with u at -0.0, on interior knots, and outside the domain (callers
+        // pass unclamped u with a clamped span).
+        for degree in 0..=4usize {
+            for offset in [0.0, -0.75, 1.0e6] {
+                let mut knots = vec![offset; degree + 1];
+                for k in 1..4 {
+                    knots.push(offset + 0.3 * f64::from(k));
+                }
+                knots.extend(vec![offset + 1.2; degree + 1]);
+                let n = knots.len() - degree - 1;
+                let mut params = vec![-0.0, 0.0, offset - 0.5, offset + 1.7];
+                params.extend(knots.iter().copied());
+                for u in params {
+                    let span = find_span(n, degree, u, &knots);
+                    let stride = degree + 1;
+                    let mut general = vec![0.0; 2 * stride];
+                    ders_basis_funs_into(span, u, degree, 1, &knots, &mut general);
+                    let mut first = vec![0.0; 2 * stride];
+                    ders_basis_funs_first_into(span, u, degree, &knots, &mut first);
+                    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(
+                        bits(&first),
+                        bits(&general),
+                        "degree {degree} offset {offset} u {u} span {span}"
                     );
                 }
             }

@@ -1860,6 +1860,39 @@ impl BrepKernel {
             .map_err(|error| JsError::new(&error.to_string()))
     }
 
+    /// Batch the edges needed by a selected feature proof. Classification
+    /// still uses the entire solid and the ordinary per-edge default probe.
+    ///
+    /// # Errors
+    /// Refuses duplicate, foreign/deleted edges, invalid probes and query errors.
+    #[wasm_bindgen(js_name = "solidEdgeRelationsSubset")]
+    pub fn solid_edge_relations_subset_binding(
+        &self,
+        solid: u32,
+        edges: &[u32],
+        probe: Option<f64>,
+    ) -> Result<String, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let edges = edges
+            .iter()
+            .map(|&edge| self.resolve_edge(edge))
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows = remus_operations::query::solid_edge_relations_subset(
+            self.topo(),
+            solid_id,
+            &edges,
+            probe,
+        )?
+        .into_iter()
+        .map(|rel| EdgeRelationRow {
+            edge: edge_id_to_u32(rel.edge),
+            relation: map_edge_concavity(rel.concavity),
+            dihedral_angle: rel.dihedral_angle,
+        })
+        .collect::<Vec<_>>();
+        serde_json::to_string(&rows).map_err(|error| JsError::new(&error.to_string()))
+    }
+
     /// Material side of one analytic face: `"outward"` (boss-like) or
     /// `"inward"` (bore- or pocket-like).
     ///

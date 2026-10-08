@@ -712,6 +712,43 @@ fn compute_lspia_step_size_weighted(
 
 // ── LSPIA (Locally Supported Progressive-Iterative Approximation) ─────
 
+/// The post-basis half of [`NurbsCurve::evaluate`], copied verbatim so LSPIA
+/// can feed it a precomputed `(span, basis)` pair and get the same bits as
+/// `evaluate` at that parameter. A copy rather than a shared helper keeps
+/// `evaluate`'s codegen untouched; `lspia_oracle_tests` pins the two together.
+fn point_from_basis(
+    bf: &[f64],
+    span: usize,
+    p: usize,
+    control_points: &[Point3],
+    weights: &[f64],
+) -> Point3 {
+    let scale = bf
+        .iter()
+        .enumerate()
+        .take(p + 1)
+        .map(|(j, &basis_val)| (basis_val * weights[span - p + j]).abs())
+        .fold(0.0_f64, f64::max);
+    let mut wx = 0.0;
+    let mut wy = 0.0;
+    let mut wz = 0.0;
+    let mut ww = 0.0;
+    for (j, &basis_val) in bf.iter().enumerate().take(p + 1) {
+        let idx = span - p + j;
+        let pt = &control_points[idx];
+        let w = weights[idx];
+        let bw = basis_val * w / scale;
+        wx += bw * pt.x();
+        wy += bw * pt.y();
+        wz += bw * pt.z();
+        ww += bw;
+    }
+
+    debug_assert!(scale.is_finite() && scale > 0.0);
+    debug_assert!(ww.is_finite() && ww > 0.0);
+    Point3::new(wx / ww, wy / ww, wz / ww)
+}
+
 /// Approximate a NURBS curve through data points using Progressive-Iterative Approximation.
 ///
 /// LSPIA iteratively adjusts control points to minimize the least-squares error,
@@ -793,21 +830,28 @@ pub fn approximate_lspia(
     // We approximate lambda_max via the power method and use a conservative mu.
     let mu = compute_lspia_step_size(&basis_data, p, m);
 
+    // Degree, knots and weights never change below, so validate them once
+    // (same error, same order as `NurbsCurve::new`) and re-check only the
+    // control points each iteration. Every parameter lies in the clamped
+    // domain [0, 1] (or is NaN), so `NurbsCurve::evaluate(u)` would recompute
+    // exactly `basis_data[i]`; feed that to its post-basis tail instead.
+    NurbsCurve::new(p, knots.clone(), control_points.clone(), weights.clone())?;
+    let mut deltas = vec![(0.0f64, 0.0f64, 0.0f64); m];
+
     for iter in 0..max_iterations {
-        let curve = NurbsCurve::new(p, knots.clone(), control_points.clone(), weights.clone())?;
+        super::validate_control_point_values(control_points.iter().copied())?;
 
         let mut max_err = 0.0f64;
-        let mut deltas = vec![(0.0f64, 0.0f64, 0.0f64); m];
+        deltas.fill((0.0, 0.0, 0.0));
 
-        for (i, &u) in params.iter().enumerate() {
-            let q = curve.evaluate(u);
+        for (i, (span, n_vals)) in basis_data.iter().enumerate() {
+            let q = point_from_basis(n_vals, *span, p, &control_points, &weights);
             let err_x = points[i].x() - q.x();
             let err_y = points[i].y() - q.y();
             let err_z = points[i].z() - q.z();
             let err_mag = (err_x * err_x + err_y * err_y + err_z * err_z).sqrt();
             max_err = max_err.max(err_mag);
 
-            let (span, n_vals) = &basis_data[i];
             for (k, &nv) in n_vals.iter().enumerate() {
                 let j = span - p + k;
                 if j < m {
@@ -964,6 +1008,9 @@ pub(crate) fn approximate_lspia_weighted(
 
     NurbsCurve::new(p, knots, control_points, weights)
 }
+
+#[cfg(test)]
+mod lspia_oracle_tests;
 
 #[cfg(test)]
 mod tests {

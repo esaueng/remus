@@ -786,11 +786,33 @@ impl ToroidalSurface {
     /// `v.sin_cos()`.
     #[inline]
     pub(crate) fn evaluate_trig(&self, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Point3 {
-        let tube_radius = self.minor_radius.fma(cos_v, self.major_radius);
+        let (tube_radius, height) = self.tube_terms(sin_v, cos_v);
+        self.evaluate_tube(tube_radius, height, sin_u, cos_u)
+    }
+
+    /// The `v`-only factors of [`Self::evaluate_trig`]: the tube point's
+    /// distance `R + r·cos(v)` from the axis and its height `r·sin(v)`.
+    #[inline]
+    pub(crate) fn tube_terms(&self, sin_v: f64, cos_v: f64) -> (f64, f64) {
+        (
+            self.minor_radius.fma(cos_v, self.major_radius),
+            self.minor_radius * sin_v,
+        )
+    }
+
+    /// [`Self::evaluate_trig`] from already computed [`Self::tube_terms`].
+    #[inline]
+    pub(crate) fn evaluate_tube(
+        &self,
+        tube_radius: f64,
+        height: f64,
+        sin_u: f64,
+        cos_u: f64,
+    ) -> Point3 {
         self.center
             + self.x_axis * (tube_radius * cos_u)
             + self.y_axis * (tube_radius * sin_u)
-            + self.z_axis * (self.minor_radius * sin_v)
+            + self.z_axis * height
     }
 
     /// Returns the outward surface normal at parameters `(u, v)`.
