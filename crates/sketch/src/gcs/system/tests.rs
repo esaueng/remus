@@ -2981,3 +2981,25 @@ fn dense_budget_ellipse_chain_and_sparse_rank_miss_refuse() {
     }
     assert_resource_refusal(rank_miss.solve_detailed(0, TOL), "gcs_dense_bytes");
 }
+
+#[test]
+fn point_fixed_edit_rebuilds_layout_in_both_directions() {
+    let mut system = GcsSystem::new();
+    let point = system
+        .add_point(PointData {
+            x: 0.,
+            y: 0.,
+            fixed: false,
+        })
+        .unwrap();
+    system.add_constraint(Constraint::FixX(point, 10.)).unwrap();
+    assert_eq!(system.dof().unwrap().num_params, 2);
+    system.point_mut(point).unwrap().fixed = true;
+    assert_eq!(system.dof().unwrap().num_params, 0);
+    assert!(!system.solve(100, 1e-9).unwrap().converged);
+    assert_eq!(system.point(point).unwrap().x.to_bits(), 0.0f64.to_bits());
+    system.point_mut(point).unwrap().fixed = false;
+    assert_eq!(system.dof().unwrap().num_params, 2);
+    assert!(system.solve(100, 1e-9).unwrap().converged);
+    assert!((system.point(point).unwrap().x - 10.).abs() < 1e-9);
+}

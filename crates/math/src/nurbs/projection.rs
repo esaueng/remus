@@ -129,6 +129,7 @@ pub fn project_point_to_curve(
 /// without reimplementing the sampling.
 #[allow(clippy::cast_precision_loss)]
 fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, MathError> {
+    let (u_min, u_max) = curve.domain();
     // Collect all (distance_sq, parameter) samples.
     let mut samples: Vec<(f64, f64)> = Vec::new();
     let knots = curve.knots();
@@ -168,7 +169,9 @@ fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, Ma
             break;
         }
         // Skip candidates too close to one we already have.
-        let dominated = candidates.iter().any(|&c: &f64| (c - u).abs() < 1e-10);
+        let dominated = candidates
+            .iter()
+            .any(|&c: &f64| ((c - u) / (u_max - u_min)).abs() < 1e-10);
         if !dominated {
             candidates.push(u);
         }
@@ -241,6 +244,9 @@ fn curve_newton_refine(
     tolerance: f64,
 ) -> (f64, Point3) {
     let tol_sq = tolerance * tolerance;
+    // Work with derivatives in a unit parameter interval. Knot units and
+    // offsets must not change Newton conditioning or geometric termination.
+    let parameter_scale = u_max - u_min;
     let mut u = u_init;
     let mut best_u = u;
     let mut best_dist_sq = f64::INFINITY;
@@ -248,8 +254,8 @@ fn curve_newton_refine(
     for _ in 0..MAX_ITERATIONS {
         let ders = curve.derivatives(u, 2);
         let c_pt = Point3::new(ders[0].x(), ders[0].y(), ders[0].z());
-        let c_prime = ders[1]; // C'(u)
-        let c_double_prime = ders[2]; // C''(u)
+        let c_prime = ders[1] * parameter_scale;
+        let c_double_prime = (ders[2] * parameter_scale) * parameter_scale;
         let diff = c_pt - point; // C(u) - P
 
         let dist_sq = diff.length_squared();
@@ -285,19 +291,27 @@ fn curve_newton_refine(
             return (u, c_pt);
         }
 
-        let delta_u = f_val / f_prime;
-        let u_new = (u - delta_u).clamp(u_min, u_max);
+        let delta = f_val / f_prime;
+        let u_new = (-delta).fma(parameter_scale, u).clamp(u_min, u_max);
 
         // Guard NaN.
         if u_new.is_nan() {
             break;
         }
 
-        // Convergence check 3: parameter step negligible.
-        let du = (u_new - u).abs();
-        if du < tolerance * (1.0 + u.abs()) {
-            let pt = curve.evaluate(u_new);
-            return (u_new, pt);
+        // Convergence check 3: geometric step negligible, including a
+        // constrained endpoint. A small step in knot units alone proves none
+        // of this when the knot domain is very small or translated.
+        let pt = curve.evaluate(u_new);
+        // Exact equality detects a rounded fixed point or a clamped endpoint.
+        #[allow(clippy::float_cmp)]
+        let stationary_parameter = u_new == u;
+        if (pt - c_pt).length_squared() < tol_sq || stationary_parameter {
+            return if (pt - point).length_squared() <= best_dist_sq {
+                (u_new, pt)
+            } else {
+                (best_u, curve.evaluate(best_u))
+            };
         }
 
         u = u_new;

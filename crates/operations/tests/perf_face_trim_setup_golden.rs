@@ -251,6 +251,10 @@ fn cross_drilled_shaft_integrals_are_pinned() {
 }
 
 /// A frustum with an off-axis bore through its lateral wall.
+///
+/// This pin includes the correctness changes from #969, #970 and #971. It
+/// was reproduced on their combined source without #972's hot-path changes;
+/// the optimized integration must match that reference bit for bit.
 #[test]
 fn drilled_cone_frustum_integrals_are_pinned() {
     let mut topo = Topology::new();
