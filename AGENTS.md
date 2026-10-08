@@ -423,6 +423,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
+| Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity | `measure/volume_memo.rs` |
 | Distance queries | `distance.rs` |
