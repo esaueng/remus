@@ -372,9 +372,17 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 (0.0, std::f64::consts::TAU),
                 face_boundary_v_extent(topo, face_id, s)?,
             );
-            let (u_range, v_range) =
+            let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
+            let uv = build_face_uv(
+                topo,
+                face_id,
+                |p| s.project_point(p),
+                outline,
+                true,
+                false,
+                true,
+            )?;
             integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -398,9 +406,17 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 (0.0, std::f64::consts::TAU),
                 (extent.0.min(0.0), extent.1.max(0.0)),
             );
-            let (u_range, v_range) =
+            let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
-            let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
+            let mut uv = build_face_uv(
+                topo,
+                face_id,
+                |p| s.project_point(p),
+                outline,
+                true,
+                false,
+                true,
+            )?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
             integrate_with_trimming_to_pole::<_, AREA_ONLY>(
                 s,
@@ -466,9 +482,17 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 (0.0, std::f64::consts::TAU),
                 (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
             );
-            let (u_range, v_range) =
+            let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
-            let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, false)?;
+            let mut uv = build_face_uv(
+                topo,
+                face_id,
+                |p| s.project_point(p),
+                outline,
+                true,
+                false,
+                false,
+            )?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
             for hole in crate::util::face_hole_polygons_curve_sampled(
                 topo,
@@ -618,12 +642,20 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 return Ok(band);
             }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
-            let (u_range, v_range) =
+            let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, true, full)?;
             // A torus is periodic in `v` as well, so the trimming boundary has
             // to be unwrapped on that axis too or a seam-crossing band lands in
             // a different branch than the range above.
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true, false)?;
+            let uv = build_face_uv(
+                topo,
+                face_id,
+                |p| s.project_point(p),
+                outline,
+                true,
+                true,
+                false,
+            )?;
             integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -656,9 +688,9 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                         |proj| (proj.u, proj.v),
                     )
             };
-            let (u_range, v_range) =
+            let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;
-            let uv = build_face_uv(topo, face_id, project, periodic_u, false, false)?;
+            let uv = build_face_uv(topo, face_id, project, outline, periodic_u, false, false)?;
             integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -677,6 +709,10 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
 
 /// UV domain bounds as `((u_min, u_max), (v_min, v_max))`.
 type UvBounds = ((f64, f64), (f64, f64));
+
+/// [`face_uv_bounds`]' bounds, with the projected outer-wire samples they
+/// were read from when the wire was sampled.
+type BoundsAndOutline = (UvBounds, Option<Vec<(f64, f64)>>);
 
 /// Samples taken along each boundary edge when measuring a face's own extent.
 const EXTENT_SAMPLES: usize = 8;
@@ -1287,10 +1323,15 @@ struct FaceUv {
 /// counting bands above it decides the sample. A sphere's `v` ends at a pole
 /// and a torus's wraps, so a period-wrapping hole on those is left to
 /// [`full_revolution_hole_vs`] or to the caller.
+///
+/// `outline` is the outer wire's projected samples when [`face_uv_bounds`]
+/// already took them with this same `project`; the boundary is built from
+/// those rather than by sampling and projecting the wire again.
 fn build_face_uv<F>(
     topo: &Topology,
     face_id: FaceId,
     project: F,
+    outline: Option<Vec<(f64, f64)>>,
     u_periodic: bool,
     v_periodic: bool,
     v_unbounded: bool,
@@ -1312,16 +1353,29 @@ where
     };
 
     let face = topo.face(face_id)?;
-    let outer = crate::util::wire_polygon_curve_sampled(
-        topo,
-        face.outer_wire(),
-        TRIM_SAMPLES,
-        TRIM_SAMPLES,
-    )?;
-    let boundary = if outer.len() < 3 {
-        UvLoop::default()
-    } else {
-        to_loop(&outer)
+    let boundary = match outline {
+        Some(outline) if outline.len() < 3 => UvLoop::default(),
+        Some(outline) => UvLoop::new(
+            outline
+                .into_iter()
+                .map(|(u, v)| Point2::new(u, v))
+                .collect(),
+            u_periodic,
+            v_periodic,
+        ),
+        None => {
+            let outer = crate::util::wire_polygon_curve_sampled(
+                topo,
+                face.outer_wire(),
+                TRIM_SAMPLES,
+                TRIM_SAMPLES,
+            )?;
+            if outer.len() < 3 {
+                UvLoop::default()
+            } else {
+                to_loop(&outer)
+            }
+        }
     };
 
     let mut pockets = Vec::new();
@@ -1687,6 +1741,10 @@ fn full_revolution_hole_vs<S: ParametricSurface>(
 /// `full_domain` must be finite on both axes. A cylinder's and a cone's
 /// analytic domain is not, so those pass their face's own boundary extent
 /// (see [`face_boundary_v_extent`]) rather than `±∞`.
+///
+/// When the outer wire was sampled, its projected samples come back too,
+/// exactly as projected (before any unwrapping), for [`build_face_uv`] to
+/// outline the boundary from instead of sampling and projecting it again.
 fn face_uv_bounds(
     topo: &Topology,
     face_id: FaceId,
@@ -1694,9 +1752,8 @@ fn face_uv_bounds(
     periodic_u: bool,
     periodic_v: bool,
     full_domain: UvBounds,
-) -> Result<UvBounds, CheckError> {
+) -> Result<BoundsAndOutline, CheckError> {
     let face = topo.face(face_id)?;
-    let mut uvs = Vec::new();
     let outer_has_edge = |curved: fn(&EdgeCurve) -> bool| -> Result<bool, CheckError> {
         Ok(topo
             .wire(face.outer_wire())?
@@ -1708,7 +1765,7 @@ fn face_uv_bounds(
     // the edges are analytic circles: two semicircles have endpoints exactly
     // pi apart, where shortest-step unwrapping is ambiguous. Using those
     // vertices alone can widen one revolution into a 3pi integration range.
-    if matches!(
+    let (mut uvs, outline) = if matches!(
         face.surface(),
         FaceSurface::Sphere(_) | FaceSurface::Cone(_)
     ) || (matches!(
@@ -1729,15 +1786,18 @@ fn face_uv_bounds(
             TRIM_SAMPLES,
             TRIM_SAMPLES,
         )?;
-        uvs.extend(points.into_iter().map(project));
+        let projected: Vec<(f64, f64)> = points.into_iter().map(project).collect();
+        (projected.clone(), Some(projected))
     } else {
         let wire = topo.wire(face.outer_wire())?;
+        let mut uvs = Vec::new();
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             let point = topo.vertex(oe.oriented_start(edge))?.point();
             uvs.push(project(point));
         }
-    }
+        (uvs, None)
+    };
 
     if uvs.is_empty() {
         return Err(CheckError::IntegrationFailed(
@@ -1765,7 +1825,7 @@ fn face_uv_bounds(
             .all(|uv| (uv.0 - ref_uv.0).abs() < 1e-6 && (uv.1 - ref_uv.1).abs() < 1e-6)
     };
     if coincident {
-        return Ok(full_domain);
+        return Ok((full_domain, outline));
     }
 
     let u_min = uvs.iter().map(|uv| uv.0).fold(f64::INFINITY, f64::min);
@@ -1785,16 +1845,16 @@ fn face_uv_bounds(
     }
 
     if matches!(face.surface(), FaceSurface::Sphere(_)) && v_max - v_min < 1e-9 {
-        return Ok(full_domain);
+        return Ok((full_domain, outline));
     }
     if u_min >= u_max || v_min >= v_max {
         // A degenerate projection (e.g. all boundary vertices on a sphere's
         // pole seam) does not mean an empty face — it means the boundary failed
         // to bound a sub-region, so the face spans the full analytic domain.
-        return Ok(full_domain);
+        return Ok((full_domain, outline));
     }
 
-    Ok(((u_min, u_max), (v_min, v_max)))
+    Ok((((u_min, u_max), (v_min, v_max)), outline))
 }
 
 /// Unwrap a step in a periodic (angular) coordinate to avoid discontinuities.
@@ -3920,6 +3980,363 @@ mod tests {
             integrate_face_about(&topo, face, &options, Point3::new(f64::NAN, 0.0, 0.0)).is_err()
         );
         assert!(integrate_face_about(&topo, face, &options, Point3::new(1.0, 2.0, 3.0)).is_ok());
+    }
+
+    fn loop_bits(l: &UvLoop) -> Vec<u64> {
+        l.points
+            .iter()
+            .flat_map(|p| [p.x().to_bits(), p.y().to_bits()])
+            .chain([l.u_center.to_bits()])
+            .collect()
+    }
+
+    /// The boundary, the periodicity flag, the pockets, an empty separator
+    /// (no loop's bits are empty) and the bands.
+    fn face_uv_bits(uv: &FaceUv) -> Vec<Vec<u64>> {
+        let mut bits = vec![loop_bits(&uv.boundary), vec![u64::from(uv.u_periodic)]];
+        bits.extend(uv.pockets.iter().map(loop_bits));
+        bits.push(Vec::new());
+        bits.extend(uv.bands.iter().map(loop_bits));
+        bits
+    }
+
+    /// A face on `surface` bounded by one closed circle edge seamed at
+    /// parameter `seam`, with `holes` (closed circles, likewise seamed) as
+    /// inner wires.
+    fn rim_face(
+        topo: &mut Topology,
+        rim: remus_math::curves::Circle3D,
+        seam: f64,
+        holes: &[(remus_math::curves::Circle3D, f64)],
+        surface: FaceSurface,
+    ) -> FaceId {
+        use remus_topology::{
+            edge::Edge,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        let ring = |topo: &mut Topology, circle: remus_math::curves::Circle3D, at: f64| {
+            let v = topo.add_vertex(Vertex::new(circle.evaluate(at), 1e-7));
+            let e = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap())
+        };
+        let outer = ring(topo, rim, seam);
+        let inner = holes
+            .iter()
+            .map(|(circle, at)| ring(topo, circle.clone(), *at))
+            .collect();
+        topo.add_face(Face::new(outer, inner, surface))
+    }
+
+    /// A face on `surface` whose outer wire runs through `corners`, joined by
+    /// the circle arc `arcs` holds for a side, or by a line.
+    fn patch_face(
+        topo: &mut Topology,
+        corners: &[Point3],
+        arcs: &[Option<remus_math::curves::Circle3D>],
+        surface: FaceSurface,
+    ) -> FaceId {
+        use remus_topology::{
+            edge::Edge,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        let vertices: Vec<_> = corners
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        let edges = (0..corners.len())
+            .map(|i| {
+                let j = (i + 1) % corners.len();
+                let edge = match &arcs[i] {
+                    Some(circle) => {
+                        let t0 = circle.project(corners[i]);
+                        let mut t1 = circle.project(corners[j]);
+                        if t1 <= t0 {
+                            t1 += std::f64::consts::TAU;
+                        }
+                        let mut edge =
+                            Edge::new(vertices[i], vertices[j], EdgeCurve::Circle(circle.clone()));
+                        edge.set_trim(Some((t0, t1)));
+                        edge
+                    }
+                    None => Edge::new(vertices[i], vertices[j], EdgeCurve::Line),
+                };
+                OrientedEdge::new(topo.add_edge(edge), true)
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        topo.add_face(Face::new(wire, vec![], surface))
+    }
+
+    /// Build the face's UV outline from the projected outer samples
+    /// [`face_uv_bounds`] hands over, and again by sampling and projecting the
+    /// outer wire afresh, and require the two bit for bit. Returns the bounds
+    /// and whether an outline was handed over.
+    #[allow(clippy::too_many_arguments)]
+    fn assert_outline_reuse_is_exact<F>(
+        topo: &Topology,
+        face: FaceId,
+        project: F,
+        periodic: (bool, bool),
+        loop_periodic_v: bool,
+        v_unbounded: bool,
+        full: UvBounds,
+        what: &str,
+    ) -> (UvBounds, bool)
+    where
+        F: Fn(Point3) -> (f64, f64) + Copy,
+    {
+        let (bounds, outline) =
+            face_uv_bounds(topo, face, &project, periodic.0, periodic.1, full).unwrap();
+        if let Some(outline) = &outline {
+            // The raw projections, before any unwrapping.
+            let sampled = crate::util::wire_polygon_curve_sampled(
+                topo,
+                topo.face(face).unwrap().outer_wire(),
+                TRIM_SAMPLES,
+                TRIM_SAMPLES,
+            )
+            .unwrap();
+            let bits = |uvs: &[(f64, f64)]| -> Vec<[u64; 2]> {
+                uvs.iter()
+                    .map(|uv| [uv.0.to_bits(), uv.1.to_bits()])
+                    .collect()
+            };
+            let fresh: Vec<_> = sampled.into_iter().map(project).collect();
+            assert_eq!(bits(outline), bits(&fresh), "{what}: outline");
+        }
+        let handed = outline.is_some();
+        let reused = build_face_uv(
+            topo,
+            face,
+            project,
+            outline,
+            periodic.0,
+            loop_periodic_v,
+            v_unbounded,
+        )
+        .unwrap();
+        let resampled = build_face_uv(
+            topo,
+            face,
+            project,
+            None,
+            periodic.0,
+            loop_periodic_v,
+            v_unbounded,
+        )
+        .unwrap();
+        assert_eq!(face_uv_bits(&reused), face_uv_bits(&resampled), "{what}");
+        (bounds, handed)
+    }
+
+    /// Every curved arm builds its trim outline from the outer samples
+    /// `face_uv_bounds` already projected; that must be exactly the outline
+    /// sampling and projecting again builds — on a seam-straddling torus
+    /// band, a periodic-`v` NURBS face (which the bounds unwrap in `v` and
+    /// the outline does not), faces that take an early full-domain exit, a
+    /// holed wall and a cone band. A cylinder bounded only by lines takes the
+    /// vertex path and hands nothing over.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn outer_outline_reuse_matches_resampling() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::{
+            ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
+        };
+        use std::f64::consts::{FRAC_PI_2, TAU};
+
+        let mut topo = Topology::new();
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let origin = Point3::new(0.0, 0.0, 0.0);
+
+        // Torus: a tube meridian next to the u seam, so its samples straddle
+        // both seams.
+        let torus = ToroidalSurface::new(origin, 10.0, 3.0).unwrap();
+        let u = TAU - 0.05;
+        let radial = Vec3::new(u.cos(), u.sin(), 0.0);
+        let meridian = Circle3D::new_with_ref(
+            origin + radial * 10.0,
+            Vec3::new(u.sin(), -u.cos(), 0.0),
+            3.0,
+            radial,
+        )
+        .unwrap();
+        let face = rim_face(
+            &mut topo,
+            meridian.clone(),
+            2.0,
+            &[],
+            FaceSurface::Torus(torus.clone()),
+        );
+        let (_, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            |p| torus.project_point(p),
+            (true, true),
+            true,
+            false,
+            ((0.0, TAU), (0.0, TAU)),
+            "torus meridian",
+        );
+        assert!(handed);
+
+        // NURBS torus, closed in v: the bounds unwrap v, the outline must not.
+        let nurbs = remus_geometry::convert::surface_to_nurbs::torus_to_nurbs(&torus).unwrap();
+        assert!(nurbs.is_periodic_v());
+        let face = rim_face(
+            &mut topo,
+            meridian,
+            2.0,
+            &[],
+            FaceSurface::Nurbs(nurbs.clone()),
+        );
+        let full = (nurbs.domain_u(), nurbs.domain_v());
+        let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(&nurbs);
+        let project = |p: Point3| {
+            remus_math::nurbs::projection::project_point_to_surface_with_grid(
+                &nurbs, p, 1e-7, &grid,
+            )
+            .map_or(
+                ((full.0.0 + full.0.1) * 0.5, (full.1.0 + full.1.1) * 0.5),
+                |proj| (proj.u, proj.v),
+            )
+        };
+        let (_, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            project,
+            (nurbs.is_periodic_u(), true),
+            false,
+            false,
+            full,
+            "periodic-v NURBS",
+        );
+        assert!(handed);
+
+        // A cylinder wall bounded by one full rim, with a second rim as a
+        // band: the outer samples share one v, so the bounds exit early on
+        // the full domain — still handing the outline over.
+        let cylinder = CylindricalSurface::new(origin, z, 2.0).unwrap();
+        let rim = |h: f64| Circle3D::new(Point3::new(0.0, 0.0, h), z, 2.0).unwrap();
+        let face = rim_face(
+            &mut topo,
+            rim(1.0),
+            0.4,
+            &[(rim(4.0), 1.3)],
+            FaceSurface::Cylinder(cylinder.clone()),
+        );
+        let full = ((0.0, TAU), (1.0, 4.0));
+        let (bounds, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            |p| cylinder.project_point(p),
+            (true, false),
+            false,
+            true,
+            full,
+            "cylinder rim",
+        );
+        assert!(handed);
+        assert_eq!(bounds, full);
+
+        // A cylinder patch between two arcs and two rulings.
+        let corners = [
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+            Point3::new(0.0, 2.0, 3.0),
+            Point3::new(2.0, 0.0, 3.0),
+        ];
+        let arcs = [
+            Some(rim(0.0)),
+            None,
+            Some(Circle3D::new(Point3::new(0.0, 0.0, 3.0), -z, 2.0).unwrap()),
+            None,
+        ];
+        let face = patch_face(
+            &mut topo,
+            &corners,
+            &arcs,
+            FaceSurface::Cylinder(cylinder.clone()),
+        );
+        let full = ((0.0, TAU), (0.0, 3.0));
+        let (_, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            |p| cylinder.project_point(p),
+            (true, false),
+            false,
+            true,
+            full,
+            "cylinder patch",
+        );
+        assert!(handed);
+
+        // The same patch chorded by lines alone: the vertex path, nothing
+        // handed over, the outline sampled as before.
+        let face = patch_face(
+            &mut topo,
+            &corners,
+            &[None, None, None, None],
+            FaceSurface::Cylinder(cylinder.clone()),
+        );
+        let (_, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            |p| cylinder.project_point(p),
+            (true, false),
+            false,
+            true,
+            full,
+            "line-bounded cylinder patch",
+        );
+        assert!(!handed);
+
+        // A hemisphere on its equator: the sphere's own early exit.
+        let sphere = SphericalSurface::new(origin, 3.0).unwrap();
+        let face = rim_face(
+            &mut topo,
+            Circle3D::new(origin, z, 3.0).unwrap(),
+            0.9,
+            &[],
+            FaceSurface::Sphere(sphere.clone()),
+        );
+        let full = ((0.0, TAU), (-FRAC_PI_2, FRAC_PI_2));
+        let (bounds, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            |p| sphere.project_point(p),
+            (true, false),
+            false,
+            false,
+            full,
+            "hemisphere",
+        );
+        assert!(handed);
+        assert_eq!(bounds, full);
+
+        // A cone band between two rims.
+        let cone = ConicalSurface::new(origin, z, 0.5).unwrap();
+        let cone_rim = |h: f64| Circle3D::new(Point3::new(0.0, 0.0, h), z, h * 0.5_f64.tan());
+        let face = rim_face(
+            &mut topo,
+            cone_rim(2.0).unwrap(),
+            0.2,
+            &[(cone_rim(5.0).unwrap(), 2.5)],
+            FaceSurface::Cone(cone.clone()),
+        );
+        let (_, handed) = assert_outline_reuse_is_exact(
+            &topo,
+            face,
+            |p| cone.project_point(p),
+            (true, false),
+            false,
+            true,
+            ((0.0, TAU), (0.0, 6.0)),
+            "cone band",
+        );
+        assert!(handed);
     }
 
     /// Reusing the cut and span buffers across abscissae — each still
