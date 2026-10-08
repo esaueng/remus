@@ -1214,3 +1214,408 @@ fn unify_faces_checked_on_a_clean_box_reports_no_merge_and_no_errors() {
         }
     );
 }
+
+/// The unify wrapper as it stood before the merge plan was split out, kept
+/// verbatim as the differential oracle: a strict validation of the input,
+/// then the whole merge and a strict validation of the candidate inside one
+/// transaction, whether or not anything merged.
+fn unify_faces_reference(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<(FaceUnifyHistory, UnifyFacesReport), crate::OperationsError> {
+    let input_errors = crate::validate::validate_solid(topo, solid)?.error_count();
+    let input_was_valid = input_errors == 0;
+    let original_faces = {
+        let shell_id = topo.solid(solid)?.outer_shell();
+        topo.shell(shell_id)?.faces().to_vec()
+    };
+    match remus_topology::transaction::run_transacted(topo, |topo| {
+        let result = unify_faces_with_history_impl(topo, solid)?;
+        let validation = crate::validate::validate_solid(topo, solid)?;
+        if input_was_valid && !validation.is_valid() {
+            return Err(UnifyTransactionError::InvalidCandidate {
+                faces_merged: result.faces_merged,
+                error_count: validation.error_count(),
+            });
+        }
+        Ok((result, validation.error_count()))
+    }) {
+        Ok((history, result_errors)) => {
+            let report = UnifyFacesReport {
+                faces_merged: history.faces_merged,
+                input_errors,
+                result_errors,
+                reverted: false,
+            };
+            Ok((history, report))
+        }
+        Err(UnifyTransactionError::InvalidCandidate { .. }) => {
+            let history = FaceUnifyHistory {
+                faces_merged: 0,
+                modified: original_faces.iter().map(|&face| (face, face)).collect(),
+            };
+            let report = UnifyFacesReport {
+                faces_merged: 0,
+                input_errors,
+                result_errors: input_errors,
+                reverted: true,
+            };
+            Ok((history, report))
+        }
+        Err(UnifyTransactionError::Operation(error)) => Err(error),
+    }
+}
+
+/// Orientation checks run, and faces they integrated, while `run` runs.
+fn orientation_probes<T>(run: impl FnOnce() -> T) -> (T, (usize, usize)) {
+    crate::validate::ORIENTATION_PROBES.with(|probes| probes.set((0, 0)));
+    let value = run();
+    (
+        value,
+        crate::validate::ORIENTATION_PROBES.with(std::cell::Cell::get),
+    )
+}
+
+/// What one unify entry point left behind, for comparison with the oracle.
+#[derive(Debug, PartialEq)]
+struct UnifyOutcome {
+    shell_faces: Vec<FaceId>,
+    arena_sizes: (usize, usize, usize),
+}
+
+fn unify_outcome(topo: &Topology, solid: SolidId) -> UnifyOutcome {
+    let shell = topo.solid(solid).unwrap().outer_shell();
+    UnifyOutcome {
+        shell_faces: topo.shell(shell).unwrap().faces().to_vec(),
+        arena_sizes: (topo.num_edges(), topo.num_wires(), topo.num_faces()),
+    }
+}
+
+/// Orientation probes of the oracle, `unify_faces_with_history` and
+/// `unify_faces_checked`, each run on its own copy of the topology.
+struct UnifyProbes {
+    reference: (usize, usize),
+    history: (usize, usize),
+    checked: (usize, usize),
+}
+
+/// Run the oracle, `unify_faces_with_history` and `unify_faces_checked` on
+/// copies of `topo` and require the same history, report, error and
+/// allocations from all three. Returns the oracle's report (`None` for an
+/// error) and every run's probes.
+fn assert_unify_matches_reference(
+    topo: &Topology,
+    solid: SolidId,
+) -> (Option<UnifyFacesReport>, UnifyProbes) {
+    let mut reference_topo = topo.clone();
+    let mut history_topo = topo.clone();
+    let mut checked_topo = topo.clone();
+    let (reference, reference_probes) =
+        orientation_probes(|| unify_faces_reference(&mut reference_topo, solid));
+    let (history, history_probes) =
+        orientation_probes(|| unify_faces_with_history(&mut history_topo, solid));
+    let (checked, checked_probes) =
+        orientation_probes(|| unify_faces_checked(&mut checked_topo, solid));
+    let probes = UnifyProbes {
+        reference: reference_probes,
+        history: history_probes,
+        checked: checked_probes,
+    };
+    let (expected_history, expected_report) = match reference {
+        Ok(result) => result,
+        Err(error) => {
+            let expected = format!("{error:?}");
+            assert_eq!(format!("{:?}", history.err().unwrap()), expected);
+            assert_eq!(format!("{:?}", checked.err().unwrap()), expected);
+            return (None, probes);
+        }
+    };
+    let history = history.unwrap();
+    assert_eq!(history.faces_merged, expected_history.faces_merged);
+    assert_eq!(history.modified, expected_history.modified);
+    assert_eq!(checked.unwrap(), expected_report);
+    let expected = unify_outcome(&reference_topo, solid);
+    assert_eq!(unify_outcome(&history_topo, solid), expected);
+    assert_eq!(unify_outcome(&checked_topo, solid), expected);
+    (Some(expected_report), probes)
+}
+
+/// A bar of unit square section along x, `segments` long, whose four walls
+/// are coplanar triangle pairs and whose end caps are single quads.
+fn triangulated_bar(segments: usize) -> (Topology, SolidId) {
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let rings: Vec<_> = (0..=segments)
+        .map(|i| {
+            [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+                .map(|(y, z)| topo.add_vertex(Vertex::new(Point3::new(i as f64, y, z), 1e-7)))
+        })
+        .collect();
+    let first = rings[0];
+    let mut polygons = vec![vec![first[3], first[2], first[1], first[0]]];
+    for pair in rings.windows(2) {
+        for k in 0..4 {
+            let next = (k + 1) % 4;
+            polygons.push(vec![pair[0][k], pair[0][next], pair[1][next]]);
+            polygons.push(vec![pair[0][k], pair[1][next], pair[1][k]]);
+        }
+    }
+    polygons.push(rings[segments].to_vec());
+    let mut edges = HashMap::new();
+    let mut faces = Vec::new();
+    for polygon in polygons {
+        let points: Vec<Point3> = polygon
+            .iter()
+            .map(|&v| topo.vertex(v).unwrap().point())
+            .collect();
+        let normal = (points[1] - points[0])
+            .cross(points[2] - points[0])
+            .normalize()
+            .unwrap();
+        let mut boundary = Vec::new();
+        for i in 0..polygon.len() {
+            let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+            let forward = a.index() < b.index();
+            let key = if forward { (a, b) } else { (b, a) };
+            let edge = *edges
+                .entry(key)
+                .or_insert_with(|| topo.add_edge(Edge::new(key.0, key.1, EdgeCurve::Line)));
+            boundary.push(OrientedEdge::new(edge, forward));
+        }
+        let wire = topo.add_wire(Wire::new(boundary, true).unwrap());
+        faces.push(topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal,
+                d: normal.dot(points[0] - Point3::new(0.0, 0.0, 0.0)),
+            },
+        )));
+    }
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+    (topo, solid)
+}
+
+fn l_fuse_without_unify(topo: &mut Topology) -> SolidId {
+    let box1 = crate::primitives::make_box(topo, 3.0, 1.0, 1.0).unwrap();
+    let box2 = crate::primitives::make_box(topo, 1.0, 3.0, 1.0).unwrap();
+    let opts = crate::boolean::BooleanOptions {
+        unify_faces: false,
+        ..Default::default()
+    };
+    crate::boolean::boolean_with_options(topo, crate::boolean::BooleanOp::Fuse, box1, box2, opts)
+        .unwrap()
+}
+
+#[test]
+fn unify_without_a_merge_skips_the_candidate_and_history_only_probe() {
+    // The box+fillet bench body: 6 trimmed planes, 12 cylinder strips and 8
+    // sphere corners, none sharing a surface with a neighbour.
+    let mut topo = Topology::new();
+    let cube = crate::primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&topo, cube).unwrap();
+    #[allow(deprecated)]
+    let filleted = crate::fillet::fillet_rolling_ball(&mut topo, cube, &edges, 1.0).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, filleted)
+        .unwrap()
+        .len();
+    assert_eq!(faces, 26);
+    let errors = crate::validate::validate_solid(&topo, filleted)
+        .unwrap()
+        .error_count();
+
+    let (report, probes) = assert_unify_matches_reference(&topo, filleted);
+    assert_eq!(
+        report,
+        Some(UnifyFacesReport {
+            faces_merged: 0,
+            input_errors: errors,
+            result_errors: errors,
+            reverted: false,
+        })
+    );
+    assert_eq!(probes.reference, (2, 2 * faces));
+    assert_eq!(probes.history, (0, 0), "nothing merges, nothing to revert");
+    assert_eq!(probes.checked, (1, faces), "one validation answers both");
+
+    let mut clean = Topology::new();
+    let solid = crate::primitives::make_box(&mut clean, 2.0, 2.0, 2.0).unwrap();
+    let (_, probes) = assert_unify_matches_reference(&clean, solid);
+    assert_eq!((probes.history, probes.checked), ((0, 0), (1, 6)));
+}
+
+#[test]
+fn unify_with_a_merge_still_validates_input_and_candidate() {
+    let mut topo = Topology::new();
+    let fused = l_fuse_without_unify(&mut topo);
+    let (report, probes) = assert_unify_matches_reference(&topo, fused);
+    let report = report.unwrap();
+    assert!(report.faces_merged > 0);
+    assert_eq!((report.input_errors, report.result_errors), (0, 0));
+    assert_eq!(probes.reference.0, 2);
+    assert_eq!(probes.history, probes.reference);
+    assert_eq!(probes.checked, probes.reference);
+
+    // Curved and hollow fragments: a bored box and a shelled box.
+    let block = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 1.0, 6.0).unwrap();
+    let place = remus_math::mat::Mat4::translation(2.0, 2.0, -1.0);
+    crate::transform::transform_solid(&mut topo, tool, &place).unwrap();
+    let opts = crate::boolean::BooleanOptions {
+        unify_faces: false,
+        ..Default::default()
+    };
+    let bored = crate::boolean::boolean_with_options(
+        &mut topo,
+        crate::boolean::BooleanOp::Cut,
+        block,
+        tool,
+        opts,
+    )
+    .unwrap();
+    let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let top = remus_topology::explorer::solid_faces(&topo, cube)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            matches!(topo.face(face).unwrap().surface(),
+                FaceSurface::Plane { normal, d } if normal.z() > 0.9 && (*d - 10.0).abs() < 0.1)
+        })
+        .unwrap();
+    let shelled = crate::shell_op::shell(&mut topo, cube, 1.0, &[top]).unwrap();
+    for solid in [bored, shelled] {
+        assert!(assert_unify_matches_reference(&topo, solid).0.is_some());
+    }
+}
+
+#[test]
+fn unify_on_an_invalid_input_skips_only_the_history_only_input_probe() {
+    // Drop one face of the L fuse: the coplanar fragments still merge, but
+    // the open shell already fails strict validation without the probe.
+    let mut topo = Topology::new();
+    let fused = l_fuse_without_unify(&mut topo);
+    let mut faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
+    faces.pop();
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    let open = topo.add_solid(remus_topology::solid::Solid::new(shell, Vec::new()));
+    let (report, probes) = assert_unify_matches_reference(&topo, open);
+    let report = report.unwrap();
+    assert!(report.faces_merged > 0);
+    assert!(report.input_errors > 0);
+    assert!(!report.reverted);
+    assert_eq!(probes.reference.0, 2);
+    assert_eq!(probes.history.0, 1, "only the merged candidate is probed");
+    assert_eq!(probes.checked, probes.reference);
+}
+
+#[test]
+fn unify_whose_merge_groups_are_all_skipped_validates_no_candidate() {
+    // Each wall is one coplanar group of 2 * 101 triangles whose merged
+    // boundary has 2 * 101 + 2 edges, over the 200-edge limit, so the plan
+    // has groups but nothing is consumed and the shell is never rebuilt.
+    let (topo, solid) = triangulated_bar(101);
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    let plan = plan_unify(&topo, solid).unwrap();
+    assert_eq!(plan.merge_groups.len(), 4);
+    let faces = plan.all_face_ids.len();
+
+    let (report, probes) = assert_unify_matches_reference(&topo, solid);
+    assert_eq!(
+        report,
+        Some(UnifyFacesReport {
+            faces_merged: 0,
+            input_errors: 0,
+            result_errors: 0,
+            reverted: false,
+        })
+    );
+    assert_eq!(probes.reference, (2, 2 * faces));
+    assert_eq!(probes.history, (1, faces), "the input probe, no candidate");
+    assert_eq!(probes.checked, (1, faces));
+}
+
+#[test]
+fn unify_refuses_a_malformed_input_with_the_same_error() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let mut foreign = Topology::new();
+    for _ in 0..4 {
+        crate::primitives::make_box(&mut foreign, 1.0, 1.0, 1.0).unwrap();
+    }
+    let dangling = foreign.wire_id_from_index(foreign.num_wires() - 1).unwrap();
+    assert!(topo.wire(dangling).is_err());
+    let mut faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let surface = topo.face(faces[0]).unwrap().surface().clone();
+    faces.push(topo.add_face(Face::new(dangling, Vec::new(), surface)));
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    let malformed = topo.add_solid(remus_topology::solid::Solid::new(shell, Vec::new()));
+
+    let (report, _) = assert_unify_matches_reference(&topo, malformed);
+    assert!(report.is_none(), "every entry point must refuse the input");
+}
+
+#[test]
+fn unify_still_reverts_a_merge_that_breaks_a_valid_input() {
+    // No natural input is known to trip the revert rule, so the plan is
+    // forged: it claims that the group shares an edge its first face really
+    // shares with a face outside it, which drops that edge from the merged
+    // boundary and can leave the outside face with a free edge.
+    let mut base = Topology::new();
+    let solid = crate::primitives::make_box(&mut base, 1.0, 2.0, 3.0).unwrap();
+    let shell_id = base.solid(solid).unwrap().outer_shell();
+    let faces = remus_topology::explorer::solid_faces(&base, solid).unwrap();
+    let real: std::collections::BTreeMap<usize, Vec<FaceId>> =
+        remus_topology::explorer::edge_to_face_map(&base, solid)
+            .unwrap()
+            .into_iter()
+            .map(|(edge, faces)| (edge, faces.to_vec()))
+            .collect();
+    let mut reverts = 0;
+    for a in 0..faces.len() {
+        for b in (a + 1)..faces.len() {
+            let mut edge_face_map = real.clone();
+            if let Some(claimed) = edge_face_map
+                .values_mut()
+                .find(|uses| uses.contains(&faces[a]) && !uses.contains(&faces[b]))
+            {
+                *claimed = vec![faces[a], faces[b]];
+            }
+            let plan = UnifyPlan {
+                shell_id,
+                all_face_ids: faces.clone(),
+                edge_face_map,
+                merge_groups: vec![vec![a, b]],
+            };
+            let mut topo = base.clone();
+            let ((history, verdict), probes) =
+                orientation_probes(|| merge_planned(&mut topo, solid, &plan, true).unwrap());
+            let MergedVerdict::Input { reverted: true } = verdict else {
+                continue;
+            };
+            reverts += 1;
+            assert_eq!(history.faces_merged, 0);
+            assert_eq!(history.modified, plan.unchanged().modified);
+            assert_eq!(topo.shell(shell_id).unwrap().faces(), faces.as_slice());
+            assert_eq!(probes.0, 1, "the merged candidate was validated");
+            // On an input that already failed, the same merge is kept.
+            let mut topo = base.clone();
+            let (history, verdict) = merge_planned(&mut topo, solid, &plan, false).unwrap();
+            assert!(history.faces_merged > 0);
+            assert!(matches!(
+                verdict,
+                MergedVerdict::Candidate { error_count } if error_count > 0
+            ));
+        }
+    }
+    assert!(
+        reverts > 0,
+        "the forged plans must exercise the revert rule"
+    );
+}
