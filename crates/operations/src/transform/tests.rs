@@ -1451,3 +1451,230 @@ fn translated_rotation_preserves_circle_carrier_and_trim() {
         }
     }
 }
+
+type FixtureBuilder<'a> = (&'static str, &'a dyn Fn(&mut Topology) -> SolidId);
+
+/// Solids covering every carrier family the transform engine rewrites:
+/// planes, seam-carrying cylinders, cones, spheres and tori, a cavity shell,
+/// smooth-loft NURBS, and rational NURBS walls bounded by ellipses.
+fn transform_oracle_fixtures() -> Vec<(&'static str, Topology, SolidId)> {
+    let square = |t: &mut Topology, half: f64, z: f64| {
+        let wire = remus_topology::builder::make_polygon_wire(
+            t,
+            &[
+                Point3::new(-half, -half, z),
+                Point3::new(half, -half, z),
+                Point3::new(half, half, z),
+                Point3::new(-half, half, z),
+            ],
+            1e-10,
+        )
+        .unwrap();
+        t.add_face(remus_topology::face::Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: z,
+            },
+        ))
+    };
+    let builders: [FixtureBuilder<'_>; 8] = [
+        ("box", &|t| {
+            crate::primitives::make_box(t, 2.0, 3.0, 4.0).unwrap()
+        }),
+        ("cylinder", &|t| {
+            crate::primitives::make_cylinder(t, 1.5, 4.0).unwrap()
+        }),
+        ("cone", &|t| {
+            crate::primitives::make_cone(t, 2.0, 0.5, 3.0).unwrap()
+        }),
+        ("sphere", &|t| {
+            crate::primitives::make_sphere(t, 2.0, 16).unwrap()
+        }),
+        ("torus", &|t| {
+            crate::primitives::make_torus(t, 3.0, 1.0, 16).unwrap()
+        }),
+        ("hollow box", &|t| {
+            let outer = crate::primitives::make_box(t, 3.0, 3.0, 3.0).unwrap();
+            let inner = crate::primitives::make_box(t, 1.0, 1.0, 1.0).unwrap();
+            transform_solid(t, inner, &Mat4::translation(1.0, 1.0, 1.0)).unwrap();
+            let hollow =
+                crate::boolean::boolean(t, crate::boolean::BooleanOp::Cut, outer, inner).unwrap();
+            assert_eq!(t.solid(hollow).unwrap().inner_shells().len(), 1);
+            hollow
+        }),
+        ("rational nurbs", &|t| {
+            let solid = crate::primitives::make_cylinder(t, 1.0, 2.0).unwrap();
+            transform_solid(t, solid, &Mat4::scale(1.0, 2.5, 1.0)).unwrap();
+            solid
+        }),
+        ("loft nurbs", &|t| {
+            let profiles = [
+                square(t, 3.0, 0.0),
+                square(t, 2.0, 2.0),
+                square(t, 3.0, 4.0),
+            ];
+            crate::loft::loft_smooth(t, &profiles).unwrap()
+        }),
+    ];
+    builders
+        .into_iter()
+        .map(|(name, build)| {
+            let mut topo = Topology::new();
+            let solid = build(&mut topo);
+            (name, topo, solid)
+        })
+        .collect()
+}
+
+fn transform_oracle_matrices() -> Vec<(&'static str, Mat4)> {
+    vec![
+        ("translate", Mat4::translation(10.0, -3.0, 7.5)),
+        (
+            "rotate",
+            Mat4::translation(1.0, 2.0, 3.0) * Mat4::rotation_z(0.7) * Mat4::rotation_x(0.3),
+        ),
+        ("mirror", Mat4::scale(-1.0, 1.0, 1.0)),
+        ("uniform scale", Mat4::scale(2.5, 2.5, 2.5)),
+        ("anisotropic scale", Mat4::scale(1.0, 2.0, 3.0)),
+    ]
+}
+
+/// `execute_solid_transform` with every phase walked in descending index
+/// order instead of ascending.
+fn reverse_order_transform(
+    topo: &mut Topology,
+    solid: SolidId,
+    matrix: &Mat4,
+) -> Result<(), crate::OperationsError> {
+    reject_degenerate_transform(matrix)?;
+    let normal_matrix = matrix.inverse()?.transpose();
+    let mut recorder = TransformRecorder::new(linear_determinant(matrix) < 0.0, true);
+    run_transacted(topo, |live| {
+        let (mut vertex_ids, mut edge_ids, mut face_ids) = collect_solid_entities(live, solid)?;
+        vertex_ids.reverse();
+        edge_ids.reverse();
+        face_ids.reverse();
+        let certificates = translation_edge_certificates(live, &edge_ids, matrix)?;
+        for vid in vertex_ids {
+            let vertex = live.vertex_mut(vid)?;
+            let new_point = matrix.mul_point(vertex.point());
+            vertex.set_point(new_point);
+        }
+        transform_edges_recorded(live, &edge_ids, matrix, &mut recorder)?;
+        restore_translation_certificates(live, certificates)?;
+        for fid in face_ids {
+            transform_face_surface_recorded(live, fid, matrix, &normal_matrix, &mut recorder)?;
+        }
+        Ok(())
+    })
+}
+
+/// Every per-entity write is a pure function of its own entity and the
+/// matrix, so walking the phases in the opposite order must commit the
+/// identical topology, down to tolerances, pcurves and mutation ticks.
+#[test]
+fn transform_solid_is_independent_of_entity_order() {
+    for (name, fixture, solid) in transform_oracle_fixtures() {
+        for (what, matrix) in transform_oracle_matrices() {
+            let mut sorted = fixture.clone();
+            let sorted_result = transform_solid(&mut sorted, solid, &matrix);
+            let mut reversed = fixture.clone();
+            let reversed_result = reverse_order_transform(&mut reversed, solid, &matrix);
+            assert!(sorted_result.is_ok(), "{name} / {what}: {sorted_result:?}");
+            assert_eq!(
+                format!("{sorted_result:?}"),
+                format!("{reversed_result:?}"),
+                "{name} / {what}"
+            );
+            assert_eq!(
+                format!("{sorted:?}"),
+                format!("{reversed:?}"),
+                "{name} / {what}"
+            );
+        }
+    }
+}
+
+/// Collection returns exactly the solid's entities, once each, ascending.
+#[test]
+fn collected_solid_entities_are_sorted_and_unique() {
+    for (name, topo, solid) in transform_oracle_fixtures() {
+        let (vertices, edges, faces) = collect_solid_entities(&topo, solid).unwrap();
+        let mut expected_vertices = remus_topology::explorer::solid_vertices(&topo, solid).unwrap();
+        expected_vertices.sort_unstable();
+        assert_eq!(vertices, expected_vertices, "{name}");
+        let mut expected_edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+        expected_edges.sort_unstable();
+        assert_eq!(edges, expected_edges, "{name}");
+        let mut expected_faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        expected_faces.sort_unstable();
+        expected_faces.dedup();
+        assert_eq!(faces, expected_faces, "{name}");
+    }
+}
+
+/// With several refusing edges the reported one is the lowest-index edge,
+/// every time: a circle and an ellipse both refuse a shear, by name.
+#[test]
+fn several_refusing_edges_report_the_lowest_index_deterministically() {
+    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let shear = Mat4([
+        [1.0, 0.5, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    for circle_first in [true, false] {
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let w = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let circle = EdgeCurve::Circle(
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap(),
+        );
+        let ellipse = EdgeCurve::Ellipse(
+            Ellipse3D::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                2.0,
+                1.0,
+            )
+            .unwrap(),
+        );
+        let (first, second) = if circle_first {
+            (Edge::new(v, v, circle), Edge::new(w, w, ellipse))
+        } else {
+            (Edge::new(w, w, ellipse), Edge::new(v, v, circle))
+        };
+        let first = topo.add_edge(first);
+        let second = topo.add_edge(second);
+        // The wire lists the higher-index edge first.
+        let uses = vec![
+            OrientedEdge::new(second, true),
+            OrientedEdge::new(first, true),
+        ];
+        let wire = topo.add_wire(Wire::new(uses, false).unwrap());
+        let before = format!("{topo:?}");
+        let expected = if circle_first {
+            "circular"
+        } else {
+            "elliptical"
+        };
+        for _ in 0..20 {
+            let err = transform_wire(&mut topo, wire, &shear).unwrap_err();
+            let crate::OperationsError::InvalidInput { reason } = &err else {
+                panic!("expected a typed refusal, got {err:?}");
+            };
+            assert!(
+                reason.contains(&format!("maps a {expected} edge")),
+                "{reason}"
+            );
+            assert_eq!(format!("{topo:?}"), before, "a refusal rolls back");
+        }
+    }
+}

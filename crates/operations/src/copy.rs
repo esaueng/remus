@@ -615,11 +615,11 @@ pub fn copy_and_transform_solid(
     matrix: &remus_math::mat::Mat4,
 ) -> Result<SolidId, crate::OperationsError> {
     crate::transform::reject_degenerate_transform(matrix)?;
-    let _ = matrix.inverse()?.transpose();
+    let normal_matrix = matrix.inverse()?.transpose();
     let mut recorder =
         TransformRecorder::new(crate::transform::linear_determinant(matrix) < 0.0, true);
     remus_topology::transaction::run_transacted(topo, |live| {
-        copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
+        copy_and_transform_solid_impl(live, solid_id, matrix, &normal_matrix, &mut recorder)
     })
 }
 
@@ -662,7 +662,7 @@ pub fn copy_and_transform_solid_detailed_with_refusal(
 ) -> Result<(SolidId, TransformReport), crate::OperationsError> {
     *refused_face = None;
     crate::transform::reject_degenerate_transform(matrix)?;
-    let _ = matrix.inverse()?.transpose();
+    let normal_matrix = matrix.inverse()?.transpose();
     if matches!(policy, TransformPolicy::ExactOnly) {
         let plans = crate::transform::preflight_solid_transform(topo, solid_id, matrix)?;
         crate::transform::refuse_unless_exact(&plans)?;
@@ -675,7 +675,7 @@ pub fn copy_and_transform_solid_detailed_with_refusal(
         matches!(policy, TransformPolicy::AllowApproximate),
     );
     let result = remus_topology::transaction::run_transacted(topo, |live| {
-        copy_and_transform_solid_impl(live, solid_id, matrix, &mut recorder)
+        copy_and_transform_solid_impl(live, solid_id, matrix, &normal_matrix, &mut recorder)
     });
     *refused_face = recorder.refused_face();
     let copied = result?;
@@ -687,15 +687,13 @@ fn copy_and_transform_solid_impl(
     topo: &mut Topology,
     solid_id: SolidId,
     matrix: &remus_math::mat::Mat4,
+    normal_matrix: &remus_math::mat::Mat4,
     recorder: &mut TransformRecorder,
 ) -> Result<SolidId, crate::OperationsError> {
-    let normal_matrix = matrix.inverse()?.transpose();
     let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
     let certificates = crate::transform::translation_edge_certificates(
         topo,
-        &remus_topology::explorer::solid_edges(topo, solid_id)?
-            .into_iter()
-            .collect(),
+        &remus_topology::explorer::solid_edges(topo, solid_id)?,
         matrix,
     )?;
 
@@ -897,7 +895,7 @@ fn copy_and_transform_solid_impl(
                 topo,
                 new_fid,
                 matrix,
-                &normal_matrix,
+                normal_matrix,
                 recorder,
             )?;
             recorder.set_refusal_origin(None);

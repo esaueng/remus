@@ -1,7 +1,5 @@
 //! Affine transforms applied to topological shapes.
 
-use std::collections::HashSet;
-
 use remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
@@ -850,11 +848,11 @@ pub fn transform_solid(
 ) -> Result<(), crate::OperationsError> {
     reject_degenerate_transform(matrix)?;
     // Validate every part of the matrix before changing live topology.
-    let _ = matrix.inverse()?.transpose();
+    let normal_matrix = matrix.inverse()?.transpose();
     let reversing = linear_determinant(matrix) < 0.0;
     let mut recorder = TransformRecorder::new(reversing, true);
     run_transacted(topo, |live| {
-        execute_solid_transform(live, solid, matrix, &mut recorder)
+        execute_solid_transform(live, solid, matrix, &normal_matrix, &mut recorder)
     })
 }
 
@@ -900,7 +898,7 @@ pub fn transform_solid_detailed_with_refusal(
     *refused_face = None;
     reject_degenerate_transform(matrix)?;
     // Validate every part of the matrix before changing live topology.
-    let _ = matrix.inverse()?.transpose();
+    let normal_matrix = matrix.inverse()?.transpose();
     if matches!(policy, TransformPolicy::ExactOnly) {
         let plans = preflight_solid_transform(topo, solid, matrix)?;
         refuse_unless_exact(&plans)?;
@@ -913,7 +911,7 @@ pub fn transform_solid_detailed_with_refusal(
         matches!(policy, TransformPolicy::AllowApproximate),
     );
     let result = run_transacted(topo, |live| {
-        execute_solid_transform(live, solid, matrix, &mut recorder)
+        execute_solid_transform(live, solid, matrix, &normal_matrix, &mut recorder)
     });
     *refused_face = recorder.refused_face();
     result?;
@@ -922,10 +920,15 @@ pub fn transform_solid_detailed_with_refusal(
 
 /// Mutation phase shared by [`transform_solid`] and
 /// [`transform_solid_detailed`]: vertices, then edges, then face surfaces.
+///
+/// Each phase visits its entities in ascending index order. Every write is
+/// a pure function of its own entity and the matrix, so the order only
+/// decides which refusal is reported when several entities refuse.
 fn execute_solid_transform(
     topo: &mut Topology,
     solid: SolidId,
     matrix: &Mat4,
+    normal_matrix: &Mat4,
     recorder: &mut TransformRecorder,
 ) -> Result<(), crate::OperationsError> {
     // Collect all unique vertex IDs, edge IDs, and face IDs in a read phase.
@@ -945,9 +948,8 @@ fn execute_solid_transform(
 
     // Mutate phase 3: transform face surface geometry.
     // For plane normals, use the inverse transpose: n' = (M⁻¹)ᵀ · n
-    let normal_matrix = matrix.inverse()?.transpose();
     for fid in face_ids {
-        transform_face_surface_recorded(topo, fid, matrix, &normal_matrix, recorder)?;
+        transform_face_surface_recorded(topo, fid, matrix, normal_matrix, recorder)?;
     }
 
     Ok(())
@@ -967,7 +969,7 @@ fn execute_solid_transform(
 #[allow(clippy::float_cmp)] // Exact identity is required; near-identity may scale geometry.
 pub(crate) fn translation_edge_certificates(
     topo: &Topology,
-    edges: &HashSet<EdgeId>,
+    edges: &[EdgeId],
     matrix: &Mat4,
 ) -> Result<Vec<(EdgeId, f64, f64)>, crate::OperationsError> {
     let m = &matrix.0;
@@ -1921,13 +1923,14 @@ pub(crate) fn transform_edge_curve_with_trim(
     Ok((new_curve, new_trim))
 }
 
-/// Transform a set of edge curves in place.
+/// Transform a set of edge curves in place. `edge_ids` must not repeat an
+/// edge.
 ///
 /// Line edges need no update — their geometry is defined by vertices.
 /// Legacy void wrapper over [`transform_edges_recorded`].
 pub(crate) fn transform_edges(
     topo: &mut Topology,
-    edge_ids: &HashSet<EdgeId>,
+    edge_ids: &[EdgeId],
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
     let mut recorder = TransformRecorder::new(false, true);
@@ -1938,7 +1941,7 @@ pub(crate) fn transform_edges(
 /// detailed twins, and the copy path.
 pub(crate) fn transform_edges_recorded(
     topo: &mut Topology,
-    edge_ids: &HashSet<EdgeId>,
+    edge_ids: &[EdgeId],
     matrix: &Mat4,
     recorder: &mut TransformRecorder,
 ) -> Result<(), crate::OperationsError> {
@@ -2034,90 +2037,96 @@ pub fn transform_face(
     })
 }
 
-/// Traverses face → wires → edges → vertices and returns deduplicated sets.
+/// Traverses face → wires → edges → vertices and returns deduplicated
+/// handles in ascending index order.
 fn collect_face_entities(
     topo: &Topology,
     face_id: FaceId,
-) -> Result<(HashSet<VertexId>, HashSet<EdgeId>), crate::OperationsError> {
-    let mut vertex_ids = HashSet::new();
-    let mut edge_ids = HashSet::new();
+) -> Result<(Vec<VertexId>, Vec<EdgeId>), crate::OperationsError> {
+    let mut edge_ids = Vec::new();
     let face = topo.face(face_id)?;
-    let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
-        .chain(face.inner_wires().iter().copied())
-        .collect();
-
-    for wid in wire_ids {
-        let wire = topo.wire(wid)?;
-        for oe in wire.edges() {
-            let eid = oe.edge();
-            edge_ids.insert(eid);
-            let edge = topo.edge(eid)?;
-            vertex_ids.insert(edge.start());
-            vertex_ids.insert(edge.end());
-        }
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        push_wire_edges(topo, wid, &mut edge_ids)?;
     }
-
-    Ok((vertex_ids, edge_ids))
+    sorted_edge_vertices(topo, edge_ids)
 }
 
-/// Traverses wire → edges → vertices and returns deduplicated sets.
+/// Traverses wire → edges → vertices and returns deduplicated handles in
+/// ascending index order.
 fn collect_wire_entities(
     topo: &Topology,
     wire_id: WireId,
-) -> Result<(HashSet<VertexId>, HashSet<EdgeId>), crate::OperationsError> {
-    let mut vertex_ids = HashSet::new();
-    let mut edge_ids = HashSet::new();
-    let wire = topo.wire(wire_id)?;
-    for oe in wire.edges() {
-        let eid = oe.edge();
-        edge_ids.insert(eid);
-        let edge = topo.edge(eid)?;
-        vertex_ids.insert(edge.start());
-        vertex_ids.insert(edge.end());
-    }
-    Ok((vertex_ids, edge_ids))
+) -> Result<(Vec<VertexId>, Vec<EdgeId>), crate::OperationsError> {
+    let mut edge_ids = Vec::new();
+    push_wire_edges(topo, wire_id, &mut edge_ids)?;
+    sorted_edge_vertices(topo, edge_ids)
 }
 
 /// Traverses solid → shells → faces → wires → edges → vertices and
-/// returns deduplicated sets of vertex IDs, edge IDs, and face IDs.
+/// returns deduplicated vertex, edge, and face handles in ascending index
+/// order.
 #[allow(clippy::type_complexity)]
 fn collect_solid_entities(
     topo: &Topology,
     solid: SolidId,
-) -> Result<(HashSet<VertexId>, HashSet<EdgeId>, HashSet<FaceId>), crate::OperationsError> {
-    let mut vertex_ids = HashSet::new();
-    let mut edge_ids = HashSet::new();
-    let mut face_ids = HashSet::new();
+) -> Result<(Vec<VertexId>, Vec<EdgeId>, Vec<FaceId>), crate::OperationsError> {
+    let mut edge_ids = Vec::new();
+    let mut face_ids = Vec::new();
     let solid_data = topo.solid(solid)?;
-    let shell_ids: Vec<_> = std::iter::once(solid_data.outer_shell())
-        .chain(solid_data.inner_shells().iter().copied())
-        .collect();
-
-    for shell_id in shell_ids {
+    for shell_id in
+        std::iter::once(solid_data.outer_shell()).chain(solid_data.inner_shells().iter().copied())
+    {
         let shell = topo.shell(shell_id)?;
-        let fids: Vec<_> = shell.faces().to_vec();
-
-        for face_id in fids {
-            face_ids.insert(face_id);
+        face_ids.reserve(shell.faces().len());
+        edge_ids.reserve(shell.faces().len().saturating_mul(4));
+        for &face_id in shell.faces() {
+            face_ids.push(face_id);
             let face = topo.face(face_id)?;
-            let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
-                .chain(face.inner_wires().iter().copied())
-                .collect();
-
-            for wire_id in wire_ids {
-                let wire = topo.wire(wire_id)?;
-                for oe in wire.edges() {
-                    let eid = oe.edge();
-                    edge_ids.insert(eid);
-                    let edge = topo.edge(eid)?;
-                    vertex_ids.insert(edge.start());
-                    vertex_ids.insert(edge.end());
-                }
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                push_wire_edges(topo, wire_id, &mut edge_ids)?;
             }
         }
     }
-
+    face_ids.sort_unstable();
+    face_ids.dedup();
+    let (vertex_ids, edge_ids) = sorted_edge_vertices(topo, edge_ids)?;
     Ok((vertex_ids, edge_ids, face_ids))
+}
+
+/// Appends a wire's edge uses, resolving each edge in traversal order so the
+/// first stale handle reports the same typed error as a full walk.
+fn push_wire_edges(
+    topo: &Topology,
+    wire_id: WireId,
+    edge_ids: &mut Vec<EdgeId>,
+) -> Result<(), crate::OperationsError> {
+    let wire = topo.wire(wire_id)?;
+    for oe in wire.edges() {
+        topo.edge(oe.edge())?;
+        edge_ids.push(oe.edge());
+    }
+    Ok(())
+}
+
+/// Sorts and deduplicates `edge_ids`, then gathers their endpoints the same
+/// way. Every edge was resolved during the traversal.
+fn sorted_edge_vertices(
+    topo: &Topology,
+    mut edge_ids: Vec<EdgeId>,
+) -> Result<(Vec<VertexId>, Vec<EdgeId>), crate::OperationsError> {
+    edge_ids.sort_unstable();
+    edge_ids.dedup();
+    let mut vertex_ids = Vec::with_capacity(edge_ids.len().saturating_mul(2));
+    for &eid in &edge_ids {
+        let edge = topo.edge(eid)?;
+        vertex_ids.push(edge.start());
+        vertex_ids.push(edge.end());
+    }
+    vertex_ids.sort_unstable();
+    vertex_ids.dedup();
+    Ok((vertex_ids, edge_ids))
 }
 
 #[cfg(test)]
@@ -2246,7 +2255,7 @@ mod translation_certificate_tests {
                 Edge::with_tolerance(a, b, EdgeCurve::NurbsCurve(curve), Some(tolerance));
             edge.set_trim(Some((0.0, 1.0)));
             let id = topo.add_edge(edge);
-            let ids = HashSet::from([id]);
+            let ids = [id];
             let matrix = Mat4::translation(4.5, 0.0, 0.0);
             let certificates = translation_edge_certificates(&topo, &ids, &matrix).unwrap();
             assert_eq!(certificates.len(), usize::from(valid_source));
