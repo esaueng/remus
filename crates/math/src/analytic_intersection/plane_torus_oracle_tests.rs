@@ -562,3 +562,162 @@ fn intersect_plane_torus_matches_the_pre_change_pipeline() {
     }
     assert!(nonempty >= 20, "only {nonempty} cases produced curves");
 }
+
+/// The pre-change chaining loop of `intersect_plane_torus`, verbatim, with
+/// every chain kept.
+fn ref_greedy_chains(crossing_pts: &[(f64, f64, Point3)], radius: f64) -> Vec<Vec<usize>> {
+    let mut used = vec![false; crossing_pts.len()];
+    let mut chains = Vec::new();
+
+    for start in 0..crossing_pts.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut chain = vec![start];
+
+        loop {
+            let last = chain[chain.len() - 1];
+            let last_pt = crossing_pts[last].2;
+            let mut best_idx = None;
+            let mut best_dist = radius;
+
+            for (j, &is_used) in used.iter().enumerate() {
+                if is_used {
+                    continue;
+                }
+                let dist = (crossing_pts[j].2 - last_pt).length();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(j);
+                }
+            }
+
+            if let Some(j) = best_idx {
+                used[j] = true;
+                chain.push(j);
+            } else {
+                break;
+            }
+        }
+        chains.push(chain);
+    }
+    chains
+}
+
+/// Crossings `(u, v, point)` as the chaining reads them.
+type Cloud = Vec<(f64, f64, Point3)>;
+
+fn cloud(points: impl IntoIterator<Item = [f64; 3]>) -> Cloud {
+    points
+        .into_iter()
+        .map(|[x, y, z]| (0.0, 0.0, Point3::new(x, y, z)))
+        .collect()
+}
+
+fn lattice(spacing: f64) -> Vec<[f64; 3]> {
+    (0..72)
+        .map(|i| {
+            let (a, b, c) = (i % 6, (i / 6) % 6, i / 36);
+            [
+                f64::from(a) * spacing,
+                f64::from(b) * spacing,
+                f64::from(c) * spacing,
+            ]
+        })
+        .collect()
+}
+
+/// Seeded point clouds (uniform, clustered, on circles, with duplicates and
+/// exact-tie lattices) and adversarial ones: points exactly at the radius
+/// and at the prefilter gate and their neighbouring floats, non-finite
+/// coordinates, tiny scales where the gate is off (including squares that
+/// underflow to zero), and zero, negative, NaN and infinite radii.
+fn chain_clouds() -> Vec<(String, Cloud, f64)> {
+    let mut rng = SplitMix(0x5EED_70A5_0000_0003);
+    let mut clouds = Vec::new();
+    for n in [0, 1, 2, 3, 17, 500] {
+        let pts = (0..n)
+            .map(|_| [(); 3].map(|()| rng.range(-1.0, 1.0)))
+            .collect::<Vec<_>>();
+        clouds.push((format!("uniform {n}"), cloud(pts), 0.2));
+    }
+    let clustered = (0..300)
+        .map(|i| {
+            let centre = f64::from(i % 10);
+            [(); 3].map(|()| centre + rng.range(-1e-3, 1e-3))
+        })
+        .collect::<Vec<_>>();
+    clouds.push(("clustered".to_owned(), cloud(clustered), 0.05));
+    for (scale, centre) in [(1e-3, 0.0), (1.0, 0.0), (1e3, 0.0), (1.0, 1e4)] {
+        let circles = (0..300)
+            .map(|i| {
+                let t = TAU * f64::from(i % 100) / 100.0 + rng.range(0.0, 1e-3);
+                let ring = 1.0 + f64::from(i / 100);
+                [
+                    scale * ring * t.cos() + centre,
+                    scale * ring * t.sin() + centre,
+                    scale * ring * 0.1 + centre,
+                ]
+            })
+            .collect::<Vec<_>>();
+        clouds.push((
+            format!("circles at {scale} around {centre}"),
+            cloud(circles),
+            scale * 0.1,
+        ));
+    }
+    let duplicates = (0..60)
+        .map(|i| [f64::from(i / 3) * 0.1, 0.0, 0.0])
+        .collect::<Vec<_>>();
+    clouds.push(("duplicates".to_owned(), cloud(duplicates), 0.3));
+    clouds.push(("lattice ties".to_owned(), cloud(lattice(1.0)), 1.5));
+    clouds.push(("lattice at radius".to_owned(), cloud(lattice(1.0)), 1.0));
+
+    let radius = 0.75_f64;
+    let gate = radius * (1.0 + 1e-12);
+    let mut edges = vec![[0.0; 3]];
+    for v in [
+        gate,
+        gate.next_up(),
+        gate.next_down(),
+        radius,
+        radius.next_up(),
+        radius.next_down(),
+    ] {
+        edges.extend([[v, 0.0, 0.0], [0.0, -v, 0.0], [0.0, 0.0, v]]);
+    }
+    clouds.push(("radius and gate edges".to_owned(), cloud(edges), radius));
+
+    let mut non_finite = lattice(0.5);
+    non_finite[3] = [f64::NAN, 0.0, 0.0];
+    non_finite[10] = [0.5, f64::INFINITY, 0.5];
+    non_finite[20] = [f64::NEG_INFINITY, f64::NAN, 1.0];
+    non_finite[40] = [1.0, 1.0, f64::NAN];
+    clouds.push(("non-finite".to_owned(), cloud(non_finite), 0.8));
+
+    for scale in [1e-160, 1e-163] {
+        let tiny = lattice(1.0).into_iter().map(|p| p.map(|c| c * scale));
+        clouds.push((format!("lattice at {scale}"), cloud(tiny), 1.5 * scale));
+    }
+    // Neighbours' squared differences round to zero: their distance is 0.
+    let underflow = (0..20).map(|i| [f64::from(i) * 1.2e-162, 0.0, 0.0]);
+    clouds.push(("subnormal squares".to_owned(), cloud(underflow), 1e-162));
+
+    let uniform = clouds[5].1.clone();
+    for radius in [0.0, -0.2, f64::NAN, f64::INFINITY] {
+        clouds.push((format!("radius {radius}"), uniform.clone(), radius));
+    }
+    clouds
+}
+
+#[test]
+fn greedy_chains_match_the_pre_change_scan() {
+    for (label, pts, radius) in chain_clouds() {
+        assert_eq!(
+            greedy_chains(&pts, radius),
+            ref_greedy_chains(&pts, radius),
+            "{label}"
+        );
+    }
+}

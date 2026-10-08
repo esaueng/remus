@@ -1264,43 +1264,11 @@ pub fn intersect_plane_torus(
     }
 
     // Group nearby points into connected curves via greedy chaining.
-    let mut used = vec![false; crossing_pts.len()];
     let mut curves = Vec::new();
 
-    for start in 0..crossing_pts.len() {
-        if used[start] {
-            continue;
-        }
-        used[start] = true;
-        let mut chain = vec![start];
-
-        loop {
-            let last = chain[chain.len() - 1];
-            let last_pt = crossing_pts[last].2;
-            let mut best_idx = None;
-            // The grid is angular: its physical spacing scales with the tube.
-            // A fixed length joins separate small lobes and fragments large ones.
-            let mut best_dist = torus.minor_radius() / 3.0;
-
-            for (j, &is_used) in used.iter().enumerate() {
-                if is_used {
-                    continue;
-                }
-                let dist = (crossing_pts[j].2 - last_pt).length();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_idx = Some(j);
-                }
-            }
-
-            if let Some(j) = best_idx {
-                used[j] = true;
-                chain.push(j);
-            } else {
-                break;
-            }
-        }
-
+    // The grid is angular: its physical spacing scales with the tube.
+    // A fixed length joins separate small lobes and fragments large ones.
+    for mut chain in greedy_chains(&crossing_pts, torus.minor_radius() / 3.0) {
         if chain.len() >= 4 {
             // The walk has no direction yet at its start. A grid corner the
             // curve passes close to yields two crossings (one per adjacent grid
@@ -1365,6 +1333,68 @@ pub fn intersect_plane_torus(
     }
 
     Ok(curves)
+}
+
+/// Greedy nearest-neighbour chains over `pts`, every chain in start order.
+///
+/// Each point not yet used starts a chain, in index order. The chain then
+/// keeps taking the unused point nearest its last one, if closer than
+/// `radius`, with ties going to the lowest index.
+fn greedy_chains(pts: &[(f64, f64, Point3)], radius: f64) -> Vec<Vec<usize>> {
+    let mut used = vec![false; pts.len()];
+    let mut chains = Vec::new();
+
+    for start in 0..pts.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut chain = vec![start];
+
+        loop {
+            let last = chain[chain.len() - 1];
+            let last_pt = pts[last].2;
+            let mut best_idx = None;
+            let mut best_dist = radius;
+
+            for (j, &is_used) in used.iter().enumerate() {
+                if is_used {
+                    continue;
+                }
+                let q = pts[j].2;
+                // `length` rounds a sum of non-negative squares that is at
+                // least the rounded square of the largest coordinate
+                // difference `m` (rounding is monotone), then rounds its
+                // root, so it is at least `m·(1 − eps)^1.5` while `m²` is
+                // normal. Once `m` reaches the gate, `dist > best_dist` (or
+                // is NaN) and the `<` below would reject `j` anyway. Below
+                // `1e-140` the gate could let `m²` go subnormal, so it is
+                // not applied.
+                let gate = best_dist * (1.0 + 1e-12);
+                if gate > 1e-140
+                    && ((q.x() - last_pt.x()).abs() >= gate
+                        || (q.y() - last_pt.y()).abs() >= gate
+                        || (q.z() - last_pt.z()).abs() >= gate)
+                {
+                    continue;
+                }
+                let dist = (q - last_pt).length();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(j);
+                }
+            }
+
+            if let Some(j) = best_idx {
+                used[j] = true;
+                chain.push(j);
+            } else {
+                break;
+            }
+        }
+        chains.push(chain);
+    }
+    chains
 }
 
 /// One end of a cell edge of the plane × torus scan grid, with its trig.
