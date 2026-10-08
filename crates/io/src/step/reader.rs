@@ -2246,6 +2246,42 @@ struct FaceBoundLoop {
     seam_flexible_v: bool,
 }
 
+/// What inner-winding repair reads of a plane-frame bound polygon.
+#[derive(Debug, Clone, Copy)]
+struct PlanarBoundShape {
+    vertex_count: usize,
+    signed_area: f64,
+    perimeter: f64,
+}
+
+impl PlanarBoundShape {
+    fn of(polygon: &[Point2]) -> Self {
+        Self {
+            vertex_count: polygon.len(),
+            signed_area: polygon_signed_area(polygon),
+            perimeter: polygon_perimeter(polygon),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SampledPlanarBound {
+    shape: PlanarBoundShape,
+    /// Raw samples of each edge, in the order sampling charged them against
+    /// `MAX_FACE_BOUND_SAMPLES`.
+    edge_samples: Vec<usize>,
+}
+
+/// Every bound of one generic planar face as its resolution sampled them,
+/// so inner-winding repair does not resample the same wires in the same
+/// frame. Built and consumed within one `build_face` call.
+#[derive(Debug)]
+struct PlanarBoundSamples {
+    frame: Frame3,
+    /// Indexed by candidate position.
+    bounds: Vec<SampledPlanarBound>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeriodicWindingAxis {
     U,
@@ -2989,9 +3025,16 @@ impl<'a> StepBuilder<'a> {
             }
         }
 
-        let (outer, inner_wires) =
+        let (outer, inner_wires, planar_samples) =
             self.resolve_face_bounds(face_ref, &surface, &candidates, &mut pending_by_wire)?;
-        self.normalize_planar_inner_winding(face_ref, &surface, outer, &inner_wires, &candidates)?;
+        self.normalize_planar_inner_winding(
+            face_ref,
+            &surface,
+            outer,
+            &inner_wires,
+            &candidates,
+            planar_samples.as_ref(),
+        )?;
         let boundary_wires: Vec<WireId> = std::iter::once(outer)
             .chain(inner_wires.iter().copied())
             .collect();
@@ -3037,6 +3080,11 @@ impl<'a> StepBuilder<'a> {
     /// Reversing a closed periodic curve changes its traversal without changing
     /// the shared topological edge use. Multi-edge loops are left unchanged so
     /// the validator can diagnose them without making import destructive.
+    ///
+    /// `presampled` holds the bounds generic planar resolution sampled for
+    /// this face, and the frame it sampled them in. They stand in for
+    /// resampling only until the first edge reversal below; every later bound
+    /// is resampled as the topology then is, exactly as without them.
     fn normalize_planar_inner_winding(
         &mut self,
         face_ref: u64,
@@ -3044,6 +3092,7 @@ impl<'a> StepBuilder<'a> {
         outer: WireId,
         inner_wires: &[WireId],
         candidates: &[FaceBoundCandidate],
+        presampled: Option<&PlanarBoundSamples>,
     ) -> Result<(), IoError> {
         let FaceSurface::Plane { normal, d } = surface else {
             return Ok(());
@@ -3057,31 +3106,41 @@ impl<'a> StepBuilder<'a> {
         if normal_sq <= tol.linear_sq() {
             return Ok(());
         }
-        let origin_vector = *normal * (*d / normal_sq);
-        let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
-        let frame = Frame3::from_normal(origin, *normal).map_err(|error| IoError::ParseError {
-            reason: format!(
-                "ADVANCED_FACE #{face_ref} cannot classify planar bound winding: {error}"
-            ),
-        })?;
+        let frame = match presampled {
+            Some(samples) => samples.frame,
+            None => {
+                planar_bound_frame(*normal, *d, normal_sq).map_err(|error| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} cannot classify planar bound winding: {error}"
+                    ),
+                })?
+            }
+        };
 
-        let candidate_for = |wire| {
+        let candidate_index = |wire| {
             candidates
                 .iter()
-                .find(|candidate| candidate.wire == wire)
-                .copied()
+                .position(|candidate| candidate.wire == wire)
                 .ok_or_else(|| IoError::ParseError {
                     reason: format!(
                         "ADVANCED_FACE #{face_ref} selected an unknown wire while resolving bounds"
                     ),
                 })
         };
+        let presampled_bound =
+            |index: usize| presampled.and_then(|samples| samples.bounds.get(index));
         let mut sampled_points = 0usize;
-        let outer_polygon =
-            self.sample_planar_bound(face_ref, candidate_for(outer)?, &frame, &mut sampled_points)?;
-        let outer_area = polygon_signed_area(&outer_polygon);
-        let outer_perimeter = polygon_perimeter(&outer_polygon);
-        if outer_polygon.len() < 3
+        let outer_index = candidate_index(outer)?;
+        let outer_bound = self.planar_bound_shape(
+            face_ref,
+            candidates[outer_index],
+            &frame,
+            &mut sampled_points,
+            presampled_bound(outer_index),
+        )?;
+        let outer_area = outer_bound.signed_area;
+        let outer_perimeter = outer_bound.perimeter;
+        if outer_bound.vertex_count < 3
             || !outer_area.is_finite()
             || !outer_perimeter.is_finite()
             || outer_area.abs() <= outer_perimeter * tol.linear
@@ -3089,16 +3148,19 @@ impl<'a> StepBuilder<'a> {
             return Ok(());
         }
 
+        let mut reversed_an_edge = false;
         for &inner_wire in inner_wires {
-            let polygon = self.sample_planar_bound(
+            let index = candidate_index(inner_wire)?;
+            let bound = self.planar_bound_shape(
                 face_ref,
-                candidate_for(inner_wire)?,
+                candidates[index],
                 &frame,
                 &mut sampled_points,
+                presampled_bound(index).filter(|_| !reversed_an_edge),
             )?;
-            let area = polygon_signed_area(&polygon);
-            let perimeter = polygon_perimeter(&polygon);
-            if polygon.len() < 3
+            let area = bound.signed_area;
+            let perimeter = bound.perimeter;
+            if bound.vertex_count < 3
                 || !area.is_finite()
                 || !perimeter.is_finite()
                 || area.abs() <= perimeter * tol.linear
@@ -3145,9 +3207,30 @@ impl<'a> StepBuilder<'a> {
                 vertex_tolerance,
             )?;
             *self.topo.edge_mut(edge_id)? = replacement;
+            reversed_an_edge = true;
         }
 
         Ok(())
+    }
+
+    /// The plane-frame polygon shape of `candidate`, charged to
+    /// `sampled_points` edge by edge exactly as sampling it charges.
+    fn planar_bound_shape(
+        &self,
+        face_ref: u64,
+        candidate: FaceBoundCandidate,
+        frame: &Frame3,
+        sampled_points: &mut usize,
+        presampled: Option<&SampledPlanarBound>,
+    ) -> Result<PlanarBoundShape, IoError> {
+        if let Some(bound) = presampled {
+            for &count in &bound.edge_samples {
+                charge_face_bound_samples(sampled_points, count)?;
+            }
+            return Ok(bound.shape);
+        }
+        let polygon = self.sample_planar_bound(face_ref, candidate, frame, sampled_points, None)?;
+        Ok(PlanarBoundShape::of(&polygon))
     }
 
     /// Resolve the semantic perimeter independently of STEP aggregate order.
@@ -3156,13 +3239,17 @@ impl<'a> StepBuilder<'a> {
     /// Generic multi-bound faces are classified in either a stable plane frame
     /// or a seam-aware periodic UV domain.  Non-periodic parametric surfaces
     /// still fail closed rather than falling back to aggregate order.
+    ///
+    /// Generic planar classification also returns the bound samples it took,
+    /// for [`Self::normalize_planar_inner_winding`]; every other path
+    /// returns `None` and leaves that repair to sample for itself.
     fn resolve_face_bounds(
         &mut self,
         face_ref: u64,
         surface: &FaceSurface,
         candidates: &[FaceBoundCandidate],
         pending_by_wire: &mut HashMap<WireId, Vec<PendingPcurveUse>>,
-    ) -> Result<(WireId, Vec<WireId>), IoError> {
+    ) -> Result<(WireId, Vec<WireId>, Option<PlanarBoundSamples>), IoError> {
         if candidates.is_empty() {
             return Err(IoError::ParseError {
                 reason: format!("ADVANCED_FACE #{face_ref} has no bounds"),
@@ -3193,20 +3280,20 @@ impl<'a> StepBuilder<'a> {
                 .enumerate()
                 .filter_map(|(index, candidate)| (index != outer_index).then_some(candidate.wire))
                 .collect();
-            return Ok((outer, inner));
+            return Ok((outer, inner, None));
         }
 
         if candidates.len() == 1 {
-            return Ok((candidates[0].wire, Vec::new()));
+            return Ok((candidates[0].wire, Vec::new(), None));
         }
 
         match surface {
-            FaceSurface::Plane { normal, d } => {
-                self.resolve_generic_planar_bounds(face_ref, candidates, *normal, *d)
-            }
-            _ if periodic_uv_domain(surface).is_some() => {
-                self.resolve_generic_periodic_bounds(face_ref, candidates, surface, pending_by_wire)
-            }
+            FaceSurface::Plane { normal, d } => self
+                .resolve_generic_planar_bounds(face_ref, candidates, *normal, *d)
+                .map(|(outer, inner, samples)| (outer, inner, Some(samples))),
+            _ if periodic_uv_domain(surface).is_some() => self
+                .resolve_generic_periodic_bounds(face_ref, candidates, surface, pending_by_wire)
+                .map(|(outer, inner)| (outer, inner, None)),
             FaceSurface::Nurbs(_)
             | FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
@@ -3228,7 +3315,7 @@ impl<'a> StepBuilder<'a> {
         candidates: &[FaceBoundCandidate],
         normal: Vec3,
         d: f64,
-    ) -> Result<(WireId, Vec<WireId>), IoError> {
+    ) -> Result<(WireId, Vec<WireId>, PlanarBoundSamples), IoError> {
         let normal_sq = normal.dot(normal);
         let tol = Tolerance::new();
         if normal_sq <= tol.linear_sq() {
@@ -3239,20 +3326,27 @@ impl<'a> StepBuilder<'a> {
                 ),
             });
         }
-        let origin_vector = normal * (d / normal_sq);
-        let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
-        let frame = Frame3::from_normal(origin, normal).map_err(|error| IoError::ParseError {
-            reason: format!(
-                "ADVANCED_FACE #{face_ref} cannot build a plane frame for generic FACE_BOUND \
-                 classification: {error}"
-            ),
-        })?;
+        let frame =
+            planar_bound_frame(normal, d, normal_sq).map_err(|error| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} cannot build a plane frame for generic FACE_BOUND \
+                     classification: {error}"
+                ),
+            })?;
 
         let mut loops = Vec::with_capacity(candidates.len());
+        let mut edge_samples = Vec::with_capacity(candidates.len());
         let mut sampled_points = 0;
         for (candidate_index, candidate) in candidates.iter().enumerate() {
-            let polygon =
-                self.sample_planar_bound(face_ref, *candidate, &frame, &mut sampled_points)?;
+            let mut bound_edge_samples = Vec::new();
+            let polygon = self.sample_planar_bound(
+                face_ref,
+                *candidate,
+                &frame,
+                &mut sampled_points,
+                Some(&mut bound_edge_samples),
+            )?;
+            edge_samples.push(bound_edge_samples);
             let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
                 IoError::ParseError {
                     reason: format!(
@@ -3372,13 +3466,28 @@ impl<'a> StepBuilder<'a> {
             .collect();
         inner_loops
             .sort_by(|&left, &right| face_bound_loop_geometry_cmp(&loops[left], &loops[right]));
-        Ok((
-            candidates[outer_candidate].wire,
-            inner_loops
-                .into_iter()
-                .map(|index| candidates[loops[index].candidate_index].wire)
+        let inner_wires = inner_loops
+            .into_iter()
+            .map(|index| candidates[loops[index].candidate_index].wire)
+            .collect();
+        // `loops` and `edge_samples` both hold one entry per candidate, in
+        // candidate order.
+        let samples = PlanarBoundSamples {
+            frame,
+            bounds: loops
+                .iter()
+                .zip(edge_samples)
+                .map(|(bound, edge_samples)| SampledPlanarBound {
+                    shape: PlanarBoundShape {
+                        vertex_count: bound.polygon.len(),
+                        signed_area: bound.signed_area,
+                        perimeter: bound.perimeter,
+                    },
+                    edge_samples,
+                })
                 .collect(),
-        ))
+        };
+        Ok((candidates[outer_candidate].wire, inner_wires, samples))
     }
 
     fn resolve_generic_periodic_bounds(
@@ -4011,13 +4120,18 @@ impl<'a> StepBuilder<'a> {
         Ok(domain.scale(Point2::new(u, v)))
     }
 
+    /// `edge_samples`, when given, receives each edge's raw sample count in
+    /// the order they are charged to `sampled_points`.
     fn sample_planar_bound(
         &self,
         face_ref: u64,
         candidate: FaceBoundCandidate,
         frame: &Frame3,
         sampled_points: &mut usize,
+        mut edge_samples: Option<&mut Vec<usize>>,
     ) -> Result<Vec<Point2>, IoError> {
+        #[cfg(test)]
+        tests::count_planar_bound_sampling();
         let wire = self
             .topo
             .wire(candidate.wire)
@@ -4039,12 +4153,10 @@ impl<'a> StepBuilder<'a> {
                     ),
                 })?;
             let mut edge_points = self.sample_bound_edge(edge)?;
-            *sampled_points = sampled_points.saturating_add(edge_points.len());
-            ensure_limit(
-                "sampled points per STEP ADVANCED_FACE",
-                *sampled_points,
-                MAX_FACE_BOUND_SAMPLES,
-            )?;
+            charge_face_bound_samples(sampled_points, edge_points.len())?;
+            if let Some(edge_samples) = edge_samples.as_mut() {
+                edge_samples.push(edge_points.len());
+            }
             if !oriented.is_forward() {
                 edge_points.reverse();
             }
@@ -7513,6 +7625,30 @@ fn shift_periodic_uv_group(
     for point in group {
         *point = Point2::new(point.x() + u_shift, point.y() + v_shift);
     }
+}
+
+/// The frame generic bound resolution and inner-winding repair both sample a
+/// `FaceSurface::Plane { normal, d }` bound in.
+fn planar_bound_frame(
+    normal: Vec3,
+    d: f64,
+    normal_sq: f64,
+) -> Result<Frame3, remus_math::MathError> {
+    let origin_vector = normal * (d / normal_sq);
+    let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
+    Frame3::from_normal(origin, normal)
+}
+
+/// Charge one bound edge's raw samples against the per-face sampling cap.
+fn charge_face_bound_samples(sampled_points: &mut usize, count: usize) -> Result<(), IoError> {
+    *sampled_points = sampled_points.saturating_add(count);
+    #[cfg(test)]
+    tests::record_face_bound_sample_charge(*sampled_points);
+    ensure_limit(
+        "sampled points per STEP ADVANCED_FACE",
+        *sampled_points,
+        MAX_FACE_BOUND_SAMPLES,
+    )
 }
 
 fn polygon_signed_area(polygon: &[Point2]) -> f64 {
@@ -11732,17 +11868,24 @@ mod tests {
             )
             .unwrap();
             builder
-                .normalize_planar_inner_winding(42, &plane, outer_wire, &[inner_wire], &candidates)
+                .normalize_planar_inner_winding(
+                    42,
+                    &plane,
+                    outer_wire,
+                    &[inner_wire],
+                    &candidates,
+                    None,
+                )
                 .unwrap();
 
             let frame =
                 Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
             let mut sampled_points = 0;
             let outer = builder
-                .sample_planar_bound(42, candidates[0], &frame, &mut sampled_points)
+                .sample_planar_bound(42, candidates[0], &frame, &mut sampled_points, None)
                 .unwrap();
             let inner = builder
-                .sample_planar_bound(42, candidates[1], &frame, &mut sampled_points)
+                .sample_planar_bound(42, candidates[1], &frame, &mut sampled_points, None)
                 .unwrap();
             assert_ne!(
                 polygon_signed_area(&outer).is_sign_positive(),
@@ -17818,6 +17961,248 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let audit = PERIODIC_CONTAINMENT_AUDIT.get();
         assert_eq!(audit.disagreed, 0, "{audit:?}");
         assert!(audit.contained >= 2, "{audit:?}");
+    }
+
+    // ── Planar inner-winding repair after generic bound resolution ─────
+
+    /// A 4 × 4 generic planar square around unit-circle holes that all run
+    /// along one closed circle edge, forward (`true`) or reversed (`false`).
+    /// No bound is a FACE_OUTER_BOUND. Candidates list the square first.
+    fn generic_planar_holes(
+        hole_senses: &[bool],
+    ) -> (
+        Topology,
+        Vec<FaceBoundCandidate>,
+        remus_topology::edge::EdgeId,
+    ) {
+        let mut topo = Topology::new();
+        let corners: Vec<_> = [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
+            .into_iter()
+            .map(|(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .collect();
+        let square_edges = (0..corners.len())
+            .map(|index| {
+                let edge = topo.add_edge(Edge::new(
+                    corners[index],
+                    corners[(index + 1) % corners.len()],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        let square = topo.add_wire(Wire::new(square_edges, true).unwrap());
+
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut circle_edge =
+            Edge::with_tolerance(seam, seam, EdgeCurve::Circle(circle), Some(1e-7));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let circle_edge = topo.add_edge(circle_edge);
+
+        let mut candidates = vec![FaceBoundCandidate {
+            bound_ref: 1,
+            wire: square,
+            explicit_outer: false,
+            source_position: 0,
+        }];
+        for (position, &forward) in hole_senses.iter().enumerate() {
+            let wire = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(circle_edge, forward)], true).unwrap());
+            candidates.push(FaceBoundCandidate {
+                bound_ref: 2 + position as u64,
+                wire,
+                explicit_outer: false,
+                source_position: position + 1,
+            });
+        }
+        (topo, candidates, circle_edge)
+    }
+
+    thread_local! {
+        static PLANAR_BOUND_SAMPLINGS: Cell<usize> = const { Cell::new(0) };
+        /// The running per-face sample total after every planar edge charge.
+        static FACE_BOUND_SAMPLE_CHARGES: std::cell::RefCell<Vec<usize>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn count_planar_bound_sampling() {
+        PLANAR_BOUND_SAMPLINGS.set(PLANAR_BOUND_SAMPLINGS.get() + 1);
+    }
+
+    pub(super) fn record_face_bound_sample_charge(total: usize) {
+        FACE_BOUND_SAMPLE_CHARGES.with_borrow_mut(|charges| charges.push(total));
+    }
+
+    /// `build_face`'s bound resolution followed by its inner-winding repair,
+    /// handing the repair the resolution's samples when `reuse_samples`.
+    /// Returns how many bounds the repair sampled and the running sample
+    /// totals it charged.
+    fn resolve_and_repair_planar_bounds(
+        topo: &mut Topology,
+        candidates: &[FaceBoundCandidate],
+        reuse_samples: bool,
+    ) -> (usize, Vec<usize>) {
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let entities = HashMap::new();
+        let units = UnitScale {
+            length: 1.0,
+            angle: 1.0,
+        };
+        let mut builder =
+            StepBuilder::new(topo, &entities, units, ImportLimits::default()).unwrap();
+        let (outer, inner, samples) = builder
+            .resolve_face_bounds(42, &plane, candidates, &mut HashMap::new())
+            .unwrap();
+        assert_eq!(outer, candidates[0].wire);
+        let samples = samples.expect("generic planar resolution returns its samples");
+        assert_eq!(samples.bounds.len(), candidates.len());
+
+        PLANAR_BOUND_SAMPLINGS.set(0);
+        FACE_BOUND_SAMPLE_CHARGES.with_borrow_mut(Vec::clear);
+        builder
+            .normalize_planar_inner_winding(
+                42,
+                &plane,
+                outer,
+                &inner,
+                candidates,
+                reuse_samples.then_some(&samples),
+            )
+            .unwrap();
+        (
+            PLANAR_BOUND_SAMPLINGS.get(),
+            FACE_BOUND_SAMPLE_CHARGES.take(),
+        )
+    }
+
+    /// The shared circle edge after `reversals` repairs, built the way the
+    /// repair builds them, rendered bit-exactly.
+    fn circle_after_reversals(hole_senses: &[bool], reversals: usize) -> String {
+        let (topo, _, circle_edge) = generic_planar_holes(hole_senses);
+        let mut edge = topo.edge(circle_edge).unwrap().clone();
+        let seam = topo.vertex(edge.start()).unwrap();
+        for _ in 0..reversals {
+            edge = reversed_closed_edge_with_authority(
+                42,
+                &edge,
+                seam.point(),
+                seam.point(),
+                seam.tolerance(),
+            )
+            .unwrap();
+        }
+        format!("{edge:?}")
+    }
+
+    #[test]
+    fn generic_planar_hole_repair_reverses_each_shared_edge_as_pinned() {
+        // (hole senses, reversals of the shared circle edge, bounds the
+        // repair still samples given the resolution's samples). Reversals
+        // are pinned on the repair that resampled every bound: a same-wound
+        // hole is reversed once; a later use of the same edge is resampled
+        // after that reversal and judged by the edge as it now is, so a
+        // forward and a reversed use reverse it twice, restoring the carrier
+        // bit for bit. The samples serve only the bounds met before the
+        // first reversal.
+        for (hole_senses, reversals, resampled) in [
+            (&[true][..], 1, 0),
+            (&[false][..], 0, 0),
+            (&[true, true][..], 1, 1),
+            (&[true, false][..], 2, 1),
+            (&[false, true][..], 2, 1),
+        ] {
+            assert_ne!(
+                circle_after_reversals(hole_senses, 0),
+                circle_after_reversals(hole_senses, 1)
+            );
+            let mut charges = Vec::new();
+            for reuse_samples in [false, true] {
+                let (mut topo, candidates, circle_edge) = generic_planar_holes(hole_senses);
+                let (samplings, charged) =
+                    resolve_and_repair_planar_bounds(&mut topo, &candidates, reuse_samples);
+                let label = format!("holes {hole_senses:?}, reuse {reuse_samples}");
+                assert_eq!(
+                    format!("{:?}", topo.edge(circle_edge).unwrap()),
+                    circle_after_reversals(hole_senses, reversals),
+                    "{label}"
+                );
+                for (candidate, &forward) in candidates[1..].iter().zip(hole_senses) {
+                    let [oriented] = topo.wire(candidate.wire).unwrap().edges() else {
+                        panic!("one-edge hole");
+                    };
+                    assert_eq!(oriented.edge(), circle_edge, "{label}");
+                    assert_eq!(oriented.is_forward(), forward, "{label}");
+                }
+                let expected = if reuse_samples {
+                    resampled
+                } else {
+                    candidates.len()
+                };
+                assert_eq!(samplings, expected, "{label}");
+                charges.push(charged);
+            }
+            // The cap sees the same running totals in the same order, so a
+            // MAX_FACE_BOUND_SAMPLES refusal would trip at the same edge with
+            // the same `actual`.
+            assert_eq!(charges[0], charges[1], "holes {hole_senses:?}");
+            assert_eq!(charges[0].len(), 4 + hole_senses.len());
+        }
+    }
+
+    #[test]
+    fn generic_planar_faces_sample_each_bound_once_on_hammer_holder() {
+        // Six multi-bound PLANE faces with 20 generic FACE_BOUNDs in all, none
+        // with a same-wound hole; resolution samples each bound once and the
+        // winding repair reuses those samples.
+        let data = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/shapr3d_hammer_holder.step"
+        ))
+        .unwrap();
+        PLANAR_BOUND_SAMPLINGS.set(0);
+        let mut topo = Topology::new();
+        let solids = read_step(&data, &mut topo).unwrap();
+        assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), 20);
+        assert_eq!(solids.len(), 1);
+        assert_eq!(topo.num_faces(), 160);
+    }
+
+    #[test]
+    fn explicit_outer_planar_repair_still_samples_every_bound() {
+        // Sampling in the repair is the plane-residual and sampling-limit
+        // gate for faces whose outer bound is explicit.
+        let (mut topo, mut candidates, _) = generic_planar_holes(&[true, false]);
+        candidates[0].explicit_outer = true;
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let entities = HashMap::new();
+        let units = UnitScale {
+            length: 1.0,
+            angle: 1.0,
+        };
+        let mut builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+        PLANAR_BOUND_SAMPLINGS.set(0);
+        let (outer, inner, samples) = builder
+            .resolve_face_bounds(42, &plane, &candidates, &mut HashMap::new())
+            .unwrap();
+        assert!(samples.is_none());
+        assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), 0);
+        builder
+            .normalize_planar_inner_winding(42, &plane, outer, &inner, &candidates, None)
+            .unwrap();
+        assert_eq!(PLANAR_BOUND_SAMPLINGS.get(), candidates.len());
     }
 }
 
