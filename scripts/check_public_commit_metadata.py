@@ -21,6 +21,8 @@ DEFAULT_NAMES = {
     "your name here",
 }
 ALLOWED_EMAIL_DOMAINS = {"users.noreply.github.com", "noreply.github.com"}
+# Exact public automation identities only; personal addresses still fail.
+PUBLIC_BOT_IDENTITIES = {"noreply@anthropic.com": {"claude", "claude code"}}
 EMAIL_PATTERN = re.compile(r"^([^\s@<>]+)@([^\s@<>]+)$")
 
 
@@ -34,8 +36,12 @@ def validate_identity(name: str, email: str) -> list[str]:
     match = EMAIL_PATTERN.fullmatch(email.lower())
     if not match:
         problems.append("email is malformed")
-    elif match.group(2) not in ALLOWED_EMAIL_DOMAINS and email.lower() != "noreply@github.com":
-        problems.append("email must use a GitHub noreply domain")
+    elif (
+        match.group(2) not in ALLOWED_EMAIL_DOMAINS
+        and email.lower() != "noreply@github.com"
+        and name.strip().lower() not in PUBLIC_BOT_IDENTITIES.get(email.lower(), set())
+    ):
+        problems.append("email must use a GitHub noreply domain or an approved public bot identity")
     return problems
 
 
