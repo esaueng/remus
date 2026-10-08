@@ -2595,30 +2595,41 @@ fn nurbs_recognition_verifies(
     Ok(true)
 }
 
-/// The signed span (`2pi` or `-2pi`) of a full turn starting at fraction 0 of
-/// an edge's trim.
-///
-/// `along` is the traced start tangent dotted with the recognized curve's
-/// tangent there and `scale` the product of their lengths; `ahead(f)` is the
-/// curve-parameter advance in `[0, 2pi)` reached at fraction `f` of the trim.
-/// A sample at a fixed fraction can lie past halfway round when the NURBS
-/// parameterization is far from uniform, so the start tangent decides. When
-/// it vanishes (an endpoint-stationary parameterization), the first fraction
-/// at which the curve has visibly moved decides instead: the advance there is
-/// small whichever way it runs.
-fn full_turn_direction(along: f64, scale: f64, ahead: &dyn Fn(f64) -> f64) -> f64 {
-    use std::f64::consts::{PI, TAU};
-
-    if along.abs() > scale * 1e-9 {
-        return TAU.copysign(along);
+/// Read full-turn orientation from the local tangent, probing actual knot
+/// spans when the trim starts at a stationary point. A fixed fraction of the
+/// whole domain can skip arbitrarily many short spans. No qualified tangent
+/// means this exact integration path must decline the edge.
+fn full_turn_direction(
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    s0: f64,
+    s1: f64,
+    project: &dyn Fn(Point3) -> f64,
+    eval: &dyn Fn(f64) -> (Point3, Vec3),
+) -> Option<f64> {
+    let direction = |parameter| {
+        let traced = (nc.derivatives(parameter, 1)[1] * (s1 - s0).signum())
+            .normalize()
+            .ok()?;
+        let curve = eval(project(nc.evaluate(parameter))).1.normalize().ok()?;
+        let along = traced.dot(curve);
+        (along.is_finite() && along.abs() > 1e-9).then_some(std::f64::consts::TAU.copysign(along))
+    };
+    if let Some(turn) = direction(s0) {
+        return Some(turn);
     }
-    for k in (1..=30).rev() {
-        let advance = ahead(2f64.powi(-k));
-        if advance.min(TAU - advance) > 1e-9 {
-            return if advance < PI { TAU } else { -TAU };
-        }
+    let probe = |span: &[f64]| {
+        let low = span[0].max(s0.min(s1));
+        let high = span[1].min(s0.max(s1));
+        let middle = low + (high - low) * 0.5;
+        (low < middle && middle < high)
+            .then(|| direction(middle))
+            .flatten()
+    };
+    if s1 > s0 {
+        nc.knots().windows(2).find_map(probe)
+    } else {
+        nc.knots().windows(2).rev().find_map(probe)
     }
-    TAU
 }
 
 /// Integrate a NURBS edge recognized as a circle or an ellipse along the arc
@@ -2661,26 +2672,22 @@ fn accumulate_recognized_arc_green_segments(
     let t0 = at(0.0);
     // Forward (increasing-parameter) offset of `t` from the start, in [0, 2pi).
     let ahead = |t: f64| (t - t0).rem_euclid(TAU);
-    let full_turn = || {
-        let traced = nc.derivatives(s0, 1)[1] * (s1 - s0).signum();
-        let curve = eval(t0).1;
-        full_turn_direction(traced.dot(curve), traced.length() * curve.length(), &|f| {
-            ahead(at(f))
-        })
-    };
+    let full_turn = || full_turn_direction(nc, s0, s1, project, eval);
     let span = if closed {
         full_turn()
     } else {
         let end = ahead(at(1.0));
         let mid = ahead(at(0.5));
         if end < 1e-12 {
-            // Endpoints coincide on the curve: a full turn either way.
             full_turn()
         } else if mid <= end {
-            end
+            Some(end)
         } else {
-            end - TAU
+            Some(end - TAU)
         }
+    };
+    let Some(span) = span else {
+        return false;
     };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let chunks = ((span.abs() / FRAC_PI_2).ceil() as usize).clamp(1, 8);
@@ -3515,32 +3522,6 @@ mod tests {
 
     use super::*;
     use remus_math::vec::{Point3, Vec3};
-
-    /// A full turn whose parameterization is stationary at its start and
-    /// crowded past halfway round by the quarter point: the start tangent
-    /// vanishes, and a fixed quarter-domain sample would read it backwards.
-    #[test]
-    fn full_turn_direction_reads_the_first_visible_advance() {
-        use std::f64::consts::TAU;
-        // Forward profile: g(0) = 0, g'(0) = 0, g(0.25) = 0.6 of a turn.
-        let forward = |f: f64| {
-            let g = if f <= 0.25 {
-                0.6 * (f / 0.25).powi(2)
-            } else {
-                0.6 + 0.4 * (f - 0.25) / 0.75
-            };
-            (TAU * g).rem_euclid(TAU)
-        };
-        let backward = |f: f64| (TAU - forward(f)).rem_euclid(TAU);
-        assert!(
-            forward(0.25) > std::f64::consts::PI,
-            "premise: quarter point past halfway"
-        );
-        assert!((full_turn_direction(0.0, 1.0, &forward) - TAU).abs() < 1e-12);
-        assert!((full_turn_direction(0.0, 1.0, &backward) + TAU).abs() < 1e-12);
-        // A usable tangent still decides on its own.
-        assert!((full_turn_direction(-0.5, 1.0, &forward) + TAU).abs() < 1e-12);
-    }
 
     /// A torus band whose `v` extent crosses the period seam must trim in the
     /// same branch the integration range lives in.
