@@ -50,6 +50,20 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    perform_with(topo, solid_a, solid_b, tol, arena, true)
+}
+
+/// [`perform`], with the gates that prune analytic pairs before their
+/// sampled scan switchable so tests can prove they change nothing but the
+/// work done.
+pub(super) fn perform_with(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    tol: Tolerance,
+    arena: &mut GfaArena,
+    analytic_gates: bool,
+) -> Result<(), AlgoError> {
     let bbox_a = crate::classifier::compute_solid_bbox(topo, solid_a)?;
     let bbox_b = crate::classifier::compute_solid_bbox(topo, solid_b)?;
     if !bbox_a
@@ -73,8 +87,24 @@ pub fn perform(
     let face_boundary_edges_b = collect_face_boundary_edges(topo, &faces_b)?;
     let face_boundary_edges_a = collect_face_boundary_edges(topo, &faces_a)?;
 
-    check_edge_face_pairs(topo, &edges_a, &faces_b, &face_boundary_edges_b, tol, arena)?;
-    check_edge_face_pairs(topo, &edges_b, &faces_a, &face_boundary_edges_a, tol, arena)?;
+    check_edge_face_pairs(
+        topo,
+        &edges_a,
+        &faces_b,
+        &face_boundary_edges_b,
+        tol,
+        arena,
+        analytic_gates,
+    )?;
+    check_edge_face_pairs(
+        topo,
+        &edges_b,
+        &faces_a,
+        &face_boundary_edges_a,
+        tol,
+        arena,
+        analytic_gates,
+    )?;
 
     Ok(())
 }
@@ -433,6 +463,7 @@ fn check_edge_face_pairs(
     face_boundary_edges: &[HashSet<EdgeId>],
     tol: Tolerance,
     arena: &mut GfaArena,
+    analytic_gates: bool,
 ) -> Result<(), AlgoError> {
     // Surface crossings are found against INFINITE surfaces; without a bounds
     // check an edge "crosses" a face far outside its trimmed region, creating
@@ -541,6 +572,24 @@ fn check_edge_face_pairs(
 
             let face = topo.face(fid)?;
             let surface = face.surface();
+
+            // Every crossing a curved edge yields against a plane is one of
+            // its own evaluations, inside `curved_gate_aabb`, and must pass
+            // the face's containment, which first tests the box `face_aabbs`
+            // contains. (Line edges took the exact test above.)
+            if analytic_gates
+                && !matches!(curve, EdgeCurve::Line)
+                && matches!(surface, FaceSurface::Plane { .. })
+                && let (Some(eb), Some(fa)) = (&curved_gate_aabb, &face_aabbs[face_idx])
+                && !eb.intersects(*fa)
+            {
+                crate::perf::bump_ef_analytic_pair_gated();
+                continue;
+            }
+
+            if takes_sampled_analytic_scan(&curve, surface) {
+                crate::perf::bump_ef_analytic_pair_scan();
+            }
             let grid = seed_grids[face_idx].as_ref();
             if grid.is_some() {
                 crate::perf::bump_ef_nurbs_pair_probe();
@@ -839,6 +888,20 @@ fn check_edge_face_pairs(
     }
 
     Ok(())
+}
+
+/// Whether the pair runs one of the sampled scans the analytic gates exist to
+/// avoid: a curved edge against a plane, or any edge against an analytic
+/// curved carrier.
+fn takes_sampled_analytic_scan(curve: &EdgeCurve, surface: &FaceSurface) -> bool {
+    match surface {
+        FaceSurface::Plane { .. } => !matches!(curve, EdgeCurve::Line),
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => true,
+        FaceSurface::Nurbs(_) => false,
+    }
 }
 
 /// The vertex of an extra pave already on `edge` that lies within `radius` of
@@ -1292,6 +1355,7 @@ mod tests {
             &[HashSet::new()],
             Tolerance::default(),
             &mut arena,
+            true,
         )
         .unwrap();
         let heights: Vec<f64> = arena

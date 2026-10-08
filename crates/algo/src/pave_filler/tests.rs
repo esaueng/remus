@@ -2402,7 +2402,7 @@ fn ef_grazing_contact_reuses_the_edges_own_on_wall_extra_pave() {
     assert_eq!(on_wall, vec![Some(contact)]);
 }
 
-// ── Broad-phase equivalence: gated vs ungated VE ─────────────────────────
+// ── Broad-phase equivalence: gated vs ungated VE and EF ──────────────────
 
 /// A closed cylinder of `radius` from `base` along `axis` for `height`. Its
 /// rims are exact circles, or their rational quadratic NURBS images when
@@ -2676,26 +2676,47 @@ fn broad_phase_corpus() -> Vec<(&'static str, Topology, Vec<remus_topology::soli
     corpus
 }
 
-/// The phases' work counters, where the `perf-counters` feature records them.
-fn ve_work() -> u64 {
+/// Work the gates exist to save, and work they must leave untouched, as
+/// recorded by the `perf-counters` feature (zero without it).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PhaseWork {
+    /// VE sampled projections.
+    ve_projections: u64,
+    /// EF sampled scans against analytic carriers.
+    ef_analytic_scans: u64,
+    /// EF pairs that reached a NURBS projection, and pave-vertex lookups:
+    /// the analytic gates must change neither.
+    untouched: (u64, u64),
+}
+
+/// The work counted since the last call, resetting the counters.
+fn phase_work() -> PhaseWork {
     #[cfg(feature = "perf-counters")]
-    return crate::perf::snapshot().ve_sampled_probes;
+    {
+        let s = crate::perf::snapshot();
+        crate::perf::reset();
+        PhaseWork {
+            ve_projections: s.ve_sampled_probes,
+            ef_analytic_scans: s.ef_analytic_pair_scans,
+            untouched: (s.ef_nurbs_pair_probes, s.pave_vertex_probes),
+        }
+    }
     #[cfg(not(feature = "perf-counters"))]
-    0
+    PhaseWork::default()
 }
 
 /// Run stage one of the pave filler over `sources` (the two-solid
 /// initialisation for two, the N-way one for more) and, at each gated
-/// phase, also run it from the same state with its broad phase off: the
-/// gated run must leave the topology and arena bit-identical. `Debug` prints
-/// floats shortest-round-trip, so equal text is equal bits, across the
-/// interference lists, every pave block's extra paves, the face info and
-/// every topology entity, in order. Returns the (gated, ungated) work.
+/// phase, also run it from the same state with its gates off: the gated run
+/// must leave the topology and arena bit-identical. `Debug` prints floats
+/// shortest-round-trip, so equal text is equal bits, across the interference
+/// lists, every pave block's extra paves, the face info and every topology
+/// entity, in order. Returns the (gated, ungated) work.
 fn assert_broad_phases_change_nothing(
     name: &str,
     mut topo: Topology,
     sources: &[remus_topology::solid::SolidId],
-) -> (u64, u64) {
+) -> (PhaseWork, PhaseWork) {
     use remus_math::tolerance::Tolerance;
     let tol = Tolerance::default();
     let context = OperationContext::new().with_tolerance(tol);
@@ -2723,42 +2744,76 @@ fn assert_broad_phases_change_nothing(
     arena.build_pave_vertex_index(&topo, tol.linear).unwrap();
 
     let mut ungated = arena.clone();
-    #[cfg(feature = "perf-counters")]
-    crate::perf::reset();
+    phase_work();
     for &(i, j) in &pairs {
         super::phase_ve::perform_with(&topo, sources[i], sources[j], tol, &mut arena, true)
             .unwrap();
     }
-    let gated_work = ve_work();
-    #[cfg(feature = "perf-counters")]
-    crate::perf::reset();
+    let mut gated_work = phase_work();
     for &(i, j) in &pairs {
         super::phase_ve::perform_with(&topo, sources[i], sources[j], tol, &mut ungated, false)
             .unwrap();
     }
-    let ungated_work = ve_work();
+    let mut ungated_work = phase_work();
     assert_eq!(
         format!("{arena:?}"),
         format!("{ungated:?}"),
         "{name}: the VE curved-edge box changed the intersection state"
     );
+
+    for &(i, j) in &pairs {
+        super::phase_ee::perform(&mut topo, sources[i], sources[j], tol, &mut arena).unwrap();
+    }
+    for &(i, j) in &pairs {
+        super::phase_vf::perform(&topo, sources[i], sources[j], tol, &mut arena).unwrap();
+    }
+    let (mut gated_topo, mut ungated_topo) = (topo.clone(), topo.clone());
+    let mut ungated = arena.clone();
+    phase_work();
+    for &(i, j) in &pairs {
+        let (a, b) = (sources[i], sources[j]);
+        super::phase_ef::perform_with(&mut gated_topo, a, b, tol, &mut arena, true).unwrap();
+    }
+    let ef_gated = phase_work();
+    for &(i, j) in &pairs {
+        let (a, b) = (sources[i], sources[j]);
+        super::phase_ef::perform_with(&mut ungated_topo, a, b, tol, &mut ungated, false).unwrap();
+    }
+    let ef_ungated = phase_work();
+    assert_eq!(
+        format!("{gated_topo:?}\n{arena:?}"),
+        format!("{ungated_topo:?}\n{ungated:?}"),
+        "{name}: the EF analytic gates changed the intersection state"
+    );
+    assert_eq!(ef_gated.untouched, ef_ungated.untouched, "{name}");
+    gated_work.ef_analytic_scans = ef_gated.ef_analytic_scans;
+    ungated_work.ef_analytic_scans = ef_ungated.ef_analytic_scans;
     (gated_work, ungated_work)
 }
 
 #[test]
 fn broad_phases_leave_the_intersection_state_bit_identical() {
-    let mut gated = 0;
-    let mut ungated = 0;
+    let mut gated = PhaseWork::default();
+    let mut ungated = PhaseWork::default();
     for (name, topo, sources) in broad_phase_corpus() {
         let (g, u) = assert_broad_phases_change_nothing(name, topo, &sources);
-        eprintln!("{name}: VE sampled projections gated {g}, ungated {u}");
-        gated += g;
-        ungated += u;
+        eprintln!(
+            "{name}: VE projections {} of {}, EF analytic scans {} of {}",
+            g.ve_projections, u.ve_projections, g.ef_analytic_scans, u.ef_analytic_scans
+        );
+        gated.ve_projections += g.ve_projections;
+        ungated.ve_projections += u.ve_projections;
+        gated.ef_analytic_scans += g.ef_analytic_scans;
+        ungated.ef_analytic_scans += u.ef_analytic_scans;
     }
     if cfg!(feature = "perf-counters") {
         assert!(
-            gated < ungated,
-            "the curved-edge box pruned nothing: {gated} vs {ungated}"
+            gated.ve_projections < ungated.ve_projections,
+            "the curved-edge VE box pruned nothing: {gated:?} vs {ungated:?}"
+        );
+        assert!(
+            gated.ef_analytic_scans < ungated.ef_analytic_scans,
+            "the EF analytic gates pruned nothing: {gated:?} vs {ungated:?}"
         );
     }
 }

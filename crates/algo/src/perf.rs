@@ -29,6 +29,16 @@
 //! | `ve_sampled_projections` | VE generic path | non-`Line` (or degenerate) pairs that sampled |
 //! | `ve_projection_evals` | VE curve evaluations | `evaluate` calls inside the projection only |
 //!
+//! A third pair counts edge-face (EF) work on analytic carriers (PERF-B05):
+//! a curved edge against a plane, or any edge against a cylinder, cone,
+//! sphere or torus, runs a sampled scan of 65 to 130 or more evaluations
+//! unless a conservative gate proves the pair has no crossing.
+//!
+//! | Counter | Hot path | Meaning |
+//! |---|---|---|
+//! | `ef_analytic_pair_scans` | EF sampled scan | analytic pairs that reached the scan |
+//! | `ef_analytic_pairs_gated` | EF analytic gates | pairs a gate proved crossing-free |
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
@@ -53,6 +63,8 @@ std::thread_local! {
     static VE_SAMPLED_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
     static VE_PROJECTION_EVALS: Cell<u64> = const { Cell::new(0) };
     static JUNCTION_SEEDS: Cell<u64> = const { Cell::new(0) };
+    static EF_ANALYTIC_PAIR_SCANS: Cell<u64> = const { Cell::new(0) };
+    static EF_ANALYTIC_PAIRS_GATED: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(feature = "perf-counters")]
@@ -170,6 +182,23 @@ pub(crate) fn bump_junction_seed() {
     increment(&JUNCTION_SEEDS);
 }
 
+/// Count one edge-face pair that runs a sampled scan against an analytic
+/// carrier: a curved edge against a plane, or any edge against a cylinder,
+/// cone, sphere or torus. Crate-internal.
+#[inline]
+pub(crate) fn bump_ef_analytic_pair_scan() {
+    #[cfg(feature = "perf-counters")]
+    increment(&EF_ANALYTIC_PAIR_SCANS);
+}
+
+/// Count one edge-face pair that an analytic gate proved crossing-free and
+/// skipped before its sampled scan. Crate-internal.
+#[inline]
+pub(crate) fn bump_ef_analytic_pair_gated() {
+    #[cfg(feature = "perf-counters")]
+    increment(&EF_ANALYTIC_PAIRS_GATED);
+}
+
 /// A snapshot of every work counter since the last [`reset`]. Only available
 /// with `perf-counters`.
 #[cfg(feature = "perf-counters")]
@@ -200,6 +229,10 @@ pub struct PerfSnapshot {
     pub ve_projection_evals: u64,
     /// Pave endpoints seeded into phase-FF junction registries.
     pub junction_seeds: u64,
+    /// EF pairs that ran a sampled scan against an analytic carrier.
+    pub ef_analytic_pair_scans: u64,
+    /// EF pairs an analytic gate proved crossing-free and skipped.
+    pub ef_analytic_pairs_gated: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -216,6 +249,8 @@ pub fn reset() {
     VE_SAMPLED_PROJECTIONS.set(0);
     VE_PROJECTION_EVALS.set(0);
     JUNCTION_SEEDS.set(0);
+    EF_ANALYTIC_PAIR_SCANS.set(0);
+    EF_ANALYTIC_PAIRS_GATED.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -235,6 +270,8 @@ pub fn snapshot() -> PerfSnapshot {
         ve_sampled_probes: VE_SAMPLED_PROJECTIONS.get(),
         ve_projection_evals: VE_PROJECTION_EVALS.get(),
         junction_seeds: JUNCTION_SEEDS.get(),
+        ef_analytic_pair_scans: EF_ANALYTIC_PAIR_SCANS.get(),
+        ef_analytic_pairs_gated: EF_ANALYTIC_PAIRS_GATED.get(),
     }
 }
 
