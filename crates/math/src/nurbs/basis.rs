@@ -283,7 +283,7 @@ pub fn ders_basis_funs_into(
 /// last two upper-triangle columns (degree `p - 1` and `p` basis functions)
 /// and the last lower-triangle row (knot differences) are ever read, so this
 /// rolls those through three short stack arrays and spells the `k = 1` step
-/// out — same operations, same order, same `mul_add`s, nothing else. The
+/// out — same operations, same order, same fused multiply-adds, nothing else. The
 /// general routine zero-fills a 121-entry table and walks its index
 /// arithmetic per call; a quadrature abscissa calls this twice.
 ///
@@ -335,7 +335,7 @@ pub fn ders_basis_funs_first_into(
         for r in 0..j {
             lower[r] = right[r + 1] + left[j - r];
             let temp = prev[r] / lower[r];
-            cur[r] = right[r + 1].mul_add(temp, saved);
+            cur[r] = right[r + 1].fma(temp, saved);
             saved = left[j - r] * temp;
         }
         cur[j] = saved;
