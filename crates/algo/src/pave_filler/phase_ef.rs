@@ -555,6 +555,13 @@ fn check_edge_face_pairs(
             .map(|a| a.expanded(tol.linear));
         let curved_gate_aabb = super::helpers::conservative_curve_aabb(&curve, start_pos, end_pos)
             .map(|a| a.expanded(gate_margin + super::helpers::coordinate_slack(a)));
+        // The NURBS-carrier gate predates the frame-tight box. Keep it at
+        // least as wide as its original reach-based box so that tightening an
+        // ellipse along its minor axis prunes no pair it used to scan: the
+        // scan of a planar- or wall-containment NURBS face can still accept an
+        // off-patch carrier crossing, and changing that is a separate fix.
+        let carrier_gate_aabb =
+            nurbs_carrier_gate_aabb(&curve, start_pos, end_pos, curved_gate_aabb, gate_margin);
         let edge_reach = super::helpers::EdgeReach::of(&curve, start_pos, end_pos);
 
         for (face_idx, &fid) in faces.iter().enumerate() {
@@ -569,7 +576,7 @@ fn check_edge_face_pairs(
                 continue;
             }
 
-            if let (Some(eb), Some(cb)) = (&curved_gate_aabb, &carrier_aabbs[face_idx])
+            if let (Some(eb), Some(cb)) = (&carrier_gate_aabb, &carrier_aabbs[face_idx])
                 && !eb.intersects(*cb)
             {
                 continue;
@@ -1316,13 +1323,104 @@ fn refine_crossing(
     (t, pt)
 }
 
+/// The edge box for the NURBS-carrier gate: the frame-tight `tight` box
+/// widened to cover [`legacy_reach_aabb`] (grown by `gate_margin`, as the
+/// gate originally used it). `None`, so nothing is gated, whenever `tight` is.
+fn nurbs_carrier_gate_aabb(
+    curve: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    tight: Option<Aabb3>,
+    gate_margin: f64,
+) -> Option<Aabb3> {
+    let tight = tight?;
+    match legacy_reach_aabb(curve, start, end).map(|a| a.expanded(gate_margin)) {
+        Some(legacy) => Aabb3::try_from_points([tight.min, tight.max, legacy.min, legacy.max]),
+        None => Some(tight),
+    }
+}
+
+/// The NURBS-carrier gate's original circle/ellipse box: the carrier inside
+/// the disc of radius `max(semi-axes)`, boxed per axis from its normal as
+/// `reach * sqrt(1 - (n . e)^2)`. Narrower than the frame-tight box where the
+/// normal is within ~1e-8 of a world axis or the frame is not orthonormal, so
+/// it only ever widens that box (see `carrier_gate_aabb`). `None` for every
+/// other carrier.
+fn legacy_reach_aabb(curve: &EdgeCurve, start: Point3, end: Point3) -> Option<Aabb3> {
+    let (center, reach, normal) = match curve {
+        EdgeCurve::Circle(circle) => (circle.center(), circle.radius(), circle.normal()),
+        EdgeCurve::Ellipse(ellipse) => (
+            ellipse.center(),
+            ellipse.semi_major().max(ellipse.semi_minor()),
+            ellipse.normal(),
+        ),
+        _ => return None,
+    };
+    if !reach.is_finite() {
+        return None;
+    }
+    let n = normal.normalize().ok()?;
+    let extent = |component: f64| -> f64 {
+        let s = (1.0 - component * component).max(0.0).sqrt();
+        reach * (s + 4.0 * f64::EPSILON)
+    };
+    let r = Vec3::new(extent(n.x()), extent(n.y()), extent(n.z()));
+    Aabb3::try_from_points([center - r, center + r, start, end])
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
     use remus_math::vec::Point3;
     use remus_topology::edge::EdgeCurve;
+
+    /// Tightening the curved-edge box along an ellipse's minor axis must not
+    /// let the NURBS-carrier gate prune a pair its reach-based box scanned:
+    /// that box is a lower bound of the gate box, as is the tight box.
+    #[test]
+    fn nurbs_carrier_gate_box_covers_the_reach_box_and_the_tight_box() {
+        use remus_math::curves::{Circle3D, Ellipse3D};
+        let margin = 4e-7;
+        let curves = [
+            EdgeCurve::Ellipse(
+                Ellipse3D::with_axes(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    3.0,
+                    1.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                )
+                .unwrap(),
+            ),
+            EdgeCurve::Circle(
+                Circle3D::new(Point3::new(5.0, -2.0, 1.0), Vec3::new(0.6, 0.0, 0.8), 2.5).unwrap(),
+            ),
+        ];
+        let zero = Point3::new(0.0, 0.0, 0.0);
+        for curve in &curves {
+            let start = curve.evaluate_with_endpoints(0.3, zero, zero);
+            let end = curve.evaluate_with_endpoints(2.0, zero, zero);
+            let tight = super::super::helpers::conservative_curve_aabb(curve, start, end)
+                .map(|a| a.expanded(margin));
+            let gate = nurbs_carrier_gate_aabb(curve, start, end, tight, margin).unwrap();
+            let legacy = legacy_reach_aabb(curve, start, end)
+                .unwrap()
+                .expanded(margin);
+            for b in [legacy, tight.unwrap()] {
+                assert!(gate.contains_point(b.min) && gate.contains_point(b.max));
+            }
+            assert!(nurbs_carrier_gate_aabb(curve, start, end, None, margin).is_none());
+        }
+        // The 3 x 1 ellipse: the tight box is 1 deep in y, the gate box 3.
+        let (start, end) = (Point3::new(3.0, 0.0, 0.0), Point3::new(-3.0, 0.0, 0.0));
+        let tight = super::super::helpers::conservative_curve_aabb(&curves[0], start, end).unwrap();
+        let gate = nurbs_carrier_gate_aabb(&curves[0], start, end, Some(tight), 0.0).unwrap();
+        assert!(tight.max.y() < 1.1 && gate.max.y() > 2.9);
+    }
 
     /// The circle's normal is 1e-8 off the z axis, which rounds to exactly
     /// `(1e-8, 0, 1)`, so a box sized from `normal()` alone is flat in z to
