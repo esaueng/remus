@@ -14,6 +14,7 @@ use std::f64::consts::{PI, TAU};
 use proptest::prelude::*;
 
 use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::surfaces::CylindricalSurface;
 
 use remus_topology::wire::WireId;
@@ -471,4 +472,122 @@ proptest! {
             loops_strictly_ordered_reference(&lo, &hi, gap)
         );
     }
+}
+
+// ── Winding-loop cuts ─────────────────────────────────────────────────────
+
+/// The exact rational quadratic circle of radius `r` about the z axis at
+/// height `z`: nine control points from world angle `phi`, corner weights
+/// `√2/2`, and the last point the first one bit for bit.
+fn nurbs_circle(r: f64, z: f64, phi: f64) -> NurbsCurve {
+    use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_4, SQRT_2};
+    let mut points: Vec<Point3> = (0..9)
+        .map(|k| {
+            let theta = phi + f64::from(k) * FRAC_PI_4;
+            let s = if k % 2 == 0 { r } else { r * SQRT_2 };
+            Point3::new(s * theta.cos(), s * theta.sin(), z)
+        })
+        .collect();
+    points[8] = points[0];
+    let weights = (0..9)
+        .map(|k| if k % 2 == 0 { 1.0 } else { FRAC_1_SQRT_2 })
+        .collect();
+    let knots = vec![
+        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+    ];
+    NurbsCurve::new(2, knots, points, weights).unwrap()
+}
+
+/// A z-axis cylinder wall of radius `r` and height 4 whose seam generator
+/// stands at world angle `seam_phi`, each loop of `loops` (height, start
+/// angle) sectioning it against a plane face, and the wall's surface.
+fn winding_fixture(
+    r: f64,
+    seam_phi: f64,
+    loops: &[(f64, f64)],
+) -> (Topology, GfaArena, CylindricalSurface) {
+    let mut topo = Topology::new();
+    let cyl = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Z, r).unwrap();
+    let foot = Point3::new(r * seam_phi.cos(), r * seam_phi.sin(), 0.0);
+    let head = foot + remus_math::vec::Vec3::new(0.0, 0.0, 4.0);
+    let (v0, v1) = (
+        topo.add_vertex(Vertex::new(foot, 1e-7)),
+        topo.add_vertex(Vertex::new(head, 1e-7)),
+    );
+    let rim = |topo: &mut Topology, v, z: f64| {
+        let c = Circle3D::new(Point3::new(0.0, 0.0, z), Z, r).unwrap();
+        topo.add_edge(Edge::with_tolerance(v, v, EdgeCurve::Circle(c), Some(1e-7)))
+    };
+    let bottom = rim(&mut topo, v0, 0.0);
+    let top = rim(&mut topo, v1, 4.0);
+    let seam = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+    let wire = Wire::new(
+        vec![
+            OrientedEdge::new(bottom, true),
+            OrientedEdge::new(seam, true),
+            OrientedEdge::new(top, false),
+            OrientedEdge::new(seam, false),
+        ],
+        true,
+    )
+    .unwrap();
+    let wire = topo.add_wire(wire);
+    let wall = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cyl.clone())));
+    let plane = square(&mut topo, 1.0);
+
+    let mut arena = GfaArena::new();
+    for &(z, phi) in loops {
+        let curve = nurbs_circle(r, z, phi);
+        arena.curves.push(crate::ds::IntersectionCurveDS {
+            bbox: curve.aabb(),
+            curve: EdgeCurve::NurbsCurve(curve),
+            face_a: wall,
+            face_b: plane,
+            pave_blocks: vec![],
+            t_range: (0.0, 1.0),
+        });
+    }
+    (topo, arena, cyl)
+}
+
+#[test]
+fn winding_loops_are_cut_on_the_seam_and_two_more_meridians() {
+    let (r, seam_phi) = (2.0, 0.4);
+    // The lower loop starts ON the seam generator (its first and last samples
+    // project exactly onto the seam meridian, so that meridian has no strict
+    // bracket and takes the on-sample fallback); the upper one starts a
+    // radian past it and brackets all three meridians.
+    let (topo, arena, cyl) =
+        winding_fixture(r, seam_phi, &[(3.0, seam_phi + 1.0), (1.0, seam_phi)]);
+    let cuts = compute_winding_loop_cuts(&topo, &arena, Tolerance::new());
+
+    let seam_u = cyl
+        .project_point(Point3::new(r * seam_phi.cos(), r * seam_phi.sin(), 0.0))
+        .0;
+    let mut want = Vec::new();
+    // Lower loop first: the loops are taken in ascending v.
+    for z in [1.0, 3.0] {
+        for k in 0..3 {
+            want.push(cyl.evaluate(seam_u + f64::from(k) * TAU / 3.0, z));
+        }
+    }
+    assert_eq!(cuts.len(), want.len(), "{cuts:?}");
+    for (got, want) in cuts.iter().zip(&want) {
+        assert!((*got - *want).length() < 1e-9, "{got:?} vs {want:?}");
+    }
+}
+
+#[test]
+fn winding_loops_closer_than_the_gap_are_not_cut() {
+    let tol = Tolerance::new();
+    let gap = 100.0 * tol.linear;
+    // Parallel but only half the gap apart: no band between them.
+    let (topo, arena, _) = winding_fixture(2.0, 0.4, &[(1.0, 0.4), (1.0 + 0.5 * gap, 1.4)]);
+    assert!(compute_winding_loop_cuts(&topo, &arena, tol).is_empty());
+    // A lone separator is left to the chain-band path.
+    let (topo, arena, _) = winding_fixture(2.0, 0.4, &[(1.0, 0.4)]);
+    assert!(compute_winding_loop_cuts(&topo, &arena, tol).is_empty());
+    // Twice the gap apart, they are cut.
+    let (topo, arena, _) = winding_fixture(2.0, 0.4, &[(1.0, 0.4), (1.0 + 2.0 * gap, 1.4)]);
+    assert_eq!(compute_winding_loop_cuts(&topo, &arena, tol).len(), 6);
 }

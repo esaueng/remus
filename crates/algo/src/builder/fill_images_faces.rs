@@ -1627,7 +1627,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
             continue;
         }
 
-        for (idx, _) in &loops {
+        for (idx, uv) in &loops {
             let Some(EdgeCurve::NurbsCurve(nurbs)) = arena.curves.get(*idx).map(|c| &c.curve)
             else {
                 continue;
@@ -1644,18 +1644,21 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
                 };
                 #[allow(clippy::cast_precision_loss)]
                 let at = |k: usize| d0 + (d1 - d0) * (k as f64 / SAMPLES as f64);
+                // `f(at(k))` without evaluating again: `uv[k]` is the
+                // projection of this curve at the same `at(k)`.
+                let fk = |k: usize| uv.get(k).map(|&(u, _)| wrap(u - target));
                 // Preserve the established cut whenever consecutive samples
                 // strictly bracket the meridian without crossing wrap's
                 // branch cut at +/-pi.
                 let bracket = (0..SAMPLES).find(|&k| {
-                    let (Some(a), Some(b)) = (f(at(k)), f(at(k + 1))) else {
+                    let (Some(a), Some(b)) = (fk(k), fk(k + 1)) else {
                         return false;
                     };
                     a.abs() > 0.0 && b.abs() > 0.0 && (a > 0.0) != (b > 0.0) && (a - b).abs() < PI
                 });
                 let crossing = if let Some(k) = bracket {
                     let (mut lo, mut hi) = (at(k), at(k + 1));
-                    let Some(f_lo) = f(lo) else { continue };
+                    let Some(f_lo) = fk(k) else { continue };
                     for _ in 0..60 {
                         let tm = f64::midpoint(lo, hi);
                         let Some(fm) = f(tm) else { break };
