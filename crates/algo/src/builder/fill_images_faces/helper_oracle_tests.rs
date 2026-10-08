@@ -1,14 +1,17 @@
 //! Independent-oracle tests for fill-images section helpers: cap-disc and
-//! equal-radius recognition, closed-section containment and coincidence, and
-//! the curved-face segment classifier.
+//! equal-radius recognition, closed-section containment and coincidence, the
+//! curved-face segment classifier, and the winding-loop ordering helpers.
 //!
 //! Expected answers come from the fixtures' own construction (which circle
 //! bounds which face, which axial band a generator segment occupies), not
-//! from the helpers under test.
+//! from the helpers under test. The winding-loop helpers are also checked bit
+//! for bit against the `rem_euclid` / `min_by` code they replace.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
+
+use proptest::prelude::*;
 
 use remus_math::curves::{Circle3D, Ellipse3D};
 use remus_math::surfaces::CylindricalSurface;
@@ -263,5 +266,209 @@ fn a_generator_segment_is_in_a_wall_exactly_when_it_lies_between_the_rims() {
         }
         // A degenerate segment classifies as nothing.
         assert!(!segment_between_boundary_arcs(&arcs, on(1.0), on(1.0), tol));
+    }
+}
+
+// ── Winding-loop ordering: fmod-free wrap and nearest-sample fold ─────────
+
+/// The wrap `loops_strictly_ordered` and `compute_winding_loop_cuts` used
+/// before the fmod-free path, kept verbatim as the bit-identity oracle.
+fn wrap_reference(d: f64) -> f64 {
+    (d + PI).rem_euclid(TAU) - PI
+}
+
+/// The nearest-sample lookup as it was: `min_by`, both keys per comparison.
+fn nearest_v_reference(s: &[(f64, f64)], u: f64) -> Option<f64> {
+    s.iter()
+        .min_by(|a, b| {
+            wrap_reference(a.0 - u)
+                .abs()
+                .partial_cmp(&wrap_reference(b.0 - u).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|&(_, v)| v)
+}
+
+fn loops_strictly_ordered_reference(lo: &[(f64, f64)], hi: &[(f64, f64)], gap: f64) -> bool {
+    lo.iter()
+        .all(|&(u, v)| nearest_v_reference(hi, u).is_some_and(|h| h - v > gap))
+        && hi
+            .iter()
+            .all(|&(u, v)| nearest_v_reference(lo, u).is_some_and(|l| v - l > gap))
+}
+
+fn bits(v: Option<f64>) -> Option<u64> {
+    v.map(f64::to_bits)
+}
+
+#[test]
+fn rem_tau_fast_takes_exactly_its_three_ranges_and_matches_rem_euclid() {
+    let two_tau = 2.0 * TAU;
+    // (x, whether the fmod-free path may answer it)
+    let table = [
+        (-two_tau.next_up(), false),
+        (-two_tau, false),
+        (-TAU.next_up(), false),
+        (-TAU, false),
+        (-TAU.next_down(), true),
+        (-PI, true),
+        (-5e-324, true),
+        (0.0_f64.next_down(), true),
+        (-0.0, true),
+        (0.0, true),
+        (5e-324, true),
+        (PI, true),
+        (TAU.next_down(), true),
+        (TAU, true),
+        (TAU.next_up(), true),
+        (3.0 * PI, true),
+        (10.0, true),
+        (two_tau.next_down(), true),
+        (two_tau, false),
+        (two_tau.next_up(), false),
+        (3.0 * TAU, false),
+        (1e300, false),
+        (-1e300, false),
+        (f64::INFINITY, false),
+        (f64::NEG_INFINITY, false),
+        (f64::NAN, false),
+    ];
+    for (x, fast) in table {
+        let got = rem_tau_fast(x);
+        assert_eq!(got.is_some(), fast, "x = {x:e}: fast path taken");
+        if let Some(r) = got {
+            let want = x.rem_euclid(TAU);
+            assert_eq!(r.to_bits(), want.to_bits(), "x = {x:e}: {r:e} vs {want:e}");
+        }
+    }
+    // Why -TAU stays out: the exact answer there is a NEGATIVE zero.
+    assert_eq!((-TAU).rem_euclid(TAU).to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(two_tau.rem_euclid(TAU).to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn wrap_pi_exact_matches_the_rem_euclid_wrap_at_every_branch_point() {
+    // `PI + PI == TAU` and `3·PI + PI == 2·TAU` exactly, so these reach the
+    // branch points through `d` itself.
+    let mut ds = vec![-0.0, 0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+    for base in [
+        -3.0 * PI,
+        -TAU - PI,
+        -TAU,
+        -PI,
+        0.0,
+        PI,
+        TAU,
+        3.0 * PI,
+        2.0 * TAU,
+        3.0 * TAU,
+        -3.0 * TAU,
+    ] {
+        ds.extend([base.next_down(), base, base.next_up()]);
+    }
+    for d in ds {
+        assert_eq!(
+            wrap_pi_exact(d).to_bits(),
+            wrap_reference(d).to_bits(),
+            "d = {d:e}"
+        );
+    }
+}
+
+#[test]
+fn nearest_v_keeps_the_first_of_equally_near_samples() {
+    type Case<'a> = (&'a [(f64, f64)], f64, Option<f64>);
+    let cases: [Case; 9] = [
+        (&[], 1.0, None),
+        // Repeated u: the first one.
+        (&[(1.0, 10.0), (1.0, 20.0)], 1.0, Some(10.0)),
+        // 0.5 either side of u = 1 (both wraps exact): the first one.
+        (&[(0.5, 1.0), (1.5, 2.0)], 1.0, Some(1.0)),
+        (&[(1.5, 2.0), (0.5, 1.0)], 1.0, Some(2.0)),
+        // A strictly nearer later sample wins.
+        (&[(0.5, 1.0), (1.25, 2.0), (0.75, 3.0)], 1.0, Some(2.0)),
+        // Exactly half a turn either way: a tie.
+        (&[(PI, 1.0), (-PI, 2.0)], 0.0, Some(1.0)),
+        // A NaN key first never gives way; a later NaN is passed over.
+        (&[(f64::NAN, 1.0), (0.0, 2.0)], 0.0, Some(1.0)),
+        (&[(1.0, 1.0), (f64::NAN, 2.0), (0.125, 3.0)], 0.0, Some(3.0)),
+        // Round the seam: 6.25 is 0.033 short of a turn from 0.
+        (&[(1.0, 1.0), (6.25, 2.0)], 0.0, Some(2.0)),
+    ];
+    for (samples, u, want) in cases {
+        assert_eq!(
+            bits(nearest_v(samples, u)),
+            bits(want),
+            "{samples:?} at {u}"
+        );
+        assert_eq!(
+            bits(nearest_v(samples, u)),
+            bits(nearest_v_reference(samples, u)),
+            "{samples:?} at {u}"
+        );
+    }
+    // The seam pair u = 0 / u = TAU in both orders.
+    for u in [0.0, TAU, 1e-9, TAU - 1e-9] {
+        for s in [[(0.0, 1.0), (TAU, 2.0)], [(TAU, 2.0), (0.0, 1.0)]] {
+            assert_eq!(bits(nearest_v(&s, u)), bits(nearest_v_reference(&s, u)));
+        }
+    }
+}
+
+#[test]
+fn loops_strictly_ordered_needs_more_than_gap_in_both_directions() {
+    let flat = |v: f64| [(0.0, v), (2.0, v), (4.0, v)];
+    assert!(loops_strictly_ordered(&flat(0.0), &flat(1.0), 0.5));
+    assert!(!loops_strictly_ordered(&flat(1.0), &flat(0.0), 0.5));
+    assert!(!loops_strictly_ordered(&flat(0.0), &flat(1.0), 1.0));
+    assert!(!loops_strictly_ordered(&flat(0.0), &[], 0.5));
+
+    // Only `hi`'s third sample sits exactly `gap` above its nearest `lo`
+    // sample: the lo -> hi scan passes and the hi -> lo scan decides.
+    let lo = [(0.0, 0.0), (1.0, 0.5)];
+    let hi = [(0.0, 2.0), (1.0, 2.0), (2.0, 1.5)];
+    assert!(!loops_strictly_ordered(&lo, &hi, 1.0));
+    assert!(loops_strictly_ordered(&lo, &hi, 0.75));
+    // And the mirror image: only lo -> hi meets exactly `gap`.
+    let lo = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.5)];
+    let hi = [(0.0, 2.0), (1.0, 1.5)];
+    assert!(!loops_strictly_ordered(&lo, &hi, 1.0));
+    assert!(loops_strictly_ordered(&lo, &hi, 0.75));
+}
+
+/// Angles from a pool that forces ties (the seam from both sides, half turns,
+/// repeats, dyadic steps whose wraps are exact) mixed with arbitrary ones.
+fn tie_angle() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        prop::sample::select(vec![0.0, -0.0, TAU, PI, -PI, 0.5, 1.0, 1.5, 3.0, 6.0]),
+        -TAU..2.0 * TAU,
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+    #[test]
+    fn wrap_pi_exact_is_the_rem_euclid_wrap(d in -3.0 * TAU..3.0 * TAU) {
+        prop_assert_eq!(wrap_pi_exact(d).to_bits(), wrap_reference(d).to_bits());
+    }
+
+    #[test]
+    fn nearest_v_is_the_min_by_choice(
+        samples in prop::collection::vec((tie_angle(), -4.0f64..4.0), 0..24),
+        u in tie_angle(),
+    ) {
+        prop_assert_eq!(bits(nearest_v(&samples, u)), bits(nearest_v_reference(&samples, u)));
+    }
+
+    #[test]
+    fn loops_strictly_ordered_is_the_min_by_verdict(
+        lo in prop::collection::vec((tie_angle(), -1.0f64..1.0), 0..16),
+        hi in prop::collection::vec((tie_angle(), -1.0f64..3.0), 0..16),
+        gap in prop::sample::select(vec![0.0, 1e-5, 0.5, 1.0]),
+    ) {
+        prop_assert_eq!(
+            loops_strictly_ordered(&lo, &hi, gap),
+            loops_strictly_ordered_reference(&lo, &hi, gap)
+        );
     }
 }

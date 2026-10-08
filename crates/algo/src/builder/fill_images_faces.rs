@@ -1521,7 +1521,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
     use std::f64::consts::{PI, TAU};
 
     const SAMPLES: usize = 256;
-    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+    let wrap = wrap_pi_exact;
 
     let mut by_face: BTreeMap<FaceId, Vec<usize>> = BTreeMap::new();
     for (idx, curve_ds) in arena.curves.iter().enumerate() {
@@ -1733,23 +1733,69 @@ fn mean_v(samples: &[(f64, f64)]) -> f64 {
 /// so it holds all the way round the period and not just where they happen to
 /// share a sample.
 fn loops_strictly_ordered(lo: &[(f64, f64)], hi: &[(f64, f64)], gap: f64) -> bool {
-    use std::f64::consts::{PI, TAU};
-    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
-    let v_at = |s: &[(f64, f64)], u: f64| -> Option<f64> {
-        s.iter()
-            .min_by(|a, b| {
-                wrap(a.0 - u)
-                    .abs()
-                    .partial_cmp(&wrap(b.0 - u).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|&(_, v)| v)
-    };
     lo.iter()
-        .all(|&(u, v)| v_at(hi, u).is_some_and(|h| h - v > gap))
+        .all(|&(u, v)| nearest_v(hi, u).is_some_and(|h| h - v > gap))
         && hi
             .iter()
-            .all(|&(u, v)| v_at(lo, u).is_some_and(|l| v - l > gap))
+            .all(|&(u, v)| nearest_v(lo, u).is_some_and(|l| v - l > gap))
+}
+
+/// The `v` of the sample whose `u` is nearest `u` round the period; the FIRST
+/// such sample on a tie, and `None` for no samples.
+///
+/// Exactly what `min_by` on the wrapped distance picked (it keeps the earlier
+/// element unless the later one compares `Greater`, and a NaN compares
+/// `Equal`), with each sample's key computed once instead of once per
+/// comparison. The scan is quadratic over two 257-sample loops, so the key is
+/// the hot spot of the whole winding-loop pass.
+fn nearest_v(s: &[(f64, f64)], u: f64) -> Option<f64> {
+    let (first, rest) = s.split_first()?;
+    let mut best_key = wrap_pi_exact(first.0 - u).abs();
+    let mut best_v = first.1;
+    for &(su, sv) in rest {
+        let key = wrap_pi_exact(su - u).abs();
+        if best_key > key {
+            best_key = key;
+            best_v = sv;
+        }
+    }
+    Some(best_v)
+}
+
+/// `(d + PI).rem_euclid(TAU) - PI`, bit for bit: an angle difference wrapped
+/// to `[-PI, PI]`.
+///
+/// `f64` `%` is a libm `fmod` call (software on `wasm32`), so the ranges
+/// angle differences actually produce go through [`rem_tau_fast`] instead.
+/// Anything else, including NaN and the `seam_u + k·TAU/3` offsets that reach
+/// below `-TAU`, takes `rem_euclid` itself.
+fn wrap_pi_exact(d: f64) -> f64 {
+    use std::f64::consts::{PI, TAU};
+    let x = d + PI;
+    rem_tau_fast(x).unwrap_or_else(|| x.rem_euclid(TAU)) - PI
+}
+
+/// `x.rem_euclid(TAU)` without `fmod` where that is exact, `None` elsewhere.
+///
+/// - `(-TAU, 0)`: `x % TAU` is `x`, so `rem_euclid` returns the same rounded
+///   `x + TAU`.
+/// - `[0, TAU)`, with `-0.0`: `x % TAU` is `x`, and so is the result.
+/// - `[TAU, 2·TAU)`: `x % TAU` is `x - TAU` exactly, and so is the float
+///   subtraction (Sterbenz).
+///
+/// `-TAU` itself is left out: `rem_euclid` gives `-0.0` there, not `+0.0`.
+/// NaN fails every comparison.
+fn rem_tau_fast(x: f64) -> Option<f64> {
+    use std::f64::consts::TAU;
+    if x > -TAU && x < 0.0 {
+        Some(x + TAU)
+    } else if (0.0..TAU).contains(&x) {
+        Some(x)
+    } else if (TAU..2.0 * TAU).contains(&x) {
+        Some(x - TAU)
+    } else {
+        None
+    }
 }
 
 /// The `u` of `face`'s seam meridian — the generator a periodic face was cut
