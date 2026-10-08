@@ -74,6 +74,7 @@ pub mod classify;
 pub mod distance;
 pub mod feature_recognition;
 pub mod measure;
+pub mod performance;
 pub mod query;
 pub mod validate;
 

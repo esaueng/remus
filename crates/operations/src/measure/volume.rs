@@ -363,7 +363,7 @@ fn whole_solid_mesh(
     deflection: f64,
 ) -> Result<tessellate::TriangleMesh, crate::OperationsError> {
     whole_solid_mesh_with(topo, solid, deflection, |d| {
-        tessellate::tessellate_solid(topo, solid, d)
+        tessellate::tessellate_solid_for_measurement(topo, solid, d)
     })
 }
 
@@ -430,7 +430,7 @@ fn required_closed_mesh_volume(
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
     required_closed_mesh_volume_with(topo, solid, deflection, why, |d| {
-        tessellate::tessellate_solid(topo, solid, d)
+        tessellate::tessellate_solid_for_measurement(topo, solid, d)
     })
 }
 
@@ -2125,6 +2125,7 @@ pub fn solid_volume(
     solid: SolidId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
+    let _total = crate::performance::span("volume.total");
     super::volume_memo::memoized(topo, solid, deflection, || {
         solid_volume_uncached(topo, solid, deflection)
     })
@@ -2136,7 +2137,9 @@ fn solid_volume_uncached(
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
     // Fast path: exact analytic formula for known primitives.
-    if let Some(v) = try_analytic_solid_volume(topo, solid) {
+    if let Some(v) = crate::performance::timed("volume.primitive", || {
+        try_analytic_solid_volume(topo, solid)
+    }) {
         vol_trace(|| format!("try_analytic -> {v}"));
         return Ok(v);
     }
@@ -2147,7 +2150,9 @@ fn solid_volume_uncached(
     // undercount and the degenerate-UV annular-band over-count that the
     // tessellation paths below suffer on bored quadrics (e.g. a cylinder
     // drilled through a sphere).
-    if let Some(v) = analytic_faces_solid_volume(topo, solid)? {
+    if let Some(v) = crate::performance::timed("volume.analytic-faces", || {
+        analytic_faces_solid_volume(topo, solid)
+    })? {
         vol_trace(|| format!("analytic_faces -> {v}"));
         return Ok(v);
     }
@@ -2158,7 +2163,9 @@ fn solid_volume_uncached(
     // recogniser is deliberately narrow (concentric caps about one axis) so it
     // does NOT catch boolean results that merely happen to have arc-bounded
     // planar faces (rounded-rect caps, arc-frame lips).
-    if let Some(v) = analytic_revolution_solid_volume(topo, solid) {
+    if let Some(v) = crate::performance::timed("volume.revolution", || {
+        analytic_revolution_solid_volume(topo, solid)
+    }) {
         vol_trace(|| format!("revolution -> {v}"));
         return Ok(v);
     }
@@ -2179,7 +2186,9 @@ fn solid_volume_uncached(
     // Gauss sum instead of faceting the solid — the closed mesh below chords
     // every convex patch and under-reads the corners. Unqualified bodies keep
     // the existing dispatch untouched.
-    if let Some(volume) = qualified_notch_family_exact_volume(topo, solid)? {
+    if let Some(volume) = crate::performance::timed("volume.qualified-notch", || {
+        qualified_notch_family_exact_volume(topo, solid)
+    })? {
         vol_trace(|| format!("notch family exact faces -> {volume}"));
         return Ok(volume);
     }
@@ -2523,7 +2532,7 @@ pub fn oriented_solid_volume(
     solid: SolidId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+    let mesh = tessellate::tessellate_solid_for_measurement(topo, solid, deflection)?;
     Ok(whole_mesh_six_volume(&mesh) / 6.0)
 }
 

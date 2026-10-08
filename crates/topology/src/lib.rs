@@ -47,7 +47,7 @@ pub use face::FaceId;
 pub use face_loop::{Loop, LoopId};
 pub use shell::ShellId;
 pub use solid::SolidId;
-pub use topology::{BodyClass, BodyId, CacheIdentity, Topology};
+pub use topology::{BodyClass, BodyId, CacheIdentity, MemoryEstimate, Topology};
 pub use vertex::VertexId;
 pub use wire::{OrientedEdge, WireId};
 

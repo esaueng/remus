@@ -2205,6 +2205,7 @@ dependencies = [
  "proptest",
  "robust",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2240,6 +2241,7 @@ dependencies = [
  "remus-offset",
  "remus-sketch",
  "remus-topology",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
 ]

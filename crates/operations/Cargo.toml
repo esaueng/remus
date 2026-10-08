@@ -26,6 +26,7 @@ remus-math.workspace = true
 remus-offset.workspace = true
 remus-sketch.workspace = true
 remus-topology.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
