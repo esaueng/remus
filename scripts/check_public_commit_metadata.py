@@ -20,7 +20,7 @@ DEFAULT_NAMES = {
     "your name",
     "your name here",
 }
-ALLOWED_EMAIL_DOMAINS = {"users.noreply.github.com", "noreply.github.com"}
+ALLOWED_EMAIL_DOMAINS = {"users.noreply.github.com"}
 # Exact public automation identities only; personal addresses still fail.
 PUBLIC_BOT_IDENTITIES = {"noreply@anthropic.com": {"claude", "claude code"}}
 EMAIL_PATTERN = re.compile(r"^([^\s@<>]+)@([^\s@<>]+)$")
