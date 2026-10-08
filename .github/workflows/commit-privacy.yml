@@ -78,7 +78,12 @@ jobs:
                   login = account.get("login", "").casefold()
                   match = NOREPLY.fullmatch(email)
                   public_login = match.group(1).casefold() if match else ""
-                  protected = bool({login, name.casefold(), public_login} & PROTECTED_LOGINS)
+                  protected_names = {
+                      display.casefold()
+                      for protected_login in PROTECTED_LOGINS
+                      for display in PUBLIC_DISPLAY_NAMES.get(protected_login, set())
+                  }
+                  protected = bool({login, name.casefold(), public_login} & (PROTECTED_LOGINS | protected_names))
                   if POLICY == "all-users" or protected:
                       if not valid_public_identity(name, email):
                           invalid.append(field)
@@ -221,8 +226,11 @@ jobs:
                   assert invalid_fields(fixture(display_name, "123+" + protected + "@users.noreply.github.com", protected)) == []
                   assert invalid_fields(fixture(display_name, "example-user@users.noreply.github.com", protected)) == ["author", "committer"]
                   assert not valid_public_identity(display_name, "example-user@users.noreply.github.com")
-                  assert invalid_fields(fixture(display_name, "example-user@users.noreply.github.com", "other-contributor")) == ([] if POLICY == "protected-users" else ["author", "committer"])
+                  assert invalid_fields(fixture(display_name, "example-user@users.noreply.github.com", "other-contributor")) == ["author", "committer"]
                   assert invalid_fields(fixture(display_name, "example@example.invalid", protected)) == ["author", "committer"]
+                  assert invalid_fields(fixture(display_name, "example@example.invalid", None)) == ["author", "committer"]
+                  assert invalid_fields(fixture(display_name.casefold(), "example@example.invalid", None)) == ["author", "committer"]
+                  assert invalid_fields(fixture(display_name, protected + "@users.noreply.github.com", None)) == []
               contributor = invalid_fields(fixture("Example Contributor", "contributor@example.invalid", "other-contributor"))
               assert contributor == (["author", "committer"] if POLICY == "all-users" else [])
               event = {"pull_request": {"base": {"sha": "a" * 40}, "head": {"sha": "b" * 40}}}
