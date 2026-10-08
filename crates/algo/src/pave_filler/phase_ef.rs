@@ -1354,7 +1354,10 @@ fn legacy_reach_aabb(curve: &EdgeCurve, start: Point3, end: Point3) -> Option<Aa
             ellipse.semi_major().max(ellipse.semi_minor()),
             ellipse.normal(),
         ),
-        _ => return None,
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Parabola(_)
+        | EdgeCurve::Hyperbola(_) => return None,
     };
     if !reach.is_finite() {
         return None;
