@@ -52,6 +52,7 @@ std::thread_local! {
     static VE_LINE_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
     static VE_SAMPLED_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
     static VE_PROJECTION_EVALS: Cell<u64> = const { Cell::new(0) };
+    static JUNCTION_SEEDS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(feature = "perf-counters")]
@@ -159,6 +160,16 @@ pub(crate) fn bump_ve_projection_eval() {
     increment(&VE_PROJECTION_EVALS);
 }
 
+/// Count one pave endpoint seeded into a phase-FF junction registry. The
+/// two-solid driver seeds once per boolean; the N-way driver seeds once per
+/// run and shares the result across its solid pairs, so the count is linear
+/// in the arena's paves rather than pairs × paves. Crate-internal.
+#[inline]
+pub(crate) fn bump_junction_seed() {
+    #[cfg(feature = "perf-counters")]
+    increment(&JUNCTION_SEEDS);
+}
+
 /// A snapshot of every work counter since the last [`reset`]. Only available
 /// with `perf-counters`.
 #[cfg(feature = "perf-counters")]
@@ -187,6 +198,8 @@ pub struct PerfSnapshot {
     pub ve_sampled_probes: u64,
     /// Curve evaluations performed inside VE projections.
     pub ve_projection_evals: u64,
+    /// Pave endpoints seeded into phase-FF junction registries.
+    pub junction_seeds: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -202,6 +215,7 @@ pub fn reset() {
     VE_LINE_PROJECTIONS.set(0);
     VE_SAMPLED_PROJECTIONS.set(0);
     VE_PROJECTION_EVALS.set(0);
+    JUNCTION_SEEDS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -220,6 +234,7 @@ pub fn snapshot() -> PerfSnapshot {
         ve_line_projections: VE_LINE_PROJECTIONS.get(),
         ve_sampled_probes: VE_SAMPLED_PROJECTIONS.get(),
         ve_projection_evals: VE_PROJECTION_EVALS.get(),
+        junction_seeds: JUNCTION_SEEDS.get(),
     }
 }
 

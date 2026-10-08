@@ -10020,3 +10020,60 @@ fn scaling_ve_projection_counts_sampled_line_work() {
         s4.ve_sampled_probes,
     );
 }
+
+/// Complexity guard for the N-way FF junction seeding (balanced `fuse_all`).
+///
+/// Every FF solid pair starts from a junction registry seeded from all of the
+/// arena's pave endpoints. The N-way driver used to rebuild it per pair —
+/// Θ(pairs × paves), i.e. cubic in the body count: 72% of balanced
+/// `fuse_all` on a 5x5 grid. It now seeds once per run, so the seed count
+/// tracks the paves (≈ bodies): 3x3 → 5x5 grows ≈ 25/9 ≈ 2.8x, against
+/// ≈ (300 · 25) / (36 · 9) ≈ 23x for per-pair seeding.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_ff_seeds_junctions_once_per_run() {
+    use remus_math::mat::Mat4;
+
+    let fuse_grid = |n: usize| -> u64 {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.01, 1.01, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        let fused = crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let seeds = remus_algo::perf::snapshot().junction_seeds;
+        let vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
+        let side = n as f64 + 0.01;
+        let expected = side * side;
+        assert!(
+            (vol - expected).abs() < 1e-9 * expected,
+            "{n}x{n} overlapping grid fuse volume {vol} != {expected}"
+        );
+        let report = crate::validate::validate_solid(&topo, fused).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        seeds
+    };
+
+    let s3 = fuse_grid(3);
+    let s5 = fuse_grid(5);
+    eprintln!("junction seeds @ 3x3 -> 5x5 overlapping grids: {s3} -> {s5}");
+    assert!(
+        s3 > 0,
+        "FF junction seeding was not exercised by the grid fuse"
+    );
+    assert!(
+        s5 < 6 * s3,
+        "N-way FF junction seeding regressed toward per-pair rebuilds: {s3} -> {s5} \
+         seeds (once per run ≈ 2.8x, per pair ≈ 23x)"
+    );
+}
