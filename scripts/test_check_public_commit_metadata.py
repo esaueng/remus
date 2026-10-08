@@ -10,8 +10,18 @@ class PublicCommitMetadataTests(unittest.TestCase):
             validate_identity("GitHub Actions[bot]", "41898282+github-actions[bot]@users.noreply.github.com"),
             [],
         )
-        self.assertEqual(validate_identity("Legacy account", "legacy-user@noreply.github.com"), [])
         self.assertEqual(validate_identity("GitHub", "noreply@github.com"), [])
+
+    def test_rejects_unofficial_noreply_domains_without_disclosing_identities(self):
+        for email in ("example@noreply.github.com", "example@users.noreply.github.com.example.invalid"):
+            findings = validate_commits([{
+                "hash": "0123456789abcdef",
+                "author_name": "Example Person", "author_email": email,
+                "committer_name": "GitHub", "committer_email": "noreply@github.com",
+            }])
+            self.assertEqual(len(findings), 1)
+            self.assertIn(": author email must use ", findings[0])
+            self.assertNotIn(email, "\n".join(findings))
 
     def test_accepts_claude_public_automation_identities(self):
         for name in ("Claude", "Claude Code", "CLAUDE"):
