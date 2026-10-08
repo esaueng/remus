@@ -32,6 +32,10 @@ pub(crate) mod undo_log;
 
 use undo_log::{ArenaTag, UndoBase, UndoLog};
 
+#[path = "memory.rs"]
+mod memory;
+pub use memory::MemoryEstimate;
+
 /// Dimensional class of a topological body.
 ///
 /// `General` reserves the future mixed-dimensional body model. No current
@@ -1218,10 +1222,11 @@ impl Topology {
         let face_id = self.faces.alloc(value);
         self.record_alloc(ArenaTag::Face, face_id.index());
         if let Ok(specs) = specs {
-            // Infallible on this path: every touched loop, coedge, face,
-            // and index key is freshly allocated above, and no authority is
-            // replaced, so neither the undo log nor the append-only guard
-            // has anything to refuse.
+            // Every touched loop, coedge, face, and index key is freshly
+            // allocated above and no authority is replaced, so this fails
+            // only for a boundary using one (edge, orientation) twice over
+            // a pre-existing edge: an armed append-only guard refuses the
+            // overwrite and its tripped scope retries on the full path.
             let _ = self.install_face_loop_specs_carrying(face_id, specs, HashMap::new(), false);
         }
         face_id
@@ -1317,7 +1322,7 @@ impl Topology {
         &mut self,
         face_id: FaceId,
         specs: Vec<BoundaryLoopSpec>,
-    ) -> Result<Vec<LoopId>, TopologyError> {
+    ) -> Result<(), TopologyError> {
         let carried_authority = self.carried_face_authority(face_id);
         self.install_face_loop_specs_carrying(face_id, specs, carried_authority, true)
     }
@@ -1356,7 +1361,7 @@ impl Topology {
         specs: Vec<BoundaryLoopSpec>,
         mut carried_authority: HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
         replace_existing: bool,
-    ) -> Result<Vec<LoopId>, TopologyError> {
+    ) -> Result<(), TopologyError> {
         // Loop/coedge rebuilds change boundary identity even when the
         // journal tick path does not bump (notably the `build_face_loops`
         // derivation fallback). Invalidate the spatial cache up front:
@@ -1396,12 +1401,17 @@ impl Topology {
             self.record_alloc(ArenaTag::Loop, loop_id.index());
             let mut coedge_ids = Vec::with_capacity(spec.oriented_edges.len());
             for oriented in &spec.oriented_edges {
-                let carried = carried_authority
-                    .remove(&(oriented.edge(), oriented.is_forward()))
-                    .unwrap_or(CarriedCoedgeAuthority {
-                        pcurve: None,
-                        periodic_winding: PeriodicWinding::ZERO,
-                    });
+                // `add_face` carries nothing; skip hashing the key into an
+                // empty map once per coedge.
+                let carried = if carried_authority.is_empty() {
+                    None
+                } else {
+                    carried_authority.remove(&(oriented.edge(), oriented.is_forward()))
+                }
+                .unwrap_or(CarriedCoedgeAuthority {
+                    pcurve: None,
+                    periodic_winding: PeriodicWinding::ZERO,
+                });
                 let coedge_id = self.coedges.alloc(Coedge::with_pcurve(
                     oriented.edge(),
                     oriented.is_forward(),
@@ -1426,9 +1436,9 @@ impl Topology {
         }
         self.record_face_overwrite(face_id)?;
         if let Some(face) = self.faces.get_mut(face_id) {
-            face.replace_boundary_loops(new_loops.clone());
+            face.replace_boundary_loops(new_loops);
         }
-        Ok(new_loops)
+        Ok(())
     }
 
     /// Atomically replaces a stored wire used by one or more face boundaries.
@@ -1543,7 +1553,12 @@ impl Topology {
         let mut wire_ids = vec![face.outer_wire()];
         wire_ids.extend(face.inner_wires().iter().copied());
         let specs = self.boundary_loop_specs(&wire_ids, None)?;
-        self.install_face_loop_specs(face_id, specs)
+        self.install_face_loop_specs(face_id, specs)?;
+        // The install recorded the face as live before writing its loops.
+        self.faces
+            .get(face_id)
+            .map(|face| face.boundary_loops().to_vec())
+            .ok_or(TopologyError::FaceNotFound(face_id))
     }
 
     /// The authoritative loops for a face, in outer-then-inner order, or

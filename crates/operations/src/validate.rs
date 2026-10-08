@@ -487,6 +487,11 @@ fn shell_orientation_issues(
     let OrientationCheck::Order(order) = check else {
         return Ok(Vec::new());
     };
+    #[cfg(test)]
+    ORIENTATION_PROBES.with(|probes| {
+        let (runs, faces) = probes.get();
+        probes.set((runs + 1, faces));
+    });
     let Some(floor) = crate::measure::negligible_volume(topo, solid) else {
         return Ok(Vec::new());
     };
@@ -499,10 +504,16 @@ fn shell_orientation_issues(
         let Some(signed) = crate::measure::shell_signed_volume(topo, shell, order) else {
             continue;
         };
+        let faces = topo.shell(shell)?.faces().len();
+        #[cfg(test)]
+        ORIENTATION_PROBES.with(|probes| {
+            let (runs, measured) = probes.get();
+            probes.set((runs, measured + faces));
+        });
         observe(ShellOrientationProbe {
             shell: index,
             order,
-            faces: topo.shell(shell)?.faces().len(),
+            faces,
             signed_volume: signed,
         });
         if index == 0 && signed < -floor {
@@ -526,6 +537,28 @@ fn shell_orientation_issues(
     }
 
     Ok(issues)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Orientation checks run on this thread and the shell faces they
+    /// integrated, so a caller's test can pin what it pays for the check.
+    pub(crate) static ORIENTATION_PROBES: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Error count of the shell-orientation check alone, at the strict order.
+///
+/// Every issue that check reports is an error, so this is exactly what
+/// [`validate_solid`] adds to the error count of the same validation run with
+/// [`OrientationCheck::Skip`]; its only fallible steps are lookups that
+/// validation has already made.
+pub(crate) fn orientation_error_count(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<usize, crate::OperationsError> {
+    let check = ValidationOptions::default().orientation;
+    Ok(shell_orientation_issues(topo, solid, check, &mut |_| {})?.len())
 }
 
 /// Validate a solid, returning a report of all issues found.

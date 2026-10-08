@@ -18,6 +18,59 @@ const GRID_THRESHOLD: usize = 256;
 /// full-scan fallback takes over with the identical outcome.
 const RING_CAP: i64 = 32;
 
+/// Whether a `log::warn!` record would reach the logger: the same level
+/// pre-check the macro itself performs. Deliberately not `log_enabled!`,
+/// which also consults `Log::enabled` and could drop a warning that the
+/// macro would emit.
+#[inline]
+fn warn_would_emit() -> bool {
+    log::Level::Warn <= log::STATIC_MAX_LEVEL && log::Level::Warn <= log::max_level()
+}
+
+/// Fit quality of an LSPIA curve over its samples: `(relative, absolute)`
+/// maximum residual. The absolute residual is the true geometric distance
+/// (nearest-point projection, falling back to evaluation at the sample's
+/// chord-length parameter for degenerate curves); the relative one divides
+/// it by the sample cloud's bounding-box diagonal so the check is
+/// scale-independent.
+fn lspia_fit_residual(
+    positions: &[Point3],
+    fitted: &crate::nurbs::curve::NurbsCurve,
+) -> (f64, f64) {
+    let fit_params = chord_length_params(positions);
+    let mut max_residual = 0.0f64;
+    let mut bbox_min = positions[0];
+    let mut bbox_max = positions[0];
+    for (i, &t) in fit_params.iter().enumerate() {
+        let src = positions[i];
+        let d = if let Ok(proj) = project_point_to_curve(fitted, src, 1e-6) {
+            proj.distance
+        } else {
+            let pt = fitted.evaluate(t);
+            (pt.x() - src.x()).hypot((pt.y() - src.y()).hypot(pt.z() - src.z()))
+        };
+        max_residual = max_residual.max(d);
+        bbox_min = Point3::new(
+            bbox_min.x().min(src.x()),
+            bbox_min.y().min(src.y()),
+            bbox_min.z().min(src.z()),
+        );
+        bbox_max = Point3::new(
+            bbox_max.x().max(src.x()),
+            bbox_max.y().max(src.y()),
+            bbox_max.z().max(src.z()),
+        );
+    }
+    let diagonal = (bbox_max.x() - bbox_min.x())
+        .hypot((bbox_max.y() - bbox_min.y()).hypot(bbox_max.z() - bbox_min.z()));
+    let rel_residual = if diagonal > 1e-12 {
+        max_residual / diagonal
+    } else {
+        max_residual
+    };
+    (rel_residual, max_residual)
+}
+
 /// Build intersection curves from a set of points by chaining and fitting.
 ///
 /// First chains points into connected components (separate intersection
@@ -64,51 +117,20 @@ pub(super) fn build_curves_from_points(
             let num_cps = (positions.len() / 3).max(degree + 1).min(positions.len());
             let fitted = approximate_lspia(&positions, degree, num_cps, 1e-6, 100)?;
 
-            // Validate fit quality: re-evaluate residual at each sample point
-            // using the same chord-length parameterisation used during fitting.
-            // Use a relative threshold (residual / point-cloud diagonal) so the
-            // check is scale-independent.  A relative residual > 1% warrants a
-            // warning; the intersection curve may be geometrically inaccurate.
-            let fit_params = chord_length_params(&positions);
-            let mut max_residual = 0.0f64;
-            let mut bbox_min = positions[0];
-            let mut bbox_max = positions[0];
-            for (i, &t) in fit_params.iter().enumerate() {
-                let src = positions[i];
-                // Nearest-point projection gives the true geometric residual.
-                // Fall back to parametric evaluation only for degenerate curves.
-                let d = if let Ok(proj) = project_point_to_curve(&fitted, src, 1e-6) {
-                    proj.distance
-                } else {
-                    let pt = fitted.evaluate(t);
-                    (pt.x() - src.x()).hypot((pt.y() - src.y()).hypot(pt.z() - src.z()))
-                };
-                max_residual = max_residual.max(d);
-                bbox_min = Point3::new(
-                    bbox_min.x().min(src.x()),
-                    bbox_min.y().min(src.y()),
-                    bbox_min.z().min(src.z()),
-                );
-                bbox_max = Point3::new(
-                    bbox_max.x().max(src.x()),
-                    bbox_max.y().max(src.y()),
-                    bbox_max.z().max(src.z()),
-                );
-            }
-            let diagonal = (bbox_max.x() - bbox_min.x())
-                .hypot((bbox_max.y() - bbox_min.y()).hypot(bbox_max.z() - bbox_min.z()));
-            let rel_residual = if diagonal > 1e-12 {
-                max_residual / diagonal
-            } else {
-                max_residual
-            };
-            if rel_residual > 1e-2 {
-                log::warn!(
-                    "SSI: LSPIA fit relative residual {rel_residual:.2e} (abs={max_residual:.2e}) \
-                     exceeds 1% of curve extent — intersection curve may be inaccurate \
-                     (degree={degree}, num_cps={num_cps}, samples={})",
-                    positions.len()
-                );
+            // The fit-quality sweep is diagnostic only (its sole consumer is
+            // the warning) and quadratic in the chain length: one global
+            // projection per sample. Run it only when the warning can be
+            // emitted.
+            if warn_would_emit() {
+                let (rel_residual, max_residual) = lspia_fit_residual(&positions, &fitted);
+                if rel_residual > 1e-2 {
+                    log::warn!(
+                        "SSI: LSPIA fit relative residual {rel_residual:.2e} (abs={max_residual:.2e}) \
+                         exceeds 1% of curve extent — intersection curve may be inaccurate \
+                         (degree={degree}, num_cps={num_cps}, samples={})",
+                        positions.len()
+                    );
+                }
             }
             fitted
         } else {
@@ -825,5 +847,51 @@ mod grid_oracle_tests {
         assert!(stamps.is_marked(0, e1));
         assert!(!stamps.is_marked(0, e2));
         assert_eq!(stamps.value(0, e1), 7);
+    }
+}
+
+#[cfg(test)]
+mod lspia_residual_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::lspia_fit_residual;
+    use crate::nurbs::curve::NurbsCurve;
+    use crate::vec::{Point3, Vec3};
+
+    /// A straight cubic from `a` along `d` (collinear control points), so the
+    /// distance of any point to it is closed-form.
+    fn straight_cubic(a: Point3, d: Vec3) -> NurbsCurve {
+        let cps = (0..4).map(|i| a + d * (f64::from(i) / 3.0)).collect();
+        NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            cps,
+            vec![1.0; 4],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn lspia_fit_residual_is_the_true_offset_over_the_sample_diagonal() {
+        let a = Point3::new(1.0, 2.0, 3.0);
+        let d = Vec3::new(10.0, 5.0, 2.0);
+        let curve = straight_cubic(a, d);
+        // Unit normal to `d` scaled to 0.5: every interior sample sits exactly
+        // 0.5 off the line, and the offset shifts the sample box rigidly.
+        let n = Vec3::new(1.0, -2.0, 0.0) * (0.5 / 5.0_f64.sqrt());
+        let (t0, t1) = (0.05, 0.95);
+        let samples: Vec<Point3> = (0..60)
+            .map(|i| a + d * (t0 + (t1 - t0) * f64::from(i) / 59.0) + n)
+            .collect();
+        let (rel, abs) = lspia_fit_residual(&samples, &curve);
+        let diagonal = (t1 - t0) * 129.0_f64.sqrt();
+        assert!((abs - 0.5).abs() < 1e-9, "abs residual {abs}");
+        assert!((rel - 0.5 / diagonal).abs() < 1e-9, "rel residual {rel}");
+        assert!(rel > 1e-2);
+
+        let on_curve: Vec<Point3> = samples.iter().map(|&p| p - n).collect();
+        let (rel, abs) = lspia_fit_residual(&on_curve, &curve);
+        assert!(abs < 1e-9, "on-curve abs residual {abs}");
+        assert!(rel <= 1e-2);
     }
 }

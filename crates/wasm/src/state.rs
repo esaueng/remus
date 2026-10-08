@@ -55,6 +55,10 @@ impl CheckpointStore {
         self.live.len()
     }
 
+    pub(crate) fn topologies(&self) -> impl Iterator<Item = &Rc<Topology>> {
+        self.live.values().map(|checkpoint| &checkpoint.topo)
+    }
+
     pub(crate) fn retire_from(&mut self, index: usize) {
         if let Ok(id) = u32::try_from(index) {
             // split_off removes all later IDs in one bounded pass.

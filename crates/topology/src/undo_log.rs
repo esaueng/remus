@@ -285,6 +285,43 @@ impl UndoLog {
             ..Self::default()
         }
     }
+
+    /// See [`Topology::scopes_alive`]. Lives on the log so a caller holding
+    /// another `Topology` field mutably (the pcurve registry) can still gate.
+    fn scopes_alive(&mut self) -> bool {
+        self.purge_dead_scopes();
+        !self.scopes.is_empty()
+    }
+
+    /// See [`Topology::purge_dead_scopes`].
+    fn purge_dead_scopes(&mut self) {
+        let live = self
+            .scopes
+            .iter()
+            .filter(|scope| Arc::strong_count(&scope.alive) > 1)
+            .count();
+        if live < self.scopes.len() {
+            self.scopes
+                .retain(|scope| Arc::strong_count(&scope.alive) > 1);
+        }
+        if self.scopes.is_empty() && !self.records.is_empty() {
+            self.records.clear();
+        }
+    }
+
+    /// See [`Topology::guard_append_use`].
+    fn guard_append_use(&mut self, edge: EdgeId, face: FaceId) -> Result<(), TopologyError> {
+        if let Some(guard) = self.append.last_mut() {
+            let marks = &guard.slot_marks;
+            if edge.index() < marks[ArenaTag::Edge as usize]
+                || face.index() < marks[ArenaTag::Face as usize]
+            {
+                guard.tripped = true;
+                return Err(TopologyError::AppendOnlyGuardTrip { entity: "pcurve" });
+            }
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for UndoLog {
@@ -306,13 +343,18 @@ macro_rules! undo_slot_api {
         /// handle (recording nothing) and refuses pre-existing slots while
         /// an append-only guard is armed, before any state changes.
         pub(crate) fn $record(&mut self, id: $Id) -> Result<(), TopologyError> {
-            let Some(old) = self.$field.get(id).cloned() else {
+            if self.$field.get(id).is_none() {
                 return Err(TopologyError::$err(id));
-            };
+            }
             self.guard_append_slot($tag, id.index())?;
             if !self.scopes_alive() {
                 return Ok(());
             }
+            // Cloned only once a record is kept: untransacted writes (a bare
+            // `add_face`, say) would otherwise deep-copy the entity to drop it.
+            let Some(old) = self.$field.get(id).cloned() else {
+                return Err(TopologyError::$err(id));
+            };
             self.undo.records.push(UndoRecord::$variant {
                 index: id.index(),
                 old: Some(old),
@@ -326,11 +368,13 @@ macro_rules! undo_slot_api {
         /// Refuses pre-existing slots while an append-only guard is armed,
         /// before any state changes.
         pub(crate) fn $retire(&mut self, id: $Id) -> Result<(), TopologyError> {
-            let Some(old) = self.$field.get(id).cloned() else {
+            if self.$field.get(id).is_none() {
                 return Ok(());
-            };
+            }
             self.guard_append_slot($tag, id.index())?;
-            if self.scopes_alive() {
+            if self.scopes_alive()
+                && let Some(old) = self.$field.get(id).cloned()
+            {
                 self.undo.records.push(UndoRecord::$variant {
                     index: id.index(),
                     old: Some(old),
@@ -354,13 +398,18 @@ macro_rules! undo_record_only {
         /// handle (recording nothing) and refuses pre-existing slots while
         /// an append-only guard is armed, before any state changes.
         pub(crate) fn $record(&mut self, id: $Id) -> Result<(), TopologyError> {
-            let Some(old) = self.$field.get(id).cloned() else {
+            if self.$field.get(id).is_none() {
                 return Err(TopologyError::$err(id));
-            };
+            }
             self.guard_append_slot($tag, id.index())?;
             if !self.scopes_alive() {
                 return Ok(());
             }
+            // Cloned only once a record is kept: untransacted writes (a bare
+            // `add_face`, say) would otherwise deep-copy the entity to drop it.
+            let Some(old) = self.$field.get(id).cloned() else {
+                return Err(TopologyError::$err(id));
+            };
             self.undo.records.push(UndoRecord::$variant {
                 index: id.index(),
                 old: Some(old),
@@ -510,16 +559,7 @@ impl Topology {
         edge: EdgeId,
         face: FaceId,
     ) -> Result<(), TopologyError> {
-        if let Some(guard) = self.undo.append.last_mut() {
-            let marks = &guard.slot_marks;
-            if edge.index() < marks[ArenaTag::Edge as usize]
-                || face.index() < marks[ArenaTag::Face as usize]
-            {
-                guard.tripped = true;
-                return Err(TopologyError::AppendOnlyGuardTrip { entity: "pcurve" });
-            }
-        }
-        Ok(())
+        self.undo.guard_append_use(edge, face)
     }
 
     /// Marks every armed append-only guard tripped (used when a foreign full
@@ -567,6 +607,10 @@ impl Topology {
     }
 
     /// Indexes one authoritative coedge use, recording the previous value.
+    ///
+    /// Equivalent to [`Self::record_pcurve_write`] followed by the registry
+    /// insert, with one key lookup instead of two: the guard and the record
+    /// still run on the previous value before the write lands.
     pub(crate) fn index_pcurve_use(
         &mut self,
         edge: EdgeId,
@@ -574,9 +618,19 @@ impl Topology {
         forward: bool,
         coedge: CoedgeId,
     ) -> Result<(), TopologyError> {
-        self.record_pcurve_write(edge, face, forward)?;
-        self.pcurves.index_use(edge, face, forward, coedge);
-        Ok(())
+        let key = PCurveKey::new(edge, face, forward);
+        let undo = &mut self.undo;
+        self.pcurves.upsert_use(key, coedge, |old| {
+            // Only an occupied key may fail: `upsert_use` has already grown
+            // the table for a vacant one.
+            if old.is_some() {
+                undo.guard_append_use(edge, face)?;
+            }
+            if undo.scopes_alive() {
+                undo.records.push(UndoRecord::PcurveUse { key, old });
+            }
+            Ok(())
+        })
     }
 
     /// Records a solid-attribute write. Any write to a pre-existing solid
@@ -662,28 +716,14 @@ impl Topology {
     /// records merge into the enclosing scope (commit) and the last close
     /// releases the log: retained storage is bounded by live scopes only.
     pub(crate) fn scopes_alive(&mut self) -> bool {
-        self.purge_dead_scopes();
-        !self.undo.scopes.is_empty()
+        self.undo.scopes_alive()
     }
 
     /// Reclaims scope entries whose snapshot was dropped, keeping their
     /// records for the enclosing scopes. Empties the log when no live
     /// scope remains.
     fn purge_dead_scopes(&mut self) {
-        let live = self
-            .undo
-            .scopes
-            .iter()
-            .filter(|scope| Arc::strong_count(&scope.alive) > 1)
-            .count();
-        if live < self.undo.scopes.len() {
-            self.undo
-                .scopes
-                .retain(|scope| Arc::strong_count(&scope.alive) > 1);
-        }
-        if self.undo.scopes.is_empty() && !self.undo.records.is_empty() {
-            self.undo.records.clear();
-        }
+        self.undo.purge_dead_scopes();
     }
 
     /// Commits a scope: its records merge into the enclosing scope. Dropping
@@ -819,6 +859,213 @@ impl Topology {
                 // Handled by the rewind driver, never applied here.
             }
             UndoRecord::ForeignRestore { old } => self.restore_rollback_fields(&old),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use remus_math::vec::{Point3, Vec3};
+
+    use crate::edge::EdgeCurve;
+    use crate::face::FaceSurface;
+    use crate::transaction::{AppendPath, run_append_only, run_transacted};
+    use crate::wire::OrientedEdge;
+
+    use super::*;
+
+    type UseKey = (EdgeId, FaceId, bool);
+
+    /// The two-lookup sequence `index_pcurve_use` replaced, kept as its oracle.
+    fn legacy_index_pcurve_use(
+        topo: &mut Topology,
+        (edge, face, forward): UseKey,
+        coedge: CoedgeId,
+    ) -> Result<(), TopologyError> {
+        topo.record_pcurve_write(edge, face, forward)?;
+        topo.pcurves.index_use(edge, face, forward, coedge);
+        Ok(())
+    }
+
+    fn triangle(topo: &mut Topology) -> (FaceId, [EdgeId; 3]) {
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let v = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let e = [(0, 1), (1, 2), (2, 0)]
+            .map(|(a, b)| topo.add_edge(Edge::new(v[a], v[b], EdgeCurve::Line)));
+        let wire = Wire::new(e.map(|id| OrientedEdge::new(id, true)).to_vec(), true).unwrap();
+        let wire = topo.add_wire(wire);
+        (topo.add_face(Face::new(wire, vec![], plane())), e)
+    }
+
+    fn plane() -> FaceSurface {
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        }
+    }
+
+    /// Full state, including the retained records `Topology`'s `Debug` hides.
+    fn snapshot(topo: &Topology) -> String {
+        format!("{topo:?}\n{:?}", topo.undo.records)
+    }
+
+    /// Runs the single-lookup index and its two-step oracle on clones of
+    /// `topo` (optionally inside a scope and under an armed guard), asserts
+    /// identical outcomes, and returns the single-lookup result.
+    fn assert_matches_legacy(
+        topo: &Topology,
+        key: UseKey,
+        coedge: CoedgeId,
+        scope: bool,
+        guard: bool,
+    ) -> (Topology, Result<(), TopologyError>) {
+        let run = |legacy: bool| {
+            let mut topo = topo.clone();
+            let ticket = scope.then(|| topo.undo_begin_scope());
+            if guard {
+                topo.arm_append();
+            }
+            let result = if legacy {
+                legacy_index_pcurve_use(&mut topo, key, coedge)
+            } else {
+                let (edge, face, forward) = key;
+                topo.index_pcurve_use(edge, face, forward, coedge)
+            };
+            let tripped = guard && topo.disarm_append();
+            let outcome = (format!("{result:?}"), tripped, snapshot(&topo));
+            drop(ticket);
+            (topo, result, outcome)
+        };
+        let (after, result, outcome) = run(false);
+        let (_, _, legacy_outcome) = run(true);
+        assert_eq!(outcome, legacy_outcome);
+        (after, result)
+    }
+
+    #[test]
+    fn single_lookup_pcurve_index_matches_two_step_oracle() {
+        let mut topo = Topology::new();
+        let (face, [e0, e1, _]) = triangle(&mut topo);
+        let c0 = topo.coedges_of_edge(e0)[0];
+        let c1 = topo.coedges_of_edge(e1)[0];
+        let before = snapshot(&topo);
+
+        // Fresh key, without and inside a scope.
+        for scope in [false, true] {
+            let (after, result) = assert_matches_legacy(&topo, (e0, face, false), c0, scope, false);
+            result.unwrap();
+            assert_eq!(after.undo_record_count(), usize::from(scope));
+        }
+
+        // Occupied key inside a scope: records the previous coedge, and a
+        // rewind restores the registry exactly.
+        let (_, result) = assert_matches_legacy(&topo, (e0, face, true), c1, true, false);
+        result.unwrap();
+        let mut scoped = topo.clone();
+        let ticket = scoped.undo_begin_scope();
+        scoped.index_pcurve_use(e0, face, true, c1).unwrap();
+        assert!(matches!(
+            scoped.undo.records.as_slice(),
+            [UndoRecord::PcurveUse { old: Some(old), .. }] if *old == c0
+        ));
+        assert_eq!(scoped.pcurves.get_use(e0, face, true), Some(c1));
+        scoped.undo_rewind_scope(ticket.mark);
+        assert_eq!(
+            format!("{:?}", scoped.pcurves),
+            format!("{:?}", topo.pcurves)
+        );
+
+        // Occupied key over a pre-existing edge under an armed guard: the
+        // typed trip lands before any registry, coedge, or record change.
+        for scope in [false, true] {
+            let (after, result) = assert_matches_legacy(&topo, (e0, face, true), c1, scope, true);
+            assert!(matches!(
+                result,
+                Err(TopologyError::AppendOnlyGuardTrip { entity: "pcurve" })
+            ));
+            assert_eq!(after.undo_record_count(), 0);
+            assert_eq!(format!("{after:?}"), format!("{topo:?}"));
+        }
+        assert_eq!(snapshot(&topo), before);
+    }
+
+    #[test]
+    fn duplicated_boundary_use_still_trips_the_append_guard() {
+        let mut base = Topology::new();
+        let (_, [e0, ..]) = triangle(&mut base);
+        // A degenerate boundary using one pre-existing edge twice, forward.
+        let add = |topo: &mut Topology| {
+            let uses = vec![OrientedEdge::new(e0, true), OrientedEdge::new(e0, true)];
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            Ok::<_, TopologyError>(topo.add_face(Face::new(wire, vec![], plane())))
+        };
+        let mut transacted = base.clone();
+        let face = run_transacted(&mut transacted, add).unwrap();
+        let mut append = base.clone();
+        let (fallback_face, path) = run_append_only(&mut append, add).unwrap();
+        assert_eq!(path, AppendPath::FullFallback);
+
+        let uses = |topo: &Topology, face| {
+            topo.loops_of_face(face)
+                .unwrap()
+                .iter()
+                .flat_map(|&id| topo.face_loop(id).unwrap().coedges().to_vec())
+                .map(|id| {
+                    let coedge = topo.coedge(id).unwrap();
+                    (coedge.edge(), coedge.is_forward())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(uses(&append, fallback_face), uses(&transacted, face));
+        assert_eq!(append.num_pcurves(), transacted.num_pcurves());
+        assert_eq!(append.num_coedges(), transacted.num_coedges());
+        assert_eq!(append.num_faces(), transacted.num_faces());
+    }
+
+    #[test]
+    fn record_helpers_clone_only_into_kept_records() {
+        let mut topo = Topology::new();
+        let (face, _) = triangle(&mut topo);
+        let mut stale = None;
+        let _ = run_transacted(&mut topo, |topo| {
+            stale = Some(topo.add_vertex(Vertex::new(Point3::new(5.0, 0.0, 0.0), 1e-7)));
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        let stale = stale.unwrap();
+        let live = topo.vertices().iter().next().unwrap().0;
+
+        for scope in [false, true] {
+            let mut topo = topo.clone();
+            let ticket = scope.then(|| topo.undo_begin_scope());
+            assert!(matches!(
+                topo.record_vertex_overwrite(stale),
+                Err(TopologyError::VertexNotFound(id)) if id == stale
+            ));
+            topo.record_vertex_retire(stale).unwrap();
+            assert_eq!(topo.undo_record_count(), 0, "dead handles record nothing");
+
+            topo.record_vertex_overwrite(live).unwrap();
+            topo.record_face_overwrite(face).unwrap();
+            if scope {
+                let vertex = format!("{:?}", topo.vertices.get(live));
+                let face = format!("{:?}", topo.faces.get(face));
+                assert!(matches!(
+                    topo.undo.records.as_slice(),
+                    [
+                        UndoRecord::Vertex { old: Some(old_vertex), .. },
+                        UndoRecord::Face { old: Some(old_face), .. },
+                    ] if format!("{:?}", Some(old_vertex)) == vertex
+                        && format!("{:?}", Some(old_face)) == face
+                ));
+            } else {
+                assert_eq!(topo.undo_record_count(), 0, "no scope keeps no record");
+            }
+            drop(ticket);
         }
     }
 }

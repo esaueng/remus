@@ -439,18 +439,18 @@ fn key_reads_every_geometry_field() {
     assert_eq!(size_of::<Ellipse3D>(), 14 * F);
     assert_eq!(size_of::<Hyperbola3D>(), 14 * F);
     assert_eq!(size_of::<Parabola3D>(), 10 * F);
-    // Degrees, knots, control points and weights, plus the derived caches.
+    // Degrees and shared immutable knots/control points/weights, plus derived caches.
     // The caches are `OnceLock`s, whose size follows the platform's `Once`
     // (8 bytes on macOS, a 4-byte futex on Linux), so they are pinned by type
     // rather than by number: a new field still fails here, a new platform
     // does not.
     assert_eq!(
         size_of::<NurbsSurface>(),
-        2 * F + 4 * size_of::<Vec<f64>>() + LOCK_F64 + LOCK_BOOL
+        2 * F + 4 * size_of::<std::sync::Arc<Vec<f64>>>() + LOCK_F64 + LOCK_BOOL
     );
     assert_eq!(
         size_of::<NurbsCurve>(),
-        F + 3 * size_of::<Vec<f64>>() + LOCK_F64
+        F + 3 * size_of::<std::sync::Arc<Vec<f64>>>() + LOCK_F64
     );
     // Start, end, curve, tolerance, trim; point, tolerance.
     assert_eq!(size_of::<Edge>(), 176);

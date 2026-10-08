@@ -19,6 +19,7 @@
 //! [`TopologyError::SeamPcurveAmbiguous`](crate::TopologyError::SeamPcurveAmbiguous)
 //! when both branches are present, instead of answering arbitrarily.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::curves2d::Curve2D;
@@ -139,6 +140,34 @@ impl PCurveRegistry {
     ) {
         self.uses
             .insert(PCurveKey::new(edge, face, forward), coedge);
+    }
+
+    /// Indexes one use after `before` has seen its previous value, with a
+    /// single key lookup; an `Err` from `before` writes nothing.
+    ///
+    /// `before` may only fail for an occupied key. `entry` grows the table
+    /// for a vacant key before `before` runs (an occupied key never grows,
+    /// so a refused overwrite leaves the registry untouched), and growth
+    /// timing differs from `insert`'s for an occupied key on a full table.
+    /// Neither is observable as long as every consumer of the map stays
+    /// iteration-order independent (sorted, `retain`, or sorted `Debug`).
+    pub(crate) fn upsert_use<E>(
+        &mut self,
+        key: PCurveKey,
+        coedge: CoedgeId,
+        before: impl FnOnce(Option<CoedgeId>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self.uses.entry(key) {
+            Entry::Occupied(mut entry) => {
+                before(Some(*entry.get()))?;
+                entry.insert(coedge);
+            }
+            Entry::Vacant(entry) => {
+                before(None)?;
+                entry.insert(coedge);
+            }
+        }
+        Ok(())
     }
 
     /// Resolves one indexed use.

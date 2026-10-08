@@ -1392,9 +1392,8 @@ fn tessellate_planar_with_holes(
         })
         .collect();
 
-    for seed in hole_removal_seeds(&pts2d, &inner_wire_ranges)? {
-        let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
-    }
+    let seeds = hole_removal_seeds(&pts2d, &inner_wire_ranges)?;
+    let _removed = cdt.flood_remove_from_points(&seeds, &constraint_set);
 
     let cdt_triangles = cdt.triangles();
     let cdt_verts = cdt.vertices();
@@ -2071,9 +2070,8 @@ pub(super) fn tessellate_planar_shared_with_holes(
         })
         .collect();
 
-    for seed in hole_removal_seeds(&pts2d, &inner_wire_ranges)? {
-        let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
-    }
+    let seeds = hole_removal_seeds(&pts2d, &inner_wire_ranges)?;
+    let _removed = cdt.flood_remove_from_points(&seeds, &constraint_set);
 
     let cdt_triangles = cdt.triangles();
 
@@ -2191,9 +2189,8 @@ pub(super) fn run_planar_cdt(
         })
         .collect();
 
-    for seed in hole_removal_seeds(pts2d, inner_wire_ranges)? {
-        let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
-    }
+    let seeds = hole_removal_seeds(pts2d, inner_wire_ranges)?;
+    let _removed = cdt.flood_remove_from_points(&seeds, &constraint_set);
 
     let cdt_triangles = cdt.triangles();
 
