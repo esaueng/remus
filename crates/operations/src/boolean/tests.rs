@@ -10033,6 +10033,44 @@ fn scaling_distance_query_prunes_far_nurbs_faces() {
     );
 }
 
+/// A cross-drilled shaft opens the bore lateral's two winding NURBS loops
+/// at three cuts each, and every face's closed sections are offered all six.
+/// The presplit's reach-box gate projects only the cuts that can lie on the
+/// section: 4 closed sections x 3 own cuts = 12, where projecting every cut
+/// would be 24 (and 24·D² for D drills).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_winding_cut_projections_skip_the_other_loop() {
+    use remus_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let shaft = crate::primitives::make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    crate::transform::transform_solid(&mut topo, tool, &Mat4::translation(-5.0, 0.0, 6.0)).unwrap();
+
+    remus_algo::perf::reset();
+    let drilled = boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap();
+    let projections = remus_algo::perf::snapshot().winding_cut_projections;
+    eprintln!("winding cut guard: projections={projections}");
+
+    assert!(
+        projections > 0,
+        "winding cut guard counter was not exercised"
+    );
+    assert!(
+        projections <= 12,
+        "expected each closed section to project only its own loop's cuts, got {projections}"
+    );
+    let report = crate::validate::validate_solid(&topo, drilled).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+}
+
 /// Vertex-on-edge projection work on a touching-box grid (PERF-M04).
 ///
 /// Fusing a left-fold chain of touching unit boxes forces T-junctions: grid

@@ -45,6 +45,11 @@
 //! exact point-segment distances and exact winding numbers, plus the planar
 //! faces and distinct planes of each geometry build.
 //!
+//! `winding_cut_projections` counts the winding-loop cuts projected onto a
+//! closed section loop in `presplit_closed_winding_loops`. Every face carries
+//! every loop's cuts, so without the reach-box gate the count grows with the
+//! square of the number of loops; with it, each loop projects only its own.
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
@@ -73,6 +78,7 @@ std::thread_local! {
     static JUNCTION_SEEDS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIR_SCANS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIRS_GATED: Cell<u64> = const { Cell::new(0) };
+    static WINDING_CUT_PROJECTIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -288,6 +294,14 @@ pub(crate) fn bump_ef_analytic_pair_gated() {
     increment(&EF_ANALYTIC_PAIRS_GATED);
 }
 
+/// Count one winding-loop cut projected onto a closed section loop (one
+/// that survived the loop's reach-box gate). Crate-internal.
+#[inline]
+pub(crate) fn bump_winding_cut_projection() {
+    #[cfg(feature = "perf-counters")]
+    increment(&WINDING_CUT_PROJECTIONS);
+}
+
 /// A snapshot of every work counter since the last [`reset`]. Only available
 /// with `perf-counters`.
 #[cfg(feature = "perf-counters")]
@@ -322,6 +336,8 @@ pub struct PerfSnapshot {
     pub ef_analytic_pair_scans: u64,
     /// EF pairs an analytic gate proved crossing-free and skipped.
     pub ef_analytic_pairs_gated: u64,
+    /// Winding-loop cuts projected onto closed section loops.
+    pub winding_cut_projections: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -340,6 +356,7 @@ pub fn reset() {
     JUNCTION_SEEDS.set(0);
     EF_ANALYTIC_PAIR_SCANS.set(0);
     EF_ANALYTIC_PAIRS_GATED.set(0);
+    WINDING_CUT_PROJECTIONS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -361,6 +378,7 @@ pub fn snapshot() -> PerfSnapshot {
         junction_seeds: JUNCTION_SEEDS.get(),
         ef_analytic_pair_scans: EF_ANALYTIC_PAIR_SCANS.get(),
         ef_analytic_pairs_gated: EF_ANALYTIC_PAIRS_GATED.get(),
+        winding_cut_projections: WINDING_CUT_PROJECTIONS.get(),
     }
 }
 

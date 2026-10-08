@@ -39,6 +39,7 @@ type CbEdgeKey = ((i64, i64, i64), (i64, i64, i64));
 /// remain separate.
 const VERTEX_DEDUP_SCALE: f64 = 1e10;
 
+use remus_math::aabb::Aabb3;
 use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
@@ -1870,9 +1871,15 @@ fn presplit_closed_winding_loops(
         }
         let (d0, d1) = ParametricCurve::domain(nurbs);
         let margin = (d1 - d0) * 1e-6;
+        // Every face carries every loop's cuts; most belong to other loops.
+        let reach = weld_reach_box(nurbs, weld);
         let mut ts: Vec<f64> = cuts
             .iter()
             .filter_map(|p| {
+                if reach.is_some_and(|b| !b.contains_point(*p)) {
+                    return None;
+                }
+                crate::perf::bump_winding_cut_projection();
                 let hit =
                     remus_math::nurbs::projection::project_point_to_curve(nurbs, *p, 1e-9).ok()?;
                 (hit.distance <= weld && hit.parameter > d0 + margin && hit.parameter < d1 - margin)
@@ -1924,6 +1931,43 @@ fn presplit_closed_winding_loops(
         }
     }
     Ok(out)
+}
+
+/// A box outside which no cut can come within `weld` of `nurbs`, so such a
+/// cut need not be projected; `None` when that is not certified.
+///
+/// Every point `project_point_to_curve` measures from is an `evaluate` or
+/// `derivatives(u, _)[0]` point: positive weights times non-negative basis
+/// values, a convex blend of `p + 1` control points. Rounding moves it off
+/// their box by about `(2p + 7)·ε·max|coord|`, far inside the slack below. So
+/// a cut outside the box grown by `2·weld` plus that slack measures more than
+/// `weld` from anything the projection can return, and the caller's
+/// `distance <= weld` filter drops it either way.
+///
+/// `derivatives` divides by the GLOBAL largest weight, so a weight ratio past
+/// 1e100 could underflow its sums off the hull: such a curve, a NaN weight,
+/// or a non-finite box is not certified.
+fn weld_reach_box(nurbs: &remus_math::nurbs::curve::NurbsCurve, weld: f64) -> Option<Aabb3> {
+    let w_max = nurbs.max_weight();
+    if !nurbs.weights().iter().all(|&w| w >= w_max * 1e-100) {
+        return None;
+    }
+    let bb = Aabb3::try_from_points(nurbs.control_points().iter().copied())?;
+    let corners = [
+        bb.min.x(),
+        bb.min.y(),
+        bb.min.z(),
+        bb.max.x(),
+        bb.max.y(),
+        bb.max.z(),
+    ];
+    if !corners.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let scale = corners.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    #[allow(clippy::cast_precision_loss)]
+    let blend = (nurbs.degree() + 1) as f64;
+    Some(bb.expanded(2.0 * weld + 1e-9 * (1.0 + scale) * blend))
 }
 
 /// Carve `curve` into the sub-curves between consecutive `bounds` (which must
