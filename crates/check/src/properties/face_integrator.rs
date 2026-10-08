@@ -1523,13 +1523,28 @@ impl<'a> UvTrim<'a> {
     /// happen to land inside it — masking alone left a 1 mm² hole in a 300 mm²
     /// wall 8 % wrong at the default order.
     fn v_spans(&self, u: f64, v_range: (f64, f64)) -> Vec<(f64, f64)> {
+        let mut spans = Vec::new();
+        self.v_spans_into(u, v_range, &mut Vec::new(), &mut spans);
+        spans
+    }
+
+    /// [`Self::v_spans`] into `spans`, with `cuts` as scratch. Both are
+    /// cleared first, so one pair serves every abscissa of a face.
+    fn v_spans_into(
+        &self,
+        u: f64,
+        v_range: (f64, f64),
+        cuts: &mut Vec<f64>,
+        spans: &mut Vec<(f64, f64)>,
+    ) {
         let (v0, v1) = if v_range.0 <= v_range.1 {
             v_range
         } else {
             (v_range.1, v_range.0)
         };
 
-        let mut cuts: Vec<f64> = vec![v0, v1];
+        cuts.clear();
+        cuts.extend([v0, v1]);
         if let Some(outer) = self.outer {
             outer.for_each_v_crossing_with(
                 self.index.outer.crossing_u.as_ref(),
@@ -1563,7 +1578,7 @@ impl<'a> UvTrim<'a> {
         // Cuts closer together than this carry no width worth integrating, and
         // splitting on them would only manufacture empty spans.
         let eps = (v1 - v0).abs() * 1e-12;
-        let mut spans: Vec<(f64, f64)> = Vec::new();
+        spans.clear();
         for w in cuts.windows(2) {
             let (a, b) = (w[0], w[1]);
             if b - a <= eps || !self.accepts(u, f64::midpoint(a, b)) {
@@ -1574,7 +1589,6 @@ impl<'a> UvTrim<'a> {
                 _ => spans.push((a, b)),
             }
         }
-        spans
     }
 }
 
@@ -3341,6 +3355,8 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     if trim.splits_domain() {
         let breaks = trim.u_breaks(u_range);
         let eps = (u_range.1 - u_range.0).abs() * 1e-12;
+        // Span buffers shared by every abscissa below.
+        let (mut cuts, mut spans) = (Vec::new(), Vec::new());
         for w in breaks.windows(2) {
             let (u0, u1) = (w[0], w[1]);
             if u1 - u0 <= eps {
@@ -3353,7 +3369,8 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                 let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
                 for gpu in gauss_pts {
                     let u = u_scale.fma(gpu.x, u_mid);
-                    for (a, b) in trim.v_spans(u, v_range) {
+                    trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
+                    for &(a, b) in &spans {
                         let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
                         let v_scale = dv_patch / 2.0;
@@ -3903,5 +3920,80 @@ mod tests {
             integrate_face_about(&topo, face, &options, Point3::new(f64::NAN, 0.0, 0.0)).is_err()
         );
         assert!(integrate_face_about(&topo, face, &options, Point3::new(1.0, 2.0, 3.0)).is_ok());
+    }
+
+    /// Reusing the cut and span buffers across abscissae — each still
+    /// holding the previous abscissa's contents — gives exactly the spans
+    /// fresh buffers give, on a trim with a boundary, pockets and a band.
+    #[test]
+    fn v_spans_into_reused_scratch_matches_fresh_buffers() {
+        use std::f64::consts::TAU;
+        let halton = |mut i: u32, base: u32| {
+            let (mut f, mut r) = (1.0_f64, 0.0_f64);
+            while i > 0 {
+                f /= f64::from(base);
+                r += f * f64::from(i % base);
+                i /= base;
+            }
+            r
+        };
+        let circle = |cu: f64, cv: f64, r: f64, n: u32| -> Vec<Point2> {
+            (0..n)
+                .map(|k| {
+                    let t = TAU * f64::from(k) / f64::from(n);
+                    Point2::new(r.mul_add(t.cos(), cu), r.mul_add(t.sin(), cv))
+                })
+                .collect()
+        };
+        // A wavy boundary patch, two pockets and a wrapping band.
+        let mut boundary: Vec<Point2> = (0..=64)
+            .map(|k| {
+                let k = f64::from(k);
+                Point2::new(4.0f64.mul_add(k / 64.0, 0.5), 0.1f64.mul_add(k.sin(), 0.2))
+            })
+            .collect();
+        boundary.extend((0..=64).rev().map(|k| {
+            let k = f64::from(k);
+            Point2::new(4.0f64.mul_add(k / 64.0, 0.5), 0.1f64.mul_add(k.cos(), 2.8))
+        }));
+        let band = UvLoop::new(
+            (0..96)
+                .map(|k| {
+                    let u = TAU * f64::from(k) / 96.0;
+                    Point2::new(u, 0.3f64.mul_add((3.0 * u).sin(), 1.6))
+                })
+                .collect(),
+            true,
+            false,
+        )
+        .oriented_along_u();
+        let uv = FaceUv {
+            boundary: UvLoop::new(boundary, true, false),
+            pockets: vec![
+                UvLoop::new(circle(1.5, 1.0, 0.3, 40), true, false),
+                UvLoop::new(circle(3.2, 2.1, 0.4, 33), true, false),
+            ],
+            bands: vec![band],
+            u_periodic: true,
+            hole_vs: Vec::new(),
+        };
+        let v_range = (0.0, 3.0);
+        let bits = |spans: &[(f64, f64)]| -> Vec<[u64; 2]> {
+            spans
+                .iter()
+                .map(|s| [s.0.to_bits(), s.1.to_bits()])
+                .collect()
+        };
+        for trim in [UvTrim::boundary_of(&uv), UvTrim::holes_of(&uv)] {
+            let (mut cuts, mut spans) = (vec![9.0; 7], vec![(9.0, 9.0); 3]);
+            let mut split = 0;
+            for i in 1..=2_000 {
+                let u = 5.0 * halton(i, 2);
+                trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
+                assert_eq!(bits(&spans), bits(&trim.v_spans(u, v_range)), "u {u}");
+                split += usize::from(spans.len() > 1);
+            }
+            assert!(split > 100, "the trim splits too few abscissae: {split}");
+        }
     }
 }
