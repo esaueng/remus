@@ -439,6 +439,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
 | Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
+| Cost-model full-scan fallback of the circle contact index: decision boundary and fallback-on/off mesh identity (tests) | `tessellate/tests/pool_fallback.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
 | Offset wire | `offset_wire.rs` |
