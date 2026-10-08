@@ -31,16 +31,17 @@ mod tests {
     fn derived_loop_coedge_lists_are_accounted_alongside_face_loop_ids() {
         let mut topo = crate::Topology::new();
         let face = crate::test_utils::make_unit_square_face(&mut topo);
-        let before = topo.memory_estimate(&mut std::collections::HashSet::new());
         let loops = topo.build_face_loops(face).unwrap();
         let uses: usize = loops
             .iter()
             .map(|&id| topo.face_loop(id).unwrap().coedges().len())
             .sum();
-        let after = topo.memory_estimate(&mut std::collections::HashSet::new());
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        let accounted = topo.memory_estimate(&mut std::collections::HashSet::new());
         assert_eq!(
-            after.entity_list_bytes - before.entity_list_bytes,
-            uses * std::mem::size_of::<crate::coedge::CoedgeId>()
+            accounted.entity_list_bytes,
+            std::mem::size_of_val(wire.edges())
+                + uses * std::mem::size_of::<crate::coedge::CoedgeId>()
                 + loops.len() * std::mem::size_of::<crate::face_loop::LoopId>()
         );
     }
