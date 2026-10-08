@@ -138,7 +138,7 @@ Quick reference — find the right file for any task:
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
-| CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, adjacency, tests, tests/off_axis_cap, tests/u_bracket_floor) |
+| CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, collinear, adjacency, tests, tests/collinear_index, tests/hole_grid, tests/off_axis_cap, tests/u_bracket_floor) |
 | Convex hull | `convex_hull.rs` |
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |

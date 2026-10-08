@@ -29,6 +29,7 @@
 )]
 
 mod adjacency;
+mod collinear;
 mod constraints;
 mod insert;
 mod locate;
@@ -117,6 +118,9 @@ pub struct Cdt {
     /// Vertex → one incident triangle index for O(1) edge lookups.
     /// Updated on triangle creation/removal.
     vertex_tri: Vec<usize>,
+    /// Coordinate index for [`Cdt::insert_constraint`]'s collinear-vertex
+    /// query, built lazily.
+    collinear_index: collinear::CollinearIndex,
 }
 
 /// Duplicate point detection tolerance.
@@ -182,6 +186,7 @@ impl Cdt {
             dup_grid: std::collections::HashMap::new(),
             last_located: 0,
             vertex_tri,
+            collinear_index: collinear::CollinearIndex::default(),
         }
     }
 
@@ -301,15 +306,10 @@ impl Cdt {
             return Ok(());
         }
 
-        // Scan for existing vertices that lie on the constraint segment.
-        // If found, recursively split the constraint through them so that
+        // Find existing vertices that lie on the constraint segment. If
+        // found, recursively split the constraint through them so that
         // recover_edge never encounters a collinear interior vertex (which
         // causes flip-recovery deadlocks on full-revolution face seams).
-        //
-        // This is an O(V) scan per constraint. For typical tessellation CDTs
-        // (< 10K vertices, < 100 constraints) the cost is negligible. A spatial
-        // index could reduce this to O(k) but dup_grid's 1e-5 cell size makes
-        // AABB iteration pathological for long segments.
         let p0 = self.vertices[v0];
         let p1 = self.vertices[v1];
         let dx = p1.x() - p0.x();
@@ -317,29 +317,9 @@ impl Cdt {
         let seg_len_sq = dx * dx + dy * dy;
 
         if seg_len_sq > 0.0 {
-            let mut collinear: Vec<(f64, usize)> = Vec::new();
-            for vi in self.super_count..self.vertices.len() {
-                if vi == v0 || vi == v1 {
-                    continue;
-                }
-                let px = self.vertices[vi].x() - p0.x();
-                let py = self.vertices[vi].y() - p0.y();
-                let t = (px * dx + py * dy) / seg_len_sq;
-                if t <= 1e-6 || t >= 1.0 - 1e-6 {
-                    continue;
-                }
-                let cross = px * dy - py * dx;
-                let dist_sq = cross * cross / seg_len_sq;
-                // Constraint insertion must not bend a long boundary through
-                // a distinct nearby vertex. Use the same linear resolution as
-                // vertex insertion, independent of the constraint's length.
-                if dist_sq < DUP_TOL * DUP_TOL {
-                    collinear.push((t, vi));
-                }
-            }
+            let mut collinear = self.collinear_vertices(v0, v1, seg_len_sq);
 
             if !collinear.is_empty() {
-                collinear.sort_by(|a, b| a.0.total_cmp(&b.0));
                 collinear.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-8);
                 let mut prev = v0;
                 for &(_, vi) in &collinear {
@@ -764,4 +744,30 @@ fn hilbert_xy_to_d(n: u32, mut x: u32, mut y: u32) -> u64 {
         s /= 2;
     }
     d
+}
+
+/// Test-only work counters, per thread, for the complexity guards in
+/// `tests/`, and a switch that forces the collinear index on or off.
+#[cfg(test)]
+mod work {
+    use std::cell::Cell;
+    use std::thread::LocalKey;
+
+    thread_local! {
+        /// Vertices the collinear-vertex query visits.
+        pub(super) static COLLINEAR_VISITS: Cell<usize> = const { Cell::new(0) };
+        /// Vertices given the collinear-vertex test itself.
+        pub(super) static COLLINEAR_TESTS: Cell<usize> = const { Cell::new(0) };
+        /// `Some(true)` builds the collinear index at the first query,
+        /// `Some(false)` never builds it.
+        pub(super) static INDEX_POLICY: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn bump(counter: &'static LocalKey<Cell<usize>>) {
+        counter.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn take(counter: &'static LocalKey<Cell<usize>>) -> usize {
+        counter.with(|c| c.replace(0))
+    }
 }
