@@ -7028,6 +7028,107 @@ fn build_perforated_panel(topo: &mut Topology, g: usize) -> (SolidId, SolidId) {
     (slab, tool)
 }
 
+/// The explorer's dedup gathers must return exactly what the per-call
+/// `HashSet` walk they replaced returned, on real boolean results: a
+/// box-perforated panel (holed caps with well over 32 edge uses) and a
+/// cylinder-perforated slab (seams used twice per wire, closed rims whose
+/// start and end vertex coincide).
+#[test]
+fn explorer_gathers_match_hashset_reference_on_perforated_results() {
+    use std::collections::HashSet;
+
+    use remus_math::mat::Mat4;
+    use remus_topology::TopologyError;
+    use remus_topology::explorer::{
+        face_edges, face_vertices, solid_edges, solid_entity_counts, solid_faces, solid_vertices,
+    };
+    use remus_topology::vertex::VertexId;
+
+    fn ref_face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, TopologyError> {
+        let face_data = topo.face(face)?;
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        for wire_id in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            for oe in topo.wire(wire_id)?.edges() {
+                if seen.insert(oe.edge().index()) {
+                    edges.push(oe.edge());
+                }
+            }
+        }
+        Ok(edges)
+    }
+    fn ref_vertices(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<VertexId>, TopologyError> {
+        let mut seen = HashSet::new();
+        let mut vertices = Vec::new();
+        for &eid in edges {
+            let edge = topo.edge(eid)?;
+            if seen.insert(edge.start().index()) {
+                vertices.push(edge.start());
+            }
+            if seen.insert(edge.end().index()) {
+                vertices.push(edge.end());
+            }
+        }
+        Ok(vertices)
+    }
+    fn ref_solid_edges(topo: &Topology, solid: SolidId) -> Result<Vec<EdgeId>, TopologyError> {
+        let mut seen = HashSet::new();
+        let mut edges = Vec::new();
+        for face_id in solid_faces(topo, solid)? {
+            for eid in ref_face_edges(topo, face_id)? {
+                if seen.insert(eid.index()) {
+                    edges.push(eid);
+                }
+            }
+        }
+        Ok(edges)
+    }
+    let check = |topo: &Topology, solid: SolidId| {
+        let faces = solid_faces(topo, solid).unwrap();
+        let edges = ref_solid_edges(topo, solid).unwrap();
+        let vertices = ref_vertices(topo, &edges).unwrap();
+        assert_eq!(solid_edges(topo, solid).unwrap(), edges);
+        assert_eq!(solid_vertices(topo, solid).unwrap(), vertices);
+        assert_eq!(
+            solid_entity_counts(topo, solid).unwrap(),
+            (faces.len(), edges.len(), vertices.len())
+        );
+        for face in faces {
+            let edges = ref_face_edges(topo, face).unwrap();
+            assert_eq!(face_edges(topo, face).unwrap(), edges);
+            assert_eq!(
+                face_vertices(topo, face).unwrap(),
+                ref_vertices(topo, &edges).unwrap()
+            );
+        }
+        (edges.len(), vertices.len())
+    };
+
+    let mut topo = Topology::new();
+    let (slab, tool) = build_perforated_panel(&mut topo, 6);
+    let panel = boolean(&mut topo, BooleanOp::Cut, slab, tool).unwrap();
+    assert_eq!(check(&topo, panel), (12 + 12 * 36, 8 + 8 * 36));
+
+    let mut topo = Topology::new();
+    let mut plate = crate::primitives::make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
+    for (x, y) in [(2.5, 2.5), (7.5, 2.5), (2.5, 7.5), (7.5, 7.5)] {
+        let drill = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
+        crate::transform::transform_solid(&mut topo, drill, &Mat4::translation(x, y, -1.0))
+            .unwrap();
+        plate = boolean(&mut topo, BooleanOp::Cut, plate, drill).unwrap();
+    }
+    let seamed = solid_faces(&topo, plate).unwrap().into_iter().any(|face| {
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        let uses: Vec<usize> = wire.edges().iter().map(|oe| oe.edge().index()).collect();
+        uses.iter()
+            .any(|e| uses.iter().filter(|u| *u == e).count() > 1)
+    });
+    assert!(seamed, "a drilled wall must use its seam twice");
+    check(&topo, plate);
+}
+
 /// Complexity-regression guard (issue #987): the five boolean hot paths that
 /// PR #990 made near-linear must stay sub-quadratic. Counting *work* (not
 /// wall-clock) makes this deterministic — a reintroduced per-item full scan or
