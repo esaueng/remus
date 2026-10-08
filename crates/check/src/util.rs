@@ -201,55 +201,49 @@ pub fn wire_polygon_curve_sampled(
             // Traversal must start at the seam vertex in both directions:
             // forward covers [t0, t0 + period), reversed covers (t0, t0 + period]
             // walked backwards — the next edge supplies the closing point.
+            // The samples go straight into `pts`, without a list of their own.
             #[allow(clippy::cast_precision_loss)]
-            let params = |n: usize, period: f64| -> Vec<f64> {
-                if forward {
-                    (0..n).map(|i| period * (i as f64) / (n as f64)).collect()
-                } else {
-                    (1..=n)
-                        .rev()
-                        .map(|i| period * (i as f64) / (n as f64))
-                        .collect()
-                }
+            let params = |n: usize, period: f64| {
+                (0..n).map(move |k| {
+                    let i = if forward { k } else { n - k };
+                    period * (i as f64) / (n as f64)
+                })
             };
-            let sampled: Vec<Point3> = match curve {
+            match curve {
                 EdgeCurve::Circle(c) => {
                     let t0 = c.project(seam_pt);
-                    params(closed_samples, std::f64::consts::TAU)
-                        .into_iter()
-                        .map(|dt| c.evaluate(t0 + dt))
-                        .collect()
+                    pts.extend(
+                        params(closed_samples, std::f64::consts::TAU).map(|dt| c.evaluate(t0 + dt)),
+                    );
                 }
                 EdgeCurve::Ellipse(e) => {
                     let t0 = e.project(seam_pt);
-                    params(closed_samples, std::f64::consts::TAU)
-                        .into_iter()
-                        .map(|dt| e.evaluate(t0 + dt))
-                        .collect()
+                    pts.extend(
+                        params(closed_samples, std::f64::consts::TAU).map(|dt| e.evaluate(t0 + dt)),
+                    );
                 }
                 EdgeCurve::NurbsCurve(nc) => {
                     let (u0, u1) = nc.domain();
                     let span = u1 - u0;
                     if span.is_finite() && span > 0.0 {
                         let t0 = nurbs_seam_parameter(nc, seam_pt, u0, u1);
-                        params(closed_samples, span)
-                            .into_iter()
-                            .map(|dt| nc.evaluate(u0 + (t0 - u0 + dt).rem_euclid(span)))
-                            .collect()
+                        pts.extend(
+                            params(closed_samples, span)
+                                .map(|dt| nc.evaluate(u0 + (t0 - u0 + dt).rem_euclid(span))),
+                        );
                     } else {
                         let mut s = sample_edge_curve(curve, closed_samples);
                         if !forward {
                             s.reverse();
                         }
-                        s
+                        pts.extend(s);
                     }
                 }
                 // Unreachable: `is_closed_edge` above only admits Circle,
                 // Ellipse and NurbsCurve. Hyperbola and parabola branches
                 // are unbounded and never satisfy start == end.
-                EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => vec![],
-            };
-            pts.extend(sampled);
+                EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {}
+            }
             prev_end = Some(start_vid);
         } else {
             let (from_vid, to_vid) = if forward {
@@ -630,6 +624,255 @@ mod tests {
                 (p.x().hypot(p.y()) - radius).abs() < 1e-9,
                 "sample off the rim circle: {p:?}"
             );
+        }
+    }
+
+    /// [`wire_polygon_curve_sampled`] as it stood before closed-edge samples
+    /// went straight into the polygon, its code kept verbatim (comments
+    /// dropped) as the oracle for that change.
+    #[allow(clippy::too_many_lines)]
+    fn legacy_wire_polygon_curve_sampled(
+        topo: &Topology,
+        wire_id: remus_topology::wire::WireId,
+        closed_samples: usize,
+        open_samples: usize,
+    ) -> Result<Vec<Point3>, CheckError> {
+        let wire = topo.wire(wire_id)?;
+        let mut pts: Vec<Point3> = Vec::new();
+        let mut prev_end: Option<remus_topology::vertex::VertexId> = None;
+
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let curve = edge.curve();
+            let start_vid = edge.start();
+            let end_vid = edge.end();
+            let forward = match prev_end {
+                Some(pe) if start_vid == pe && end_vid != pe => true,
+                Some(pe) if end_vid == pe && start_vid != pe => false,
+                _ if start_vid == end_vid => oe.is_forward(),
+                _ => match prev_end {
+                    Some(previous_end) => {
+                        let last = topo.vertex(previous_end)?.point();
+                        let sp = topo.vertex(start_vid)?.point();
+                        let ep = topo.vertex(end_vid)?.point();
+                        (sp - last).length_squared() <= (ep - last).length_squared()
+                    }
+                    None => oe.is_forward(),
+                },
+            };
+            let is_closed_edge = start_vid == end_vid
+                && matches!(
+                    curve,
+                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
+                );
+            if is_closed_edge {
+                let seam_pt = topo.vertex(start_vid)?.point();
+                #[allow(clippy::cast_precision_loss)]
+                let params = |n: usize, period: f64| -> Vec<f64> {
+                    if forward {
+                        (0..n).map(|i| period * (i as f64) / (n as f64)).collect()
+                    } else {
+                        (1..=n)
+                            .rev()
+                            .map(|i| period * (i as f64) / (n as f64))
+                            .collect()
+                    }
+                };
+                let sampled: Vec<Point3> = match curve {
+                    EdgeCurve::Circle(c) => {
+                        let t0 = c.project(seam_pt);
+                        params(closed_samples, std::f64::consts::TAU)
+                            .into_iter()
+                            .map(|dt| c.evaluate(t0 + dt))
+                            .collect()
+                    }
+                    EdgeCurve::Ellipse(e) => {
+                        let t0 = e.project(seam_pt);
+                        params(closed_samples, std::f64::consts::TAU)
+                            .into_iter()
+                            .map(|dt| e.evaluate(t0 + dt))
+                            .collect()
+                    }
+                    EdgeCurve::NurbsCurve(nc) => {
+                        let (u0, u1) = nc.domain();
+                        let span = u1 - u0;
+                        if span.is_finite() && span > 0.0 {
+                            let t0 = nurbs_seam_parameter(nc, seam_pt, u0, u1);
+                            params(closed_samples, span)
+                                .into_iter()
+                                .map(|dt| nc.evaluate(u0 + (t0 - u0 + dt).rem_euclid(span)))
+                                .collect()
+                        } else {
+                            let mut s = sample_edge_curve(curve, closed_samples);
+                            if !forward {
+                                s.reverse();
+                            }
+                            s
+                        }
+                    }
+                    EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => vec![],
+                };
+                pts.extend(sampled);
+                prev_end = Some(start_vid);
+            } else {
+                let (from_vid, to_vid) = if forward {
+                    (start_vid, end_vid)
+                } else {
+                    (end_vid, start_vid)
+                };
+                let is_open_curve = open_samples > 1 && !matches!(curve, EdgeCurve::Line);
+                if is_open_curve {
+                    let start_pt = topo.vertex(start_vid)?.point();
+                    let end_pt = topo.vertex(end_vid)?.point();
+                    let (t0, t1) = edge
+                        .strict_domain()
+                        .map_err(crate::error::edge_domain_validation)?;
+                    let traversal_start = topo.vertex(from_vid)?.point();
+                    #[allow(clippy::cast_precision_loss)]
+                    let mut seq: Vec<Point3> = (0..=open_samples)
+                        .map(|i| {
+                            let t = (t1 - t0).mul_add(i as f64 / open_samples as f64, t0);
+                            curve.evaluate_with_endpoints(t, start_pt, end_pt)
+                        })
+                        .collect();
+                    if (seq[0] - traversal_start).length_squared()
+                        > (seq[open_samples] - traversal_start).length_squared()
+                    {
+                        seq.reverse();
+                    }
+                    seq.pop();
+                    pts.extend(seq);
+                } else {
+                    pts.push(topo.vertex(from_vid)?.point());
+                }
+                prev_end = Some(to_vid);
+            }
+        }
+
+        Ok(pts)
+    }
+
+    fn bits(points: &[Point3]) -> Vec<[u64; 3]> {
+        points
+            .iter()
+            .map(|p| [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()])
+            .collect()
+    }
+
+    /// A wire of one closed edge on `curve`, seamed at `seam`, walked forward
+    /// or backward.
+    fn closed_edge_wire(
+        topo: &mut Topology,
+        curve: EdgeCurve,
+        seam: Point3,
+        forward: bool,
+    ) -> remus_topology::wire::WireId {
+        let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let e = topo.add_edge(Edge::new(v, v, curve));
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e, forward)], true).unwrap())
+    }
+
+    /// Closed circle, ellipse and NURBS edges sample to exactly the points
+    /// they did when each edge's samples were collected first: forward and
+    /// reversed, a rational rim seamed off its domain start, an unevenly
+    /// weighted rim, and a closed edge after an open arc has already put
+    /// points in the polygon.
+    ///
+    /// The non-finite-span fallback is not exercised: a validated knot
+    /// vector reaches it only by overflowing `u1 - u0`, and
+    /// `sample_edge_curve` then evaluates at `0 * inf`, which the curve's
+    /// own debug assertion rejects. That branch is the same call either way.
+    #[test]
+    fn closed_edge_sampling_matches_collected_samples() {
+        use remus_math::curves::Ellipse3D;
+        use remus_math::nurbs::curve::NurbsCurve;
+
+        let mut topo = Topology::new();
+        let mut wires = Vec::new();
+        let center = Point3::new(1.5, -2.0, 0.25);
+        let normal = Vec3::new(0.3, -0.2, 1.0);
+        let circle = Circle3D::new(center, normal, 2.5).unwrap();
+        let ellipse = Ellipse3D::new(center, normal, 3.0, 1.25).unwrap();
+        let rim = circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU).unwrap();
+        // The rim with one interior weight moved: still closed, no longer a
+        // circle, and unevenly weighted.
+        let mut weights = rim.weights().to_vec();
+        weights[2] *= 1.7;
+        let lopsided = NurbsCurve::new(
+            rim.degree(),
+            rim.knots().to_vec(),
+            rim.control_points().to_vec(),
+            weights,
+        )
+        .unwrap();
+        for forward in [true, false] {
+            wires.push(closed_edge_wire(
+                &mut topo,
+                EdgeCurve::Circle(circle.clone()),
+                circle.evaluate(0.7),
+                forward,
+            ));
+            wires.push(closed_edge_wire(
+                &mut topo,
+                EdgeCurve::Ellipse(ellipse.clone()),
+                ellipse.evaluate(2.2),
+                forward,
+            ));
+            wires.push(closed_edge_wire(
+                &mut topo,
+                EdgeCurve::NurbsCurve(rim.clone()),
+                circle.evaluate(1.1),
+                forward,
+            ));
+            wires.push(closed_edge_wire(
+                &mut topo,
+                EdgeCurve::NurbsCurve(lopsided.clone()),
+                lopsided.evaluate(lopsided.knots()[0]),
+                forward,
+            ));
+        }
+        // An open quarter arc into a closed rim seamed at its end.
+        let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(circle.evaluate(1.5), 1e-7));
+        let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+        arc.set_trim(Some((0.0, 1.5)));
+        let arc = topo.add_edge(arc);
+        let ring = Circle3D::new(circle.evaluate(1.5), Vec3::new(0.0, 1.0, 0.0), 0.5).unwrap();
+        let ring = topo.add_edge(Edge::new(b, b, EdgeCurve::Circle(ring)));
+        for forward in [true, false] {
+            wires.push(
+                topo.add_wire(
+                    Wire::new(
+                        vec![
+                            OrientedEdge::new(arc, true),
+                            OrientedEdge::new(ring, forward),
+                        ],
+                        true,
+                    )
+                    .unwrap(),
+                ),
+            );
+        }
+
+        for closed_samples in [0, 1, 2, 7, CLOSED_CURVE_SAMPLES, 128] {
+            for open_samples in [1, OPEN_CURVE_SAMPLES] {
+                for &wire in &wires {
+                    let now = wire_polygon_curve_sampled(&topo, wire, closed_samples, open_samples)
+                        .unwrap();
+                    let before = legacy_wire_polygon_curve_sampled(
+                        &topo,
+                        wire,
+                        closed_samples,
+                        open_samples,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        bits(&now),
+                        bits(&before),
+                        "wire {wire:?} closed {closed_samples} open {open_samples}"
+                    );
+                }
+            }
         }
     }
 }
