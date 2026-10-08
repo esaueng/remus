@@ -306,16 +306,23 @@ pub fn ders_basis_funs_first_into(
     let stride = p + 1;
     let mut left = [0.0_f64; MAX_STACK_DEGREE + 1];
     let mut right = [0.0_f64; MAX_STACK_DEGREE + 1];
-    // `prev`/`cur`: upper-triangle columns `j - 1` and `j` of `ndu`, i.e.
-    // `ndu[r][j - 1]` and `ndu[r][j]`; `lower`: lower-triangle row `j`,
-    // `ndu[j][r]`. After the loop `prev` is column `p - 1` and `lower` row
-    // `p`, which is all the first derivative reads.
-    let mut prev = [0.0_f64; MAX_STACK_DEGREE + 1];
-    let mut cur = [0.0_f64; MAX_STACK_DEGREE + 1];
+    // `cols[j & 1]` is upper-triangle column `j` of `ndu` (`ndu[r][j]`), so
+    // `prev`/`cur` alternate between the two buffers instead of copying a
+    // column per step (a variable-length copy lowers to a libc `memmove`
+    // call in this hot loop). Iteration `j` overwrites `cur[0..=j]` and
+    // reads only `prev[0..j]`, so stale entries are never observed.
+    // `lower`: lower-triangle row `j`, `ndu[j][r]`. After the loop column
+    // `p - 1` and row `p` are all the first derivative reads.
+    let mut cols = [[0.0_f64; MAX_STACK_DEGREE + 1]; 2];
     let mut lower = [0.0_f64; MAX_STACK_DEGREE + 1];
-    cur[0] = 1.0;
+    cols[0][0] = 1.0;
     for j in 1..=p {
-        prev[..j].copy_from_slice(&cur[..j]);
+        let [even, odd] = &mut cols;
+        let (prev, cur) = if j % 2 == 1 {
+            (&*even, odd)
+        } else {
+            (&*odd, even)
+        };
         left[j] = u - knots[span + 1 - j];
         right[j] = knots[span + j] - u;
         let mut saved = 0.0;
@@ -327,6 +334,9 @@ pub fn ders_basis_funs_first_into(
         }
         cur[j] = saved;
     }
+    // Column `p - 1` shares the parity of `p + 1`, which also stays in range
+    // at `p == 0`, where `prev` is never read.
+    let (cur, prev) = (&cols[p & 1], &cols[(p + 1) & 1]);
     out[..stride].copy_from_slice(&cur[..stride]);
 
     // A2.3 at k = 1 with a[s1][0] = 1: the leading term exists for r >= 1,
