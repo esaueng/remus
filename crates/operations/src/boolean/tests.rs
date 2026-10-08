@@ -10125,3 +10125,50 @@ fn scaling_ve_curved_edge_box_prunes_far_circle_pairs() {
     let report = crate::validate::validate_solid(&topo, result).unwrap();
     assert!(report.is_valid(), "{:?}", report.issues);
 }
+
+/// Edge-face work against analytic carriers (the EF slice of PERF-B05).
+/// Ungated, one more cut of the bench's holed plate scans every plate line,
+/// hole rim and seam against the tool wall and every tool edge against each
+/// hole wall (12 + 6 * 16 = 108 sampled scans), plus 76 rim x plane scans,
+/// and none of them can cross: the holes are 18 mm or more from the tool and
+/// the tool rims sit 5 mm off the plate. The planar face box and the
+/// certified cylinder clearance prune them all. `cut(box, cyl)` of the
+/// `cad_operations` bench keeps its genuine crossers (the four box lines
+/// through the tool wall), so an over-eager gate or a deleted counter fails
+/// here too. That the gates change no result is proven bit-exactly by
+/// `broad_phases_leave_the_intersection_state_bit_identical` in `remus-algo`.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_ef_analytic_gates_prune_far_pairs() {
+    let mut topo = Topology::new();
+    let (plate, tool) = bench_holed_plate_and_tool(&mut topo, 50.0, 95.0);
+    remus_algo::perf::reset();
+    let result = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    let far = remus_algo::perf::snapshot();
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+
+    let mut topo = Topology::new();
+    let block = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
+    remus_algo::perf::reset();
+    boolean(&mut topo, BooleanOp::Cut, block, tool).unwrap();
+    let near = remus_algo::perf::snapshot();
+    eprintln!(
+        "ef analytic guard: holed plate scans={} gated={}, cut(box,cyl) scans={} gated={}",
+        far.ef_analytic_pair_scans,
+        far.ef_analytic_pairs_gated,
+        near.ef_analytic_pair_scans,
+        near.ef_analytic_pairs_gated,
+    );
+    assert!(
+        far.ef_analytic_pair_scans <= 4,
+        "EF analytic gates regressed: {} sampled scans on the holed plate (ungated: 184)",
+        far.ef_analytic_pair_scans,
+    );
+    assert!(
+        near.ef_analytic_pair_scans >= 4,
+        "cut(box, cyl) must still scan its four crossing box lines, got {}",
+        near.ef_analytic_pair_scans,
+    );
+}

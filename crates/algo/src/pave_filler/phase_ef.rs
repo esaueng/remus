@@ -496,9 +496,12 @@ fn check_edge_face_pairs(
     // own conservative box stays farther than the crossing thresholds from
     // it can produce no crossing, no tangency and no on-surface verdict.
     // Both boxes carry a coordinate-scaled slack for evaluation rounding.
-    // Analytic carriers are unbounded and their distance is cheap; they are
-    // not gated.
+    // Analytic carriers are unbounded, so a box says nothing about them; a
+    // cylinder or sphere carrier is gated by a certified distance bound
+    // instead (`carrier_gates`, below). Cones and tori are not gated.
     let mut carrier_aabbs: Vec<Option<Aabb3>> = Vec::with_capacity(faces.len());
+    let mut carrier_gates: Vec<Option<super::helpers::CarrierGate>> =
+        Vec::with_capacity(faces.len());
     for &fid in faces {
         let surface = topo.face(fid)?.surface().clone();
         seed_grids.push(match &surface {
@@ -520,6 +523,7 @@ fn check_edge_face_pairs(
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_) => None,
         });
+        carrier_gates.push(super::helpers::CarrierGate::of(&surface));
     }
     // Every threshold the crossing scan compares a distance against is at
     // most 4 x linear tolerance (the tangent-contact trigger); gate at twice
@@ -551,6 +555,7 @@ fn check_edge_face_pairs(
             .map(|a| a.expanded(tol.linear));
         let curved_gate_aabb = super::helpers::conservative_curve_aabb(&curve, start_pos, end_pos)
             .map(|a| a.expanded(gate_margin + super::helpers::coordinate_slack(a)));
+        let edge_reach = super::helpers::EdgeReach::of(&curve, start_pos, end_pos);
 
         for (face_idx, &fid) in faces.iter().enumerate() {
             if face_boundary_edges[face_idx].contains(&eid) {
@@ -582,6 +587,22 @@ fn check_edge_face_pairs(
                 && matches!(surface, FaceSurface::Plane { .. })
                 && let (Some(eb), Some(fa)) = (&curved_gate_aabb, &face_aabbs[face_idx])
                 && !eb.intersects(*fa)
+            {
+                crate::perf::bump_ef_analytic_pair_gated();
+                continue;
+            }
+
+            // Against a cylinder or sphere the scan emits a crossing only at
+            // a point it measures within 4 x tolerance of the carrier, and it
+            // never measures a point closer than its distance to the infinite
+            // carrier. An edge whose certified clearance from that carrier
+            // exceeds the gate margin can therefore produce no crossing, no
+            // tangency and no on-surface verdict.
+            if analytic_gates
+                && let (Some(reach), Some(gate)) = (&edge_reach, &carrier_gates[face_idx])
+                && gate
+                    .clearance(reach)
+                    .is_some_and(|clearance| clearance > gate_margin)
             {
                 crate::perf::bump_ef_analytic_pair_gated();
                 continue;
@@ -1372,6 +1393,185 @@ mod tests {
             .collect();
         assert_eq!(heights.len(), 2, "{heights:?}");
         assert!(heights.iter().all(|h| (h - z).abs() < 1e-9), "{heights:?}");
+    }
+
+    /// Wherever the cylinder or sphere carrier gate fires, the scan's own
+    /// `distance_to_surface` keeps every point it can evaluate on the edge at
+    /// least 4 x tolerance (its largest trigger) from the carrier. Checked on
+    /// a dense sweep plus the endpoints, for lines, full circles, arcs across
+    /// the seam and reversed, an ellipse and a rational NURBS, against an
+    /// axis-aligned and a tilted cylinder and a sphere placed at the origin,
+    /// 1e6 and 1e13. At the origin the gate must also decide the adversarial
+    /// placements as stated: a line through the wall or tangent to it at the
+    /// radius, and a coaxial rim of the wall's own radius, stay ungated; a
+    /// coaxial smaller rim, a line inside the wall and a rim 9e-7 clear of it
+    /// are gated; a rim 7e-7 clear (inside the 8e-7 margin) is not.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn carrier_gate_fires_only_where_every_scanned_point_is_clear() {
+        use remus_math::curves::{Circle3D, Ellipse3D};
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
+        use std::f64::consts::TAU;
+
+        // (curve, t0, t1, start, end, expected gate decision at the origin)
+        type Case = (EdgeCurve, f64, f64, Point3, Point3, Option<bool>);
+        let tol = Tolerance::default();
+        let gate_margin = 8.0 * tol.linear;
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let zero = Point3::new(0.0, 0.0, 0.0);
+        let line = |a: Point3, b: Point3, gated: Option<bool>| -> Case {
+            (EdgeCurve::Line, 0.0, 1.0, a, b, gated)
+        };
+        let closed = |curve: EdgeCurve, gated: Option<bool>| -> Case {
+            let seam = curve.evaluate_with_endpoints(0.0, zero, zero);
+            (curve, 0.0, TAU, seam, seam, gated)
+        };
+        let arc = |curve: EdgeCurve, t0: f64, t1: f64| -> Case {
+            let (a, b) = (
+                curve.evaluate_with_endpoints(t0, zero, zero),
+                curve.evaluate_with_endpoints(t1, zero, zero),
+            );
+            (curve, t0, t1, a, b, Some(true))
+        };
+        let circle =
+            |c: Point3, n: Vec3, r: f64| EdgeCurve::Circle(Circle3D::new(c, n, r).unwrap());
+        let nurbs = |o: Point3| {
+            let points = [
+                (0.0, 0.0, 0.0),
+                (1.0, 3.0, 0.0),
+                (2.0, -3.0, 1.0),
+                (3.0, 3.0, -1.0),
+                (4.0, 0.0, 0.0),
+            ]
+            .map(|(x, y, w)| Point3::new(o.x() + x, o.y() + y, o.z() + w))
+            .to_vec();
+            let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0];
+            let weights = vec![1.0, 2.0, 0.5, 2.0, 1.0];
+            EdgeCurve::NurbsCurve(NurbsCurve::new(3, knots, points, weights).unwrap())
+        };
+
+        let mut decided = [0_usize; 2];
+        for offset in [0.0, 1e6, 1e13] {
+            let at = |x: f64, y: f64, w: f64| Point3::new(offset + x, y - offset, offset + w);
+            let tilt = Vec3::new(1.0, 0.3, 2.0).normalize().unwrap();
+            // A unit vector across the tilted axis.
+            let u = Vec3::new(2.0, 0.0, -1.0).normalize().unwrap();
+            let carriers: Vec<(FaceSurface, Vec<Case>)> = vec![
+                (
+                    FaceSurface::Cylinder(
+                        CylindricalSurface::new(at(0.0, 0.0, 0.0), z, 2.0).unwrap(),
+                    ),
+                    vec![
+                        line(at(5.0, 0.0, -1.0), at(5.0, 3.0, 4.0), Some(true)),
+                        line(at(-1.0, 0.0, 0.0), at(1.0, 0.0, 3.0), Some(true)),
+                        line(at(-3.0, 0.0, 0.0), at(3.0, 0.0, 0.0), Some(false)),
+                        line(at(-3.0, 2.0, 0.0), at(3.0, 2.0, 0.0), Some(false)),
+                        closed(circle(at(0.0, 0.0, 5.0), z, 2.0), Some(false)),
+                        closed(circle(at(0.0, 0.0, 5.0), z, 1.0), Some(true)),
+                        closed(circle(at(3.0 + 9e-7, 0.0, 1.0), z, 1.0), Some(true)),
+                        closed(circle(at(3.0 + 7e-7, 0.0, 1.0), z, 1.0), Some(false)),
+                        arc(circle(at(6.0, 0.0, 0.0), z, 1.0), 5.5, 7.0),
+                        arc(circle(at(6.0, 0.0, 0.0), z, 1.0), 2.9, 0.3),
+                        closed(
+                            EdgeCurve::Ellipse(
+                                Ellipse3D::new(at(0.0, 0.0, 1.0), z, 1.5, 1.0).unwrap(),
+                            ),
+                            Some(true),
+                        ),
+                        (
+                            nurbs(at(10.0, 0.0, 0.0)),
+                            0.0,
+                            1.0,
+                            at(10.0, 0.0, 0.0),
+                            at(14.0, 0.0, 0.0),
+                            Some(true),
+                        ),
+                        (
+                            nurbs(at(-1.0, -1.0, 0.0)),
+                            0.0,
+                            1.0,
+                            at(-1.0, -1.0, 0.0),
+                            at(3.0, -1.0, 0.0),
+                            Some(false),
+                        ),
+                    ],
+                ),
+                (
+                    FaceSurface::Cylinder(
+                        CylindricalSurface::new(at(1.0, 1.0, 1.0), tilt, 1.5).unwrap(),
+                    ),
+                    vec![
+                        line(
+                            at(1.0, 1.0, 1.0) + u * 3.0,
+                            at(1.0, 1.0, 1.0) + u * 3.0 + tilt * 9.0,
+                            Some(true),
+                        ),
+                        line(
+                            at(1.0, 1.0, 1.0) + u * 1.5,
+                            at(1.0, 1.0, 1.0) + u * 1.5 + tilt * 9.0,
+                            Some(false),
+                        ),
+                        closed(
+                            circle(at(1.0, 1.0, 1.0) + tilt * 4.0, tilt, 1.5),
+                            Some(false),
+                        ),
+                        closed(
+                            circle(at(1.0, 1.0, 1.0) + tilt * 4.0, tilt, 1.0),
+                            Some(true),
+                        ),
+                        closed(circle(at(9.0, 1.0, 1.0), z, 1.0), None),
+                    ],
+                ),
+                (
+                    FaceSurface::Sphere(SphericalSurface::new(at(0.0, 0.0, 0.0), 3.0).unwrap()),
+                    vec![
+                        line(at(5.0, -1.0, 0.0), at(5.0, 1.0, 2.0), Some(true)),
+                        line(at(-5.0, 0.0, 0.0), at(5.0, 0.0, 0.0), Some(false)),
+                        line(at(-1.0, 0.5, 0.0), at(1.0, 0.0, 1.0), Some(true)),
+                        line(at(-3.0, 3.0, 0.0), at(3.0, 3.0, 0.0), Some(false)),
+                        closed(circle(at(0.0, 0.0, 0.5), z, 2.0), Some(true)),
+                        closed(circle(at(0.0, 0.0, 0.0), z, 3.0), Some(false)),
+                        arc(circle(at(0.0, 0.0, 9.0), z, 1.0), 5.5, 7.0),
+                        (
+                            nurbs(at(10.0, 0.0, 0.0)),
+                            0.0,
+                            1.0,
+                            at(10.0, 0.0, 0.0),
+                            at(14.0, 0.0, 0.0),
+                            Some(true),
+                        ),
+                    ],
+                ),
+            ];
+            for (surface, cases) in carriers {
+                let gate = super::super::helpers::CarrierGate::of(&surface).expect("sound carrier");
+                for (curve, t0, t1, start, end, expected) in cases {
+                    let reach = super::super::helpers::EdgeReach::of(&curve, start, end).unwrap();
+                    let gated = gate.clearance(&reach).is_some_and(|c| c > gate_margin);
+                    if offset == 0.0
+                        && let Some(expected) = expected
+                    {
+                        assert_eq!(gated, expected, "{curve:?} against {surface:?}");
+                    }
+                    decided[usize::from(gated)] += 1;
+                    if !gated {
+                        continue;
+                    }
+                    let nearest = (0..=4096)
+                        .map(|i| t0 + (t1 - t0) * (f64::from(i) / 4096.0))
+                        .map(|t| curve.evaluate_with_endpoints(t, start, end))
+                        .chain([start, end])
+                        .map(|p| distance_to_surface(p, &surface, None))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(
+                        nearest >= 4.0 * tol.linear,
+                        "gated {curve:?} comes {nearest} from {surface:?}"
+                    );
+                }
+            }
+        }
+        assert!(decided[0] > 0 && decided[1] > 0, "{decided:?}");
     }
 
     /// The duplicate window is two sample spacings. Mutation testing found
