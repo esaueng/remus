@@ -10,14 +10,23 @@ fn checkpoint_accounting_distinguishes_shared_and_copied_arenas() {
         serde_json::from_str(&kernel.checkpoint_memory_stats().unwrap()).unwrap()
     };
     let original = stats(&kernel);
+    assert_eq!(
+        original["nextMutationEstimatedBytes"],
+        original["estimatedBytes"]
+    );
     let saved = kernel.checkpoint().unwrap();
     let shared = stats(&kernel);
     assert_eq!(original["estimatedBytes"], shared["estimatedBytes"]);
     assert_eq!(shared["uniqueTopologies"], 1);
+    assert!(shared["nextMutationEstimatedBytes"].as_u64() > shared["estimatedBytes"].as_u64());
     kernel.make_box_solid(4., 3., 2.).unwrap();
     let copied = stats(&kernel);
     assert_eq!(copied["uniqueTopologies"], 2);
     assert!(copied["estimatedBytes"].as_u64() > shared["estimatedBytes"].as_u64());
+    assert_eq!(
+        copied["nextMutationEstimatedBytes"],
+        copied["estimatedBytes"]
+    );
     kernel.restore(saved).unwrap();
     assert!(stats(&kernel)["retiredSlots"].as_u64().unwrap() > 0);
 }

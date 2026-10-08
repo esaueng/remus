@@ -24,6 +24,28 @@ pub struct MemoryEstimate {
     pub retired_slots: usize,
 }
 
+#[cfg(all(test, feature = "test-utils"))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    #[test]
+    fn derived_loop_coedge_lists_are_accounted_alongside_face_loop_ids() {
+        let mut topo = crate::Topology::new();
+        let face = crate::test_utils::make_unit_square_face(&mut topo);
+        let before = topo.memory_estimate(&mut std::collections::HashSet::new());
+        let loops = topo.build_face_loops(face).unwrap();
+        let uses: usize = loops
+            .iter()
+            .map(|&id| topo.face_loop(id).unwrap().coedges().len())
+            .sum();
+        let after = topo.memory_estimate(&mut std::collections::HashSet::new());
+        assert_eq!(
+            after.entity_list_bytes - before.entity_list_bytes,
+            uses * std::mem::size_of::<crate::coedge::CoedgeId>()
+                + loops.len() * std::mem::size_of::<crate::face_loop::LoopId>()
+        );
+    }
+}
+
 impl MemoryEstimate {
     /// Sum of the accounted categories.
     #[must_use]
@@ -77,6 +99,9 @@ impl Topology {
         }
         for wire in self.wires.retained_items() {
             out.entity_list_bytes += std::mem::size_of_val(wire.edges());
+        }
+        for boundary in self.loops.retained_items() {
+            out.entity_list_bytes += std::mem::size_of_val(boundary.coedges());
         }
         for shell in self.shells.retained_items() {
             out.entity_list_bytes += std::mem::size_of_val(shell.faces());

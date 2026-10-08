@@ -27,6 +27,13 @@ fn now_ms() -> f64 {
     }
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn linear_memory_bytes(pages: usize) -> u64 {
+    u64::try_from(pages)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(65536)
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     /// Accounted live/retained topology bytes and unique NURBS payload bytes.
@@ -57,20 +64,28 @@ impl BrepKernel {
             .topo
             .memory_estimate(&mut std::collections::HashSet::new());
         #[cfg(target_arch = "wasm32")]
-        let linear_bytes = Some(core::arch::wasm32::memory_size(0) * 65536);
+        let linear_bytes = Some(linear_memory_bytes(core::arch::wasm32::memory_size(0)));
         #[cfg(not(target_arch = "wasm32"))]
-        let linear_bytes: Option<usize> = None;
+        let linear_bytes: Option<u64> = None;
+        let copy_bytes = if std::rc::Rc::strong_count(&self.topo) > 1 {
+            current
+                .arena_bytes
+                .saturating_add(current.entity_list_bytes)
+        } else {
+            0
+        };
         serde_json::to_string(&serde_json::json!({
             "linearMemoryBytes": linear_bytes,
             "estimatedBytes": bytes,
             "currentEstimatedBytes": current.bytes(),
-            "nextMutationEstimatedBytes": bytes.saturating_add(current.arena_bytes).saturating_add(current.entity_list_bytes),
+            "nextMutationEstimatedBytes": bytes.saturating_add(copy_bytes),
             "uniqueNurbsBytes": nurbs_bytes,
             "uniqueTopologies": topologies.len(),
             "allocatedSlots": allocated_slots,
             "retiredSlots": retired_slots,
             "checkpoints": self.checkpoints.active_len()
-        })).map_err(|error| JsError::new(&error.to_string()))
+        }))
+        .map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Enable bounded module-local timings; disabled by default. This does
@@ -90,5 +105,13 @@ impl BrepKernel {
     pub fn drain_performance_trace(&self) -> Result<String, JsError> {
         serde_json::to_string(&remus_operations::performance::drain())
             .map_err(|error| JsError::new(&error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn maximum_wasm_memory_is_four_gibibytes() {
+        assert_eq!(super::linear_memory_bytes(65536), 4_294_967_296);
     }
 }

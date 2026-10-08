@@ -3025,13 +3025,21 @@ pub(super) fn split_face_with_internal_loops(
                 }
             }
             if !nested_holes_by_loop[li].is_empty() {
-                nested_interior_by_loop[li] = annulus_interior_3d(
-                    loop_edges,
-                    &nested_holes_by_loop[li]
-                        .iter()
-                        .map(|&hi| &original_inner_wires[hi])
-                        .collect::<Vec<_>>(),
-                    &frame,
+                nested_interior_by_loop[li] = Some(
+                    annulus_interior_3d(
+                        loop_edges,
+                        &nested_holes_by_loop[li]
+                            .iter()
+                            .map(|&hi| &original_inner_wires[hi])
+                            .collect::<Vec<_>>(),
+                        &frame,
+                    )
+                    .ok_or_else(|| {
+                        AlgoError::FaceSplitFailed(
+                            "planar region with existing holes has no qualified interior probe"
+                                .into(),
+                        )
+                    })?,
                 );
             }
         }
@@ -3134,7 +3142,8 @@ pub(super) fn split_face_with_internal_loops(
             // coplanar boundary). Use the surface normal direction.
             let normal_offset = match &surface {
                 FaceSurface::Plane { normal, .. } => {
-                    let n = if reversed { -*normal } else { *normal };
+                    let unit = normal.normalize()?;
+                    let n = if reversed { -unit } else { unit };
                     // Offset INTO the solid (opposite to the face normal).
                     remus_math::vec::Vec3::new(-n.x(), -n.y(), -n.z()) * 1e-6
                 }
@@ -3250,7 +3259,7 @@ pub(super) fn split_face_with_internal_loops(
             &mut all_holes,
             &PlaneFrame::from_plane_face(*normal, wire_pts),
             if reversed { -*normal } else { *normal },
-        );
+        )?;
     }
 
     // For all-Line hole loops, compute the frame interior point in 3D:
@@ -3548,7 +3557,7 @@ fn nest_internal_plane_regions(
     remainder_holes: &mut Vec<Vec<OrientedPCurveEdge>>,
     frame: &PlaneFrame,
     effective_normal: remus_math::vec::Vec3,
-) {
+) -> Result<(), AlgoError> {
     let polygons: Vec<_> = regions
         .iter()
         .map(|region| super::sampling::sample_wire_loop_uv_via_frame(&region.outer_wire, frame))
@@ -3572,6 +3581,26 @@ fn nest_internal_plane_regions(
                 .map(|(parent, _)| parent)
         })
         .collect();
+    let normal = effective_normal.normalize()?;
+    let mut probes = vec![None; regions.len()];
+    for (index, region) in regions.iter().enumerate() {
+        if parents.contains(&Some(index)) {
+            let holes: Vec<_> = region
+                .inner_wires
+                .iter()
+                .chain(parents.iter().enumerate().filter_map(|(child, parent)| {
+                    (*parent == Some(index)).then_some(&remainder_holes[child])
+                }))
+                .collect();
+            let point =
+                annulus_interior_3d(&region.outer_wire, &holes, frame).ok_or_else(|| {
+                    AlgoError::FaceSplitFailed(
+                        "nested planar region has no qualified interior probe".into(),
+                    )
+                })?;
+            probes[index] = Some(point - normal * 1e-6);
+        }
+    }
     for (child, parent) in parents.iter().enumerate() {
         if let Some(parent) = parent {
             regions[*parent]
@@ -3579,14 +3608,9 @@ fn nest_internal_plane_regions(
                 .push(remainder_holes[child].clone());
         }
     }
-    for (index, region) in regions.iter_mut().enumerate() {
-        if parents.contains(&Some(index)) {
-            region.precomputed_interior = annulus_interior_3d(
-                &region.outer_wire,
-                &region.inner_wires.iter().collect::<Vec<_>>(),
-                frame,
-            )
-            .map(|point| point - effective_normal * 1e-6);
+    for (region, probe) in regions.iter_mut().zip(probes) {
+        if probe.is_some() {
+            region.precomputed_interior = probe;
         }
     }
     let mut index = 0;
@@ -3595,6 +3619,7 @@ fn nest_internal_plane_regions(
         index += 1;
         root
     });
+    Ok(())
 }
 
 /// True when an internal section loop and a pre-existing inner wire (both
@@ -5843,6 +5868,93 @@ mod tests {
     fn dummy_face_id() -> FaceId {
         let mut topo = remus_topology::topology::Topology::new();
         remus_topology::test_utils::make_unit_square_face(&mut topo)
+    }
+
+    fn nested_square_region(half: f64, frame: &PlaneFrame) -> super::SplitSubFace {
+        let points = [
+            Point3::new(-half, -half, 0.),
+            Point3::new(half, -half, 0.),
+            Point3::new(half, half, 0.),
+            Point3::new(-half, half, 0.),
+        ];
+        let outer_wire = (0..4)
+            .map(|i| {
+                let mut edge = line_chord(points[i], points[(i + 1) % 4]);
+                edge.start_uv = frame.project(edge.start_3d);
+                edge.end_uv = frame.project(edge.end_3d);
+                edge
+            })
+            .collect();
+        super::SplitSubFace {
+            surface: FaceSurface::Plane {
+                normal: Vec3::new(0., 0., 1.),
+                d: 0.,
+            },
+            outer_wire,
+            inner_wires: Vec::new(),
+            reversed: false,
+            parent: dummy_face_id(),
+            rank: super::Rank::A,
+            precomputed_interior: Some(Point3::new(0., 0., -1e-6)),
+        }
+    }
+
+    #[test]
+    fn nested_region_probes_use_a_unit_normal_distance() {
+        let frame = disk_test_frame();
+        for magnitude in [1e-3, 1., 1e6] {
+            for sign in [-1., 1.] {
+                let mut regions = vec![
+                    nested_square_region(2., &frame),
+                    nested_square_region(1., &frame),
+                ];
+                let mut holes = regions
+                    .iter()
+                    .map(|r| super::reverse_loop(&r.outer_wire))
+                    .collect();
+                super::nest_internal_plane_regions(
+                    &mut regions,
+                    &mut holes,
+                    &frame,
+                    Vec3::new(0., 0., magnitude * sign),
+                )
+                .unwrap();
+                let point = regions[0].precomputed_interior.unwrap();
+                assert!((point.z() + sign * 1e-6).abs() < 1e-15);
+                assert!(point.x().abs() < 2. && point.y().abs() < 2.);
+                assert!(point.x().abs() > 1. || point.y().abs() > 1.);
+                assert_eq!(regions[0].inner_wires.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn unqualified_nested_region_refuses_before_changing_holes_or_probes() {
+        let frame = disk_test_frame();
+        let mut regions = vec![
+            nested_square_region(2., &frame),
+            nested_square_region(1., &frame),
+        ];
+        // An existing boundary covers every candidate in this region. None
+        // may be replaced with an on-plane generic classification point.
+        let covering_hole = super::reverse_loop(&regions[0].outer_wire);
+        regions[0].inner_wires.push(covering_hole);
+        let old_probe = regions[0].precomputed_interior;
+        let mut holes: Vec<_> = regions
+            .iter()
+            .map(|r| super::reverse_loop(&r.outer_wire))
+            .collect();
+        let error = super::nest_internal_plane_regions(
+            &mut regions,
+            &mut holes,
+            &frame,
+            Vec3::new(0., 0., 1.),
+        )
+        .unwrap_err();
+        assert!(matches!(error, super::AlgoError::FaceSplitFailed(_)));
+        assert_eq!(regions[0].inner_wires.len(), 1);
+        assert_eq!(regions[0].precomputed_interior, old_probe);
+        assert_eq!(holes.len(), 2);
     }
 
     fn section_chord(start: Point3, end: Point3) -> SectionEdge {
