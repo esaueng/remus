@@ -464,6 +464,7 @@ fn check_edge_face_pairs(
     // (the projection clamps to the surface domain), so a curved edge whose
     // own conservative box stays farther than the crossing thresholds from
     // it can produce no crossing, no tangency and no on-surface verdict.
+    // Both boxes carry a coordinate-scaled slack for evaluation rounding.
     // Analytic carriers are unbounded and their distance is cheap; they are
     // not gated.
     let mut carrier_aabbs: Vec<Option<Aabb3>> = Vec::with_capacity(faces.len());
@@ -479,7 +480,8 @@ fn check_edge_face_pairs(
         });
         carrier_aabbs.push(match &surface {
             FaceSurface::Nurbs(nurbs) => {
-                Aabb3::try_from_points(nurbs.control_points().iter().flatten().copied())
+                super::helpers::finite_aabb(nurbs.control_points().iter().flatten().copied())
+                    .map(|a| a.expanded(super::helpers::coordinate_slack(a)))
             }
             FaceSurface::Plane { .. }
             | FaceSurface::Cylinder(_)
@@ -516,8 +518,8 @@ fn check_edge_face_pairs(
             .then(|| Aabb3::try_from_points([start_pos, end_pos]))
             .flatten()
             .map(|a| a.expanded(tol.linear));
-        let curved_gate_aabb =
-            conservative_curve_aabb(&curve, start_pos, end_pos).map(|a| a.expanded(gate_margin));
+        let curved_gate_aabb = super::helpers::conservative_curve_aabb(&curve, start_pos, end_pos)
+            .map(|a| a.expanded(gate_margin + super::helpers::coordinate_slack(a)));
 
         for (face_idx, &fid) in faces.iter().enumerate() {
             if face_boundary_edges[face_idx].contains(&eid) {
@@ -1161,47 +1163,6 @@ fn find_crossings_by_sampling(
 }
 
 /// Compute distance from point to surface.
-/// A box guaranteed to contain every point the edge-face scan can evaluate
-/// on this edge: the whole carrier curve (a circle's or ellipse's full turn,
-/// boxed per axis from its normal; a NURBS curve's control polygon by the
-/// convex-hull property; a line's endpoints) plus the stored endpoints, which
-/// `evaluate_with_endpoints` returns verbatim and which may sit a vertex
-/// tolerance off the curve.
-///
-/// `None` for carriers without a cheap finite bound (parabola, hyperbola),
-/// which are never gated.
-fn conservative_curve_aabb(curve: &EdgeCurve, start: Point3, end: Point3) -> Option<Aabb3> {
-    let (center, reach, normal) = match curve {
-        EdgeCurve::Line => return Aabb3::try_from_points([start, end]),
-        EdgeCurve::Circle(circle) => (circle.center(), circle.radius(), circle.normal()),
-        EdgeCurve::Ellipse(ellipse) => (
-            ellipse.center(),
-            ellipse.semi_major().max(ellipse.semi_minor()),
-            ellipse.normal(),
-        ),
-        EdgeCurve::NurbsCurve(nurbs) => {
-            let mut points: Vec<Point3> = nurbs.control_points().to_vec();
-            points.push(start);
-            points.push(end);
-            return Aabb3::try_from_points(points);
-        }
-        EdgeCurve::Parabola(_) | EdgeCurve::Hyperbola(_) => return None,
-    };
-    if !reach.is_finite() {
-        return None;
-    }
-    // A planar curve inside the disc of radius `reach` reaches at most
-    // `reach * sqrt(1 - (n . e)^2)` along axis `e`; the square root is
-    // rounded up by a full ulp-scale slack so the bound stays outside.
-    let n = normal.normalize().ok()?;
-    let extent = |component: f64| -> f64 {
-        let s = (1.0 - component * component).max(0.0).sqrt();
-        reach * (s + 4.0 * f64::EPSILON)
-    };
-    let r = Vec3::new(extent(n.x()), extent(n.y()), extent(n.z()));
-    Aabb3::try_from_points([center - r, center + r, start, end])
-}
-
 fn distance_to_surface(pt: Point3, surface: &FaceSurface, grid: Option<&SurfaceSeedGrid>) -> f64 {
     if let FaceSurface::Plane { normal, d } = surface {
         (pt.x() * normal.x() + pt.y() * normal.y() + pt.z() * normal.z() - d).abs()
@@ -1279,104 +1240,74 @@ mod tests {
     use remus_math::vec::Point3;
     use remus_topology::edge::EdgeCurve;
 
-    /// Every point the crossing scan can evaluate on an edge (the 65 scan
-    /// samples over the stored parameter range, the bisection midpoints and
-    /// the golden-section probes) must lie inside `conservative_curve_aabb`.
-    /// Checked on a dense parameter sweep, of which the scan's points are a
-    /// subset, and on the stored endpoints themselves.
-    fn assert_box_covers_edge(curve: &EdgeCurve, start: Point3, end: Point3, t0: f64, t1: f64) {
-        let bbox = conservative_curve_aabb(curve, start, end).expect("gated curve kind");
-        for i in 0..=4096 {
-            let t = t0 + (t1 - t0) * (f64::from(i) / 4096.0);
-            let p = curve.evaluate_with_endpoints(t, start, end);
-            assert!(
-                bbox.contains_point(p),
-                "sample at t={t} outside the gate box: {p:?}"
-            );
-        }
-        assert!(bbox.contains_point(start));
-        assert!(bbox.contains_point(end));
-    }
-
+    /// The circle's normal is 1e-8 off the z axis, which rounds to exactly
+    /// `(1e-8, 0, 1)`, so a box sized from `normal()` alone is flat in z to
+    /// within ulps while the circle itself reaches `r * 1e-8 = 1e-4` above and
+    /// below its centre. A planar NURBS face at `z = 3e-5` is crossed twice;
+    /// the curved-edge gate must not prune the pair (it did, and EF recorded
+    /// nothing).
     #[test]
-    fn gate_box_covers_circle_arcs_across_the_seam_and_offset_endpoints() {
+    fn ef_nurbs_gate_keeps_a_near_axis_tilted_circle_crossing_its_carrier() {
         use remus_math::curves::Circle3D;
-        let circle =
-            Circle3D::new(Point3::new(3.0, -2.0, 1.0), Vec3::new(0.6, 0.0, 0.8), 2.5).unwrap();
-        let curve = EdgeCurve::Circle(circle);
-        let zero = Point3::new(0.0, 0.0, 0.0);
-        // Endpoints a vertex tolerance off the true curve, as imported STEP
-        // often stores them; ranges include the full turn, a seam crossing
-        // and a reversed range.
-        for (t0, t1) in [
-            (0.0, std::f64::consts::TAU),
-            (5.5, 7.0),
-            (0.3, 2.9),
-            (2.9, 0.3),
-        ] {
-            let start = curve.evaluate_with_endpoints(t0, zero, zero);
-            let end = curve.evaluate_with_endpoints(t1, zero, zero);
-            let start = Point3::new(start.x() + 5e-7, start.y(), start.z() - 5e-7);
-            let end = Point3::new(end.x(), end.y() + 5e-7, end.z());
-            assert_box_covers_edge(&curve, start, end, t0, t1);
-        }
-    }
+        use remus_math::nurbs::surface::NurbsSurface;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
-    #[test]
-    fn gate_box_covers_ellipses_and_nurbs_curves() {
-        use remus_math::curves::Ellipse3D;
-        use remus_math::nurbs::curve::NurbsCurve;
-        let ellipse = Ellipse3D::new(
-            Point3::new(-1.0, 4.0, 0.5),
-            Vec3::new(0.0, 1.0, 0.0),
-            3.0,
-            1.5,
+        let mut topo = Topology::new();
+        let normal = Vec3::new(1e-8, 0.0, 1.0).normalize().unwrap();
+        assert_eq!(normal.z().to_bits(), 1.0_f64.to_bits());
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, 1e4).unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut rim = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+        rim.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let rim = topo.add_edge(rim);
+
+        let (h, z) = (2e4, 3e-5);
+        let corners = [(-h, -h), (h, -h), (h, h), (-h, h)].map(|(x, y)| Point3::new(x, y, z));
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![vec![corners[0], corners[3]], vec![corners[1], corners[2]]],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
         )
         .unwrap();
-        let curve = EdgeCurve::Ellipse(ellipse);
-        let zero = Point3::new(0.0, 0.0, 0.0);
-        let start = curve.evaluate_with_endpoints(0.2, zero, zero);
-        let end = curve.evaluate_with_endpoints(4.0, zero, zero);
-        assert_box_covers_edge(&curve, start, end, 0.2, 4.0);
+        let v = corners.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let sides: Vec<_> = (0..4)
+            .map(|i| {
+                let e = topo.add_edge(Edge::new(v[i], v[(i + 1) % 4], EdgeCurve::Line));
+                OrientedEdge::new(e, true)
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(sides, true).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Nurbs(surface)));
 
-        let nurbs = NurbsCurve::new(
-            3,
-            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
-            vec![
-                Point3::new(0.0, 0.0, 0.0),
-                Point3::new(1.0, 3.0, 0.0),
-                Point3::new(2.0, -3.0, 1.0),
-                Point3::new(3.0, 3.0, -1.0),
-                Point3::new(4.0, 0.0, 0.0),
-            ],
-            vec![1.0, 2.0, 0.5, 2.0, 1.0],
+        let mut arena = GfaArena::new();
+        check_edge_face_pairs(
+            &mut topo,
+            &[rim],
+            &[face],
+            &[HashSet::new()],
+            Tolerance::default(),
+            &mut arena,
         )
         .unwrap();
-        let curve = EdgeCurve::NurbsCurve(nurbs);
-        let start = Point3::new(0.0, 0.0, 6e-7);
-        let end = Point3::new(4.0, -6e-7, 0.0);
-        assert_box_covers_edge(&curve, start, end, 0.0, 1.0);
-    }
-
-    #[test]
-    fn gate_box_is_exact_for_lines_and_tight_for_planar_circles() {
-        use remus_math::curves::{Circle3D, Parabola3D};
-        let a = Point3::new(0.0, 0.0, 0.0);
-        let b = Point3::new(1.0, 1.0, 1.0);
-        let line = conservative_curve_aabb(&EdgeCurve::Line, a, b).unwrap();
-        assert!(line.contains_point(a) && line.contains_point(b));
-        assert!(!line.contains_point(Point3::new(1.0, 1.0, 1.1)));
-        // A circle in the z = 7 plane must not be padded along z: that is
-        // what lets it stay clear of a face carrier in the z = 10 plane.
-        let flat =
-            Circle3D::new(Point3::new(50.0, 8.0, 7.0), Vec3::new(0.0, 0.0, 1.0), 3.0).unwrap();
-        let p = flat.evaluate(0.0);
-        let bbox = conservative_curve_aabb(&EdgeCurve::Circle(flat), p, p).unwrap();
-        assert!(bbox.max.z() - 7.0 < 1e-12 && 7.0 - bbox.min.z() < 1e-12);
-        assert!(bbox.min.x() <= 47.0 && bbox.max.x() >= 53.0);
-        let parabola =
-            Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
-        assert!(conservative_curve_aabb(&EdgeCurve::Parabola(parabola), a, b).is_none());
+        let heights: Vec<f64> = arena
+            .interference
+            .ef
+            .iter()
+            .filter_map(|i| match i {
+                Interference::EF {
+                    new_vertex: Some(v),
+                    ..
+                } => Some(topo.vertex(*v).unwrap().point().z()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heights.len(), 2, "{heights:?}");
+        assert!(heights.iter().all(|h| (h - z).abs() < 1e-9), "{heights:?}");
     }
 
     /// The duplicate window is two sample spacings. Mutation testing found

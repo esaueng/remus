@@ -9846,14 +9846,14 @@ fn intersection_audit_uses_the_trimmed_torus_boundary() {
 /// projected onto all six faces. Counts are deterministic work, not time.
 ///
 /// This guards the pruning only. That the gate leaves geometry untouched is
-/// covered by the box-coverage tests in `phase_ef` (every sample the scan
-/// can evaluate lies inside the gate box) and by the Shapr3D hammer fixtures
-/// in `remus-io`, whose exact face counts, volumes and STEP round trips run
-/// through this phase on real NURBS lettering and blends. The raw GFA fuse
-/// on a `convert_to_bspline` bar is used here because the operations-level
-/// boolean recognises those faces back to planes and never reaches the gate;
-/// its result volume is not asserted (a pre-existing, gate-independent
-/// defect on such converted margins is tracked separately).
+/// covered by the box-coverage tests in `pave_filler::helpers` (every sample
+/// the scan can evaluate lies inside the gate box) and by the Shapr3D hammer
+/// fixtures in `remus-io`, whose exact face counts, volumes and STEP round
+/// trips run through this phase on real NURBS lettering and blends. The raw
+/// GFA fuse on a `convert_to_bspline` bar is used here because the
+/// operations-level boolean recognises those faces back to planes and never
+/// reaches the gate; its result volume is not asserted (a pre-existing,
+/// gate-independent defect on such converted margins is tracked separately).
 #[cfg(feature = "perf-counters")]
 #[test]
 fn scaling_ef_curved_edge_gate_prunes_far_nurbs_pairs() {
