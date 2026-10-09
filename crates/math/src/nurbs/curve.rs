@@ -315,9 +315,11 @@ impl NurbsCurve {
         let n = self.control_points.len();
         let u = u.clamp(self.knots[p], self.knots[n]);
         let span = basis::find_span(n, p, u, &self.knots);
-        let mut bf_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
+        // Sized to `basis_funs_into`'s own stack bound: a degree it serves
+        // without allocating must not pay for a heap buffer here.
+        let mut bf_stack = [0.0f64; basis::MAX_STACK_DEGREE + 1];
         let mut bf_heap;
-        let bf: &mut [f64] = if p <= basis::MAX_STACK_OUTPUT {
+        let bf: &mut [f64] = if p <= basis::MAX_STACK_DEGREE {
             &mut bf_stack[..=p]
         } else {
             bf_heap = vec![0.0; p + 1];
@@ -965,3 +967,6 @@ mod weight_cache_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod eval_stack_oracle_tests;

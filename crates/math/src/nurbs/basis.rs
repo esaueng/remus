@@ -9,7 +9,7 @@ use crate::fma::FusedMulAdd;
 ///
 /// CAD practice uses at most degree 7 (cubic and quartic are by far the most
 /// common). This gives a generous buffer while keeping the stack arrays small.
-const MAX_STACK_DEGREE: usize = 10;
+pub(crate) const MAX_STACK_DEGREE: usize = 10;
 
 /// Find the knot span index for parameter `u` (A2.1).
 ///
