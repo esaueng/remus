@@ -120,20 +120,25 @@ fn bench_hollow_box(c: &mut Criterion) {
     });
 }
 
+/// The bench plate: a 100 × 100 × 10 block with the first `holes` of an
+/// 8 × 8 grid of radius-2 through holes on a 12 mm pitch, row by row.
+fn hole_plate(holes: u32) -> (Topology, remus_topology::solid::SolidId) {
+    let mut topo = Topology::new();
+    let mut result = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
+    for i in 0..holes {
+        let cyl = primitives::make_cylinder(&mut topo, 2.0, 20.0).unwrap();
+        let x = 6.0 + f64::from(i % 8) * 12.0;
+        let y = 6.0 + f64::from(i / 8) * 12.0;
+        transform_solid(&mut topo, cyl, &Mat4::translation(x, y, -5.0)).unwrap();
+        result = boolean(&mut topo, BooleanOp::Cut, result, cyl).unwrap();
+    }
+    (topo, result)
+}
+
 /// Scaling input: 64-hole plate drives the parallel sampling/CDT paths and
 /// the contact-refinement budget at production size.
 fn bench_64_hole_plate(c: &mut Criterion) {
-    let mut topo = Topology::new();
-    let mut result = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
-    for row in 0..8 {
-        for col in 0..8 {
-            let cyl = primitives::make_cylinder(&mut topo, 2.0, 20.0).unwrap();
-            let x = 6.0 + col as f64 * 12.0;
-            let y = 6.0 + row as f64 * 12.0;
-            transform_solid(&mut topo, cyl, &Mat4::translation(x, y, -5.0)).unwrap();
-            result = boolean(&mut topo, BooleanOp::Cut, result, cyl).unwrap();
-        }
-    }
+    let (topo, result) = hole_plate(64);
     let built = Instant::now();
     let mesh = tessellate::tessellate_solid(&topo, result, 0.1).unwrap();
     report_stats("64-hole-plate", &mesh, built.elapsed());
@@ -142,10 +147,24 @@ fn bench_64_hole_plate(c: &mut Criterion) {
     });
 }
 
+/// Mid-size pool: the first 24 holes of the plate. Its ~870-vertex pool
+/// sits where scanning the pool for every hole rim (instead of walking the
+/// circle contact index) costs more than the walk, so a contact-refinement
+/// path choice that misjudges that band shows up here.
+fn bench_24_hole_plate(c: &mut Criterion) {
+    let (topo, result) = hole_plate(24);
+    let built = Instant::now();
+    let mesh = tessellate::tessellate_solid(&topo, result, 0.1).unwrap();
+    report_stats("24-hole-plate", &mesh, built.elapsed());
+    c.bench_function("perf-d03 24-hole plate (tol=0.1)", |b| {
+        b.iter(|| black_box(tessellate::tessellate_solid(&topo, result, 0.1).unwrap()));
+    });
+}
+
 criterion_group!(
     name = perf_d03;
     config = fast_config();
     targets = bench_drilled_box, bench_curved_intersect, bench_hollow_box,
-        bench_64_hole_plate
+        bench_64_hole_plate, bench_24_hole_plate
 );
 criterion_main!(perf_d03);

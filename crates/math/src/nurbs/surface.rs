@@ -763,18 +763,20 @@ impl NurbsSurface {
 
         let span_u = basis::find_span(n_rows, pu, u, &self.knots_u);
         let span_v = basis::find_span(n_cols, pv, v, &self.knots_v);
-        let mut nu_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
+        // Sized to `basis_funs_into`'s own stack bound: a degree it serves
+        // without allocating must not pay for a heap buffer here.
+        let mut nu_stack = [0.0f64; basis::MAX_STACK_DEGREE + 1];
         let mut nu_heap;
-        let nu: &mut [f64] = if pu <= basis::MAX_STACK_OUTPUT {
+        let nu: &mut [f64] = if pu <= basis::MAX_STACK_DEGREE {
             &mut nu_stack[..=pu]
         } else {
             nu_heap = vec![0.0; pu + 1];
             &mut nu_heap
         };
         basis::basis_funs_into(span_u, u, pu, &self.knots_u, nu);
-        let mut nv_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nv_stack = [0.0f64; basis::MAX_STACK_DEGREE + 1];
         let mut nv_heap;
-        let nv: &mut [f64] = if pv <= basis::MAX_STACK_OUTPUT {
+        let nv: &mut [f64] = if pv <= basis::MAX_STACK_DEGREE {
             &mut nv_stack[..=pv]
         } else {
             nv_heap = vec![0.0; pv + 1];
@@ -3468,3 +3470,6 @@ mod first_order_fast_path_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod eval_stack_oracle_tests;
