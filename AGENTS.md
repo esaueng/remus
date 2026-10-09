@@ -118,8 +118,10 @@ Quick reference — find the right file for any task:
 | Points, vectors, matrices | `vec.rs`, `mat.rs` |
 | Planes | `plane.rs` |
 | NURBS curve evaluation/manipulation | `nurbs/curve.rs` |
+| Bit-identity oracle for `NurbsCurve::evaluate`'s basis buffer against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/curve/eval_stack_oracle_tests.rs` |
 | Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
 | NURBS surface evaluation | `nurbs/surface.rs` |
+| Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
@@ -437,6 +439,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
 | Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
+| Cost-model full-scan fallback of the circle contact index: decision boundary and fallback-on/off mesh identity (tests) | `tessellate/tests/pool_fallback.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
 | Offset wire | `offset_wire.rs` |

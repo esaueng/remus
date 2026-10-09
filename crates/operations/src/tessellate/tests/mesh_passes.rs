@@ -5,7 +5,9 @@
 //! refinement (`pool_index`) must produce byte-identical meshes. Under
 //! `cfg(test)` a thread-local switch (`use_reference_passes`) routes the
 //! pipeline through these copies and through the full-pool circle scan, so
-//! every comparison below meshes the same body both ways.
+//! every comparison below meshes the same body both ways. Circles with a
+//! small pool for their arc length take the full scan in production too, so
+//! the comparison also forces the index walk (`pool_index::test_hooks`).
 
 #![allow(clippy::expect_used, clippy::panic)]
 
@@ -19,6 +21,7 @@ use remus_topology::solid::SolidId;
 
 use super::super::TriangleMesh;
 use super::super::mesh_ops::COINCIDENT_DEDUPE_GRID;
+use super::super::pool_index::test_hooks::with_fallback;
 use super::super::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid_grouped_with_tolerance,
 };
@@ -392,7 +395,7 @@ pub(in crate::tessellate) mod reference {
     }
 }
 
-fn grouped(
+pub(super) fn grouped(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
@@ -401,7 +404,11 @@ fn grouped(
     tessellate_solid_grouped_with_tolerance(topo, solid, deflection, angular).expect("tessellate")
 }
 
-fn assert_bit_identical(a: &(TriangleMesh, Vec<u32>), b: &(TriangleMesh, Vec<u32>), context: &str) {
+pub(super) fn assert_bit_identical(
+    a: &(TriangleMesh, Vec<u32>),
+    b: &(TriangleMesh, Vec<u32>),
+    context: &str,
+) {
     assert_eq!(a.1, b.1, "{context}: face offsets differ");
     assert_eq!(a.0.indices, b.0.indices, "{context}: indices differ");
     let bits = |m: &TriangleMesh| -> (Vec<[u64; 3]>, Vec<[u64; 3]>) {
@@ -536,6 +543,11 @@ fn pipeline_matches_reference_passes_bit_for_bit() {
             let fast = grouped(&topo, body, deflection, angular);
             let reference = with_reference(|| grouped(&topo, body, deflection, angular));
             assert_bit_identical(&fast, &reference, &context);
+            // Small pools may skip the circle index for the full scan; walk
+            // it anyway so the index itself stays compared with the reference.
+            let (walked, _) =
+                with_fallback(Some(false), || grouped(&topo, body, deflection, angular));
+            assert_bit_identical(&walked, &reference, &format!("{context} index walked"));
             assert_eq!(boundary_edge_count(&fast.0), 0, "{context}: open");
             assert_eq!(non_manifold_edge_count(&fast.0), 0, "{context}: branching");
             // The ungrouped entry point skips face attribution.

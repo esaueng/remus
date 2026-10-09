@@ -21,6 +21,7 @@ mod face_cache;
 mod mesh_oracles;
 pub(super) mod mesh_passes;
 mod mutation_oracles;
+mod pool_fallback;
 
 #[test]
 fn tessellate_square() {
