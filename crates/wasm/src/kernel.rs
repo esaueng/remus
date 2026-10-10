@@ -62,13 +62,14 @@ impl BrepKernel {
     #[must_use]
     pub fn new() -> Self {
         crate::panics::install_hook();
-        // Content-keyed face integrals and identity-keyed volume readings
-        // (both off in the library by default). Module-wide on purpose: the
-        // face cache is keyed by content, so a body validated in one kernel
-        // is a hit when a short-lived probe kernel validates its deserialized
+        // Content-keyed face integrals and NURBS areas, plus identity-keyed
+        // volume readings (off in the library by default). Module-wide on
+        // purpose: a body validated in one kernel is a content-keyed hit
+        // when a short-lived probe kernel validates its deserialized
         // copy, and every hit is bit-identical to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
+        remus_operations::measure::enable_thread_nurbs_area_memo();
         remus_operations::tessellate::enable_face_mesh_cache();
         Self {
             topo: Rc::new(Topology::new()),
@@ -2172,6 +2173,55 @@ mod kernel_correctness_tests {
     #![allow(clippy::unwrap_used)]
 
     use crate::kernel::BrepKernel;
+
+    #[test]
+    fn constructors_retain_content_keyed_nurbs_area_readings() {
+        use remus_math::nurbs::surface::NurbsSurface;
+        use remus_math::vec::Point3;
+        use remus_operations::measure;
+        use remus_topology::builder::make_nurbs_face;
+
+        struct ResetMemo;
+        impl Drop for ResetMemo {
+            fn drop(&mut self) {
+                measure::disable_thread_nurbs_area_memo();
+            }
+        }
+
+        measure::disable_thread_nurbs_area_memo();
+        let _reset = ResetMemo;
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        let mut first = BrepKernel::new();
+        measure::set_thread_nurbs_area_memo_limits(3, 4096);
+        let face = make_nurbs_face(first.topo_mut(), surface.clone(), 1e-7).unwrap();
+        let area = first.face_area(face.index() as u32, 0.05).unwrap();
+        let before = measure::thread_nurbs_area_memo_stats().unwrap();
+        assert_eq!(before.len, 1);
+
+        let mut second = BrepKernel::new();
+        let after_constructor = measure::thread_nurbs_area_memo_stats().unwrap();
+        assert_eq!(after_constructor.len, before.len);
+        assert_eq!(after_constructor.misses, before.misses);
+        assert_eq!(after_constructor.capacity, 3);
+        assert_eq!(after_constructor.byte_budget, 4096);
+        let second_face = make_nurbs_face(second.topo_mut(), surface, 1e-7).unwrap();
+        let second_area = second.face_area(second_face.index() as u32, 0.05).unwrap();
+        assert_eq!(area.to_bits(), second_area.to_bits());
+        let after = measure::thread_nurbs_area_memo_stats().unwrap();
+        assert_eq!(after.hits, before.hits + 1);
+        assert_eq!(after.len, before.len);
+    }
 
     fn journaled_box(width: f64) -> (BrepKernel, u32, String) {
         let mut kernel = BrepKernel::new();

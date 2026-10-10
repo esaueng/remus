@@ -75,6 +75,26 @@ fn fresh(topo: &Topology, solid: SolidId, deflection: f64) -> (TriangleMesh, Vec
     mesh
 }
 
+fn quantity_mesh(topo: &Topology, solid: SolidId, deflection: f64) -> TriangleMesh {
+    super::super::solid::tessellate_solid_for_measurement(topo, solid, deflection)
+        .expect("quantity tessellation")
+}
+
+fn fresh_quantity(topo: &Topology, solid: SolidId, deflection: f64) -> TriangleMesh {
+    let parked = super::super::face_cache::park();
+    let mesh = quantity_mesh(topo, solid, deflection);
+    super::super::face_cache::unpark(parked);
+    mesh
+}
+
+fn assert_geometry_bits(mesh: &TriangleMesh, reference: &TriangleMesh) {
+    assert_eq!(mesh.indices, reference.indices);
+    assert_eq!(mesh.positions.len(), reference.positions.len());
+    for (position, expected) in mesh.positions.iter().zip(&reference.positions) {
+        assert_eq!(position.0.map(f64::to_bits), expected.0.map(f64::to_bits));
+    }
+}
+
 /// Body scale for the roundoff bound on translated positions.
 fn scale(mesh: &TriangleMesh) -> f64 {
     mesh.positions
@@ -527,6 +547,134 @@ fn bounds_evict_fifo_and_refuse_oversized_entries() {
     enable_face_mesh_cache_with_limits(0, usize::MAX);
     grouped(&topo, solid, DEFLECTION);
     assert_eq!(stats().entries, 0);
+}
+
+#[test]
+fn distinct_quantity_requests_preserve_display_entries_within_total_count_bound() {
+    let _guard = CacheGuard::enabled();
+    let mut topo = Topology::new();
+    let solid = filleted_box(&mut topo);
+    // Fillet construction performs its own quantity checks. Start the churn
+    // experiment after setup so only the displayed result occupies the cache.
+    clear_face_mesh_cache();
+    let faces = solid_faces(&topo, solid).unwrap().len();
+    enable_face_mesh_cache_with_limits(faces * 2, usize::MAX);
+    let display = grouped(&topo, solid, DEFLECTION);
+    assert_eq!(stats().entries, faces);
+
+    // Each changing quantity tolerance is a distinct key, including when its
+    // rounded sampling counts coincide. Its result must still be the fresh
+    // mesh at that exact request, rather than a previously coarser mesh.
+    for i in 0..16 {
+        let deflection = 0.02 + f64::from(i) * 0.001;
+        let quantity = quantity_mesh(&topo, solid, deflection);
+        assert_geometry_bits(&quantity, &fresh_quantity(&topo, solid, deflection));
+        let snapshot = stats();
+        assert!(snapshot.entries <= faces * 2);
+        assert!(snapshot.retained_bytes <= snapshot.max_bytes);
+    }
+    assert!(stats().evictions > 0, "quantity entries exercised eviction");
+
+    let before = stats();
+    let reused = grouped(&topo, solid, DEFLECTION);
+    let difference = delta(before, stats());
+    assert_eq!(difference.exact, faces as u64);
+    assert_eq!(difference.misses, 0);
+    assert_reproduces(&reused, &display, 0.0, "protected display");
+    assert_reproduces(
+        &reused,
+        &fresh(&topo, solid, DEFLECTION),
+        0.0,
+        "protected display fresh reference",
+    );
+    assert_geometry_bits(&reused.0, &display.0);
+}
+
+#[test]
+fn quantity_admission_respects_byte_bound_without_evicting_display() {
+    let _guard = CacheGuard::enabled();
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+    grouped(&topo, solid, DEFLECTION);
+    let display = stats();
+    enable_face_mesh_cache_with_limits(64, display.retained_bytes);
+
+    for i in 0..12 {
+        let deflection = 0.01 + f64::from(i) * 0.001;
+        let mesh = quantity_mesh(&topo, solid, deflection);
+        assert_geometry_bits(&mesh, &fresh_quantity(&topo, solid, deflection));
+        let snapshot = stats();
+        assert_eq!(snapshot.entries, display.entries);
+        assert_eq!(snapshot.retained_bytes, display.retained_bytes);
+        assert_eq!(snapshot.stored, display.stored);
+        assert_eq!(snapshot.evictions, display.evictions);
+    }
+    let before = stats();
+    let reused = grouped(&topo, solid, DEFLECTION);
+    assert_eq!(delta(before, stats()).exact, 6);
+    assert_reproduces(
+        &reused,
+        &fresh(&topo, solid, DEFLECTION),
+        0.0,
+        "byte-protected display",
+    );
+
+    // Explicitly shrinking the caller's total budget may evict display entries.
+    enable_face_mesh_cache_with_limits(64, display.retained_bytes - 1);
+    let shrunk = stats();
+    assert!(shrunk.entries < display.entries);
+    assert!(shrunk.retained_bytes <= shrunk.max_bytes);
+}
+
+#[test]
+fn quantity_entries_promote_on_display_and_clear_disable_reset_retention() {
+    let _guard = CacheGuard::enabled();
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+    enable_face_mesh_cache_with_limits(6, usize::MAX);
+    quantity_mesh(&topo, solid, DEFLECTION);
+    let quantity = stats();
+    assert_eq!(quantity.entries, 6);
+
+    // Use the default angular tolerance on both paths so the content keys are
+    // identical. Display reuses and protects the quantity capture in place.
+    let displayed = tessellate_solid(&topo, solid, DEFLECTION).unwrap();
+    let promoted = stats();
+    assert_eq!(delta(quantity, promoted).exact, 6);
+    assert_eq!(promoted.entries, quantity.entries);
+    assert_eq!(promoted.stored, quantity.stored);
+    for i in 1..=12 {
+        quantity_mesh(&topo, solid, DEFLECTION + f64::from(i) * 0.001);
+    }
+    let before = stats();
+    let reused = tessellate_solid(&topo, solid, DEFLECTION).unwrap();
+    assert_eq!(delta(before, stats()).exact, 6);
+    assert_eq!(stats().evictions, promoted.evictions);
+    assert_geometry_bits(&reused, &displayed);
+    assert_eq!(reused.normals, displayed.normals);
+
+    let before_clear = stats();
+    clear_face_mesh_cache();
+    let cleared = stats();
+    assert_eq!((cleared.entries, cleared.retained_bytes), (0, 0));
+    assert_eq!(cleared.stored, before_clear.stored);
+    assert_eq!(cleared.lookups, before_clear.lookups);
+    quantity_mesh(&topo, solid, DEFLECTION);
+    assert_eq!(stats().entries, 6, "clear removes protected retention too");
+
+    enable_face_mesh_cache_with_limits(0, usize::MAX);
+    assert_eq!((stats().entries, stats().retained_bytes), (0, 0));
+    disable_face_mesh_cache();
+    quantity_mesh(&topo, solid, DEFLECTION);
+    assert!(face_mesh_cache_stats().is_none());
+    enable_face_mesh_cache();
+    let reset = stats();
+    assert_eq!(
+        (reset.entries, reset.retained_bytes, reset.lookups),
+        (0, 0, 0)
+    );
+    assert_eq!(reset.max_entries, DEFAULT_FACE_MESH_CACHE_ENTRIES);
+    assert_eq!(reset.max_bytes, DEFAULT_FACE_MESH_CACHE_BYTES);
 }
 
 /// A square-to-square smooth loft through a wider middle section: four
