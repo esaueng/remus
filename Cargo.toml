@@ -123,7 +123,7 @@ overflow-checks = true
 
 # Keep the JS binding layer compact while kernel crates retain speed optimization.
 [profile.release.package.remus-wasm]
-opt-level = "s"
+opt-level = "z"
 
 [profile.profiling]
 debug = true
