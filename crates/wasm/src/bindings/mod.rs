@@ -20,6 +20,7 @@ pub mod measure;
 pub mod modifier_detailed;
 pub mod naming;
 pub mod nurbs;
+pub mod nurbs_reuse;
 pub mod operations;
 pub mod performance;
 pub mod polygon2d;

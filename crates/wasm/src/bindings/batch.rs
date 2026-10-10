@@ -212,6 +212,11 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getNurbsCurveData"
         | "getNurbsSurfaceData"
         | "getNurbsSurfaceDataParity"
+        | "surfaceKnotRemoveU"
+        | "surfaceKnotRemoveV"
+        | "simplifyNurbsCurve"
+        | "simplifyNurbsSurface"
+        | "fitCubicCurve"
         | "massProperties"
         | "meshQuality"
         | "polygonBoolean2d"
@@ -3344,6 +3349,7 @@ impl BrepKernel {
                 .or_else(|| self.dispatch_evolution_op(other, args))
                 .or_else(|| self.dispatch_gcs_op(other, args))
                 .or_else(|| self.dispatch_project_curve_op(other, args))
+                .or_else(|| self.dispatch_nurbs_reuse_op(other, args))
                 .unwrap_or_else(|| Err(StructuredWasmError::unknown_operation(other))),
         }
     }

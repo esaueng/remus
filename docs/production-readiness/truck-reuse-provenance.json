@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "https://github.com/ricosjp/truck",
+    "commit": "88ed005249e5e3a6b07f62425399435905cd3ab6",
+    "license": "Apache-2.0",
+    "license_file": "LICENSE",
+    "package_manifest": "truck-geometry/Cargo.toml",
+    "notice_files": []
+  },
+  "file_sha256": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "truck-geometry/Cargo.toml": "5aac396e38458c73919679464d4ea47f24c1e2a739f94a377e19b79bcecc9983",
+    "truck-geometry/src/nurbs/bspsurface.rs": "3c1308ecd84c0ca43bf2a948e96aea8d0bc9a43ef296a6eb547ff3441ae72f9d",
+    "truck-geometry/src/nurbs/bspcurve.rs": "a183b052faea43ac7b1e894bb1c886e7d791c6ea0a45af1bfcd55132cf0d7e8c"
+  },
+  "adaptations": [
+    {
+      "source_file": "truck-geometry/src/nurbs/bspsurface.rs",
+      "source_function": "BSplineSurface::try_remove_uknot",
+      "source_lines": [
+        851,
+        897
+      ],
+      "source_range_sha256": "25b70af421af3a846130c02241be334b0b8c8533af4f9c54a3d4353301c6ef06",
+      "destination_file": "crates/math/src/nurbs/reduction.rs",
+      "scope": "Homogeneous inverse-insertion recurrence; local Truck near checks replaced.",
+      "license": "Apache-2.0"
+    },
+    {
+      "source_file": "truck-geometry/src/nurbs/bspsurface.rs",
+      "source_function": "BSplineSurface::try_remove_vknot",
+      "source_lines": [
+        949,
+        996
+      ],
+      "source_range_sha256": "31a302d7b036523b8880167ea3d20ff808683cd94aab3230f05125b5714be943",
+      "destination_file": "crates/math/src/nurbs/reduction.rs",
+      "scope": "V-direction homogeneous inverse-insertion recurrence; local Truck near checks replaced.",
+      "license": "Apache-2.0"
+    },
+    {
+      "source_file": "truck-geometry/src/nurbs/bspsurface.rs",
+      "source_function": "BSplineSurface::optimize",
+      "source_lines": [
+        1542,
+        1557
+      ],
+      "source_range_sha256": "bfbc558721259e6f8ba26043b12593f30ef18790cd65388d000c21215e7e8ed0",
+      "destination_file": "crates/math/src/nurbs/reduction.rs",
+      "scope": "Descending repeated-removal strategy with Remus policy and original-geometry certificates.",
+      "license": "Apache-2.0"
+    },
+    {
+      "source_file": "truck-geometry/src/nurbs/bspcurve.rs",
+      "source_function": "BSplineCurve::optimize",
+      "source_lines": [
+        714,
+        723
+      ],
+      "source_range_sha256": "49046f1564e3545a74e7ad38a12e6d88c764c99a501d513d10f106f8f9f5e70c",
+      "destination_file": "crates/math/src/nurbs/reduction.rs",
+      "scope": "Descending repeated-removal strategy; candidate curve removal is existing Remus code.",
+      "license": "Apache-2.0"
+    },
+    {
+      "source_file": "truck-geometry/src/nurbs/bspcurve.rs",
+      "source_function": "BSplineCurve::cubic_bezier_interpolation",
+      "source_lines": [
+        1287,
+        1301
+      ],
+      "source_range_sha256": "b8a6cb86ca0ebc89f9d86e9fda86a0c8f87605393da822c8f3786a00ee78f21d",
+      "destination_file": "crates/math/src/nurbs/cubic_fit.rs",
+      "scope": "Endpoint/tangent cubic control construction.",
+      "license": "Apache-2.0"
+    },
+    {
+      "source_file": "truck-geometry/src/nurbs/bspcurve.rs",
+      "source_function": "BSplineCurve::sub_cubic_approximation",
+      "source_lines": [
+        1303,
+        1355
+      ],
+      "source_range_sha256": "af7b48155a75326e77f75fe76ccee60cc0e9ddc5d89222224ab599a58a68d4d4",
+      "destination_file": "crates/math/src/nurbs/cubic_fit.rs",
+      "scope": "Adaptive bisection orchestration; no hash sample acceptance or Truck concatenation helper.",
+      "license": "Apache-2.0"
+    },
+    {
+      "source_file": "truck-geometry/src/nurbs/bspcurve.rs",
+      "source_function": "BSplineCurve::cubic_approximation",
+      "source_lines": [
+        1373,
+        1391
+      ],
+      "source_range_sha256": "31e9519ebf1c2221245973135af62a41773fbcb5283b8a4f451b07dc296458e8",
+      "destination_file": "crates/math/src/nurbs/cubic_fit.rs",
+      "scope": "Endpoint and derivative initialization; no trailing Truck optimize call.",
+      "license": "Apache-2.0"
+    }
+  ],
+  "independent_files": [
+    "crates/math/src/nurbs/reuse.rs",
+    "crates/math/src/nurbs/reuse_bounds.rs"
+  ],
+  "copied_upstream_test_files": [],
+  "copied_fixture_files": [],
+  "extracted_helper_files": [],
+  "new_dependencies": [],
+  "excluded_sources": [
+    "OCCT",
+    "Remus historical upstream v3 or later"
+  ]
+}

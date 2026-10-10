@@ -30,9 +30,10 @@ set -euo pipefail
 #       Release history. Their links resolve to commits that really do live in
 #       the predecessor repository; rewriting them would break real references.
 #
-#   NOTICE
+#   NOTICE, crates/math/NOTICE, check-truck-reuse-provenance.py
 #       Attribution. A NOTICE file credits the contributors it names, and
-#       renaming them defeats its purpose.
+#       renaming them defeats its purpose. The math crate distributes an exact
+#       copy; the Truck provenance checker ensures existing attribution stays.
 #
 #   apache-replay-provenance.{md,json}, check-apache-replay-provenance.py
 #       The lineage ledger. It pins the upstream repository, the fork cutoff,
@@ -56,6 +57,8 @@ readonly ALLOWED_HISTORY=(
   "CHANGELOG.md"
   "crates/wasm/CHANGELOG.md"
   "NOTICE"
+  "crates/math/NOTICE"
+  "scripts/check-truck-reuse-provenance.py"
   "AI-DISCLOSURE-ETHICS.md"
   "docs/production-readiness/apache-replay-provenance.json"
   "docs/production-readiness/apache-replay-provenance.md"
