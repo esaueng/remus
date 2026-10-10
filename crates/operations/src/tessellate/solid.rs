@@ -1470,7 +1470,8 @@ fn tessellate_faces_core(
     // content key (surface, wires, final boundary chains, tolerances) matches
     // a retained capture up to a rigid translation is replayed instead of
     // re-meshed; every other face is meshed as before and captured.
-    let mut cache_session = face_cache::Session::begin();
+    let mut cache_session =
+        face_cache::Session::begin(matches!(boundary_mode, MeshBoundaryMode::ClosedMeasurement));
     for &fi in &other_face_indices {
         let face_id = all_faces[fi];
         let allow_latitude_cap = !plan.policy.circle_floor

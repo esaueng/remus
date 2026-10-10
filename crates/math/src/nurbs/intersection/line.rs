@@ -220,13 +220,12 @@ pub fn intersect_line_nurbs_with_grid(
     Ok(results)
 }
 
-/// Reusable buffers for [`refine_line_surface_point`]'s first-derivative
-/// table: the same values `NurbsSurface::derivatives` returns, without its
-/// three allocations per Newton iteration.
+/// Reusable first-partials scratch for [`refine_line_surface_point`].
+/// The specialized first-order solve returns the general derivative table's
+/// partials bit for bit, with verified span hints and one fused contraction.
 #[derive(Default)]
 struct NewtonWorkspace {
     scratch: DerivativeScratch,
-    table: Vec<Vec<Vec3>>,
 }
 
 /// Where the iteration budget ends on a cycle: the index into the visited
@@ -287,13 +286,10 @@ fn refine_line_surface_point(
             });
         }
 
-        // Newton step in (u, v) space. `derivative_table_from` is the exact
-        // computation `NurbsSurface::derivatives` runs, into reused buffers.
-        workspace
-            .scratch
-            .derivative_table_from(surface, u, v, 1, &mut workspace.table);
-        let su = workspace.table[1][0];
-        let sv = workspace.table[0][1];
+        // Keep `evaluate` above for the position and residual: the derivative
+        // solve's position uses a different arithmetic order. Only substitute
+        // the partials, whose bits match the general derivative-table solve.
+        let (su, sv) = workspace.scratch.partials_from(surface, u, v);
 
         let r = Vec3::new(residual.x(), residual.y(), residual.z());
 

@@ -1,5 +1,12 @@
 # O06 subset: whole-solid feature recognition and edge relations
 
+Follow-up, 2026-10-10: the line-NURBS Newton solver now uses the existing
+specialized first-partial scratch solve, while retaining its original position
+evaluation. A bounded scalar memo also serves repeated standalone NURBS face
+areas. The measurements below describe their pinned revisions; see
+[Face-edit responsiveness](perf-face-edit-responsiveness.md) for the current
+changes and their qualification targets.
+
 OpenZCAD rebuilds an imported STEP body after every direct edit and re-runs
 imported-feature recognition on it: `recognizeFeatures` and
 `solidEdgeRelations`, each over the whole solid. Neither result can be carried
