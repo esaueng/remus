@@ -5,6 +5,7 @@ mod area;
 mod bounding_box;
 mod edge_length;
 pub(crate) mod helpers;
+mod nurbs_area_memo;
 mod volume;
 mod volume_memo;
 
@@ -17,6 +18,11 @@ pub(crate) use bounding_box::{
 };
 pub use bounding_box::{sheet_bounding_box, solid_bounding_box};
 pub use edge_length::{body_length, edge_length, face_perimeter, wire_length};
+pub use nurbs_area_memo::{
+    DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET, DEFAULT_NURBS_AREA_MEMO_CAPACITY, NurbsAreaMemoStats,
+    clear_thread_nurbs_area_memo, disable_thread_nurbs_area_memo, enable_thread_nurbs_area_memo,
+    set_thread_nurbs_area_memo_limits, thread_nurbs_area_memo_stats,
+};
 pub(crate) use volume::{gauss_unqualified_face, negligible_volume, shell_signed_volume};
 pub use volume::{
     mass_properties, oriented_solid_volume, solid_center_of_mass, solid_is_inverted, solid_volume,

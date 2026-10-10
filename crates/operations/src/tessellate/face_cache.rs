@@ -92,8 +92,12 @@
 //!
 //! The cache is per thread and opt-in ([`enable_face_mesh_cache`]); when
 //! disabled the pipeline is untouched. It holds at most a configured number
-//! of faces and estimated bytes, with deterministic FIFO eviction; an entry
-//! larger than the whole byte budget is never retained. Because the key is
+//! of faces and estimated bytes. Quantity meshes may evict only other quantity
+//! meshes; display meshes and changes to the bounds evict quantity meshes first,
+//! then display meshes, with deterministic FIFO eviction within each class.
+//! A quantity entry replayed for display is promoted without duplicating its
+//! storage. An entry larger than the whole byte budget is never retained.
+//! Because the key is
 //! the content itself, in-place mutation (transforms, `*_mut` edits,
 //! healing, checkpoint restore, deletion) cannot serve a stale mesh: changed
 //! content simply misses. Holed planar faces (stage B CDT jobs) and the
@@ -160,7 +164,7 @@ pub struct FaceMeshCacheStats {
     pub uncacheable: u64,
     /// Faces captured and retained.
     pub stored: u64,
-    /// Entries evicted (FIFO).
+    /// Entries evicted (quantity entries first, FIFO within each class).
     pub evictions: u64,
     /// Entries currently retained.
     pub entries: usize,
@@ -190,15 +194,16 @@ pub fn enable_face_mesh_cache() {
 /// `max_bytes` estimated bytes.
 ///
 /// When the cache is already enabled its bounds change and the oldest
-/// entries are evicted to fit. `max_entries == 0` keeps the cache enabled
-/// but retains nothing.
+/// quantity entries, then the oldest display entries, are evicted to fit.
+/// Quantity requests share these total bounds but cannot evict display entries.
+/// `max_entries == 0` keeps the cache enabled but retains nothing.
 pub fn enable_face_mesh_cache_with_limits(max_entries: usize, max_bytes: usize) {
     FACE_MESH_CACHE.with(|cell| {
         let mut slot = cell.borrow_mut();
         let cache = slot.get_or_insert_with(FaceMeshCache::default);
         cache.max_entries = max_entries;
         cache.max_bytes = max_bytes;
-        cache.evict_to_fit(0);
+        cache.evict_to_fit(0, RetentionClass::Display);
     });
 }
 
@@ -964,7 +969,16 @@ struct CachedFace {
     /// The capture was meshed by the frame-charted NURBS CDT (see
     /// [`TranslationRule::NurbsFrame`]).
     nurbs_frame_chart: bool,
+    /// Display use protects an entry from quantity-driven eviction. This is
+    /// retention metadata, not a meshing input or part of the content key.
+    retention: RetentionClass,
     bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetentionClass {
+    Display,
+    Quantity,
 }
 
 impl CachedFace {
@@ -984,7 +998,8 @@ struct FaceMeshCache {
     max_entries: usize,
     max_bytes: usize,
     next_id: u64,
-    order: VecDeque<u64>,
+    display_order: VecDeque<u64>,
+    quantity_order: VecDeque<u64>,
     entries: DetHashMap<u64, CachedFace>,
     buckets: DetHashMap<u64, Vec<u64>>,
     retained_bytes: usize,
@@ -1003,7 +1018,8 @@ impl FaceMeshCache {
     }
 
     fn clear(&mut self) {
-        self.order.clear();
+        self.display_order.clear();
+        self.quantity_order.clear();
         self.entries.clear();
         self.buckets.clear();
         self.retained_bytes = 0;
@@ -1045,16 +1061,38 @@ impl FaceMeshCache {
         best
     }
 
-    /// Evict FIFO until `incoming` more bytes (and, when nonzero, one more
-    /// entry) fit the bounds.
-    fn evict_to_fit(&mut self, incoming: usize) {
-        while let Some(&oldest) = self.order.front() {
+    /// Protect a quantity capture once it has served a display request.
+    fn promote_for_display(&mut self, id: u64) {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return;
+        };
+        if entry.retention == RetentionClass::Quantity {
+            entry.retention = RetentionClass::Display;
+            self.quantity_order.retain(|&candidate| candidate != id);
+            self.display_order.push_back(id);
+        }
+    }
+
+    /// Evict until `incoming` more bytes (and, when nonzero, one more entry)
+    /// fit the total bounds. A quantity admission never evicts a display entry;
+    /// return `false` if protected entries leave insufficient capacity.
+    fn evict_to_fit(&mut self, incoming: usize, retention: RetentionClass) -> bool {
+        loop {
             let over_count = self.entries.len() + usize::from(incoming > 0) > self.max_entries;
-            let over_bytes = self.retained_bytes + incoming > self.max_bytes;
+            let over_bytes = self.retained_bytes.saturating_add(incoming) > self.max_bytes;
             if !over_count && !over_bytes {
-                break;
+                return true;
             }
-            self.order.pop_front();
+            let oldest = if let Some(id) = self.quantity_order.pop_front() {
+                Some(id)
+            } else if retention == RetentionClass::Display {
+                self.display_order.pop_front()
+            } else {
+                None
+            };
+            let Some(oldest) = oldest else {
+                return false;
+            };
             if let Some(entry) = self.entries.remove(&oldest) {
                 self.retained_bytes -= entry.bytes;
                 if let Some(bucket) = self.buckets.get_mut(&entry.key.hash) {
@@ -1068,24 +1106,32 @@ impl FaceMeshCache {
         }
     }
 
-    fn insert(&mut self, entry: CachedFace) {
+    fn insert(&mut self, mut entry: CachedFace, retention: RetentionClass) {
         if self.max_entries == 0 || entry.bytes > self.max_bytes {
             return;
         }
         // Identical faces captured in one call (or re-meshed after a replay
         // conflict) keep the first entry.
-        if self
-            .find(&entry.key)
-            .is_some_and(|(_, kind)| kind != KeyMatch::TranslationRefused)
+        if let Some((id, kind)) = self.find(&entry.key)
+            && kind != KeyMatch::TranslationRefused
         {
+            if retention == RetentionClass::Display {
+                self.promote_for_display(id);
+            }
             return;
         }
-        self.evict_to_fit(entry.bytes);
+        if !self.evict_to_fit(entry.bytes, retention) {
+            return;
+        }
+        entry.retention = retention;
         let id = self.next_id;
         self.next_id += 1;
         self.retained_bytes += entry.bytes;
         self.buckets.entry(entry.key.hash).or_default().push(id);
-        self.order.push_back(id);
+        match retention {
+            RetentionClass::Display => self.display_order.push_back(id),
+            RetentionClass::Quantity => self.quantity_order.push_back(id),
+        }
         self.entries.insert(id, entry);
         self.stats.stored += 1;
     }
@@ -1114,14 +1160,20 @@ pub(super) struct CaptureStart {
 /// tessellation never leaves entries behind.
 pub(super) struct Session {
     faces: DetHashMap<FaceId, SessionFace>,
+    retention: RetentionClass,
 }
 
 impl Session {
     /// A session when this thread's cache is enabled.
-    pub(super) fn begin() -> Option<Self> {
+    pub(super) fn begin(quantity: bool) -> Option<Self> {
         FACE_MESH_CACHE.with(|cell| {
             cell.borrow().as_ref().map(|_| Self {
                 faces: DetHashMap::default(),
+                retention: if quantity {
+                    RetentionClass::Quantity
+                } else {
+                    RetentionClass::Display
+                },
             })
         })
     }
@@ -1166,6 +1218,9 @@ impl Session {
                     cache.stats.exact_hits += 1;
                 } else {
                     cache.stats.translated_hits += 1;
+                }
+                if self.retention == RetentionClass::Display {
+                    cache.promote_for_display(id);
                 }
                 Some(normals)
             } else {
@@ -1285,7 +1340,7 @@ impl Session {
                 if let Some(mut entry) = state.pending {
                     entry.boundary_normals = state.normals;
                     entry.estimate_bytes();
-                    cache.insert(entry);
+                    cache.insert(entry, self.retention);
                 }
             }
         });
@@ -1349,6 +1404,7 @@ fn capture(
         corners,
         boundary_normals: Vec::new(),
         nurbs_frame_chart: false,
+        retention: RetentionClass::Quantity,
         bytes: 0,
     })
 }

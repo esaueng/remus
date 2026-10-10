@@ -59,9 +59,10 @@ on is kept as ordinals, so the new body's numbering is free to differ.
   contributions in its unchanged order; exact hits supply cached
   contributions, everything else evaluates them.
 - **Bounds.** Per thread, opt-in (`enable_face_mesh_cache[_with_limits]`),
-  default 4096 faces / 32 MiB estimated, deterministic FIFO; an entry larger
-  than the budget is never retained; captures are committed only after the
-  whole tessellation succeeded.
+  default 4096 faces / 32 MiB estimated. Current retention gives display
+  entries priority over quantity entries, with deterministic FIFO within each
+  class (§9); an entry larger than the budget is never retained; captures are
+  committed only after the whole tessellation succeeded.
 - **Invalidation.** The key is the content, so `transform_solid`, `*_mut`
   edits, healing, rollback, checkpoint restore and deletion cannot serve a
   stale mesh: changed content misses.
@@ -327,3 +328,27 @@ refinement 2 ms, dedupe 1.8 ms.
   uncached; the key construction is now the largest warm cost.
 - No JS binding for the statistics; OpenZCAD #598 is required for the
   display call to hit the cache after an edit.
+
+## 9. Follow-up (2026-10-10): display priority within the existing bounds
+
+Fine measurement meshes and display meshes still share the same 4096-entry,
+32 MiB default cache. They retain the same geometry, boundary-plan, tolerance,
+translation and replay keys; retention class is bookkeeping, not a new meshing
+input. Quantity admission evicts only quantity entries and declines storage
+when protected display entries leave insufficient space. Display admission
+and explicit bound reductions evict quantity entries first, then display
+entries. Each class keeps deterministic FIFO order.
+
+A quantity entry reused for display is promoted without a second copy. Promotion
+occurs on successful face replay; a later whole-mesh failure can leave that
+retention metadata changed. New captures still commit only after the complete
+tessellation succeeds. Total count and byte bounds apply in either case.
+
+This prevents varying fine-volume requests from flushing the display working
+set. It does not let one tolerance answer another: an edited bounding-box
+diagonal can still change volume's effective tolerance and force fresh
+measurement meshing.
+
+The measurements and qualification counts above describe their dated revisions.
+Current production changes and their qualification targets are recorded in
+[Face-edit responsiveness](perf-face-edit-responsiveness.md).
