@@ -34,6 +34,10 @@ name = "cdt_insertion"
 harness = false
 name = "fitting_interpolation"
 
+[[bench]]
+harness = false
+name = "truck_reuse"
+
 [features]
 default = []
 serde = ["dep:serde"]

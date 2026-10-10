@@ -123,6 +123,9 @@ Quick reference — find the right file for any task:
 | NURBS surface evaluation | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
+| Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
+| Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
+| Certified adaptive Hermite cubic approximation | `nurbs/cubic_fit.rs`, `nurbs/cubic_fit/tests.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
@@ -537,6 +540,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Assembly management | `bindings/assembly.rs` |
 | 2D polygon operations | `bindings/polygon2d.rs` |
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
+| Read-only certified NURBS carrier reduction and cubic fitting | `bindings/nurbs_reuse.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
