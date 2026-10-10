@@ -178,6 +178,7 @@ impl<'a> ReuseBudget<'a> {
     }
 
     /// Charge before any corresponding work or allocation, without overflow.
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     pub(crate) fn spend(&mut self, amount: usize) -> Result<(), ReuseError> {
         self.context.check_cancelled()?;
         if amount > self.limit - self.used {

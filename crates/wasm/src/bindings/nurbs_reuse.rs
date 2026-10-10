@@ -168,7 +168,11 @@ impl BrepKernel {
         let edge = self.resolve_edge(get_u32(args, "edge")?)?;
         match self.topo.edge(edge)?.curve() {
             EdgeCurve::NurbsCurve(curve) => Ok(curve),
-            _ => Err(ReuseError::Unsupported {
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => Err(ReuseError::Unsupported {
                 reason: "source edge must store a NURBS carrier",
             }
             .into()),
@@ -179,7 +183,11 @@ impl BrepKernel {
         let face = self.resolve_face(get_u32(args, "face")?)?;
         match self.topo.face(face)?.surface() {
             FaceSurface::Nurbs(surface) => Ok(surface),
-            _ => Err(ReuseError::Unsupported {
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => Err(ReuseError::Unsupported {
                 reason: "source face must store a NURBS carrier",
             }
             .into()),
@@ -406,6 +414,23 @@ mod tests {
             serde_json::from_str(&kernel.get_nurbs_curve_data(edge).unwrap()).unwrap();
         assert_eq!(data["controlPoints"].as_array().unwrap().len(), 4);
         assert_eq!(data["domain"], json!([2., 5.]));
+    }
+
+    #[test]
+    fn analytic_carriers_refuse_without_implicit_nurbs_conversion() {
+        let mut kernel = BrepKernel::new();
+        kernel.make_box_solid(1., 1., 1.).unwrap();
+        let edge = edge_id_to_u32(kernel.topo.edge_id_from_index(0).unwrap());
+        let face = face_id_to_u32(kernel.topo.face_id_from_index(0).unwrap());
+        for result in [
+            kernel.simplify_nurbs_curve(edge, "{}"),
+            kernel.simplify_nurbs_surface(face, "{}"),
+        ] {
+            let result: Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(result["code"], "unsupported_nurbs_reuse");
+            assert_eq!(result["category"], "unsupported");
+        }
+        assert_eq!(kernel.topo.num_solids(), 1);
     }
 
     #[test]

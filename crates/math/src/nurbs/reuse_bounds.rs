@@ -33,6 +33,7 @@ impl Interval {
         }
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn rounded(lo: f64, hi: f64) -> Result<Self, ReuseError> {
         let result = Self {
             lo: lo.next_down(),
@@ -49,6 +50,7 @@ impl Interval {
         self.lo == 0.0 && self.hi == 0.0
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn add(self, other: Self) -> Result<Self, ReuseError> {
         if self.is_zero() {
             return Ok(other);
@@ -61,6 +63,7 @@ impl Interval {
 
     // Singleton equality here is an exact real-arithmetic identity proof.
     #[allow(clippy::float_cmp)]
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn sub(self, other: Self) -> Result<Self, ReuseError> {
         if other.is_zero() {
             return Ok(self);
@@ -71,6 +74,7 @@ impl Interval {
         Self::rounded(self.lo - other.hi, self.hi - other.lo)
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn mul(self, other: Self) -> Result<Self, ReuseError> {
         if self.is_zero() || other.is_zero() {
             return Ok(Self::ZERO);
@@ -87,6 +91,7 @@ impl Interval {
         )
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn div(self, other: Self) -> Result<Self, ReuseError> {
         if other.lo <= 0.0 && other.hi >= 0.0 {
             return Err(unavailable(
@@ -317,6 +322,7 @@ fn basis_on_span(
 }
 
 #[allow(clippy::cast_precision_loss)]
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 fn multiply_affine_add(
     output: &mut [Interval],
     input: &[Interval],
@@ -346,6 +352,7 @@ struct Polynomial {
 }
 
 impl Polynomial {
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn zero(du: usize, dv: usize, budget: &mut ReuseBudget<'_>) -> Result<Self, ReuseError> {
         budget.spend((du + 1) * (dv + 1))?;
         Ok(Self {
@@ -355,6 +362,7 @@ impl Polynomial {
         })
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn sub(&self, other: &Self, budget: &mut ReuseBudget<'_>) -> Result<Self, ReuseError> {
         if self.du != other.du || self.dv != other.dv {
             return Err(unavailable("incompatible Bernstein polynomial degrees"));
@@ -371,6 +379,7 @@ impl Polynomial {
         Ok(output)
     }
 
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn product(&self, other: &Self, budget: &mut ReuseBudget<'_>) -> Result<Self, ReuseError> {
         // All degrees stay below 48 under MAX_DEGREE; binomial integers are
         // then exactly representable as f64, and ratios are interval divisions.
@@ -401,6 +410,7 @@ impl Polynomial {
     }
 
     #[allow(clippy::cast_precision_loss)]
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn derivative(
         &self,
         range: (f64, f64),
@@ -452,6 +462,7 @@ fn binomial(n: usize, k: usize) -> f64 {
     value as f64
 }
 
+#[cfg_attr(target_arch = "wasm32", inline(never))]
 fn product_factor(m: usize, i: usize, n: usize, j: usize) -> Result<Interval, ReuseError> {
     Interval::point(binomial(m, i))
         .mul(Interval::point(binomial(n, j)))?
