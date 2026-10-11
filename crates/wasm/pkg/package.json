@@ -14,6 +14,7 @@
     "remus_wasm_bg.js",
     "remus_wasm.d.ts",
     "LICENSE-APACHE",
+    "NOTICE",
     "remus_wasm_node.cjs"
   ],
   "keywords": [
@@ -37,6 +38,6 @@
   ],
   "type": "module",
   "types": "remus_wasm.d.ts",
-  "version": "2026.1.45",
+  "version": "2026.1.46",
   "homepage": "https://github.com/esaueng/remus"
 }
