@@ -7,6 +7,9 @@ use std::process::Command;
 /// the workspace Cargo.toml.
 const WASM_BINDGEN_VERSION: &str = "0.2.126";
 
+/// Attribution and license text included in every distributable npm package.
+const PACKAGE_METADATA_FILES: [&str; 2] = ["LICENSE-APACHE", "NOTICE"];
+
 /// Valid .wasm file size range (bytes). The upper bounds mirror the consumer
 /// policy `KERNEL_WASM_POLICY` in esaueng/openzcad
 /// `scripts/bundle-size-policy.mjs` (rationale in its
@@ -249,9 +252,10 @@ fn copy_package_metadata(root: &Path, pkg: &Path) -> Result<()> {
     if stale_mit_license.exists() {
         fs::remove_file(&stale_mit_license).context("removing stale MIT package license")?;
     }
-    let name = "LICENSE-APACHE";
-    fs::copy(root.join(name), pkg.join(name))
-        .with_context(|| format!("copying {name} into npm package"))?;
+    for name in PACKAGE_METADATA_FILES {
+        fs::copy(root.join(name), pkg.join(name))
+            .with_context(|| format!("copying {name} into npm package"))?;
+    }
     Ok(())
 }
 
@@ -325,7 +329,7 @@ fn patch_package_json(pkg_json: &mut serde_json::Value, spec: &PackageSpec) -> R
         }),
     );
 
-    // Ensure files array includes the node entry.
+    // Ensure files includes the node entry and redistribution notices.
     {
         let files = obj
             .entry("files")
@@ -336,8 +340,8 @@ fn patch_package_json(pkg_json: &mut serde_json::Value, spec: &PackageSpec) -> R
         files.retain(|entry| entry.as_str() != Some("LICENSE-MIT"));
 
         // Keep a clean package identical to an incremental build, where
-        // wasm-pack may already include the previously copied license.
-        for entry in ["LICENSE-APACHE", node_entry.as_str()] {
+        // wasm-pack may already include the previously copied metadata.
+        for entry in ["LICENSE-APACHE", "NOTICE", node_entry.as_str()] {
             let entry = serde_json::json!(entry);
             if !files.contains(&entry) {
                 files.push(entry);
@@ -380,6 +384,7 @@ fn validate_at(pkg: &Path, spec: &PackageSpec) -> Result<()> {
         format!("{stem}.d.ts"),
         "package.json".to_string(),
         "LICENSE-APACHE".to_string(),
+        "NOTICE".to_string(),
     ];
     for file in &required_files {
         let path = pkg.join(file);
@@ -392,6 +397,7 @@ fn validate_at(pkg: &Path, spec: &PackageSpec) -> Result<()> {
     if pkg.join("LICENSE-MIT").exists() {
         errors.push("stale LICENSE-MIT present in Apache-only package".into());
     }
+    validate_package_metadata(&project_root()?, pkg, &mut errors);
 
     // 2. WASM binary size
     let wasm_path = pkg.join(format!("{stem}_bg.wasm"));
@@ -448,6 +454,22 @@ fn validate_at(pkg: &Path, spec: &PackageSpec) -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n");
         bail!("Validation failed:\n{msg}");
+    }
+}
+
+/// Refuse stale or truncated attribution even when its filename is present.
+fn validate_package_metadata(root: &Path, pkg: &Path, errors: &mut Vec<String>) {
+    for name in PACKAGE_METADATA_FILES {
+        let source = fs::read(root.join(name));
+        let output = fs::read(pkg.join(name));
+        match (source, output) {
+            (Ok(expected), Ok(actual)) if expected == actual => {
+                println!("  ok {name} matches source metadata");
+            }
+            (Ok(_), Ok(_)) => errors.push(format!("package {name} differs from source metadata")),
+            (Err(error), _) => errors.push(format!("source {name} unreadable: {error}")),
+            (_, Err(error)) => errors.push(format!("package {name} unreadable: {error}")),
+        }
     }
 }
 
@@ -587,7 +609,7 @@ fn validate_package_json(
     }
 
     if let Some(files) = pkg_json.get("files").and_then(|v| v.as_array()) {
-        for required in [node_entry.as_str(), "LICENSE-APACHE"] {
+        for required in [node_entry.as_str(), "LICENSE-APACHE", "NOTICE"] {
             if !files.iter().any(|v| v.as_str() == Some(required)) {
                 errors.push(format!("files array missing '{required}'"));
             } else {
@@ -845,6 +867,7 @@ mod tests {
         let files = pkg["files"].as_array().unwrap();
         assert!(files.contains(&json!("remus_wasm_node.cjs")));
         assert!(files.contains(&json!("LICENSE-APACHE")));
+        assert!(files.contains(&json!("NOTICE")));
         assert!(!files.contains(&json!("LICENSE-MIT")));
         // Original files preserved
         assert!(files.contains(&json!("remus_wasm_bg.wasm")));
@@ -877,7 +900,7 @@ mod tests {
 
         patch_package_json(&mut pkg, &KERNEL).unwrap();
 
-        assert_eq!(pkg["files"].as_array().unwrap().len(), 3);
+        assert_eq!(pkg["files"].as_array().unwrap().len(), 4);
     }
 
     #[test]
@@ -887,9 +910,10 @@ mod tests {
         patch_package_json(&mut pkg, &KERNEL).unwrap();
 
         let files = pkg["files"].as_array().unwrap();
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
         assert_eq!(files[0], "LICENSE-APACHE");
-        assert_eq!(files[1], "remus_wasm_node.cjs");
+        assert_eq!(files[1], "NOTICE");
+        assert_eq!(files[2], "remus_wasm_node.cjs");
     }
 
     // -- validate_package_json tests --------------------------------------
@@ -959,6 +983,48 @@ mod tests {
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
 
+    #[test]
+    fn validate_refuses_notice_omitted_from_npm_files() {
+        let mut pkg = json!({"files": ["remus_wasm_bg.wasm"]});
+        patch_package_json(&mut pkg, &KERNEL).unwrap();
+        pkg["files"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|entry| entry.as_str() != Some("NOTICE"));
+        let mut errors = Vec::new();
+        validate_package_json(&pkg, &KERNEL, &mut errors);
+        assert_eq!(errors, ["files array missing 'NOTICE'"]);
+    }
+
+    #[test]
+    fn validation_refuses_missing_and_stale_notice_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let pkg = root.path().join("pkg");
+        fs::create_dir(&pkg).unwrap();
+        fs::write(root.path().join("LICENSE-APACHE"), "license\n").unwrap();
+        fs::write(
+            root.path().join("NOTICE"),
+            "existing attribution\nTruck contributors\n",
+        )
+        .unwrap();
+        fs::write(pkg.join("LICENSE-APACHE"), "license\n").unwrap();
+
+        let mut errors = Vec::new();
+        validate_package_metadata(root.path(), &pkg, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("package NOTICE unreadable"));
+
+        fs::write(pkg.join("NOTICE"), "existing attribution\n").unwrap();
+        errors.clear();
+        validate_package_metadata(root.path(), &pkg, &mut errors);
+        assert_eq!(errors, ["package NOTICE differs from source metadata"]);
+
+        copy_package_metadata(root.path(), &pkg).unwrap();
+        errors.clear();
+        validate_package_metadata(root.path(), &pkg, &mut errors);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
     // -- count_dts_methods tests ------------------------------------------
 
     #[test]
@@ -1001,6 +1067,11 @@ export class BrepKernel {
                 fs::create_dir_all(&pkg).unwrap();
                 fs::create_dir_all(&pkg_node).unwrap();
                 fs::write(dir.path().join("LICENSE-APACHE"), "fixture license\n").unwrap();
+                fs::write(
+                    dir.path().join("NOTICE"),
+                    "fixture attribution\nTruck contributors\n",
+                )
+                .unwrap();
                 let mut files = vec![
                     format!("{}_bg.wasm", spec.stem),
                     format!("{}.js", spec.stem),
@@ -1009,7 +1080,9 @@ export class BrepKernel {
                 ];
                 if existing_license {
                     files.push("LICENSE-APACHE".to_owned());
+                    files.push("NOTICE".to_owned());
                     fs::write(pkg.join("LICENSE-APACHE"), "fixture license\n").unwrap();
+                    fs::write(pkg.join("NOTICE"), "stale attribution\n").unwrap();
                 }
                 let initial = json!({
                     "name": spec.name,
@@ -1032,9 +1105,26 @@ export class BrepKernel {
                 copy_package_metadata(dir.path(), &pkg).unwrap();
                 let contract = fs::read(pkg.join("package.json")).unwrap();
                 let parsed: serde_json::Value = serde_json::from_slice(&contract).unwrap();
-                files.extend(["LICENSE-APACHE".to_owned(), spec.node_entry()]);
-                files.dedup();
+                for required in [
+                    "LICENSE-APACHE".to_owned(),
+                    "NOTICE".to_owned(),
+                    spec.node_entry(),
+                ] {
+                    if !files.contains(&required) {
+                        files.push(required);
+                    }
+                }
                 assert_eq!(parsed["files"], json!(files));
+                assert_eq!(
+                    fs::read(pkg.join("NOTICE")).unwrap(),
+                    fs::read(dir.path().join("NOTICE")).unwrap()
+                );
+                let mut metadata_errors = Vec::new();
+                validate_package_metadata(dir.path(), &pkg, &mut metadata_errors);
+                assert!(
+                    metadata_errors.is_empty(),
+                    "unexpected errors: {metadata_errors:?}"
+                );
                 let conditions = parsed["exports"]["."]
                     .as_object()
                     .unwrap()
