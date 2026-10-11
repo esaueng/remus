@@ -117,7 +117,10 @@ scan() {
 status=0
 
 for package in crates/wasm/pkg crates/wasm-io/pkg; do
-  if [[ -f "$package/NOTICE" ]] && ! cmp -s NOTICE "$package/NOTICE"; then
+  if [[ ! -f "$package/NOTICE" ]]; then
+    echo "Remus rename violation: missing package NOTICE: $package"
+    status=1
+  elif ! cmp -s NOTICE "$package/NOTICE"; then
     echo "Remus rename violation: package NOTICE differs from source attribution: $package"
     status=1
   fi
