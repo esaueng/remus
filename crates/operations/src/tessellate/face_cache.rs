@@ -1075,8 +1075,26 @@ impl FaceMeshCache {
 
     /// Evict until `incoming` more bytes (and, when nonzero, one more entry)
     /// fit the total bounds. A quantity admission never evicts a display entry;
-    /// return `false` if protected entries leave insufficient capacity.
+    /// return `false` without eviction if protected entries leave insufficient capacity.
     fn evict_to_fit(&mut self, incoming: usize, retention: RetentionClass) -> bool {
+        if retention == RetentionClass::Quantity {
+            if self.display_order.len() + usize::from(incoming > 0) > self.max_entries {
+                return false;
+            }
+            // Only scan protected entries under byte pressure. Reject an
+            // impossible admission before discarding reusable quantity meshes.
+            if self.retained_bytes.saturating_add(incoming) > self.max_bytes {
+                let protected_bytes: usize = self
+                    .display_order
+                    .iter()
+                    .filter_map(|id| self.entries.get(id))
+                    .map(|entry| entry.bytes)
+                    .sum();
+                if protected_bytes.saturating_add(incoming) > self.max_bytes {
+                    return false;
+                }
+            }
+        }
         loop {
             let over_count = self.entries.len() + usize::from(incoming > 0) > self.max_entries;
             let over_bytes = self.retained_bytes.saturating_add(incoming) > self.max_bytes;
@@ -1476,4 +1494,90 @@ fn replay(
         point_to_global.remove(&key);
     }
     false
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    /// Synthetic captures isolate admission policy from meshing and byte estimates.
+    fn entry(tag: u64, bytes: usize) -> CachedFace {
+        CachedFace {
+            key: FaceKey {
+                tags: vec![tag],
+                scalars: vec![],
+                dirs: vec![],
+                points: vec![],
+                planes: vec![],
+                translation: TranslationRule::Refused,
+                chart: vec![],
+                hash: tag,
+            },
+            positions: vec![],
+            normals: vec![],
+            interned: vec![],
+            corners: vec![],
+            boundary_normals: vec![],
+            nurbs_frame_chart: false,
+            retention: RetentionClass::Quantity,
+            bytes,
+        }
+    }
+
+    #[test]
+    fn unfit_quantity_admission_preserves_reusable_entries() {
+        for admitted_bytes in [7, 10] {
+            let mut cache = FaceMeshCache {
+                max_entries: 4,
+                max_bytes: 100,
+                ..FaceMeshCache::default()
+            };
+            cache.insert(entry(1, 40), RetentionClass::Display);
+            cache.insert(entry(2, 50), RetentionClass::Display);
+            cache.insert(entry(3, 2), RetentionClass::Quantity);
+            cache.insert(entry(4, 3), RetentionClass::Quantity);
+            let before = cache.stats();
+            assert_eq!((before.entries, before.retained_bytes), (4, 95));
+            let display_order = cache.display_order.clone();
+            let quantity_order = cache.quantity_order.clone();
+            let buckets = cache.buckets.clone();
+            let next_id = cache.next_id;
+
+            // Each entry fits the whole budget, but not alongside the 90
+            // protected display bytes, even after evicting every quantity entry.
+            for bytes in [20, 11, 20] {
+                cache.insert(entry(5, bytes), RetentionClass::Quantity);
+                assert_eq!(cache.stats(), before);
+                assert_eq!(cache.display_order, display_order);
+                assert_eq!(cache.quantity_order, quantity_order);
+                assert_eq!(cache.buckets, buckets);
+                assert_eq!(cache.next_id, next_id);
+                for tag in 1..=4 {
+                    assert!(
+                        matches!(cache.find(&entry(tag, 0).key), Some((id, KeyMatch::Exact)) if id == tag - 1)
+                    );
+                }
+                assert!(cache.find(&entry(5, bytes).key).is_none());
+            }
+
+            // A fitting admission still evicts only as many FIFO quantity
+            // entries as needed and may fill the shared byte budget exactly.
+            cache.insert(entry(5, admitted_bytes), RetentionClass::Quantity);
+            let after = cache.stats();
+            assert_eq!(after.retained_bytes, after.max_bytes);
+            assert!(after.entries <= after.max_entries);
+            assert_eq!(after.stored, before.stored + 1);
+            let evicted = if admitted_bytes == 7 { 1 } else { 2 };
+            assert_eq!(after.evictions, before.evictions + evicted);
+            assert_eq!(cache.display_order, display_order);
+            for tag in 1..=2 {
+                assert!(
+                    matches!(cache.find(&entry(tag, 0).key), Some((id, KeyMatch::Exact)) if id == tag - 1)
+                );
+            }
+            assert!(cache.find(&entry(3, 0).key).is_none());
+            assert_eq!(cache.find(&entry(4, 0).key).is_some(), admitted_bytes == 7);
+            assert!(cache.find(&entry(5, 0).key).is_some());
+        }
+    }
 }
