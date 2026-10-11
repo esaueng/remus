@@ -16,7 +16,7 @@ use super::boundary_plan::{BoundaryPlan, BoundaryRefinementRequest, SampleChains
 use super::edge_sampling::{
     circle_param_range, sample_edge, sample_edge_with_params, segments_for_chord_deviation_a,
 };
-use super::face_cache;
+use super::face_cache::{self, RetentionClass};
 use super::mesh_ops::{
     dedupe_coincident_triangles, fill_sub_deflection_triangular_gaps, weld_boundary_vertices,
 };
@@ -168,8 +168,16 @@ pub fn tessellate_solid_for_boolean(
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMesh, crate::OperationsError> {
-    tessellate_solid_core(topo, solid, deflection, angular_tol, false, true)
-        .map(|(mesh, _, _)| mesh)
+    tessellate_solid_core(
+        topo,
+        solid,
+        deflection,
+        angular_tol,
+        false,
+        true,
+        RetentionClass::Quantity,
+    )
+    .map(|(mesh, _, _)| mesh)
 }
 
 /// Tessellate a solid with explicit linear and angular tolerances.
@@ -186,8 +194,16 @@ pub fn tessellate_solid_with_tolerance(
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMesh, crate::OperationsError> {
-    tessellate_solid_core(topo, solid, deflection, angular_tol, false, false)
-        .map(|(mesh, _, _)| mesh)
+    tessellate_solid_core(
+        topo,
+        solid,
+        deflection,
+        angular_tol,
+        false,
+        false,
+        RetentionClass::Display,
+    )
+    .map(|(mesh, _, _)| mesh)
 }
 
 /// The quantity path reads positions and indices, never shading normals.
@@ -209,6 +225,7 @@ pub fn tessellate_solid_for_measurement(
         MeshBoundaryMode::ClosedMeasurement,
         false,
         false,
+        RetentionClass::Quantity,
     )
     .map(|(mesh, _, _)| mesh)
 }
@@ -265,6 +282,7 @@ pub fn tessellate_sheet_with_tolerance(
         MeshBoundaryMode::OpenSheet,
         false,
         false,
+        RetentionClass::Display,
     )
     .map(|(mesh, _, _)| mesh)
 }
@@ -290,6 +308,7 @@ pub fn tessellate_closed_face_set(
         MeshBoundaryMode::ClosedSolid,
         false,
         false,
+        RetentionClass::Quantity,
     )
     .map(|(mesh, _, _)| mesh)
 }
@@ -344,8 +363,15 @@ pub fn tessellate_solid_grouped_with_tolerance(
     deflection: f64,
     angular_tol: f64,
 ) -> Result<(TriangleMesh, Vec<u32>), crate::OperationsError> {
-    let (mut mesh, tri_faces, n_faces) =
-        tessellate_solid_core(topo, solid, deflection, angular_tol, true, false)?;
+    let (mut mesh, tri_faces, n_faces) = tessellate_solid_core(
+        topo,
+        solid,
+        deflection,
+        angular_tol,
+        true,
+        false,
+        RetentionClass::Display,
+    )?;
     let tri_faces = tri_faces.unwrap_or_default();
     debug_assert_eq!(tri_faces.len() * 3, mesh.indices.len());
 
@@ -395,6 +421,8 @@ pub fn tessellate_solid_grouped_with_tolerance(
 /// it); the boolean mesh-fallback passes `true` for co-refinement robustness.
 /// Because the shared edge pool drives the cylinder/cone band density, this one
 /// flag governs every circular feature in the solid consistently.
+/// `retention` independently gives display requests priority over internal
+/// measurement and mesh-boolean captures; it never changes the mesh inputs.
 #[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
 fn tessellate_solid_core(
     topo: &Topology,
@@ -403,6 +431,7 @@ fn tessellate_solid_core(
     angular_tol: f64,
     track_faces: bool,
     circle_floor: bool,
+    retention: RetentionClass,
 ) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
     use remus_topology::explorer;
 
@@ -415,6 +444,7 @@ fn tessellate_solid_core(
         MeshBoundaryMode::ClosedSolid,
         track_faces,
         circle_floor,
+        retention,
     )
 }
 
@@ -425,7 +455,11 @@ enum MeshBoundaryMode {
     ClosedMeasurement,
 }
 
-#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::fn_params_excessive_bools
+)]
 fn tessellate_faces_core(
     topo: &Topology,
     all_faces: &[FaceId],
@@ -434,6 +468,7 @@ fn tessellate_faces_core(
     boundary_mode: MeshBoundaryMode,
     track_faces: bool,
     circle_floor: bool,
+    retention: RetentionClass,
 ) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
     let _total = crate::performance::span("mesh.total");
     let sampling = crate::performance::span("mesh.boundary-sampling");
@@ -1470,8 +1505,7 @@ fn tessellate_faces_core(
     // content key (surface, wires, final boundary chains, tolerances) matches
     // a retained capture up to a rigid translation is replayed instead of
     // re-meshed; every other face is meshed as before and captured.
-    let mut cache_session =
-        face_cache::Session::begin(matches!(boundary_mode, MeshBoundaryMode::ClosedMeasurement));
+    let mut cache_session = face_cache::Session::begin(retention);
     for &fi in &other_face_indices {
         let face_id = all_faces[fi];
         let allow_latitude_cap = !plan.policy.circle_floor
@@ -2365,6 +2399,7 @@ mod boundary_plan_pipeline_tests {
                 MeshBoundaryMode::ClosedSolid,
                 false,
                 false,
+                RetentionClass::Display,
             )
             .unwrap();
             let bd = super::super::mesh_ops::boundary_edge_count(&mesh);
@@ -2399,6 +2434,7 @@ mod boundary_plan_pipeline_tests {
             MeshBoundaryMode::ClosedSolid,
             false,
             false,
+            RetentionClass::Display,
         )
         .unwrap();
         let (second, _, _) = tessellate_faces_core(
@@ -2409,6 +2445,7 @@ mod boundary_plan_pipeline_tests {
             MeshBoundaryMode::ClosedSolid,
             false,
             false,
+            RetentionClass::Display,
         )
         .unwrap();
 
