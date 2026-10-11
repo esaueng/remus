@@ -1131,13 +1131,11 @@ impl FaceMeshCache {
             return;
         }
         // Identical faces captured in one call (or re-meshed after a replay
-        // conflict) keep the first entry.
-        if let Some((id, kind)) = self.find(&entry.key)
+        // conflict) keep the first entry. Only successful display replay may
+        // promote it: a fresh capture does not prove the old entry was usable.
+        if let Some((_, kind)) = self.find(&entry.key)
             && kind != KeyMatch::TranslationRefused
         {
-            if retention == RetentionClass::Display {
-                self.promote_for_display(id);
-            }
             return;
         }
         if !self.evict_to_fit(entry.bytes, retention) {
@@ -1554,6 +1552,99 @@ mod admission_tests {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn display_promotion_requires_successful_replay() {
+        struct CacheGuard;
+        impl Drop for CacheGuard {
+            fn drop(&mut self) {
+                disable_face_mesh_cache();
+            }
+        }
+        let _guard = CacheGuard;
+        let mut topo = Topology::new();
+        crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).expect("box");
+        let face = topo.faces().iter().next().expect("face").0;
+        let positions = vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
+        ];
+        let normals = vec![Vec3::new(0.0, 0.0, 1.0); 3];
+
+        for conflict in [true, false] {
+            disable_face_mesh_cache();
+            enable_face_mesh_cache_with_limits(1, usize::MAX);
+            let mut original = entry(1, 0);
+            original.positions = positions.clone();
+            original.normals = normals.clone();
+            original.interned = vec![true; 3];
+            original.corners = vec![0, 1, 2];
+            original.estimate_bytes();
+            let key = original.key.clone();
+            FACE_MESH_CACHE.with(|cell| {
+                cell.borrow_mut()
+                    .as_mut()
+                    .expect("cache")
+                    .insert(original, RetentionClass::Quantity);
+            });
+
+            let mut merged = TriangleMesh::default();
+            let mut pool = DetHashMap::default();
+            if conflict {
+                merged.positions.push(positions[0]);
+                merged.normals.push(normals[0]);
+                pool.insert(point_merge_key(positions[0], MERGE_GRID), 0);
+            }
+            let before_mesh = merged.clone();
+            let before_pool = pool.clone();
+            let boundary = FaceBoundary {
+                gids: vec![],
+                by_gid: vec![],
+            };
+            let mut session = Session::begin(RetentionClass::Display).expect("session");
+            if let Err(boundary) = session.try_replay(face, &key, boundary, &mut merged, &mut pool)
+            {
+                assert!(conflict);
+                assert_eq!(merged.positions, before_mesh.positions);
+                assert_eq!(merged.normals, before_mesh.normals);
+                assert_eq!(merged.indices, before_mesh.indices);
+                assert_eq!(pool, before_pool);
+                // A fresh mesher may append non-interned vertices after a
+                // replay conflict. Its capture must not promote the old
+                // entry merely because the content key matches.
+                let start = Session::capture_start(&boundary, &merged, &pool);
+                merged.positions.extend_from_slice(&positions);
+                merged.normals.extend_from_slice(&normals);
+                merged.indices.extend([1, 2, 3]);
+                session.capture_finish(face, key, boundary, &start, false, &merged, &pool);
+                assert!(session.faces[&face].pending.is_some());
+            } else {
+                assert!(!conflict);
+                assert_eq!(merged.positions, positions);
+                assert_eq!(merged.normals, normals);
+                assert_eq!(merged.indices, [0, 1, 2]);
+            }
+            session.commit();
+
+            FACE_MESH_CACHE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                let cache = slot.as_mut().expect("cache");
+                assert_eq!(cache.stats().stored, 1, "no duplicate storage");
+                assert_eq!(cache.stats().replay_conflicts, u64::from(conflict));
+                assert_eq!(cache.stats().exact_hits, u64::from(!conflict));
+                assert_eq!(cache.display_order.len(), usize::from(!conflict));
+                assert_eq!(cache.quantity_order.len(), usize::from(conflict));
+                cache.insert(entry(2, 10), RetentionClass::Quantity);
+                assert_eq!(cache.find(&entry(1, 0).key).is_some(), !conflict);
+                assert_eq!(cache.find(&entry(2, 0).key).is_some(), conflict);
+                assert_eq!(cache.stats().evictions, u64::from(conflict));
+                assert!(cache.stats().entries <= cache.max_entries);
+                assert!(cache.retained_bytes <= cache.max_bytes);
+            });
+        }
+    }
 
     /// Synthetic captures isolate admission policy from meshing and byte estimates.
     fn entry(tag: u64, bytes: usize) -> CachedFace {
