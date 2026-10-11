@@ -226,7 +226,7 @@ jobs:
           toolchain: "1.96.0"
           components: clippy,rustfmt,rust-src
           targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.87.23
         with:
           tool: cargo-machete@0.9.1,taplo-cli@0.9.3
       - name: Run repository policy checks
@@ -280,7 +280,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.62.30
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.62.30
         with:
           tool: nextest
       # Lint first: a clippy failure is cheaper to report than a test run,
@@ -340,7 +340,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.62.30
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.62.30
         with:
           tool: cargo-llvm-cov,nextest
       - name: Generate coverage
@@ -430,7 +430,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.62.30
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.62.30
         with:
           tool: wasm-pack
       - name: Build and validate WASM
@@ -521,7 +521,7 @@ jobs:
         with:
           persist-credentials: false
       - *fleet-rust
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7
         with:
           tool: cargo-deny@0.20.2
       - run: cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check
@@ -562,7 +562,7 @@ jobs:
       - run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.87.23
         with:
           tool: mdbook@0.4.52
       - run: mdbook build book
