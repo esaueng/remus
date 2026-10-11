@@ -980,7 +980,14 @@ fn try_build_convex_analytic(
 // Composite classifier
 // ---------------------------------------------------------------------------
 
-/// Try to build a composite classifier for a shelled/hollow solid.
+/// Try to build a composite classifier for an all-planar shelled/hollow solid.
+///
+/// A reference point does not prove that finite curved patches form an outer
+/// intersection minus one inner intersection. In particular, the reference
+/// can lie radially inside a floor bore while lying above its axial trim; using
+/// that bore as an outer constraint then excludes the entire cup wall (#984).
+/// Decline curved composites until their finite CSG decomposition is certified,
+/// so the caller uses the trimmed ray-cast classifier instead.
 #[allow(clippy::too_many_lines)]
 fn try_build_composite_classifier(
     topo: &Topology,
@@ -989,6 +996,16 @@ fn try_build_composite_classifier(
 ) -> Option<AnalyticClassifier> {
     let s = topo.solid(solid).ok()?;
     let shell = topo.shell(s.outer_shell()).ok()?;
+    for &fid in shell.faces() {
+        match topo.face(fid).ok()?.surface() {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return None,
+        }
+    }
     // Compute vertex centroid for inner/outer classification.
     let centroid = {
         let mut c = Vec3::new(0.0, 0.0, 0.0);
@@ -1013,11 +1030,6 @@ fn try_build_composite_classifier(
 
     let mut outer_planes: Vec<(Vec3, f64)> = Vec::new();
     let mut inner_planes: Vec<(Vec3, f64)> = Vec::new();
-    let mut outer_cylinders: Vec<(Point3, Vec3, f64, f64, f64)> = Vec::new();
-    let mut inner_cylinders: Vec<(Point3, Vec3, f64, f64, f64)> = Vec::new();
-    let mut outer_cones: Vec<(Point3, Vec3, f64, f64, f64, f64)> = Vec::new();
-    let mut inner_cones: Vec<(Point3, Vec3, f64, f64, f64, f64)> = Vec::new();
-
     for &fid in shell.faces() {
         let face = topo.face(fid).ok()?;
         match face.surface() {
@@ -1035,65 +1047,13 @@ fn try_build_composite_classifier(
                     inner_planes.push((n, dv));
                 }
             }
-            FaceSurface::Cylinder(cyl) => {
-                let origin = cyl.origin();
-                let axis = cyl.axis();
-                let r = cyl.radius();
-                let origin_v = Vec3::new(origin.x(), origin.y(), origin.z());
-                let wire = topo.wire(face.outer_wire()).ok()?;
-                let (z_min, z_max) = wire_axial_extent(topo, wire, origin_v, axis)?;
-                let diff = centroid - origin;
-                let diff_v = Vec3::new(diff.x(), diff.y(), diff.z());
-                let projected = axis * diff_v.dot(axis);
-                let radial_dist = (diff_v - projected).length();
-                // The centroid lying OUTSIDE this cylinder means it is a corner
-                // fillet (or off-axis bore), not a body/cavity-bounding cylinder.
-                // The `ConvexAnalytic` model intersects "inside every cylinder",
-                // which cannot represent a rounded-rect prism (its centre is far
-                // from each corner arc) — it would classify interior points as
-                // Outside. Bail so `classify_point` falls back to the
-                // geometrically-exact ray-cast classifier.
-                if radial_dist > r + tol.linear {
-                    return None;
-                }
-                if radial_dist < r {
-                    outer_cylinders.push((origin, axis, r, z_min, z_max));
-                } else {
-                    inner_cylinders.push((origin, axis, r, z_min, z_max));
-                }
-            }
-            FaceSurface::Cone(con) => {
-                let apex = con.apex();
-                let axis = con.axis();
-                let apex_v = Vec3::new(apex.x(), apex.y(), apex.z());
-                let wire = topo.wire(face.outer_wire()).ok()?;
-                let (z_min, z_max, r_min, r_max) = wire_cone_extent(topo, wire, apex_v, axis)?;
-                let diff = centroid - apex;
-                let diff_v = Vec3::new(diff.x(), diff.y(), diff.z());
-                let axial = diff_v.dot(axis);
-                let dz = z_max - z_min;
-                let t = if dz.abs() > tol.linear {
-                    ((axial - z_min) / dz).clamp(0.0, 1.0)
-                } else {
-                    0.5
-                };
-                let expected_r = r_min + t * (r_max - r_min);
-                let projected = axis * axial;
-                let radial_dist = (diff_v - projected).length();
-                // See the cylinder arm: a centroid outside this cone means a
-                // corner-fillet/off-axis cone the ConvexAnalytic intersection
-                // model can't represent — bail to ray-cast.
-                if radial_dist > expected_r + tol.linear {
-                    return None;
-                }
-                if radial_dist < expected_r {
-                    outer_cones.push((apex, axis, z_min, z_max, r_min, r_max));
-                } else {
-                    inner_cones.push((apex, axis, z_min, z_max, r_min, r_max));
-                }
-            }
-            // Sphere, Torus, NURBS — skip for composite classifier
-            FaceSurface::Sphere(_) | FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => {}
+            // Keep this match exhaustive even though the qualification above
+            // has already excluded every curved surface.
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return None,
         }
     }
 
@@ -1160,30 +1120,13 @@ fn try_build_composite_classifier(
         })
     };
 
-    let build_classifier = |planes: &[(Vec3, f64)],
-                            cylinders: &[(Point3, Vec3, f64, f64, f64)],
-                            cones: &[(Point3, Vec3, f64, f64, f64, f64)]|
-     -> Option<AnalyticClassifier> {
-        if (!cylinders.is_empty() || !cones.is_empty()) && planes.len() >= 2 {
-            Some(AnalyticClassifier::ConvexAnalytic {
-                planes: planes.to_vec(),
-                cylinders: cylinders.to_vec(),
-                cones: cones.to_vec(),
-            })
-        } else {
-            build_box(planes)
-        }
-    };
-
-    let outer = build_classifier(&outer_planes, &outer_cylinders, &outer_cones)?;
-    let inner = build_classifier(&inner_planes, &inner_cylinders, &inner_cones)?;
+    let outer = build_box(&outer_planes)?;
+    let inner = build_box(&inner_planes)?;
 
     // The vertex centroid only proposes an outer envelope; it does not prove
-    // that the envelope contains the solid. In a cup with a centered floor
-    // bore, it lies inside the bore's cylinder, so the cylinder is mistakenly
-    // added as an outer constraint and excludes all four walls. Every boundary
-    // vertex must lie in or on an actual outer envelope. A contrary witness
-    // invalidates this shortcut; let the ray classifier use the full boundary.
+    // that the envelope contains the solid. Retain the boundary-vertex check
+    // for planar composites: a contrary witness invalidates this shortcut,
+    // so the ray classifier must use the full boundary.
     for &fid in shell.faces() {
         let face = topo.face(fid).ok()?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
