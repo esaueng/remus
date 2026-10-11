@@ -1024,3 +1024,89 @@ fn volume_only_cache_entry_cannot_answer_full_properties() {
     assert_eq!(light.volume.to_bits(), direct.volume.to_bits());
     assert_eq!((full_first.stats().misses, full_first.stats().hits), (1, 1));
 }
+
+/// A warm affine volume entry must reject the same invalid references as a
+/// cold or disabled cache, before returning a hit or recording an integral.
+#[test]
+fn non_finite_references_fail_with_cold_warm_and_disabled_caches() {
+    let mut topo = Topology::new();
+    let face = nurbs_pillow(&mut topo, 0.4);
+    let invalid = [
+        Point3::new(f64::NAN, 0.0, 0.0),
+        Point3::new(0.0, f64::INFINITY, 0.0),
+        Point3::new(0.0, 0.0, f64::NEG_INFINITY),
+    ];
+    for enabled in [true, false] {
+        for warm in [true, false] {
+            let mut cache = if enabled {
+                FaceIntegralCache::new()
+            } else {
+                FaceIntegralCache::disabled()
+            };
+            set_thread_face_cache_limits(0, 0);
+            if enabled {
+                enable_thread_face_cache();
+            }
+            if warm {
+                cache
+                    .integrate_face_volume_about(&topo, face, 5, origin())
+                    .unwrap();
+                integrate_face_volume_about_memoized(&topo, face, 5, origin()).unwrap();
+            }
+            let before = cache.stats();
+            let thread_before = thread_face_cache_stats();
+            for reference in invalid {
+                let expected =
+                    face_integrator::integrate_face_fixed_about(&topo, face, 5, reference)
+                        .unwrap_err()
+                        .to_string();
+                let errors = [
+                    cache
+                        .integrate_face_volume_about(&topo, face, 5, reference)
+                        .unwrap_err(),
+                    cache
+                        .integrate_face_fixed_about(&topo, face, 5, reference)
+                        .unwrap_err(),
+                    integrate_face_volume_about_memoized(&topo, face, 5, reference).unwrap_err(),
+                    integrate_face_fixed_about_memoized(&topo, face, 5, reference).unwrap_err(),
+                ];
+                for error in errors {
+                    assert_eq!(error.to_string(), expected);
+                }
+            }
+            assert_eq!(cache.stats(), before);
+            assert_eq!(thread_face_cache_stats(), thread_before);
+        }
+    }
+    clear_thread_face_cache();
+    set_thread_face_cache_limits(0, 0);
+}
+
+/// Independently, the pillow is the graph
+/// z = 9 L u(1-u)v(1-v), x = u, y = v. Its integral of z is L/4;
+/// integrating (P-R) dot (-z_u,-z_v,1)/3 gives L/4 - R_z/3.
+#[test]
+fn volume_only_nurbs_matches_polynomial_divergence_oracle() {
+    let mut topo = Topology::new();
+    let mut cache = FaceIntegralCache::disabled();
+    for lift in [0.0, 0.4, 2.0] {
+        let face = nurbs_pillow(&mut topo, lift);
+        for reversed in [false, true] {
+            topo.face_mut(face).unwrap().set_reversed(reversed);
+            let sign = if reversed { -1.0 } else { 1.0 };
+            for order in [2, 5, 8] {
+                for reference in [origin(), Point3::new(3.0, -7.0, 0.75)] {
+                    let probe = cache
+                        .integrate_face_volume_about(&topo, face, order, reference)
+                        .unwrap();
+                    let expected = sign * (lift / 4.0 - reference.z() / 3.0);
+                    assert!(
+                        (probe.volume - expected).abs() <= 2e-14,
+                        "lift {lift}, reversed {reversed}, order {order}: {} vs {expected}",
+                        probe.volume
+                    );
+                }
+            }
+        }
+    }
+}

@@ -125,6 +125,10 @@ class UbuntuRoutingTests(unittest.TestCase):
         for path in WORKFLOWS.glob("*.yml"):
             for name, sha in re.findall(r"uses: esaueng/remus/(.github/workflows/fleet-[\w-]+.yml)@([a-f0-9]{40})", path.read_text()):
                 with self.subTest(caller=path.name, workflow=name):
+                    self.assertEqual(subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", sha, "origin/main"],
+                        cwd=ROOT, capture_output=True).returncode, 0,
+                        "Pin reusable workflows to a reachable main ancestor, not a squash-merged branch")
                     self.assertEqual(subprocess.check_output(
                         ["git", "show", f"{sha}:{name}"], cwd=ROOT, text=True), (ROOT / name).read_text())
 
