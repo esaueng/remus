@@ -206,6 +206,33 @@ pub fn tessellate_solid_with_tolerance(
     .map(|(mesh, _, _)| mesh)
 }
 
+/// Tessellate for analysis or export without displacing cached display meshes.
+///
+/// Produces the same positions, indices, and normals as
+/// [`tessellate_solid_with_tolerance`] at the same tolerances. Only cache
+/// retention differs: these captures share the quantity class with internal
+/// measurement and boolean meshes.
+///
+/// # Errors
+/// Returns an error if any topology lookup or face tessellation fails.
+pub fn tessellate_solid_for_analysis(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_solid_core(
+        topo,
+        solid,
+        deflection,
+        angular_tol,
+        false,
+        false,
+        RetentionClass::Quantity,
+    )
+    .map(|(mesh, _, _)| mesh)
+}
+
 /// The quantity path reads positions and indices, never shading normals.
 /// Skip only boundary normal reconstruction: welding, dedupe and gap fill
 /// depend exclusively on positions/indices and retain their usual policy.

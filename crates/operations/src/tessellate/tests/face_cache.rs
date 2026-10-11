@@ -679,19 +679,17 @@ fn quantity_entries_promote_on_display_and_clear_disable_reset_retention() {
 
 #[test]
 fn internal_mesh_captures_preserve_display_entries_under_count_and_byte_limits() {
-    for boolean_request in [false, true] {
+    for request in 0..3 {
         for byte_limited in [false, true] {
             let _guard = CacheGuard::enabled();
             let mut topo = Topology::new();
             let solid = crate::primitives::make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
             let faces = solid_faces(&topo, solid).unwrap();
-            let capture = |deflection| {
-                if boolean_request {
-                    tessellate_solid_for_boolean(&topo, solid, deflection, ANGULAR).unwrap()
-                } else {
-                    super::super::solid::tessellate_closed_face_set(&topo, &faces, deflection)
-                        .unwrap()
-                }
+            let capture = |deflection| match request {
+                0 => super::super::solid::tessellate_closed_face_set(&topo, &faces, deflection)
+                    .unwrap(),
+                1 => tessellate_solid_for_boolean(&topo, solid, deflection, ANGULAR).unwrap(),
+                _ => tessellate_solid_for_analysis(&topo, solid, deflection, ANGULAR).unwrap(),
             };
             let displayed = grouped(&topo, solid, DEFLECTION);
             let display = stats();
@@ -710,6 +708,14 @@ fn internal_mesh_captures_preserve_display_entries_under_count_and_byte_limits()
                 super::super::face_cache::unpark(parked);
                 assert_geometry_bits(&mesh, &reference);
                 assert_eq!(mesh.normals, reference.normals);
+                if request == 2 {
+                    let parked = super::super::face_cache::park();
+                    let display_mesh =
+                        tessellate_solid_with_tolerance(&topo, solid, deflection, ANGULAR).unwrap();
+                    super::super::face_cache::unpark(parked);
+                    assert_geometry_bits(&mesh, &display_mesh);
+                    assert_eq!(mesh.normals, display_mesh.normals);
+                }
                 assert!(stats().entries <= max_entries);
                 assert!(stats().retained_bytes <= max_bytes);
             }
