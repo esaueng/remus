@@ -976,7 +976,7 @@ struct CachedFace {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RetentionClass {
+pub(super) enum RetentionClass {
     Display,
     Quantity,
 }
@@ -1180,15 +1180,11 @@ pub(super) struct Session {
 
 impl Session {
     /// A session when this thread's cache is enabled.
-    pub(super) fn begin(quantity: bool) -> Option<Self> {
+    pub(super) fn begin(retention: RetentionClass) -> Option<Self> {
         FACE_MESH_CACHE.with(|cell| {
             cell.borrow().as_ref().map(|_| Self {
                 faces: DetHashMap::default(),
-                retention: if quantity {
-                    RetentionClass::Quantity
-                } else {
-                    RetentionClass::Display
-                },
+                retention,
             })
         })
     }
