@@ -147,7 +147,12 @@ pub fn winding_number(
     point: Point3,
     deflection: f64,
 ) -> Result<f64, OperationsError> {
-    let mesh = crate::tessellate::tessellate_solid(topo, solid, deflection)?;
+    let mesh = crate::tessellate::tessellate_solid_for_analysis(
+        topo,
+        solid,
+        deflection,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+    )?;
 
     Ok(mesh_winding_number(&mesh, point))
 }
@@ -257,10 +262,11 @@ impl<'a> RobustClassifier<'a> {
         }
         let mesh = match &mut self.mesh {
             Some(mesh) => mesh,
-            slot @ None => slot.insert(crate::tessellate::tessellate_solid(
+            slot @ None => slot.insert(crate::tessellate::tessellate_solid_for_analysis(
                 self.topo,
                 self.solid,
                 self.deflection,
+                remus_math::chord::DEFAULT_ANGULAR_TOL,
             )?),
         };
         let w = mesh_winding_number(mesh, point);

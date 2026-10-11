@@ -396,7 +396,7 @@ impl BrepKernel {
         validate_positive(deflection, "deflection")?;
         let angular_tol = super::tessellate::resolve_angular_tol(angular_tolerance)?;
         let solid_id = self.resolve_solid(solid)?;
-        let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
+        let mesh = remus_operations::tessellate::tessellate_solid_for_analysis(
             &self.topo,
             solid_id,
             deflection,

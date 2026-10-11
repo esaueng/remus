@@ -17,6 +17,8 @@ class RenameTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         self.write("NOTICE", "Historical " + "brep" + "kit attribution\n")
         self.write("source.rs", "// Remus\n")
+        for package in ("crates/wasm/pkg", "crates/wasm-io/pkg"):
+            self.write(package + "/NOTICE", (self.root / "NOTICE").read_text())
 
     def write(self, path, content):
         file = self.root / path
@@ -39,6 +41,17 @@ class RenameTests(unittest.TestCase):
         result = self.check()
         self.assertEqual(result.returncode, 1)
         self.assertIn("differs from source attribution", result.stdout)
+
+    def test_missing_package_notice_is_rejected(self):
+        for package in ("crates/wasm/pkg", "crates/wasm-io/pkg"):
+            with self.subTest(package=package):
+                path = package + "/NOTICE"
+                subprocess.run(["git", "rm", "-q", "-f", "--", path], cwd=self.root, check=True)
+                result = self.check()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("missing package NOTICE", result.stdout)
+                self.assertIn(package, result.stdout)
+                self.write(path, (self.root / "NOTICE").read_text())
 
     def test_stale_source_identity_is_still_rejected(self):
         self.write("source.rs", "// " + "brep" + "kit\n")

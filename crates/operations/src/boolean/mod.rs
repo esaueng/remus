@@ -5265,8 +5265,7 @@ fn intersection_boundary_samples(topo: &Topology, result: SolidId) -> Option<Vec
     // Use the owning-solid tessellator so curved faces retain their trimming
     // wires. Standalone analytic tessellation can cover the entire carrier
     // (for example the full tube of a partial toroidal blend).
-    let Ok(mesh) = crate::tessellate::tessellate_solid_with_tolerance(topo, result, 0.05, 0.1)
-    else {
+    let Ok(mesh) = crate::tessellate::tessellate_solid_for_analysis(topo, result, 0.05, 0.1) else {
         return None;
     };
     let mut samples = Vec::new();
@@ -5301,7 +5300,12 @@ fn intersection_audit_mesh_volumes(
     const MAX_TRIANGLES: usize = 500_000;
 
     let measure = |deflection| -> Result<f64, crate::OperationsError> {
-        let mesh = crate::tessellate::tessellate_solid(topo, solid, deflection)?;
+        let mesh = crate::tessellate::tessellate_solid_for_analysis(
+            topo,
+            solid,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
         if mesh.indices.is_empty()
             || mesh.indices.len() % 3 != 0
             || mesh.indices.len() / 3 > MAX_TRIANGLES

@@ -187,14 +187,24 @@ fn write_binary_stl_streaming(
     deflection: f64,
 ) -> Result<Vec<u8>, crate::IoError> {
     if let [solid_id] = solids {
-        let mut mesh = tessellate::tessellate_solid(topo, *solid_id, deflection)?;
+        let mut mesh = tessellate::tessellate_solid_for_analysis(
+            topo,
+            *solid_id,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         return write_binary_stl(&mesh);
     }
 
     let mut total = 0;
     for &solid_id in solids {
-        let mut mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
+        let mut mesh = tessellate::tessellate_solid_for_analysis(
+            topo,
+            solid_id,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         total = checked_add_triangle_count(total, mesh.indices.len() / 3)?;
     }
@@ -209,7 +219,12 @@ fn write_binary_stl_streaming(
 
     let mut written = 0;
     for &solid_id in solids {
-        let mut mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
+        let mut mesh = tessellate::tessellate_solid_for_analysis(
+            topo,
+            solid_id,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         written = checked_add_triangle_count(written, mesh.indices.len() / 3)?;
         if written > total {
@@ -243,7 +258,12 @@ fn write_ascii_stl_streaming(
     writeln!(buf, "solid remus").map_err(crate::IoError::Io)?;
 
     for &solid_id in solids {
-        let mut mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
+        let mut mesh = tessellate::tessellate_solid_for_analysis(
+            topo,
+            solid_id,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         append_mesh_ascii(&mut buf, &mesh)?;
     }
