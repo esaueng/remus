@@ -1,13 +1,15 @@
 //! P-Class 8.1 execution-surface cross-check: native vs batch contract.
 //!
 //! Every committed `opseq81-*.json` bundle replays natively (see
-//! `crates/operations/tests/op_seq_81.rs`, whose ignored finding tests pin
+//! `crates/operations/tests/op_seq_81.rs`, whose finding tests pin
 //! the verdicts) and here through the actual `executeBatchV2` dispatch path
 //! — the same contract the built WASM package serves. For each bundle the
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
-//! on the final produced solid and checks the pinned defect signature:
+//! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - orientation findings (F1/F2/F5) must show validation errors through
+//! - fixed coaxial orientation findings F1/F2 must validate clean and mesh
+//!   watertight with their closed-form volumes through batch.
+//! - open orientation findings (F5 and later) must show validation errors through
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
@@ -98,17 +100,17 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-coax-intersect-orientation.json",
             signature: Signature::Probes {
-                volume_near: (std::f64::consts::PI, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                volume_near: (std::f64::consts::PI, 1e-9),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
             file: "opseq81-coax-fuse-orientation.json",
             signature: Signature::Probes {
-                volume_near: (8.639_379_797, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                volume_near: (2.75 * std::f64::consts::PI, 1e-9),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {

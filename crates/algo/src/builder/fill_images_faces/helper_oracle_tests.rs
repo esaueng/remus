@@ -24,6 +24,113 @@ use super::*;
 
 const Z: remus_math::vec::Vec3 = remus_math::vec::Vec3::new(0.0, 0.0, 1.0);
 
+#[test]
+fn closed_common_block_replacement_preserves_wire_traversal() {
+    // Independently choose the physical rim direction about +Z, then vary
+    // the carrier normal, signed trim, wire use and face orientation.
+    for ellipse in [false, true] {
+        for opposite_carrier in [false, true] {
+            for descending in [false, true] {
+                for forward in [false, true] {
+                    for reversed in [false, true] {
+                        let mut topo = Topology::new();
+                        let center = Point3::new(3.0, -2.0, 5.0);
+                        let curve = |normal| {
+                            if ellipse {
+                                EdgeCurve::Ellipse(
+                                    Ellipse3D::new(center, normal, 2.0, 1.0).unwrap(),
+                                )
+                            } else {
+                                EdgeCurve::Circle(Circle3D::new(center, normal, 2.0).unwrap())
+                            }
+                        };
+                        let original = curve(Z);
+                        let seam = original.evaluate_with_endpoints(0.0, center, center);
+                        let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+                        let mut old = Edge::new(v, v, original);
+                        old.set_trim(Some((0.0, TAU)));
+                        let old = topo.add_edge(old);
+                        let replacement = curve(if opposite_carrier { -Z } else { Z });
+                        // The opposite normal may choose a different frame:
+                        // project the shared seam instead of assuming t = 0.
+                        let t = match &replacement {
+                            EdgeCurve::Circle(c) => c.project(seam),
+                            EdgeCurve::Ellipse(e) => e.project(seam),
+                            _ => unreachable!(),
+                        };
+                        let mut cb = Edge::new(v, v, replacement);
+                        cb.set_trim(Some((t, t + if descending { -TAU } else { TAU })));
+                        let cb = topo.add_edge(cb);
+                        let wire = topo.add_wire(
+                            Wire::new(vec![OrientedEdge::new(old, forward)], true).unwrap(),
+                        );
+                        let mut face = Face::new(wire, vec![], z_plane(5.0));
+                        face.set_reversed(reversed);
+                        let face = topo.add_face(face);
+                        let q = |x: f64| (x * VERTEX_DEDUP_SCALE).round() as i64;
+                        let key = (q(seam.x()), q(seam.y()), q(seam.z()));
+                        let replacements = HashMap::from([((key, key), cb)]);
+                        let rebuilt = rebuild_face_with_cb_edges(
+                            &mut topo,
+                            face,
+                            &replacements,
+                            &BTreeMap::new(),
+                            Tolerance::default(),
+                        )
+                        .expect("closed rim must be replaced");
+                        let result = topo.face(rebuilt).unwrap();
+                        assert_eq!(result.is_reversed(), reversed);
+                        let use_ = topo.wire(result.outer_wire()).unwrap().edges()[0];
+                        assert_eq!(use_.edge(), cb);
+                        assert_eq!(
+                            use_.is_forward(),
+                            forward ^ opposite_carrier ^ descending,
+                            "ellipse={ellipse}, opposite={opposite_carrier}, descending={descending}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn closed_common_block_nurbs_direction_follows_carrier_and_signed_trim() {
+    let mut topo = Topology::new();
+    let ring = nurbs_circle(2.0, 5.0, 0.0);
+    let seam = ring.evaluate(0.0);
+    let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+    let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(ring.clone()));
+    edge.set_trim(Some((0.0, 1.0)));
+    let original = topo.add_edge(edge);
+    for reversed_carrier in [false, true] {
+        for descending in [false, true] {
+            let curve = if reversed_carrier {
+                ring.reversed()
+            } else {
+                ring.clone()
+            };
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(curve));
+            edge.set_trim(Some(if descending { (1.0, 0.0) } else { (0.0, 1.0) }));
+            let replacement = topo.add_edge(edge);
+            assert_eq!(
+                closed_cb_edges_same_direction(&topo, original, replacement),
+                Some(reversed_carrier == descending)
+            );
+        }
+    }
+    let missing_trim = topo.add_edge(Edge::new(v, v, EdgeCurve::NurbsCurve(ring)));
+    assert_eq!(
+        closed_cb_edges_same_direction(&topo, original, missing_trim),
+        None
+    );
+    let degenerate_line = topo.add_edge(Edge::new(v, v, EdgeCurve::Line));
+    assert_eq!(
+        closed_cb_edges_same_direction(&topo, original, degenerate_line),
+        None
+    );
+}
+
 fn closed_wire(topo: &mut Topology, curve: EdgeCurve, seam: Point3, domain: (f64, f64)) -> WireId {
     let v = topo.add_vertex(Vertex::new(seam, 1e-7));
     let mut edge = Edge::with_tolerance(v, v, curve, Some(1e-7));
