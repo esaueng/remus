@@ -10,7 +10,7 @@
 use crate::MathError;
 use crate::fma::FusedMulAdd;
 use crate::nurbs::curve::NurbsCurve;
-use crate::nurbs::surface::NurbsSurface;
+use crate::nurbs::surface::{DerivativeScratch, NurbsSurface};
 use crate::vec::Point3;
 
 /// Maximum Newton iterations before declaring convergence failure.
@@ -601,12 +601,15 @@ fn surface_newton_refine(
     };
     let mut u = u_init;
     let mut v = v_init;
+    let mut scratch = DerivativeScratch::new();
 
     for _ in 0..max_iterations {
-        let ders = surface.derivatives(u, v, 1);
-        let s_pt = Point3::new(ders[0][0].x(), ders[0][0].y(), ders[0][0].z());
-        let deriv_u = ders[1][0]; // ∂S/∂u
-        let deriv_v = ders[0][1]; // ∂S/∂v
+        // The scratch solve reads exactly the three entries of the old
+        // derivatives(u, v, 1) table, with the same arithmetic and quotient
+        // order. Keep the evaluate call on the negligible-step exit below:
+        // that exit historically reads position from a different evaluator.
+        let (position, deriv_u, deriv_v) = scratch.point_and_partials_from(surface, u, v);
+        let s_pt = Point3::new(position.x(), position.y(), position.z());
         let r = s_pt - point; // S(u,v) - P
 
         // Convergence check 1: point coincidence.
@@ -1175,5 +1178,299 @@ mod tests {
             "nearest point z should be ≈ 0.05, got z={:.4}",
             res.point.z()
         );
+    }
+}
+
+/// The allocating Newton path before scratch reuse, kept verbatim as an
+/// independent bit-identity oracle (including its position-evaluator exits).
+#[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::expect_used,
+    clippy::similar_names,
+    clippy::suspicious_operation_groupings,
+    clippy::too_many_arguments
+)]
+mod surface_newton_scratch_oracle_tests {
+    use super::*;
+    use crate::vec::Vec3;
+
+    fn allocating_surface_newton_refine(
+        surface: &NurbsSurface,
+        point: Point3,
+        u_init: f64,
+        v_init: f64,
+        u_min: f64,
+        u_max: f64,
+        v_min: f64,
+        v_max: f64,
+        closed_u: bool,
+        closed_v: bool,
+        tolerance: f64,
+        max_iterations: usize,
+    ) -> Result<(f64, f64, Point3), MathError> {
+        // On a closed (periodic) direction the domain bound is a seam, not a
+        // boundary: clamping there pins Newton on the wrong side of the seam and
+        // the small-step exit then returns the clamped point as a silent wrong
+        // answer (a near-seam query projects up to half a period off). Wrap the
+        // parameter across the seam instead so the walk reaches the true foot.
+        let advance = |t: f64, delta: f64, lo: f64, hi: f64, closed: bool| {
+            let t_new = t + delta;
+            if closed && hi > lo {
+                lo + (t_new - lo).rem_euclid(hi - lo)
+            } else {
+                t_new.clamp(lo, hi)
+            }
+        };
+        let mut u = u_init;
+        let mut v = v_init;
+
+        for _ in 0..max_iterations {
+            let ders = surface.derivatives(u, v, 1);
+            let s_pt = Point3::new(ders[0][0].x(), ders[0][0].y(), ders[0][0].z());
+            let deriv_u = ders[1][0]; // ∂S/∂u
+            let deriv_v = ders[0][1]; // ∂S/∂v
+            let r = s_pt - point; // S(u,v) - P
+
+            // Convergence check 1: point coincidence.
+            let dist = r.length();
+            if dist < tolerance {
+                return Ok((u, v, s_pt));
+            }
+
+            // Convergence check 2: zero cosine in both directions.
+            let du_len = deriv_u.length();
+            let dv_len = deriv_v.length();
+            let dot_du_r = deriv_u.dot(r);
+            let dot_dv_r = deriv_v.dot(r);
+            if du_len > 0.0 && dv_len > 0.0 {
+                let cos_u = dot_du_r.abs() / (du_len * dist);
+                let cos_v = dot_dv_r.abs() / (dv_len * dist);
+                if cos_u < tolerance && cos_v < tolerance {
+                    return Ok((u, v, s_pt));
+                }
+            }
+
+            // Build the 2×2 Jacobian and right-hand side.
+            // J = [S_u · S_u,  S_u · S_v]
+            //     [S_v · S_u,  S_v · S_v]
+            let j00 = deriv_u.dot(deriv_u);
+            let j01 = deriv_u.dot(deriv_v);
+            let j11 = deriv_v.dot(deriv_v);
+            // rhs = [-S_u · r, -S_v · r]
+            let rhs0 = -dot_du_r;
+            let rhs1 = -dot_dv_r;
+
+            // Solve 2×2 system via Cramer's rule: det = j00*j11 - j01²
+            // Use a relative threshold so the singularity test stays meaningful
+            // near surface poles / cone apex where both derivatives shrink to zero.
+            let det = j00.fma(j11, -(j01 * j01));
+            let (delta_u, delta_v) = if det.abs() < (j00 + j11).max(1e-30) * 1e-12 {
+                // Near-singular: apply Tikhonov (Levenberg–Marquardt) regularisation
+                // by adding λI to the normal equations.  This yields a step biased
+                // toward zero rather than blowing up, preserving convergence near
+                // poles and cone apices.
+                let lambda = (j00 + j11).max(1e-10) * 1e-4;
+                let j00r = j00 + lambda;
+                let j11r = j11 + lambda;
+                let det_r = j00r.fma(j11r, -(j01 * j01));
+                if det_r.abs() < 1e-30 {
+                    // Still singular even after regularisation — fall back to a 1-D
+                    // search along whichever parameter axis has more gradient.
+                    if j00 > j11 {
+                        (rhs0 / j00.max(1e-30), 0.0)
+                    } else if j11 > 1e-30 {
+                        (0.0, rhs1 / j11.max(1e-30))
+                    } else {
+                        return Ok((u, v, s_pt));
+                    }
+                } else {
+                    (
+                        rhs0.fma(j11r, -(rhs1 * j01)) / det_r,
+                        j00r.fma(rhs1, -(j01 * rhs0)) / det_r,
+                    )
+                }
+            } else {
+                (
+                    rhs0.fma(j11, -(rhs1 * j01)) / det,
+                    j00.fma(rhs1, -(j01 * rhs0)) / det,
+                )
+            };
+
+            let u_new = advance(u, delta_u, u_min, u_max, closed_u);
+            let v_new = advance(v, delta_v, v_min, v_max, closed_v);
+
+            // Convergence check 3: parameter step negligible. A seam wrap makes
+            // (u_new - u) span nearly the whole period, which reads as a large
+            // step — never a spurious convergence, so the check stays sound.
+            let step = (deriv_u * (u_new - u) + deriv_v * (v_new - v)).length();
+            if step < tolerance {
+                let pt = surface.evaluate(u_new, v_new);
+                return Ok((u_new, v_new, pt));
+            }
+
+            u = u_new;
+            v = v_new;
+        }
+
+        Err(MathError::ConvergenceFailure {
+            iterations: max_iterations,
+        })
+    }
+
+    fn knots(degree: usize, interior: &[f64], lo: f64, hi: f64) -> Vec<f64> {
+        [
+            vec![lo; degree + 1],
+            interior.iter().map(|&k| (hi - lo).mul_add(k, lo)).collect(),
+            vec![hi; degree + 1],
+        ]
+        .concat()
+    }
+
+    fn patch(degree: usize, scale: f64, rational: bool, shifted: bool) -> NurbsSurface {
+        let interior = [0.2, 0.5, 0.5, 0.85];
+        let count = degree + 1 + interior.len();
+        let control_points = (0..count)
+            .map(|i| {
+                (0..count)
+                    .map(|j| {
+                        let (x, y) = (i as f64, j as f64);
+                        Point3::new(x - 2.0, y * 0.75, (x * 0.7 + y * 0.4).sin())
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights = (0..count)
+            .map(|i| {
+                (0..count)
+                    .map(|j| {
+                        scale
+                            * if rational {
+                                1.0 + ((i + 3 * j) % 5) as f64 * 0.125
+                            } else {
+                                1.0
+                            }
+                    })
+                    .collect()
+            })
+            .collect();
+        let (lo, hi) = if shifted { (-3.0, 7.0) } else { (0.0, 1.0) };
+        NurbsSurface::new(
+            degree,
+            degree,
+            knots(degree, &interior, lo, hi),
+            knots(degree, &interior, lo, hi),
+            control_points,
+            weights,
+        )
+        .expect("valid oracle patch")
+    }
+
+    fn assert_result_bits(
+        expected: Result<(f64, f64, Point3), MathError>,
+        got: Result<(f64, f64, Point3), MathError>,
+    ) {
+        match (expected, got) {
+            (Ok((eu, ev, ep)), Ok((u, v, p))) => assert_eq!(
+                [
+                    eu.to_bits(),
+                    ev.to_bits(),
+                    ep.x().to_bits(),
+                    ep.y().to_bits(),
+                    ep.z().to_bits()
+                ],
+                [
+                    u.to_bits(),
+                    v.to_bits(),
+                    p.x().to_bits(),
+                    p.y().to_bits(),
+                    p.z().to_bits()
+                ],
+            ),
+            (Err(e), Err(g)) => assert_eq!(format!("{e:?}"), format!("{g:?}")),
+            (e, g) => assert_eq!(
+                e.is_ok(),
+                g.is_ok(),
+                "Newton result changed: expected {e:?}, got {g:?}",
+            ),
+        }
+    }
+
+    fn compare(surface: &NurbsSurface) {
+        let (u0, u1, v0, v1) = surface_domain(surface);
+        // Coarse-grid seeds, out-of-domain supplied seeds (clamped exactly
+        // as refine_from does), domain ends, and points on/off the carrier.
+        for &(un, vn) in &[
+            (0.0, 0.0),
+            (0.00001, 0.99999),
+            (0.2, 0.5),
+            (0.5, 0.85),
+            (0.81, 0.3),
+            (1.0, 1.0),
+        ] {
+            let point = surface.evaluate((u1 - u0).mul_add(un, u0), (v1 - v0).mul_add(vn, v0));
+            for offset in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.17, -0.3, 0.7)] {
+                let query = point + offset;
+                let grid_seed = surface_coarse_search(surface, query);
+                for seed in [
+                    grid_seed,
+                    (u0, v0),
+                    (u1, v1),
+                    (u0 - (u1 - u0), v1 + (v1 - v0)),
+                ] {
+                    for iterations in [0, 1, 3, SEEDED_MAX_ITERATIONS, MAX_ITERATIONS] {
+                        let args = (
+                            seed.0.clamp(u0, u1),
+                            seed.1.clamp(v0, v1),
+                            surface.is_periodic_u(),
+                            surface.is_periodic_v(),
+                        );
+                        let old = allocating_surface_newton_refine(
+                            surface, query, args.0, args.1, u0, u1, v0, v1, args.2, args.3, 1e-8,
+                            iterations,
+                        );
+                        let new = surface_newton_refine(
+                            surface, query, args.0, args.1, u0, u1, v0, v1, args.2, args.3, 1e-8,
+                            iterations,
+                        );
+                        assert_result_bits(old, new);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn projection_scratch_is_bit_identical_to_allocating_newton() {
+        for degree in [2, 3, 9, 12] {
+            for scale in [1.0, 1e-300] {
+                for rational in [false, true] {
+                    for shifted in [false, true] {
+                        compare(&patch(degree, scale, rational, shifted));
+                    }
+                }
+            }
+        }
+        let cylinder = crate::surfaces::CylindricalSurface::new(
+            Point3::new(2.0, -3.0, 4.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .expect("valid cylinder");
+        compare(
+            &cylinder
+                .to_nurbs(-2.0, 3.0)
+                .expect("exact periodic cylinder"),
+        );
+        let collapsed = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![vec![Point3::new(1.0, 2.0, 3.0); 2]; 2],
+            vec![vec![1.0; 2]; 2],
+        )
+        .expect("valid degenerate patch");
+        compare(&collapsed);
     }
 }
