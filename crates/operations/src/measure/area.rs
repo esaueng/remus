@@ -28,6 +28,10 @@ use super::helpers::{collect_solid_face_ids, collect_wire_positions};
 /// (`remus_check::properties::face_cache`, off unless an application enables
 /// it), which returns a previous reading of the same face content bit for
 /// bit.
+/// The standalone NURBS tessellation path can likewise reuse its scalar area
+/// through the opt-in [`super::enable_thread_nurbs_area_memo`], keyed by the
+/// support surface's exact content and request policy. Neither memo substitutes
+/// a display mesh or changes the measurement's numerical path.
 ///
 /// # Errors
 ///
@@ -67,9 +71,17 @@ pub fn face_area(
             remus_check::properties::face_cache::integrate_face_area_memoized(topo, face_id, 8)?
                 .abs(),
         ),
-        FaceSurface::Nurbs(_) => {
-            let mesh = tessellate::tessellate(topo, face_id, deflection)?;
-            Ok(triangle_mesh_area(&mesh))
+        FaceSurface::Nurbs(surface) => {
+            let compute = || {
+                let mesh = tessellate::tessellate(topo, face_id, deflection)?;
+                Ok(triangle_mesh_area(&mesh))
+            };
+            // Standalone tessellation refuses inner wires. That gate must run
+            // before any support-surface memo hit can answer this face.
+            if !face.inner_wires().is_empty() {
+                return compute();
+            }
+            super::nurbs_area_memo::memoized(surface, deflection, face.is_reversed(), compute)
         }
     }
 }

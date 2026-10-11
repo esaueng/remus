@@ -250,6 +250,69 @@ change, and a violation fails both the pre-push hook and CI.
 
 ## Performance
 
+### Filleted face edits (2026-10-10 candidate)
+
+The [face-edit performance change](https://github.com/esaueng/remus/pull/979)
+was measured by pushing the outward +X cap of the public
+[hammer-holder STEP fixture](crates/io/tests/data/shapr3d_hammer_holder.step):
+160 faces, including 42 NURBS surfaces and analytic blend patches. Display
+meshes retain priority within the existing shared 32 MiB face-mesh cache bound;
+exact NURBS area reuse and first-order Newton scratch reduce repeated analysis.
+Modeling tolerances and validation gates remain unchanged.
+
+**Native before/after:** one paired process run, 40 timed edits after three
+warmups per process, volume before display. Rust 1.96 release builds ran on
+Linux x86_64 / Intel Xeon Platinum 8573C, pinned to one CPU with one Rayon
+worker. The baseline is `61ed862`; the candidate is `85134ff`.
+
+| Stage or behavior | Before | After |
+| --- | ---: | ---: |
+| Display mesh median | 48.7 ms | 27.3 ms |
+| Display mesh p95 | 246.1 ms | 48.5 ms |
+| Display calls exceeding 100 ms | 8 / 40 | 0 / 40 |
+| Feature-recognition median | 246.2 ms | 159.0 ms |
+
+These are warmed kernel-stage timings. Source cloning and between-edit area
+and repeat-volume diagnostics are outside the timer; those diagnostics still
+affect cache history. The display p95 excludes the preceding volume wait and
+does not measure an entire edit or a rendered frame.
+
+**WASM before/after:** production SIMD packages under Node 24.19.0 on the
+same single CPU, with geometry before volume. Medians cover 12 timed edits
+per package across two rounds, with alternating old/new process order and
+two warmups per process.
+
+| Stage | Before | After |
+| --- | ---: | ---: |
+| Display mesh, including typed-array transfer | 67.1 ms | 49.2 ms |
+| Feature recognition | 621.1 ms | 468.0 ms |
+| Kernel pipeline | 1646.5 ms | 1296.1 ms |
+
+The kernel pipeline sums move, validation, bounds, meshing, volume and
+recognition; it excludes typed-array transfer, construction and source restore.
+The shipped baseline is `2026.1.45` at `a04b5c86`; the candidate also includes
+[#976](https://github.com/esaueng/remus/pull/976), so this package comparison
+does not isolate #979. Native and WASM use different between-edit workloads.
+
+Across both WASM schedules, all 36 paired source/warmup/timed snapshots match
+exact arena documents, volume bits, complete feature records and display
+arrays, and every edit validates with a watertight display mesh. Volume remains
+costly; its timing gains were inconsistent across schedules. Small sample
+counts and cloud timing variation limit extrapolation. These measurements do
+not establish browser responsiveness or a reference-kernel face-edit speed ratio.
+
+See the [full qualification and stage results](docs/performance/perf-face-edit-responsiveness.md)
+and [reproducible WASM harness](scripts/perf/filleted-face-edit/README.md).
+The companion [OpenZCAD preview change](https://github.com/esaueng/OpenZCAD/pull/624)
+publishes validated drag geometry before completion analysis and requires full
+analysis before committing; target-device frame timing remains to be measured.
+
+### Historical Remus vs OCCT (2026-08-06)
+
+The following results predate the Apache-only line and use a retired
+head-to-head harness. Treat them as historical; they are not a current OCCT
+comparison or evidence for the face-edit workload above.
+
 Median times from the [brepjs benchmark suite](https://github.com/andymai/brepjs/tree/main/benchmarks)
 (5 iterations, Node.js, Linux x86_64). WASM is single-threaded. Native
 benchmarks use criterion.

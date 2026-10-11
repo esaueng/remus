@@ -71,3 +71,9 @@ OpenZCAD implementation plan. A single WASM call is still synchronous; this
 change does not introduce browser threads, GPU modeling or a second analysis
 arena. General mixed-history reuse remains conditional on workload evidence
 and an audited persistent-reference/dependency contract.
+
+The [face-edit responsiveness follow-up](performance/perf-face-edit-responsiveness.md)
+documents allocation-light NURBS partials, orientation-only accumulation,
+standalone area memoization and display-priority retention within the existing
+face-mesh budget. Those changes preserve the numerical policies above;
+consumer scheduling and time-to-frame still need independent qualification.
