@@ -1526,14 +1526,13 @@ impl BrepKernel {
                 let deflection = get_deflection(args)?;
                 let angular_tolerance = get_angular_tolerance(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
+                let quality = super::measure::mesh_quality_at(
                     &self.topo,
                     solid_id,
                     deflection,
                     angular_tolerance,
                 )
                 .map_err(StructuredWasmError::from)?;
-                let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
                 Ok(serde_json::json!({
                     "triangleCount": quality.triangle_count,
                     "boundaryEdges": quality.boundary_edges,
