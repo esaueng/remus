@@ -1567,6 +1567,73 @@ mod tests {
         }
     }
 
+    /// Issue #984: the direct detailed and batch routes must keep the cup's
+    /// material when its center line passes through a floor bore.
+    #[test]
+    fn centered_cup_bore_booleans_preserve_material_through_both_routes() {
+        use remus_math::mat::Mat4;
+        use remus_operations::transform::transform_solid;
+
+        let placed_box = |kernel: &mut BrepKernel, x, y, z, dx, dy, dz| {
+            let handle = kernel.make_box_solid(dx, dy, dz).unwrap();
+            let solid = kernel.resolve_solid(handle).unwrap();
+            transform_solid(kernel.topo_mut(), solid, &Mat4::translation(x, y, z)).unwrap();
+            handle
+        };
+        let detailed = |kernel: &mut BrepKernel, op, name, a, b| {
+            let result =
+                serde_json::to_value(kernel.binary_boolean_detailed_impl(op, name, a, b)).unwrap();
+            assert_eq!(result["status"], "ok", "{name}: {result}");
+            u32::try_from(result["value"].as_u64().unwrap()).unwrap()
+        };
+        let cup_volume = 1952. - 18. * std::f64::consts::PI;
+        for batch in [false, true] {
+            for contained in [false, true] {
+                for (op, name, expected) in [
+                    (
+                        BooleanOp::Fuse,
+                        "fuse",
+                        cup_volume + if contained { 0. } else { 72. },
+                    ),
+                    (BooleanOp::Cut, "cut", cup_volume - 24.),
+                    (BooleanOp::Intersect, "intersect", 24.),
+                ] {
+                    let mut kernel = BrepKernel::new();
+                    let outer = placed_box(&mut kernel, 0., 0., 0., 20., 20., 10.);
+                    let cavity = placed_box(&mut kernel, 2., 2., 2., 16., 16., 10.);
+                    let cup = detailed(&mut kernel, BooleanOp::Cut, "cut", outer, cavity);
+                    let drill = kernel.make_cylinder_solid(3., 4.).unwrap();
+                    let drill_id = kernel.resolve_solid(drill).unwrap();
+                    transform_solid(
+                        kernel.topo_mut(),
+                        drill_id,
+                        &Mat4::translation(10., 10., -1.),
+                    )
+                    .unwrap();
+                    let cup = detailed(&mut kernel, BooleanOp::Cut, "cut", cup, drill);
+                    let (x, dx) = if contained { (0.5, 1.) } else { (-3., 4.) };
+                    let tool = placed_box(&mut kernel, x, 5., 3., dx, 6., 4.);
+                    let result = if batch {
+                        let response = kernel.execute_batch_v2(
+                            &serde_json::json!([{"op": name, "args": {"solidA": cup, "solidB": tool}}])
+                                .to_string(),
+                        );
+                        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+                        assert!(response[0]["ok"].is_u64(), "{response}");
+                        u32::try_from(response[0]["ok"].as_u64().unwrap()).unwrap()
+                    } else {
+                        detailed(&mut kernel, op, name, cup, tool)
+                    };
+                    let volume = kernel.volume(result, 0.001).unwrap();
+                    assert!(
+                        (volume - expected).abs() < 1e-7,
+                        "batch={batch}, contained={contained}, op={name}: {volume} != {expected}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn detailed_binary_boolean_refusals_match_batch_v2_codes() {
         for (op, operation) in [
