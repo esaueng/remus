@@ -677,6 +677,56 @@ fn quantity_entries_promote_on_display_and_clear_disable_reset_retention() {
     assert_eq!(reset.max_bytes, DEFAULT_FACE_MESH_CACHE_BYTES);
 }
 
+#[test]
+fn internal_mesh_captures_preserve_display_entries_under_count_and_byte_limits() {
+    for boolean_request in [false, true] {
+        for byte_limited in [false, true] {
+            let _guard = CacheGuard::enabled();
+            let mut topo = Topology::new();
+            let solid = crate::primitives::make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+            let faces = solid_faces(&topo, solid).unwrap();
+            let capture = |deflection| {
+                if boolean_request {
+                    tessellate_solid_for_boolean(&topo, solid, deflection, ANGULAR).unwrap()
+                } else {
+                    super::super::solid::tessellate_closed_face_set(&topo, &faces, deflection)
+                        .unwrap()
+                }
+            };
+            let displayed = grouped(&topo, solid, DEFLECTION);
+            let display = stats();
+            let max_entries = if byte_limited { 64 } else { 12 };
+            let max_bytes = if byte_limited {
+                display.retained_bytes
+            } else {
+                usize::MAX
+            };
+            enable_face_mesh_cache_with_limits(max_entries, max_bytes);
+            for i in 0..16 {
+                let deflection = 0.02 + f64::from(i) * 0.001;
+                let mesh = capture(deflection);
+                let parked = super::super::face_cache::park();
+                let reference = capture(deflection);
+                super::super::face_cache::unpark(parked);
+                assert_geometry_bits(&mesh, &reference);
+                assert_eq!(mesh.normals, reference.normals);
+                assert!(stats().entries <= max_entries);
+                assert!(stats().retained_bytes <= max_bytes);
+            }
+            let before = stats();
+            let reused = grouped(&topo, solid, DEFLECTION);
+            assert_eq!(delta(before, stats()).exact, display.entries as u64);
+            assert_eq!(delta(before, stats()).misses, 0);
+            assert_reproduces(
+                &reused,
+                &displayed,
+                0.0,
+                "display after internal mesh churn",
+            );
+        }
+    }
+}
+
 /// A square-to-square smooth loft through a wider middle section: four
 /// curved, non-periodic NURBS side faces without pcurves, placed so that
 /// every coordinate stays in its binade under the test's +8 X translation.
