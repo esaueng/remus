@@ -4037,6 +4037,85 @@ mod tests {
         topo.add_face(Face::new(outer, inner, surface))
     }
 
+    /// Cover the remaining analytic dispatch arms with a quarter-cylinder
+    /// patch, a hemisphere and an apex-closing cone. Their origin-based
+    /// signed volume terms are respectively 2π, 18π and zero.
+    #[test]
+    fn volume_only_analytic_faces_preserve_samples_and_match_closed_forms() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface};
+        use std::f64::consts::PI;
+
+        let mut topo = Topology::new();
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let cylinder = patch_face(
+            &mut topo,
+            &[
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(0.0, 2.0, 0.0),
+                Point3::new(0.0, 2.0, 3.0),
+                Point3::new(2.0, 0.0, 3.0),
+            ],
+            &[
+                Some(Circle3D::new(origin, z, 2.0).unwrap()),
+                None,
+                Some(Circle3D::new(Point3::new(0.0, 0.0, 3.0), -z, 2.0).unwrap()),
+                None,
+            ],
+            FaceSurface::Cylinder(CylindricalSurface::new(origin, z, 2.0).unwrap()),
+        );
+        let sphere = rim_face(
+            &mut topo,
+            Circle3D::new(origin, z, 3.0).unwrap(),
+            0.9,
+            &[],
+            FaceSurface::Sphere(SphericalSurface::new(origin, 3.0).unwrap()),
+        );
+        let angle = 0.5_f64;
+        let cone = rim_face(
+            &mut topo,
+            Circle3D::new(
+                Point3::new(0.0, 0.0, 3.0 * angle.sin()),
+                z,
+                3.0 * angle.cos(),
+            )
+            .unwrap(),
+            0.2,
+            &[],
+            FaceSurface::Cone(ConicalSurface::new(origin, z, angle).unwrap()),
+        );
+        for (face, seam) in [(sphere, 0.9), (cone, 0.2)] {
+            let wire = topo.face(face).unwrap().outer_wire();
+            let edge = topo.wire(wire).unwrap().edges()[0].edge();
+            topo.edge_mut(edge)
+                .unwrap()
+                .set_trim(Some((seam, seam + std::f64::consts::TAU)));
+        }
+        for (face, expected) in [(cylinder, 2.0 * PI), (sphere, 18.0 * PI), (cone, 0.0)] {
+            let (probe, _) =
+                integrate_face_fixed_volume_flux_about(&topo, face, 8, origin).unwrap();
+            assert!((probe.volume - expected).abs() <= 1e-10);
+            for reversed in [false, true] {
+                topo.face_mut(face).unwrap().set_reversed(reversed);
+                for order in [1, 5, 8] {
+                    for reference in [origin, Point3::new(-5.0, 7.0, 13.0)] {
+                        let (full, full_flux) =
+                            integrate_face_fixed_flux_about(&topo, face, order, reference).unwrap();
+                        let (probe, probe_flux) =
+                            integrate_face_fixed_volume_flux_about(&topo, face, order, reference)
+                                .unwrap();
+                        assert_eq!(probe.area.to_bits(), full.area.to_bits());
+                        assert_eq!(probe.volume.to_bits(), full.volume.to_bits());
+                        let flux_bits =
+                            |n: Option<Vec3>| n.map(|v| [v.x(), v.y(), v.z()].map(f64::to_bits));
+                        assert_eq!(flux_bits(probe_flux), flux_bits(full_flux));
+                    }
+                }
+            }
+        }
+    }
+
     /// A face on `surface` whose outer wire runs through `corners`, joined by
     /// the circle arc `arcs` holds for a side, or by a line.
     fn patch_face(

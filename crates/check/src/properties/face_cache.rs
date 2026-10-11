@@ -228,6 +228,25 @@ enum Request {
 }
 
 impl Request {
+    /// Input validation must precede a lookup: a cached affine volume term
+    /// cannot turn a non-finite reference into a successful NaN reading.
+    fn validate_reference(self) -> Result<(), CheckError> {
+        let reference = match self {
+            Self::FixedAbout { reference, .. } | Self::Volume { reference, .. } => reference,
+            Self::Area { .. } => return Ok(()),
+        };
+        if [reference.x(), reference.y(), reference.z()]
+            .iter()
+            .all(|c| c.is_finite())
+        {
+            Ok(())
+        } else {
+            Err(CheckError::IntegrationFailed(
+                "integration reference point must be finite".into(),
+            ))
+        }
+    }
+
     /// Requests of one family share lookup buckets; the family and the order
     /// are part of the key, the reference is not. Full-property answers also
     /// require the entry's full_contribution flag.
@@ -556,6 +575,7 @@ impl FaceIntegralCache {
         face: FaceId,
         request: Request,
     ) -> Result<Answer, CheckError> {
+        request.validate_reference()?;
         if !self.is_enabled() {
             return Ok(request.answer_fresh(&request.compute(topo, face)?));
         }
@@ -771,6 +791,7 @@ pub fn integrate_face_area_memoized(
 /// across the integration, so a nested memoized call cannot meet a held
 /// borrow; a borrow that is unavailable anyway degrades to a plain call.
 fn memoized(topo: &Topology, face: FaceId, request: Request) -> Result<Answer, CheckError> {
+    request.validate_reference()?;
     let enabled =
         THREAD_CACHE.with(|cache| cache.try_borrow().is_ok_and(|cache| cache.is_enabled()));
     if !enabled {
