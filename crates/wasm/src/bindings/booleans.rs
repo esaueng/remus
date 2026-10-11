@@ -1546,6 +1546,65 @@ mod tests {
     }
 
     #[test]
+    fn detailed_cup_bore_booleans_preserve_material_and_operands() {
+        for (contained, fixture) in [
+            (
+                false,
+                include_str!("../../tests/repro/cup-bore-wall-overlap.json"),
+            ),
+            (
+                true,
+                include_str!("../../tests/repro/cup-bore-inside-wall.json"),
+            ),
+        ] {
+            let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let setup = &fixture["operations"].as_array().unwrap()[..9];
+            let mut kernel = BrepKernel::new();
+            let response: serde_json::Value = serde_json::from_str(
+                &kernel.execute_batch_v2(&serde_json::to_string(setup).unwrap()),
+            )
+            .unwrap();
+            assert!(
+                response
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.get("ok").is_some()),
+                "{response}"
+            );
+            let before = kernel.serialize_solids(&[4, 5]).unwrap();
+            let cup_volume = 1952.0 - 18.0 * std::f64::consts::PI;
+            for (op, operation, expected) in [
+                (
+                    BooleanOp::Fuse,
+                    "fuse",
+                    cup_volume + if contained { 0.0 } else { 72.0 },
+                ),
+                (BooleanOp::Cut, "cut", cup_volume - 24.0),
+                (BooleanOp::Intersect, "intersect", 24.0),
+            ] {
+                let result =
+                    serde_json::to_value(kernel.binary_boolean_detailed_impl(op, operation, 4, 5))
+                        .unwrap();
+                assert_eq!(
+                    result["status"], "ok",
+                    "{operation}, contained={contained}: {result}"
+                );
+                let handle = u32::try_from(result["value"].as_u64().unwrap()).unwrap();
+                let id = kernel.resolve_solid(handle).unwrap();
+                let volume = remus_operations::measure::mass_properties(kernel.topo(), id)
+                    .unwrap()
+                    .mass;
+                assert!(
+                    (volume - expected).abs() < 1e-6,
+                    "{operation}: {volume} vs {expected}"
+                );
+                assert_eq!(kernel.serialize_solids(&[4, 5]).unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
     fn detailed_binary_boolean_successes_return_live_handles() {
         for (op, operation) in [
             (BooleanOp::Fuse, "fuse"),
