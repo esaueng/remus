@@ -1,5 +1,11 @@
 # V02 subset: strict validation's orientation probe and repeated measurement reads
 
+Follow-up, 2026-10-10: orientation requests now omit unused moment accumulation,
+and an independently bounded scalar memo serves repeated standalone NURBS area
+readings. The historical measurements below describe their pinned revisions;
+see [Face-edit responsiveness](perf-face-edit-responsiveness.md) for current
+behavior, cache boundaries and qualification targets.
+
 Strict `validate_solid` proves each shell faces the right way by integrating
 its signed volume over every face at the default Gauss order
 (`ValidationOptions::default()` → `OrientationCheck::Order(5)`) and reading one
