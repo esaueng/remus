@@ -1,8 +1,8 @@
 //! Content-keyed memo of fixed-order face integrals (PERF-V02 subset), with
 //! readings that survive an edit (PERF-V02 / O07).
 //!
-//! [`FaceIntegralCache`] remembers what [`face_integrator::integrate_face_fixed_about`]
-//! and [`face_integrator::integrate_face_area`] returned for a face, keyed by
+//! [`FaceIntegralCache`] remembers fixed-order full contributions, area/volume
+//! terms and areas for a face, keyed by
 //! the face's *content* rather than its handle: everything those integrators
 //! read, plus the request (Gauss order and kind). The integrators are pure
 //! functions of exactly that input, so a lookup that finds the same content
@@ -43,9 +43,16 @@
 //! Only [`integrate_face_volume_about`](FaceIntegralCache::integrate_face_volume_about)
 //! (the probe's area and signed volume) uses these readings. The full
 //! contribution — first and second moments included — is served only from an
-//! entry of identical content integrated about the very same reference, and
+//! entry that computed those moments, with identical content integrated about
+//! the very same reference, and
 //! an area only from identical content, so both stay bit-identical to a fresh
 //! integration.
+//!
+//! A volume-only miss computes area, signed volume and vector area without
+//! centroid/inertia terms. Full and volume requests share lookup buckets so
+//! a full entry can answer a volume request; each entry records whether its
+//! moments were computed, preventing a partial entry from answering a full
+//! request even when content and reference match exactly.
 //!
 //! ## How close a reused reading is
 //!
@@ -189,6 +196,9 @@ pub struct FaceVolumeTerm {
 #[derive(Debug, Clone)]
 struct Value {
     contribution: FaceContribution,
+    /// Whether centroid/inertia terms were computed. A volume-only entry
+    /// may answer volume requests but never a full-property request.
+    full_contribution: bool,
     /// The reference the positional terms of `contribution` are taken about.
     reference: Point3,
     /// `∫ n dA` from the same samples, when the integration reported it.
@@ -218,8 +228,9 @@ enum Request {
 }
 
 impl Request {
-    /// Requests of one family share entries; the family and the order are
-    /// part of the key, the reference is not.
+    /// Requests of one family share lookup buckets; the family and the order
+    /// are part of the key, the reference is not. Full-property answers also
+    /// require the entry's full_contribution flag.
     const fn family_and_order(self) -> (u64, usize) {
         match self {
             Self::FixedAbout { order, .. } | Self::Volume { order, .. } => (1, order),
@@ -229,11 +240,23 @@ impl Request {
 
     fn compute(self, topo: &Topology, face: FaceId) -> Result<Value, CheckError> {
         match self {
-            Self::FixedAbout { order, reference } | Self::Volume { order, reference } => {
+            Self::FixedAbout { order, reference } => {
                 let (contribution, flux) =
                     face_integrator::integrate_face_fixed_flux_about(topo, face, order, reference)?;
                 Ok(Value {
                     contribution,
+                    full_contribution: true,
+                    reference,
+                    flux,
+                })
+            }
+            Self::Volume { order, reference } => {
+                let (contribution, flux) = face_integrator::integrate_face_fixed_volume_flux_about(
+                    topo, face, order, reference,
+                )?;
+                Ok(Value {
+                    contribution,
+                    full_contribution: false,
                     reference,
                     flux,
                 })
@@ -242,6 +265,7 @@ impl Request {
                 let area = face_integrator::integrate_face_area(topo, face, order)?;
                 Ok(Value {
                     contribution: area_only(area),
+                    full_contribution: false,
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
                 })
@@ -267,14 +291,15 @@ impl Request {
         let found = key.matches(&entry.key)?;
         let value = &entry.value;
         match self {
-            Self::FixedAbout { reference, .. } => {
-                (found == Match::Exact && same_point(value.reference, reference)).then(|| {
-                    (
-                        Rank::Identical,
-                        Answer::Contribution(value.contribution.clone()),
-                    )
-                })
-            }
+            Self::FixedAbout { reference, .. } => (value.full_contribution
+                && found == Match::Exact
+                && same_point(value.reference, reference))
+            .then(|| {
+                (
+                    Rank::Identical,
+                    Answer::Contribution(value.contribution.clone()),
+                )
+            }),
             // `face_area` is a reported measurement: only identical content
             // answers it, so it stays bit-identical to a fresh reading.
             Self::Area { .. } => (found == Match::Exact)

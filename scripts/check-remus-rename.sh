@@ -34,6 +34,8 @@ set -euo pipefail
 #       Attribution. A NOTICE file credits the contributors it names, and
 #       renaming them defeats its purpose. The math crate distributes an exact
 #       copy; the Truck provenance checker ensures existing attribution stays.
+#       The two WASM package copies are also exempt and checked byte for byte
+#       against the source NOTICE below.
 #
 #   apache-replay-provenance.{md,json}, check-apache-replay-provenance.py
 #       The lineage ledger. It pins the upstream repository, the fork cutoff,
@@ -57,6 +59,8 @@ readonly ALLOWED_HISTORY=(
   "CHANGELOG.md"
   "crates/wasm/CHANGELOG.md"
   "NOTICE"
+  "crates/wasm/pkg/NOTICE"
+  "crates/wasm-io/pkg/NOTICE"
   "crates/math/NOTICE"
   "scripts/check-truck-reuse-provenance.py"
   "AI-DISCLOSURE-ETHICS.md"
@@ -111,6 +115,16 @@ scan() {
 }
 
 status=0
+
+for package in crates/wasm/pkg crates/wasm-io/pkg; do
+  if [[ ! -f "$package/NOTICE" ]]; then
+    echo "Remus rename violation: missing package NOTICE: $package"
+    status=1
+  elif ! cmp -s NOTICE "$package/NOTICE"; then
+    echo "Remus rename violation: package NOTICE differs from source attribution: $package"
+    status=1
+  fi
+done
 
 content_hits=$(scan "content scan" \
   git grep -n -I -i -E "$STALE" -- "${exclude_pathspecs[@]}")

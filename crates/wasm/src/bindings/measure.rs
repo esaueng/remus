@@ -15,6 +15,22 @@ use crate::kernel::BrepKernel;
 /// clamping silently.
 const MASS_PROPERTIES_MAX_DEPTH: usize = 32;
 
+/// Native query shared by the direct binding and both batch contracts.
+pub(super) fn mesh_quality_at(
+    topo: &remus_topology::Topology,
+    solid: remus_topology::solid::SolidId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<remus_operations::tessellate::WeldedMeshQuality, remus_operations::OperationsError> {
+    let mesh = remus_operations::tessellate::tessellate_solid_for_analysis(
+        topo,
+        solid,
+        deflection,
+        angular_tol,
+    )?;
+    Ok(remus_operations::tessellate::welded_mesh_quality(&mesh))
+}
+
 /// Resolve the optional `massProperties` numerical controls onto the native
 /// [`measure::mass_properties_default_options`].
 ///
@@ -396,13 +412,7 @@ impl BrepKernel {
         validate_positive(deflection, "deflection")?;
         let angular_tol = super::tessellate::resolve_angular_tol(angular_tolerance)?;
         let solid_id = self.resolve_solid(solid)?;
-        let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
-            &self.topo,
-            solid_id,
-            deflection,
-            angular_tol,
-        )?;
-        let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
+        let quality = mesh_quality_at(&self.topo, solid_id, deflection, angular_tol)?;
         #[allow(clippy::cast_possible_truncation)]
         let result = crate::types::MeshQualityResult {
             triangle_count: quality.triangle_count as u32,
@@ -1358,6 +1368,90 @@ mod tests {
     }
 
     // ── Mesh quality ───────────────────────────────────────────────
+
+    #[test]
+    fn mesh_quality_direct_and_both_batches_preserve_display_retention() {
+        use remus_operations::tessellate::{
+            WeldedMeshQuality, disable_face_mesh_cache, enable_face_mesh_cache,
+            enable_face_mesh_cache_with_limits, face_mesh_cache_stats,
+            tessellate_solid_with_tolerance, welded_mesh_quality,
+        };
+        fn json(quality: WeldedMeshQuality) -> serde_json::Value {
+            serde_json::json!({
+                "triangleCount": quality.triangle_count,
+                "boundaryEdges": quality.boundary_edges,
+                "nonManifoldEdges": quality.non_manifold_edges,
+                "eulerCharacteristic": quality.euler_characteristic,
+                "isWatertight": quality.is_watertight(),
+            })
+        }
+        struct CacheGuard;
+        impl Drop for CacheGuard {
+            fn drop(&mut self) {
+                disable_face_mesh_cache();
+            }
+        }
+        for entry_point in 0..3 {
+            for byte_limited in [false, true] {
+                let mut kernel = BrepKernel::new();
+                disable_face_mesh_cache();
+                let _guard = CacheGuard;
+                let handle = kernel.make_box_solid(1.0, 2.0, 3.0).unwrap();
+                let solid = kernel.resolve_solid(handle).unwrap();
+                let references: Vec<_> = (0..16)
+                    .map(|i| {
+                        let mesh = tessellate_solid_with_tolerance(
+                            &kernel.topo,
+                            solid,
+                            0.02 + f64::from(i) * 0.001,
+                            0.1,
+                        )
+                        .unwrap();
+                        json(welded_mesh_quality(&mesh))
+                    })
+                    .collect();
+                enable_face_mesh_cache();
+                let shown =
+                    tessellate_solid_with_tolerance(&kernel.topo, solid, 0.05, 0.3).unwrap();
+                let display = face_mesh_cache_stats().unwrap();
+                let (max_entries, max_bytes) = if byte_limited {
+                    (64, display.retained_bytes)
+                } else {
+                    (12, usize::MAX)
+                };
+                enable_face_mesh_cache_with_limits(max_entries, max_bytes);
+                for (i, reference) in references.iter().enumerate() {
+                    let deflection = 0.02 + f64::from(u32::try_from(i).unwrap()) * 0.001;
+                    let result = if entry_point == 0 {
+                        json(super::mesh_quality_at(&kernel.topo, solid, deflection, 0.1).unwrap())
+                    } else {
+                        let input = serde_json::json!([{"op":"meshQuality", "args":{
+                            "solid":handle, "deflection":deflection, "angularTolerance":0.1,
+                        }}])
+                        .to_string();
+                        let output = if entry_point == 1 {
+                            kernel.execute_batch(&input)
+                        } else {
+                            kernel.execute_batch_v2(&input)
+                        };
+                        serde_json::from_str::<serde_json::Value>(&output).unwrap()[0]["ok"].clone()
+                    };
+                    assert_eq!(&result, reference);
+                    let stats = face_mesh_cache_stats().unwrap();
+                    assert!(stats.entries <= max_entries && stats.retained_bytes <= max_bytes);
+                }
+                let before = face_mesh_cache_stats().unwrap();
+                let replay =
+                    tessellate_solid_with_tolerance(&kernel.topo, solid, 0.05, 0.3).unwrap();
+                let after = face_mesh_cache_stats().unwrap();
+                assert_eq!(after.exact_hits - before.exact_hits, display.entries as u64);
+                assert_eq!(after.misses, before.misses);
+                assert_eq!(replay.positions, shown.positions);
+                assert_eq!(replay.indices, shown.indices);
+                assert_eq!(replay.normals, shown.normals);
+            }
+        }
+    }
 
     #[test]
     fn box_mesh_quality_is_watertight() {

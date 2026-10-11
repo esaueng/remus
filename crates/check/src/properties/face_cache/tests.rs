@@ -901,3 +901,126 @@ fn thread_volume_reads_rereference_once_enabled() {
     clear_thread_face_cache();
     set_thread_face_cache_limits(0, 0);
 }
+
+/// A lightweight probe retains the full rule's area, volume and vector area
+/// bits on each qualified path, including rational and reversed NURBS faces.
+#[test]
+fn volume_only_matches_full_rule_area_volume_and_flux_bits() {
+    let mut topo = Topology::new();
+    let mut faces = path_faces(&mut topo);
+    let band = torus_band(&mut topo, Point3::new(13.0, -7.0, 5.0), 0);
+    let data = topo.face(band).unwrap().clone();
+    let FaceSurface::Torus(torus) = data.surface() else {
+        panic!("torus fixture");
+    };
+    let periodic = remus_geometry::convert::surface_to_nurbs::torus_to_nurbs(torus).unwrap();
+    assert!(periodic.is_periodic_v());
+    let periodic = topo.add_face(Face::new(
+        data.outer_wire(),
+        data.inner_wires().to_vec(),
+        FaceSurface::Nurbs(periodic),
+    ));
+    faces.push(("periodic rational NURBS", periodic));
+    let original = nurbs_pillow(&mut topo, 0.4);
+    let data = topo.face(original).unwrap().clone();
+    let FaceSurface::Nurbs(surface) = data.surface() else {
+        panic!("NURBS fixture");
+    };
+    let mut weights = surface.weights().to_vec();
+    weights[1][1] = 1.7;
+    weights[2][2] = 0.4;
+    let rational = NurbsSurface::new(
+        surface.degree_u(),
+        surface.degree_v(),
+        surface.knots_u().to_vec(),
+        surface.knots_v().to_vec(),
+        surface.control_points().to_vec(),
+        weights,
+    )
+    .unwrap();
+    let rational = topo.add_face(Face::new(
+        data.outer_wire(),
+        data.inner_wires().to_vec(),
+        FaceSurface::Nurbs(rational),
+    ));
+    faces.push(("rational NURBS", rational));
+    let reversed = {
+        let mut copy = topo.face(rational).unwrap().clone();
+        copy.set_reversed(true);
+        topo.add_face(copy)
+    };
+    faces.push(("reversed rational NURBS", reversed));
+    for order in [3, 5, 8] {
+        for reference in [origin(), Point3::new(0.5, -0.25, 900.0)] {
+            for &(label, face) in &faces {
+                let (full, full_flux) =
+                    face_integrator::integrate_face_fixed_flux_about(&topo, face, order, reference)
+                        .unwrap();
+                let (light, light_flux) = face_integrator::integrate_face_fixed_volume_flux_about(
+                    &topo, face, order, reference,
+                )
+                .unwrap();
+                assert_eq!(
+                    light.area.to_bits(),
+                    full.area.to_bits(),
+                    "{label}, order {order}"
+                );
+                assert_eq!(
+                    light.volume.to_bits(),
+                    full.volume.to_bits(),
+                    "{label}, order {order}"
+                );
+                let flux_bits = |v: Option<Vec3>| {
+                    v.map(|v| [v.x().to_bits(), v.y().to_bits(), v.z().to_bits()])
+                };
+                assert_eq!(
+                    flux_bits(light_flux),
+                    flux_bits(full_flux),
+                    "{label}, order {order}"
+                );
+            }
+        }
+    }
+}
+
+/// A volume-only reading at exactly the same reference must not populate
+/// centroid/inertia answers; a complete entry may still serve volume reads.
+#[test]
+fn volume_only_cache_entry_cannot_answer_full_properties() {
+    let mut topo = Topology::new();
+    let face = nurbs_pillow(&mut topo, 0.4);
+    let reference = Point3::new(0.2, -0.3, 0.4);
+    let direct = fresh(&topo, face, reference);
+    let mut cache = FaceIntegralCache::new();
+    let light = cache
+        .integrate_face_volume_about(&topo, face, 5, reference)
+        .unwrap();
+    assert_eq!(light.area.to_bits(), direct.area.to_bits());
+    assert_eq!(light.volume.to_bits(), direct.volume.to_bits());
+    assert_eq!(cache.stats().misses, 1);
+    let full = cache
+        .integrate_face_fixed_about(&topo, face, 5, reference)
+        .unwrap();
+    assert_eq!(bits(&full), bits(&direct));
+    assert_eq!(
+        cache.stats().misses,
+        2,
+        "partial entry must miss even at the same reference"
+    );
+    let again = cache
+        .integrate_face_fixed_about(&topo, face, 5, reference)
+        .unwrap();
+    assert_eq!(bits(&again), bits(&direct));
+    assert_eq!(cache.stats().hits, 1);
+
+    let mut full_first = FaceIntegralCache::new();
+    full_first
+        .integrate_face_fixed_about(&topo, face, 5, reference)
+        .unwrap();
+    let light = full_first
+        .integrate_face_volume_about(&topo, face, 5, reference)
+        .unwrap();
+    assert_eq!(light.area.to_bits(), direct.area.to_bits());
+    assert_eq!(light.volume.to_bits(), direct.volume.to_bits());
+    assert_eq!((full_first.stats().misses, full_first.stats().hits), (1, 1));
+}

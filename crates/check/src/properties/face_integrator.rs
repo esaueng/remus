@@ -34,6 +34,9 @@ struct IntegrationRule<'a> {
     knots: Option<(&'a [f64], &'a [f64])>,
     /// Point the positional integrands are taken about (B58).
     reference: Point3,
+    /// Omit unused moments in fixed orientation reads. Keep this a runtime
+    /// policy so full and volume requests share the large integration code.
+    volume_only: bool,
     /// Where a fixed-rule path records the face's vector area `∫ n dA`, taken
     /// over exactly the samples (or the closed form) its volume came from;
     /// see [`integrate_face_fixed_flux_about`]. Adaptive paths leave it unset.
@@ -64,6 +67,7 @@ impl<'a> IntegrationRule<'a> {
             adaptive: self.requested_refinement(),
             knots: self.knots,
             reference: self.reference,
+            volume_only: self.volume_only,
             flux: self.flux,
         }
     }
@@ -200,6 +204,7 @@ pub fn integrate_face_fixed_about(
             adaptive: None,
             knots: None,
             reference,
+            volume_only: false,
             flux: None,
         },
     )
@@ -213,7 +218,7 @@ pub fn integrate_face_fixed_about(
 /// with `N = Σ wᵢ nᵢ` the contribution about another reference is
 /// `volume − (1/3)(R' − R) · N` — the same sum regrouped, equal to a fresh
 /// integration about `R'` up to rounding. `None` when the path that measured
-/// the face does not report it (none of the fixed paths do so today).
+/// the face does not report it.
 ///
 /// # Errors
 ///
@@ -223,6 +228,34 @@ pub(crate) fn integrate_face_fixed_flux_about(
     face_id: FaceId,
     gauss_order: usize,
     reference: Point3,
+) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
+    integrate_face_fixed_flux_impl(topo, face_id, gauss_order, reference, false)
+}
+
+/// Fixed-rule area, signed volume and vector area only.
+///
+/// Uses exactly the full fixed rule's samples and accumulation order for
+/// these three quantities. Other contribution fields are unspecified and
+/// must never answer a full-property request.
+///
+/// # Errors
+///
+/// Exactly the errors of [`integrate_face_fixed_about`].
+pub(crate) fn integrate_face_fixed_volume_flux_about(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+    reference: Point3,
+) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
+    integrate_face_fixed_flux_impl(topo, face_id, gauss_order, reference, true)
+}
+
+fn integrate_face_fixed_flux_impl(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+    reference: Point3,
+    volume_only: bool,
 ) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
     if ![reference.x(), reference.y(), reference.z()]
         .iter()
@@ -241,6 +274,7 @@ pub(crate) fn integrate_face_fixed_flux_about(
             adaptive: None,
             knots: None,
             reference,
+            volume_only,
             flux: Some(&flux),
         },
     )?;
@@ -268,6 +302,7 @@ pub fn integrate_face_area(
             adaptive: None,
             knots: None,
             reference: Point3::new(0.0, 0.0, 0.0),
+            volume_only: false,
             flux: None,
         },
     )?
@@ -335,6 +370,7 @@ pub fn integrate_face_about(
             adaptive: Some(options),
             knots: None,
             reference,
+            volume_only: false,
             flux: None,
         },
     )
@@ -876,6 +912,7 @@ pub fn integrate_torus_band_face_about(
             adaptive: None,
             knots: None,
             reference,
+            volume_only: false,
             flux: None,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
@@ -1012,7 +1049,10 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
         .map(Some);
     }
     let gauss = gauss_legendre_points(order);
-    let mut acc = Accumulator::default();
+    let mut acc = Accumulator {
+        volume_only: rule.volume_only,
+        ..Accumulator::default()
+    };
     let mut scratch = DerivativeScratch::new();
     for interval in breaks.windows(2) {
         let v_scale = (interval[1] - interval[0]) / 2.0;
@@ -3057,6 +3097,8 @@ fn integrate_planar_face_exact(
 /// Running totals of a face's contribution over quadrature abscissae.
 #[derive(Default)]
 struct Accumulator {
+    /// Runtime fixed-rule policy; adaptive/full accumulation leaves it false.
+    volume_only: bool,
     area: f64,
     vol: f64,
     mx: f64,
@@ -3123,6 +3165,13 @@ impl Accumulator {
         self.nx += w * n.x();
         self.ny += w * n.y();
         self.nz += w * n.z();
+
+        // A strict orientation probe needs no centroid or inertia moments.
+        // Keep area, volume and flux arithmetic above identical to the full
+        // fixed rule so cold readings and reference/translation reuse agree.
+        if self.volume_only {
+            return;
+        }
 
         // Volume moments via divergence theorem:
         // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
@@ -3364,7 +3413,10 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     let nu = patch_count(u_range.1 - u_range.0, scale.u);
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
-    let mut acc = Accumulator::default();
+    let mut acc = Accumulator {
+        volume_only: rule.volume_only,
+        ..Accumulator::default()
+    };
     // One scratch per face integration: every NURBS abscissa below reuses
     // these buffers instead of allocating a derivative table each time.
     // Integration is single-threaded within a face, so one scratch suffices.
