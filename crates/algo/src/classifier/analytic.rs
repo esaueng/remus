@@ -1123,6 +1123,25 @@ fn try_build_composite_classifier(
     let outer = build_box(&outer_planes)?;
     let inner = build_box(&inner_planes)?;
 
+    // The vertex centroid only proposes an outer envelope; it does not prove
+    // that the envelope contains the solid. Retain the boundary-vertex check
+    // for planar composites: a contrary witness invalidates this shortcut,
+    // so the ray classifier must use the full boundary.
+    for &fid in shell.faces() {
+        let face = topo.face(fid).ok()?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).ok()?.edges() {
+                let edge = topo.edge(oe.edge()).ok()?;
+                for vid in [edge.start(), edge.end()] {
+                    let point = topo.vertex(vid).ok()?.point();
+                    if outer.classify(point, tol) == Some(FaceClass::Outside) {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
     Some(AnalyticClassifier::Composite {
         outer: std::boxed::Box::new(outer),
         inner: std::boxed::Box::new(inner),
