@@ -1886,6 +1886,10 @@ export class BrepKernel {
      */
     filletWithEvolution(solid: number, edge_handles: Uint32Array, radius: number): FaceEvolutionPayloadV1;
     /**
+     * Fits approximate cubic carrier geometry with explicit position/derivative tolerances.
+     */
+    fitCubicCurve(edge: number, options_json: string): string;
+    /**
      * Fix face orientations to ensure consistent outward normals.
      *
      * Returns the number of faces fixed.
@@ -3867,6 +3871,14 @@ export class BrepKernel {
      */
     shellWithQuality(solid: number, thickness: number, open_faces: Uint32Array, approximation_spacing?: number | null): ShellQualityResult;
     /**
+     * Returns simplified curve carrier geometry; the source edge remains unchanged.
+     */
+    simplifyNurbsCurve(edge: number, options_json: string): string;
+    /**
+     * Returns simplified surface carrier geometry; trims and topology remain unchanged.
+     */
+    simplifyNurbsSurface(face: number, options_json: string): string;
+    /**
      * Add an arc to a sketch (defined by center, start, end point indices).
      * Returns the arc index.
      */
@@ -3994,6 +4006,14 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
     surfaceArea(solid: number, deflection: number): number;
+    /**
+     * Returns reduced U carrier geometry and a certified bound as a JSON envelope.
+     */
+    surfaceKnotRemoveU(face: number, knot: number, options_json: string): string;
+    /**
+     * Returns reduced V carrier geometry and a certified bound as a JSON envelope.
+     */
+    surfaceKnotRemoveV(face: number, knot: number, options_json: string): string;
     /**
      * Sweep a planar face along a NURBS curve path to create a solid.
      *

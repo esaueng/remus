@@ -9910,6 +9910,98 @@ fn fuse_acceptance_detects_small_tool_lost_from_long_blank() {
 }
 
 #[test]
+fn internal_queries_preserve_display_meshes_and_query_results() {
+    use crate::tessellate::{
+        disable_face_mesh_cache, enable_face_mesh_cache, enable_face_mesh_cache_with_limits,
+        face_mesh_cache_stats, tessellate_solid_grouped_with_tolerance,
+    };
+    struct CacheGuard;
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            disable_face_mesh_cache();
+        }
+    }
+    for query_kind in 0..4 {
+        for byte_limited in [false, true] {
+            disable_face_mesh_cache();
+            let _guard = CacheGuard;
+            let mut topo = Topology::new();
+            let display = crate::primitives::make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+            let candidates: Vec<_> = (0..16)
+                .map(|i| {
+                    let d = f64::from(i) * 0.1;
+                    crate::primitives::make_box(&mut topo, 1.25 + d, 2.5 + d, 3.75 + d).unwrap()
+                })
+                .collect();
+            let query = |solid| -> Vec<u64> {
+                match query_kind {
+                    0 => intersection_boundary_samples(&topo, solid)
+                        .unwrap()
+                        .into_iter()
+                        .flat_map(|p| [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()])
+                        .collect(),
+                    1 => {
+                        let (coarse, fine) = intersection_audit_mesh_volumes(&topo, solid).unwrap();
+                        vec![coarse.to_bits(), fine.to_bits()]
+                    }
+                    2 => vec![
+                        crate::classify::winding_number(
+                            &topo,
+                            solid,
+                            Point3::new(0.5, 0.5, 0.5),
+                            0.05,
+                        )
+                        .unwrap()
+                        .to_bits(),
+                    ],
+                    _ => vec![match crate::classify::classify_point_robust(
+                        &topo,
+                        solid,
+                        Point3::new(0.5, 0.5, 0.5),
+                        0.05,
+                        1e-7,
+                    )
+                    .unwrap()
+                    {
+                        crate::classify::PointClassification::Inside => 1,
+                        crate::classify::PointClassification::Outside => 0,
+                        crate::classify::PointClassification::OnBoundary => 2,
+                    }],
+                }
+            };
+            let references: Vec<_> = candidates.iter().map(|&solid| query(solid)).collect();
+            enable_face_mesh_cache();
+            let shown = tessellate_solid_grouped_with_tolerance(&topo, display, 0.05, 0.3).unwrap();
+            let display_stats = face_mesh_cache_stats().unwrap();
+            let (max_entries, max_bytes) = if byte_limited {
+                (64, display_stats.retained_bytes)
+            } else {
+                (12, usize::MAX)
+            };
+            enable_face_mesh_cache_with_limits(max_entries, max_bytes);
+            for (&solid, reference) in candidates.iter().zip(&references) {
+                assert_eq!(&query(solid), reference);
+                let stats = face_mesh_cache_stats().unwrap();
+                assert!(stats.entries <= max_entries && stats.retained_bytes <= max_bytes);
+            }
+            let before = face_mesh_cache_stats().unwrap();
+            let replay =
+                tessellate_solid_grouped_with_tolerance(&topo, display, 0.05, 0.3).unwrap();
+            let after = face_mesh_cache_stats().unwrap();
+            assert_eq!(
+                after.exact_hits - before.exact_hits,
+                display_stats.entries as u64
+            );
+            assert_eq!(after.misses, before.misses);
+            assert_eq!(replay.0.positions, shown.0.positions);
+            assert_eq!(replay.0.indices, shown.0.indices);
+            assert_eq!(replay.0.normals, shown.0.normals);
+            assert_eq!(replay.1, shown.1);
+        }
+    }
+}
+
+#[test]
 fn intersection_audit_uses_the_trimmed_torus_boundary() {
     let mut topo = Topology::new();
     let torus = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 32).unwrap();

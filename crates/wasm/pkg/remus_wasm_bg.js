@@ -2413,6 +2413,26 @@ export class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Fits approximate cubic carrier geometry with explicit position/derivative tolerances.
+     * @param {number} edge
+     * @param {string} options_json
+     * @returns {string}
+     */
+    fitCubicCurve(edge, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_fitCubicCurve(this.__wbg_ptr, edge, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Fix face orientations to ensure consistent outward normals.
      *
      * Returns the number of faces fixed.
@@ -6870,6 +6890,46 @@ export class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Returns simplified curve carrier geometry; the source edge remains unchanged.
+     * @param {number} edge
+     * @param {string} options_json
+     * @returns {string}
+     */
+    simplifyNurbsCurve(edge, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_simplifyNurbsCurve(this.__wbg_ptr, edge, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Returns simplified surface carrier geometry; trims and topology remain unchanged.
+     * @param {number} face
+     * @param {string} options_json
+     * @returns {string}
+     */
+    simplifyNurbsSurface(face, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_simplifyNurbsSurface(this.__wbg_ptr, face, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Add an arc to a sketch (defined by center, start, end point indices).
      * Returns the arc index.
      * @param {number} sketch
@@ -7169,6 +7229,48 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0];
+    }
+    /**
+     * Returns reduced U carrier geometry and a certified bound as a JSON envelope.
+     * @param {number} face
+     * @param {number} knot
+     * @param {string} options_json
+     * @returns {string}
+     */
+    surfaceKnotRemoveU(face, knot, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_surfaceKnotRemoveU(this.__wbg_ptr, face, knot, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Returns reduced V carrier geometry and a certified bound as a JSON envelope.
+     * @param {number} face
+     * @param {number} knot
+     * @param {string} options_json
+     * @returns {string}
+     */
+    surfaceKnotRemoveV(face, knot, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_surfaceKnotRemoveV(this.__wbg_ptr, face, knot, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Sweep a planar face along a NURBS curve path to create a solid.

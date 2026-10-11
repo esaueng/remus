@@ -55,8 +55,8 @@ pub use mesh_ops::{
 };
 pub use solid::{
     tessellate_body_with_tolerance, tessellate_sheet, tessellate_sheet_with_tolerance,
-    tessellate_solid, tessellate_solid_for_boolean, tessellate_solid_grouped_with_tolerance,
-    tessellate_solid_with_tolerance,
+    tessellate_solid, tessellate_solid_for_analysis, tessellate_solid_for_boolean,
+    tessellate_solid_grouped_with_tolerance, tessellate_solid_with_tolerance,
 };
 pub(crate) use solid::{tessellate_closed_face_set, tessellate_solid_for_measurement};
 
