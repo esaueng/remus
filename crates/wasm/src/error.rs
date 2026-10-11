@@ -445,6 +445,31 @@ impl From<remus_math::MathError> for StructuredWasmError {
     }
 }
 
+impl From<remus_math::nurbs::reuse::ReuseError> for StructuredWasmError {
+    fn from(error: remus_math::nurbs::reuse::ReuseError) -> Self {
+        let diagnostic = error.diagnostic();
+        let category = diagnostic.category();
+        let code = match category {
+            FailureCategory::InvalidInput => WasmErrorCode::InvalidArgument,
+            FailureCategory::ResourceLimit => WasmErrorCode::ResourceLimitExceeded,
+            FailureCategory::Cancelled => WasmErrorCode::Cancelled,
+            _ => WasmErrorCode::OperationFailed,
+        };
+        let mut structured = Self::new(code, error.to_string()).with_kernel_diagnostic(&error);
+        structured.category = category.as_str();
+        for (key, value) in diagnostic.details() {
+            use remus_math::diagnostic::DetailValue;
+            let value = match value {
+                DetailValue::Int(value) => Value::from(*value),
+                DetailValue::Float(value) => Value::from(*value),
+                DetailValue::Text(value) => Value::from(value.clone()),
+            };
+            structured.details.insert((*key).to_owned(), value);
+        }
+        structured
+    }
+}
+
 impl From<remus_check::CheckError> for StructuredWasmError {
     fn from(error: remus_check::CheckError) -> Self {
         let message = error.to_string();

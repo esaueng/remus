@@ -4,3 +4,10 @@ This product includes software developed by the brepkit contributors.
 This distribution contains modifications maintained by Esau Engineering.
 
 The project is distributed under the Apache License, Version 2.0.
+
+This product includes modified portions of Truck's truck-geometry package,
+developed by the Truck contributors (https://github.com/ricosjp/truck),
+distributed under the Apache License, Version 2.0. The reused portions are
+pinned to commit 88ed005249e5e3a6b07f62425399435905cd3ab6. Their adaptations
+and source provenance are recorded in
+docs/production-readiness/truck-reuse-provenance.md.

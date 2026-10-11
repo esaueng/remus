@@ -19,7 +19,12 @@ pub use remus_topology::TopologyError;
 pub use remus_math::aabb::Aabb3;
 pub use remus_math::context::{CancellationToken, FallbackPolicy, OperationContext, WorkBudgets};
 pub use remus_math::mat::Mat4;
-pub use remus_math::nurbs::NurbsCurve;
+pub use remus_math::nurbs::cubic_fit::{CubicFitOptions, CubicFitOutcome, fit_cubic_curve};
+pub use remus_math::nurbs::reduction::{
+    simplify_curve, simplify_surface, surface_knot_remove_u, surface_knot_remove_v,
+};
+pub use remus_math::nurbs::reuse::{ReductionOptions, ReductionOutcome, ReuseError};
+pub use remus_math::nurbs::{NurbsCurve, NurbsSurface};
 pub use remus_math::vec::{Point3, Vec3};
 
 // Session-owned topology, handles, journal, and persistent references.
@@ -108,5 +113,10 @@ pub mod prelude {
         tessellate_with_tolerance, tessellate_with_uvs, validate_solid,
         validate_solid_with_options, welded_mesh_quality, wire_length, write_step,
         write_step_with_options,
+    };
+    pub use crate::{
+        CubicFitOptions, CubicFitOutcome, NurbsSurface, ReductionOptions, ReductionOutcome,
+        ReuseError, fit_cubic_curve, simplify_curve, simplify_surface, surface_knot_remove_u,
+        surface_knot_remove_v,
     };
 }

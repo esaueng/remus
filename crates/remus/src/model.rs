@@ -4,7 +4,9 @@ use remus_io::step::{StepReadResult, StepWriteOptions};
 use remus_math::aabb::Aabb3;
 use remus_math::context::OperationContext;
 use remus_math::mat::Mat4;
-use remus_math::nurbs::NurbsCurve;
+use remus_math::nurbs::cubic_fit::{CubicFitOptions, CubicFitOutcome};
+use remus_math::nurbs::reuse::{ReductionOptions, ReductionOutcome, ReuseError};
+use remus_math::nurbs::{NurbsCurve, NurbsSurface};
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::BlendResult;
 use remus_operations::boolean::{BooleanOp, BooleanOutcome};
@@ -79,6 +81,73 @@ impl Model {
     #[must_use]
     pub const fn context(&self) -> &OperationContext {
         &self.context
+    }
+
+    /// Removes one U knot from a NURBS carrier using the session policy.
+    ///
+    /// Returns carrier geometry and its whole-domain deviation bound. This
+    /// does not replace a face or reconstruct its trims.
+    ///
+    /// # Errors
+    /// Returns a typed refusal for unsupported geometry, tolerance, or resources.
+    pub fn surface_knot_remove_u(
+        &self,
+        surface: &NurbsSurface,
+        knot: f64,
+        options: &ReductionOptions,
+    ) -> Result<ReductionOutcome<NurbsSurface>, ReuseError> {
+        remus_math::nurbs::reduction::surface_knot_remove_u(surface, knot, options, &self.context)
+    }
+
+    /// Removes one V knot from a NURBS carrier using the session policy.
+    ///
+    /// # Errors
+    /// Returns a typed refusal for unsupported geometry, tolerance, or resources.
+    pub fn surface_knot_remove_v(
+        &self,
+        surface: &NurbsSurface,
+        knot: f64,
+        options: &ReductionOptions,
+    ) -> Result<ReductionOutcome<NurbsSurface>, ReuseError> {
+        remus_math::nurbs::reduction::surface_knot_remove_v(surface, knot, options, &self.context)
+    }
+
+    /// Simplifies a curve carrier with a bound against the original geometry.
+    ///
+    /// # Errors
+    /// Returns a typed refusal for unsupported geometry, tolerance, or resources.
+    pub fn simplify_nurbs_curve(
+        &self,
+        curve: &NurbsCurve,
+        options: &ReductionOptions,
+    ) -> Result<ReductionOutcome<NurbsCurve>, ReuseError> {
+        remus_math::nurbs::reduction::simplify_curve(curve, options, &self.context)
+    }
+
+    /// Simplifies both surface axes with a bound against the original carrier.
+    ///
+    /// # Errors
+    /// Returns a typed refusal for unsupported geometry, tolerance, or resources.
+    pub fn simplify_nurbs_surface(
+        &self,
+        surface: &NurbsSurface,
+        options: &ReductionOptions,
+    ) -> Result<ReductionOutcome<NurbsSurface>, ReuseError> {
+        remus_math::nurbs::reduction::simplify_surface(surface, options, &self.context)
+    }
+
+    /// Fits disclosed cubic carrier geometry under the session's approximation policy.
+    ///
+    /// Bounds cover position and first derivative in the original parameter.
+    ///
+    /// # Errors
+    /// Returns a typed refusal for unsupported geometry, tolerance, or resources.
+    pub fn fit_cubic_curve(
+        &self,
+        curve: &NurbsCurve,
+        options: &CubicFitOptions,
+    ) -> Result<CubicFitOutcome, ReuseError> {
+        remus_math::nurbs::cubic_fit::fit_cubic_curve(curve, options, &self.context)
     }
 
     /// Returns the operation policy for in-place caller configuration.
