@@ -1178,6 +1178,27 @@ fn try_build_composite_classifier(
     let outer = build_classifier(&outer_planes, &outer_cylinders, &outer_cones)?;
     let inner = build_classifier(&inner_planes, &inner_cylinders, &inner_cones)?;
 
+    // The vertex centroid only proposes an outer envelope; it does not prove
+    // that the envelope contains the solid. In a cup with a centered floor
+    // bore, it lies inside the bore's cylinder, so the cylinder is mistakenly
+    // added as an outer constraint and excludes all four walls. Every boundary
+    // vertex must lie in or on an actual outer envelope. A contrary witness
+    // invalidates this shortcut; let the ray classifier use the full boundary.
+    for &fid in shell.faces() {
+        let face = topo.face(fid).ok()?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).ok()?.edges() {
+                let edge = topo.edge(oe.edge()).ok()?;
+                for vid in [edge.start(), edge.end()] {
+                    let point = topo.vertex(vid).ok()?.point();
+                    if outer.classify(point, tol) == Some(FaceClass::Outside) {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
     Some(AnalyticClassifier::Composite {
         outer: std::boxed::Box::new(outer),
         inner: std::boxed::Box::new(inner),
