@@ -418,6 +418,24 @@ pub(super) fn march_with_branches(
     Ok((result, branch_seeds))
 }
 
+/// `cos 30° = √3/2` rounded to nearest, which is the largest `f64` below
+/// `√3/2`.
+///
+/// The branch gate compares the cosine itself, not `acos` of it: libms round
+/// `acos` differently in the last bit (macOS returns `30°.to_radians()`
+/// exactly for the cosine one ULP above this constant; glibc and wasm32 do
+/// not), so an angle comparison's boundary rests on the host libm. One `f64`
+/// comparison against a literal is bit-identical everywhere.
+const COS_MIN_BRANCH_ANGLE: f64 = 0.866_025_403_784_438_6;
+
+/// Whether a direction whose `|cos|` with the incoming tangent is `cos_angle`
+/// lies more than 30° from it. Exact for every `f64`: since no `f64` equals
+/// `√3/2`, `cos_angle < √3/2` holds exactly when `cos_angle <=` its
+/// largest `f64` lower bound. `NaN` is never a branch.
+fn exceeds_min_branch_angle(cos_angle: f64) -> bool {
+    cos_angle <= COS_MIN_BRANCH_ANGLE
+}
+
 /// Detect the transverse branch at a confirmed crossing.
 ///
 /// At a point where `|n1 x n2|` is small, the orthonormal difference `Q` is
@@ -439,7 +457,6 @@ fn find_branch_directions(
     context: &OperationContext,
     scratch: &mut SsiScratch,
 ) -> Result<Vec<IntersectionPoint>, MathError> {
-    let min_branch_angle = 30.0_f64.to_radians();
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
 
@@ -512,7 +529,7 @@ fn find_branch_directions(
                 }
                 if let Ok(dir) = dvec.normalize() {
                     let cos_angle = dir.dot(current_tangent).abs().clamp(-1.0, 1.0);
-                    if cos_angle.acos() > min_branch_angle {
+                    if exceeds_min_branch_angle(cos_angle) {
                         // Deduplicate seeds on the same arm.
                         let dup = branch_seeds.iter().any(|s: &IntersectionPoint| {
                             (s.point - refined.point).length() < tolerance * 100.0
@@ -1015,6 +1032,20 @@ fn at_boundary(state: &[f64; 4], s1: &NurbsSurface, s2: &NurbsSurface) -> bool {
         .any(|((&s, &c), &is_per)| !is_per && (s - c).abs() > f64::EPSILON)
 }
 
+/// `cos 10°` rounded to nearest, which lies below `cos 10°`: a step whose
+/// tangent-turn cosine is `<=` it turned more than 10°, exactly.
+///
+/// The step control compares cosines against literals, never `acos` of
+/// them, for the reason given at [`COS_MIN_BRANCH_ANGLE`]. The side each
+/// literal rounds to was checked at 400 bits; it makes `<=` and `>=` the
+/// exact angle comparisons, matching the decisions `acos` gave on macOS,
+/// wasm32, and a correctly rounded `acos` around each threshold.
+const COS_MAX_TURN: f64 = 0.984_807_753_012_208;
+
+/// `cos 2°` rounded to nearest, which lies above `cos 2°`: a step whose
+/// tangent-turn cosine is `>=` it turned less than 2°, exactly.
+const COS_MIN_TURN: f64 = 0.999_390_827_019_095_8;
+
 /// March in one direction along the intersection curve using RKF45
 /// adaptive stepping with closed-loop detection and curvature-based
 /// step adaptation.
@@ -1054,9 +1085,6 @@ fn march_direction(
     // full RKF45 + Newton cycles.
     let h_min = (step_size * 1e-3).max(tolerance);
     let max_h = step_size * 4.0;
-    // Angular thresholds in radians for curvature adaptation.
-    let max_angle = 10.0_f64.to_radians(); // halve step if tangent turns > 10 deg
-    let min_angle = 2.0_f64.to_radians(); // double step if tangent turns < 2 deg
 
     // Track previous 3D tangent for angular deviation.
     let mut prev_tangent: Option<Vec3> = {
@@ -1156,7 +1184,6 @@ fn march_direction(
 
             if let (Some(prev_t), Some(cur_t)) = (prev_tangent, cur_tangent) {
                 let cos_angle = prev_t.dot(cur_t).clamp(-1.0, 1.0);
-                let angle = cos_angle.acos();
 
                 if cos_angle < 0.0 {
                     // Turning point detected: tangent reversed direction.
@@ -1188,10 +1215,10 @@ fn march_direction(
                         break;
                     }
                     continue;
-                } else if angle > max_angle && h > h_min {
+                } else if cos_angle <= COS_MAX_TURN && h > h_min {
                     // High curvature -- reduce step size for next iteration.
                     h = (h * 0.5).max(h_min);
-                } else if angle < min_angle {
+                } else if cos_angle >= COS_MIN_TURN {
                     // Low curvature -- increase step size.
                     h = (h * 2.0).min(max_h);
                 }
