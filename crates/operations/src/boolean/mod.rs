@@ -3298,13 +3298,19 @@ fn operands_are_represented(
                 probes.push(c + Vec3::new(0.0, d.y() * sign, 0.0));
                 probes.push(c + Vec3::new(0.0, 0.0, d.z() * sign));
             }
-            let inside = |s: SolidId, p: Point3| {
+            // One classifier per operand: each tessellates its solid once for
+            // all seven probes instead of once per probe point.
+            let mut in_b = crate::classify::RobustClassifier::new(topo, b, 0.1, tol.linear);
+            let mut in_a = crate::classify::RobustClassifier::new(topo, a, 0.1, tol.linear);
+            let inside = |classifier: &mut crate::classify::RobustClassifier<'_>, p: Point3| {
                 matches!(
-                    crate::classify::classify_point_robust(topo, s, p, 0.1, tol.linear),
+                    classifier.classify(p),
                     Ok(crate::classify::PointClassification::Inside)
                 )
             };
-            !probes.iter().any(|&p| inside(b, p) && inside(a, p))
+            !probes
+                .iter()
+                .any(|&p| inside(&mut in_b, p) && inside(&mut in_a, p))
         }
         BooleanOp::Intersect => true,
     }
