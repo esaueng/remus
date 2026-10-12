@@ -1518,6 +1518,38 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
     Some(flux > 0.0)
 }
 
+/// Whether every edge the shell uses exactly twice is used once in each
+/// direction, with face reversal applied.
+///
+/// The same rule as the check crate's shell-orientation validation, kept here
+/// because `algo` cannot depend on `check`. Purely topological: it compares
+/// edge identities and use directions, with no tolerance.
+fn shell_orientation_is_consistent(topo: &Topology, faces: &[FaceId]) -> bool {
+    let mut uses: DetHashMap<EdgeId, (u32, u32)> = DetHashMap::default();
+    for &fid in faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        let reversed = face.is_reversed();
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            let Ok(wire) = topo.wire(wire_id) else {
+                return false;
+            };
+            for oe in wire.edges() {
+                let entry = uses.entry(oe.edge()).or_insert((0, 0));
+                if oe.is_forward() == reversed {
+                    entry.1 += 1;
+                } else {
+                    entry.0 += 1;
+                }
+            }
+        }
+    }
+    uses.values()
+        .all(|&(forward, backward)| forward + backward != 2 || (forward == 1 && backward == 1))
+}
+
 /// Classify shells as Growth (outer) or Hole (inner).
 ///
 /// Uses signed volume: positive → outward normals (growth),
@@ -1564,7 +1596,11 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
             // volume degenerates to zero (e.g. the B64 wall caps) can sign-flip
             // to a tiny negative under translation rounding; outward flux
             // keeps such lumps as growth, inward (or inconclusive) stays hole.
-            shell_is_outward_oriented(topo, shell).unwrap_or(false)
+            // The flux only means something on a consistently oriented shell:
+            // a negative shell whose shared edges disagree on direction is a
+            // mis-assembled fragment, not a growth lump, and stays a hole.
+            shell_orientation_is_consistent(topo, shell)
+                && shell_is_outward_oriented(topo, shell).unwrap_or(false)
         };
         if std::env::var("BK_AREAS").is_ok() {
             let mut mix: DetHashMap<&str, usize> = DetHashMap::default();
