@@ -657,4 +657,7 @@ nothing.
   hole.
 - **Wider coverage:** fuse and intersect, cavity shells, and faces with
   stored pcurves (NURBS), which the path declines today.
-- **Exposure:** a WASM switch, so the app can try the path.
+- **Exposure:** done. The WASM kernel exposes `setStoreLocalCuts(enabled)`
+  and `storeLocalCutsEnabled()`, direct and in `executeBatch`. The switch is
+  off by default and set per thread, so it applies to the whole module
+  instance.

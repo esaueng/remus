@@ -577,6 +577,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Per-edge convexity + face material-sense qualification (B16) | `bindings/qualify_edge_relations_tests.rs` |
 | Ordered wire traversal contract (B16) | `bindings/wire_traversal_contract_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
+| Store-local cut switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)
