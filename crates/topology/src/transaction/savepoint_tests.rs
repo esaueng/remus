@@ -993,6 +993,18 @@ struct Staged {
     edge: crate::EdgeId,
 }
 
+/// `wire` traversed the other way: reversed use order, flipped orientations.
+fn reversed_wire(t: &Topology, wire: crate::WireId) -> Result<crate::wire::Wire, TopologyError> {
+    let wire = t.wire(wire)?;
+    let uses = wire
+        .edges()
+        .iter()
+        .rev()
+        .map(|used| crate::wire::OrientedEdge::new(used.edge(), !used.is_forward()))
+        .collect();
+    crate::wire::Wire::new(uses, wire.is_closed())
+}
+
 // Every stage rewrites entities the same scope allocated, including from
 // nested scopes (where they count as pre-existing) and after re-deriving or
 // retiring them. Each prefix can fail.
@@ -1052,8 +1064,7 @@ fn rewrite_own_allocations(
                     t.face_mut(face)?.set_reversed(false);
                     t.edge_mut(edge)?.set_trim(Some((0.25, 0.5)));
                     let wire = t.face(face)?.outer_wire();
-                    t.wire_mut(wire)?.edges_mut().reverse();
-                    let replacement = t.wire(wire)?.clone();
+                    let replacement = reversed_wire(t, wire)?;
                     t.replace_boundary_wire(wire, replacement)?;
                     t.set_face_attributes(face, attributes("inner"))?;
                     t.delete_solid(solid)
@@ -1077,8 +1088,12 @@ fn rewrite_own_allocations(
                 })?;
             }
             6 => {
+                // Rewrites the wire slot and re-derives the face's loops in
+                // the allocating scope (the second pass also rewrites the
+                // first pass's wire).
                 let wire = t.face(face)?.outer_wire();
-                t.wire_mut(wire)?.edges_mut().reverse();
+                let replacement = reversed_wire(t, wire)?;
+                t.replace_boundary_wire(wire, replacement)?;
                 t.build_face_loops(face)?;
             }
             7 => {
