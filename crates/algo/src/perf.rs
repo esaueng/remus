@@ -89,6 +89,8 @@ std::thread_local! {
     static JUNCTION_CURVE_SCANS: Cell<u64> = const { Cell::new(0) };
     static FACE_EXTENT_BUILDS: Cell<u64> = const { Cell::new(0) };
     static HOLE_CONTAINMENT_SAMPLINGS: Cell<u64> = const { Cell::new(0) };
+    static FACE_BBOX_BUILDS: Cell<u64> = const { Cell::new(0) };
+    static FACE_OUTLINE_SAMPLINGS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -321,6 +323,21 @@ pub(crate) fn bump_face_extent_build() {
     increment(&FACE_EXTENT_BUILDS);
 }
 
+/// Count one sampled phase-FF face box. Crate-internal.
+#[inline]
+pub(crate) fn bump_face_bbox_build() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FACE_BBOX_BUILDS);
+}
+
+/// Count one face whose outline phase EF sampled for its containment test.
+/// Crate-internal.
+#[inline]
+pub(crate) fn bump_face_outline_sampling() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FACE_OUTLINE_SAMPLINGS);
+}
+
 /// Count one hole loop the face splitter's containment test sampled (one
 /// that survived its box gate). Crate-internal.
 #[inline]
@@ -388,6 +405,10 @@ pub struct PerfSnapshot {
     pub face_extent_builds: u64,
     /// Hole loops the face splitter's containment test sampled.
     pub hole_containment_samplings: u64,
+    /// Sampled phase-FF face boxes.
+    pub face_bbox_builds: u64,
+    /// Faces whose outline phase EF sampled for containment.
+    pub face_outline_samplings: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -410,6 +431,8 @@ pub fn reset() {
     JUNCTION_CURVE_SCANS.set(0);
     FACE_EXTENT_BUILDS.set(0);
     HOLE_CONTAINMENT_SAMPLINGS.set(0);
+    FACE_BBOX_BUILDS.set(0);
+    FACE_OUTLINE_SAMPLINGS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -435,6 +458,8 @@ pub fn snapshot() -> PerfSnapshot {
         junction_curve_scans: JUNCTION_CURVE_SCANS.get(),
         face_extent_builds: FACE_EXTENT_BUILDS.get(),
         hole_containment_samplings: HOLE_CONTAINMENT_SAMPLINGS.get(),
+        face_bbox_builds: FACE_BBOX_BUILDS.get(),
+        face_outline_samplings: FACE_OUTLINE_SAMPLINGS.get(),
     }
 }
 

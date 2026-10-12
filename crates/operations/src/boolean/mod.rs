@@ -3477,20 +3477,49 @@ fn result_within_operand_bounds(
     b: SolidId,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
+    // Fast accept from the operands' vertex boxes, without sampling every
+    // face. Each lies inside its operand's full box, so the allowed box built
+    // from them lies inside the full allowed box (for an intersect too: the
+    // overlap of smaller boxes is inside the overlap of larger ones), and a
+    // non-degenerate one makes the full box non-degenerate with at least the
+    // same margin. Every result vertex inside the smaller grown box is then
+    // inside the full one, so the full test would accept as well.
+    if let (Some(a_vertices), Some(b_vertices)) = (
+        crate::measure::solid_vertex_bounding_box(topo, a),
+        crate::measure::solid_vertex_bounding_box(topo, b),
+    ) && vertices_within(
+        topo,
+        result,
+        allowed_operand_box(op, a_vertices, b_vertices),
+        tol,
+    ) == Some(true)
+    {
+        return true;
+    }
+
     let (Ok(a_box), Ok(b_box)) = (
         crate::measure::solid_bounding_box(topo, a),
         crate::measure::solid_bounding_box(topo, b),
     ) else {
         return true; // unmeasurable: keep the historic acceptance
     };
+    // An inverted or degenerate allowed box carries no information (disjoint
+    // intersect operands, a zero-thickness operand); do not reject on it.
+    vertices_within(topo, result, allowed_operand_box(op, a_box, b_box), tol).unwrap_or(true)
+}
 
-    // The box the operands entitle the result to occupy.
-    let allowed = match op {
+/// The box the operands entitle a boolean result to occupy.
+fn allowed_operand_box(
+    op: BooleanOp,
+    a_box: remus_math::aabb::Aabb3,
+    b_box: remus_math::aabb::Aabb3,
+) -> remus_math::aabb::Aabb3 {
+    match op {
         // Material can only be removed, so the blank alone bounds the result.
         BooleanOp::Cut => a_box,
         // A subset of both operands is a subset of the smaller box. Build the
         // overlap directly; a non-overlapping pair yields an inverted box,
-        // which the emptiness guard below turns into an accept.
+        // which the emptiness guard turns into an accept.
         BooleanOp::Intersect => remus_math::aabb::Aabb3 {
             min: Point3::new(
                 a_box.min.x().max(b_box.min.x()),
@@ -3516,25 +3545,35 @@ fn result_within_operand_bounds(
                 a_box.max.z().max(b_box.max.z()),
             ),
         },
-    };
+    }
+}
 
-    // An inverted or degenerate allowed box carries no information (disjoint
-    // intersect operands, a zero-thickness operand); do not reject on it.
+/// Whether every vertex of `result` lies in `allowed`, grown by a margin of
+/// one part per million of its diagonal (at least the linear tolerance).
+/// `None` when `allowed` is inverted or degenerate, which carries no
+/// information; `Some(true)` when the result's vertices cannot be read (the
+/// historic acceptance).
+fn vertices_within(
+    topo: &Topology,
+    result: SolidId,
+    allowed: remus_math::aabb::Aabb3,
+    tol: remus_math::tolerance::Tolerance,
+) -> Option<bool> {
     let extent = allowed.max - allowed.min;
     if !(extent.x() >= 0.0 && extent.y() >= 0.0 && extent.z() >= 0.0) {
-        return true;
+        return None;
     }
 
     let margin = (extent.length() * 1e-6).max(tol.linear);
     let grown = allowed.expanded(margin);
 
     let Ok(vertices) = remus_topology::explorer::solid_vertices(topo, result) else {
-        return true;
+        return Some(true);
     };
-    !vertices.iter().any(|&vid| {
+    Some(!vertices.iter().any(|&vid| {
         topo.vertex(vid)
             .is_ok_and(|v| !grown.contains_point(v.point()))
-    })
+    }))
 }
 
 /// Returns `true` when two axis-aligned boxes are separated on at least

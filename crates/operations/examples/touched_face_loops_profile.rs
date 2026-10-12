@@ -9,8 +9,8 @@
 //! Run with
 //! `cargo run --profile profiling -p remus-operations --example touched_face_loops_profile -- [n...]`
 //! (default `0 6 12 18`); `repeat <n> <k>` cuts `k` slots on one `n` plate,
-//! for a profiler. A leading `memo` enables the planar arc pcurve memo, as
-//! the WASM kernel does.
+//! for a profiler. A leading `memo` enables the GFA's content-keyed memos,
+//! as the WASM kernel does.
 
 #![allow(clippy::unwrap_used, clippy::print_stdout, missing_docs)]
 
@@ -58,11 +58,13 @@ fn cut_slots(topo: &mut Topology, mut plate: SolidId, k: u32) -> (SolidId, f64) 
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // `memo` first: enable the planar arc pcurve memo, as the WASM kernel
-    // does (the library leaves it off).
+    // `memo` first: enable the GFA's content-keyed memos (planar arc
+    // pcurves, revolved wire areas), as the WASM kernel does (the library
+    // leaves them off).
     if args.first().map(String::as_str) == Some("memo") {
         args.remove(0);
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
+        remus_algo::wire_area_memo::enable_thread_wire_area_memo();
     }
     if args.first().map(String::as_str) == Some("repeat") {
         let n: u32 = args.get(1).map_or(18, |s| s.parse().unwrap());

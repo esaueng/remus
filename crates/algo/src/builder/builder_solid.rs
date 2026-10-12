@@ -660,6 +660,95 @@ fn revolved_wire_uv_area(
     wire_id: WireId,
     surface: &FaceSurface,
 ) -> Result<Option<f64>, AlgoError> {
+    if crate::wire_area_memo::enabled()
+        && let Some(key) = wire_area_key(topo, wire_id, surface)
+    {
+        return crate::wire_area_memo::memoized(&key, || {
+            measure_revolved_wire_uv_area(topo, wire_id, surface)
+        });
+    }
+    measure_revolved_wire_uv_area(topo, wire_id, surface)
+}
+
+/// The exact bits [`measure_revolved_wire_uv_area`] reads for a cylinder or
+/// cone wire made of lines, circles and ellipses: the surface, then per edge
+/// in traversal order its direction, curve, endpoints and domain. `None` for
+/// any other surface or curve, or when a lookup fails (the measurement then
+/// reports it).
+fn wire_area_key(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> Option<crate::wire_area_memo::WireAreaKey> {
+    let mut words: Vec<f64> = Vec::with_capacity(64);
+    let point = |words: &mut Vec<f64>, p: remus_math::vec::Point3| {
+        words.extend([p.x(), p.y(), p.z()]);
+    };
+    let vector = |words: &mut Vec<f64>, v: remus_math::vec::Vec3| {
+        words.extend([v.x(), v.y(), v.z()]);
+    };
+    match surface {
+        FaceSurface::Cylinder(c) => {
+            words.push(1.0);
+            point(&mut words, c.origin());
+            vector(&mut words, c.axis());
+            words.push(c.radius());
+            vector(&mut words, c.x_axis());
+            vector(&mut words, c.y_axis());
+        }
+        FaceSurface::Cone(c) => {
+            words.push(2.0);
+            point(&mut words, c.apex());
+            vector(&mut words, c.axis());
+            words.push(c.half_angle());
+            vector(&mut words, c.x_axis());
+            vector(&mut words, c.y_axis());
+        }
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return None,
+    }
+    for oriented in topo.wire(wire_id).ok()?.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        words.push(if oriented.is_forward() { 1.0 } else { -1.0 });
+        match edge.curve() {
+            EdgeCurve::Line => words.push(0.0),
+            EdgeCurve::Circle(c) => {
+                words.push(1.0);
+                point(&mut words, c.center());
+                vector(&mut words, c.normal());
+                words.push(c.radius());
+                vector(&mut words, c.u_axis());
+                vector(&mut words, c.v_axis());
+            }
+            EdgeCurve::Ellipse(e) => {
+                words.push(2.0);
+                point(&mut words, e.center());
+                vector(&mut words, e.normal());
+                words.extend([e.semi_major(), e.semi_minor()]);
+                vector(&mut words, e.u_axis());
+                vector(&mut words, e.v_axis());
+            }
+            EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return None;
+            }
+        }
+        point(&mut words, topo.vertex(edge.start()).ok()?.point());
+        point(&mut words, topo.vertex(edge.end()).ok()?.point());
+        let (t0, t1) = edge.strict_domain().ok()?;
+        words.extend([t0, t1]);
+    }
+    Some(words.into_iter().map(f64::to_bits).collect())
+}
+
+/// The signed area of a revolved face's wire in the surface's `(u, v)`
+/// chart, or `None` when it cannot be read.
+fn measure_revolved_wire_uv_area(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> Result<Option<f64>, AlgoError> {
     use remus_math::vec::Point2;
     let mut points = Vec::new();
     for oriented in topo.wire(wire_id)?.edges() {
