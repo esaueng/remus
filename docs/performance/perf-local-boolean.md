@@ -535,8 +535,9 @@ Criterion over the boolean benches, two rounds. Consistent wins:
 | `gridfinity 3x3` | −4% |
 
 `cross_drilled_cylinder` read +5% and +2%, and the `torus_notch` trio up to
-+3%. The cross-drilled instruction count above is unchanged; the torus
-benches were not instruction-counted.
++3%. Neither held up by instruction count. The cross-drilled count is above,
+and 300 torus-notch cuts, fuses and intersects count 15.0–15.3 G on both
+branches, within their ±0.6% run-to-run spread.
 
 **What remains.** About 10% of the slot cut is the GFA store copying every
 face in and out, which is stage 4 (store-local subsets). Shell assembly's
