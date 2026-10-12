@@ -422,7 +422,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Task | File(s) |
 |------|---------|
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
-| Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, disjoint_witness_tests) |
+| Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |

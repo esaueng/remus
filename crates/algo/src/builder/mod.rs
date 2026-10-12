@@ -1260,18 +1260,44 @@ impl Builder {
 /// the fuse bails with an error so the caller can fall back to the sequential
 /// path. Coincident-face support is the next increment.
 ///
+/// **Candidate pairs** — with `Some(pairs)` (the list given to
+/// [`crate::pave_filler::run_pave_filler_n_with_pairs`]), a sub-face of
+/// source `i` is classified only against the sources paired with `i`, in
+/// ascending source order. Every omitted source is proven separated from
+/// source `i` by conservative bounds, and the sample lies on a face of `i`,
+/// so that source could only answer `Outside` — which the all-sources loop
+/// skips anyway. The first decisive answer, and so the kept face set, is the
+/// one the all-sources loop reaches. `None` classifies against every source.
+///
 /// # Errors
 ///
 /// Returns [`AlgoError`] if a coincident contact is detected, a sub-face cannot
 /// be sampled or classified, or assembly fails.
+#[allow(clippy::too_many_lines)]
 pub fn build_fuse_n(
     mut topo: Topology,
     arena: GfaArena,
     sources: &[SolidId],
     face_source: &DetHashMap<FaceId, usize>,
+    candidate_pairs: Option<&[(usize, usize)]>,
     tol: Tolerance,
     context: &OperationContext,
 ) -> Result<(Topology, SolidId), AlgoError> {
+    // Ascending rival sources of each source, when the caller pruned pairs.
+    let rivals: Option<Vec<Vec<usize>>> = candidate_pairs.map(|pairs| {
+        let mut rivals = vec![Vec::new(); sources.len()];
+        for &(i, j) in pairs {
+            if let (Some(_), Some(_)) = (rivals.get(i), rivals.get(j)) {
+                rivals[i].push(j);
+                rivals[j].push(i);
+            }
+        }
+        for list in &mut rivals {
+            list.sort_unstable();
+            list.dedup();
+        }
+        rivals
+    });
     // Split every source face. Sections are face-relative, so a constant rank
     // is correct for all of them (see the doc comment).
     let edge_images = fill_images::fill_edge_images(&arena);
@@ -1321,7 +1347,12 @@ pub fn build_fuse_n(
                            own: usize,
                            others: &dyn Fn(usize) -> bool|
      -> Result<bool, AlgoError> {
-        for (j, &other) in sources.iter().enumerate() {
+        let candidates: &mut dyn Iterator<Item = usize> = match &rivals {
+            Some(rivals) => &mut rivals[own].iter().copied(),
+            None => &mut (0..sources.len()),
+        };
+        for j in candidates {
+            let other = sources[j];
             if j == own || !others(j) {
                 continue;
             }

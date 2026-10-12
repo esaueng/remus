@@ -495,15 +495,52 @@ pub fn fuse_n_with_context(
     context: &OperationContext,
 ) -> Result<SolidId, AlgoError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
-        fuse_n_with_context_impl(topo, sources, context)
+        fuse_n_with_context_impl(topo, sources, None, context)
+    })
+}
+
+/// Most source pairs one N-way fuse intersects. [`fuse_n_with_context`]
+/// refuses a source list with more pairs than this, and
+/// [`fuse_n_with_candidate_pairs`] a longer candidate list, so a caller
+/// building candidates can stop as soon as it would exceed it.
+pub use crate::pave_filler::MAX_SOURCE_PAIRS as MAX_NWAY_SOURCE_PAIRS;
+
+/// [`fuse_n_with_context`] intersecting only the given candidate source pairs.
+///
+/// `candidate_pairs` indexes `sources`. It must be strictly increasing with
+/// `i < j`, and every omitted pair must be proven separated by more than the
+/// operation tolerance using conservative bounds (bounds enclosing the whole
+/// trimmed geometry, not only its vertices), widened by the solids' own
+/// vertex/edge tolerances. A pair that cannot be proven separated must be
+/// listed. The source-pair budget then counts only
+/// the listed pairs, so a large sparse lattice is fused in one arrangement.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if `sources` is empty, the pair list is malformed or
+/// over budget, or any GFA stage fails.
+pub fn fuse_n_with_candidate_pairs(
+    topo: &mut Topology,
+    sources: &[SolidId],
+    candidate_pairs: &[(usize, usize)],
+    context: &OperationContext,
+) -> Result<SolidId, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        fuse_n_with_context_impl(topo, sources, Some(candidate_pairs), context)
     })
 }
 
 fn fuse_n_with_context_impl(
     topo: &mut Topology,
     sources: &[SolidId],
+    candidate_pairs: Option<&[(usize, usize)]>,
     context: &OperationContext,
 ) -> Result<SolidId, AlgoError> {
+    // A caller-built candidate list is checked before the single-source fast
+    // path, which never reaches the pave filler's own check.
+    if let Some(pairs) = candidate_pairs {
+        pave_filler::validate_candidate_pairs(pairs, sources.len())?;
+    }
     // Same up-front refusal as `boolean_with_tolerance`; see that function.
     for &sid in sources {
         reject_unsupported_curves(topo, sid)?;
@@ -523,9 +560,10 @@ fn fuse_n_with_context_impl(
             let mut store = GfaShapeStoreN::new(topo, sources)?;
 
             let mut arena = GfaArena::new();
-            pave_filler::run_pave_filler_n_with_context(
+            pave_filler::run_pave_filler_n_with_pairs(
                 &mut store.topo,
                 &store.sources,
+                candidate_pairs,
                 context,
                 &mut arena,
             )?;
@@ -535,6 +573,7 @@ fn fuse_n_with_context_impl(
                 arena,
                 &store.sources,
                 &store.face_source,
+                candidate_pairs,
                 tol,
                 context,
             )?;
