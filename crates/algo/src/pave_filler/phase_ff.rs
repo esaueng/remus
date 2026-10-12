@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use remus_math::aabb::Aabb3;
 use remus_math::analytic_intersection;
 use remus_math::context::OperationContext;
+use remus_math::det_hash::{DetHashMap, DetState};
 use remus_math::nurbs::intersection as nurbs_isect;
 use remus_math::tolerance::Tolerance;
 use remus_math::traits::ParametricCurve;
@@ -86,11 +87,11 @@ fn ff_trace_x() -> Option<f64> {
 /// four faces meet), and the disagreeing copies mint micro-sliver free edges.
 #[derive(Default, Clone)]
 struct JunctionRegistry {
-    cells: std::collections::HashMap<(i64, i64, i64), JunctionEntry>,
+    cells: DetHashMap<(i64, i64, i64), JunctionEntry>,
     /// Characteristic size per face pair, so the snap bands below track the
     /// geometry instead of a fixed length. Cached because `resolve` runs per
     /// section endpoint and a face AABB costs a surface sampling pass.
-    extents: std::collections::HashMap<(usize, usize), f64>,
+    extents: DetHashMap<(usize, usize), f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -478,10 +479,8 @@ fn perform_seeded(
     // snapping the second arc's endpoint to the first's vertex chains the arcs
     // into one continuous split curve. Keyed by a fine quantization so only
     // genuinely-coincident crossings (well under the linear tolerance) merge.
-    let mut exact_arc_vertices: std::collections::HashMap<
-        (i64, i64, i64),
-        remus_topology::vertex::VertexId,
-    > = std::collections::HashMap::new();
+    let mut exact_arc_vertices: DetHashMap<(i64, i64, i64), remus_topology::vertex::VertexId> =
+        DetHashMap::default();
 
     let ff_trace = ff_trace_x();
 
@@ -1350,17 +1349,14 @@ fn emit_exact_arc(
     fb: FaceId,
     raw: &RawCurve,
     tol: Tolerance,
-    registry: &mut std::collections::HashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    registry: &mut DetHashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
 ) -> Result<(), AlgoError> {
     // Refuse before `resolve` can allocate or register either endpoint.
     validate_section_range("phase_ff exact-arc writer", raw.t_range)?;
 
     let resolve = |topo: &mut Topology,
                    arena: &GfaArena,
-                   registry: &mut std::collections::HashMap<
-        (i64, i64, i64),
-        remus_topology::vertex::VertexId,
-    >,
+                   registry: &mut DetHashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
                    p: Point3|
      -> remus_topology::vertex::VertexId {
         let key = exact_arc_key(p);
@@ -1475,6 +1471,9 @@ enum FaceExtent {
 
 /// Seventeen samples along a curved boundary edge in traversal order — the
 /// outline resolution every polygon extent uses.
+///
+/// Yields the samples lazily, so a caller appends them straight into its
+/// outline buffer instead of allocating a temporary per edge.
 fn sample_edge_16(
     curve: &EdgeCurve,
     t0: f64,
@@ -1482,19 +1481,21 @@ fn sample_edge_16(
     forward: bool,
     s3: Point3,
     e3: Point3,
-) -> Vec<Point3> {
-    (0..=16)
-        .map(|i| {
-            let f = f64::from(i) / 16.0;
-            let t = if forward {
-                t0 + (t1 - t0) * f
-            } else {
-                t1 + (t0 - t1) * f
-            };
-            curve.evaluate_with_endpoints(t, s3, e3)
-        })
-        .collect()
+) -> impl Iterator<Item = Point3> + '_ {
+    (0..=16).map(move |i| {
+        let f = f64::from(i) / 16.0;
+        let t = if forward {
+            t0 + (t1 - t0) * f
+        } else {
+            t1 + (t0 - t1) * f
+        };
+        curve.evaluate_with_endpoints(t, s3, e3)
+    })
 }
+
+/// Upper bound on the outline points a [`FaceExtent`] polygon samples per
+/// boundary edge: one for a straight edge, seventeen for a curved one.
+const OUTLINE_SAMPLES_PER_EDGE: usize = 17;
 
 /// Largest distance between a curved edge and the chord of one of its
 /// sixteen outline segments, measured at each segment's mid-parameter.
@@ -1571,8 +1572,8 @@ fn convex_spherical_patch_normals(
     if edges.len() < 3 {
         return Ok(None);
     }
-    let mut normals = Vec::new();
-    let mut arcs = Vec::new();
+    let mut normals = Vec::with_capacity(edges.len());
+    let mut arcs = Vec::with_capacity(edges.len());
     for oe in edges {
         let edge = topo.edge(oe.edge())?;
         let EdgeCurve::Circle(circle) = edge.curve() else {
@@ -1679,7 +1680,7 @@ impl FaceExtent {
             let mut sagitta = 0.0_f64;
             let mut wire_poly = |wid| -> Result<Vec<remus_math::vec::Point2>, AlgoError> {
                 let wire = topo.wire(wid)?;
-                let mut poly = Vec::new();
+                let mut poly = Vec::with_capacity(wire.edges().len() * OUTLINE_SAMPLES_PER_EDGE);
                 for oe in wire.edges() {
                     let edge = topo.edge(oe.edge())?;
                     let s3 = topo.vertex(edge.start())?.point();
@@ -1695,9 +1696,9 @@ impl FaceExtent {
                                 "face-extent boundary sampling",
                             )?;
                             let samples = sample_edge_16(curve, t0, t1, oe.is_forward(), s3, e3);
+                            poly.extend(samples.map(|p| frame.project(p)));
                             sagitta =
                                 sagitta.max(chord_sagitta(curve, t0, t1, oe.is_forward(), s3, e3));
-                            poly.extend(samples.into_iter().map(|p| frame.project(p)));
                         }
                     }
                 }
@@ -1707,7 +1708,7 @@ impl FaceExtent {
             if poly.len() < 3 {
                 return Ok(None);
             }
-            let mut holes = Vec::new();
+            let mut holes = Vec::with_capacity(face.inner_wires().len());
             for &inner_wire in face.inner_wires() {
                 let hole = wire_poly(inner_wire)?;
                 if hole.len() >= 3 {
@@ -1789,7 +1790,7 @@ impl FaceExtent {
         let mut sagitta = 0.0_f64;
         let mut wire_poly = |wid| -> Result<Option<Vec<remus_math::vec::Point2>>, AlgoError> {
             let wire = topo.wire(wid)?;
-            let mut poly = Vec::new();
+            let mut poly = Vec::with_capacity(wire.edges().len() * OUTLINE_SAMPLES_PER_EDGE);
             for oe in wire.edges() {
                 let edge = topo.edge(oe.edge())?;
                 let s3 = topo.vertex(edge.start())?.point();
@@ -1803,7 +1804,7 @@ impl FaceExtent {
                             oe.edge(),
                             "face-extent boundary sampling",
                         )?;
-                        samples = sample_edge_16(curve, t0, t1, oe.is_forward(), s3, e3);
+                        samples = sample_edge_16(curve, t0, t1, oe.is_forward(), s3, e3).collect();
                         sagitta =
                             sagitta.max(chord_sagitta(curve, t0, t1, oe.is_forward(), s3, e3));
                     }
@@ -1823,7 +1824,7 @@ impl FaceExtent {
         if poly.len() < 3 {
             return Ok(None);
         }
-        let mut holes = Vec::new();
+        let mut holes = Vec::with_capacity(face.inner_wires().len());
         for &inner_wire in face.inner_wires() {
             let Some(hole) = wire_poly(inner_wire)? else {
                 return Ok(None);
@@ -5008,7 +5009,8 @@ fn longest_inboth_run(inb: &[bool], closed: bool) -> (usize, usize) {
 /// Compute AABB for a face by sampling its boundary edges.
 fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result<Aabb3, AlgoError> {
     let edges = remus_topology::explorer::face_edges(topo, face_id)?;
-    let mut points = Vec::new();
+    // Nine samples per edge; conic axis extrema (at most six) grow it rarely.
+    let mut points = Vec::with_capacity(edges.len() * 9);
 
     for eid in edges {
         let edge = topo.edge(eid)?;
@@ -7955,8 +7957,8 @@ where
     T: Copy + Eq + std::hash::Hash,
 {
     let (&(first_start, first_end), rest) = edges.split_first()?;
-    let mut incident: std::collections::HashMap<T, Vec<usize>> =
-        std::collections::HashMap::with_capacity(edges.len());
+    let mut incident: DetHashMap<T, Vec<usize>> =
+        DetHashMap::with_capacity_and_hasher(edges.len(), DetState);
     for (index, &(start, end)) in edges.iter().enumerate() {
         incident.entry(start).or_default().push(index);
         incident.entry(end).or_default().push(index);
@@ -9001,7 +9003,7 @@ mod tests {
             p_end: ellipse.evaluate(expected.1),
         };
         let mut arena = GfaArena::new();
-        let mut registry = std::collections::HashMap::new();
+        let mut registry = DetHashMap::default();
 
         emit_exact_arc(
             &mut topo,
@@ -9055,7 +9057,7 @@ mod tests {
             p_end: ellipse.evaluate(1.0),
         };
         let mut arena = GfaArena::new();
-        let mut registry = std::collections::HashMap::new();
+        let mut registry = DetHashMap::default();
         let before = writer_state(&topo, &arena);
 
         let err = emit_exact_arc(

@@ -22,8 +22,7 @@
 //! recognized diagnostic families) must name a probe family to observe it:
 //! an unlisted prefix reads as a false zero.
 
-use std::collections::{BTreeMap, HashMap};
-use std::hash::BuildHasher;
+use std::collections::BTreeMap;
 
 /// Quantized 3D position pair for CommonBlock edge matching.
 type CbEdgeKey = ((i64, i64, i64), (i64, i64, i64));
@@ -41,6 +40,7 @@ const VERTEX_DEDUP_SCALE: f64 = 1e10;
 
 use remus_math::aabb::Aabb3;
 use remus_math::context::OperationContext;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
@@ -68,11 +68,11 @@ use super::split_types::{SectionEdge, SurfaceInfo};
 /// Returns [`AlgoError::FaceSplitFailed`] when a generated non-Line boundary
 /// lacks valid parameter authority or its carried range misses its endpoints.
 #[allow(clippy::too_many_lines, clippy::type_complexity)]
-pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
+pub fn fill_images_faces(
     topo: &mut Topology,
     arena: &GfaArena,
-    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
-    face_ranks: &HashMap<FaceId, Rank, S2>,
+    edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
+    face_ranks: &DetHashMap<FaceId, Rank>,
     tol: Tolerance,
     context: &OperationContext,
     lineage: &mut super::split_types::EdgeLineageLog,
@@ -82,14 +82,14 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     // Shared edge cache: (face_id, source_edge_idx) → EdgeId. Ensures section
     // edges (which appear in both forward and reverse in adjacent loops from
     // the SAME face's split) reference the SAME topology edge entity.
-    let mut shared_edge_cache: HashMap<(usize, usize), remus_topology::edge::EdgeId> =
-        HashMap::new();
+    let mut shared_edge_cache: DetHashMap<(usize, usize), remus_topology::edge::EdgeId> =
+        DetHashMap::default();
 
     // CommonBlock position-pair → shared EdgeId. When building sub-face edges,
     // if the edge endpoints match a CB's split_edge endpoints (by quantized
     // position), reuse the CB's edge entity. This ensures faces from different
     // input solids share the same EdgeId at their common boundaries.
-    let cb_qpair_edges: HashMap<CbEdgeKey, remus_topology::edge::EdgeId> = {
+    let cb_qpair_edges: DetHashMap<CbEdgeKey, remus_topology::edge::EdgeId> = {
         let scale = VERTEX_DEDUP_SCALE;
         let qpt = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
             (
@@ -98,7 +98,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                 (p.z() * scale).round() as i64,
             )
         };
-        let mut map = HashMap::new();
+        let mut map = DetHashMap::default();
         for (_, cb) in arena.common_blocks.iter() {
             if let Some(edge_id) = cb.split_edge
                 && let Ok(edge) = topo.edge(edge_id)
@@ -202,8 +202,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     // connect to input solid topology (no contamination).
     let shared_vertex_pool: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> = {
         // Count UNIQUE faces per resolved vertex position (any rank).
-        let mut vid_faces: HashMap<usize, (Point3, std::collections::HashSet<usize>)> =
-            HashMap::new();
+        let mut vid_faces: DetHashMap<usize, (Point3, DetHashSet<usize>)> = DetHashMap::default();
         for (&face_id, &_rank) in face_ranks {
             if let Ok(face) = topo.face(face_id)
                 && let Ok(wire) = topo.wire(face.outer_wire())
@@ -213,9 +212,9 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                         for &vid in &[edge.start(), edge.end()] {
                             let rv = arena.resolve_vertex(vid);
                             if let Ok(v) = topo.vertex(rv) {
-                                let entry = vid_faces.entry(rv.index()).or_insert_with(|| {
-                                    (v.point(), std::collections::HashSet::new())
-                                });
+                                let entry = vid_faces
+                                    .entry(rv.index())
+                                    .or_insert_with(|| (v.point(), DetHashSet::default()));
                                 entry.1.insert(face_id.index());
                             }
                         }
@@ -233,7 +232,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         // the same quantized positions, producing nondeterministic topology
         // downstream and intermittent compound-boolean failures.
         let mut pool = BTreeMap::new();
-        let mut sorted_entries: Vec<(usize, &(Point3, std::collections::HashSet<usize>))> =
+        let mut sorted_entries: Vec<(usize, &(Point3, DetHashSet<usize>))> =
             vid_faces.iter().map(|(&k, v)| (k, v)).collect();
         sorted_entries.sort_by_key(|(k, _)| *k);
         for (_, (pt, faces)) in sorted_entries {
@@ -704,7 +703,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         topo.face(sf.face_id)
             .is_ok_and(|f| matches!(f.surface(), FaceSurface::Plane { .. }))
     });
-    let ranks: std::collections::HashSet<_> = sub_faces.iter().map(|sf| sf.rank).collect();
+    let ranks: DetHashSet<_> = sub_faces.iter().map(|sf| sf.rank).collect();
     let no_inner_wires = sub_faces.iter().all(|sf| {
         topo.face(sf.face_id)
             .is_ok_and(|f| f.inner_wires().is_empty())
@@ -719,14 +718,16 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         };
 
         // Build per-rank merge maps.
-        let mut rank_merge_maps: HashMap<Rank, HashMap<usize, remus_topology::vertex::VertexId>> =
-            HashMap::new();
+        let mut rank_merge_maps: DetHashMap<
+            Rank,
+            DetHashMap<usize, remus_topology::vertex::VertexId>,
+        > = DetHashMap::default();
         {
-            let mut rank_edges: HashMap<Rank, Vec<EdgeId>> = HashMap::new();
+            let mut rank_edges: DetHashMap<Rank, Vec<EdgeId>> = DetHashMap::default();
             for sf in &sub_faces {
                 let edges = rank_edges.entry(sf.rank).or_default();
                 if let Ok(face) = topo.face(sf.face_id) {
-                    let mut seen = std::collections::HashSet::new();
+                    let mut seen = DetHashSet::default();
                     if let Ok(wire) = topo.wire(face.outer_wire()) {
                         for oe in wire.edges() {
                             if seen.insert(oe.edge().index()) {
@@ -739,8 +740,8 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             for (&rank, edges) in &rank_edges {
                 let mut canonical: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> =
                     BTreeMap::new();
-                let mut merge_map: HashMap<usize, remus_topology::vertex::VertexId> =
-                    HashMap::new();
+                let mut merge_map: DetHashMap<usize, remus_topology::vertex::VertexId> =
+                    DetHashMap::default();
                 for &eid in edges {
                     if let Ok(edge) = topo.edge(eid) {
                         for &vid in &[edge.start(), edge.end()] {
@@ -929,10 +930,10 @@ fn rebuild_face_with_fresh_vertices(
 /// multiple children. Only expands edges with 2+ split images; single-edge
 /// replacements (1:1 CB mappings) are left for `merge_duplicate_edges`.
 #[allow(clippy::too_many_lines)]
-fn rebuild_face_with_edge_images<S: BuildHasher>(
+fn rebuild_face_with_edge_images(
     topo: &mut Topology,
     face_id: FaceId,
-    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+    edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
 ) -> Option<FaceId> {
     let (surface, is_reversed, outer_edges, inner_edges_list) = {
         let face = topo.face(face_id).ok()?;
@@ -1022,10 +1023,10 @@ fn is_degenerate_image(topo: &Topology, img: EdgeId) -> bool {
 }
 
 /// Count of an edge's split images that are not zero-length stubs.
-fn non_degenerate_image_count<S: BuildHasher>(
+fn non_degenerate_image_count(
     topo: &Topology,
     eid: EdgeId,
-    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+    edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
 ) -> usize {
     edge_images.get(&eid).map_or(0, |imgs| {
         imgs.iter()
@@ -1038,11 +1039,11 @@ fn non_degenerate_image_count<S: BuildHasher>(
 /// Only expands Line edges with 2+ non-degenerate children; keeps
 /// everything else (including edges whose only extra images are
 /// zero-length stubs) as-is.
-fn expand_edge<S: BuildHasher>(
+fn expand_edge(
     topo: &Topology,
     eid: EdgeId,
     fwd: bool,
-    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+    edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
 ) -> Vec<OrientedEdge> {
     // Only expand Line edges
     if !topo
@@ -1129,7 +1130,7 @@ fn closed_cb_edges_same_direction(topo: &Topology, a: EdgeId, b: EdgeId) -> Opti
 fn rebuild_face_with_cb_edges(
     topo: &mut Topology,
     face_id: FaceId,
-    cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
+    cb_qpair_edges: &DetHashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
     vv_vertex_seed: &std::collections::BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     tol: Tolerance,
 ) -> Option<FaceId> {
@@ -1264,8 +1265,8 @@ fn rebuild_face_with_cb_edges(
             .collect();
 
         // Pre-lookup CB edge start positions (needed for orientation)
-        let cb_start_qs: HashMap<remus_topology::edge::EdgeId, (i64, i64, i64)> = {
-            let mut m = HashMap::new();
+        let cb_start_qs: DetHashMap<remus_topology::edge::EdgeId, (i64, i64, i64)> = {
+            let mut m = DetHashMap::default();
             for &eid in cb_qpair_edges.values() {
                 if let Ok(e) = topo.edge(eid)
                     && let Ok(v) = topo.vertex(e.start())
@@ -2021,7 +2022,7 @@ fn split_nurbs_at(
 fn build_section_map(
     topo: &Topology,
     arena: &GfaArena,
-) -> Result<HashMap<FaceId, Vec<SectionSource>>, AlgoError> {
+) -> Result<DetHashMap<FaceId, Vec<SectionSource>>, AlgoError> {
     // Opt-in probe: only emits with BK_PAVES set (see module docs).
     if std::env::var("BK_PAVES").is_ok() {
         for (ci, curve) in arena.curves.iter().enumerate() {
@@ -2048,7 +2049,7 @@ fn build_section_map(
             }
         }
     }
-    let mut map: HashMap<FaceId, Vec<SectionSource>> = HashMap::new();
+    let mut map: DetHashMap<FaceId, Vec<SectionSource>> = DetHashMap::default();
     // Section edges from FF intersection curves.
     // For non-Line curves (Circle, Ellipse, NURBS): use one Curve entry per curve
     // so the face splitter gets the complete geometric loop instead of fragments.
@@ -2084,7 +2085,7 @@ fn build_section_map(
     // IN PBs — the complete FF curve already captures the same geometry.
     // This prevents 28 arc fragments from being added alongside the single
     // complete circle intersection curve.
-    let faces_with_curved_ff: std::collections::HashSet<usize> = map
+    let faces_with_curved_ff: DetHashSet<usize> = map
         .iter()
         .filter_map(|(fid, sources)| {
             sources
@@ -2190,7 +2191,7 @@ fn build_section_edges(
     topo: &Topology,
     arena: &GfaArena,
     face_id: FaceId,
-    section_map: &HashMap<FaceId, Vec<SectionSource>>,
+    section_map: &DetHashMap<FaceId, Vec<SectionSource>>,
     seam_anchors: &BTreeMap<usize, Point3>,
     tol: f64,
 ) -> Result<Vec<SectionEdge>, AlgoError> {
@@ -3896,11 +3897,11 @@ fn clip_line_to_face_extent(
 /// to their calibrated boundary clip, and CLOSED curved sections (a full
 /// circle touching the outline, e.g. a cylinder inscribed in a box wall) to
 /// the closed-loop machinery that already treats them as holes.
-fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
+fn split_plane_curved_sections_at_boundary_junctions(
     topo: &Topology,
     face_id: FaceId,
     sections: Vec<crate::builder::split_types::SectionEdge>,
-    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+    edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
     let splittable = |s: &crate::builder::split_types::SectionEdge| {
@@ -3943,10 +3944,10 @@ fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
 
 /// Interior pave junctions of a face's boundary edges: every vertex shared by
 /// two consecutive images of one split boundary edge.
-fn face_boundary_image_junctions<S: BuildHasher>(
+fn face_boundary_image_junctions(
     topo: &Topology,
     face_id: FaceId,
-    edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
+    edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
 ) -> Vec<Point3> {
     let Ok(face) = topo.face(face_id) else {
         return Vec::new();
@@ -4291,8 +4292,8 @@ fn build_topology_face(
     split: &super::split_types::SplitSubFace,
     tol: Tolerance,
     _parent_face_id: FaceId,
-    _shared_edge_cache: &mut HashMap<(usize, usize), remus_topology::edge::EdgeId>,
-    _cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
+    _shared_edge_cache: &mut DetHashMap<(usize, usize), remus_topology::edge::EdgeId>,
+    _cb_qpair_edges: &DetHashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
     vv_vertex_seed: &BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     rank_pool: Option<&BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>>,
     pb_vertex_registry: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
@@ -5130,7 +5131,8 @@ mod tests {
         );
         pb.split_edge = Some(eid);
         let pid = arena.pave_blocks.alloc(pb);
-        let sources = HashMap::from([(own_face, vec![SectionSource::PaveBlock(pid, Some(face))])]);
+        let sources: DetHashMap<_, _> =
+            std::iter::once((own_face, vec![SectionSource::PaveBlock(pid, Some(face))])).collect();
         let sections =
             build_section_edges(&topo, &arena, own_face, &sources, &BTreeMap::new(), 1e-7).unwrap();
         assert_eq!(sections.len(), 1);
@@ -5183,7 +5185,8 @@ mod tests {
             let mut pb = PaveBlock::new(eid, Pave::new(va, trim.0), Pave::new(vb, trim.1));
             pb.split_edge = Some(eid);
             let pid = arena.pave_blocks.alloc(pb);
-            let sources = HashMap::from([(face, vec![SectionSource::PaveBlock(pid, None)])]);
+            let sources: DetHashMap<_, _> =
+                std::iter::once((face, vec![SectionSource::PaveBlock(pid, None)])).collect();
             let result =
                 build_section_edges(&topo, &arena, face, &sources, &BTreeMap::new(), 1e-7).unwrap();
             assert_eq!(result.len(), 1);

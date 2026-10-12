@@ -72,7 +72,8 @@ fn closed_common_block_replacement_preserves_wire_traversal() {
                         let face = topo.add_face(face);
                         let q = |x: f64| (x * VERTEX_DEDUP_SCALE).round() as i64;
                         let key = (q(seam.x()), q(seam.y()), q(seam.z()));
-                        let replacements = HashMap::from([((key, key), cb)]);
+                        let replacements: DetHashMap<_, _> =
+                            std::iter::once(((key, key), cb)).collect();
                         let rebuilt = rebuild_face_with_cb_edges(
                             &mut topo,
                             face,

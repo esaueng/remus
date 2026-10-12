@@ -1,5 +1,6 @@
 //! Coordinate/type conversions between 3D, UV, and topology types.
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::FaceSurface;
@@ -67,7 +68,7 @@ pub(super) fn boundary_edges_to_pcurve(
         surface,
         wire_pts,
         frame,
-        &std::collections::HashMap::new(),
+        &DetHashMap::default(),
         &[],
         0.0,
     )
@@ -83,17 +84,13 @@ pub(super) fn boundary_edges_to_pcurve(
 /// kumiko z~9.9 missing-face root). Expansion covers demand-gated line images
 /// and circular NURBS junctions, mirroring `rebuild_face_with_edge_images`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
+pub(super) fn boundary_edges_to_pcurve_with_images(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
-    edge_images: &std::collections::HashMap<
-        remus_topology::edge::EdgeId,
-        Vec<remus_topology::edge::EdgeId>,
-        S,
-    >,
+    edge_images: &DetHashMap<remus_topology::edge::EdgeId, Vec<remus_topology::edge::EdgeId>>,
     anchors: &[Point3],
     linear_tolerance: f64,
 ) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {

@@ -855,8 +855,11 @@ fn wire_polygon(
         let edge = topo.edge(oe.edge())?;
         let raw_start = topo.vertex(edge.start())?.point();
         let raw_end = topo.vertex(edge.end())?.point();
-        let mut pts = vec![raw_start];
-        if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+        let is_line = matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line);
+        // Endpoints plus at most sixteen interior samples (a closed curve).
+        let mut pts = Vec::with_capacity(if is_line { 2 } else { 18 });
+        pts.push(raw_start);
+        if !is_line {
             let (t0, t1) = edge.strict_domain().map_err(|error| {
                 AlgoError::ClassificationFailed(format!(
                     "wire {wire_id:?} edge {:?} lacks authoritative parameter range: {error}",
@@ -879,7 +882,7 @@ fn wire_polygon(
 
     let join_tol = 1e-6;
     let mut used = vec![false; polylines.len()];
-    let mut verts: Vec<Point3> = Vec::new();
+    let mut verts: Vec<Point3> = Vec::with_capacity(polylines.iter().map(Vec::len).sum());
     let Some(first) = polylines.first() else {
         return Ok(verts);
     };
@@ -906,11 +909,13 @@ fn wire_polygon(
         });
         let Some((idx, rev)) = next else { break };
         used[idx] = true;
-        let mut pl = polylines[idx].clone();
+        let pl = &polylines[idx];
         if rev {
-            pl.reverse();
+            // The reversed polyline minus its first point, without a copy.
+            verts.extend(pl.iter().rev().skip(1));
+        } else {
+            verts.extend_from_slice(&pl[1..]);
         }
-        verts.extend_from_slice(&pl[1..]);
     }
     // Append any unchained polylines so no geometry is silently lost
     // (matches the previous behavior of emitting all edge samples).
@@ -1857,6 +1862,7 @@ pub fn compute_solid_bbox(
             points.extend([bounds.min, bounds.max]);
         }
         let wire = topo.wire(face.outer_wire())?;
+        points.reserve(wire.edges().len() * 2);
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             let start_pos = topo.vertex(edge.start())?.point();

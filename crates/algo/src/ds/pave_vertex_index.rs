@@ -12,8 +12,7 @@
 //! and start-before-end within each block. That position is recorded as `rank`,
 //! and a query returns the minimum-`rank` candidate within tolerance.
 
-use std::collections::HashMap;
-
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point3;
 use remus_topology::vertex::VertexId;
 
@@ -31,7 +30,7 @@ struct Entry {
 pub struct PaveVertexIndex {
     cell: f64,
     inv_cell: f64,
-    grid: HashMap<(i64, i64, i64), Vec<Entry>>,
+    grid: DetHashMap<(i64, i64, i64), Vec<Entry>>,
 }
 
 impl PaveVertexIndex {
@@ -42,7 +41,7 @@ impl PaveVertexIndex {
         entries: impl Iterator<Item = (u32, VertexId, Point3, f64)>,
     ) -> Self {
         let inv_cell = 1.0 / cell.max(f64::MIN_POSITIVE);
-        let mut grid: HashMap<(i64, i64, i64), Vec<Entry>> = HashMap::new();
+        let mut grid: DetHashMap<(i64, i64, i64), Vec<Entry>> = DetHashMap::default();
         for (rank, vertex, pos, radius) in entries {
             grid.entry(cell_of(pos, inv_cell)).or_default().push(Entry {
                 rank,
