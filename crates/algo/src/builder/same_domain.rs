@@ -14,8 +14,7 @@
 //! images with a single representative face) is not yet implemented.
 //! Currently only pairwise SD records are emitted.
 
-use std::collections::{HashMap, HashSet};
-use std::hash::BuildHasher;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 
 use super::SubFace;
 use crate::ds::{GfaArena, Rank};
@@ -134,9 +133,9 @@ type EdgeSet = Vec<(QVert, QVert, QVert)>;
 /// roots whose union came from the geometric-containment pass. The grouping is
 /// rank-agnostic — the emission step interprets it per boolean operation.
 struct SdGrouping {
-    sd_groups: HashMap<usize, Vec<usize>>,
-    pair_data: HashMap<(usize, usize), bool>,
-    geometric_overlap_groups: HashSet<usize>,
+    sd_groups: DetHashMap<usize, Vec<usize>>,
+    pair_data: DetHashMap<(usize, usize), bool>,
+    geometric_overlap_groups: DetHashSet<usize>,
 }
 
 /// Detect and union all coincident (same-domain) sub-faces.
@@ -149,9 +148,9 @@ fn build_sd_grouping(
     let n = sub_faces.len();
     if n < 2 {
         return SdGrouping {
-            sd_groups: HashMap::new(),
-            pair_data: HashMap::new(),
-            geometric_overlap_groups: HashSet::new(),
+            sd_groups: DetHashMap::default(),
+            pair_data: DetHashMap::default(),
+            geometric_overlap_groups: DetHashSet::default(),
         };
     }
 
@@ -174,7 +173,7 @@ fn build_sd_grouping(
         .collect();
 
     // Key = edge set, Value = list of sub-face indices with that set.
-    let mut groups: HashMap<EdgeSet, Vec<usize>> = HashMap::new();
+    let mut groups: DetHashMap<EdgeSet, Vec<usize>> = DetHashMap::default();
     for (idx, edge_set) in edge_sets.iter().enumerate() {
         if let Some(es) = edge_set
             && !es.is_empty()
@@ -204,14 +203,14 @@ fn build_sd_grouping(
         .collect();
 
     let mut uf = UnionFind::new(n);
-    let mut pair_data: HashMap<(usize, usize), bool> = HashMap::new(); // (min,max) → same_orientation
+    let mut pair_data: DetHashMap<(usize, usize), bool> = DetHashMap::default(); // (min,max) → same_orientation
     // Tracks pairs unioned by the geometric containment pass (Step 3b).
     // Cross-rank groups containing such pairs are "overlapping" same-domain
     // faces (one face contained in / partially over the other) rather than
     // exactly coextensive. `geometric_overlap` records this so the BOP selector
     // can pick the larger face for Fuse and the smaller for Intersect; the two
     // faces always differ in extent for these pairs.
-    let mut geometric_overlap_groups: HashSet<usize> = HashSet::new();
+    let mut geometric_overlap_groups: DetHashSet<usize> = DetHashSet::default();
 
     for members in groups.values() {
         if members.len() < 2 {
@@ -424,14 +423,14 @@ fn build_sd_grouping(
     }
 
     // Collect all roots that participate in pairs (O(m) not O(n*m)).
-    let mut active_roots: HashSet<usize> = HashSet::new();
+    let mut active_roots: DetHashSet<usize> = DetHashSet::default();
     for &(a, b) in pair_data.keys() {
         active_roots.insert(uf.find(a));
         active_roots.insert(uf.find(b));
     }
 
     // Each group picks A's face with smallest index as representative.
-    let mut sd_groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut sd_groups: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
     for idx in 0..n {
         let root = uf.find(idx);
         if active_roots.contains(&root) {
@@ -450,11 +449,11 @@ fn build_sd_grouping(
 /// cross-rank [`SameDomainPair`] plus within-rank duplicates for the BOP
 /// selector. Behaviour is unchanged from before the grouping was extracted.
 #[cfg(test)]
-pub fn detect_same_domain<S: BuildHasher>(
+pub fn detect_same_domain(
     topo: &Topology,
     arena: &GfaArena,
     sub_faces: &[SubFace],
-    face_ranks: &HashMap<FaceId, Rank, S>,
+    face_ranks: &DetHashMap<FaceId, Rank>,
     tol: Tolerance,
 ) -> SameDomainResult {
     detect_same_domain_with_shells(topo, arena, sub_faces, face_ranks, tol, None)
@@ -470,13 +469,13 @@ pub fn detect_same_domain<S: BuildHasher>(
 /// bin), and dropping the void face as a "duplicate" orphans the void walls
 /// into an open hole shell. Sequential-boolean residue (#696, the honeycomb's
 /// stacked caps) accumulates within one shell and still dedups.
-pub fn detect_same_domain_with_shells<S: BuildHasher>(
+pub fn detect_same_domain_with_shells(
     topo: &Topology,
     arena: &GfaArena,
     sub_faces: &[SubFace],
-    _face_ranks: &HashMap<FaceId, Rank, S>,
+    _face_ranks: &DetHashMap<FaceId, Rank>,
     tol: Tolerance,
-    face_shells: Option<&HashMap<FaceId, usize>>,
+    face_shells: Option<&DetHashMap<FaceId, usize>>,
 ) -> SameDomainResult {
     let SdGrouping {
         sd_groups,
@@ -709,14 +708,14 @@ pub fn detect_same_domain_with_shells<S: BuildHasher>(
 pub struct FuseNSameDomain {
     /// Every sub-face that belongs to a coincident group. These are handled
     /// here and excluded from the caller's normal inside/outside classification.
-    pub grouped: HashSet<usize>,
+    pub grouped: DetHashSet<usize>,
     /// For each SAME-oriented (shared-exterior) group, its single kept
     /// representative paired with the set of source indices in that group. The
     /// caller keeps the representative only if it is also outside every source
     /// NOT in the group (a third solid could still cover it). Opposite-oriented
     /// (internal-interface) groups contribute members to `grouped` only — all
     /// dropped.
-    pub keep_reprs: Vec<(usize, HashSet<usize>)>,
+    pub keep_reprs: Vec<(usize, DetHashSet<usize>)>,
 }
 
 /// Resolve coincident faces for an N-way FUSE.
@@ -746,7 +745,7 @@ pub fn detect_same_domain_fuse_n(
 ) -> Result<FuseNSameDomain, AlgoError> {
     let SdGrouping { sd_groups, .. } = build_sd_grouping(topo, arena, sub_faces, tol);
 
-    let mut grouped = HashSet::new();
+    let mut grouped = DetHashSet::default();
     let mut keep_reprs = Vec::new();
 
     for members in sd_groups.values() {
@@ -776,7 +775,7 @@ pub fn detect_same_domain_fuse_n(
         if all_aligned {
             // Shared exterior boundary — keep exactly one representative.
             let repr = members.iter().copied().min().unwrap_or(members[0]);
-            let group_sources: HashSet<usize> = members.iter().map(|&m| source[m]).collect();
+            let group_sources: DetHashSet<usize> = members.iter().map(|&m| source[m]).collect();
             keep_reprs.push((repr, group_sources));
         }
         // Mixed orientation → interior interface → drop all (members already in
@@ -815,7 +814,7 @@ fn compute_edge_set_quantized(
 
     // Cache resolved vertex positions to avoid redundant resolve_vertex() calls
     // when the same vertex appears in multiple edges.
-    let mut vertex_cache: HashMap<VertexId, QVert> = HashMap::new();
+    let mut vertex_cache: DetHashMap<VertexId, QVert> = DetHashMap::default();
     let mut resolve_and_quantize = |vid: VertexId| -> Option<QVert> {
         if let Some(&cached) = vertex_cache.get(&vid) {
             return Some(cached);
@@ -965,8 +964,8 @@ fn opposite_boundary_traversal(a: &DirectedBoundary, b: &DirectedBoundary) -> bo
     if a.is_empty() || a.len() != b.len() {
         return false;
     }
-    let forward: HashSet<(QVert, QVert)> = b.iter().copied().collect();
-    let reversed: HashSet<(QVert, QVert)> = b.iter().map(|&(s, e)| (e, s)).collect();
+    let forward: DetHashSet<(QVert, QVert)> = b.iter().copied().collect();
+    let reversed: DetHashSet<(QVert, QVert)> = b.iter().map(|&(s, e)| (e, s)).collect();
     a.iter().all(|k| reversed.contains(k)) && !a.iter().any(|k| forward.contains(k))
 }
 
@@ -1870,7 +1869,7 @@ fn for_each_overlap_candidate_pair(
     let inv = 1.0 / cell;
     let cell_of = |c: f64| (c * inv).floor() as i64;
 
-    let mut buckets: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut buckets: DetHashMap<(i64, i64, i64), Vec<usize>> = DetHashMap::default();
     // A face whose expanded AABB spans more cells than this would cost O(cells)
     // to grid (a broad wall patch among many tiny facets); above it, AABB-test
     // the face against all faces directly instead — mirrors PointGrid's guard.
@@ -1911,7 +1910,7 @@ fn for_each_overlap_candidate_pair(
     // now linear rather than an unbounded cache of every candidate pair.
     ranges.sort_unstable_by_key(|&(idx, _, _)| idx);
     for &(idx, expanded, cells) in &ranges {
-        let mut candidates = HashSet::new();
+        let mut candidates = DetHashSet::default();
         if let Some((cx0, cx1, cy0, cy1, cz0, cz1)) = cells {
             for cx in cx0..=cx1 {
                 for cy in cy0..=cy1 {

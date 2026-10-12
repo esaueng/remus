@@ -4,6 +4,7 @@
 //! PaveFiller -> Builder -> BOP -> assemble.
 
 use remus_math::context::OperationContext;
+use remus_math::det_hash::DetHashMap;
 use remus_math::tolerance::Tolerance;
 use remus_topology::BodyClass;
 use remus_topology::Topology;
@@ -817,15 +818,15 @@ pub struct BooleanRegion {
 /// Store-local construction records that must be captured before the builder
 /// consumes the pave-filler arena.
 struct EntityLineage {
-    split_parent: std::collections::HashMap<usize, usize>,
-    pave_block_original: std::collections::HashMap<usize, usize>,
+    split_parent: DetHashMap<usize, usize>,
+    pave_block_original: DetHashMap<usize, usize>,
     section_origins: std::collections::BTreeMap<usize, (usize, usize)>,
 }
 
 impl EntityLineage {
     fn capture(arena: &GfaArena) -> Self {
-        let mut split_parent = std::collections::HashMap::new();
-        let mut pave_block_original = std::collections::HashMap::new();
+        let mut split_parent = DetHashMap::default();
+        let mut pave_block_original = DetHashMap::default();
         for (pave_block_id, pave_block) in arena.pave_blocks.iter() {
             pave_block_original.insert(pave_block_id.index(), pave_block.original_edge.index());
             if let Some(split) = pave_block.split_edge {
@@ -1082,8 +1083,7 @@ fn boolean_regions_with_entity_evolution_impl(
         builder.build_result_regions_with_origins(op)?;
     store.topo = store_topo;
 
-    let origins_by_face: std::collections::HashMap<FaceId, Option<FaceId>> =
-        store_origins.into_iter().collect();
+    let origins_by_face: DetHashMap<FaceId, Option<FaceId>> = store_origins.into_iter().collect();
     let mut regions = Vec::with_capacity(store_regions.len());
     for store_region in store_regions {
         let region_origins = remus_topology::explorer::solid_faces(&store.topo, store_region)?

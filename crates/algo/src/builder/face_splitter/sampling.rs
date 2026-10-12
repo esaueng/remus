@@ -90,10 +90,13 @@ pub(super) fn sample_wire_loop_uv_periodic(
     use remus_math::curves2d::Curve2D;
     const CURVE_SAMPLES: usize = 8;
 
-    let mut pts: Vec<Point2> = Vec::new();
+    let mut pts: Vec<Point2> = Vec::with_capacity(wire.len() * CURVE_SAMPLES);
     let has_period = u_period.is_some() || v_period.is_some();
+    // One scratch buffer for every edge: `append` below drains it but keeps
+    // its capacity, so the per-edge sampling never reallocates.
+    let mut group: Vec<Point2> = Vec::with_capacity(CURVE_SAMPLES);
     for edge in wire {
-        let mut group: Vec<Point2> = Vec::new();
+        group.clear();
         match &edge.pcurve {
             Curve2D::Line(_) => {
                 // For periodic surfaces, push both start and end to enable
