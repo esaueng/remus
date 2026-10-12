@@ -7245,6 +7245,82 @@ fn scaling_perforated_cut_is_subquadratic() {
     );
 }
 
+/// Complexity-regression guard for phase FF's per-loop work on a touched
+/// face (stage 3 of `docs/performance/perf-local-boolean.md`). A slot cut
+/// through a plate meets only the plate's top and bottom faces, but those
+/// carry every hole drilled so far. Phase FF used to sample every hole rim
+/// for every section endpoint's junction snap and rebuild both faces'
+/// extents (every hole rim again) twice per face pair.
+///
+/// Going from 36 to 144 holes (4×):
+///
+/// | counter | fixed | reverted | bound |
+/// |---|---|---|---|
+/// | `junction_curve_scans` | 0 → 0 | 576 → 2304 (×4) | absolute `< 64` |
+/// | `face_extent_builds` | 6 → 6 (once per face) | 32 → 32 (twice per pair and face) | absolute `<= 8` |
+///
+/// Runs only with `--features perf-counters`, in the `test(scaling_)` step.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_slot_cut_does_not_rescan_touched_face_loops() {
+    use crate::primitives::{make_box, make_cylinder};
+    use remus_math::mat::Mat4;
+
+    let slot_counts = |g: u32| -> remus_algo::perf::PerfSnapshot {
+        let mut topo = Topology::new();
+        let extent = f64::from(g) * 12.0 + 4.0;
+        let mut plate = make_box(&mut topo, extent, extent, 10.0).unwrap();
+        for row in 0..g {
+            for col in 0..g {
+                let tool = make_cylinder(&mut topo, 2.0, 20.0).unwrap();
+                let at = Mat4::translation(
+                    6.0 + f64::from(col) * 12.0,
+                    6.0 + f64::from(row) * 12.0,
+                    -5.0,
+                );
+                crate::transform::transform_solid(&mut topo, tool, &at).unwrap();
+                plate = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+            }
+        }
+        // A 2 × 6 slot between the first two hole columns, clear of them.
+        let slot = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
+        crate::transform::transform_solid(&mut topo, slot, &Mat4::translation(11.0, 9.0, -5.0))
+            .unwrap();
+        remus_algo::perf::reset();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, plate, slot).unwrap();
+        remus_algo::perf::snapshot()
+    };
+    let small = slot_counts(6);
+    let large = slot_counts(12);
+    eprintln!(
+        "touched-face loop guard @ 36→144 holes: junction_curve_scans {}->{}, \
+         face_extent_builds {}->{}",
+        small.junction_curve_scans,
+        large.junction_curve_scans,
+        small.face_extent_builds,
+        large.face_extent_builds,
+    );
+    // The snap's box gate leaves only rims within its band of a section
+    // endpoint, and no hole is: an ungated snap samples every rim per call.
+    assert!(
+        large.junction_curve_scans < 64,
+        "junction snap samples every hole rim again: {} scans at 144 holes",
+        large.junction_curve_scans
+    );
+    // Extents are built once per face of the pass: the plate's top and
+    // bottom and the slot's four walls. Per-pair rebuilding is four times
+    // that, each pass over every hole rim.
+    assert!(
+        large.face_extent_builds > 0,
+        "face-extent instrumentation not exercised"
+    );
+    assert!(
+        large.face_extent_builds <= 8,
+        "face extents rebuilt per pair: {} builds at 144 holes",
+        large.face_extent_builds
+    );
+}
+
 #[test]
 fn cut_cylinder_by_box_slot_perpendicular_walls_is_watertight() {
     // Regression: a box cutting a slot into a cylinder's side has two faces

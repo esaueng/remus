@@ -50,6 +50,12 @@
 //! every loop's cuts, so without the reach-box gate the count grows with the
 //! square of the number of loops; with it, each loop projects only its own.
 //!
+//! Two count the per-loop work of phase FF on a face carrying many loops (a
+//! drilled plate's top, stage 3 of `docs/performance/perf-local-boolean.md`):
+//! `junction_curve_scans`, the curved boundary edges the junction snap
+//! samples (a box gate skips those out of reach), and `face_extent_builds`,
+//! the face extents built (once per face per pass, not per pair).
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
@@ -78,6 +84,8 @@ std::thread_local! {
     static JUNCTION_SEEDS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIR_SCANS: Cell<u64> = const { Cell::new(0) };
     static EF_ANALYTIC_PAIRS_GATED: Cell<u64> = const { Cell::new(0) };
+    static JUNCTION_CURVE_SCANS: Cell<u64> = const { Cell::new(0) };
+    static FACE_EXTENT_BUILDS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -294,6 +302,22 @@ pub(crate) fn bump_ef_analytic_pair_gated() {
     increment(&EF_ANALYTIC_PAIRS_GATED);
 }
 
+/// Count one curved boundary edge sampled by the phase-FF junction snap
+/// (one that survived its box gate). Crate-internal.
+#[inline]
+pub(crate) fn bump_junction_curve_scan() {
+    #[cfg(feature = "perf-counters")]
+    increment(&JUNCTION_CURVE_SCANS);
+}
+
+/// Count one phase-FF face extent built from a face's boundary.
+/// Crate-internal.
+#[inline]
+pub(crate) fn bump_face_extent_build() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FACE_EXTENT_BUILDS);
+}
+
 /// Count one winding-loop cut projected onto a closed section loop (one
 /// that survived the loop's reach-box gate). Crate-internal.
 #[inline]
@@ -347,6 +371,10 @@ pub struct PerfSnapshot {
     pub ef_analytic_pairs_gated: u64,
     /// Winding-loop cuts projected onto closed section loops.
     pub winding_cut_projections: u64,
+    /// Curved boundary edges the phase-FF junction snap sampled.
+    pub junction_curve_scans: u64,
+    /// Phase-FF face extents built from face boundaries.
+    pub face_extent_builds: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -366,6 +394,8 @@ pub fn reset() {
     EF_ANALYTIC_PAIR_SCANS.set(0);
     EF_ANALYTIC_PAIRS_GATED.set(0);
     WINDING_CUT_PROJECTIONS.set(0);
+    JUNCTION_CURVE_SCANS.set(0);
+    FACE_EXTENT_BUILDS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -388,6 +418,8 @@ pub fn snapshot() -> PerfSnapshot {
         ef_analytic_pair_scans: EF_ANALYTIC_PAIR_SCANS.get(),
         ef_analytic_pairs_gated: EF_ANALYTIC_PAIRS_GATED.get(),
         winding_cut_projections: WINDING_CUT_PROJECTIONS.get(),
+        junction_curve_scans: JUNCTION_CURVE_SCANS.get(),
+        face_extent_builds: FACE_EXTENT_BUILDS.get(),
     }
 }
 
