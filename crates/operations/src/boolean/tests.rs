@@ -7258,6 +7258,11 @@ fn scaling_perforated_cut_is_subquadratic() {
 /// |---|---|---|---|
 /// | `junction_curve_scans` | 0 → 0 | 576 → 2304 (×4) | absolute `< 64` |
 /// | `face_extent_builds` | 6 → 6 (once per face) | 32 → 32 (twice per pair and face) | absolute `<= 8` |
+/// | `hole_containment_samplings` | 0 → 0 | 288 → 1152 (×4) | absolute `< 64` |
+///
+/// The last is the face splitter's hole-containment test, which resampled
+/// every round hole for every query point until a box gate skipped the holes
+/// a query lies outside.
 ///
 /// Runs only with `--features perf-counters`, in the `test(scaling_)` step.
 #[cfg(feature = "perf-counters")]
@@ -7294,11 +7299,13 @@ fn scaling_slot_cut_does_not_rescan_touched_face_loops() {
     let large = slot_counts(12);
     eprintln!(
         "touched-face loop guard @ 36→144 holes: junction_curve_scans {}->{}, \
-         face_extent_builds {}->{}",
+         face_extent_builds {}->{}, hole_containment_samplings {}->{}",
         small.junction_curve_scans,
         large.junction_curve_scans,
         small.face_extent_builds,
         large.face_extent_builds,
+        small.hole_containment_samplings,
+        large.hole_containment_samplings,
     );
     // The snap's box gate leaves only rims within its band of a section
     // endpoint, and no hole is: an ungated snap samples every rim per call.
@@ -7318,6 +7325,98 @@ fn scaling_slot_cut_does_not_rescan_touched_face_loops() {
         large.face_extent_builds <= 8,
         "face extents rebuilt per pair: {} builds at 144 holes",
         large.face_extent_builds
+    );
+    // The splitter's containment queries sit far from every hole.
+    assert!(
+        large.hole_containment_samplings < 64,
+        "hole containment resamples every hole: {} samplings at 144 holes",
+        large.hole_containment_samplings
+    );
+}
+
+/// The planar arc pcurve memo (stage 3 of the local boolean) must not change
+/// a boolean's result. A slot is cut through a drilled plate with the memo
+/// off, then again on a fresh copy with the memo warmed by the same cut, and
+/// the two results are compared entity by entity, every float exactly.
+#[test]
+fn warm_pcurve_memo_leaves_a_slot_cut_bit_identical() {
+    use crate::primitives::{make_box, make_cylinder};
+    use remus_math::mat::Mat4;
+    use std::fmt::Write;
+
+    let mut topo = Topology::new();
+    let mut plate = make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
+    for (x, y) in [
+        (6.0, 6.0),
+        (18.0, 6.0),
+        (6.0, 18.0),
+        (18.0, 18.0),
+        (30.0, 30.0),
+    ] {
+        let tool = make_cylinder(&mut topo, 2.0, 20.0).unwrap();
+        crate::transform::transform_solid(&mut topo, tool, &Mat4::translation(x, y, -5.0)).unwrap();
+        plate = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    }
+    let slot = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
+    crate::transform::transform_solid(&mut topo, slot, &Mat4::translation(11.0, 9.0, -5.0))
+        .unwrap();
+    let dump = |topo: &Topology, solid: SolidId| {
+        let mut out = String::new();
+        for face_id in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+            let face = topo.face(face_id).unwrap();
+            writeln!(
+                out,
+                "face {} {} {:?}",
+                face_id.index(),
+                face.is_reversed(),
+                face.surface()
+            )
+            .unwrap();
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire).unwrap().edges() {
+                    let edge = topo.edge(oriented.edge()).unwrap();
+                    writeln!(
+                        out,
+                        "  {} {} {:?} {:?} {:?} {:?}",
+                        oriented.edge().index(),
+                        oriented.is_forward(),
+                        edge.curve(),
+                        edge.trim(),
+                        topo.vertex(edge.start()).unwrap().point(),
+                        topo.vertex(edge.end()).unwrap().point(),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        out
+    };
+
+    remus_algo::pcurve_memo::set_thread_pcurve_memo_capacity(0);
+    let mut cold = topo.clone();
+    let cold_result = boolean(&mut cold, BooleanOp::Cut, plate, slot).unwrap();
+    remus_algo::pcurve_memo::enable_thread_pcurve_memo();
+    let mut warming = topo.clone();
+    boolean(&mut warming, BooleanOp::Cut, plate, slot).unwrap();
+    let before = remus_algo::pcurve_memo::thread_pcurve_memo_stats();
+    let mut warm = topo.clone();
+    let warm_result = boolean(&mut warm, BooleanOp::Cut, plate, slot).unwrap();
+    let after = remus_algo::pcurve_memo::thread_pcurve_memo_stats();
+    remus_algo::pcurve_memo::set_thread_pcurve_memo_capacity(0);
+
+    assert!(
+        after.hits > before.hits,
+        "the warm cut never consulted the memo: {after:?}"
+    );
+    assert_eq!(
+        after.misses, before.misses,
+        "an identical warm cut refitted pcurves: {before:?} -> {after:?}"
+    );
+    assert_eq!(
+        dump(&cold, cold_result),
+        dump(&warm, warm_result),
+        "the memo changed the result"
     );
 }
 
