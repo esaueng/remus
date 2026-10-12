@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791770038194,
+  "lastUpdate": 1791782543425,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -91279,6 +91279,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 71243,
             "range": "± 685",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db94435797c26972ad3681e498332bacf36dfd29",
+          "message": "perf(operations): share one robust classifier across convexity probes (#991)\n\n* fix(bench): keep the flat-bevel fillet bench inside its supported cell\n\n`box+fillet (bevel)` filleted all twelve box edges with the deprecated\nflat-bevel engine. That engine has no vertex blend, so it now correctly\nrefuses any selection where two edges meet at a vertex (the result fails\nits postcondition with open corners), and the bench panicked on its\nunwrap. Every cad_operations bench after it never ran.\n\nBench the four pairwise-disjoint vertical edges instead, under a new ID\nso criterion history for the old workload is not mixed with the new one.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf(operations): share one robust classifier across convexity probes\n\n`query::edge_concavity` classified each of its four quadrant probes with\n`classify_point_robust`, which builds a fresh `RobustClassifier` and so a\nfresh whole-solid tessellation per point. `validate_blend_volume` calls\nit for every blended edge at up to three probe sizes, the chamfer and\nconcave-fillet paths ran the one-shot `edge_is_convex` (adjacency index\nplus tessellation) per edge, and the boolean cut witness probe classified\nseven points against each operand one-shot.\n\n`RobustClassifier` exists to reuse one tessellation across a batch of\npoints: the mesh is a pure function of (topology, solid, deflection) and\nits lazily prepared ray-cast fallback reaches the one-shot verdicts. Use\none classifier (and one adjacency index) per solid at each call site:\n\n- `query::edge_concavity_with` takes the index and classifier;\n  `edge_concavity` keeps its public signature and now classifies its four\n  quadrants on one mesh.\n- `blend_ops::edge_is_convex` takes the index and classifier; its two\n  callers (chamfer convexity census, concave-fillet retry) share them.\n- the boolean cut witness probe keeps one classifier per operand.\n\nVerdicts are unchanged: a test keeps the pre-change per-point body\nverbatim as an oracle and compares it with the shared form over every\nedge of five bodies (box, notched, post fuse, bore, filleted) at three\nprobe sizes; a test-only counter pins one mesh per classifier batch.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T00:13:26-05:00",
+          "tree_id": "c9f741cdb7a3b2461cf0464319ec7c48ea5bca95",
+          "url": "https://github.com/esaueng/remus/commit/db94435797c26972ad3681e498332bacf36dfd29"
+        },
+        "date": 1791782541600,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1275176,
+            "range": "± 2778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1339882,
+            "range": "± 3376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27000,
+            "range": "± 824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7461630,
+            "range": "± 22053",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7392541,
+            "range": "± 26746",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7245489,
+            "range": "± 30909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 727127,
+            "range": "± 760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3031276,
+            "range": "± 6306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 33394865,
+            "range": "± 461943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 232,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 167,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 864,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 195,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 394,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 210,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 565,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 735,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3512,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 501321,
+            "range": "± 890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2933856,
+            "range": "± 5649",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 146186,
+            "range": "± 598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 438370,
+            "range": "± 848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 361646,
+            "range": "± 784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64636,
+            "range": "± 1403",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 928884,
+            "range": "± 1028",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10786877,
+            "range": "± 122685",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 640482,
+            "range": "± 3231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1282455,
+            "range": "± 5153",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 82631,
+            "range": "± 638",
             "unit": "ns/iter"
           }
         ]
