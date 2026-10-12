@@ -1,7 +1,5 @@
 //! Shared helpers for measurement operations.
 
-use std::collections::HashSet;
-
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
@@ -12,7 +10,9 @@ pub(super) fn collect_solid_vertex_points(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
-    let mut vertex_ids = HashSet::new();
+    // Gathered, then sorted and deduplicated: no hashing, and the points come
+    // back in vertex-id order rather than a per-run hash order.
+    let mut vertex_ids = Vec::new();
     let solid_data = topo.solid(solid)?;
 
     for shell_id in
@@ -27,12 +27,14 @@ pub(super) fn collect_solid_vertex_points(
                 let wire = topo.wire(wire_id)?;
                 for oe in wire.edges() {
                     let edge = topo.edge(oe.edge())?;
-                    vertex_ids.insert(edge.start());
-                    vertex_ids.insert(edge.end());
+                    vertex_ids.push(edge.start());
+                    vertex_ids.push(edge.end());
                 }
             }
         }
     }
+    vertex_ids.sort_unstable();
+    vertex_ids.dedup();
 
     let mut points = Vec::with_capacity(vertex_ids.len());
     for vid in vertex_ids {
