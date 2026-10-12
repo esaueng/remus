@@ -2,10 +2,10 @@
 
 **Status (2026-10-12):** stage 1 (through holes) and the first stage 2
 widening (blind holes) are implemented in
-`crates/operations/src/boolean/local_cut.rs`. The first part of stage 3,
-which makes phase FF's work on a touched face follow the loops a cut
-meets, is implemented in `remus-algo`'s phase FF (last section). The rest is
-design only.
+`crates/operations/src/boolean/local_cut.rs`. Stage 3 makes the GFA's work
+on a touched face follow the loops a cut meets. Its two parts are
+implemented in `remus-algo` (the last two sections): phase FF, then the
+face splitter's untouched holes. The rest is design only.
 
 ## Problem
 
@@ -424,7 +424,24 @@ per-hole costs:
 - The scaling guard gains `hole_containment_samplings`: 0 → 0 from 36 to
   144 holes, against 288 → 1152 with the gate removed.
 
-<!--PART2-EVIDENCE-->
+**Evidence.** Part 1 (`fe944883`) against this part, Apple M5 Pro, shared
+machine, `RAYON_NUM_THREADS=1`. Instruction counts (`/usr/bin/time -l`,
+binaries alternated, three rounds):
+
+| run | part 1 | memo off (library) | memo on (kernel) |
+| --- | ---: | ---: | ---: |
+| 100 slots on a 324-hole plate, whole run | 54.25–54.40 G | 53.18–53.43 G (−2%) | 50.59–50.71 G (−7%) |
+| 2000 slots on a blank plate | 13.50–13.55 G | 13.51–13.52 G | 13.50–13.52 G |
+
+Slot cuts are about 85% of the first run, so a slot costs about 8% less
+with the memo warm. The gain is modest: the splitter's hole work was about
+10% of the cut after part 1, and this part removes most of it.
+
+Criterion over the boolean benches moved within about ±2% with changing
+sign. `cross_drilled_cylinder` read +6% and +2%, but repeated 1000 times
+it counts 21.21 G instructions on both branches, as do the gridfinity
+magnet cuts and a box-cylinder cut (1.065 G and 0.268 G). Those readings
+were noise.
 
 **What remains.** With the memo warm, the splitter's per-hole work is about
 6% of the slot cut: memo lookups and clones, and the winding sampling. The
