@@ -2879,3 +2879,81 @@ fn broad_phases_leave_the_intersection_state_bit_identical() {
         );
     }
 }
+
+/// A box crossing a drilled hole off its axis cuts a window into the hole
+/// wall: the wall splits into the window and the band around it, whose inner
+/// wire is the window. Each piece's classification sample must lie on the
+/// cylinder and inside its own region. The window's sample used to be the 3D
+/// centroid of its loop (0.36 from the axis, off the r = 2 wall), and the
+/// band's landed inside the window because the window's clockwise arcs were
+/// sampled over their complements; both pieces classified Inside.
+#[test]
+fn window_in_a_drilled_hole_wall_samples_each_piece_on_its_own_region() {
+    use crate::builder::{Builder, FaceClass};
+    use crate::ds::Rank;
+
+    let mut topo = Topology::default();
+    let mut plate = make_box(&mut topo, [0.0, 0.0, 0.0], [64.0, 64.0, 10.0]);
+    for row in 0..3 {
+        for col in 0..3 {
+            let (x, y) = (8.0 + f64::from(col) * 12.0, 8.0 + f64::from(row) * 12.0);
+            let tool = make_cylinder(&mut topo, x, y, -5.0, 2.0, 20.0);
+            plate =
+                crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Cut, plate, tool).unwrap();
+        }
+    }
+    let probe = make_box(&mut topo, [28.0, 31.0, 2.0], [36.0, 37.0, 8.0]);
+
+    let tol = remus_math::tolerance::Tolerance::default();
+    let mut arena = GfaArena::new();
+    crate::pave_filler::run_pave_filler(&mut topo, plate, probe, tol, &mut arena).unwrap();
+    let mut builder = Builder::with_tolerance(topo, arena, plate, probe, tol);
+    builder.perform().unwrap();
+    let (sub_faces, _, topo) = builder.debug_info();
+
+    // The window: the wall inside the probe box (y > 31, 2 < z < 8).
+    let in_window = |p: Point3| p.y() > 31.0 && (2.0..8.0).contains(&p.z());
+    let mut pieces = 0;
+    for sf in sub_faces {
+        let FaceSurface::Cylinder(wall) = topo.face(sf.face_id).unwrap().surface() else {
+            continue;
+        };
+        let axis = wall.origin();
+        if sf.rank != Rank::A || (axis.x() - 32.0).abs() > 1e-9 || (axis.y() - 32.0).abs() > 1e-9 {
+            continue;
+        }
+        pieces += 1;
+        let sample = sf
+            .interior_point
+            .expect("split wall piece carries a sample");
+        let radial = ((sample.x() - 32.0).powi(2) + (sample.y() - 32.0).powi(2)).sqrt();
+        assert!(
+            (radial - 2.0).abs() < 1e-9,
+            "sample {sample:?} of {:?} is {radial} from the axis, off the r = 2 wall",
+            sf.face_id
+        );
+        assert!(
+            (0.0..10.0).contains(&sample.z()),
+            "sample {sample:?} off the wall's span"
+        );
+        let holed = !topo.face(sf.face_id).unwrap().inner_wires().is_empty();
+        if holed {
+            // The band: its inner wire is the window.
+            assert!(
+                !in_window(sample),
+                "band sample {sample:?} lies in the window"
+            );
+            assert_eq!(sf.classification, FaceClass::Outside, "band at {sample:?}");
+        } else {
+            assert!(
+                in_window(sample),
+                "window sample {sample:?} lies outside the window"
+            );
+            assert_eq!(sf.classification, FaceClass::Inside, "window at {sample:?}");
+        }
+    }
+    assert_eq!(
+        pieces, 2,
+        "the hole wall splits into the window and the band"
+    );
+}
