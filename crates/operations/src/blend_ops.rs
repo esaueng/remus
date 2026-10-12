@@ -82,15 +82,20 @@ fn reject_seed_selection_larger_than_solid(
 ///
 /// Returns `None` when the edge's neighbourhood cannot be classified
 /// (non-manifold edge, degenerate normals, on-boundary sample).
+///
+/// `adjacency` must be the solid's own edge-to-face index and `classifier`
+/// must be built for the same solid with deflection `0.01` and tolerance
+/// `1e-7`. Callers classifying several edges share both: the classifier
+/// tessellates the solid once and reuses that mesh for every probe point,
+/// where a one-shot robust classification rebuilt it per point. Each verdict
+/// is the one the one-shot classification reaches.
 pub(crate) fn edge_is_convex(
     topo: &Topology,
-    solid: SolidId,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
     edge: EdgeId,
     probe: f64,
+    classifier: &mut crate::classify::RobustClassifier<'_>,
 ) -> Result<Option<bool>, OperationsError> {
-    let Ok(adjacency) = topo.build_adjacency(solid) else {
-        return Ok(None);
-    };
     let faces = adjacency.faces_for_edge(edge);
     if faces.len() != 2 {
         return Ok(None);
@@ -187,9 +192,7 @@ pub(crate) fn edge_is_convex(
 
     // Step inward along the bisector. Inside the material ⇒ convex edge.
     let sample = mid - bisector * probe;
-    let Ok(classification) =
-        crate::classify::classify_point_robust(topo, solid, sample, 0.01, 1e-7)
-    else {
+    let Ok(classification) = classifier.classify(sample) else {
         return Ok(None);
     };
     Ok(match classification {
@@ -368,6 +371,11 @@ pub(crate) fn validate_blend_volume(
 
     // Sign rule, applied only when every blended edge shares one convexity
     // (a mixed set can legitimately net out either way).
+    //
+    // One classifier serves every edge and probe size: it tessellates the
+    // input once, where each one-shot `edge_concavity` probe point rebuilt
+    // the whole-solid mesh (four quadrants × up to three probes per edge).
+    let mut classifier = crate::classify::RobustClassifier::new(topo, input_solid, 0.01, 1.0e-7);
     let convexities: Vec<bool> = budget_edges
         .iter()
         .filter_map(|&e| {
@@ -378,7 +386,9 @@ pub(crate) fn validate_blend_volume(
             // and the sign rule still fires; a genuinely ambiguous edge keeps
             // its Unknown verdict and stays excluded, as before.
             for probe in [reach * 0.25, reach * 0.25 / 64.0, reach * 0.25 / 4096.0] {
-                match crate::query::edge_concavity(topo, input_solid, e, probe).ok()? {
+                match crate::query::edge_concavity_with(topo, &adjacency, e, probe, &mut classifier)
+                    .ok()?
+                {
                     crate::query::EdgeConcavity::Convex => return Some(true),
                     crate::query::EdgeConcavity::Concave => return Some(false),
                     crate::query::EdgeConcavity::Tangent => return None,
@@ -1133,11 +1143,19 @@ fn fillet_group(
     // edge is positively classified as concave and the legacy route above has
     // already failed closed.
     let mut all_concave = true;
-    for &edge in edges {
-        if edge_is_convex(topo, solid, edge, radius * 0.25)? != Some(false) {
-            all_concave = false;
-            break;
+    if let Ok(adjacency) = topo.build_adjacency(solid) {
+        let mut classifier = crate::classify::RobustClassifier::new(topo, solid, 0.01, 1e-7);
+        for &edge in edges {
+            if edge_is_convex(topo, &adjacency, edge, radius * 0.25, &mut classifier)?
+                != Some(false)
+            {
+                all_concave = false;
+                break;
+            }
         }
+    } else {
+        // The one-shot form reports an unindexable solid as unclassified.
+        all_concave = edges.is_empty();
     }
     if !all_concave {
         return Err(legacy_refusal);

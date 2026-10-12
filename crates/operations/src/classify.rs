@@ -216,6 +216,14 @@ pub fn classify_point_robust(
     RobustClassifier::new(topo, solid, deflection, tolerance).classify(point)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Whole-solid meshes [`RobustClassifier`] built on this thread, so tests
+    /// can pin that batch callers tessellate once rather than per point.
+    pub(crate) static ROBUST_MESH_BUILDS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Reuses one immutable operand tessellation across a batch of point queries.
 /// Boundary checks and ambiguous winding fallback retain the scalar contract.
 pub(crate) struct RobustClassifier<'a> {
@@ -262,12 +270,17 @@ impl<'a> RobustClassifier<'a> {
         }
         let mesh = match &mut self.mesh {
             Some(mesh) => mesh,
-            slot @ None => slot.insert(crate::tessellate::tessellate_solid_for_analysis(
-                self.topo,
-                self.solid,
-                self.deflection,
-                remus_math::chord::DEFAULT_ANGULAR_TOL,
-            )?),
+            slot @ None => {
+                let mesh = crate::tessellate::tessellate_solid_for_analysis(
+                    self.topo,
+                    self.solid,
+                    self.deflection,
+                    remus_math::chord::DEFAULT_ANGULAR_TOL,
+                )?;
+                #[cfg(test)]
+                ROBUST_MESH_BUILDS.with(|builds| builds.set(builds.get() + 1));
+                slot.insert(mesh)
+            }
         };
         let w = mesh_winding_number(mesh, point);
         if w > INSIDE_THRESHOLD + AMBIGUOUS_BAND {

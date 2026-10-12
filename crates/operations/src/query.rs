@@ -13,7 +13,7 @@ use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::boolean::{face_polygon, wire_polygon};
-use crate::classify::{PointClassification, classify_point_robust};
+use crate::classify::{PointClassification, RobustClassifier};
 use crate::measure::face_area;
 
 /// An opposing pair of parallel planar faces with a non-zero projected overlap.
@@ -636,6 +636,31 @@ pub fn edge_concavity(
         });
     }
     let adjacency = topo.build_adjacency(solid)?;
+    let mut classifier = RobustClassifier::new(topo, solid, 0.01, 1.0e-7);
+    edge_concavity_with(topo, &adjacency, edge, probe, &mut classifier)
+}
+
+/// [`edge_concavity`] for callers that classify several edges (or several
+/// probe sizes) of one solid.
+///
+/// `adjacency` must be the solid's own edge-to-face index and `classifier`
+/// must have been built for the same solid with deflection `0.01` and
+/// tolerance `1e-7`, the parameters [`edge_concavity`] uses. The classifier
+/// tessellates the solid once and reuses that mesh for every quadrant probe;
+/// the one-shot robust classification it replaces rebuilt the whole-solid
+/// mesh per probe point. Every verdict is unchanged.
+pub(crate) fn edge_concavity_with(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edge: EdgeId,
+    probe: f64,
+    classifier: &mut RobustClassifier<'_>,
+) -> Result<EdgeConcavity, OperationsError> {
+    if !probe.is_finite() || probe <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
     let faces = adjacency.faces_for_edge(edge);
     if faces.len() != 2 || faces[0] == faces[1] {
         return Ok(EdgeConcavity::Unknown);
@@ -643,7 +668,7 @@ pub fn edge_concavity(
     let (face_a, face_b) = (faces[0], faces[1]);
     let samples = sampled_normals(topo, edge, face_a, face_b)?;
     edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
-        classify_point_robust(topo, solid, point, 0.01, 1.0e-7)
+        classifier.classify(point)
     })
 }
 
@@ -2020,6 +2045,127 @@ mod tests {
             edge_concavity(&topo, notched, reflex, 0.01).unwrap(),
             EdgeConcavity::Concave
         );
+    }
+
+    /// The pre-sharing body of [`edge_concavity`], verbatim: every quadrant
+    /// probe point ran its own one-shot robust classification (and so its
+    /// own whole-solid tessellation). Kept as the oracle for the shared form.
+    fn one_shot_point_concavity(
+        topo: &Topology,
+        solid: SolidId,
+        edge: EdgeId,
+        probe: f64,
+    ) -> Result<EdgeConcavity, OperationsError> {
+        if !probe.is_finite() || probe <= 0.0 {
+            return Err(OperationsError::InvalidInput {
+                reason: "edge concavity probe must be positive and finite".into(),
+            });
+        }
+        let adjacency = topo.build_adjacency(solid)?;
+        let faces = adjacency.faces_for_edge(edge);
+        if faces.len() != 2 || faces[0] == faces[1] {
+            return Ok(EdgeConcavity::Unknown);
+        }
+        let (face_a, face_b) = (faces[0], faces[1]);
+        let samples = sampled_normals(topo, edge, face_a, face_b)?;
+        edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
+            crate::classify::classify_point_robust(topo, solid, point, 0.01, 1.0e-7)
+        })
+    }
+
+    /// Bodies with convex, concave, tangent and curved edges.
+    fn concavity_bodies() -> Vec<(Topology, SolidId)> {
+        let mut bodies = Vec::new();
+
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+        bodies.push((topo, solid));
+
+        let mut topo = Topology::new();
+        let base = make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+        let tool = make_box(&mut topo, 12.0, 12.0, 6.0).unwrap();
+        transform_solid(&mut topo, tool, &Mat4::translation(10.0, 10.0, 5.0)).unwrap();
+        let notched = boolean(&mut topo, BooleanOp::Cut, base, tool).unwrap();
+        bodies.push((topo, notched));
+
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 40.0, 30.0, 8.0).unwrap();
+        let post = make_cylinder(&mut topo, 6.0, 20.0).unwrap();
+        transform_solid(&mut topo, post, &Mat4::translation(20.0, 15.0, 8.0)).unwrap();
+        let posted = boolean(&mut topo, BooleanOp::Fuse, plate, post).unwrap();
+        bodies.push((topo, posted));
+
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 20.0, 20.0, 6.0).unwrap();
+        let drill = make_cylinder(&mut topo, 3.0, 10.0).unwrap();
+        transform_solid(&mut topo, drill, &Mat4::translation(10.0, 10.0, -2.0)).unwrap();
+        let bored = boolean(&mut topo, BooleanOp::Cut, plate, drill).unwrap();
+        bodies.push((topo, bored));
+
+        let mut topo = Topology::new();
+        let block = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+        let edge = solid_edges(&topo, block).unwrap()[0];
+        let filleted = crate::blend_ops::fillet_cascade(&mut topo, block, &[edge], 2.0)
+            .unwrap()
+            .solid;
+        bodies.push((topo, filleted));
+
+        bodies
+    }
+
+    #[test]
+    fn shared_classifier_concavity_matches_one_shot_points() {
+        let mut compared = 0;
+        for (topo, solid) in concavity_bodies() {
+            let adjacency = topo.build_adjacency(solid).unwrap();
+            let mut classifier = RobustClassifier::new(&topo, solid, 0.01, 1.0e-7);
+            for edge in solid_edges(&topo, solid).unwrap() {
+                for probe in [0.01, 0.5, 3.0] {
+                    let shared =
+                        edge_concavity_with(&topo, &adjacency, edge, probe, &mut classifier);
+                    let one_shot = one_shot_point_concavity(&topo, solid, edge, probe);
+                    assert_eq!(
+                        format!("{shared:?}"),
+                        format!("{one_shot:?}"),
+                        "edge {} probe {probe}",
+                        edge.index()
+                    );
+                    assert_eq!(
+                        format!("{:?}", edge_concavity(&topo, solid, edge, probe)),
+                        format!("{one_shot:?}"),
+                        "public one-shot form, edge {} probe {probe}",
+                        edge.index()
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 100, "compared only {compared} verdicts");
+    }
+
+    #[test]
+    fn edge_concavity_batch_tessellates_once() {
+        let (topo, notched) = concavity_bodies().swap_remove(1);
+        let adjacency = topo.build_adjacency(notched).unwrap();
+        let edges = solid_edges(&topo, notched).unwrap();
+        let before = crate::classify::ROBUST_MESH_BUILDS.with(std::cell::Cell::get);
+        let mut classifier = RobustClassifier::new(&topo, notched, 0.01, 1.0e-7);
+        let mut verdicts = 0;
+        for &edge in &edges {
+            for probe in [0.01, 0.5] {
+                edge_concavity_with(&topo, &adjacency, edge, probe, &mut classifier).unwrap();
+                verdicts += 1;
+            }
+        }
+        let builds = crate::classify::ROBUST_MESH_BUILDS.with(std::cell::Cell::get) - before;
+        assert!(edges.len() >= 12, "notched body has {} edges", edges.len());
+        assert_eq!(builds, 1, "{verdicts} verdicts built {builds} meshes");
+
+        // One public call still classifies its four quadrants on one mesh.
+        let before = crate::classify::ROBUST_MESH_BUILDS.with(std::cell::Cell::get);
+        edge_concavity(&topo, notched, edges[0], 0.01).unwrap();
+        let builds = crate::classify::ROBUST_MESH_BUILDS.with(std::cell::Cell::get) - before;
+        assert_eq!(builds, 1);
     }
 
     #[test]

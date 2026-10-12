@@ -355,11 +355,20 @@ fn chamfer_core(
     // material-filling concave notch bevels; its closing sign gate must not
     // misclassify the latter as a folded result.
     let mut convexity_by_edge: HashMap<usize, bool> = HashMap::default();
-    for &edge in &filtered_edges {
-        if let Some(convex) =
-            crate::blend_ops::edge_is_convex(topo, solid, edge, distances.max_distance() * 0.25)?
-        {
-            convexity_by_edge.insert(edge.index(), convex);
+    // One index and one classifier serve every edge (the classifier
+    // tessellates the input once rather than once per probe point).
+    if let Ok(adjacency) = topo.build_adjacency(solid) {
+        let mut classifier = crate::classify::RobustClassifier::new(topo, solid, 0.01, 1e-7);
+        for &edge in &filtered_edges {
+            if let Some(convex) = crate::blend_ops::edge_is_convex(
+                topo,
+                &adjacency,
+                edge,
+                distances.max_distance() * 0.25,
+                &mut classifier,
+            )? {
+                convexity_by_edge.insert(edge.index(), convex);
+            }
         }
     }
     let all_convex = convexity_by_edge.len() == filtered_edges.len()
