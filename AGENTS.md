@@ -243,6 +243,8 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the rim-chain splitter, the orphaned-rim detector and the cone-lateral dispatch (tests) | `builder/face_splitter/rim_chain_oracle_tests.rs` |
 | Closed-form oracles for the O2.3b arrangement engine: intersections, tangent order, ray crossing, distance, work budgets, periodic quotient (tests) | `builder/face_splitter/arrangement/oracle_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
+| Opt-in per-thread content-keyed memo of planar arc pcurves (bit-identical hits; the WASM kernel enables it) | `pcurve_memo.rs` |
+| Differential oracle for the hole-containment box gate (the ungated test kept verbatim, tests) | `builder/face_splitter/containment/gate_oracle_tests.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
 | Shared DCEL clockwise-successor connectivity | `builder/rotation_system.rs` |

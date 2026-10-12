@@ -2,10 +2,10 @@
 
 **Status (2026-10-12):** stage 1 (through holes) and the first stage 2
 widening (blind holes) are implemented in
-`crates/operations/src/boolean/local_cut.rs`. The first part of stage 3,
-which makes phase FF's work on a touched face follow the loops a cut
-meets, is implemented in `remus-algo`'s phase FF (last section). The rest is
-design only.
+`crates/operations/src/boolean/local_cut.rs`. Stage 3 makes the GFA's work
+on a touched face follow the loops a cut meets. Its two parts are
+implemented in `remus-algo` (the last two sections): phase FF, then the
+face splitter's untouched holes. The rest is design only.
 
 ## Problem
 
@@ -375,3 +375,77 @@ Criterion, two rounds against main:
 Part 2 is the loop-local splitter itself. Holes that no section touches
 would pass through without pcurves, assigned to the sub-face that
 contains them by a cheap exact test.
+
+## Stage 3, part 2: untouched holes in the face splitter (implemented)
+
+**Why not a literal pass-through.** `split_face_2d` chooses among more
+than a dozen calibrated paths. Many of them branch on whether the face has
+holes at all, or on how many it has, such as `original_inner_wires.is_empty()`
+or `len() >= 2`. Withholding untouched holes from that list would change
+which path runs, and so the result. The pass-through therefore keeps every
+hole in the list and makes the per-hole work cheap and exact instead.
+
+On a plane, hole pcurves never reach the topology: `fill_images` stores
+coedge pcurves only on NURBS walls. Inside the splitter they feed two
+per-hole costs:
+
+- **Pcurve fitting.** Each arc rim is sampled sixteen times and fitted
+  with an interpolating NURBS on every cut, about 6.6% of the slot cut. An
+  arc's pcurve is a pure function of the curve, its traversal endpoints
+  and domain, the plane and the plane frame. A content-keyed memo
+  (`remus_algo::pcurve_memo`) keys on the exact bits of all of them and
+  returns a clone of the first result, so a hit is bit-identical to
+  recomputing.
+  - It is opt-in and per thread, like the face-integral, volume, NURBS-area
+    and face-mesh memos. `BrepKernel::new` enables it module-wide.
+  - It is bounded at 4096 pcurves by default, oldest dropped first.
+  - An unchanged hole rim is a hit on every later cut of the same face.
+- **Hole containment.** A one-edge round hole has no chord polygon, so
+  `is_inside_any_hole` resampled its fitted pcurve for every query point
+  against every hole, about 3% of the slot cut. A box holding every point
+  the sampler takes now skips holes the query lies outside. Outside that
+  box, the even-odd crossing test cannot return true, so skipping is exact.
+  The sampler takes line starts, NURBS evaluations (each a positive-weight
+  average of control points) and chord points.
+
+**Exactness.**
+- `pcurve_memo` tests compare memoized and computed pcurves by exact
+  `Debug` text, over full circles, open arcs both ways, ellipses and a
+  circle one ulp larger than another, on two planes. They also check that
+  every case gets its own key.
+- `warm_pcurve_memo_leaves_a_slot_cut_bit_identical` cuts a slot through
+  a drilled plate cold with the memo off, then again with a warmed memo, and
+  compares the full results. The warm cut answers every arc from the memo,
+  with no new misses.
+- `containment/gate_oracle_tests.rs` keeps the ungated containment test
+  verbatim. It agrees with the gated one on over 8 000 queries over round,
+  elliptical, half-round and straight holes, many packed against the rims.
+  A shrunken box fails it.
+- The scaling guard gains `hole_containment_samplings`: 0 → 0 from 36 to
+  144 holes, against 288 → 1152 with the gate removed.
+
+**Evidence.** Part 1 (`fe944883`) against this part, Apple M5 Pro, shared
+machine, `RAYON_NUM_THREADS=1`. Instruction counts (`/usr/bin/time -l`,
+binaries alternated, three rounds):
+
+| run | part 1 | memo off (library) | memo on (kernel) |
+| --- | ---: | ---: | ---: |
+| 100 slots on a 324-hole plate, whole run | 54.25–54.40 G | 53.18–53.43 G (−2%) | 50.59–50.71 G (−7%) |
+| 2000 slots on a blank plate | 13.50–13.55 G | 13.51–13.52 G | 13.50–13.52 G |
+
+Slot cuts are about 85% of the first run, so a slot costs about 8% less
+with the memo warm. The gain is modest: the splitter's hole work was about
+10% of the cut after part 1, and this part removes most of it.
+
+Criterion over the boolean benches moved within about ±2% with changing
+sign. `cross_drilled_cylinder` read +6% and +2%, but repeated 1000 times
+it counts 21.21 G instructions on both branches, as do the gridfinity
+magnet cuts and a box-cylinder cut (1.065 G and 0.268 G). Those readings
+were noise.
+
+**What remains.** With the memo warm, the splitter's per-hole work is about
+6% of the slot cut: memo lookups and clones, and the winding sampling. The
+remaining per-hole cost is untouched-face work outside the splitter. Shell
+assembly and `orient_revolved_face_wires` revisit every hole wall, and the
+GFA store copies every face in and out. That is the next stage, frozen
+untouched faces.
