@@ -679,11 +679,13 @@ and lies outside it.
   the untouched faces exactly as a cut's is.
 - **Intersect** drops every untouched face, so its patch is the whole
   result. `Builder::build_patch` runs full shell assembly for it instead of
-  the cleanup passes alone. The general path relies on that assembly: on a
-  window crossing a hole wall, the wall's remaining band is classified
-  inside the tool (from a sample point off the cylinder), and only shell
-  assembly drops it, because it closes no shell. An intersect patch that
-  assembles to more than one solid or to a cavity is declined.
+  the cleanup passes alone, so a sub-face selected wrongly still drops when
+  it closes no shell, as on the general path. (A window crossing a hole wall
+  used to rely on that: the wall's remaining band was classified inside the
+  tool, from a sample point inside the window. The face splitter now samples
+  the window and the band on their own regions, so the band classifies
+  outside.) An intersect patch that assembles to more than one solid or to a
+  cavity is declined.
 - **One lump.** The general path returns separate lumps as separate solids,
   and the splice always builds one shell. So the result must also be one
   edge-connected shell, checked inside the transaction next to the
