@@ -6,7 +6,8 @@ widening (blind holes) are implemented in
 on a touched face follow the loops a cut meets. Its two parts are
 implemented in `remus-algo`: phase FF, then the face splitter's untouched
 holes. The frozen-untouched-faces stage is implemented in part. Stage 4,
-the store-local cut, is implemented as an opt-in path (last section).
+the store-local boolean, is implemented as an opt-in path for cut, fuse and
+intersect (last two sections).
 
 ## Problem
 
@@ -558,7 +559,7 @@ assembly. So the path is opt-in (`set_thread_store_local_cuts(true)`) and
 off by default, and its oracle is equivalence rather than bit-identity.
 Enabling it by default is a separate decision.
 
-**What it does.** `boolean::store_local` handles `Cut` only. It partitions
+**What it does.** In this part `boolean::store_local` handled `Cut` only. It partitions
 the blank's outer-shell faces:
 
 - **Touched:** a face whose outer box (`ruled_face_bound`, else the
@@ -619,7 +620,7 @@ volume, and checks that both results are valid and watertight. The cases:
 - three successive slots, compared after each.
 
 It also checks that the path is off by default and declines a tool that
-touches every face. `scaling_store_local_slot_copies_only_touched_faces`
+touches every face. `scaling_store_local_slot_copies_only_touched_faces` (now `scaling_store_local_booleans_copy_only_touched_faces`)
 (`perf-counters`) shows the store holding 8 faces for a slot through plates
 with 9 and 16 holes, against 54 on the general path.
 
@@ -655,9 +656,69 @@ nothing.
 - **Remaining cost:** what still grows with a blank's size is the touched
   faces' own loops, which a drilled plate's top and bottom carry for every
   hole.
-- **Wider coverage:** fuse and intersect, cavity shells, and faces with
-  stored pcurves (NURBS), which the path declines today.
+- **Wider coverage:** cavity shells and faces with stored pcurves
+  (NURBS), which the path declines today. Fuse and intersect: done (part 2,
+  below).
 - **Exposure:** done. The WASM kernel exposes `setStoreLocalCuts(enabled)`
   and `storeLocalCutsEnabled()`, direct and in `executeBatch`. The switch is
   off by default and set per thread, so it applies to the whole module
   instance.
+
+## Stage 4, part 2: store-local fuse and intersect (implemented)
+
+The same switch (`set_thread_store_local_cuts`, WASM `setStoreLocalCuts`;
+the names predate this part) now covers all three operations, with the
+first operand as the blank and the second as the tool. The partition is
+unchanged, and so is its argument: an untouched face does not meet the tool
+and lies outside it.
+
+- **Fuse** keeps every untouched face, as a cut does. The patch
+  (`remus_algo::gfa::boolean_patch`, which `cut_patch` now delegates to)
+  holds the touched faces' pieces outside the tool and the tool's pieces
+  outside the blank, classified against the whole blank. It is spliced onto
+  the untouched faces exactly as a cut's is.
+- **Intersect** drops every untouched face, so its patch is the whole
+  result. `Builder::build_patch` runs full shell assembly for it instead of
+  the cleanup passes alone. The general path relies on that assembly: on a
+  window crossing a hole wall, the wall's remaining band is classified
+  inside the tool (from a sample point off the cylinder), and only shell
+  assembly drops it, because it closes no shell. An intersect patch that
+  assembles to more than one solid or to a cavity is declined.
+- **One lump.** The general path returns separate lumps as separate solids,
+  and the splice always builds one shell. So the result must also be one
+  edge-connected shell, checked inside the transaction next to the
+  boolean-result gate. A fuse tool that the clearance reaches but that does
+  not meet the blank (a pin inside a hole) therefore declines.
+
+**Exactness.** `store_local_tests.rs` runs each case both ways, with the
+same face-by-face comparison as the cuts:
+
+- fuse: a rib sunk into the top face, a cylinder boss sunk into it, a boss
+  standing on it (a coplanar contact), and a lug out through a side wall;
+- intersect: a window over four holes, and a window crossing one hole off
+  its axis (the case above);
+- refusal: the pin inside a hole declines and matches the general path.
+
+`scaling_store_local_booleans_copy_only_touched_faces` (`perf-counters`)
+now covers a slot cut, a rib fuse and a window intersect. The store holds
+the same count on plates with 9 and 16 holes (8, 7 and 12 faces), against
+54, 55 and 38 on the general path.
+
+**Evidence.** This branch, Apple M5 Pro, shared machine.
+`touched_face_loops_profile memo [local] [fuse|intersect] repeat <n> 40`,
+time per boolean measured in-process. The fuse tool is a 2 × 6 × 4 rib sunk
+2 into the top face; the intersect tool is the slot, so it keeps a 2 × 6 ×
+10 block.
+
+| boolean | holes | general path | store-local |
+| --- | ---: | ---: | ---: |
+| cut (slot) | 144 | 5.08 ms | 3.11 ms (−39%) |
+| cut (slot) | 576 | 22.3 ms | 12.1 ms (−46%) |
+| fuse (rib) | 144 | 4.94 ms | 1.80 ms (−64%) |
+| fuse (rib) | 576 | 22.5 ms | 7.09 ms (−68%) |
+| intersect (slot) | 144 | 3.23 ms | 2.44 ms (−24%) |
+| intersect (slot) | 576 | 14.3 ms | 9.01 ms (−37%) |
+
+The rib touches only the top face, the slot both top and bottom, which is
+why the fuse saves more. With the switch off, the general path is
+unchanged.

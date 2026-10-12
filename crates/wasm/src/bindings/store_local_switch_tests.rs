@@ -1,9 +1,9 @@
-//! WASM contract tests for the store-local cut switch, through
+//! WASM contract tests for the store-local boolean switch, through
 //! `executeBatch` (the JS surface).
 //!
 //! The switch is off by default and toggles the thread's setting, and a slot
-//! cut through a drilled plate gives the same solid either way: the same
-//! volume and the same face and edge counts. Which path ran, and
+//! cut, a rib fuse and a window intersect on a drilled plate each give the
+//! same solid either way: the same volume and the same face and edge counts. Which path ran, and
 //! that its result equals the general boolean's face by face, is pinned by
 //! the operations crate's store-local oracle tests.
 
@@ -100,31 +100,37 @@ fn store_local_switch_is_off_by_default_and_toggles() {
     );
 }
 
-#[test]
-fn slot_cut_gives_the_same_solid_with_the_switch_on() {
+/// Run `op` on the drilled plate and a box of `size` at `at`, with the
+/// switch off and on; both results must have the same counts and volume,
+/// which is returned.
+fn same_solid_both_ways(op: &str, size: (f64, f64, f64), at: (f64, f64, f64)) -> f64 {
     let mut kernel = BrepKernel::new();
     let plate = drilled_plate(&mut kernel);
-    let slot = handle(&call(
+    let tool = handle(&call(
         &mut kernel,
         "makeBox",
-        json!({"width": 2.0, "height": 6.0, "depth": 20.0}),
+        json!({"width": size.0, "height": size.1, "depth": size.2}),
     ));
-    let slot = translated(&mut kernel, slot, 13.0, 11.0, -5.0);
+    let tool = translated(&mut kernel, tool, at.0, at.1, at.2);
 
     let general = handle(&call(
         &mut kernel,
-        "cut",
-        json!({"solidA": plate, "solidB": slot}),
+        op,
+        json!({"solidA": plate, "solidB": tool}),
     ));
     call(&mut kernel, "setStoreLocalCuts", json!({"enabled": true}));
     let local = handle(&call(
         &mut kernel,
-        "cut",
-        json!({"solidA": plate, "solidB": slot}),
+        op,
+        json!({"solidA": plate, "solidB": tool}),
     ));
     call(&mut kernel, "setStoreLocalCuts", json!({"enabled": false}));
 
-    assert_eq!(counts(&mut kernel, local), counts(&mut kernel, general));
+    assert_eq!(
+        counts(&mut kernel, local),
+        counts(&mut kernel, general),
+        "{op}: counts"
+    );
     let volume = |kernel: &mut BrepKernel, solid: u32| {
         call(
             kernel,
@@ -137,11 +143,39 @@ fn slot_cut_gives_the_same_solid_with_the_switch_on() {
     let (v_local, v_general) = (volume(&mut kernel, local), volume(&mut kernel, general));
     assert!(
         (v_local - v_general).abs() <= 1e-9 * v_general,
-        "volume {v_local} with the switch on vs {v_general} off"
+        "{op}: volume {v_local} with the switch on vs {v_general} off"
     );
+    v_local
+}
+
+#[test]
+fn slot_cut_gives_the_same_solid_with_the_switch_on() {
+    let measured = same_solid_both_ways("cut", (2.0, 6.0, 20.0), (13.0, 11.0, -5.0));
     let expected = 64.0 * 64.0 * 10.0 - 9.0 * std::f64::consts::PI * 4.0 * 10.0 - 2.0 * 6.0 * 10.0;
     assert!(
-        (v_local - expected).abs() < 1e-6 * expected,
-        "volume {v_local}"
+        (measured - expected).abs() < 1e-6 * expected,
+        "volume {measured}"
+    );
+}
+
+#[test]
+fn rib_fuse_gives_the_same_solid_with_the_switch_on() {
+    // Sunk 2 into the top face, standing 2 proud.
+    let measured = same_solid_both_ways("fuse", (6.0, 3.0, 4.0), (11.0, 12.5, 8.0));
+    let expected = 64.0 * 64.0 * 10.0 - 9.0 * std::f64::consts::PI * 4.0 * 10.0 + 6.0 * 3.0 * 2.0;
+    assert!(
+        (measured - expected).abs() < 1e-6 * expected,
+        "volume {measured}"
+    );
+}
+
+#[test]
+fn window_intersect_gives_the_same_solid_with_the_switch_on() {
+    // A 20 × 20 window holding four of the holes.
+    let measured = same_solid_both_ways("intersect", (20.0, 20.0, 20.0), (4.0, 4.0, -5.0));
+    let expected = 20.0 * 20.0 * 10.0 - 4.0 * std::f64::consts::PI * 4.0 * 10.0;
+    assert!(
+        (measured - expected).abs() < 1e-6 * expected,
+        "volume {measured}"
     );
 }

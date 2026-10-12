@@ -816,16 +816,21 @@ impl Builder {
         Ok((self.topo, solid_id))
     }
 
-    /// Select and prepare the faces of a store-local boolean's open patch:
-    /// [`Builder::build_result`] up to assembly's cleanup passes, without
-    /// forming shells. Returns the store topology, the prepared faces and,
-    /// parallel to them, the store input face each derives from (`None` for
-    /// a cap).
+    /// Select and prepare the faces of a store-local boolean's patch.
+    ///
+    /// For a cut or fuse the patch is open (the blank's untouched faces
+    /// close it): [`Builder::build_result`] runs up to assembly's cleanup
+    /// passes, without forming shells. An intersect's patch is the whole
+    /// result, so it runs full assembly, which also drops selected faces
+    /// that close no shell, and returns the one shell's faces. Returns the
+    /// store topology, the prepared faces and, parallel to them, the store
+    /// input face each derives from (`None` for a cap).
     ///
     /// # Errors
     ///
-    /// Returns [`AlgoError`] if orientation or a cleanup pass fails, or no
-    /// face survives.
+    /// Returns [`AlgoError`] if orientation, a cleanup pass or assembly
+    /// fails, no face survives, or an intersect assembles to anything but
+    /// one solid with one shell.
     pub(crate) fn build_patch(mut self, op: BooleanOp) -> Result<PatchFaces, AlgoError> {
         let selected = bop::select_faces(
             &self.sub_faces,
@@ -838,6 +843,33 @@ impl Builder {
         }
         builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
         let cap_planes = self.partial_overlap_cap_planes(&selected);
+        if op == BooleanOp::Intersect {
+            let (solids, origins) = builder_solid::build_solids_with_origins(
+                &mut self.topo,
+                &selected,
+                &cap_planes,
+                &mut self.edge_lineage,
+            )?;
+            let [solid] = solids[..] else {
+                return Err(AlgoError::AssemblyFailed(format!(
+                    "store-local intersect assembled {} solids",
+                    solids.len()
+                )));
+            };
+            let solid = self.topo.solid(solid)?;
+            if !solid.inner_shells().is_empty() {
+                return Err(AlgoError::AssemblyFailed(
+                    "store-local intersect assembled a cavity".into(),
+                ));
+            }
+            let faces = self.topo.shell(solid.outer_shell())?.faces().to_vec();
+            let origin: DetHashMap<FaceId, Option<FaceId>> = origins.into_iter().collect();
+            let sources = faces
+                .iter()
+                .map(|face| origin.get(face).copied().flatten())
+                .collect();
+            return Ok((self.topo, faces, sources));
+        }
         let (faces, sources) = builder_solid::clean_selected_faces(
             &mut self.topo,
             &selected,
