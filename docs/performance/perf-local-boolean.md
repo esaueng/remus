@@ -509,7 +509,34 @@ Part 1 removes the passes that paid for them:
   `face_outline_samplings` 12 → 12 from 36 to 144 holes; with the gates
   removed they read 54 → 162 and 48 → 156.
 
-<!--FROZEN-EVIDENCE-->
+**Evidence.** Stage 3 part 2 (`0f7b50c8`) against this part, Apple M5 Pro,
+shared machine, `RAYON_NUM_THREADS=1`. Instruction counts
+(`/usr/bin/time -l`, binaries alternated, three rounds):
+
+| run | part 2 | this part |
+| --- | ---: | ---: |
+| 100 slots on a 324-hole plate, memos off | 53.19–53.38 G | 49.04–49.19 G (−8%) |
+| the same, memos on (kernel) | 50.55–50.62 G | 44.95–45.05 G (−11%) |
+| 2000 slots on a blank plate | 13.51 G | 13.21–13.23 G (−2%) |
+| 1000 cross-drilled shafts | 21.22–21.27 G | 21.17–21.21 G |
+| 1000 gridfinity magnet-pocket sets, 1000 box − cylinder cuts | 1.066–1.069 G, 0.268 G | 1.067–1.068 G, 0.268–0.269 G |
+
+Slot cuts are about 85% of the 324-hole runs, so a slot costs about 9% less
+with the memos off and 13% less with them on. The blank-plate gain is the
+operand bounds shortcut, which every boolean takes.
+
+Criterion over the boolean benches, two rounds. Consistent wins:
+
+| bench | change |
+| --- | ---: |
+| `multi-boolean model` | −15 to −17% |
+| `cut_box_box` | −9 to −12% |
+| `cut(box,cyl) x10` | −4 to −5% |
+| `gridfinity 3x3` | −4% |
+
+`cross_drilled_cylinder` read +5% and +2%, and the `torus_notch` trio up to
++3%. The cross-drilled instruction count above is unchanged; the torus
+benches were not instruction-counted.
 
 **What remains.** About 10% of the slot cut is the GFA store copying every
 face in and out, which is stage 4 (store-local subsets). Shell assembly's
