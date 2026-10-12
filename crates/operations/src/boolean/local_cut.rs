@@ -1,40 +1,49 @@
-//! Local through-hole cut: the first qualified cell of a boolean whose cost
+//! Local drilled-hole cut: the first qualified cells of a boolean whose cost
 //! follows the region the tool touches instead of the whole blank.
 //!
 //! The general GFA re-processes every face of the blank on every cut, so a
 //! plate drilled one hole at a time pays for all earlier holes again
-//! (`docs/performance/perf-local-boolean.md`). This cell recognizes the
-//! commonest sequential cut — a right circular cylinder drilled straight
-//! through two parallel planar faces, clear of every other piece of the
-//! blank — and builds the exact GFA result by local surgery on a copy:
-//! each pierced face gains one circular inner wire and one cylindrical wall
-//! face closes the hole. Every other face is copied unchanged.
+//! (`docs/performance/perf-local-boolean.md`). This module recognizes the
+//! commonest sequential cuts — a right circular cylinder drilled straight
+//! through two parallel planar faces, or into one planar face down to a
+//! floor inside the blank, clear of every other piece of the blank — and
+//! builds the exact GFA result by local surgery on a copy. Each pierced face
+//! gains one circular inner wire, one cylindrical wall face lines the hole,
+//! and a blind hole keeps the tool's buried cap as its floor. Every other
+//! face is copied unchanged.
 //!
-//! The cell is fail-closed. Anything it cannot prove returns `None` and the
-//! caller runs the general GFA, so a refusal costs one pass over the blank's
-//! conservative face boxes and changes no result.
+//! The cells are fail-closed. Anything they cannot prove returns `None` and
+//! the caller runs the general GFA, so a refusal costs one pass over the
+//! blank's conservative face boxes and changes no result.
 //!
 //! # Why the result is exact
 //!
 //! Let the tool `B` be the solid cylinder of radius `r` about axis
-//! `o + s·d`, `s ∈ [s0, s1]`, and let `L`, `U` be the two pierced faces of
-//! the blank `A`, planes perpendicular to `d` at `s_L < s_U`, both strictly
-//! inside `(s0, s1)`. The cell proves:
+//! `o + s·d`, `s ∈ [s0, s1]`, and let `P` be the blank faces whose boxes
+//! come within the clearance of `B`'s box. The cells prove:
 //!
-//! 1. every other face of `A` has a conservative box at least the clearance
-//!    away from `B`'s box, so it does not meet `B`;
-//! 2. on `L` and `U` the section disc (radius `r` about the axis point) lies
-//!    inside the face region with at least the clearance to every boundary
-//!    edge, so `plane ∩ B` meets `∂A` exactly in that disc;
-//! 3. `L`'s outward normal is `−d` and `U`'s is `+d`.
+//! 1. every face of `A` outside `P` has a conservative box at least the
+//!    clearance away from `B`'s box, so it does not meet `B`;
+//! 2. each face of `P` is a plane perpendicular to `d` at some `s` strictly
+//!    inside `(s0, s1)`, and its section disc (radius `r` about the axis
+//!    point) lies inside the face region with at least the clearance to
+//!    every boundary edge, so `plane ∩ B` meets `∂A` exactly in that disc;
+//! 3. the outward normals of the faces of `P` put the material on the side
+//!    each cell needs.
 //!
-//! By (1) and (2) the open cylinder segment between the two discs does not
-//! meet `∂A`, so it lies wholly inside or wholly outside `A`; by (3) the
-//! material sits just above `L`'s disc, so it is inside. The same argument
-//! puts the tool's parts below `L` and above `U` wholly outside `A`. Hence
-//! `A ∩ B` is exactly that segment and `A − B` is `A` with the two discs
-//! removed from `L` and `U` and the segment's lateral surface added as a
-//! reversed wall — the topology built here.
+//! By (1) and (2), `∂A ∩ B` is the union of the discs. They cut `B` into
+//! slabs, each wholly inside or wholly outside `A`, and the outward normal
+//! of a disc's face says which of its two sides is inside.
+//!
+//! - **Through hole**: `P = {L, U}` at `s_L < s_U`, with `L`'s outward
+//!   normal `−d` and `U`'s `+d`. Only the slab between the discs is inside,
+//!   so `A − B` is `A` with both discs removed and that slab's lateral
+//!   surface added as a reversed wall.
+//! - **Blind hole**: `P = {E}`. The slab on the side opposite `E`'s outward
+//!   normal is inside and ends at one of the tool's caps, which (1) puts
+//!   strictly inside `A`. So `A − B` is `A` with `E`'s disc removed, a
+//!   reversed wall from `E` to that cap, and the cap, reversed, as the
+//!   hole's floor.
 
 use remus_math::aabb::Aabb3;
 use remus_math::curves::Circle3D;
@@ -45,6 +54,9 @@ use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+
+use crate::copy::{ShellSlot, Splice, SpliceEdge, SpliceFace, SpliceWire};
 
 /// Clearance, in linear tolerances, the cell demands between the tool and
 /// every piece of geometry it must not touch. Contacts closer than this are
@@ -84,6 +96,27 @@ struct ToolCylinder {
     /// hole (a plug filling it, a coaxial counterbore) then sees the same
     /// seam vertices either way.
     reference: Vec3,
+    /// The wall surface, for the GFA's seam anchoring arithmetic.
+    wall: FaceSurface,
+    /// The start of the wall's seam.
+    seam_point: Point3,
+    /// The cap rims at `s0` and `s1`, when the wall's loop is the natural
+    /// `(u, v)` rectangle — `s0` rim forward, seam up, `s1` rim back, seam
+    /// down — that a blind hole's wall and floor are built from.
+    rims: Option<[ToolRim; 2]>,
+}
+
+/// One cap of the tool and the circle it shares with the wall.
+#[derive(Clone, Copy)]
+struct ToolRim {
+    /// The cap face.
+    cap: FaceId,
+    /// The cap's one edge, a closed circle the wall also uses.
+    edge: EdgeId,
+    /// Whether the cap's wire uses `edge` forward.
+    cap_forward: bool,
+    /// The edge's vertex, where the wall's seam meets it.
+    vertex: VertexId,
 }
 
 /// A blank face the tool pierces.
@@ -95,17 +128,38 @@ struct PiercedFace {
     normal: Vec3,
 }
 
-/// Cut `b` out of `a` locally when the pair lies in the through-hole cell.
+/// A qualified cut.
+enum Cell {
+    /// Through two pierced faces, ordered by axial position.
+    Through {
+        lower: PiercedFace,
+        upper: PiercedFace,
+    },
+    /// Into one pierced face, down to the tool's cap rim `floor`
+    /// (0 at `s0`, 1 at `s1`).
+    Blind { entry: PiercedFace, floor: usize },
+}
+
+impl std::fmt::Debug for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Through { lower, upper } => write!(f, "through {lower:?}/{upper:?}"),
+            Self::Blind { entry, floor } => write!(f, "blind {entry:?} to cap {floor}"),
+        }
+    }
+}
+
+/// Cut `b` out of `a` locally when the pair lies in a drilled-hole cell.
 ///
-/// Returns `Ok(None)` — having changed nothing — whenever the cell does not
-/// apply or its result fails the strict boolean-result gate; the caller then
-/// runs the general GFA.
+/// Returns `Ok(None)` — having changed nothing — whenever no cell applies
+/// or its result fails the strict boolean-result gate; the caller then runs
+/// the general GFA.
 ///
 /// # Errors
 ///
 /// Returns an error only for a failed topology lookup while reading the
 /// operands; construction failures roll back and decline instead.
-pub(super) fn try_local_through_hole(
+pub(super) fn try_local_hole(
     topo: &mut Topology,
     a: SolidId,
     b: SolidId,
@@ -121,23 +175,29 @@ pub(super) fn try_local_through_hole(
     let Some(tool) = recognize_tool(topo, b, tol)? else {
         return Ok(None);
     };
-    let Some((lower, upper)) = qualify_blank(topo, a, b, &tool, tol)? else {
+    let Some(cell) = qualify_blank(topo, a, b, &tool, tol)? else {
         return Ok(None);
     };
     let attempt = remus_topology::transaction::run_transacted(topo, |topo| {
-        let result = build_through_hole(topo, a, &tool, &lower, &upper, tol)?;
+        let splice = match &cell {
+            Cell::Through { lower, upper } => {
+                through_hole_splice(topo, a, &tool, lower, upper, tol)?
+            }
+            Cell::Blind { entry, floor } => blind_hole_splice(topo, a, &tool, entry, *floor, tol)?,
+        };
+        let result = crate::copy::copy_solid_spliced(topo, a, &splice)?;
         super::assembly::validate_boolean_result_with_tolerance(topo, result, tol)?;
         Ok::<_, crate::OperationsError>(result)
     });
     match attempt {
         Ok(result) => {
-            log::debug!("Cut built locally: through-hole on faces {lower:?}/{upper:?}");
+            log::debug!("Cut built locally: {cell:?}");
             #[cfg(test)]
             BUILT.with(|built| built.set(built.get() + 1));
             Ok(Some(result))
         }
         Err(error) => {
-            log::debug!("local through-hole cut declined after construction: {error}");
+            log::debug!("local hole cut declined after construction: {error}");
             Ok(None)
         }
     }
@@ -176,7 +236,7 @@ fn recognize_tool(
             FaceSurface::Cylinder(cylinder) if wall.is_none() => {
                 wall = Some((cylinder.clone(), face.outer_wire()));
             }
-            FaceSurface::Plane { normal, d } => caps.push((*normal, *d)),
+            FaceSurface::Plane { normal, d } => caps.push((face_id, *normal, *d)),
             FaceSurface::Cylinder(_)
             | FaceSurface::Nurbs(_)
             | FaceSurface::Cone(_)
@@ -205,15 +265,18 @@ fn recognize_tool(
     if !(radius.is_finite() && greater(radius, tol.linear)) || (axis.length() - 1.0).abs() > 1e-12 {
         return Ok(None);
     }
-    let mut span = [0.0; 2];
-    for (slot, &(normal, d)) in span.iter_mut().zip([cap_a, cap_b]) {
+    let mut placed = [(cap_a.0, 0.0), (cap_b.0, 0.0)];
+    for (slot, &(_, normal, d)) in placed.iter_mut().zip([cap_a, cap_b]) {
         let Some(s) = axial_plane_position(origin, axis, normal, d) else {
             return Ok(None);
         };
-        *slot = s;
+        slot.1 = s;
     }
-    let (s0, s1) = (span[0].min(span[1]), span[0].max(span[1]));
-    if !greater(s1 - s0, tol.linear) {
+    if placed[1].1 < placed[0].1 {
+        placed.swap(0, 1);
+    }
+    let span = (placed[0].1, placed[1].1);
+    if !greater(span.1 - span.0, tol.linear) {
         return Ok(None);
     }
     let radial = seam_point - origin;
@@ -221,14 +284,73 @@ fn recognize_tool(
     if !greater(reference.length(), 0.5 * radius) {
         return Ok(None);
     }
+    let rims = natural_rims(topo, wall_wire, [placed[0].0, placed[1].0])?;
     Ok(Some(ToolCylinder {
+        wall: FaceSurface::Cylinder(surface.clone()),
         surface,
         origin,
         axis,
         radius,
-        span: (s0, s1),
+        span,
         reference,
+        seam_point,
+        rims,
     }))
+}
+
+/// The cap rims of a tool whose wall loop is the natural rectangle
+/// `[s0 rim +, seam +, s1 rim −, seam −]`, each rim a closed circle that is
+/// its cap's only edge and starts where the seam meets it; `None` for any
+/// other wall loop.
+fn natural_rims(
+    topo: &Topology,
+    wall_wire: remus_topology::wire::WireId,
+    caps: [FaceId; 2],
+) -> Result<Option<[ToolRim; 2]>, crate::OperationsError> {
+    let uses = topo.wire(wall_wire)?.edges();
+    let [lower, seam_up, upper, seam_down] = uses else {
+        return Ok(None);
+    };
+    if !(lower.is_forward()
+        && seam_up.is_forward()
+        && !upper.is_forward()
+        && !seam_down.is_forward()
+        && seam_up.edge() == seam_down.edge())
+    {
+        return Ok(None);
+    }
+    let seam = topo.edge(seam_up.edge())?;
+    if !matches!(seam.curve(), EdgeCurve::Line) {
+        return Ok(None);
+    }
+    let mut rims = Vec::with_capacity(2);
+    for ((cap, rim_use), seam_end) in caps
+        .into_iter()
+        .zip([lower, upper])
+        .zip([seam.start(), seam.end()])
+    {
+        let edge = topo.edge(rim_use.edge())?;
+        if !matches!(edge.curve(), EdgeCurve::Circle(_))
+            || edge.start() != seam_end
+            || edge.end() != seam_end
+        {
+            return Ok(None);
+        }
+        let cap_uses = topo.wire(topo.face(cap)?.outer_wire())?.edges();
+        let [cap_use] = cap_uses else {
+            return Ok(None);
+        };
+        if cap_use.edge() != rim_use.edge() {
+            return Ok(None);
+        }
+        rims.push(ToolRim {
+            cap,
+            edge: rim_use.edge(),
+            cap_forward: cap_use.is_forward(),
+            vertex: seam_end,
+        });
+    }
+    Ok(<[ToolRim; 2]>::try_from(rims).ok())
 }
 
 /// Axial coordinate along `origin + s·axis` where the plane `normal·x = d`
@@ -245,15 +367,16 @@ fn axial_plane_position(origin: Point3, axis: Vec3, normal: Vec3, d: f64) -> Opt
     s.is_finite().then_some(s)
 }
 
-/// Prove the blank side of the cell; returns the lower and upper pierced
-/// faces (by axial position) or `None`.
+/// Prove the blank side of a cell: two pierced faces with the material
+/// between them, or one pierced face with the material on the side of a
+/// tool cap the wall can end on.
 fn qualify_blank(
     topo: &Topology,
     a: SolidId,
     b: SolidId,
     tool: &ToolCylinder,
     tol: Tolerance,
-) -> Result<Option<(PiercedFace, PiercedFace)>, crate::OperationsError> {
+) -> Result<Option<Cell>, crate::OperationsError> {
     let solid = topo.solid(a)?;
     if !solid.inner_shells().is_empty() {
         return Ok(None);
@@ -282,28 +405,49 @@ fn qualify_blank(
         }
         candidates.push(face_id);
     }
-    let [first, second] = candidates.as_slice() else {
-        return Ok(None);
-    };
-    let (Some(first), Some(second)) = (
-        pierced_face(topo, *first, tool, clearance, tol)?,
-        pierced_face(topo, *second, tool, clearance, tol)?,
-    ) else {
-        return Ok(None);
-    };
-    let (lower, upper) = if first.s < second.s {
-        (first, second)
-    } else {
-        (second, first)
-    };
-    // Material between the discs: outward normals point away from it.
-    if !greater(upper.s - lower.s, 2.0 * clearance)
-        || lower.normal.dot(tool.axis) >= 0.0
-        || upper.normal.dot(tool.axis) <= 0.0
-    {
-        return Ok(None);
+    match *candidates.as_slice() {
+        [entry] => {
+            let (Some(entry), Some(_)) = (
+                pierced_face(topo, entry, tool, clearance, tol)?,
+                tool.rims.as_ref(),
+            ) else {
+                return Ok(None);
+            };
+            // The material lies against the outward normal, so the wall
+            // runs from the entry plane to the cap on that side.
+            let toward_axis = entry.normal.dot(tool.axis);
+            let floor = if greater(toward_axis, 0.0) {
+                0
+            } else if greater(-toward_axis, 0.0) {
+                1
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(Cell::Blind { entry, floor }))
+        }
+        [first, second] => {
+            let (Some(first), Some(second)) = (
+                pierced_face(topo, first, tool, clearance, tol)?,
+                pierced_face(topo, second, tool, clearance, tol)?,
+            ) else {
+                return Ok(None);
+            };
+            let (lower, upper) = if first.s < second.s {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            // Material between the discs: outward normals point away from it.
+            if !greater(upper.s - lower.s, 2.0 * clearance)
+                || lower.normal.dot(tool.axis) >= 0.0
+                || upper.normal.dot(tool.axis) <= 0.0
+            {
+                return Ok(None);
+            }
+            Ok(Some(Cell::Through { lower, upper }))
+        }
+        _ => Ok(None),
     }
-    Ok(Some((lower, upper)))
 }
 
 /// An outer box for a planar, cylindrical or conical face bounded only by
@@ -649,92 +793,217 @@ fn winding_number(polygon: &[(f64, f64)]) -> i32 {
     winding
 }
 
-/// Build `A − B` for a qualified pair: a copy of `a` whose two pierced faces
-/// gain circular inner wires, closed by a reversed cylindrical wall.
-fn build_through_hole(
-    topo: &mut Topology,
+/// The rim the cut leaves on a pierced face: a full circle about the axis
+/// point whose normal is the face's outward normal, starting at a new
+/// vertex on the tool's seam. New edges carry the operation tolerance, as
+/// the GFA's section edges do.
+///
+/// The start is found as the GFA's seam anchoring finds it — the wall
+/// surface evaluated at the seam vertex's `u` and the section's `v` — and
+/// the circle's reference is that point's offset from the centre. The same
+/// arithmetic keeps the rim's frame and vertex bit-identical to the GFA's,
+/// including the rounding of `cos(3π/2)` that surfaces near small
+/// coordinates.
+fn section_rim(
+    tool: &ToolCylinder,
+    face: &PiercedFace,
+    vertex: usize,
+    tol: Tolerance,
+) -> Result<((Point3, f64), SpliceEdge), crate::OperationsError> {
+    let center = tool.origin + tool.axis * face.s;
+    let refused = || crate::OperationsError::InvalidInput {
+        reason: "local cut: section rim cannot be anchored on the tool seam".into(),
+    };
+    let reference = Circle3D::new_with_ref(center, face.normal, tool.radius, tool.reference)
+        .map_err(crate::OperationsError::Math)?;
+    let (seam_u, _) = tool
+        .wall
+        .project_point(tool.seam_point)
+        .ok_or_else(refused)?;
+    let (_, section_v) = tool
+        .wall
+        .project_point(reference.evaluate(0.0))
+        .ok_or_else(refused)?;
+    let anchor = tool.wall.evaluate(seam_u, section_v).ok_or_else(refused)?;
+    let radial = anchor - center;
+    if !((radial.length() - tool.radius).abs() <= tol.linear
+        && radial.dot(face.normal).abs() <= tol.linear)
+    {
+        return Err(refused());
+    }
+    let circle = Circle3D::new_with_ref(center, face.normal, tool.radius, radial)
+        .map_err(crate::OperationsError::Math)?;
+    Ok((
+        (anchor, tol.linear),
+        SpliceEdge {
+            start: vertex,
+            end: vertex,
+            curve: EdgeCurve::Circle(circle),
+            trim: Some((0.0, std::f64::consts::TAU)),
+            tolerance: Some(tol.linear),
+        },
+    ))
+}
+
+/// The new wall's seam from splice vertex `start` (at the `s0` end) to
+/// `end`.
+fn seam(start: usize, end: usize, tol: Tolerance) -> SpliceEdge {
+    SpliceEdge {
+        start,
+        end,
+        curve: EdgeCurve::Line,
+        trim: None,
+        tolerance: Some(tol.linear),
+    }
+}
+
+/// A pierced face's new hole: its rim, traversed clockwise seen from
+/// outside (the rim's circle normal is the face's outward normal).
+fn hole(rim: usize) -> SpliceWire {
+    SpliceWire {
+        edges: vec![(rim, false)],
+        closed: true,
+    }
+}
+
+/// The wall: a reversed copy of the tool's cylinder.
+fn wall(tool: &ToolCylinder, outer: usize) -> SpliceFace {
+    SpliceFace {
+        outer,
+        surface: FaceSurface::Cylinder(tool.surface.clone()),
+        reversed: true,
+    }
+}
+
+/// Splice for a through hole: two pierced faces gain circular inner wires,
+/// joined by a reversed cylindrical wall.
+fn through_hole_splice(
+    topo: &Topology,
     a: SolidId,
     tool: &ToolCylinder,
     lower: &PiercedFace,
     upper: &PiercedFace,
     tol: Tolerance,
-) -> Result<SolidId, crate::OperationsError> {
-    let reference = tool.reference;
-    let circle = |face: &PiercedFace| {
-        Circle3D::new_with_ref(
-            tool.origin + tool.axis * face.s,
-            face.normal,
-            tool.radius,
-            reference,
-        )
-        .map_err(crate::OperationsError::Math)
-    };
-    let (circle_lower, circle_upper) = (circle(lower)?, circle(upper)?);
+) -> Result<Splice, crate::OperationsError> {
     // Spliced entity indices: vertices 0 (lower) and 1 (upper); edges
     // 0 (lower rim), 1 (upper rim), 2 (seam); wires 0 and 1 (the holes) and
     // 2 (the wall); face 0 (the wall).
-    let vertices = vec![
-        (circle_lower.evaluate(0.0), tol.linear),
-        (circle_upper.evaluate(0.0), tol.linear),
-    ];
-    // New edges carry the operation tolerance, as the GFA's section edges do.
-    let rim = |vertex, circle: Circle3D| crate::copy::SpliceEdge {
-        start: vertex,
-        end: vertex,
-        curve: EdgeCurve::Circle(circle),
-        trim: Some((0.0, std::f64::consts::TAU)),
-        tolerance: Some(tol.linear),
-    };
-    let edges = vec![
-        rim(0, circle_lower),
-        rim(1, circle_upper),
-        crate::copy::SpliceEdge {
-            start: 0,
-            end: 1,
-            curve: EdgeCurve::Line,
-            trim: None,
-            tolerance: Some(tol.linear),
-        },
-    ];
+    let (lower_vertex, lower_rim) = section_rim(tool, lower, 0, tol)?;
+    let (upper_vertex, upper_rim) = section_rim(tool, upper, 1, tol)?;
     // The wall's loop is the cylinder's natural (u, v) rectangle: lower rim
-    // with increasing u, seam up, upper rim back, seam down. Each rim's
-    // circle normal is its plane face's outward normal, so the plane faces
-    // traverse it reversed (a clockwise hole) and so does the reversed wall.
-    let hole = |rim| crate::copy::SpliceWire {
-        edges: vec![(rim, false)],
-        closed: true,
-    };
-    let wires = vec![
-        hole(0),
-        hole(1),
-        crate::copy::SpliceWire {
-            edges: vec![(0, false), (2, true), (1, false), (2, false)],
-            closed: true,
-        },
-    ];
-    let outer_shell = gfa_shell_order(topo, a, lower.face, upper.face)?
-        .into_iter()
-        .map(|slot| match slot {
-            Some(face) => crate::copy::ShellSlot::Source(face),
-            None => crate::copy::ShellSlot::Spliced(0),
-        })
-        .collect();
-    crate::copy::copy_solid_spliced(
+    // with increasing u, seam up, upper rim back, seam down. The plane faces
+    // and the reversed wall both traverse each rim reversed.
+    let wall_loop = vec![(0, false), (2, true), (1, false), (2, false)];
+    let outer_shell = gfa_shell_order(
         topo,
         a,
-        &crate::copy::Splice {
-            vertices,
-            edges,
-            wires,
-            faces: vec![crate::copy::SpliceFace {
-                outer: 2,
-                surface: FaceSurface::Cylinder(tool.surface.clone()),
-                reversed: true,
-            }],
-            leading_inner: vec![(lower.face, 0), (upper.face, 1)],
-            outer_shell,
-        },
-    )
+        &[(lower.face, Use::Spliced(0)), (upper.face, Use::Spliced(1))],
+        &[vec![
+            Use::Spliced(0),
+            Use::Spliced(2),
+            Use::Spliced(1),
+            Use::Spliced(2),
+        ]],
+    )?;
+    Ok(Splice {
+        vertices: vec![lower_vertex, upper_vertex],
+        edges: vec![lower_rim, upper_rim, seam(0, 1, tol)],
+        wires: vec![
+            hole(0),
+            hole(1),
+            SpliceWire {
+                edges: wall_loop,
+                closed: true,
+            },
+        ],
+        faces: vec![wall(tool, 2)],
+        leading_inner: vec![(lower.face, 0), (upper.face, 1)],
+        outer_shell,
+    })
+}
+
+/// Splice for a blind hole: the entry face gains a circular inner wire, a
+/// reversed wall runs down to the tool's buried cap, and a reversed copy of
+/// that cap is the floor.
+///
+/// The GFA keeps the cap's own rim (curve, trim and tolerance) and vertex
+/// for the floor and splits the tool's seam at the entry rim; the wall loop
+/// keeps the tool's natural rectangle with the entry rim, reversed, in
+/// place of the protruding cap's rim.
+fn blind_hole_splice(
+    topo: &Topology,
+    a: SolidId,
+    tool: &ToolCylinder,
+    entry: &PiercedFace,
+    floor: usize,
+    tol: Tolerance,
+) -> Result<Splice, crate::OperationsError> {
+    let Some(rims) = tool.rims.as_ref() else {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "local cut: blind hole without natural tool rims".into(),
+        });
+    };
+    let rim = rims[floor];
+    // Spliced entity indices: vertices 0 (entry) and 1 (floor); edges
+    // 0 (entry rim), 1 (floor rim), 2 (seam); wires 0 (the hole), 1 (the
+    // wall) and 2 (the floor); faces 0 (the wall) and 1 (the floor).
+    let (entry_vertex, entry_rim) = section_rim(tool, entry, 0, tol)?;
+    let floor_vertex = topo.vertex(rim.vertex)?;
+    let floor_vertex = (floor_vertex.point(), floor_vertex.tolerance());
+    let floor_edge = topo.edge(rim.edge)?;
+    let floor_rim = SpliceEdge {
+        start: 1,
+        end: 1,
+        curve: floor_edge.curve().clone(),
+        trim: floor_edge.trim(),
+        tolerance: floor_edge.tolerance(),
+    };
+    let cap = topo.face(rim.cap)?;
+    let floor_face = SpliceFace {
+        outer: 2,
+        surface: cap.surface().clone(),
+        reversed: !cap.is_reversed(),
+    };
+    let (wall_loop, seam_edge, wall_uses) = if floor == 0 {
+        (
+            vec![(1, true), (2, true), (0, false), (2, false)],
+            seam(1, 0, tol),
+            [Use::Spliced(1), Use::Spliced(0)],
+        )
+    } else {
+        (
+            vec![(0, false), (2, true), (1, false), (2, false)],
+            seam(0, 1, tol),
+            [Use::Spliced(0), Use::Spliced(1)],
+        )
+    };
+    let outer_shell = gfa_shell_order(
+        topo,
+        a,
+        &[(entry.face, Use::Spliced(0))],
+        &[
+            vec![wall_uses[0], Use::Spliced(2), wall_uses[1], Use::Spliced(2)],
+            vec![Use::Spliced(1)],
+        ],
+    )?;
+    Ok(Splice {
+        vertices: vec![entry_vertex, floor_vertex],
+        edges: vec![entry_rim, floor_rim, seam_edge],
+        wires: vec![
+            hole(0),
+            SpliceWire {
+                edges: wall_loop,
+                closed: true,
+            },
+            SpliceWire {
+                edges: vec![(1, rim.cap_forward)],
+                closed: true,
+            },
+        ],
+        faces: vec![wall(tool, 1), floor_face],
+        leading_inner: vec![(entry.face, 0)],
+        outer_shell,
+    })
 }
 
 /// A boundary use in the result, before its entities exist.
@@ -742,18 +1011,17 @@ fn build_through_hole(
 enum Use {
     /// An edge of the blank, kept by the copy.
     Blank(EdgeId),
-    /// The new rim on the lower pierced face.
-    LowerRim,
-    /// The new rim on the upper pierced face.
-    UpperRim,
-    /// The new wall's seam.
-    Seam,
+    /// The splice edge with this index.
+    Spliced(usize),
 }
 
 /// The result's outer-shell face order, as the GFA's shell assembly would
 /// produce it: a breadth-first walk from the blank's first face, visiting
 /// neighbours across each face's boundary uses in wire order (outer wire,
-/// then inner wires, the new hole first). `None` is the wall.
+/// then inner wires, a new hole first).
+///
+/// `pierced` gives each pierced face's new hole rim; `spliced` gives each
+/// spliced face's boundary uses, in its loop's order.
 ///
 /// Matching that order keeps every order-sensitive reading of the result —
 /// per-face listings, summed integrals — identical to the GFA's. The blank
@@ -762,33 +1030,34 @@ enum Use {
 fn gfa_shell_order(
     topo: &Topology,
     a: SolidId,
-    lower: FaceId,
-    upper: FaceId,
-) -> Result<Vec<Option<FaceId>>, crate::OperationsError> {
-    let blank_faces = topo.shell(topo.solid(a)?.outer_shell())?.faces().to_vec();
-    let mut nodes: Vec<(Option<FaceId>, Vec<Use>)> = Vec::with_capacity(blank_faces.len() + 1);
-    for &face_id in &blank_faces {
+    pierced: &[(FaceId, Use)],
+    spliced: &[Vec<Use>],
+) -> Result<Vec<ShellSlot>, crate::OperationsError> {
+    let blank_faces = topo.shell(topo.solid(a)?.outer_shell())?.faces();
+    let mut nodes: Vec<(ShellSlot, Vec<Use>)> =
+        Vec::with_capacity(blank_faces.len() + spliced.len());
+    for &face_id in blank_faces {
         let face = topo.face(face_id)?;
         let mut uses = Vec::new();
         for oriented in topo.wire(face.outer_wire())?.edges() {
             uses.push(Use::Blank(oriented.edge()));
         }
-        if face_id == lower {
-            uses.push(Use::LowerRim);
-        } else if face_id == upper {
-            uses.push(Use::UpperRim);
-        }
+        uses.extend(
+            pierced
+                .iter()
+                .filter(|&&(target, _)| target == face_id)
+                .map(|&(_, rim)| rim),
+        );
         for &wire in face.inner_wires() {
             for oriented in topo.wire(wire)?.edges() {
                 uses.push(Use::Blank(oriented.edge()));
             }
         }
-        nodes.push((Some(face_id), uses));
+        nodes.push((ShellSlot::Source(face_id), uses));
     }
-    nodes.push((
-        None,
-        vec![Use::LowerRim, Use::Seam, Use::UpperRim, Use::Seam],
-    ));
+    for (index, uses) in spliced.iter().enumerate() {
+        nodes.push((ShellSlot::Spliced(index), uses.clone()));
+    }
 
     let mut faces_of: remus_math::det_hash::DetHashMap<Use, Vec<usize>> =
         remus_math::det_hash::DetHashMap::default();
