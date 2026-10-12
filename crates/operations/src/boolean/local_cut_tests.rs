@@ -1,4 +1,4 @@
-//! Oracle tests for the local through-hole cut.
+//! Oracle tests for the local drilled-hole cut (through and blind holes).
 //!
 //! Every qualified case is cut twice from the same topology — once through
 //! the local cell and once with it disabled, so the general GFA builds the
@@ -54,21 +54,23 @@ fn shape(topo: &Topology, solid: SolidId) -> Shape {
     }
 }
 
-/// Every face in shell order with its surface, orientation and wires, every
-/// wire use with its edge's id, curve, trim and tolerance, and every vertex
-/// with its id, point and tolerance — `Debug` prints each `f64` exactly, so
-/// equal dumps mean bit-identical results, entity numbering included.
+/// The solid's attributes, then every face in shell order with its
+/// attributes, surface, orientation and wires, every wire use with its
+/// edge's id, curve, trim and tolerance, and every vertex with its id, point
+/// and tolerance — `Debug` prints each `f64` exactly, so equal dumps mean
+/// bit-identical results, entity numbering included.
 fn dump(topo: &Topology, solid: SolidId) -> String {
     use std::fmt::Write;
-    let mut out = String::new();
+    let mut out = format!("solid {:?}\n", topo.attributes().solid(solid));
     for face_id in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
         let face = topo.face(face_id).unwrap();
         writeln!(
             out,
-            "face {} reversed={} {:?}",
+            "face {} reversed={} {:?} {:?}",
             face_id.index(),
             face.is_reversed(),
-            face.surface()
+            face.surface(),
+            topo.attributes().face(face_id)
         )
         .unwrap();
         for &loop_id in topo.loops_of_face(face_id).unwrap() {
@@ -390,9 +392,34 @@ fn cell_declines_unqualified_cuts() {
             drill(&mut topo, 2.0, 20.0, &Mat4::translation(13.0, 10.0, -5.0)),
         ),
         (
-            "blind hole (cap inside the plate)",
+            "blind floor within the clearance of the bottom face",
             blank,
-            drill(&mut topo, 2.0, 20.0, &Mat4::translation(20.0, 20.0, 5.0)),
+            drill(&mut topo, 2.0, 20.0, &Mat4::translation(20.0, 20.0, 1e-5)),
+        ),
+        (
+            "blind hole overlapping an existing hole",
+            drilled,
+            drill(&mut topo, 1.0, 20.0, &Mat4::translation(10.0, 12.5, 5.0)),
+        ),
+        (
+            "blind hole drilled sideways out of a hole's wall",
+            drilled,
+            drill(
+                &mut topo,
+                0.5,
+                10.0,
+                &(Mat4::translation(10.0, 10.0, 5.0) * Mat4::rotation_x(-FRAC_PI_2)),
+            ),
+        ),
+        (
+            "blind hole entering a side wall near a corner",
+            blank,
+            drill(
+                &mut topo,
+                2.0,
+                10.0,
+                &(Mat4::translation(-5.0, 1.0, 5.0) * Mat4::rotation_y(FRAC_PI_2)),
+            ),
         ),
         (
             "base coplanar with the bottom face",
@@ -439,35 +466,189 @@ fn cell_declines_unqualified_cuts() {
 }
 
 #[test]
-fn blind_magnet_holes_stay_on_the_gfa() {
-    // The gridfinity baseplate bench: Ø6 magnet pockets whose tool tops out
-    // at z = 4.5 inside a 4.65-thick unit. They are blind, so the cell must
-    // leave them to the GFA, and the result must keep the pocket floors.
-    let mut topo = Topology::new();
-    let unit = make_box(&mut topo, 42.0, 42.0, 4.65).unwrap();
+fn blind_holes_match_gfa() {
+    let blind = 40.0 * 40.0 * 10.0 - PI * 4.0 * 5.0;
+    let cases = [
+        // Tool up from inside the plate: the floor is the tool's base cap.
+        (
+            "into the top face",
+            Mat4::translation(20.0, 20.0, 5.0),
+            20.0,
+        ),
+        // Tool up from below: the floor is the tool's top cap.
+        (
+            "into the bottom face",
+            Mat4::translation(20.0, 20.0, -15.0),
+            20.0,
+        ),
+        // Axis −z from above, the floor is the far cap at z = 5.
+        (
+            "downward into the top face",
+            Mat4::translation(25.0, 12.0, 15.0) * Mat4::rotation_x(PI),
+            10.0,
+        ),
+        // Axis +x into the x = 0 wall, 5 deep.
+        (
+            "into a side wall",
+            Mat4::translation(-10.0, 20.0, 5.0) * Mat4::rotation_y(FRAC_PI_2),
+            15.0,
+        ),
+    ];
+    for (label, at, height) in cases {
+        let mut topo = Topology::new();
+        let blank = plate(&mut topo);
+        let tool = drill(&mut topo, 2.0, height, &at);
+        let (local, result) = assert_matches_gfa(&topo, blank, tool, label);
+        let measured = volume(&local, result);
+        assert!(
+            (measured - blind).abs() < 1e-6 * blind,
+            "{label}: {measured}"
+        );
+    }
+}
+
+/// Cut `holes` (radius, height, placement) one after another, locally and
+/// through the GFA, requiring every cut to build locally and the two
+/// results to stay bit-identical after each one.
+fn assert_sequence_matches_gfa(
+    topo: &Topology,
+    blank: SolidId,
+    holes: &[(f64, f64, Mat4)],
+    label: &str,
+) -> (Topology, SolidId) {
     let mut local = topo.clone();
     let mut general = topo.clone();
-    let mut local_unit = unit;
-    let mut general_unit = unit;
-    for (x, y) in [(4.0, 4.0), (38.0, 4.0), (4.0, 38.0), (38.0, 38.0)] {
-        let at = Mat4::translation(x, y, -0.5);
-        let tool = drill(&mut local, 3.0, 5.0, &at);
+    let (mut local_blank, mut general_blank) = (blank, blank);
+    for (index, (radius, height, at)) in holes.iter().enumerate() {
+        let local_tool = drill(&mut local, *radius, *height, at);
         let before = BUILT.with(std::cell::Cell::get);
-        local_unit = boolean(&mut local, BooleanOp::Cut, local_unit, tool).unwrap();
+        local_blank = boolean(&mut local, BooleanOp::Cut, local_blank, local_tool).unwrap();
         assert_eq!(
             BUILT.with(std::cell::Cell::get),
-            before,
-            "blind pocket built locally"
+            before + 1,
+            "{label}: hole {index} declined"
         );
-        let tool = drill(&mut general, 3.0, 5.0, &at);
+        let general_tool = drill(&mut general, *radius, *height, at);
         DISABLED.with(|disabled| disabled.set(true));
-        general_unit = boolean(&mut general, BooleanOp::Cut, general_unit, tool).unwrap();
+        general_blank = boolean(&mut general, BooleanOp::Cut, general_blank, general_tool).unwrap();
         DISABLED.with(|disabled| disabled.set(false));
+        assert_eq!(
+            dump(&local, local_blank),
+            dump(&general, general_blank),
+            "{label}: hole {index} not bit-identical"
+        );
     }
+    assert_sound(&local, local_blank, label);
+    (local, local_blank)
+}
+
+#[test]
+fn mixed_blind_and_through_grid_matches_gfa_hole_by_hole() {
+    let mut topo = Topology::new();
+    let blank = make_box(&mut topo, 50.0, 50.0, 10.0).unwrap();
+    let mut holes = Vec::new();
+    let mut expected = 50.0 * 50.0 * 10.0;
+    for row in 0..4 {
+        for col in 0..4 {
+            let (x, y) = (10.0 + f64::from(col) * 10.0, 10.0 + f64::from(row) * 10.0);
+            // Through, blind from the top 4 deep, blind from the bottom
+            // 3 deep, downward blind 6 deep.
+            let (at, height, depth) = match (row + col) % 4 {
+                0 => (Mat4::translation(x, y, -5.0), 20.0, 10.0),
+                1 => (Mat4::translation(x, y, 6.0), 20.0, 4.0),
+                2 => (Mat4::translation(x, y, -17.0), 20.0, 3.0),
+                _ => (
+                    Mat4::translation(x, y, 14.0) * Mat4::rotation_x(PI),
+                    10.0,
+                    6.0,
+                ),
+            };
+            holes.push((3.0, height, at));
+            expected -= PI * 9.0 * depth;
+        }
+    }
+    let (local, result) = assert_sequence_matches_gfa(&topo, blank, &holes, "mixed grid");
+    let measured = volume(&local, result);
+    assert!((measured - expected).abs() < 1e-6 * expected, "{measured}");
+}
+
+#[test]
+fn blind_magnet_holes_match_gfa_hole_by_hole() {
+    // The gridfinity baseplate bench: Ø6 magnet pockets whose tool tops out
+    // at z = 4.5 inside a 4.65-thick unit, leaving a 0.15 floor.
+    let mut topo = Topology::new();
+    let unit = make_box(&mut topo, 42.0, 42.0, 4.65).unwrap();
+    let holes: Vec<_> = [(4.0, 4.0), (38.0, 4.0), (4.0, 38.0), (38.0, 38.0)]
+        .into_iter()
+        .map(|(x, y)| (3.0, 5.0, Mat4::translation(x, y, -0.5)))
+        .collect();
+    let (local, result) = assert_sequence_matches_gfa(&topo, unit, &holes, "magnet pockets");
     let expected = 42.0 * 42.0 * 4.65 - 4.0 * PI * 9.0 * 4.5;
-    for (topo, solid) in [(&local, local_unit), (&general, general_unit)] {
+    let measured = volume(&local, result);
+    assert!((measured - expected).abs() < 1e-6 * expected, "{measured}");
+}
+
+#[test]
+fn rotated_blind_hole_matches_gfa() {
+    let mut topo = Topology::new();
+    // A small tilt: steeper, and the tilted bottom face's axis-aligned box
+    // reaches the tool's, so the cell (correctly) declines.
+    let frame = Mat4::rotation_z(0.3) * Mat4::rotation_x(0.05);
+    let blank = plate(&mut topo);
+    let blank = placed(&mut topo, blank, &frame);
+    let tool = drill(
+        &mut topo,
+        3.0,
+        20.0,
+        &(frame * Mat4::translation(20.0, 20.0, 4.0)),
+    );
+    let ((local, local_result), (general, general_result)) = cut_both(&topo, blank, tool);
+    // As for through holes off the axes: the same entities, with the entry
+    // rim frame and seam vertex a few ulps apart.
+    assert_eq!(
+        structure(&local, local_result),
+        structure(&general, general_result)
+    );
+    let drift = vertex_drift((&local, local_result), (&general, general_result));
+    assert!(drift < 1e-9, "vertex drift {drift}");
+    assert_sound(&local, local_result, "rotated blind");
+    let expected = 40.0 * 40.0 * 10.0 - PI * 9.0 * 6.0;
+    for (topo, solid) in [(&local, local_result), (&general, general_result)] {
         let measured = volume(topo, solid);
         assert!((measured - expected).abs() < 1e-6 * expected, "{measured}");
+    }
+
+    let steep = Mat4::rotation_z(0.3) * Mat4::rotation_x(0.2);
+    let blank = plate(&mut topo);
+    let blank = placed(&mut topo, blank, &steep);
+    let tool = drill(
+        &mut topo,
+        3.0,
+        20.0,
+        &(steep * Mat4::translation(20.0, 20.0, 4.0)),
+    );
+    assert_declined(&topo, blank, tool, "steeply tilted blind hole");
+}
+
+#[test]
+fn local_cuts_drop_blank_attributes_like_the_gfa() {
+    // GFA results carry no solid or face attributes; a local cut must not
+    // keep them either, or the result would depend on which path ran.
+    let mut topo = Topology::new();
+    let blank = plate(&mut topo);
+    let attributes = remus_topology::attributes::EntityAttributes {
+        name: Some("plate".into()),
+        color: None,
+    };
+    for face in remus_topology::explorer::solid_faces(&topo, blank).unwrap() {
+        topo.set_face_attributes(face, attributes.clone()).unwrap();
+    }
+    topo.set_solid_attributes(blank, attributes).unwrap();
+    let through = drill(&mut topo, 2.0, 20.0, &Mat4::translation(10.0, 10.0, -5.0));
+    let blind = drill(&mut topo, 2.0, 20.0, &Mat4::translation(30.0, 30.0, 5.0));
+    for (label, tool) in [("through", through), ("blind", blind)] {
+        let (local, result) = assert_matches_gfa(&topo, blank, tool, label);
+        assert!(local.attributes().solid(result).is_none(), "{label}");
     }
 }
 
