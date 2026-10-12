@@ -6,6 +6,7 @@
 
 pub mod assembly;
 mod classify;
+mod local_cut;
 mod types;
 pub(crate) use assembly::{
     BoundaryCurveOverride, assemble_solid_mixed, assemble_solid_mixed_with_history,
@@ -800,6 +801,16 @@ fn boolean_with_context_impl(
     if let remus_math::context::FallbackPolicy::ApproximateOnly { budget } = context.fallback {
         *used_fallback = true;
         return run_mesh_fallback(topo, op, a, b, budget, tol, opts);
+    }
+
+    // A straight through-hole into two parallel planar faces, clear of the
+    // rest of the blank, is built by local surgery instead of re-running the
+    // GFA over every face (see `local_cut`). It proves its own cell and
+    // declines — changing nothing — for every other pair.
+    if op == BooleanOp::Cut
+        && let Some(result) = local_cut::try_local_through_hole(topo, a, b, tol)?
+    {
+        return Ok(result);
     }
 
     // Detect A⊂B or B⊂A (including A=B) and handle directly. A positive
@@ -7263,6 +7274,8 @@ pub fn collect_face_signatures(
 
 #[cfg(test)]
 mod disjoint_witness_tests;
+#[cfg(test)]
+mod local_cut_tests;
 #[cfg(test)]
 mod tests;
 

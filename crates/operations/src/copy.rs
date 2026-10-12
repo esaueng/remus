@@ -649,6 +649,340 @@ fn materialize_copy(
     })
 }
 
+/// New entities spliced into a copy as it is planned.
+///
+/// The copy walks `outer_shell` in order — each slot one source face of the
+/// outer shell (every one exactly once) or one of `faces` — the way a plain
+/// copy walks the source shell: each face's outer wire, then its inner wires
+/// (`leading_inner` splice wires first), each wire's edges, each new edge's
+/// start and end vertex, every entity numbered on first sight and written in
+/// that order. A spliced copy therefore allocates its entities exactly as a
+/// copy of the finished solid would. Inner shells are copied as usual. The
+/// source faces' coedge authority is restored as for a plain copy; spliced
+/// uses start without stored pcurves.
+#[derive(Debug, Default)]
+pub(crate) struct Splice {
+    /// New vertices: `(point, tolerance)`.
+    pub(crate) vertices: Vec<(Point3, f64)>,
+    /// New edges, their endpoints indexing `vertices`.
+    pub(crate) edges: Vec<SpliceEdge>,
+    /// New wires, their uses indexing `edges`.
+    pub(crate) wires: Vec<SpliceWire>,
+    /// New faces, their outer wire indexing `wires`.
+    pub(crate) faces: Vec<SpliceFace>,
+    /// `(source face, splice wire)`: placed before that face's own inner
+    /// wires, in the order listed.
+    pub(crate) leading_inner: Vec<(FaceId, usize)>,
+    /// The copied outer shell, in order.
+    pub(crate) outer_shell: Vec<ShellSlot>,
+}
+
+/// A spliced edge.
+#[derive(Debug)]
+pub(crate) struct SpliceEdge {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) curve: EdgeCurve,
+    pub(crate) trim: Option<(f64, f64)>,
+    pub(crate) tolerance: Option<f64>,
+}
+
+/// A spliced wire: `(splice edge, forward)` per use.
+#[derive(Debug)]
+pub(crate) struct SpliceWire {
+    pub(crate) edges: Vec<(usize, bool)>,
+    pub(crate) closed: bool,
+}
+
+/// A spliced face without inner wires.
+#[derive(Debug)]
+pub(crate) struct SpliceFace {
+    pub(crate) outer: usize,
+    pub(crate) surface: FaceSurface,
+    pub(crate) reversed: bool,
+}
+
+/// One position of a spliced copy's outer shell.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ShellSlot {
+    /// The copy of this source face.
+    Source(FaceId),
+    /// The spliced face with this index.
+    Spliced(usize),
+}
+
+/// Plan ordinals of spliced entities, assigned on first sight.
+struct SpliceOrdinals {
+    vertices: Vec<Option<usize>>,
+    edges: Vec<Option<usize>>,
+    wires: Vec<Option<usize>>,
+}
+
+/// A source-index stand-in for spliced entity `index`, above every live
+/// arena index so it never names a source entity in the plan's maps.
+const fn spliced_index(index: usize) -> usize {
+    usize::MAX - index
+}
+
+/// [`copy_solid`] with `splice` planned into the copy.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup fails, or if the splice does not
+/// name every source face of the outer shell exactly once or indexes a
+/// spliced entity that does not exist.
+pub(crate) fn copy_solid_spliced(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    splice: &Splice,
+) -> Result<SolidId, crate::OperationsError> {
+    let plan = build_spliced_copy_plan(topo, solid_id, splice)?;
+    let face_count = plan.shells.iter().map(Vec::len).sum();
+    materialize_copy(topo, plan, face_count).map(|copied| copied.solid)
+}
+
+/// [`build_copy_plan`] walking the outer shell in `splice` order.
+fn build_spliced_copy_plan(
+    source: &Topology,
+    solid_id: SolidId,
+    splice: &Splice,
+) -> Result<CopyPlan, crate::OperationsError> {
+    let solid = source.solid(solid_id)?;
+    let outer_faces = source.shell(solid.outer_shell())?.faces();
+    let mut unvisited: remus_math::det_hash::DetHashSet<FaceId> =
+        outer_faces.iter().copied().collect();
+    if unvisited.len() != outer_faces.len() {
+        return Err(plan_error(
+            "spliced copy needs an outer shell listing each face once".to_owned(),
+        ));
+    }
+    let mut plan = CopyPlan {
+        vertices: Vec::new(),
+        edges: Vec::new(),
+        wires: Vec::new(),
+        shells: Vec::new(),
+        authority: Vec::new(),
+        authority_edges: Vec::new(),
+        edge_ordinals: DetHashMap::default(),
+        solid_attributes: source.attributes().solid(solid_id).cloned(),
+    };
+    let mut ordinals = SpliceOrdinals {
+        vertices: vec![None; splice.vertices.len()],
+        edges: vec![None; splice.edges.len()],
+        wires: vec![None; splice.wires.len()],
+    };
+    let mut vertex_ordinals = DetHashMap::default();
+    let mut wire_ordinals = DetHashMap::default();
+    let mut faces = Vec::with_capacity(splice.outer_shell.len());
+    for slot in &splice.outer_shell {
+        match *slot {
+            ShellSlot::Source(face_id) => {
+                if !unvisited.remove(&face_id) {
+                    return Err(plan_error(format!(
+                        "spliced copy visits {face_id:?}, not an unvisited outer face"
+                    )));
+                }
+                let face = source.face(face_id)?;
+                let authority_start = plan.authority.len();
+                snapshot_face_coedge_authority_into(source, face_id, &mut plan.authority)?;
+                let outer = plan_wire_ordinal(
+                    source,
+                    face.outer_wire(),
+                    &mut plan,
+                    &mut wire_ordinals,
+                    &mut vertex_ordinals,
+                )?;
+                let mut inner = Vec::with_capacity(face.inner_wires().len());
+                for &(_, wire) in splice
+                    .leading_inner
+                    .iter()
+                    .filter(|&&(target, _)| target == face_id)
+                {
+                    inner.push(plan_spliced_wire(splice, wire, &mut plan, &mut ordinals)?);
+                }
+                let mut source_inner = Vec::with_capacity(face.inner_wires().len());
+                for &wire_id in face.inner_wires() {
+                    let wire = plan_wire_ordinal(
+                        source,
+                        wire_id,
+                        &mut plan,
+                        &mut wire_ordinals,
+                        &mut vertex_ordinals,
+                    )?;
+                    source_inner.push(wire);
+                    inner.push(wire);
+                }
+                // The authority snapshots cover the source loops only, so
+                // their edge ordinals follow the source wires by position.
+                for wire in std::iter::once(outer).chain(source_inner) {
+                    let wire = plan
+                        .wires
+                        .get(wire)
+                        .ok_or_else(|| plan_error(format!("copy plan has no wire {wire}")))?;
+                    plan.authority_edges
+                        .extend(wire.edges.iter().map(|&(edge, _)| edge));
+                }
+                if plan.authority_edges.len() != plan.authority.len() {
+                    return Err(
+                        remus_topology::TopologyError::LoopWireMismatch { face: face_id }.into(),
+                    );
+                }
+                faces.push(PlanFace {
+                    old_index: face_id.index(),
+                    outer,
+                    inner,
+                    surface: face.surface().clone(),
+                    reversed: face.is_reversed(),
+                    attributes: source.attributes().face(face_id).cloned(),
+                    authority: authority_start..plan.authority.len(),
+                });
+            }
+            ShellSlot::Spliced(index) => {
+                let face = splice
+                    .faces
+                    .get(index)
+                    .ok_or_else(|| plan_error(format!("splice has no face {index}")))?;
+                let outer = plan_spliced_wire(splice, face.outer, &mut plan, &mut ordinals)?;
+                faces.push(PlanFace {
+                    old_index: spliced_index(index),
+                    outer,
+                    inner: Vec::new(),
+                    surface: face.surface.clone(),
+                    reversed: face.reversed,
+                    attributes: None,
+                    authority: plan.authority.len()..plan.authority.len(),
+                });
+            }
+        }
+    }
+    if !unvisited.is_empty() {
+        return Err(plan_error(format!(
+            "spliced copy leaves {} outer faces unvisited",
+            unvisited.len()
+        )));
+    }
+    plan.shells.push(faces);
+    for &shell_id in solid.inner_shells() {
+        let mut shell_faces = Vec::new();
+        for &face_id in source.shell(shell_id)?.faces() {
+            let face = source.face(face_id)?;
+            let authority_start = plan.authority.len();
+            snapshot_face_coedge_authority_into(source, face_id, &mut plan.authority)?;
+            let outer = plan_wire_ordinal(
+                source,
+                face.outer_wire(),
+                &mut plan,
+                &mut wire_ordinals,
+                &mut vertex_ordinals,
+            )?;
+            let mut inner = Vec::with_capacity(face.inner_wires().len());
+            for &wire_id in face.inner_wires() {
+                inner.push(plan_wire_ordinal(
+                    source,
+                    wire_id,
+                    &mut plan,
+                    &mut wire_ordinals,
+                    &mut vertex_ordinals,
+                )?);
+            }
+            for wire in std::iter::once(outer).chain(inner.iter().copied()) {
+                let wire = plan
+                    .wires
+                    .get(wire)
+                    .ok_or_else(|| plan_error(format!("copy plan has no wire {wire}")))?;
+                plan.authority_edges
+                    .extend(wire.edges.iter().map(|&(edge, _)| edge));
+            }
+            if plan.authority_edges.len() != plan.authority.len() {
+                return Err(
+                    remus_topology::TopologyError::LoopWireMismatch { face: face_id }.into(),
+                );
+            }
+            shell_faces.push(PlanFace {
+                old_index: face_id.index(),
+                outer,
+                inner,
+                surface: face.surface().clone(),
+                reversed: face.is_reversed(),
+                attributes: source.attributes().face(face_id).cloned(),
+                authority: authority_start..plan.authority.len(),
+            });
+        }
+        plan.shells.push(shell_faces);
+    }
+    Ok(plan)
+}
+
+/// The plan ordinal of spliced wire `index`, planning it (and its unseen
+/// spliced edges and vertices) on first sight.
+fn plan_spliced_wire(
+    splice: &Splice,
+    index: usize,
+    plan: &mut CopyPlan,
+    ordinals: &mut SpliceOrdinals,
+) -> Result<usize, crate::OperationsError> {
+    let missing = |kind: &str, at: usize| plan_error(format!("splice has no {kind} {at}"));
+    if let Some(ordinal) = *ordinals
+        .wires
+        .get(index)
+        .ok_or_else(|| missing("wire", index))?
+    {
+        return Ok(ordinal);
+    }
+    let ordinal = plan.wires.len();
+    ordinals.wires[index] = Some(ordinal);
+    let wire = &splice.wires[index];
+    let mut edges = Vec::with_capacity(wire.edges.len());
+    for &(edge_index, forward) in &wire.edges {
+        let seen = *ordinals
+            .edges
+            .get(edge_index)
+            .ok_or_else(|| missing("edge", edge_index))?;
+        let edge_ordinal = if let Some(seen) = seen {
+            seen
+        } else {
+            let edge_ordinal = plan.edges.len();
+            ordinals.edges[edge_index] = Some(edge_ordinal);
+            let edge = &splice.edges[edge_index];
+            let mut vertex = |at: usize| -> Result<usize, crate::OperationsError> {
+                if let Some(seen) = *ordinals
+                    .vertices
+                    .get(at)
+                    .ok_or_else(|| missing("vertex", at))?
+                {
+                    return Ok(seen);
+                }
+                let vertex_ordinal = plan.vertices.len();
+                ordinals.vertices[at] = Some(vertex_ordinal);
+                let (point, tol) = splice.vertices[at];
+                plan.vertices.push(VertexSnap {
+                    old_index: spliced_index(at),
+                    point,
+                    tol,
+                });
+                Ok(vertex_ordinal)
+            };
+            let start = vertex(edge.start)?;
+            let end = vertex(edge.end)?;
+            plan.edges.push(PlanEdge {
+                old_index: spliced_index(edge_index),
+                start,
+                end,
+                curve: edge.curve.clone(),
+                tolerance: edge.tolerance,
+                trim: edge.trim,
+            });
+            edge_ordinal
+        };
+        edges.push((edge_ordinal, forward));
+    }
+    plan.wires.push(PlanWire {
+        edges,
+        closed: wire.closed,
+    });
+    Ok(ordinal)
+}
+
 /// Copies a solid within one arena.
 fn copy_solid_ids(
     topo: &mut Topology,
