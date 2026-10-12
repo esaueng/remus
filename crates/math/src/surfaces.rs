@@ -75,7 +75,29 @@ impl CylindricalSurface {
     #[must_use]
     pub fn normal(&self, u: f64, _v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
+        self.normal_trig(sin_u, cos_u)
+    }
+
+    /// [`Self::normal`] from an already computed `u.sin_cos()`.
+    #[inline]
+    fn normal_trig(&self, sin_u: f64, cos_u: f64) -> Vec3 {
         self.x_axis * cos_u + self.y_axis * sin_u
+    }
+
+    /// The point and normal at `(u, v)` from an already computed
+    /// `(sin_u, cos_u) = u.sin_cos()`.
+    ///
+    /// Bit-identical to `(self.evaluate(u, v), self.normal(u, v))`: both run
+    /// the same arithmetic on the same values. A caller sampling many points
+    /// that share a `u` (a tessellation grid column) computes its sine and
+    /// cosine once instead of twice per point.
+    #[inline]
+    #[must_use]
+    pub fn point_and_normal_trig(&self, sin_u: f64, cos_u: f64, v: f64) -> (Point3, Vec3) {
+        (
+            self.evaluate_trig(sin_u, cos_u, v),
+            self.normal_trig(sin_u, cos_u),
+        )
     }
 
     /// Returns the origin.
@@ -256,8 +278,7 @@ impl ConicalSurface {
     pub fn evaluate(&self, u: f64, v: f64) -> Point3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_a, cos_a) = self.half_angle.sin_cos();
-        let radial = self.x_axis * cos_u + self.y_axis * sin_u;
-        self.apex + (radial * cos_a + self.axis * sin_a) * v
+        self.point_on_generator(self.radial(sin_u, cos_u), sin_a, cos_a, v)
     }
 
     /// Returns the surface normal at parameters `(u, v)`.
@@ -265,7 +286,45 @@ impl ConicalSurface {
     pub fn normal(&self, u: f64, _v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_a, cos_a) = self.half_angle.sin_cos();
-        let radial = self.x_axis * cos_u + self.y_axis * sin_u;
+        self.normal_from_radial(self.radial(sin_u, cos_u), sin_a, cos_a)
+    }
+
+    /// The point and normal at `(u, v)` from an already computed
+    /// `(sin_u, cos_u) = u.sin_cos()`.
+    ///
+    /// Bit-identical to `(self.evaluate(u, v), self.normal(u, v))`: both run
+    /// the same arithmetic on the same values. A caller sampling many points
+    /// that share a `u` (a tessellation grid column) computes its sine and
+    /// cosine once instead of twice per point, and the half-angle's once per
+    /// point instead of twice.
+    #[inline]
+    #[must_use]
+    pub fn point_and_normal_trig(&self, sin_u: f64, cos_u: f64, v: f64) -> (Point3, Vec3) {
+        let (sin_a, cos_a) = self.half_angle.sin_cos();
+        let radial = self.radial(sin_u, cos_u);
+        (
+            self.point_on_generator(radial, sin_a, cos_a, v),
+            self.normal_from_radial(radial, sin_a, cos_a),
+        )
+    }
+
+    /// The unit radial direction at longitude `u`, from `u.sin_cos()`.
+    #[inline]
+    fn radial(&self, sin_u: f64, cos_u: f64) -> Vec3 {
+        self.x_axis * cos_u + self.y_axis * sin_u
+    }
+
+    /// The point at distance `v` along the generator through `radial`, from
+    /// the half-angle's `sin_cos()`.
+    #[inline]
+    fn point_on_generator(&self, radial: Vec3, sin_a: f64, cos_a: f64, v: f64) -> Point3 {
+        self.apex + (radial * cos_a + self.axis * sin_a) * v
+    }
+
+    /// The outward normal along the generator through `radial`, from the
+    /// half-angle's `sin_cos()`.
+    #[inline]
+    fn normal_from_radial(&self, radial: Vec3, sin_a: f64, cos_a: f64) -> Vec3 {
         // Normal points outward: radial * sin(a) - axis * cos(a)
         radial * sin_a + self.axis * (-cos_a)
     }
@@ -512,7 +571,36 @@ impl SphericalSurface {
     pub fn normal(&self, u: f64, v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
+        self.normal_trig(sin_u, cos_u, sin_v, cos_v)
+    }
+
+    /// [`Self::normal`] from already computed `u.sin_cos()` and
+    /// `v.sin_cos()`.
+    #[inline]
+    fn normal_trig(&self, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Vec3 {
         self.x_axis * (cos_v * cos_u) + self.y_axis * (cos_v * sin_u) + self.z_axis * sin_v
+    }
+
+    /// The point and outward normal at `(u, v)` from already computed
+    /// `(sin_u, cos_u) = u.sin_cos()` and `(sin_v, cos_v) = v.sin_cos()`.
+    ///
+    /// Bit-identical to `(self.evaluate(u, v), self.normal(u, v))`: both run
+    /// the same arithmetic on the same values. A caller sampling a grid
+    /// computes each column's and each row's sine and cosine once instead of
+    /// twice per point.
+    #[inline]
+    #[must_use]
+    pub fn point_and_normal_trig(
+        &self,
+        sin_u: f64,
+        cos_u: f64,
+        sin_v: f64,
+        cos_v: f64,
+    ) -> (Point3, Vec3) {
+        (
+            self.evaluate_trig(sin_u, cos_u, sin_v, cos_v),
+            self.normal_trig(sin_u, cos_u, sin_v, cos_v),
+        )
     }
 
     /// Returns the center.
@@ -820,8 +908,37 @@ impl ToroidalSurface {
     pub fn normal(&self, u: f64, v: f64) -> Vec3 {
         let (sin_u, cos_u) = u.sin_cos();
         let (sin_v, cos_v) = v.sin_cos();
+        self.normal_trig(sin_u, cos_u, sin_v, cos_v)
+    }
+
+    /// [`Self::normal`] from already computed `u.sin_cos()` and
+    /// `v.sin_cos()`.
+    #[inline]
+    fn normal_trig(&self, sin_u: f64, cos_u: f64, sin_v: f64, cos_v: f64) -> Vec3 {
         let radial = self.x_axis * cos_u + self.y_axis * sin_u;
         radial * cos_v + self.z_axis * sin_v
+    }
+
+    /// The point and outward normal at `(u, v)` from already computed
+    /// `(sin_u, cos_u) = u.sin_cos()` and `(sin_v, cos_v) = v.sin_cos()`.
+    ///
+    /// Bit-identical to `(self.evaluate(u, v), self.normal(u, v))`: both run
+    /// the same arithmetic on the same values. A caller sampling a grid
+    /// computes each column's and each row's sine and cosine once instead of
+    /// twice per point.
+    #[inline]
+    #[must_use]
+    pub fn point_and_normal_trig(
+        &self,
+        sin_u: f64,
+        cos_u: f64,
+        sin_v: f64,
+        cos_v: f64,
+    ) -> (Point3, Vec3) {
+        (
+            self.evaluate_trig(sin_u, cos_u, sin_v, cos_v),
+            self.normal_trig(sin_u, cos_u, sin_v, cos_v),
+        )
     }
 
     /// Returns the center.
@@ -1097,3 +1214,6 @@ fn uniform_clamped_knots(n: usize, degree: usize) -> Vec<f64> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
+
+#[cfg(test)]
+mod trig_oracle_tests;
