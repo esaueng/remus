@@ -202,9 +202,24 @@ copy kept the blank's, so an attributed blank came out differently
 depending on which path ran. Spliced copies now drop them, and the oracle
 dump compares attributes.
 
-**Evidence.**
+**Evidence.** Main at `957201b8` against this stage, Apple M5 Pro, shared
+machine, `RAYON_NUM_THREADS=1`.
 
-<!--MEASURE-->
+Instruction counts (`/usr/bin/time -l`, base and candidate binaries
+alternated, three rounds) for `examples/sequential_cut_profile.rs 12`:
+
+| run | main | stage 2 |
+| --- | ---: | ---: |
+| 144 blind holes, instructions | 8.64–8.65 G | 0.525–0.526 G (−94%) |
+| 144 blind holes, cycles | 1.91–1.96 G | 0.114–0.125 G |
+| 144 blind holes, wall clock | 445–457 ms | 23–25 ms |
+| 144 through holes, instructions | 0.707–0.713 G | 0.704–0.716 G (unchanged) |
+
+Criterion, `gridfinity 3x3 baseplate (grid+holes)`, the four magnet
+pockets: 955 µs → 92–96 µs (−90%, both rounds). `multi-boolean model` and
+`boolean 64 cuts`, which take only through holes, showed no reproducible
+change. A reverse-order rerun swung the same pair by ±10%, and the
+instruction counts above are equal.
 
 `boolean/local_cut_tests.rs` adds full-dump oracles for blind holes:
 
