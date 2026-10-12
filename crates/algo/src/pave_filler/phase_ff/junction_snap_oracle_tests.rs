@@ -212,7 +212,9 @@ fn closed_edge(topo: &mut Topology, curve: EdgeCurve, trim: Option<(f64, f64)>) 
         EdgeCurve::Circle(c) => c.evaluate(trim.map_or(0.0, |t| t.0)),
         EdgeCurve::Ellipse(e) => e.evaluate(trim.map_or(0.0, |t| t.0)),
         EdgeCurve::NurbsCurve(n) => n.evaluate(n.domain().0),
-        _ => unreachable!("closed fixture edges are curved"),
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            unreachable!("closed fixture edges are curved")
+        }
     };
     let v = vertex(topo, start);
     let mut edge = Edge::with_tolerance(v, v, curve, Some(1e-7));
@@ -451,7 +453,11 @@ fn curve_box_distance_never_exceeds_a_sampled_distance() {
     for curve in &curves {
         let (t0, t1) = match curve {
             EdgeCurve::NurbsCurve(n) => n.domain(),
-            _ => (0.0, std::f64::consts::TAU),
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => (0.0, std::f64::consts::TAU),
         };
         for &p in &probes {
             let bound = curve_box_distance(curve, p).expect("curved fixtures are bounded");
