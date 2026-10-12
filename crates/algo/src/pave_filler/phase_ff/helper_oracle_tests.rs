@@ -1439,6 +1439,7 @@ fn curved_nurbs_trim_authority_stops_at_the_extent_handoff() {
         vec![raw],
         Tolerance::default(),
         &mut super::JunctionRegistry::default(),
+        &mut super::FaceExtents::default(),
     )
     .unwrap();
     assert_eq!(current.len(), 1);
