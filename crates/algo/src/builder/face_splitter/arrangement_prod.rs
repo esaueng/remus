@@ -1717,20 +1717,28 @@ impl<'a> Collector<'a> {
         // Closed uses canonicalize to a CCW-native full span anchored at
         // the traversal start's own angle. The trim proves full span but
         // its branch says nothing about where traversal starts, so
-        // anchoring to the trim branch would pair the wrong ends (the
-        // core verifies source ends against endpoint positions). Sense
-        // is unobservable for a closed loop; the set covers the carrier.
+        // anchoring to an arbitrary trim branch would pair the wrong ends
+        // (the core verifies source ends against endpoint positions).
+        // When the carried trim does start on the traversal start, its
+        // stored value is that angle: keep it rather than re-deriving it
+        // through `atan2`, whose last bits differ across platform libms.
+        // Sense is unobservable for a closed loop; the set covers the
+        // carrier.
         let (native_start, native_end) = if closed {
             if (trim_hi - trim_lo).abs() < TAU - FULL_CIRCLE_BAND
                 || (trim_hi - trim_lo).abs() > TAU + FULL_CIRCLE_BAND
             {
                 return None;
             }
-            let raw = circle.project(start_3d);
-            if !raw.is_finite() {
-                return None;
-            }
-            let anchor = raw.rem_euclid(TAU);
+            let anchor = if (circle.evaluate(trim_lo) - start_3d).length() <= self.tol {
+                trim_lo
+            } else {
+                let raw = circle.project(start_3d);
+                if !raw.is_finite() {
+                    return None;
+                }
+                raw.rem_euclid(TAU)
+            };
             if (circle.evaluate(anchor) - start_3d).length() > self.tol {
                 return None;
             }
@@ -1780,59 +1788,113 @@ impl<'a> Collector<'a> {
         if circle.radius() <= self.tol {
             return None;
         }
-        // Anchor the correspondence at the traversal start. `rem_euclid`
-        // can return exactly TAU through rounding; TAU is the branch cut,
-        // canonically identical to angle zero.
-        let start_angle = {
-            let raw = angle_of(center_uv, self.frame.project(start_3d));
-            if raw >= TAU { 0.0 } else { raw }
-        };
-        let signed_span = orientation * span;
-        // Directed traversal interval in UV angles (possibly descending
-        // for CW uses, possibly leaving `[0, 2π]`). A full turn from a
-        // nonzero start always crosses the cut exactly once; a partial
-        // arc crosses it at most once since |span| <= 2π.
-        let end_angle = start_angle + signed_span;
-        let crosses = !(0.0..=TAU).contains(&end_angle);
-        // (range, source) per piece, each in traversal order. Sources
-        // come from the directed chart (uniform angle motion, exact
-        // fractions); ranges use canonical `[0, 2π]` representatives of
-        // the same geometric angles. A traversal starting exactly on
-        // the cut with a negative span takes one descending canonical
-        // piece instead of a degenerate cut pair.
-        let cut_source = |cut_directed: f64| -> f64 {
-            native_start + span * (cut_directed - start_angle) / (end_angle - start_angle)
-        };
-        let pieces_raw: Vec<RawPiece> = if start_angle == 0.0 && signed_span < 0.0 {
-            vec![RawPiece {
-                range: [TAU, end_angle + TAU],
-                source: [native_start, native_end],
-            }]
-        } else if !crosses {
-            vec![RawPiece {
-                range: [start_angle, end_angle],
-                source: [native_start, native_end],
-            }]
-        } else {
-            let cut = if signed_span > 0.0 { TAU } else { 0.0 };
-            let restart = if signed_span > 0.0 { 0.0 } else { TAU };
-            let canon_end = if signed_span > 0.0 {
-                end_angle - TAU
+        // Chart angle of an authoritative endpoint, read from its own 3D
+        // position. Both ends of every use take their angle this way, so
+        // uses meeting at one vertex agree bit for bit: adjacent arcs on
+        // one carrier abut instead of overlapping, and a closed use
+        // returns exactly to its start. An end derived as `start + span`
+        // (or `start ± 2π ∓ 2π` across the cut) rounds to the ULP of the
+        // larger operand and can land past the neighbor's start, which the
+        // core refuses as an overlap of one carrier; which starts trip it
+        // depends on the platform libm's `atan2`/`sin`/`cos` last bits.
+        //
+        // An angle within half an ULP of 2π of the branch cut is on the
+        // cut at the chart's precision: `rem_euclid` rounds one just below
+        // the cut up to exactly TAU, and one just above it has a
+        // representative `raw + 2π` that rounds onto TAU. Both read as
+        // angle zero. Left above the cut, a vertex such as the carrier
+        // evaluated at native π (`sin(π)` = 1.2e-16) would make a CW
+        // traversal from it split off a piece shorter than its native
+        // parameter can resolve.
+        let chart_angle = |point: Point3| {
+            let raw = angle_of(center_uv, self.frame.project(point));
+            if raw >= TAU || raw + TAU <= TAU {
+                0.0
             } else {
-                end_angle + TAU
-            };
-            let source_cut = cut_source(cut);
+                raw
+            }
+        };
+        let start_angle = chart_angle(start_3d);
+        // A closed use is one chart vertex: its end is its start.
+        let end_angle = if closed {
+            start_angle
+        } else {
+            chart_angle(end_3d)
+        };
+        // Two distinct vertices on one chart angle bound no arc.
+        if !closed && end_angle.total_cmp(&start_angle).is_eq() {
+            return None;
+        }
+        // The trim decides only the sense of traversal; the endpoint
+        // angles bound it. Each end takes the cut representative on its
+        // own side: a CCW traversal leaves the cut from 0 and arrives at
+        // 2π, a CW one leaves from 2π and arrives at 0. A traversal that
+        // passes the cut splits there into two canonical pieces, each with
+        // a nonzero range: a crossing CCW traversal starts below 2π and
+        // ends above 0, and symmetrically for CW.
+        let ccw = orientation * span > 0.0;
+        let (start_rep, end_rep) = if ccw {
+            (start_angle, if end_angle == 0.0 { TAU } else { end_angle })
+        } else {
+            (
+                if start_angle == 0.0 { TAU } else { start_angle },
+                end_angle,
+            )
+        };
+        let crosses = if ccw {
+            end_rep <= start_rep
+        } else {
+            end_rep >= start_rep
+        };
+        let (cut, restart) = if ccw { (TAU, 0.0) } else { (0.0, TAU) };
+        // Directed angular length the endpoint angles select.
+        let first_len = if crosses {
+            (cut - start_rep).abs()
+        } else {
+            (end_rep - start_rep).abs()
+        };
+        let total_len = if crosses {
+            first_len + (end_rep - restart).abs()
+        } else {
+            first_len
+        };
+        // The trim must sweep that same arc: its far end lands within
+        // `tol` of the endpoint along the carrier. Stated as arc length,
+        // the gate also pins the turn count, which a chord cannot. A
+        // closed use already passed the full-span band above.
+        if !closed && circle.radius() * (total_len - span.abs()).abs() > self.tol {
+            return None;
+        }
+        // (range, source) per piece, each in traversal order. Sources
+        // divide the native span by uniform angle motion along the
+        // selected arc; ranges are canonical `[0, 2π]` representatives.
+        let pieces_raw: Vec<RawPiece> = if crosses {
+            let source_cut = native_start + span * (first_len / total_len);
             vec![
                 RawPiece {
-                    range: [start_angle, cut],
+                    range: [start_rep, cut],
                     source: [native_start, source_cut],
                 },
                 RawPiece {
-                    range: [restart, canon_end],
+                    range: [restart, end_rep],
                     source: [source_cut, native_end],
                 },
             ]
+        } else {
+            vec![RawPiece {
+                range: [start_rep, end_rep],
+                source: [native_start, native_end],
+            }]
         };
+        // A piece whose native subspan rounds to a point is below the
+        // source parameter's resolution; the core would refuse it as an
+        // invalid boundary. Decline it here as out-of-domain instead.
+        if pieces_raw
+            .iter()
+            .any(|piece| piece.source[0].total_cmp(&piece.source[1]).is_eq())
+        {
+            return None;
+        }
         let cut_cert = self.fresh_cert();
         if pieces_raw.len() == 2 {
             // A genuine branch split (not the degenerate single-piece
@@ -2519,6 +2581,277 @@ mod tests {
         assert_eq!(rim.source_topo_edge, Some(edge_id.index()));
         assert!((rim.start_3d - start).length() <= TOL);
         assert!((rim.end_3d - start).length() <= TOL);
+    }
+
+    /// A planar disc face at z = 0 whose outer loop is one circle carrier
+    /// split into `arcs` forward edges, with vertices at native angles
+    /// `start + k·2π/arcs` and each edge carrying its exact native trim.
+    fn circle_rim_face(
+        normal: Vec3,
+        radius: f64,
+        start: f64,
+        arcs: u32,
+    ) -> (Topology, FaceId, Vec<(f64, f64)>) {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, radius).unwrap();
+        let params: Vec<f64> = (0..arcs)
+            .map(|k| start + TAU * f64::from(k) / f64::from(arcs))
+            .collect();
+        let vids: Vec<_> = params
+            .iter()
+            .map(|&t| topo.add_vertex(Vertex::new(circle.evaluate(t), TOL)))
+            .collect();
+        let mut trims = Vec::new();
+        let mut edges = Vec::new();
+        for k in 0..params.len() {
+            let next = (k + 1) % params.len();
+            let trim = (
+                params[k],
+                if next == 0 { start + TAU } else { params[next] },
+            );
+            let mut edge = Edge::new(vids[k], vids[next], EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(trim));
+            trims.push(trim);
+            edges.push(OrientedEdge::new(topo.add_edge(edge), true));
+        }
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        (topo, face, trims)
+    }
+
+    /// Bitwise chart identity, with the branch cut's two representatives
+    /// (0 and 2π) naming one angle.
+    fn same_chart_angle(a: f64, b: f64) -> bool {
+        let canon = |t: f64| if t.total_cmp(&TAU).is_eq() { 0.0 } else { t };
+        canon(a).total_cmp(&canon(b)).is_eq()
+    }
+
+    #[test]
+    fn closed_rim_returns_to_its_start_angle_from_every_start() {
+        // Regression: the closing angle of a full circle used to be
+        // re-derived as `(start ± 2π) ∓ 2π`, which rounds to the ULP of 2π.
+        // For about a third of start angles it landed one ULP past the
+        // start, the two branch pieces overlapped, and the core declined
+        // the face; which third depended on the platform's `atan2` last
+        // bits (π/4 declined on macOS, passed on glibc and wasm32). Sweep
+        // starts in both carrier senses so the fixture does not hinge on
+        // one libm's rounding.
+        for normal in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0)] {
+            for k in 0..360 {
+                let start = TAU * f64::from(k) / 360.0;
+                let (topo, face, trims) = circle_rim_face(normal, 2.0, start, 1);
+                let inputs = collect(&topo, face, &[]).expect("qualified closed rim");
+                let first = inputs.uses.first().expect("rim use");
+                let last = inputs.uses.last().expect("rim use");
+                assert!(
+                    same_chart_angle(first.range[0], last.range[1]),
+                    "start {start}: rim opens at {:e} but closes at {:e}",
+                    first.range[0],
+                    last.range[1]
+                );
+                let emitted = split_emit(&topo, face, &[])
+                    .unwrap_or_else(|| panic!("start {start} normal {normal:?}: rim declined"));
+                assert_eq!(emitted.len(), 1);
+                assert_eq!(emitted[0].outer_wire.len(), 1);
+                // The carried trim already starts on the rim vertex, so it
+                // comes back verbatim (in the region's traversal order)
+                // instead of re-derived through atan2.
+                let (lo, hi) = trims[0];
+                let trim = emitted[0].outer_wire[0].trim;
+                assert!(
+                    trim == Some((lo, hi)) || trim == Some((hi, lo)),
+                    "start {start} normal {normal:?}: trim {trim:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arcs_of_one_carrier_meet_on_one_chart_angle() {
+        // Regression: each circle use took its start angle from its start
+        // vertex but derived its end as `start + span`, which lands a few
+        // ULPs off the next use's start at the shared vertex. Overshooting
+        // made two arcs of one carrier overlap, and the core declined
+        // most split rims (72% of two-arc and 88% of three-arc starts).
+        for arcs in [2, 3] {
+            for normal in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0)] {
+                for k in 0..180 {
+                    let start = TAU * f64::from(k) / 180.0;
+                    let (topo, face, trims) = circle_rim_face(normal, 2.0, start, arcs);
+                    let inputs = collect(&topo, face, &[]).expect("qualified split rim");
+                    for (i, use_data) in inputs.uses.iter().enumerate() {
+                        let next = &inputs.uses[(i + 1) % inputs.uses.len()];
+                        assert_eq!(use_data.endpoints[1], next.endpoints[0]);
+                        assert!(
+                            same_chart_angle(use_data.range[1], next.range[0]),
+                            "arcs {arcs} start {start}: use {i} ends at {:e}, next starts at {:e}",
+                            use_data.range[1],
+                            next.range[0]
+                        );
+                    }
+                    let emitted = split_emit(&topo, face, &[]).unwrap_or_else(|| {
+                        panic!("arcs {arcs} start {start} normal {normal:?}: rim declined")
+                    });
+                    assert_eq!(emitted.len(), 1);
+                    // Native trims come back verbatim, in the region's
+                    // traversal order.
+                    let mut emitted_trims: Vec<_> = emitted[0]
+                        .outer_wire
+                        .iter()
+                        .map(|edge| {
+                            let (a, b) = edge.trim.expect("native arc trim");
+                            (a.min(b), a.max(b))
+                        })
+                        .collect();
+                    let mut expected = trims.clone();
+                    emitted_trims.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    expected.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    assert_eq!(emitted_trims, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vertex_rounding_just_past_the_cut_reads_as_the_cut() {
+        use std::f64::consts::PI;
+        // A -z carrier split at native 0 and π on a +z face: the vertex at
+        // native π lies on the UV branch cut, but `sin(π)` puts its chart
+        // angle at +1.2e-16 rather than 0. The CW traversal leaving it
+        // used to split off a [1.2e-16, 0] piece whose native subspan
+        // rounds to the single point π, and the core refused the face as
+        // an internal `InvalidBoundary` error instead of declining.
+        let (topo, face, _) = circle_rim_face(Vec3::new(0.0, 0.0, -1.0), 2.0, 0.0, 2);
+        let frame = plane_frame();
+        let raw = angle_of(
+            frame.project(Point3::new(0.0, 0.0, 0.0)),
+            frame.project(
+                Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 2.0)
+                    .unwrap()
+                    .evaluate(PI),
+            ),
+        );
+        assert!(
+            raw > 0.0 && raw + TAU <= TAU,
+            "fixture sits just past the cut: {raw:e}"
+        );
+        let inputs = collect(&topo, face, &[]).expect("qualified split rim");
+        assert_eq!(inputs.uses.len(), 2, "no sub-resolution cut piece");
+        for use_data in &inputs.uses {
+            for t in use_data.range {
+                assert!(same_chart_angle(t, 0.0) || same_chart_angle(t, PI), "{t:e}");
+            }
+        }
+        let emitted = split_emit(&topo, face, &[]).expect("split rim emits");
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].outer_wire.len(), 2);
+    }
+
+    #[test]
+    fn sub_resolution_cut_piece_declines_instead_of_refusing() {
+        use std::f64::consts::PI;
+        // A vertex just outside the cut band (chart angle ~6e-16) on a
+        // carrier whose native trims sit near 3π, where an ULP is 1.8e-15:
+        // the CW traversal leaving it crosses the cut after 6e-16 rad, and
+        // that first piece's native subspan rounds to a point. The adapter
+        // must decline (the established path runs) rather than hand the
+        // core a degenerate use it refuses as an internal error.
+        let mut topo = Topology::new();
+        let frame = plane_frame();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 2.0).unwrap();
+        let a = frame.evaluate(2.0, 1.2e-15);
+        let chart = angle_of(frame.project(circle.center()), frame.project(a));
+        assert!(
+            chart > 0.0 && chart + TAU > TAU,
+            "outside the cut band: {chart:e}"
+        );
+        let lo = circle.project(a).rem_euclid(TAU) + TAU;
+        assert!(
+            lo > 2.0 * PI && (lo + 6e-16).total_cmp(&lo).is_eq(),
+            "native ULP hides the piece"
+        );
+        let b = circle.evaluate(lo + PI);
+        let va = topo.add_vertex(Vertex::new(a, TOL));
+        let vb = topo.add_vertex(Vertex::new(b, TOL));
+        let mut first = Edge::new(va, vb, EdgeCurve::Circle(circle.clone()));
+        first.set_trim(Some((lo, lo + PI)));
+        let mut second = Edge::new(vb, va, EdgeCurve::Circle(circle));
+        second.set_trim(Some((lo + PI, lo + TAU)));
+        let first = topo.add_edge(first);
+        let second = topo.add_edge(second);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(first, true),
+                    OrientedEdge::new(second, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        assert!(collect(&topo, face, &[]).is_none());
+        assert!(split_emit(&topo, face, &[]).is_none());
+    }
+
+    #[test]
+    fn trim_sweeping_past_a_full_turn_declines() {
+        // The endpoint angles select the arc and the trim only its sense,
+        // so the trim's sweep must match the selected arc. Here the trim
+        // runs 5e-10 rad past a full turn (inside the full-circle band) on
+        // a radius-1e4 carrier, so its ends sit 5e-6 apart: distinct
+        // vertices whose CCW arc is 5e-10 rad long. Claiming that sliver
+        // for a near-full-turn trim would silently sweep the wrong arc.
+        let mut topo = Topology::new();
+        let radius = 1e4;
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+        let lo = 0.3;
+        let hi = lo + TAU + 5e-10;
+        let a = circle.evaluate(lo);
+        let b = circle.evaluate(hi);
+        assert!((a - b).length() > 10.0 * TOL);
+        let va = topo.add_vertex(Vertex::new(a, TOL));
+        let vb = topo.add_vertex(Vertex::new(b, TOL));
+        let mut arc = Edge::new(va, vb, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((lo, hi)));
+        let arc = topo.add_edge(arc);
+        let closing = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(arc, true),
+                    OrientedEdge::new(closing, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        assert!(collect(&topo, face, &[]).is_none());
+        assert!(split_emit(&topo, face, &[]).is_none());
     }
 
     #[test]
