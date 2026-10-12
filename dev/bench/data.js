@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791842964078,
+  "lastUpdate": 1791844993326,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -95119,6 +95119,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 74455,
             "range": "± 416",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1faa18caa22ea36eb43272c30ba6cf701b20e167",
+          "message": "perf(boolean): store-local fuse and intersect (local boolean, stage 4 part 2) (#1017)\n\n* feat(wasm): add a switch for store-local cuts\n\nsetStoreLocalCuts(enabled) and storeLocalCutsEnabled() on BrepKernel,\nplus the matching executeBatch ops (registered read-only: they never\ntouch the topology), expose the opt-in store-local cut from #1014. It\nstays off by default; the setting is per thread, so it applies to every\nkernel in the module instance. Contract tests drive both through\nexecuteBatch: off by default, toggles, and a slot cut through a drilled\nplate gives the same volume and face and edge counts either way.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf(boolean): store-local fuse and intersect (local boolean, stage 4 part 2)\n\nThe opt-in store-local path now covers fuse and intersect as well as cut,\nbehind the same switch (set_thread_store_local_cuts / setStoreLocalCuts).\n\n- remus_algo::gfa::boolean_patch(op) generalises cut_patch, which now\n  delegates to it.\n- Fuse keeps the untouched faces and splices the patch onto them, as a cut\n  does. Intersect drops them: its patch is the whole result, so\n  Builder::build_patch runs full shell assembly for it (the general path\n  relies on assembly to drop a misclassified hole-wall band), declining\n  more than one solid or a cavity.\n- The result must also be one edge-connected shell, checked in the\n  transaction beside the boolean-result gate; a fuse tool that is reached\n  but does not meet the blank declines.\n- Equivalence oracles for four fuses, two intersects and a refusal; the\n  scaling guard covers all three operations; WASM contract tests for fuse\n  and intersect through executeBatch; the profile example gains fuse and\n  intersect modes.\n\n576-hole plate, per boolean: cut 22.3 -> 12.1 ms, fuse 22.5 -> 7.1 ms,\nintersect 14.3 -> 9.0 ms. Default path unchanged.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T17:34:36-05:00",
+          "tree_id": "fc600a65bc073d77205fb15b5a22a00fdb6f7e07",
+          "url": "https://github.com/esaueng/remus/commit/1faa18caa22ea36eb43272c30ba6cf701b20e167"
+        },
+        "date": 1791844990977,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1143125,
+            "range": "± 2149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1222533,
+            "range": "± 3978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 18920,
+            "range": "± 535",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7316966,
+            "range": "± 6924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7299562,
+            "range": "± 14695",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7154331,
+            "range": "± 8322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 25834,
+            "range": "± 191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2935760,
+            "range": "± 22094",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 28578720,
+            "range": "± 407846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 117,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 237,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 168,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 872,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 395,
+            "range": "± 49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 210,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 572,
+            "range": "± 94",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 761,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3493,
+            "range": "± 208",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 501285,
+            "range": "± 1084",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2920007,
+            "range": "± 5651",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 145839,
+            "range": "± 2615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 437487,
+            "range": "± 986",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 357884,
+            "range": "± 4666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 62297,
+            "range": "± 800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 828098,
+            "range": "± 1958",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9521717,
+            "range": "± 187430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 529081,
+            "range": "± 2797",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1150013,
+            "range": "± 2759",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 83998,
+            "range": "± 708",
             "unit": "ns/iter"
           }
         ]
