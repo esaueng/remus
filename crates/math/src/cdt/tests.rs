@@ -6,6 +6,7 @@ mod collinear_index;
 mod flood_batch;
 mod hole_grid;
 mod off_axis_cap;
+mod predicate_oracle;
 mod u_bracket_floor;
 
 #[test]
