@@ -332,7 +332,34 @@ per-entry wire walk now, with the same result.
 | `junction_curve_scans` | 0 → 0 | 576 → 2304 |
 | `face_extent_builds` | 6 → 6 | 32 → 32 |
 
-<!--STAGE3-EVIDENCE-->
+**Evidence.** Main at `404d41cf` against this part, Apple M5 Pro, shared
+machine, `RAYON_NUM_THREADS=1`. `touched_face_loops_profile` reports time
+per slot cut, measured in-process:
+
+| holes on the plate | main | part 1 |
+| ---: | ---: | ---: |
+| 36 | 3.74 ms | 2.72 ms |
+| 144 | 12.4 ms | 6.95 ms (−44%) |
+| 324 | 27.3 ms | 15.2 ms |
+| 576 | 49.7 ms | 28.0 ms (−44%) |
+
+Instruction counts (`/usr/bin/time -l`, binaries alternated, three
+rounds):
+
+- 100 slot cuts on a 324-hole plate: 70.7 G → 54.3 G for the whole run,
+  including the drilling (26 → 14.2 ms per slot).
+- 2000 slot cuts on a blank plate: 13.56 G → 13.52 G. The gate costs
+  nothing when there is nothing to skip.
+
+Criterion, two rounds against main:
+
+- consistent wins: `cut(box,cyl) x10` −12%, `perforated_cut_36` −12 to
+  −14%, `boolean 64 cuts` −4 to −5%;
+- every other boolean bench moved within ±4% with changing sign, except
+  single-round outliers that reversed in the other round
+  (`intersect_box_box` −0.9% then +17%, `torus_notch_fuse` +12% then
+  −0.3%). `cut_cylinder_through_box` never reaches phase FF and drifted
+  +3% in both rounds, which sets the noise floor.
 
 **Remaining per-hole cost.** After this part the slot cut costs about
 44 µs per hole. The rest is spread over several passes:
