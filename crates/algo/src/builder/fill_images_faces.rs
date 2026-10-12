@@ -1095,6 +1095,27 @@ fn cb_edge_matches_branch(topo: &Topology, a: EdgeId, b: EdgeId, tolerance: f64)
     }
 }
 
+/// Compare intrinsic traversal at the shared seam of two closed CB edges.
+/// Endpoints cannot distinguish direction on a closed rim. The derivative
+/// must also follow the signed trim: a descending range reverses traversal
+/// even when both copies use the same curve carrier.
+fn closed_cb_edges_same_direction(topo: &Topology, a: EdgeId, b: EdgeId) -> Option<bool> {
+    let directed_tangent = |id| {
+        let edge = topo.edge(id).ok()?;
+        let (lo, hi) = edge.strict_domain().ok()?;
+        let tangent = match edge.curve() {
+            EdgeCurve::Circle(c) => c.tangent(lo),
+            EdgeCurve::Ellipse(e) => e.tangent(lo),
+            EdgeCurve::NurbsCurve(n) => n.tangent(lo).ok()?,
+            EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+        };
+        Some(tangent.normalize().ok()? * (hi - lo).signum())
+    };
+    let dot = directed_tangent(a)?.dot(directed_tangent(b)?);
+    // An unresolved direction must not authorize a replacement.
+    (dot.is_finite() && dot != 0.0).then_some(dot > 0.0)
+}
+
 /// Rebuild an unsplit face replacing boundary edges with CommonBlock shared edges.
 ///
 /// For each boundary edge of the face, checks if its PaveBlock belongs to a
@@ -1270,15 +1291,21 @@ fn rebuild_face_with_cb_edges(
                 && cb_edge != eid
                 && cb_edge_matches_branch(topo, eid, cb_edge, tol.linear)
             {
-                let oriented_start_q = if fwd { qs } else { qe };
-                // If we can't look up the CB edge's start position,
-                // preserve the original orientation rather than
-                // guessing `false`.
-                let new_fwd = cb_start_qs
-                    .get(&cb_edge)
-                    .map_or(fwd, |&cs| cs == oriented_start_q);
-                oes.push(OrientedEdge::new(cb_edge, new_fwd));
-                continue;
+                let new_fwd = if qs == qe {
+                    closed_cb_edges_same_direction(topo, eid, cb_edge)
+                        .map(|same| if same { fwd } else { !fwd })
+                } else {
+                    let oriented_start_q = if fwd { qs } else { qe };
+                    Some(
+                        cb_start_qs
+                            .get(&cb_edge)
+                            .map_or(fwd, |&cs| cs == oriented_start_q),
+                    )
+                };
+                if let Some(new_fwd) = new_fwd {
+                    oes.push(OrientedEdge::new(cb_edge, new_fwd));
+                    continue;
+                }
             }
 
             // (2) Vertex canonicalization via VV seed
