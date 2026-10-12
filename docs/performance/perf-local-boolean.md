@@ -2,7 +2,10 @@
 
 **Status (2026-10-12):** stage 1 (through holes) and the first stage 2
 widening (blind holes) are implemented in
-`crates/operations/src/boolean/local_cut.rs`. Later stages are design only.
+`crates/operations/src/boolean/local_cut.rs`. The first part of stage 3,
+which makes phase FF's work on a touched face follow the loops a cut
+meets, is implemented in `remus-algo`'s phase FF (last section). The rest is
+design only.
 
 ## Problem
 
