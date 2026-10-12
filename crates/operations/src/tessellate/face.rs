@@ -219,16 +219,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     false,
                 );
                 let nv = 1;
-                let cyl = cyl.clone();
-                tessellate_analytic(
-                    |u, v| cyl.evaluate(u, v),
-                    |u, v| cyl.normal(u, v),
-                    u_range,
-                    v_range,
-                    nu,
-                    nv,
-                    AnalyticKind::General,
-                )
+                tessellate_analytic(cyl, u_range, v_range, nu, nv, AnalyticKind::General)
             }
         }
         FaceSurface::Cone(cone) => {
@@ -273,16 +264,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     } else {
                         AnalyticKind::General
                     };
-                    let cone = cone.clone();
-                    tessellate_analytic(
-                        |u, v| cone.evaluate(u, v),
-                        |u, v| cone.normal(u, v),
-                        u_range,
-                        v_range,
-                        nu,
-                        nv,
-                        kind,
-                    )
+                    tessellate_analytic(cone, u_range, v_range, nu, nv, kind)
                 }
             } else {
                 let radius = super::nurbs::cone_chart_radius(topo, face_data, cone);
@@ -346,16 +328,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     curvature_floor,
                 );
                 let kind = sphere_analytic_kind(v_range);
-                let sphere = sphere.clone();
-                tessellate_analytic(
-                    |u, v| sphere.evaluate(u, v),
-                    |u, v| sphere.normal(u, v),
-                    u_range,
-                    v_range,
-                    nu,
-                    nv,
-                    kind,
-                )
+                tessellate_analytic(sphere, u_range, v_range, nu, nv, kind)
             }
         }
         FaceSurface::Torus(torus) => {
@@ -375,16 +348,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 angular_tol,
                 true,
             );
-            let torus = torus.clone();
-            tessellate_analytic(
-                |u, v| torus.evaluate(u, v),
-                |u, v| torus.normal(u, v),
-                u_range,
-                v_range,
-                nu,
-                nv,
-                AnalyticKind::General,
-            )
+            tessellate_analytic(torus, u_range, v_range, nu, nv, AnalyticKind::General)
         }
     }?;
 

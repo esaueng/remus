@@ -334,6 +334,8 @@ where
     let mut angles: Vec<f64> = Vec::new();
 
     if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        // Two endpoints plus at most one midpoint per edge.
+        angles.reserve(wire.edges().len().saturating_mul(3));
         for oe in wire.edges() {
             if let Ok(edge) = topo.edge(oe.edge()) {
                 for &vid in &[edge.start(), edge.end()] {
@@ -451,6 +453,7 @@ pub fn compute_sphere_v_range(
 
     let mut wire_pts = Vec::new();
     if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        wire_pts.reserve(wire.edges().len());
         for oe in wire.edges() {
             if let Ok(edge) = topo.edge(oe.edge())
                 && let Ok(vertex) = topo.vertex(edge.start())
