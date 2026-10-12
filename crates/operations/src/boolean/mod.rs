@@ -7,6 +7,7 @@
 pub mod assembly;
 mod classify;
 mod local_cut;
+mod store_local;
 mod types;
 pub(crate) use assembly::{
     BoundaryCurveOverride, assemble_solid_mixed, assemble_solid_mixed_with_history,
@@ -14,6 +15,7 @@ pub(crate) use assembly::{
 };
 use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
+pub use store_local::{set_thread_store_local_cuts, thread_store_local_cuts_enabled};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
 /// Exact cellular boolean output: a Compound plus per-region construction
@@ -810,6 +812,14 @@ fn boolean_with_context_impl(
     // pair.
     if op == BooleanOp::Cut
         && let Some(result) = local_cut::try_local_hole(topo, a, b, tol)?
+    {
+        return Ok(result);
+    }
+
+    // Opt-in: a cut whose tool reaches only part of the blank runs the GFA
+    // on that part and splices it back onto the rest (see `store_local`).
+    if op == BooleanOp::Cut
+        && let Some(result) = store_local::try_store_local_cut(topo, a, b, context)?
     {
         return Ok(result);
     }
@@ -7423,6 +7433,8 @@ mod disjoint_witness_tests;
 mod local_cut_tests;
 #[cfg(test)]
 mod nway_pairs_tests;
+#[cfg(test)]
+mod store_local_tests;
 #[cfg(test)]
 mod tests;
 

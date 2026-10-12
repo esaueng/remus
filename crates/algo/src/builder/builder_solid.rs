@@ -69,23 +69,24 @@ pub fn build_solid_with_origins(
     Ok((solid, origins))
 }
 
-/// Assemble every disconnected growth region as its own solid.
+/// Assembly's face preparation: reversed copies for flipped selections, then
+/// the cleanup passes (sliver drop, zero-length edges, vertex weld,
+/// collinear and arc edge splitting, duplicate-edge merge, doubled faces,
+/// spur excision, partial-overlap caps). Returns the prepared faces and,
+/// parallel to them, the input face each derives from (`None` for a cap).
 ///
-/// Unlike [`build_solid_with_origins`], this is the first-class cellular
-/// result path: it does not hide disconnected regions in one outer shell.
-/// The returned provenance is total over all returned solids.
+/// [`build_solids_with_origins`] forms shells from these; a store-local
+/// boolean keeps them as an open patch.
 ///
 /// # Errors
 ///
-/// Returns [`AlgoError`] if selection, shell construction, or deterministic
-/// cavity assignment fails.
-#[allow(clippy::too_many_lines)]
-pub fn build_solids_with_origins(
+/// Returns [`AlgoError`] if no face is selected or survives, or a pass fails.
+pub fn clean_selected_faces(
     topo: &mut Topology,
     selected: &[SelectedFace],
     cap_planes: &[CapPlane],
     lineage: &mut super::split_types::EdgeLineageLog,
-) -> Result<(Vec<SolidId>, FaceProvenance), AlgoError> {
+) -> Result<(Vec<FaceId>, Vec<Option<FaceId>>), AlgoError> {
     if selected.is_empty() {
         return Err(AlgoError::AssemblyFailed("no faces selected".into()));
     }
@@ -255,6 +256,28 @@ pub fn build_solids_with_origins(
     if trace_steps {
         dump_face_wires(topo, &face_ids, "FACES step08-cap");
     }
+
+    Ok((face_ids, sources))
+}
+
+/// Assemble every disconnected growth region as its own solid.
+///
+/// Unlike [`build_solid_with_origins`], this is the first-class cellular
+/// result path: it does not hide disconnected regions in one outer shell.
+/// The returned provenance is total over all returned solids.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if selection, shell construction, or deterministic
+/// cavity assignment fails.
+#[allow(clippy::too_many_lines)]
+pub fn build_solids_with_origins(
+    topo: &mut Topology,
+    selected: &[SelectedFace],
+    cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
+) -> Result<(Vec<SolidId>, FaceProvenance), AlgoError> {
+    let (face_ids, sources) = clean_selected_faces(topo, selected, cap_planes, lineage)?;
 
     // Snapshot provenance now that face_ids / sources are final and parallel:
     // map each result-bound face to the input face it derives from (None for a

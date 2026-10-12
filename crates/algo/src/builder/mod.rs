@@ -343,6 +343,10 @@ pub struct Builder {
     sd_within_rank_dups: Vec<same_domain::WithinRankDuplicate>,
 }
 
+/// A store-local boolean's prepared patch: the store topology, the patch
+/// faces, and the store input face each derives from (`None` for a cap).
+pub type PatchFaces = (Topology, Vec<FaceId>, Vec<Option<FaceId>>);
+
 impl Builder {
     /// Create a Builder with custom tolerance.
     #[must_use]
@@ -397,7 +401,7 @@ impl Builder {
     pub fn perform(&mut self) -> Result<(), AlgoError> {
         self.build_face_ranks()?;
         self.fill_images()?;
-        self.classify_sub_faces()?;
+        self.classify_sub_faces(None)?;
         if let Ok(v) = std::env::var("BK_CLS3")
             && let Ok(want) = v.parse::<usize>()
         {
@@ -812,6 +816,37 @@ impl Builder {
         Ok((self.topo, solid_id))
     }
 
+    /// Select and prepare the faces of a store-local boolean's open patch:
+    /// [`Builder::build_result`] up to assembly's cleanup passes, without
+    /// forming shells. Returns the store topology, the prepared faces and,
+    /// parallel to them, the store input face each derives from (`None` for
+    /// a cap).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if orientation or a cleanup pass fails, or no
+    /// face survives.
+    pub(crate) fn build_patch(mut self, op: BooleanOp) -> Result<PatchFaces, AlgoError> {
+        let selected = bop::select_faces(
+            &self.sub_faces,
+            op,
+            &self.sd_pairs,
+            &self.sd_within_rank_dups,
+        );
+        if op == BooleanOp::Fuse {
+            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        }
+        builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
+        let cap_planes = self.partial_overlap_cap_planes(&selected);
+        let (faces, sources) = builder_solid::clean_selected_faces(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, faces, sources))
+    }
+
     /// Like [`Builder::build_result`], but also returns the provenance of each
     /// result face: `(result face, Some(input source face) | None)`. The source
     /// face IDs are in this builder's (store-local) topology — callers crossing
@@ -1028,7 +1063,29 @@ impl Builder {
 
     /// Phase 2: classify each sub-face as inside/outside the opposing solid.
     #[allow(clippy::too_many_lines)]
-    fn classify_sub_faces(&mut self) -> Result<(), AlgoError> {
+    /// [`Builder::perform`] for a store-local boolean whose rank A is a patch
+    /// of the blank: rank-B sub-faces are classified against `full_a`, the
+    /// whole blank in the caller's topology, by the same three tests the
+    /// whole-operand path runs against its store copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if topology lookups or classification fails.
+    pub(crate) fn perform_against_full_a(
+        &mut self,
+        full_a: (&Topology, SolidId),
+    ) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()?;
+        self.classify_sub_faces(Some(full_a))
+    }
+
+    /// Classify every sub-face against the opposing solid. Rank-B sub-faces
+    /// read `full_a` instead of the store's rank-A solid when it is given.
+    fn classify_sub_faces(
+        &mut self,
+        full_a: Option<(&Topology, SolidId)>,
+    ) -> Result<(), AlgoError> {
         // SD faces are excluded from non-SD BOP selection, so their
         // classification doesn't affect the result. But the ray-cast
         // classifier is non-deterministic at coplanar boundaries,
@@ -1058,7 +1115,10 @@ impl Builder {
         // solid's face geometry per sub-face was O(faces) × O(sub-faces). A
         // collection failure leaves `None`, which falls back to the per-call
         // path (identical behaviour, just not memoised).
-        let geoms_a = classifier::RayCastGeoms::new(&self.topo, self.solid_a).ok();
+        let geoms_a = match full_a {
+            Some((topo, solid)) => classifier::RayCastGeoms::new(topo, solid).ok(),
+            None => classifier::RayCastGeoms::new(&self.topo, self.solid_a).ok(),
+        };
         let geoms_b = classifier::RayCastGeoms::new(&self.topo, self.solid_b).ok();
 
         for (idx, sf) in self.sub_faces.iter_mut().enumerate() {
@@ -1079,9 +1139,10 @@ impl Builder {
                 continue;
             }
 
-            let opposing_solid = match sf.rank {
-                Rank::A => self.solid_b,
-                Rank::B => self.solid_a,
+            let (opposing_topo, opposing_solid) = match (sf.rank, full_a) {
+                (Rank::A, _) => (&self.topo, self.solid_b),
+                (Rank::B, Some((topo, solid))) => (topo, solid),
+                (Rank::B, None) => (&self.topo, self.solid_a),
             };
             let opposing_geoms = match sf.rank {
                 Rank::A => geoms_b.as_ref(),
@@ -1109,6 +1170,7 @@ impl Builder {
                 Ok(point) => {
                     let point = sample_full_cylinder_away_from_plane_contacts(
                         &self.topo,
+                        opposing_topo,
                         sf.face_id,
                         opposing_solid,
                         point,
@@ -1126,6 +1188,7 @@ impl Builder {
                     {
                         classifier::classify_coincident_coplanar(
                             &self.topo,
+                            opposing_topo,
                             opposing_solid,
                             opposing_geoms,
                             sf.face_id,
@@ -1140,7 +1203,7 @@ impl Builder {
                     sf.classification = match coincident {
                         Some(class) => class,
                         None => classifier::classify_point_cached_with_tolerance(
-                            &self.topo,
+                            opposing_topo,
                             opposing_solid,
                             opposing_geoms,
                             point,
@@ -1494,6 +1557,7 @@ fn orient_selected_fuse_analytic_holes(
 /// inside the same unsplit face region.
 fn sample_full_cylinder_away_from_plane_contacts(
     topo: &Topology,
+    opposing_topo: &Topology,
     face_id: FaceId,
     opposing: SolidId,
     sample: Point3,
@@ -1509,8 +1573,8 @@ fn sample_full_cylinder_away_from_plane_contacts(
         return Ok(None);
     }
     let mut planes = Vec::new();
-    for fid in remus_topology::explorer::solid_faces(topo, opposing)? {
-        let FaceSurface::Plane { normal, d } = topo.face(fid)?.surface() else {
+    for fid in remus_topology::explorer::solid_faces(opposing_topo, opposing)? {
+        let FaceSurface::Plane { normal, d } = opposing_topo.face(fid)?.surface() else {
             return Ok(None);
         };
         planes.push((*normal, *d));
