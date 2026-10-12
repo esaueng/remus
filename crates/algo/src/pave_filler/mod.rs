@@ -248,10 +248,12 @@ pub fn run_pave_filler_with_context(
 /// The Stage-1 intersection phases are inherently pairwise (each section is
 /// between the faces of two solids) and, crucially, deposit only geometric
 /// split data into the shared `arena` — they carry no `Rank`. So the two-solid
-/// phase code is reused verbatim: run each phase for every spatially-interacting
-/// source pair into ONE arena, and the paves/sections accumulate correctly. A
-/// bbox broad-phase skips non-interacting pairs, keeping the stage O(n·k) for
-/// the sparse interaction graphs a fused lattice produces rather than O(n²).
+/// phase code is reused verbatim: run each phase for every source pair into ONE
+/// arena, and the paves/sections accumulate correctly. This entry point
+/// intersects every pair; a caller holding conservative bounds can restrict
+/// Stage 1 to the interacting pairs with [`run_pave_filler_n_with_pairs`],
+/// which keeps the stage O(n·k) for the sparse interaction graphs a fused
+/// lattice produces rather than O(n²).
 ///
 /// Phase order preserves the two-solid pipeline's invariant that the
 /// pave-vertex coincidence index is built ONCE, after all VV coincidences are
@@ -288,7 +290,41 @@ pub fn run_pave_filler_n_with_context(
     context: &OperationContext,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
-    const MAX_SOURCE_PAIRS: usize = 4_096;
+    run_pave_filler_n_with_pairs(topo, sources, None, context, arena)
+}
+
+/// Most source pairs one N-way pave filler run will intersect.
+const MAX_SOURCE_PAIRS: usize = 4_096;
+
+/// Run the N-way PaveFiller pipeline over the given candidate source pairs.
+///
+/// `candidate_pairs = None` intersects every source pair `(i, j)`, `i < j`,
+/// exactly as [`run_pave_filler_n_with_context`]. `Some(pairs)` runs Stage 1
+/// only for the listed pairs, in the order given. The caller vouches that every
+/// omitted pair is separated by more than the operation tolerance — proven
+/// with *conservative* bounds (bounds that enclose the whole trimmed geometry,
+/// not just its vertices) — so its phases would deposit
+/// nothing. The list must be strictly increasing in `(i, j)` with `i < j <
+/// sources.len()`, i.e. a subsequence of the all-pairs order, so the kept
+/// pairs run in the order the all-pairs pipeline runs them.
+///
+/// The source-pair budget (4096) applies to the pairs actually intersected,
+/// so a sparse lattice of many solids — where each touches only its
+/// neighbours — stays on the single arrangement instead of being refused for
+/// the `n·(n−1)/2` pairs it never needed.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if `sources` is empty, `candidate_pairs` is not a
+/// strictly increasing list of in-range `i < j` pairs, the pair budget is
+/// exceeded, or any stage fails.
+pub fn run_pave_filler_n_with_pairs(
+    topo: &mut Topology,
+    sources: &[SolidId],
+    candidate_pairs: Option<&[(usize, usize)]>,
+    context: &OperationContext,
+    arena: &mut GfaArena,
+) -> Result<(), AlgoError> {
     let tol = context.tolerance;
     context.check_cancelled()?;
 
@@ -297,22 +333,32 @@ pub fn run_pave_filler_n_with_context(
             "N-way pave filler needs at least one source solid".into(),
         ));
     }
-    let pair_count = sources
-        .len()
-        .checked_mul(sources.len().saturating_sub(1))
-        .and_then(|count| count.checked_div(2))
-        .ok_or_else(|| {
-            AlgoError::AssemblyFailed("N-way pave filler source count overflows".into())
-        })?;
+    let pair_count = match candidate_pairs {
+        Some(pairs) => {
+            validate_candidate_pairs(pairs, sources.len())?;
+            pairs.len()
+        }
+        None => sources
+            .len()
+            .checked_mul(sources.len().saturating_sub(1))
+            .and_then(|count| count.checked_div(2))
+            .ok_or_else(|| {
+                AlgoError::AssemblyFailed("N-way pave filler source count overflows".into())
+            })?,
+    };
     if pair_count > MAX_SOURCE_PAIRS {
         return Err(AlgoError::AssemblyFailed(format!(
             "N-way pave filler needs {pair_count} source pairs; limit is {MAX_SOURCE_PAIRS}"
         )));
     }
 
-    // Stage 1: Intersection over every source pair, accumulating into one arena.
+    // Stage 1: Intersection over every candidate source pair, accumulating
+    // into one arena.
     init_pave_blocks_n(topo, sources, arena)?;
-    let pairs = source_pairs(sources);
+    let pairs = match candidate_pairs {
+        Some(pairs) => pairs.to_vec(),
+        None => source_pairs(sources),
+    };
 
     let mut vertex_pairs = phase_vv::VertexPairBudget::new(context.budgets.vertex_pairs);
     for &(i, j) in &pairs {
@@ -421,11 +467,34 @@ fn init_pave_blocks_n(
     Ok(())
 }
 
+/// Check that `pairs` is a strictly increasing list of `(i, j)` with
+/// `i < j < source_count` — a subsequence of `source_pairs`' order.
+fn validate_candidate_pairs(
+    pairs: &[(usize, usize)],
+    source_count: usize,
+) -> Result<(), AlgoError> {
+    for (index, &(i, j)) in pairs.iter().enumerate() {
+        if i >= j || j >= source_count {
+            return Err(AlgoError::AssemblyFailed(format!(
+                "N-way candidate pair ({i}, {j}) is not an in-range i < j pair of {source_count} sources"
+            )));
+        }
+        if index > 0 && pairs[index - 1] >= (i, j) {
+            return Err(AlgoError::AssemblyFailed(
+                "N-way candidate pairs must be strictly increasing".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Every source-index pair `(i, j)` with `i < j`.
 ///
 /// Do not prune this list using vertex-only bounds: analytic curves and
 /// surfaces can extend beyond their topological vertices, so such bounds are
-/// not conservative and can silently omit real intersections.
+/// not conservative and can silently omit real intersections. Callers that
+/// hold conservative bounds pass their own pairs to
+/// [`run_pave_filler_n_with_pairs`] instead.
 fn source_pairs(sources: &[SolidId]) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     for i in 0..sources.len() {

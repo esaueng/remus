@@ -2051,7 +2051,13 @@ fn fuse_cluster_with_context(
         });
     };
     if cluster.len() >= 3 {
-        match remus_algo::gfa::fuse_n_with_context(topo, cluster, context) {
+        let fused = match cluster_candidate_pairs(topo, cluster, context.tolerance.linear) {
+            Some(pairs) => {
+                remus_algo::gfa::fuse_n_with_candidate_pairs(topo, cluster, &pairs, context)
+            }
+            None => remus_algo::gfa::fuse_n_with_context(topo, cluster, context),
+        };
+        match fused {
             Ok(fused)
                 if validate_boolean_result_with_tolerance(topo, fused, context.tolerance)
                     .is_ok() =>
@@ -2079,6 +2085,64 @@ fn fuse_cluster_with_context(
             &mut used_fallback,
         )
     })
+}
+
+/// The source pairs of an N-way fuse cluster that may interact.
+///
+/// A pair is omitted only when the solids' conservative bounding boxes
+/// ([`crate::measure::conservative_solid_bounding_box`] — the bounds the
+/// compound fuse already relies on to merge disjoint groups without a
+/// boolean) stay apart after each is grown by its largest vertex/edge
+/// tolerance plus a margin well above the operation tolerance. The pave
+/// filler's widest contact window is `tol_a + tol_b + tol.linear` (vertex
+/// coincidence), so such a pair has nothing within reach of each other and
+/// the N-way pave filler would deposit nothing for it. Returns the kept pairs
+/// in the all-pairs order, or `None` (intersect every pair) when any bound or
+/// tolerance is unavailable or not finite.
+fn cluster_candidate_pairs(
+    topo: &Topology,
+    cluster: &[SolidId],
+    tolerance: f64,
+) -> Option<Vec<(usize, usize)>> {
+    /// Multiple of the linear tolerance added to each box, so a pair counts
+    /// as interacting up to a gap of twice this many tolerances.
+    const CONTACT_MARGIN_TOLERANCES: f64 = 32.0;
+    let base_margin = CONTACT_MARGIN_TOLERANCES * tolerance.max(f64::EPSILON);
+    let boxes = cluster
+        .iter()
+        .map(|&solid| {
+            let bounds = crate::measure::conservative_solid_bounding_box(topo, solid).ok()?;
+            let finite = [bounds.min, bounds.max].iter().all(|corner| {
+                corner.x().is_finite() && corner.y().is_finite() && corner.z().is_finite()
+            });
+            let entity_tolerance = max_entity_tolerance(topo, solid)?;
+            finite.then(|| bounds.expanded(base_margin + entity_tolerance))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut pairs = Vec::new();
+    for i in 0..boxes.len() {
+        for j in (i + 1)..boxes.len() {
+            if boxes[i].intersects(boxes[j]) {
+                pairs.push((i, j));
+            }
+        }
+    }
+    Some(pairs)
+}
+
+/// Largest vertex or stored edge tolerance of `solid`, or `None` when the
+/// solid cannot be walked or a tolerance is not finite.
+fn max_entity_tolerance(topo: &Topology, solid: SolidId) -> Option<f64> {
+    let mut largest = 0.0_f64;
+    for vertex in remus_topology::explorer::solid_vertices(topo, solid).ok()? {
+        largest = largest.max(topo.vertex(vertex).ok()?.tolerance());
+    }
+    for edge in remus_topology::explorer::solid_edges(topo, solid).ok()? {
+        if let Some(edge_tolerance) = topo.edge(edge).ok()?.tolerance() {
+            largest = largest.max(edge_tolerance);
+        }
+    }
+    largest.is_finite().then_some(largest)
 }
 
 /// Group tools into AABB-overlap clusters (union-find over tolerance-
@@ -7235,6 +7299,8 @@ pub fn collect_face_signatures(
     Ok(result)
 }
 
+#[cfg(test)]
+mod nway_pairs_tests;
 #[cfg(test)]
 mod tests;
 

@@ -70,7 +70,9 @@ fn bench_fuse_balanced(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(1));
     group.measurement_time(Duration::from_secs(5));
 
-    for &side in &[2, 3, 4, 5] {
+    // N=144 is past the N-way source-pair budget when every pair is
+    // counted (10 296 > 4 096); its sequential twin would take seconds.
+    for &side in &[2, 3, 4, 5, 12] {
         let n = side * side;
         group.bench_function(format!("balanced_N={n}"), |b| {
             let (base_topo, solids) = build_overlapping_box_grid(side);
@@ -80,6 +82,9 @@ fn bench_fuse_balanced(c: &mut Criterion) {
                 black_box(fuse_all(&mut topo, cid).unwrap());
             });
         });
+        if side > 5 {
+            continue;
+        }
 
         group.bench_function(format!("sequential_N={n}"), |b| {
             let (base_topo, solids) = build_overlapping_box_grid(side);
@@ -103,7 +108,7 @@ fn bench_fuse_touching_boxes(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(1));
     group.measurement_time(Duration::from_secs(5));
 
-    for &side in &[2, 3, 4] {
+    for &side in &[2, 3, 4, 12] {
         let n = side * side;
         group.bench_function(format!("balanced_N={n}"), |b| {
             let (base_topo, solids) = build_box_grid(side);
