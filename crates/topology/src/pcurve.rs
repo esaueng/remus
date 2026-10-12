@@ -19,10 +19,11 @@
 //! [`TopologyError::SeamPcurveAmbiguous`](crate::TopologyError::SeamPcurveAmbiguous)
 //! when both branches are present, instead of answering arbitrarily.
 
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
 
 use remus_math::curves2d::Curve2D;
+use remus_math::det_hash::DetHashMap;
 
 use crate::coedge::CoedgeId;
 use crate::edge::EdgeId;
@@ -30,7 +31,7 @@ use crate::face::FaceId;
 
 /// Key identifying one pcurve use: which edge, on which face, traversed in
 /// which direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PCurveKey {
     /// The edge this pcurve belongs to.
     pub edge: EdgeId,
@@ -39,6 +40,21 @@ pub struct PCurveKey {
     /// The traversal orientation of this use relative to the edge's
     /// natural direction. Distinguishes the two branches of a seam edge.
     pub forward: bool,
+}
+
+/// Hashes the use as one packed word rather than three field writes.
+///
+/// Every face allocation indexes one key per boundary use, and the
+/// byte-wise registry hasher costs one step per written byte, so packing
+/// halves the hash work on the construction hot path. Equal keys pack to
+/// equal words, which is all `Hash` must guarantee; distinct keys may share
+/// a word (the map compares keys with `Eq`).
+impl std::hash::Hash for PCurveKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let edge = self.edge.index() as u64;
+        let face = self.face.index() as u64;
+        state.write_u64(((edge << 1) | u64::from(self.forward)) ^ face.rotate_left(32));
+    }
 }
 
 impl PCurveKey {
@@ -106,9 +122,16 @@ impl PCurve {
 
 /// Compatibility index from the historical per-use key to the authoritative
 /// coedge. Access goes through [`Topology`](crate::Topology)'s pcurve methods.
+///
+/// Every face allocation indexes one entry per boundary use, so the key hash
+/// sits on the construction hot path. The fixed-seed FNV map hashes these
+/// integer keys several times faster than the std SipHash map. No consumer
+/// depends on iteration order (queries sort, removals `retain`, and `Debug`
+/// renders sorted); the hasher is not DoS-resistant, which is fine for keys
+/// that are arena handles minted by this topology, never external input.
 #[derive(Default, Clone)]
 pub struct PCurveRegistry {
-    uses: HashMap<PCurveKey, CoedgeId>,
+    uses: DetHashMap<PCurveKey, CoedgeId>,
 }
 
 impl std::fmt::Debug for PCurveRegistry {
