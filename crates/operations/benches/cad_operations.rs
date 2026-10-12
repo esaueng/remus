@@ -317,16 +317,30 @@ fn bench_box_chamfer_all(c: &mut Criterion) {
     });
 }
 
-/// `box(20,20,20)` + fillet all edges r=1, flat-bevel engine.
+/// `box(20,20,20)` + fillet the four vertical edges r=1, flat-bevel engine.
+///
+/// The flat-bevel engine has no vertex blend, so it refuses any selection in
+/// which two edges meet at a vertex (the all-edge box fails its postcondition
+/// with open corners). The four vertical edges are pairwise disjoint and stay
+/// inside its supported cell.
 ///
 /// This is NOT the engine the `fillet` JS binding selects; see
 /// `bench_box_fillet_all_rolling_ball` for that one.
 fn bench_box_fillet_all(c: &mut Criterion) {
-    c.bench_function("box+fillet (bevel)", |b| {
+    c.bench_function("box+fillet (bevel, 4 vertical edges)", |b| {
         b.iter(|| {
             let mut topo = Topology::new();
             let solid = primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
-            let edges = collect_edges(&topo, solid);
+            let edges: Vec<_> = collect_edges(&topo, solid)
+                .into_iter()
+                .filter(|&edge| {
+                    let edge = topo.edge(edge).unwrap();
+                    let start = topo.vertex(edge.start()).unwrap().point();
+                    let end = topo.vertex(edge.end()).unwrap().point();
+                    (start.z() - end.z()).abs() > 1.0
+                })
+                .collect();
+            assert_eq!(edges.len(), 4);
             #[allow(deprecated)]
             black_box(fillet(&mut topo, solid, &edges, 1.0).unwrap());
         });

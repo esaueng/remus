@@ -29,10 +29,10 @@ pub mod wire_builder;
 
 pub use face_class::FaceClass;
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use remus_math::context::OperationContext;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 
 use remus_math::surfaces::CylindricalSurface;
@@ -90,10 +90,8 @@ fn log_source_face_partition(topo: &Topology, subs: &[SubFace], selected: &[bop:
     // only those whose pieces fail to tile them — the cheap way to find a
     // missing result face without guessing which source it came from.
     if want.trim() == "all" {
-        let chosen: std::collections::HashSet<FaceId> =
-            selected.iter().map(|s| s.face_id).collect();
-        let mut by_src: std::collections::HashMap<FaceId, (f64, usize, usize)> =
-            std::collections::HashMap::new();
+        let chosen: DetHashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
+        let mut by_src: DetHashMap<FaceId, (f64, usize, usize)> = DetHashMap::default();
         for sf in subs {
             let e = by_src.entry(sf.source_face).or_insert((0.0, 0, 0));
             e.0 += face_area_estimate(topo, sf.face_id);
@@ -136,7 +134,7 @@ fn log_source_face_partition(topo: &Topology, subs: &[SubFace], selected: &[bop:
     let Ok(want) = want.trim().parse::<usize>() else {
         return;
     };
-    let chosen: std::collections::HashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
+    let chosen: DetHashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
     let mut total = 0.0;
     let mut n = 0;
     let mut src_id: Option<FaceId> = None;
@@ -213,7 +211,7 @@ fn log_subfaces_in_box(
         return Ok(());
     }
     let (lo, hi) = ([v[0], v[2], v[4]], [v[1], v[3], v[5]]);
-    let chosen: std::collections::HashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
+    let chosen: DetHashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
     for sf in subs {
         let Ok(f) = topo.face(sf.face_id) else {
             continue;
@@ -337,7 +335,7 @@ pub struct Builder {
     /// result edges (Issue 12).
     edge_lineage: split_types::EdgeLineageLog,
     /// Map from face ID to its argument rank.
-    face_ranks: HashMap<FaceId, Rank>,
+    face_ranks: DetHashMap<FaceId, Rank>,
     /// Same-domain face pairs detected by `same_domain`.
     sd_pairs: Vec<same_domain::SameDomainPair>,
     /// Within-rank SD duplicates (boolean residue accumulated across
@@ -385,7 +383,7 @@ impl Builder {
             context: context.clone(),
             sub_faces: Vec::new(),
             edge_lineage: split_types::EdgeLineageLog::default(),
-            face_ranks: HashMap::new(),
+            face_ranks: DetHashMap::default(),
             sd_pairs: Vec::new(),
             sd_within_rank_dups: Vec::new(),
         }
@@ -536,7 +534,7 @@ impl Builder {
             });
         }
 
-        let mut pieces_by_source: HashMap<FaceId, usize> = HashMap::new();
+        let mut pieces_by_source: DetHashMap<FaceId, usize> = DetHashMap::default();
         let selected: Vec<bop::SelectedFace> = self
             .sub_faces
             .iter()
@@ -906,7 +904,7 @@ impl Builder {
         selected: &[bop::SelectedFace],
     ) -> Vec<assemble::CapPlane> {
         use remus_topology::face::FaceSurface;
-        let kept: std::collections::HashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
+        let kept: DetHashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
         let mut planes = Vec::new();
         for pair in &self.sd_pairs {
             if !pair.geometric_overlap {
@@ -1006,8 +1004,8 @@ impl Builder {
     /// (an internal void's face coplanar with an outer face) from within-shell
     /// boolean residue. A lookup failure just leaves faces unmapped, which
     /// keeps the historic dedup for them.
-    fn build_face_shell_map(&self) -> HashMap<FaceId, usize> {
-        let mut map = HashMap::new();
+    fn build_face_shell_map(&self) -> DetHashMap<FaceId, usize> {
+        let mut map = DetHashMap::default();
         let mut ordinal = 0usize;
         for sid in [self.solid_a, self.solid_b] {
             let Ok(solid) = self.topo.solid(sid) else {
@@ -1046,9 +1044,9 @@ impl Builder {
         // it to `sd_indices` would force it to "On" with no matching pair
         // record, so `apply_sd_selection` would never pick it up and the
         // face would silently drop out.
-        let sd_indices: std::collections::HashSet<usize> =
+        let sd_indices: DetHashSet<usize> =
             if self.sd_pairs.is_empty() && self.sd_within_rank_dups.is_empty() {
-                std::collections::HashSet::new()
+                DetHashSet::default()
             } else {
                 let cross = self.sd_pairs.iter().flat_map(|p| [p.idx_a, p.idx_b]);
                 let within = self.sd_within_rank_dups.iter().map(|d| d.duplicate);
@@ -1276,11 +1274,11 @@ impl Builder {
 /// Returns [`AlgoError`] if a coincident contact is detected, a sub-face cannot
 /// be sampled or classified, or assembly fails.
 #[allow(clippy::too_many_lines)]
-pub fn build_fuse_n<S: std::hash::BuildHasher>(
+pub fn build_fuse_n(
     mut topo: Topology,
     arena: GfaArena,
     sources: &[SolidId],
-    face_source: &HashMap<FaceId, usize, S>,
+    face_source: &DetHashMap<FaceId, usize>,
     candidate_pairs: Option<&[(usize, usize)]>,
     tol: Tolerance,
     context: &OperationContext,
@@ -1303,7 +1301,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     // Split every source face. Sections are face-relative, so a constant rank
     // is correct for all of them (see the doc comment).
     let edge_images = fill_images::fill_edge_images(&arena);
-    let all_a_ranks: HashMap<FaceId, Rank> = face_source.keys().map(|&f| (f, Rank::A)).collect();
+    let all_a_ranks: DetHashMap<FaceId, Rank> = face_source.keys().map(|&f| (f, Rank::A)).collect();
     let mut nway_lineage = split_types::EdgeLineageLog::default();
     let sub_faces = fill_images_faces::fill_images_faces(
         &mut topo,
@@ -1333,8 +1331,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     // representative (still verified against sources outside the group). The
     // remaining sub-faces are classified by inside/outside as usual.
     let sd = same_domain::detect_same_domain_fuse_n(&topo, &arena, &sub_faces, &sub_source, tol)?;
-    let keep_reprs: HashMap<usize, std::collections::HashSet<usize>> =
-        sd.keep_reprs.into_iter().collect();
+    let keep_reprs: DetHashMap<usize, DetHashSet<usize>> = sd.keep_reprs.into_iter().collect();
 
     // One ray-cast geometry per source, reused across every rival sub-face.
     let geoms: Vec<Option<classifier::RayCastGeoms>> = sources
@@ -1426,7 +1423,7 @@ fn orient_selected_fuse_analytic_holes(
     sub_faces: &[SubFace],
     selected: &[bop::SelectedFace],
 ) {
-    let mut processed = std::collections::HashSet::new();
+    let mut processed = DetHashSet::default();
 
     for selected_face in selected {
         if !processed.insert(selected_face.face_id) {

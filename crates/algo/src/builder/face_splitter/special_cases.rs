@@ -1,5 +1,6 @@
 //! Special topology handlers for face splitting edge cases.
 
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point2, Point3, Vec2};
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
@@ -716,7 +717,6 @@ fn sphere_loop_projected_area(
 /// same latitude are distinguished. Returns every traced loop (callers drop the
 /// outer face / lunes by winding).
 fn trace_region_loops(soup: &[OrientedPCurveEdge], tol: f64) -> Vec<Vec<OrientedPCurveEdge>> {
-    use std::collections::HashMap;
     use std::f64::consts::TAU;
 
     let q = |v: f64| -> i64 {
@@ -759,7 +759,7 @@ fn trace_region_loops(soup: &[OrientedPCurveEdge], tol: f64) -> Vec<Vec<Oriented
     let out_dir = |e: &OrientedPCurveEdge| -> f64 { edge_dir(e, true) };
     let in_dir = |e: &OrientedPCurveEdge| -> f64 { edge_dir(e, false) };
 
-    let mut outgoing: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut outgoing: DetHashMap<(i64, i64), Vec<usize>> = DetHashMap::default();
     for (i, e) in soup.iter().enumerate() {
         outgoing.entry(key(e.start_uv)).or_default().push(i);
     }
@@ -2943,11 +2943,11 @@ pub(super) fn split_face_with_internal_loops(
     // trace twice. Merge each such pair instead: the frame keeps ONE union
     // outline, and the removable disc is bounded by the loop pieces outside
     // the hole plus the hole pieces inside the loop.
-    let mut consumed_holes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut consumed_holes: DetHashSet<usize> = DetHashSet::default();
     let mut union_hole_by_loop: Vec<Option<Vec<OrientedPCurveEdge>>> = vec![None; loops.len()];
     // Pre-existing holes that lie ENTIRELY inside an internal loop, per loop.
     let mut nested_holes_by_loop: Vec<Vec<usize>> = vec![Vec::new(); loops.len()];
-    let mut nested_holes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut nested_holes: DetHashSet<usize> = DetHashSet::default();
     // Interior probe for a disc sub-face that owns nested holes (its centroid
     // would land in the hole, not on the surviving annulus).
     let mut nested_interior_by_loop: Vec<Option<Point3>> = vec![None; loops.len()];
@@ -4661,7 +4661,6 @@ pub(super) fn try_split_disk_by_chords(
 ) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     use remus_math::curves::Circle3D;
     use remus_math::curves2d::{Curve2D, Line2D};
-    use std::collections::{HashMap, HashSet};
     use std::f64::consts::{PI, TAU};
 
     use crate::builder::classify_2d::{sample_interior_point, signed_area_2d};
@@ -4763,8 +4762,8 @@ pub(super) fn try_split_disk_by_chords(
     let qs = 1.0 / tol.max(1e-12);
     let qkey =
         |p: Point2| -> (i64, i64) { ((p.x() * qs).round() as i64, (p.y() * qs).round() as i64) };
-    let mut vpos: HashMap<(i64, i64), Point2> = HashMap::new();
-    let reg = |p: Point2, m: &mut HashMap<(i64, i64), Point2>| -> (i64, i64) {
+    let mut vpos: DetHashMap<(i64, i64), Point2> = DetHashMap::default();
+    let reg = |p: Point2, m: &mut DetHashMap<(i64, i64), Point2>| -> (i64, i64) {
         let k = qkey(p);
         m.entry(k).or_insert(p);
         k
@@ -4891,7 +4890,7 @@ pub(super) fn try_split_disk_by_chords(
     // (< π): a crescent lens is always minor, while a semicircle/major-arc
     // partition (a diameter cut's half-discs, a corner bite's major remnant) is
     // a calibrated shape that carries its own interior vertices — left untouched.
-    let mut chord_pairs: HashSet<((i64, i64), (i64, i64))> = HashSet::new();
+    let mut chord_pairs: DetHashSet<((i64, i64), (i64, i64))> = DetHashSet::default();
     for s in &subs {
         if matches!(s.kind, Kind::Line) {
             chord_pairs.insert(if s.a <= s.b { (s.a, s.b) } else { (s.b, s.a) });
@@ -4961,7 +4960,7 @@ pub(super) fn try_split_disk_by_chords(
         vpos.get(&k)
             .is_some_and(|p| ((*p - cu).length() - r).abs() <= tol * 100.0)
     };
-    let mut degree: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut degree: DetHashMap<(i64, i64), usize> = DetHashMap::default();
     for s in &subs {
         *degree.entry(s.a).or_insert(0) += 1;
         *degree.entry(s.b).or_insert(0) += 1;
@@ -5017,7 +5016,7 @@ pub(super) fn try_split_disk_by_chords(
         }
     }
 
-    let mut out_at: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut out_at: DetHashMap<(i64, i64), Vec<usize>> = DetHashMap::default();
     for (hi, h) in halfs.iter().enumerate() {
         out_at.entry(h.from).or_default().push(hi);
     }
@@ -6175,7 +6174,7 @@ mod tests {
                 (p.z() * 1e5).round() as i64,
             )
         };
-        let mut pairs = std::collections::HashSet::new();
+        let mut pairs = remus_math::det_hash::DetHashSet::default();
         for e in &lens.outer_wire {
             let (a, b) = (q(e.start_3d), q(e.end_3d));
             let key = if a <= b { (a, b) } else { (b, a) };

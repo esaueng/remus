@@ -6,9 +6,9 @@
 //!
 //! Uses the minimum clockwise angle traversal algorithm for face splitting.
 
-use std::collections::HashMap;
 use std::f64::consts::TAU;
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point2;
 
 use super::split_types::OrientedPCurveEdge;
@@ -90,7 +90,7 @@ pub fn build_wire_loops_with_winding(
     let v_period = if v_periodic { Some(TAU) } else { None };
 
     // 1. Build vertex adjacency map.
-    let mut adj: HashMap<(i64, i64), Vec<VertexEntry>> = HashMap::new();
+    let mut adj: DetHashMap<(i64, i64), Vec<VertexEntry>> = DetHashMap::default();
     for (idx, edge) in edges.iter().enumerate() {
         let start_key = quantize_uv_periodic(edge.start_uv, tol, u_period, v_period);
         let end_key = quantize_uv_periodic(edge.end_uv, tol, u_period, v_period);
@@ -274,7 +274,7 @@ pub fn build_wire_loops_dcel(
     // fwd/rev pair); co-endpoint DISTINCT edges (the lens class) only pair
     // with each other if no same-source partner exists and both are free.
     let mut twin: Vec<Option<usize>> = vec![None; n_real];
-    let mut by_pair: HashMap<QuantizedPair, Vec<usize>> = HashMap::new();
+    let mut by_pair: DetHashMap<QuantizedPair, Vec<usize>> = DetHashMap::default();
     for (i, e) in edges.iter().enumerate() {
         by_pair
             .entry((key_of(e.start_uv), key_of(e.end_uv)))
@@ -323,7 +323,7 @@ pub fn build_wire_loops_dcel(
 
     // Per-node circular order of OUTGOING halves by departure angle (ties
     // broken by index for a strict, deterministic order).
-    let mut node_out: HashMap<(i64, i64), Vec<(f64, usize)>> = HashMap::new();
+    let mut node_out: DetHashMap<(i64, i64), Vec<(f64, usize)>> = DetHashMap::default();
     for (i, h) in halves.iter().enumerate() {
         let ang = edge_angle_at_vertex_periodic(h, true, u_period, v_period);
         node_out
@@ -484,17 +484,17 @@ pub fn remove_pendant_sections(
     let u_period = if u_periodic { Some(TAU) } else { None };
     let v_period = if v_periodic { Some(TAU) } else { None };
     let mut alive = vec![true; edges.len()];
-    let mut vertex_ids = HashMap::new();
-    let mut vertices: Vec<HashMap<Option<usize>, usize>> = Vec::new();
+    let mut vertex_ids = DetHashMap::default();
+    let mut vertices: Vec<DetHashMap<Option<usize>, usize>> = Vec::new();
     let mut edge_vertices = Vec::with_capacity(edges.len());
-    let mut source_edges: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut source_edges: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
 
     for (i, e) in edges.iter().enumerate() {
         let sk = quantize_uv_periodic(e.start_uv, tol, u_period, v_period);
         let ek = quantize_uv_periodic(e.end_uv, tol, u_period, v_period);
         let mut vertex_id = |key| {
             *vertex_ids.entry(key).or_insert_with(|| {
-                vertices.push(HashMap::new());
+                vertices.push(DetHashMap::default());
                 vertices.len() - 1
             })
         };
@@ -510,7 +510,7 @@ pub fn remove_pendant_sections(
         }
     }
 
-    let sole_section = |counts: &HashMap<Option<usize>, usize>| {
+    let sole_section = |counts: &DetHashMap<Option<usize>, usize>| {
         (counts.len() == 1)
             .then(|| counts.keys().next().copied().flatten())
             .flatten()

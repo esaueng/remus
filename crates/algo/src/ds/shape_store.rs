@@ -5,7 +5,7 @@
 //! back to the caller's Topology. This eliminates vertex/edge identity
 //! conflicts between input solids and the GFA result.
 
-use std::collections::HashMap;
+use remus_math::det_hash::{DetHashMap, DetHashSet, DetState};
 
 use remus_topology::edge::{Edge, EdgeId};
 use remus_topology::face::{Face, FaceId};
@@ -31,11 +31,11 @@ pub struct GfaShapeStore {
     pub solid_b: SolidId,
     /// Maps a store-local input face index back to the caller's original face
     /// index, for both operands — shape-evolution provenance across the copy.
-    pub input_face_to_caller: HashMap<usize, usize>,
+    pub input_face_to_caller: DetHashMap<usize, usize>,
     /// Store-local input edge index → caller edge index (Issue 12).
-    pub input_edge_to_caller: HashMap<usize, usize>,
+    pub input_edge_to_caller: DetHashMap<usize, usize>,
     /// Store-local input vertex index → caller vertex index (Issue 12).
-    pub input_vertex_to_caller: HashMap<usize, usize>,
+    pub input_vertex_to_caller: DetHashMap<usize, usize>,
 }
 
 impl GfaShapeStore {
@@ -52,9 +52,9 @@ impl GfaShapeStore {
 
         // Invert the caller-index -> store-entity maps into store-index ->
         // caller-index so a store input entity resolves to its caller origin.
-        let mut input_face_to_caller = HashMap::new();
-        let mut input_edge_to_caller = HashMap::new();
-        let mut input_vertex_to_caller = HashMap::new();
+        let mut input_face_to_caller = DetHashMap::default();
+        let mut input_edge_to_caller = DetHashMap::default();
+        let mut input_vertex_to_caller = DetHashMap::default();
         for maps in [maps_a, maps_b] {
             for (caller_idx, store_face) in maps.faces {
                 input_face_to_caller.insert(store_face.index(), caller_idx);
@@ -104,7 +104,7 @@ impl GfaShapeStore {
         &self,
         target: &mut Topology,
         solid_id: SolidId,
-    ) -> Result<(SolidId, HashMap<usize, FaceId>), AlgoError> {
+    ) -> Result<(SolidId, DetHashMap<usize, FaceId>), AlgoError> {
         deep_copy_solid(&self.topo, target, solid_id)
     }
 
@@ -137,7 +137,7 @@ pub struct GfaShapeStoreN {
     pub sources: Vec<SolidId>,
     /// Store-local input face → the source index (position in `sources`) it
     /// belongs to. The basis for per-sub-face source tagging downstream.
-    pub face_source: HashMap<FaceId, usize>,
+    pub face_source: DetHashMap<FaceId, usize>,
 }
 
 impl GfaShapeStoreN {
@@ -155,7 +155,7 @@ impl GfaShapeStoreN {
 
         let mut topo = Topology::default();
         let mut sources = Vec::with_capacity(origs.len());
-        let mut face_source = HashMap::new();
+        let mut face_source = DetHashMap::default();
 
         for (src_idx, &orig) in origs.iter().enumerate() {
             let (solid, map) = deep_copy_solid(source, &mut topo, orig)?;
@@ -196,18 +196,18 @@ impl GfaShapeStoreN {
 /// Entity maps produced by a deep copy: source index → new id, per kind.
 pub struct DeepCopyMaps {
     /// Source face index → copied face.
-    pub faces: HashMap<usize, FaceId>,
+    pub faces: DetHashMap<usize, FaceId>,
     /// Source edge index → copied edge.
-    pub edges: HashMap<usize, remus_topology::EdgeId>,
+    pub edges: DetHashMap<usize, remus_topology::EdgeId>,
     /// Source vertex index → copied vertex.
-    pub vertices: HashMap<usize, remus_topology::VertexId>,
+    pub vertices: DetHashMap<usize, remus_topology::VertexId>,
 }
 
 pub fn deep_copy_solid(
     source: &Topology,
     target: &mut Topology,
     solid_id: SolidId,
-) -> Result<(SolidId, HashMap<usize, FaceId>), AlgoError> {
+) -> Result<(SolidId, DetHashMap<usize, FaceId>), AlgoError> {
     let (solid, maps) = deep_copy_solid_with_maps(source, target, solid_id)?;
     Ok((solid, maps.faces))
 }
@@ -309,16 +309,16 @@ fn deep_copy_shells_with_maps(
     let mut vertex_snaps: Vec<VertexSnap> = Vec::new();
     let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
     let mut wire_snaps: Vec<WireSnap> = Vec::new();
-    let mut shell_snaps: Vec<ShellSnap> = Vec::new();
+    let mut shell_snaps: Vec<ShellSnap> = Vec::with_capacity(all_shell_ids.len());
     let mut coedge_authority_snaps = Vec::new();
 
-    let mut seen_vertices = std::collections::HashSet::new();
-    let mut seen_edges = std::collections::HashSet::new();
-    let mut seen_wires = std::collections::HashSet::new();
+    let mut seen_vertices = DetHashSet::default();
+    let mut seen_edges = DetHashSet::default();
+    let mut seen_wires = DetHashSet::default();
 
     for &shell_id in all_shell_ids {
         let shell = source.shell(shell_id)?;
-        let mut face_snaps = Vec::new();
+        let mut face_snaps = Vec::with_capacity(shell.faces().len());
 
         for &face_id in shell.faces() {
             let face = source.face(face_id)?;
@@ -346,7 +346,7 @@ fn deep_copy_shells_with_maps(
                     continue;
                 }
                 let wire = source.wire(wire_id)?;
-                let mut edge_refs = Vec::new();
+                let mut edge_refs = Vec::with_capacity(wire.edges().len());
 
                 for oe in wire.edges() {
                     let edge_idx = oe.edge().index();
@@ -402,13 +402,15 @@ fn deep_copy_shells_with_maps(
 
     // ── Allocate phase ──────────────────────────────────────────────
 
-    let mut vertex_map: HashMap<usize, VertexId> = HashMap::new();
+    let mut vertex_map: DetHashMap<usize, VertexId> =
+        DetHashMap::with_capacity_and_hasher(vertex_snaps.len(), DetState);
     for vsnap in &vertex_snaps {
         let new_vid = target.add_vertex(Vertex::new(vsnap.point, vsnap.tol));
         vertex_map.insert(vsnap.old_index, new_vid);
     }
 
-    let mut edge_map: HashMap<usize, EdgeId> = HashMap::new();
+    let mut edge_map: DetHashMap<usize, EdgeId> =
+        DetHashMap::with_capacity_and_hasher(edge_snaps.len(), DetState);
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
@@ -419,7 +421,8 @@ fn deep_copy_shells_with_maps(
         edge_map.insert(esnap.old_index, new_eid);
     }
 
-    let mut wire_map: HashMap<usize, WireId> = HashMap::new();
+    let mut wire_map: DetHashMap<usize, WireId> =
+        DetHashMap::with_capacity_and_hasher(wire_snaps.len(), DetState);
     for wsnap in &wire_snaps {
         let new_edges: Vec<OrientedEdge> = wsnap
             .edges
@@ -430,11 +433,13 @@ fn deep_copy_shells_with_maps(
         wire_map.insert(wsnap.old_index, target.add_wire(new_wire));
     }
 
-    let mut new_shell_ids = Vec::new();
+    let mut new_shell_ids = Vec::with_capacity(shell_snaps.len());
     // Provenance: source face index -> the new face it was copied to.
-    let mut face_map: HashMap<usize, FaceId> = HashMap::new();
+    let face_count = shell_snaps.iter().map(|s| s.faces.len()).sum();
+    let mut face_map: DetHashMap<usize, FaceId> =
+        DetHashMap::with_capacity_and_hasher(face_count, DetState);
     for ssnap in &shell_snaps {
-        let mut new_face_ids = Vec::new();
+        let mut new_face_ids = Vec::with_capacity(ssnap.faces.len());
         for fsnap in &ssnap.faces {
             let new_outer = wire_map[&fsnap.outer_wire_index];
             let new_inner: Vec<WireId> = fsnap
