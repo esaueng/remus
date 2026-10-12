@@ -106,7 +106,16 @@ pub fn compute_pcurve_on_surface_in_domain(
             let dir = Vec2::new(p1.x() - p0.x(), p1.y() - p0.y());
             return Ok(Curve2D::Line(make_line2d_safe(p0, dir)));
         }
-        // Curved edge on plane: sample and project via PlaneFrame below.
+        // Curved edge on plane: sample and project via PlaneFrame below. An
+        // arc's pcurve depends only on the curve, endpoints, domain, plane
+        // and frame, so the thread's memo (when enabled) answers a repeat.
+        if let Some(frame) = frame
+            && let Some(key) = planar_arc_key(curve_3d, start, end, domain, surface, frame)
+        {
+            return crate::pcurve_memo::memoized(&key, || {
+                planar_curved_pcurve(curve_3d, start, end, domain, surface, frame)
+            });
+        }
     }
 
     // For plane surfaces with curved edges, use PlaneFrame for projection.
@@ -122,6 +131,107 @@ pub fn compute_pcurve_on_surface_in_domain(
     } else {
         sample_edge_to_uv(curve_3d, start, end, domain, surface)?
     };
+    pcurve_through_uv_samples(&uv_pts, surface)
+}
+
+/// A curved planar edge's pcurve through the frame: the general path's plane
+/// branch, factored out so [`crate::pcurve_memo`] stores exactly what it
+/// computes.
+fn planar_curved_pcurve(
+    curve_3d: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    domain: (f64, f64),
+    surface: &FaceSurface,
+    frame: &PlaneFrame,
+) -> Result<Curve2D, AlgoError> {
+    let uv_pts = sample_edge_to_uv_via_frame(curve_3d, start, end, domain, surface, frame)?;
+    pcurve_through_uv_samples(&uv_pts, surface)
+}
+
+/// The exact bits a circle or ellipse pcurve on a plane depends on, or
+/// `None` for any other curve or surface.
+fn planar_arc_key(
+    curve_3d: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    domain: (f64, f64),
+    surface: &FaceSurface,
+    frame: &PlaneFrame,
+) -> Option<crate::pcurve_memo::PcurveKey> {
+    let FaceSurface::Plane { normal, d } = surface else {
+        return None;
+    };
+    let (kind, center, curve_normal, radii, u_axis, v_axis) = match curve_3d {
+        EdgeCurve::Circle(c) => (
+            1.0,
+            c.center(),
+            c.normal(),
+            (c.radius(), c.radius()),
+            c.u_axis(),
+            c.v_axis(),
+        ),
+        EdgeCurve::Ellipse(e) => (
+            2.0,
+            e.center(),
+            e.normal(),
+            (e.semi_major(), e.semi_minor()),
+            e.u_axis(),
+            e.v_axis(),
+        ),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return None,
+    };
+    let (origin, fu, fv) = (frame.origin(), frame.u_axis(), frame.v_axis());
+    let words = [
+        kind,
+        center.x(),
+        center.y(),
+        center.z(),
+        curve_normal.x(),
+        curve_normal.y(),
+        curve_normal.z(),
+        radii.0,
+        radii.1,
+        u_axis.x(),
+        u_axis.y(),
+        u_axis.z(),
+        v_axis.x(),
+        v_axis.y(),
+        v_axis.z(),
+        start.x(),
+        start.y(),
+        start.z(),
+        end.x(),
+        end.y(),
+        end.z(),
+        domain.0,
+        domain.1,
+        normal.x(),
+        normal.y(),
+        normal.z(),
+        *d,
+        origin.x(),
+        origin.y(),
+        origin.z(),
+        fu.x(),
+        fu.y(),
+        fu.z(),
+        fv.x(),
+        fv.y(),
+        fv.z(),
+    ];
+    Some(words.map(f64::to_bits))
+}
+
+/// The pcurve through `uv_pts`: a `Line2D` when the samples are collinear
+/// and open, otherwise an interpolating NURBS.
+fn pcurve_through_uv_samples(
+    uv_pts: &[Point2],
+    surface: &FaceSurface,
+) -> Result<Curve2D, AlgoError> {
     if uv_pts.len() < 2 {
         return Err(projection_failure(surface, "insufficient_curve_samples"));
     }
@@ -132,7 +242,7 @@ pub fn compute_pcurve_on_surface_in_domain(
     // origin + unit_dir * t), not [0,1] mapping. For curves that need
     // evaluate(0)→start and evaluate(1)→end, use NURBS interpolation
     // instead, which naturally maps [0,1] to the full extent.
-    if is_collinear_2d(&uv_pts, 1e-6) {
+    if is_collinear_2d(uv_pts, 1e-6) {
         let p0 = uv_pts[0];
         let pn = uv_pts[uv_pts.len() - 1];
         let dx = pn.x() - p0.x();
@@ -149,7 +259,7 @@ pub fn compute_pcurve_on_surface_in_domain(
     }
 
     // Fit a NURBS curve through the UV sample points.
-    Ok(fit_nurbs2d_through_points(&uv_pts))
+    Ok(fit_nurbs2d_through_points(uv_pts))
 }
 
 /// Project a 3D point onto a surface's parameter space.

@@ -46,12 +46,69 @@ pub(super) fn is_inside_any_hole(pt: &Point2, inner_wires: &[Vec<OrientedPCurveE
             }
             continue;
         }
+        // A point outside the box of every sample cannot be inside the
+        // sampled polygon: skip the sampling. A drilled plate's top tests each
+        // query against every round hole, nearly all of them far away.
+        if sampled_loop_box_excludes(hole, *pt) {
+            continue;
+        }
+        crate::perf::bump_hole_containment_sampling();
         let hole_pts = sample_wire_loop_uv(hole);
         if hole_pts.len() >= 3 && super::super::classify_2d::point_in_polygon_2d(*pt, &hole_pts) {
             return true;
         }
     }
     false
+}
+
+/// Whether `pt` lies outside a box holding every point
+/// [`sample_wire_loop_uv`] takes from `hole`, by more than a rounding slack.
+///
+/// The sampler takes `start_uv` of a line pcurve, eight evaluations of a
+/// NURBS pcurve (each a positive-weight average of control points, or the
+/// first control point), and chord points between `start_uv` and `end_uv` of
+/// a circle or ellipse pcurve. A NURBS with a non-positive weight gets no
+/// box (`false`). Outside the polygon's box, the even-odd crossing test of
+/// `point_in_polygon_2d` crosses an even number of edges, or none, so it
+/// returns `false` there: skipping the sampling changes no answer.
+fn sampled_loop_box_excludes(hole: &[OrientedPCurveEdge], pt: Point2) -> bool {
+    let (mut lo, mut hi) = (
+        [f64::INFINITY, f64::INFINITY],
+        [f64::NEG_INFINITY, f64::NEG_INFINITY],
+    );
+    let mut include = |p: Point2| {
+        lo = [lo[0].min(p.x()), lo[1].min(p.y())];
+        hi = [hi[0].max(p.x()), hi[1].max(p.y())];
+    };
+    for edge in hole {
+        match &edge.pcurve {
+            Curve2D::Line(_) => include(edge.start_uv),
+            Curve2D::Nurbs(nurbs) => {
+                if !nurbs.weights().iter().all(|&w| w > 0.0) {
+                    return false;
+                }
+                include(edge.start_uv);
+                for &p in nurbs.control_points() {
+                    include(p);
+                }
+            }
+            Curve2D::Circle(_) | Curve2D::Ellipse(_) => {
+                include(edge.start_uv);
+                include(edge.end_uv);
+            }
+        }
+    }
+    let scale = 1.0
+        + lo[0]
+            .abs()
+            .max(lo[1].abs())
+            .max(hi[0].abs())
+            .max(hi[1].abs());
+    let slack = 1e-9 * scale;
+    pt.x() < lo[0] - slack
+        || pt.x() > hi[0] + slack
+        || pt.y() < lo[1] - slack
+        || pt.y() > hi[1] + slack
 }
 
 /// Find a UV point inside the outer wire but outside all holes.
@@ -183,3 +240,6 @@ pub(super) fn find_point_outside_holes(
         outer_pts.iter().map(|p| p.y()).sum::<f64>() / n,
     )
 }
+
+#[cfg(test)]
+mod gate_oracle_tests;

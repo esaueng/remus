@@ -54,7 +54,9 @@
 //! drilled plate's top, stage 3 of `docs/performance/perf-local-boolean.md`):
 //! `junction_curve_scans`, the curved boundary edges the junction snap
 //! samples (a box gate skips those out of reach), and `face_extent_builds`,
-//! the face extents built (once per face per pass, not per pair).
+//! the face extents built (once per face per pass, not per pair). A third,
+//! `hole_containment_samplings`, counts the hole loops the face splitter's
+//! containment test samples (a box gate skips those a query lies outside).
 //!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
@@ -86,6 +88,7 @@ std::thread_local! {
     static EF_ANALYTIC_PAIRS_GATED: Cell<u64> = const { Cell::new(0) };
     static JUNCTION_CURVE_SCANS: Cell<u64> = const { Cell::new(0) };
     static FACE_EXTENT_BUILDS: Cell<u64> = const { Cell::new(0) };
+    static HOLE_CONTAINMENT_SAMPLINGS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -318,6 +321,14 @@ pub(crate) fn bump_face_extent_build() {
     increment(&FACE_EXTENT_BUILDS);
 }
 
+/// Count one hole loop the face splitter's containment test sampled (one
+/// that survived its box gate). Crate-internal.
+#[inline]
+pub(crate) fn bump_hole_containment_sampling() {
+    #[cfg(feature = "perf-counters")]
+    increment(&HOLE_CONTAINMENT_SAMPLINGS);
+}
+
 /// Count one winding-loop cut projected onto a closed section loop (one
 /// that survived the loop's reach-box gate). Crate-internal.
 #[inline]
@@ -375,6 +386,8 @@ pub struct PerfSnapshot {
     pub junction_curve_scans: u64,
     /// Phase-FF face extents built from face boundaries.
     pub face_extent_builds: u64,
+    /// Hole loops the face splitter's containment test sampled.
+    pub hole_containment_samplings: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -396,6 +409,7 @@ pub fn reset() {
     WINDING_CUT_PROJECTIONS.set(0);
     JUNCTION_CURVE_SCANS.set(0);
     FACE_EXTENT_BUILDS.set(0);
+    HOLE_CONTAINMENT_SAMPLINGS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -420,6 +434,7 @@ pub fn snapshot() -> PerfSnapshot {
         winding_cut_projections: WINDING_CUT_PROJECTIONS.get(),
         junction_curve_scans: JUNCTION_CURVE_SCANS.get(),
         face_extent_builds: FACE_EXTENT_BUILDS.get(),
+        hole_containment_samplings: HOLE_CONTAINMENT_SAMPLINGS.get(),
     }
 }
 

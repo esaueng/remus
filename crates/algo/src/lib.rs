@@ -21,6 +21,7 @@ pub mod bop;
 pub mod diagnostic;
 pub mod error;
 pub mod gfa;
+pub mod pcurve_memo;
 pub mod perf;
 
 mod builder;
