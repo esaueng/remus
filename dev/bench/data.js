@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791783084920,
+  "lastUpdate": 1791783695195,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -91759,6 +91759,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 83916,
             "range": "± 372",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8c8dd90b8aadf029f5ca2decedfeb46e4efaa05e",
+          "message": "fix(algo): read both circle-use chart angles from their vertices (#996)\n\nThe provenance plane arrangement took a circle use's start angle from its\nstart vertex but derived the end as `start + span` (and, across the\nbranch cut, `start ± 2π ∓ 2π`). That sum rounds to the ULP of the larger\noperand, so the end lands up to a few ULPs off the angle the next use\ncomputes for the same vertex. When it overshoots, two arcs of one carrier\noverlap and the core refuses with AmbiguousOverlap, declining the face.\nWhether it overshoots depends on the platform libm's atan2/sin/cos last\nbits: off_axis_full_circle_emits_one_native_edge declined on\naarch64-apple-darwin (atan2 one ULP below glibc and wasm32 for pi/4) and\npassed on Linux only because glibc's pi/4 has three trailing zero bits.\nAcross start angles the defect hit every platform: about a third of\nclosed rims and 72-88% of rims split into two or three arcs declined.\n\nEvery use end now takes its chart angle from its own vertex (a closed use\nreturns to its start angle exactly); the trim decides only the sense, and\nan arc-length gate checks the trim sweeps the arc the endpoints select,\npinning the turn count. A closed rim keeps its carried trim as the native\nanchor when it already starts on the rim vertex instead of re-deriving it\nthrough atan2. Angles within half an ULP of 2pi of the cut read as the\ncut on both sides, so a vertex at native pi (sin(pi) = 1.2e-16) no longer\nsplits off a sub-resolution piece that the core refused as an internal\nInvalidBoundary error; any remaining sub-resolution piece declines.\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T00:27:13-05:00",
+          "tree_id": "14d63d989037ae2f5572f4a05fa664f8d5ea866f",
+          "url": "https://github.com/esaueng/remus/commit/8c8dd90b8aadf029f5ca2decedfeb46e4efaa05e"
+        },
+        "date": 1791783692492,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1198597,
+            "range": "± 7050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1267540,
+            "range": "± 32253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26883,
+            "range": "± 363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7351293,
+            "range": "± 18611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7330172,
+            "range": "± 17547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7178041,
+            "range": "± 15798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 692763,
+            "range": "± 2698",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3016631,
+            "range": "± 61087",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31384216,
+            "range": "± 248131",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 41,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 235,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 864,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 394,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 210,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 566,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 734,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3490,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 492286,
+            "range": "± 1175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2938102,
+            "range": "± 11596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 144459,
+            "range": "± 244",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 439969,
+            "range": "± 2343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 360358,
+            "range": "± 346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 66238,
+            "range": "± 1177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 926603,
+            "range": "± 5875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10724542,
+            "range": "± 45675",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 604009,
+            "range": "± 983",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1192960,
+            "range": "± 2503",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 81888,
+            "range": "± 1745",
             "unit": "ns/iter"
           }
         ]
