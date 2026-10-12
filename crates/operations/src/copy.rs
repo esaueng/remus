@@ -660,6 +660,9 @@ fn materialize_copy(
 /// copy of the finished solid would. Inner shells are copied as usual. The
 /// source faces' coedge authority is restored as for a plain copy; spliced
 /// uses start without stored pcurves.
+///
+/// A spliced copy stands in for a boolean result, so like the GFA's results
+/// it carries no solid or face attributes.
 #[derive(Debug, Default)]
 pub(crate) struct Splice {
     /// New vertices: `(point, tolerance)`.
@@ -764,7 +767,7 @@ fn build_spliced_copy_plan(
         authority: Vec::new(),
         authority_edges: Vec::new(),
         edge_ordinals: DetHashMap::default(),
-        solid_attributes: source.attributes().solid(solid_id).cloned(),
+        solid_attributes: None,
     };
     let mut ordinals = SpliceOrdinals {
         vertices: vec![None; splice.vertices.len()],
@@ -833,7 +836,7 @@ fn build_spliced_copy_plan(
                     inner,
                     surface: face.surface().clone(),
                     reversed: face.is_reversed(),
-                    attributes: source.attributes().face(face_id).cloned(),
+                    attributes: None,
                     authority: authority_start..plan.authority.len(),
                 });
             }
@@ -904,7 +907,7 @@ fn build_spliced_copy_plan(
                 inner,
                 surface: face.surface().clone(),
                 reversed: face.is_reversed(),
-                attributes: source.attributes().face(face_id).cloned(),
+                attributes: None,
                 authority: authority_start..plan.authority.len(),
             });
         }
