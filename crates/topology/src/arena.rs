@@ -147,6 +147,19 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Retires every live slot at index `start` or above, keeping each
+    /// value as an inaccessible tombstone: the inverse of every allocation
+    /// made since the slot count was `start`. Future allocations still
+    /// append after the retired slots, so no index is ever reissued.
+    pub(crate) fn retire_from(&mut self, start: usize) {
+        if let Some(tail) = self.live.get_mut(start..) {
+            for is_live in tail.iter_mut().filter(|is_live| **is_live) {
+                *is_live = false;
+                self.live_len -= 1;
+            }
+        }
+    }
+
     /// Retires an entry without reclaiming or reusing its arena slot.
     ///
     /// Returns `true` when `id` named a live entry and was retired. Returns
@@ -267,30 +280,21 @@ impl<T> Arena<T> {
 }
 
 impl<T: Clone> Arena<T> {
-    /// Rewinds one slot to its pre-scope state without ever reusing it.
+    /// Rewinds one slot to its pre-scope value without ever reusing it:
+    /// writes `value` back and revives the slot.
     ///
-    /// `Some(value)` writes the value back and revives the slot; `None`
-    /// retires the slot, keeping its post-scope value as an inaccessible
-    /// tombstone so a stale handle can never alias a later entity.
     /// Out-of-range indices are silently ignored (unreachable through the
     /// transaction API, which only records slots it has seen).
-    pub(crate) fn rewind_slot(&mut self, index: usize, value: Option<T>) {
+    pub(crate) fn rewind_slot(&mut self, index: usize, value: T) {
         let Some(is_live) = self.live.get_mut(index) else {
             return;
         };
-        if let Some(value) = value {
-            if !*is_live {
-                self.live_len += 1;
-            }
-            *is_live = true;
-            if let Some(slot) = self.items.get_mut(index) {
-                *slot = value;
-            }
-        } else {
-            if *is_live {
-                self.live_len -= 1;
-            }
-            *is_live = false;
+        if !*is_live {
+            self.live_len += 1;
+        }
+        *is_live = true;
+        if let Some(slot) = self.items.get_mut(index) {
+            *slot = value;
         }
     }
 
@@ -444,24 +448,32 @@ mod tests {
 
         // Overwrite rewind: value and liveness come back.
         arena.retire(victim);
-        arena.rewind_slot(victim.index(), Some("victim".to_owned()));
+        arena.rewind_slot(victim.index(), "victim".to_owned());
         assert_eq!(arena.get(victim).map(String::as_str), Some("victim"));
         assert_eq!(arena.len(), 2);
 
-        // Allocation rewind: the slot retires as a tombstone holding its
-        // post-scope value, and the index is never reissued.
+        // Allocation rewind: every slot from the mark retires as a tombstone
+        // holding its post-scope value, and no index is ever reissued.
+        let mark = arena.slot_len();
         let staged = arena.alloc("staged".to_owned());
-        arena.rewind_slot(staged.index(), None);
+        let dropped = arena.alloc("dropped".to_owned());
+        arena.retire(dropped);
+        arena.retire_from(mark);
         assert!(arena.get(staged).is_none());
         assert!(arena.id_from_index(staged.index()).is_none());
-        assert_eq!(arena.len(), 2);
+        assert!(arena.get(dropped).is_none());
+        assert_eq!(arena.len(), 2, "already-dead slots are not counted twice");
+        assert_eq!(arena.slot_len(), mark + 2, "tombstones stay allocated");
         let fresh = arena.alloc("fresh".to_owned());
-        assert!(fresh.index() > staged.index());
+        assert!(fresh.index() > dropped.index());
 
-        // Out-of-range rewind is a silent no-op.
-        arena.rewind_slot(9999, Some("ghost".to_owned()));
+        // Out-of-range rewinds are silent no-ops.
+        arena.rewind_slot(9999, "ghost".to_owned());
+        arena.retire_from(9999);
         assert_eq!(arena.len(), 3);
         assert_eq!(arena.get(keep).map(String::as_str), Some("keep"));
+        assert_eq!(arena.get(victim).map(String::as_str), Some("victim"));
+        assert_eq!(arena.get(fresh).map(String::as_str), Some("fresh"));
     }
 
     #[test]

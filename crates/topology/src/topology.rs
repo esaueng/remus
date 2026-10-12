@@ -16,7 +16,7 @@ use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
 use crate::face_loop::{Loop, LoopId};
 use crate::journal::{EntityKey, EvolutionDraft, Journal, OpId, PendingOp};
-use crate::pcurve::{PCurve, PCurveRegistry};
+use crate::pcurve::{PCurve, PCurveKey, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
 use crate::vertex::{Vertex, VertexId};
@@ -30,7 +30,7 @@ use crate::{DeleteSolidError, TopologyError};
 #[path = "undo_log.rs"]
 pub(crate) mod undo_log;
 
-use undo_log::{ArenaTag, UndoBase, UndoLog};
+use undo_log::{UndoBase, UndoLog};
 
 #[path = "memory.rs"]
 mod memory;
@@ -352,9 +352,10 @@ macro_rules! arena_get {
 /// Usage: `arena_get_mut!(method_name, arena_field, EntityType, IdType, ErrorVariant, record_method)`
 ///
 /// The record method clones the live value into the undo log (when scopes
-/// are active) and refuses pre-existing slots under an armed append-only
-/// guard — always before the exclusive reference escapes, so no write
-/// through the returned reference can bypass rollback tracking.
+/// are active and the slot predates the innermost one) and refuses
+/// pre-existing slots under an armed append-only guard — always before the
+/// exclusive reference escapes, so no write through the returned reference
+/// can bypass rollback tracking.
 ///
 /// Counts as a model mutation for journal gap detection (see
 /// [`Topology::journal_begin`]), even if nothing is written.
@@ -385,9 +386,9 @@ macro_rules! arena_get_mut {
 /// Generates allocation, read-only arena access, count, and index
 /// reconstruction methods for a single entity type.
 ///
-/// The allocation records `(arena, index)` in the undo log when scopes are
-/// active; allocations always append above the high-water mark, so they
-/// never trip the append-only guard.
+/// Allocations write nothing to the undo log: they append above every live
+/// scope's slot marks, which a rewind retires wholesale, and so they never
+/// trip the append-only guard either.
 macro_rules! arena_api {
     (
         add = $add:ident,
@@ -396,16 +397,13 @@ macro_rules! arena_api {
         count = $count:ident,
         id_from_index = $id_from_index:ident,
         T = $T:ty,
-        Id = $Id:ty,
-        tag = $tag:expr
+        Id = $Id:ty
     ) => {
         /// Allocates a new entity in the arena and returns its typed handle.
         pub fn $add(&mut self, value: $T) -> $Id {
             self.mutation_ticks = self.mutation_ticks.saturating_add(1);
             self.bump_cache_generation();
-            let id = self.$arena.alloc(value);
-            self.record_alloc($tag, id.index());
-            id
+            self.$arena.alloc(value)
         }
 
         /// Returns a shared reference to the arena for iteration and queries.
@@ -1175,8 +1173,7 @@ impl Topology {
         count = num_vertices,
         id_from_index = vertex_id_from_index,
         T = Vertex,
-        Id = VertexId,
-        tag = ArenaTag::Vertex
+        Id = VertexId
     );
 
     arena_api!(
@@ -1186,8 +1183,7 @@ impl Topology {
         count = num_edges,
         id_from_index = edge_id_from_index,
         T = Edge,
-        Id = EdgeId,
-        tag = ArenaTag::Edge
+        Id = EdgeId
     );
 
     arena_api!(
@@ -1197,8 +1193,7 @@ impl Topology {
         count = num_wires,
         id_from_index = wire_id_from_index,
         T = Wire,
-        Id = WireId,
-        tag = ArenaTag::Wire
+        Id = WireId
     );
 
     /// Allocates a face and immediately promotes its valid wire boundary to
@@ -1211,25 +1206,91 @@ impl Topology {
     /// are installed and strict consumers return the corresponding not-found
     /// error when they inspect the boundary.
     pub fn add_face(&mut self, mut value: Face) -> FaceId {
-        let mut wire_ids = vec![value.outer_wire()];
-        wire_ids.extend(value.inner_wires().iter().copied());
-        let specs = self.boundary_loop_specs(&wire_ids, None);
+        let resolves = self.face_boundary_resolves(&value);
         // A cloned Face is a construction specification, not permission to
         // share another face's owned Loop handles.
         value.replace_boundary_loops(Vec::new());
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         self.bump_cache_generation();
         let face_id = self.faces.alloc(value);
-        self.record_alloc(ArenaTag::Face, face_id.index());
-        if let Ok(specs) = specs {
+        if resolves {
             // Every touched loop, coedge, face, and index key is freshly
-            // allocated above and no authority is replaced, so this fails
-            // only for a boundary using one (edge, orientation) twice over
-            // a pre-existing edge: an armed append-only guard refuses the
+            // allocated and no authority is replaced, so this fails only for
+            // a boundary using one (edge, orientation) twice over a
+            // pre-existing edge: an armed append-only guard refuses the
             // overwrite and its tripped scope retries on the full path.
-            let _ = self.install_face_loop_specs_carrying(face_id, specs, HashMap::new(), false);
+            let _ = self.install_fresh_face_loops(face_id);
         }
         face_id
+    }
+
+    /// Whether every boundary wire of `face`, and every edge those wires
+    /// use, resolves: the condition under which [`Self::add_face`] derives
+    /// loops (the checks [`Self::boundary_loop_specs`] makes, without
+    /// copying the wires).
+    fn face_boundary_resolves(&self, face: &Face) -> bool {
+        std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .all(|wire_id| {
+                self.wires.get(wire_id).is_some_and(|wire| {
+                    wire.edges()
+                        .iter()
+                        .all(|oriented| self.edges.get(oriented.edge()).is_some())
+                })
+            })
+    }
+
+    /// [`Self::install_face_loop_specs_carrying`] for a face [`Self::add_face`]
+    /// allocated just now, carrying nothing and replacing nothing.
+    ///
+    /// Reads the boundary straight from the face's wires instead of from
+    /// copied specs, and writes the fresh loops and face without overwrite
+    /// records: both slots were allocated by this call, above every live
+    /// scope's slot mark, so [`UndoLog::keeps_slot_record`] would skip them
+    /// anyway (and an armed append-only guard never refuses a fresh slot).
+    /// Allocation, index, and guard traffic is otherwise identical, in the
+    /// same order, including the early return on a refused index write.
+    fn install_fresh_face_loops(&mut self, face_id: FaceId) -> Result<(), TopologyError> {
+        self.bump_cache_generation();
+        let Self {
+            faces,
+            wires,
+            loops,
+            coedges,
+            pcurves,
+            undo,
+            ..
+        } = self;
+        let Some(face) = faces.get(face_id) else {
+            return Err(TopologyError::FaceNotFound(face_id));
+        };
+        let mut new_loops = Vec::with_capacity(1 + face.inner_wires().len());
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            let wire = wires
+                .get(wire_id)
+                .ok_or(TopologyError::WireNotFound(wire_id))?;
+            let loop_id = loops.alloc(Loop::new(face_id, Vec::new(), wire.is_closed()));
+            let mut coedge_ids = Vec::with_capacity(wire.edges().len());
+            for oriented in wire.edges() {
+                let coedge_id =
+                    coedges.alloc(Coedge::new(oriented.edge(), oriented.is_forward(), loop_id));
+                undo.index_pcurve_use(
+                    pcurves,
+                    PCurveKey::new(oriented.edge(), face_id, oriented.is_forward()),
+                    coedge_id,
+                )?;
+                coedge_ids.push(coedge_id);
+            }
+            if let Some(loop_entity) = loops.get_mut(loop_id) {
+                *loop_entity = Loop::new(face_id, coedge_ids, wire.is_closed());
+            }
+            new_loops.push(loop_id);
+        }
+        if let Some(face) = faces.get_mut(face_id) {
+            face.replace_boundary_loops(new_loops);
+        }
+        Ok(())
     }
 
     /// Returns the face arena for iteration and queries.
@@ -1257,8 +1318,7 @@ impl Topology {
         count = num_shells,
         id_from_index = shell_id_from_index,
         T = Shell,
-        Id = ShellId,
-        tag = ArenaTag::Shell
+        Id = ShellId
     );
 
     arena_api!(
@@ -1268,8 +1328,7 @@ impl Topology {
         count = num_solids,
         id_from_index = solid_id_from_index,
         T = Solid,
-        Id = SolidId,
-        tag = ArenaTag::Solid
+        Id = SolidId
     );
 
     arena_api!(
@@ -1279,8 +1338,7 @@ impl Topology {
         count = num_compounds,
         id_from_index = compound_id_from_index,
         T = Compound,
-        Id = CompoundId,
-        tag = ArenaTag::Compound
+        Id = CompoundId
     );
 
     arena_api!(
@@ -1290,8 +1348,7 @@ impl Topology {
         count = num_compsolids,
         id_from_index = compsolid_id_from_index,
         T = CompSolid,
-        Id = CompSolidId,
-        tag = ArenaTag::CompSolid
+        Id = CompSolidId
     );
 
     fn boundary_loop_specs(
@@ -1398,7 +1455,6 @@ impl Topology {
             let loop_id = self
                 .loops
                 .alloc(Loop::new(face_id, Vec::new(), spec.closed));
-            self.record_alloc(ArenaTag::Loop, loop_id.index());
             let mut coedge_ids = Vec::with_capacity(spec.oriented_edges.len());
             for oriented in &spec.oriented_edges {
                 // `add_face` carries nothing; skip hashing the key into an
@@ -1418,7 +1474,6 @@ impl Topology {
                     loop_id,
                     carried.pcurve,
                 ));
-                self.record_alloc(ArenaTag::Coedge, coedge_id.index());
                 if carried.periodic_winding != PeriodicWinding::ZERO {
                     self.record_coedge_overwrite(coedge_id)?;
                     if let Some(coedge) = self.coedges.get_mut(coedge_id) {
