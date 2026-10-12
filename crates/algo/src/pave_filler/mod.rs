@@ -293,8 +293,10 @@ pub fn run_pave_filler_n_with_context(
     run_pave_filler_n_with_pairs(topo, sources, None, context, arena)
 }
 
-/// Most source pairs one N-way pave filler run will intersect.
-const MAX_SOURCE_PAIRS: usize = 4_096;
+/// Most source pairs one N-way pave filler run will intersect; re-exported as
+/// `gfa::MAX_NWAY_SOURCE_PAIRS` so callers can stop building a candidate
+/// list the run would refuse.
+pub const MAX_SOURCE_PAIRS: usize = 4_096;
 
 /// Run the N-way PaveFiller pipeline over the given candidate source pairs.
 ///

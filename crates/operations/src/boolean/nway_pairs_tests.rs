@@ -63,6 +63,7 @@ fn candidate_pairs_reproduce_the_all_pairs_arena() {
     let context = OperationContext::new();
     for (name, (topo, solids)) in cases {
         let pairs = cluster_candidate_pairs(&topo, &solids, context.tolerance.linear)
+            .candidates()
             .expect("finite bounds");
         let all = solids.len() * (solids.len() - 1) / 2;
         assert!(
@@ -95,6 +96,7 @@ fn candidate_pairs_grow_with_contacts_not_with_all_pairs() {
     let count = |side| {
         let (topo, solids) = box_lattice(side, 1.01);
         cluster_candidate_pairs(&topo, &solids, tolerance)
+            .candidates()
             .expect("finite bounds")
             .len()
     };
@@ -121,8 +123,9 @@ fn large_sparse_cluster_fuses_in_one_arrangement() {
         "the all-pairs budget no longer refuses this lattice; pick a larger one"
     );
 
-    let pairs =
-        cluster_candidate_pairs(&topo, &solids, context.tolerance.linear).expect("finite bounds");
+    let pairs = cluster_candidate_pairs(&topo, &solids, context.tolerance.linear)
+        .candidates()
+        .expect("finite bounds");
     let mut direct = topo.clone();
     let nway = remus_algo::gfa::fuse_n_with_candidate_pairs(&mut direct, &solids, &pairs, &context)
         .expect("one arrangement");
@@ -137,4 +140,35 @@ fn large_sparse_cluster_fuses_in_one_arrangement() {
         "fuse_cluster did not take the N-way arrangement"
     );
     crate::test_helpers::assert_volume_near(&fused, result, 11.01 * 11.01, 1e-9);
+}
+
+#[test]
+fn dense_cluster_stops_collecting_at_the_pair_budget() {
+    // 92 coincident-overlapping boxes: 4186 interacting pairs, one past what
+    // the N-way fuse accepts. Collection must stop at the budget instead of
+    // materializing every pair, and report the cluster as over budget.
+    let mut topo = Topology::new();
+    let mut solids = Vec::new();
+    for index in 0..92 {
+        let solid = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let shift = f64::from(index) * 1e-3;
+        transform_solid(&mut topo, solid, &Mat4::translation(shift, shift, 0.0)).unwrap();
+        solids.push(solid);
+    }
+    const { assert!(92 * 91 / 2 > remus_algo::gfa::MAX_NWAY_SOURCE_PAIRS) };
+    let tolerance = OperationContext::new().tolerance.linear;
+    assert!(matches!(
+        cluster_candidate_pairs(&topo, &solids, tolerance),
+        super::ClusterPairs::OverBudget
+    ));
+    // One fewer pair than the budget still yields the full candidate list.
+    let within = &solids[..91];
+    const { assert!(91 * 90 / 2 <= remus_algo::gfa::MAX_NWAY_SOURCE_PAIRS) };
+    assert_eq!(
+        cluster_candidate_pairs(&topo, within, tolerance)
+            .candidates()
+            .expect("finite bounds")
+            .len(),
+        91 * 90 / 2
+    );
 }

@@ -499,6 +499,12 @@ pub fn fuse_n_with_context(
     })
 }
 
+/// Most source pairs one N-way fuse intersects. [`fuse_n_with_context`]
+/// refuses a source list with more pairs than this, and
+/// [`fuse_n_with_candidate_pairs`] a longer candidate list, so a caller
+/// building candidates can stop as soon as it would exceed it.
+pub use crate::pave_filler::MAX_SOURCE_PAIRS as MAX_NWAY_SOURCE_PAIRS;
+
 /// [`fuse_n_with_context`] intersecting only the given candidate source pairs.
 ///
 /// `candidate_pairs` indexes `sources`. It must be strictly increasing with
