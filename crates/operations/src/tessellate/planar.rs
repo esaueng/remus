@@ -1,6 +1,7 @@
 //! Planar and simple analytic face tessellation.
 
 use remus_math::det_hash::{DetHashMap, DetHashSet};
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 
@@ -926,14 +927,80 @@ pub(super) fn tessellate_revolved_with_holes(
     })
 }
 
+/// An analytic surface that [`tessellate_analytic`] samples from per-column
+/// `u.sin_cos()` and per-row `v.sin_cos()` tables.
+pub(super) trait AnalyticGridSurface {
+    /// `(evaluate(u, v), normal(u, v))` from `trig_u = u.sin_cos()` and
+    /// `trig_v = v.sin_cos()`, bit-identical to the two per-point calls.
+    /// Surfaces whose formulas use `v` linearly ignore `trig_v`.
+    fn grid_point_normal(&self, trig_u: (f64, f64), v: f64, trig_v: (f64, f64)) -> (Point3, Vec3);
+}
+
+impl AnalyticGridSurface for CylindricalSurface {
+    #[inline]
+    fn grid_point_normal(
+        &self,
+        (sin_u, cos_u): (f64, f64),
+        v: f64,
+        _trig_v: (f64, f64),
+    ) -> (Point3, Vec3) {
+        self.point_and_normal_trig(sin_u, cos_u, v)
+    }
+}
+
+impl AnalyticGridSurface for ConicalSurface {
+    #[inline]
+    fn grid_point_normal(
+        &self,
+        (sin_u, cos_u): (f64, f64),
+        v: f64,
+        _trig_v: (f64, f64),
+    ) -> (Point3, Vec3) {
+        self.point_and_normal_trig(sin_u, cos_u, v)
+    }
+}
+
+impl AnalyticGridSurface for SphericalSurface {
+    #[inline]
+    fn grid_point_normal(
+        &self,
+        (sin_u, cos_u): (f64, f64),
+        _v: f64,
+        (sin_v, cos_v): (f64, f64),
+    ) -> (Point3, Vec3) {
+        self.point_and_normal_trig(sin_u, cos_u, sin_v, cos_v)
+    }
+}
+
+impl AnalyticGridSurface for ToroidalSurface {
+    #[inline]
+    fn grid_point_normal(
+        &self,
+        (sin_u, cos_u): (f64, f64),
+        _v: f64,
+        (sin_v, cos_v): (f64, f64),
+    ) -> (Point3, Vec3) {
+        self.point_and_normal_trig(sin_u, cos_u, sin_v, cos_v)
+    }
+}
+
+/// Mesh the `(nu + 1) × (nv + 1)` iso-parametric grid of an analytic surface
+/// over `u_range × v_range`.
+///
+/// Every column shares one `u` and every row one `v`, so their sines and
+/// cosines are computed once per column and once per row rather than twice
+/// per vertex (once each in `evaluate` and `normal`). A column's `u` is the
+/// same expression of its index in every row, so each vertex receives
+/// exactly the values the per-vertex calls computed, and
+/// [`AnalyticGridSurface::grid_point_normal`] runs their arithmetic: the mesh
+/// is bit-identical to sampling `evaluate`/`normal` per vertex.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::too_many_lines
 )]
 pub(super) fn tessellate_analytic(
-    surface_eval: impl Fn(f64, f64) -> Point3,
-    normal_fn: impl Fn(f64, f64) -> Vec3,
+    surface: &impl AnalyticGridSurface,
     u_range: (f64, f64),
     v_range: (f64, f64),
     nu: usize,
@@ -965,57 +1032,58 @@ pub(super) fn tessellate_analytic(
     let u_periodic = (u_range.1 - u_range.0 - std::f64::consts::TAU).abs()
         < remus_math::tolerance::Tolerance::new().linear;
 
-    let mut grid = vec![0u32; (nu + 1) * (nv + 1)];
+    // Each column's `u` and `u.sin_cos()`, shared by every row.
+    let columns: Vec<(f64, (f64, f64))> = (0..=nu)
+        .map(|iu| {
+            let u = u_range.0 + (u_range.1 - u_range.0) * (iu as f64) / (nu as f64);
+            (u, u.sin_cos())
+        })
+        .collect();
     for iv in 0..=nv {
         let v = v_range.0 + (v_range.1 - v_range.0) * (iv as f64) / (nv as f64);
-        for iu in 0..=nu {
-            let u = u_range.0 + (u_range.1 - u_range.0) * (iu as f64) / (nu as f64);
-            let idx = positions.len() as u32;
-            positions.push(surface_eval(u, v));
-            normals.push(normal_fn(u, v));
+        let trig_v = v.sin_cos();
+        for &(u, trig_u) in &columns {
+            let (point, normal) = surface.grid_point_normal(trig_u, v, trig_v);
+            positions.push(point);
+            normals.push(normal);
             uvs.push([u, v]);
-            grid[iv * (nu + 1) + iu] = idx;
         }
     }
-
-    // Get grid index, wrapping u only for periodic seams (full circles).
-    let gi = |iu: usize, iv: usize| -> u32 {
-        let iu_w = if u_periodic && iu >= nu { 0 } else { iu };
-        grid[iv * (nu + 1) + iu_w]
-    };
 
     let v_min_degenerate = matches!(kind, AnalyticKind::SpherePole | AnalyticKind::ConeApex);
     let v_max_degenerate = matches!(kind, AnalyticKind::SpherePole | AnalyticKind::VMaxPole);
 
+    // Vertices are pushed row by row, so `(iu, iv)` sits at
+    // `iv * (nu + 1) + iu`. Wrap u only for periodic seams (full circles):
+    // the quad's left column `iu < nu` never wraps, its right column `iu + 1`
+    // wraps to 0 on the closing quad of a full turn.
+    let stride = nu + 1;
     for iv in 0..nv {
         let is_bottom = iv == 0;
         let is_top = iv == nv - 1;
+        let row0 = iv * stride;
+        let row1 = row0 + stride;
 
         for iu in 0..nu {
-            let i00 = gi(iu, iv);
-            let i10 = gi(iu + 1, iv);
-            let i01 = gi(iu, iv + 1);
-            let i11 = gi(iu + 1, iv + 1);
+            let iu1 = if u_periodic && iu + 1 >= nu {
+                0
+            } else {
+                iu + 1
+            };
+            let i00 = (row0 + iu) as u32;
+            let i10 = (row0 + iu1) as u32;
+            let i01 = (row1 + iu) as u32;
+            let i11 = (row1 + iu1) as u32;
 
             if is_bottom && v_min_degenerate {
                 // Bottom pole/apex: triangle fan from the degenerate row.
-                indices.push(i00);
-                indices.push(i11);
-                indices.push(i01);
+                indices.extend_from_slice(&[i00, i11, i01]);
             } else if is_top && v_max_degenerate {
                 // Top pole: triangle fan from the degenerate row.
-                indices.push(i00);
-                indices.push(i10);
-                indices.push(i01);
+                indices.extend_from_slice(&[i00, i10, i01]);
             } else {
                 // Standard two-triangle quad.
-                indices.push(i00);
-                indices.push(i10);
-                indices.push(i11);
-
-                indices.push(i00);
-                indices.push(i11);
-                indices.push(i01);
+                indices.extend_from_slice(&[i00, i10, i11, i00, i11, i01]);
             }
         }
     }

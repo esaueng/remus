@@ -136,6 +136,7 @@ Quick reference — find the right file for any task:
 | 3D curves (Line, Circle, Ellipse, Parabola, Hyperbola) | `curves.rs` |
 | 2D curves (Line2D, Circle2D, Ellipse2D) | `curves2d.rs` |
 | Analytic surfaces (Cylinder, Cone, Sphere, Torus) | `surfaces.rs` |
+| Bit-identity oracle for the analytic surfaces' trig-taking `point_and_normal_trig` against their verbatim pre-change `evaluate`/`normal` (tests) | `surfaces/trig_oracle_tests.rs` |
 | Exact swept-surface carriers (revolution, linear extrusion) | `surfaces/swept.rs` |
 | Surface-surface intersection | `nurbs/intersection/` (mod, surface_marching, surface_seeding, curve_surface, plane, line, chaining, tests) |
 | Hand-placed oracles for intersection-point chaining: grid walk, adjacency (tests) | `nurbs/intersection/chaining/mutation_oracle_tests.rs` |
@@ -440,6 +441,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
+| Per-vertex analytic grid kept verbatim as a bit-identity oracle for the trig-table `tessellate_analytic` (tests) | `tessellate/tests/analytic_grid_oracle.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits, with display-priority retention inside shared bounds (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
 | Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
