@@ -623,7 +623,32 @@ touches every face. `scaling_store_local_slot_copies_only_touched_faces`
 (`perf-counters`) shows the store holding 8 faces for a slot through plates
 with 9 and 16 holes, against 54 on the general path.
 
-<!--STAGE4-EVIDENCE-->
+**Evidence.** Main at `15d7ceb8` against this part, Apple M5 Pro, shared
+machine, `RAYON_NUM_THREADS=1`. `touched_face_loops_profile` with memos on,
+time per slot cut measured in-process:
+
+| holes on the plate | general path | store-local |
+| ---: | ---: | ---: |
+| 144 | 5.9–6.1 ms | 3.17 ms (−47%) |
+| 576 | 22.3–22.5 ms | 12.3 ms (−45%) |
+
+Instruction counts (`/usr/bin/time -l`, binaries alternated, three
+rounds):
+
+| run | main | branch, default | branch, store-local |
+| --- | ---: | ---: | ---: |
+| 100 slots on a 324-hole plate, memos off (whole run) | 48.89–49.03 G | 48.95–49.06 G | 38.76–38.84 G (−21%) |
+| the same, memos on | 44.90–44.93 G | 44.86–44.94 G | 36.16–36.19 G (−19%) |
+| 2000 slots on a blank plate | 13.21–13.22 G | 13.22 G | 11.18–11.19 G (−15%) |
+| 500 cross-drilled shafts | 10.58–10.60 G | 10.58–10.59 G | — |
+| 1000 gridfinity magnet-pocket sets | 1.068–1.069 G | 1.067–1.071 G | — |
+| 150 torus-notch cuts | 7.68 G | 7.64 G | — |
+
+The whole runs include drilling the plate. The slot cuts themselves cost
+about 42% less store-locally (11.9 → 6.9 ms with memos off, 10.8 → 6.2 ms
+with them on). With the path off, every count matches main: the
+refactored classification helpers, cleanup passes and store copy cost
+nothing.
 
 **Next.**
 
