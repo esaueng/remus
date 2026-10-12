@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791824522131,
+  "lastUpdate": 1791828751163,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -94399,6 +94399,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 82184,
             "range": "± 544",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "31288b757296daf2a05f2a88b3e4fe474cd7dbad",
+          "message": "perf(boolean): stop paying for untouched faces in the pave filler and assembly (frozen faces, part 1) (#1012)\n\n* perf(algo): stop phase FF rescanning every loop of a touched face (local boolean, stage 3 part 1)\n\nA general cut through a face carrying many loops (a slot through a drilled\nplate) paid for every existing hole rim several times per face pair in\nphase FF:\n\n- The junction snap sampled every curved boundary edge of both faces\n  (65 samples + 48 ternary steps) for each section endpoint, keeping an\n  edge only within the snap band. A box holding the whole curve (conic\n  axes per axis, NURBS control points) now skips edges out of reach; no\n  skipped edge could be adopted, so the result is bit-identical. A\n  verbatim copy of the ungated search is the differential oracle.\n- Both faces' FaceExtent (17 samples per boundary edge plus a sagitta\n  pass) was rebuilt twice per pair. FF only adds vertices and edges, so a\n  face's extent is fixed for the pass: FaceExtents builds it once.\n- The registry's cheap distance test runs before its per-entry wire walk.\n\nTwo perf counters (junction_curve_scans, face_extent_builds) back a new\nscaling guard; reverting either change trips it.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(perf): note stage 3 part 1 in the local boolean status\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(perf): record stage 3 part 1 evidence\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf(algo): make untouched holes cheap in the face splitter (local boolean, stage 3 part 2)\n\nA cut through a face carrying many holes refitted every hole rim's pcurve\nand resampled every round hole for every containment query. The splitter\nbranches on whether and how many holes a face has, so instead of dropping\nuntouched holes the per-hole work is made cheap and exact:\n\n- remus_algo::pcurve_memo: an opt-in, per-thread, bounded memo of planar\n  circle and ellipse pcurves, keyed on the exact bits of the curve,\n  endpoints, domain, plane and frame. Hits clone the stored curve, so they\n  are bit-identical to recomputing. BrepKernel::new enables it with the\n  other content-keyed memos; the library leaves it off.\n- is_inside_any_hole skips sampling a hole whose sample box the query lies\n  outside; the even-odd test cannot answer true there.\n\nOracles: memo vs computed pcurves by exact Debug text, a warm-memo slot cut\nvs a cold one, and the ungated containment test kept verbatim. The scaling\nguard gains hole_containment_samplings (0 vs 1152 at 144 holes reverted).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(perf): record stage 3 part 2 evidence\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf(boolean): stop paying for untouched faces in the pave filler and assembly (frozen faces, part 1)\n\nA cut that meets two faces of a drilled blank still sampled every face and\nrim it never touches. Each change is exact:\n\n- phase EF: analytic curved faces (whose containment is empty anyway)\n  return before sampling their outline; edge domains are validated first,\n  so the sampling could not have failed.\n- phase FF: a face whose conservative box misses every expanded tool-face\n  box keeps that box instead of its sampled one; the rejection refuses its\n  pairs either way and nothing else reads it.\n- phase FF: the junction snap reads each face's boundary from a per-pass\n  cache (same candidates, order and arithmetic), and pair extents read\n  per-face boxes instead of resampling both faces per pair.\n- assembly: remus_algo::wire_area_memo, an opt-in content-keyed memo of\n  revolved-face wire areas (bit-identical hits), enabled by BrepKernel::new;\n  it shares a bounded store (memo.rs) with the pcurve memo.\n- operations: result_within_operand_bounds accepts from the operands'\n  vertex boxes when they already contain every result vertex, before\n  sampling the full boxes.\n- BK_RAWC is read once per FF pass.\n\nOracles: the cached snap vs the verbatim ungated search, the face-box gate\nagainst sampled boxes, memoized vs measured wire areas, and a warm-memo\nslot cut vs a cold one. The scaling guard adds face_bbox_builds and\nface_outline_samplings (flat vs linear in holes when reverted).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(perf): record frozen-faces part 1 evidence\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(perf): note torus-notch instruction counts\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T13:05:10-05:00",
+          "tree_id": "8ffbd7b6ed6df392548445a75d674d34586fc2c5",
+          "url": "https://github.com/esaueng/remus/commit/31288b757296daf2a05f2a88b3e4fe474cd7dbad"
+        },
+        "date": 1791828748618,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 919085,
+            "range": "± 2032",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 960864,
+            "range": "± 1392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14521,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6035128,
+            "range": "± 4495",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6010005,
+            "range": "± 4655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 5905459,
+            "range": "± 14674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 19824,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2430999,
+            "range": "± 3997",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 22859072,
+            "range": "± 551092",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 53,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 190,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 137,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 675,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 145,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 296,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 441,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 604,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2731,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 73,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 382904,
+            "range": "± 1182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2304984,
+            "range": "± 2485",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 113216,
+            "range": "± 126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 338338,
+            "range": "± 543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 285954,
+            "range": "± 411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 48616,
+            "range": "± 450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 667207,
+            "range": "± 26840",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8022597,
+            "range": "± 255969",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 417145,
+            "range": "± 1162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 901771,
+            "range": "± 6228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 72259,
+            "range": "± 364",
             "unit": "ns/iter"
           }
         ]
