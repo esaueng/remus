@@ -145,7 +145,15 @@ pub fn face_set_bounding_box(
     Ok(aabb)
 }
 
-fn face_set_vertex_bounding_box(
+/// The box of a face set's boundary vertices: the box
+/// [`face_set_bounding_box`] starts from before its curvature expansion, so
+/// always contained in it, with the same error conditions.
+///
+/// # Errors
+///
+/// Returns an error if the face set has no vertices, an edge domain fails the
+/// sampling preflight, or a topology lookup fails.
+pub fn face_set_vertex_bounding_box(
     topo: &Topology,
     faces: &[FaceId],
 ) -> Result<Aabb3, crate::OperationsError> {

@@ -1180,8 +1180,11 @@ fn boolean_with_context_impl(
     //
     // Disjointness is decided per connected component with a positive
     // tolerance margin (see `solids_provably_disjoint`), so only a clear gap
-    // fires this; touching or overlapping operands fall through to GFA. The
-    // result is a deep copy, so it does not alias the input.
+    // fires this; touching or overlapping operands fall through to GFA. A tool
+    // floating inside the target can never fire it: its boxes nest inside the
+    // target's, which is overlap, not separation. The result is a deep copy,
+    // so it does not alias the input. (The witness is a pure function of the
+    // unchanged topology, so it is evaluated once per call.)
     if op == BooleanOp::Cut && solids_provably_disjoint(topo, a, b, tol.linear) {
         log::debug!("Cut short-circuited: tool is provably disjoint from the blank");
         return crate::copy::copy_solid(topo, a);
@@ -1193,19 +1196,6 @@ fn boolean_with_context_impl(
         let merged = crate::compound_ops::merge_disjoint_solids(topo, &[copy_a, copy_b])?;
         log::debug!("Fuse short-circuited via disjoint shell merge");
         return Ok(merged);
-    }
-
-    // Disjoint-cut fast path: a tool with a clear gap from every component of
-    // the target removes nothing, so A − B is exactly A. Same disjointness
-    // witness as the fuse path above (per-component conservative boxes, strict
-    // positive gap), so a touching or overlapping tool still routes to GFA.
-    // A tool floating inside the target can never reach here: its boxes nest
-    // inside the target's, which is overlap, not separation. The copy keeps
-    // the result independent of the inputs, preserving the boolean contract.
-    if op == BooleanOp::Cut && solids_provably_disjoint(topo, a, b, tol.linear) {
-        let copy_a = crate::copy::copy_solid(topo, a)?;
-        log::debug!("Cut short-circuited: disjoint tool removes nothing");
-        return Ok(copy_a);
     }
 
     let algo_op = match op {
@@ -3240,6 +3230,24 @@ fn operands_are_represented(
     b: SolidId,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
+    // Every early exit below accepts, so take the cheap ones before measuring
+    // the result: Intersect is never checked, and a Cut whose face count
+    // changed has removed something.
+    match op {
+        BooleanOp::Intersect => return true,
+        BooleanOp::Cut => {
+            let (Ok(r_faces), Ok(a_faces)) = (
+                remus_topology::explorer::solid_faces(topo, result),
+                remus_topology::explorer::solid_faces(topo, a),
+            ) else {
+                return true;
+            };
+            if r_faces.len() != a_faces.len() {
+                return true;
+            }
+        }
+        BooleanOp::Fuse => {}
+    }
     let Ok(r_box) = crate::measure::solid_bounding_box(topo, result) else {
         return true; // unmeasurable: keep the historic acceptance
     };
@@ -3259,19 +3267,10 @@ fn operands_are_represented(
             })
         }
         BooleanOp::Cut => {
-            // Only a result that is face-for-face and box-for-box the blank can
-            // have removed nothing, so the interior probe runs on that case
-            // alone: a blind pocket keeps the blank's box but adds its walls,
-            // and a through trim changes the box.
-            let (Ok(r_faces), Ok(a_faces)) = (
-                remus_topology::explorer::solid_faces(topo, result),
-                remus_topology::explorer::solid_faces(topo, a),
-            ) else {
-                return true;
-            };
-            if r_faces.len() != a_faces.len() {
-                return true;
-            }
+            // Only a result that is face-for-face (checked above) and
+            // box-for-box the blank can have removed nothing, so the interior
+            // probe runs on that case alone: a blind pocket keeps the blank's
+            // box but adds its walls, and a through trim changes the box.
             let Ok(a_box) = crate::measure::solid_bounding_box(topo, a) else {
                 return true;
             };
@@ -3475,6 +3474,27 @@ fn solids_provably_disjoint(topo: &Topology, a: SolidId, b: SolidId, margin: f64
     let comps_a = assembly::face_components(topo, a);
     let comps_b = assembly::face_components(topo, b);
     if comps_a.is_empty() || comps_b.is_empty() {
+        return false;
+    }
+    // Cheap refutation first. Each component's curvature-expanded box below
+    // contains its vertex box, and growing a box can only close a gap, so a
+    // component pair whose vertex boxes already lack a clear gap cannot have
+    // one in the expanded boxes either — the verdict is `false` without
+    // sampling any curved boundary. (A vertex box that cannot be built has
+    // the expanded box's error conditions, which also answer `false`.)
+    let vertex_boxes = |comps: &[Vec<FaceId>]| -> Option<Vec<remus_math::aabb::Aabb3>> {
+        comps
+            .iter()
+            .map(|faces| crate::measure::face_set_vertex_bounding_box(topo, faces).ok())
+            .collect()
+    };
+    let (Some(vertex_a), Some(vertex_b)) = (vertex_boxes(&comps_a), vertex_boxes(&comps_b)) else {
+        return false;
+    };
+    if !vertex_a
+        .iter()
+        .all(|ba| vertex_b.iter().all(|bb| aabbs_clear_gap(ba, bb, margin)))
+    {
         return false;
     }
     let boxes = |comps: &[Vec<FaceId>]| -> Option<Vec<remus_math::aabb::Aabb3>> {
@@ -7235,6 +7255,8 @@ pub fn collect_face_signatures(
     Ok(result)
 }
 
+#[cfg(test)]
+mod disjoint_witness_tests;
 #[cfg(test)]
 mod tests;
 
