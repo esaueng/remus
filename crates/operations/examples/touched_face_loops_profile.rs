@@ -10,7 +10,9 @@
 //! `cargo run --profile profiling -p remus-operations --example touched_face_loops_profile -- [n...]`
 //! (default `0 6 12 18`); `repeat <n> <k>` cuts `k` slots on one `n` plate,
 //! for a profiler. A leading `memo` enables the GFA's content-keyed memos,
-//! as the WASM kernel does.
+//! as the WASM kernel does; `local` next enables the store-local booleans;
+//! `fuse` or `intersect` next fuses ribs (sunk 2 into the top face) or
+//! intersects with the slots instead of cutting them.
 
 #![allow(clippy::unwrap_used, clippy::print_stdout, missing_docs)]
 
@@ -42,15 +44,25 @@ fn drilled_plate(topo: &mut Topology, n: u32) -> SolidId {
     plate
 }
 
-/// Cut `k` 2 × 6 slots between hole columns; returns milliseconds per cut.
-fn cut_slots(topo: &mut Topology, mut plate: SolidId, k: u32) -> (SolidId, f64) {
+/// Run `op` with `k` 2 × 6 slots between hole columns (for a fuse, 4-tall
+/// ribs sunk 2 into the top face); returns milliseconds per boolean. An
+/// intersect keeps only the slot, so each one starts from the plate.
+fn cut_slots(topo: &mut Topology, mut plate: SolidId, k: u32, op: BooleanOp) -> (SolidId, f64) {
     let mut total = 0.0;
     for slot in 0..k {
-        let tool = primitives::make_box(topo, 2.0, 6.0, 20.0).unwrap();
-        let at = Mat4::translation(11.0 + f64::from(slot % 4) * 12.0, 9.0, -5.0);
+        let (height, z) = if op == BooleanOp::Fuse {
+            (4.0, 8.0)
+        } else {
+            (20.0, -5.0)
+        };
+        let tool = primitives::make_box(topo, 2.0, 6.0, height).unwrap();
+        let at = Mat4::translation(11.0 + f64::from(slot % 4) * 12.0, 9.0, z);
         transform_solid(topo, tool, &at).unwrap();
         let start = Instant::now();
-        plate = boolean(topo, BooleanOp::Cut, plate, tool).unwrap();
+        let result = boolean(topo, op, plate, tool).unwrap();
+        if op != BooleanOp::Intersect {
+            plate = result;
+        }
         total += start.elapsed().as_secs_f64() * 1e3;
     }
     (plate, total / f64::from(k))
@@ -71,6 +83,14 @@ fn main() {
         args.remove(0);
         remus_operations::boolean::set_thread_store_local_cuts(true);
     }
+    let op = match args.first().map(String::as_str) {
+        Some("fuse") => BooleanOp::Fuse,
+        Some("intersect") => BooleanOp::Intersect,
+        _ => BooleanOp::Cut,
+    };
+    if op != BooleanOp::Cut {
+        args.remove(0);
+    }
     if args.first().map(String::as_str) == Some("repeat") {
         let n: u32 = args.get(1).map_or(18, |s| s.parse().unwrap());
         let k: u32 = args.get(2).map_or(200, |s| s.parse().unwrap());
@@ -79,7 +99,7 @@ fn main() {
         let mut per = 0.0;
         for _ in 0..k {
             let mut copy = topo.clone();
-            per += cut_slots(&mut copy, plate, 1).1;
+            per += cut_slots(&mut copy, plate, 1, op).1;
         }
         println!("n {n}: {:.3} ms per slot over {k} runs", per / f64::from(k));
         return;
@@ -95,7 +115,7 @@ fn main() {
         let faces = remus_topology::explorer::solid_faces(&topo, plate)
             .unwrap()
             .len();
-        let (_, per) = cut_slots(&mut topo, plate, 4);
-        println!("holes {:4} faces {faces:4}: {per:8.3} ms per slot", n * n);
+        let (_, per) = cut_slots(&mut topo, plate, 4, op);
+        println!("holes {:4} faces {faces:4}: {per:8.3} ms per {op:?}", n * n);
     }
 }

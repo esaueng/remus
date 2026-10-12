@@ -372,29 +372,31 @@ impl BrepKernel {
             .into_ts()?)
     }
 
-    /// Turn the store-local cut on or off (off by default).
+    /// Turn store-local booleans on or off (off by default).
     ///
-    /// When on, a cut whose tool reaches only part of the blank (`cut`,
-    /// batch `cut`, and the other cuts that run the plain boolean;
-    /// evolution-tracking cuts keep the general path) runs the boolean on
-    /// that part and splices the result back onto the faces it does not
-    /// touch.
-    /// On a body with many faces, such as a drilled plate, a cut costs
-    /// about half as much. The result is the same solid as with the switch
-    /// off (same faces, edges, vertices and volume), but its faces and
-    /// entities come out in a different order and numbering.
+    /// When on, a cut, fuse or intersect whose second solid reaches only
+    /// part of the first (`cut`, `fuse`, `intersectSolids`, their batch ops,
+    /// and the other booleans that run the plain boolean;
+    /// evolution-tracking booleans keep the general path) runs the boolean
+    /// on that part and splices the result back onto the faces it does not
+    /// touch. The name predates fuse and intersect.
+    /// On a body with many faces, such as a drilled plate, a boolean costs
+    /// about a third to two thirds less. The result is the same solid as
+    /// with the switch off (same faces, edges, vertices and volume), but its
+    /// faces and entities come out in a different order and numbering.
     ///
     /// The setting is per thread, like the kernel's content-keyed memos: it
     /// applies to every kernel in this module instance (one browser worker),
-    /// not only to this one. A cut that does not qualify, or whose spliced
-    /// result fails the boolean-result gate, runs the general path.
+    /// not only to this one. A boolean that does not qualify, or whose
+    /// result fails the boolean-result gate or is not one connected shell,
+    /// runs the general path.
     #[wasm_bindgen(js_name = "setStoreLocalCuts")]
     #[allow(clippy::unused_self)] // instance method so JS finds it on the kernel
     pub fn set_store_local_cuts(&self, enabled: bool) {
         remus_operations::boolean::set_thread_store_local_cuts(enabled);
     }
 
-    /// Whether store-local cuts are on (see `setStoreLocalCuts`).
+    /// Whether store-local booleans are on (see `setStoreLocalCuts`).
     #[wasm_bindgen(js_name = "storeLocalCutsEnabled")]
     #[must_use]
     #[allow(clippy::unused_self)] // instance method so JS finds it on the kernel
