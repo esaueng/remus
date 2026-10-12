@@ -771,19 +771,50 @@ fn nearly_flat_crossing_still_seeds_its_transverse_branch() {
     );
 }
 
-/// The 30° branch-angle gate is `acos(|cos|) > 30°`. No `f64` cosine has an
-/// `acos` exactly equal to `30°.to_radians()`: acos is monotone, and the
-/// whole neighbourhood of `cos 30°` is checked here, so `>` and `>=` agree on
-/// every input (the equivalence proof for that comparison, made executable).
+/// Integer oracle for "`c` lies below `cos 30° = √3/2`", for `c` in `[½, 1)`.
+/// There `c = m·2⁻⁵³` with `m` the 53-bit significand, so `c < √3/2` iff
+/// `c² < ¾` iff `4m² < 3·2¹⁰⁶`: exact in `u128` (`4m² < 2¹⁰⁸`), so no float
+/// operation, libm or otherwise, takes part.
+fn below_cos_30(c: f64) -> bool {
+    assert!((0.5..1.0).contains(&c), "{c:e}");
+    let m = u128::from((c.to_bits() & ((1 << 52) - 1)) | (1 << 52));
+    4 * m * m < 3 << 106
+}
+
+/// The 30° branch-angle gate compares the cosine with `COS_MIN_BRANCH_ANGLE`
+/// and never calls `acos`, so the host libm cannot move its boundary. It is
+/// exactly "more than 30° apart" because the constant is the largest `f64`
+/// below `√3/2`, which the integer oracle proves. The sweep then checks the
+/// production predicate against that oracle on every cosine within 4000 ULPs.
 #[test]
-fn no_cosine_lands_exactly_on_the_branch_angle() {
-    let target = 30.0_f64.to_radians();
-    let centre = target.cos().to_bits();
-    let below = f64::from_bits(centre - 4000).acos();
-    let above = f64::from_bits(centre + 4000).acos();
-    assert!(below > target && above < target, "window must bracket 30°");
+fn branch_angle_gate_is_exactly_thirty_degrees_without_libm() {
+    let k = COS_MIN_BRANCH_ANGLE;
+    // Rounded to nearest: IEEE `sqrt` is correctly rounded on every target.
+    assert_eq!(k.to_bits(), (3.0_f64.sqrt() * 0.5).to_bits());
+    assert!(below_cos_30(k) && !below_cos_30(k.next_up()));
+    let centre = k.to_bits();
     for bits in centre - 4000..=centre + 4000 {
-        assert!(f64::from_bits(bits).acos().to_bits() != target.to_bits());
+        let c = f64::from_bits(bits);
+        assert_eq!(exceeds_min_branch_angle(c), below_cos_30(c), "{c:e}");
+    }
+    // Perpendicular is a branch; parallel and NaN are not.
+    assert!(exceeds_min_branch_angle(0.0));
+    assert!(!exceeds_min_branch_angle(1.0));
+    assert!(!exceeds_min_branch_angle(f64::NAN));
+}
+
+/// The step control's turn thresholds are literal cosines, so its decision is
+/// one comparison on every platform. Each literal sits within one ULP of the
+/// host's `cos` (every libm is that accurate), which catches a mistyped
+/// constant; the side of the true cosine each rounds to is checked offline.
+#[test]
+fn step_control_turn_thresholds_are_cos_10_and_cos_2() {
+    for (k, deg) in [(COS_MAX_TURN, 10.0_f64), (COS_MIN_TURN, 2.0)] {
+        let host = deg.to_radians().cos();
+        assert!(
+            k.to_bits().abs_diff(host.to_bits()) <= 1,
+            "{deg}°: {k:e} vs {host:e}"
+        );
     }
 }
 
