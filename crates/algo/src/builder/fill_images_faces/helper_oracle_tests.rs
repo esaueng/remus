@@ -56,7 +56,10 @@ fn closed_common_block_replacement_preserves_wire_traversal() {
                         let t = match &replacement {
                             EdgeCurve::Circle(c) => c.project(seam),
                             EdgeCurve::Ellipse(e) => e.project(seam),
-                            _ => unreachable!(),
+                            EdgeCurve::Line
+                            | EdgeCurve::NurbsCurve(_)
+                            | EdgeCurve::Hyperbola(_)
+                            | EdgeCurve::Parabola(_) => unreachable!(),
                         };
                         let mut cb = Edge::new(v, v, replacement);
                         cb.set_trim(Some((t, t + if descending { -TAU } else { TAU })));
