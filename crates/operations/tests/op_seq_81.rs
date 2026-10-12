@@ -5600,8 +5600,8 @@ fn bounded_campaign() {
     );
 }
 
-/// 8.1 finding F1 (retained, kernel untouched): swapped-operand coaxial
-/// cylinder intersect carries an inconsistent-orientation edge.
+/// 8.1 finding F1 regression: swapped-operand coaxial cylinder intersect
+/// must preserve the shared closed rim's orientation during CB replacement.
 ///
 /// Minimized from bounded-campaign seeds `10006000559475869461`
 /// (cylinders r=2.5/h=4.0 × r=2.0/h=5.0) and `12304682496488374415`
@@ -5614,9 +5614,7 @@ fn bounded_campaign() {
 /// clean — here even the ops gate fails).
 ///
 /// Acceptance: exact intersect, valid topology, volume π (r=1/h=1 overlap).
-/// No geometry fix in this harness PR; un-ignore when green.
 #[test]
-#[ignore = "8.1 finding F1: swapped coaxial cylinder intersect misorients one shared edge; route to the B33 orientation family"]
 fn finding_coax_cylinder_intersect_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.5},"op":"makeCylinder"},{"args":{"height":1.5,"radius":1.0},"op":"makeCylinder"},{"args":{"exactOnly":true,"operation":"intersect","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
@@ -5641,16 +5639,15 @@ fn finding_coax_cylinder_intersect_orientation() {
     );
 }
 
-/// 8.1 finding F2 (retained, kernel untouched): the same swapped coaxial
-/// pair fused instead of intersected carries the same inconsistent
-/// shared-edge orientation (verified by direct native replay of both
+/// 8.1 finding F2 regression: the same swapped coaxial pair fused instead
+/// of intersected exposed the same inconsistent shared-edge orientation
+/// (verified by direct native replay of both
 /// operand orders: small-first invalid, big-first valid, identical volumes
 /// and face counts).
 ///
 /// Acceptance: exact fuse, valid topology, volume 8.639379797
-/// (7.068583 + 4.712389 − π overlap). No geometry fix in this harness PR.
+/// (7.068583 + 4.712389 − π overlap).
 #[test]
-#[ignore = "8.1 finding F2: swapped coaxial cylinder fuse misorients one shared edge; route to the B33 orientation family"]
 fn finding_coax_cylinder_fuse_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.5},"op":"makeCylinder"},{"args":{"height":1.5,"radius":1.0},"op":"makeCylinder"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
