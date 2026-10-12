@@ -161,6 +161,79 @@ fn boolean_with_context_impl(
     Ok(result)
 }
 
+/// The result of [`cut_patch`]: the faces a cut leaves where it touches the
+/// blank, in the store topology they were built in.
+pub struct CutPatch {
+    /// The store topology holding the patch.
+    pub topo: Topology,
+    /// The patch faces: the touched blank faces' surviving pieces and the
+    /// tool pieces inside the blank, reversed, after assembly's cleanup
+    /// passes. They do not close on their own; the blank's untouched faces
+    /// close them.
+    pub faces: Vec<FaceId>,
+    /// Store input edge index → caller edge index, for the edges copied in.
+    /// A patch edge listed here is the caller edge unchanged.
+    pub edge_to_caller: DetHashMap<usize, usize>,
+    /// Store input vertex index → caller vertex index.
+    pub vertex_to_caller: DetHashMap<usize, usize>,
+}
+
+/// Cut `b` from the faces `faces_a` of the blank `a` only: the store-local
+/// GFA behind the operations crate's opt-in store-local cut (stage 4 of
+/// `docs/performance/perf-local-boolean.md`).
+///
+/// The store holds `faces_a` as an open patch and the whole tool. The pave
+/// filler and face splitting run on them as on whole operands; tool pieces
+/// are classified against the whole blank in `topo`; selection and
+/// assembly's cleanup passes run on the patch, which is returned without
+/// being closed into a shell. The caller proves that no other face of `a`
+/// meets `b` and splices the patch back onto them.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] for unsupported curves or any GFA stage failure.
+pub fn cut_patch(
+    topo: &Topology,
+    a: SolidId,
+    faces_a: &[FaceId],
+    b: SolidId,
+    context: &OperationContext,
+) -> Result<CutPatch, AlgoError> {
+    context.check_cancelled()?;
+    reject_unsupported_curves(topo, a)?;
+    reject_unsupported_curves(topo, b)?;
+    let mut store = crate::ds::GfaShapeStore::with_face_subset(topo, faces_a, b)?;
+
+    context.check_cancelled()?;
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler_with_context(
+        &mut store.topo,
+        store.solid_a,
+        store.solid_b,
+        context,
+        &mut arena,
+    )?;
+
+    context.check_cancelled()?;
+    let mut builder = Builder::with_context(
+        std::mem::take(&mut store.topo),
+        arena,
+        store.solid_a,
+        store.solid_b,
+        context,
+    );
+    builder.perform_against_full_a((topo, a))?;
+
+    context.check_cancelled()?;
+    let (patch_topo, faces, _sources) = builder.build_patch(BooleanOp::Cut)?;
+    Ok(CutPatch {
+        topo: patch_topo,
+        faces,
+        edge_to_caller: store.input_edge_to_caller,
+        vertex_to_caller: store.input_vertex_to_caller,
+    })
+}
+
 /// Split a solid with a first-class sheet-body face set.
 ///
 /// The sheet is installed in the isolated GFA topology behind a traversal-only

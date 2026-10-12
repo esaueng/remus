@@ -66,6 +66,11 @@ fn main() {
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
     }
+    // `local` next: run the slots through the opt-in store-local cut.
+    if args.first().map(String::as_str) == Some("local") {
+        args.remove(0);
+        remus_operations::boolean::set_thread_store_local_cuts(true);
+    }
     if args.first().map(String::as_str) == Some("repeat") {
         let n: u32 = args.get(1).map_or(18, |s| s.parse().unwrap());
         let k: u32 = args.get(2).map_or(200, |s| s.parse().unwrap());
