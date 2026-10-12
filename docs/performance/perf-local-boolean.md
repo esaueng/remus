@@ -193,3 +193,77 @@ The tests also check that the cell declines:
 Each stage must keep the current refusal behaviour outside its cell, and
 must carry a differential oracle against the GFA and a deterministic
 work-count guard.
+
+## Stage 3, part 1: per-loop work on touched faces in phase FF (implemented)
+
+Stage 3 makes the GFA's cost on a *touched* face follow the loops a cut
+actually meets, not every loop the face carries. The general cuts the cells
+leave behind need it: a rectangular slot, a tilted hole, a pocket. Its
+first part is in phase FF.
+
+**Measured cost.** `examples/touched_face_loops_profile.rs` drills an
+`n × n` grid of holes (the stage 1 cell, cheap) and then cuts 2 × 6
+rectangular slots between them. The slots meet only the plate's top and
+bottom, which carry every hole. On main at `957201b8` a slot cost 1.7 ms
+on a blank plate and 48 ms at 576 holes, about 80 µs per hole.
+
+The profile did not match the design above, which expected the face
+splitter to dominate. The largest per-hole cost was phase FF's junction
+snap. Its next cost was rebuilding face extents. Both are now exact
+no-ops for loops a section cannot reach:
+
+- **Junction snap box gate.** `snap_to_boundary_junction_band` ran a
+  65-sample scan plus 48 ternary steps on every boundary edge of both
+  faces, for every section endpoint, then kept an edge only if it was
+  within the snap band (about 1e-3). It now first measures the distance
+  from the endpoint to a box that holds the whole curve:
+  - circles and ellipses: `centre ± (a|u_i| + b|v_i|)` per axis, which
+    holds every evaluated point whatever the axes' rounding;
+  - NURBS with positive weights: the box of the control points.
+
+  An edge whose box is farther than the band, after a rounding slack,
+  cannot be adopted, so its sampling is skipped.
+- **Face extents once per face.** Each face pair rebuilt both faces'
+  `FaceExtent`, which samples every boundary edge 17 times plus a sagitta
+  pass. It did this twice per pair (exact-arc assembly and curve
+  restriction). An extent reads only the face's boundary, surface and
+  `v_range`, and FF only adds vertices and edges, so it is fixed for the
+  whole pass. `FaceExtents` now builds it on the face's first use.
+
+The pairwise registry's cheap distance test also runs before its
+per-entry wire walk now, with the same result.
+
+**Exactness.**
+- `phase_ff/junction_snap_oracle_tests.rs` keeps the ungated search
+  verbatim. It compares the two bit for bit on about 30 000 queries over a
+  plate holding circular, elliptical and NURBS holes and crossed by three
+  walls, about 900 of which snap. The box bound is also checked against
+  sampled curve distances, and an inflated bound fails both tests.
+- The extent cache relies on the purity argument above. The full suites
+  pass unchanged.
+
+**Work guard.** `scaling_slot_cut_does_not_rescan_touched_face_loops`
+(`test(scaling_)`, `perf-counters`) cuts a slot through plates with 36 and
+144 holes:
+
+| counter | 36 → 144 holes, fixed | reverted |
+| --- | ---: | ---: |
+| `junction_curve_scans` | 0 → 0 | 576 → 2304 |
+| `face_extent_builds` | 6 → 6 | 32 → 32 |
+
+<!--STAGE3-EVIDENCE-->
+
+**Remaining per-hole cost.** After this part the slot cut costs about
+44 µs per hole. The rest is spread over several passes:
+
+| pass | share of the cut |
+| --- | ---: |
+| shell assembly (`perform_loops`, collinear-vertex arc splitting, duplicate-edge merge) | about 20% |
+| face splitting: boundary pcurves for every existing hole (each rim sampled and NURBS-fitted) | about 8% |
+| face splitting: hole containment | about 4% |
+| GFA store copy and export | about 12% |
+| phase EF edge-face scans | about 7% |
+
+Part 2 is the loop-local splitter itself. Holes that no section touches
+would pass through without pcurves, assigned to the sub-face that
+contains them by a cheap exact test.

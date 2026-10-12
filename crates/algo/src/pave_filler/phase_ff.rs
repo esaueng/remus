@@ -225,6 +225,11 @@ impl JunctionRegistry {
             .cells
             .values()
             .filter_map(|entry| {
+                // The cheap distance test first: the wire walk below visits
+                // every boundary edge of both faces.
+                if (entry.point - boundary_junction).length() > trigger {
+                    return None;
+                }
                 let face_uses_source = entry.source_edge.is_some_and(|source| {
                     [fa, fb].into_iter().any(|face_id| {
                         topo.face(face_id).is_ok_and(|face| {
@@ -239,9 +244,7 @@ impl JunctionRegistry {
                 let shares_face = entry.faces.is_some_and(|(prev_a, prev_b)| {
                     [prev_a, prev_b].contains(&fa) || [prev_a, prev_b].contains(&fb)
                 });
-                if (!shares_face && !face_uses_source)
-                    || (entry.point - boundary_junction).length() > trigger
-                {
+                if !shares_face && !face_uses_source {
                     return None;
                 }
                 let validated =
@@ -483,6 +486,7 @@ fn perform_seeded(
         DetHashMap::default();
 
     let ff_trace = ff_trace_x();
+    let mut face_extents = FaceExtents::default();
 
     for (idx_a, &fa) in faces_a.iter().enumerate() {
         context.check_cancelled()?;
@@ -796,12 +800,12 @@ fn perform_seeded(
             // the surface — shared between adjacent treads, so the arcs chain.
             // These exact arcs bypass the generic filters below.
             let (exact_arcs, raw_curves): (Vec<RawCurve>, Vec<RawCurve>) = {
-                let ext_a = FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?;
-                let ext_b = FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?;
+                face_extents.ensure(topo, fa, surf_a, v_range_a, tol)?;
+                face_extents.ensure(topo, fb, surf_b, v_range_b, tol)?;
                 let mut exact = Vec::new();
                 let mut rest = Vec::new();
                 for raw in raw_curves {
-                    if let (Some(ea), Some(eb)) = (&ext_a, &ext_b)
+                    if let (Some(ea), Some(eb)) = (face_extents.get(fa), face_extents.get(fb))
                         && let Some(arcs) = trim_ellipse_to_boundary_crossings(
                             topo, fa, fb, surf_a, surf_b, &raw, ea, eb,
                         )
@@ -979,6 +983,7 @@ fn perform_seeded(
                 raw_curves,
                 tol,
                 junction_registry,
+                &mut face_extents,
             )?;
             validate_raw_curve_collection("phase_ff face restriction", &raw_curves)?;
             if traced {
@@ -1617,6 +1622,41 @@ fn convex_spherical_patch_normals(
     Ok(Some(normals))
 }
 
+/// The [`FaceExtent`]s of one FF pass, each built on its face's first use.
+///
+/// An extent reads only the face's boundary (wires, edges, vertices), its
+/// surface and `v_range`, and FF only ever adds vertices and edges, so a
+/// face's extent is the same for every pair it takes part in. Building it
+/// once per face instead of once per pair is what keeps a face carrying many
+/// loops (a drilled plate's top) from paying for all of them on every pair.
+#[derive(Default)]
+struct FaceExtents {
+    built: DetHashMap<FaceId, Option<FaceExtent>>,
+}
+
+impl FaceExtents {
+    /// Build `face_id`'s extent unless this pass already has.
+    fn ensure(
+        &mut self,
+        topo: &Topology,
+        face_id: FaceId,
+        surface: &FaceSurface,
+        v_range: Option<(f64, f64)>,
+        tol: Tolerance,
+    ) -> Result<(), AlgoError> {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.built.entry(face_id) {
+            crate::perf::bump_face_extent_build();
+            slot.insert(FaceExtent::new(topo, face_id, surface, v_range, tol)?);
+        }
+        Ok(())
+    }
+
+    /// The extent [`Self::ensure`] built, `None` when the face has none.
+    fn get(&self, face_id: FaceId) -> Option<&FaceExtent> {
+        self.built.get(&face_id).and_then(Option::as_ref)
+    }
+}
+
 impl FaceExtent {
     fn new(
         topo: &Topology,
@@ -2221,6 +2261,7 @@ fn restrict_curves_to_faces(
     raw_curves: Vec<RawCurve>,
     tol: Tolerance,
     junctions: &mut JunctionRegistry,
+    face_extents: &mut FaceExtents,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     // Prove complete exclusion before the sampled mutual-extent filter. Using
     // the smaller patch in that filter would incorrectly discard narrow but
@@ -2254,10 +2295,10 @@ fn restrict_curves_to_faces(
             })
         })
         .collect();
-    let (Some(ext_a), Some(ext_b)) = (
-        FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?,
-        FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?,
-    ) else {
+    face_extents.ensure(topo, fa, surf_a, v_range_a, tol)?;
+    face_extents.ensure(topo, fb, surf_b, v_range_b, tol)?;
+    let face_extents: &FaceExtents = face_extents;
+    let (Some(ext_a), Some(ext_b)) = (face_extents.get(fa), face_extents.get(fb)) else {
         // Conservative: if either face's extent can't be built, don't restrict.
         return Ok(raw_curves);
     };
@@ -2298,7 +2339,7 @@ fn restrict_curves_to_faces(
         // the curved partner along a contact with no area.
         if matches!(raw.curve, EdgeCurve::Line) {
             if !nurbs_pair {
-                if line_section_is_tangency_graze(&raw, &ext_a, &ext_b, tol) {
+                if line_section_is_tangency_graze(&raw, ext_a, ext_b, tol) {
                     log::debug!(
                         "restrict_curves_to_faces: faces {fa:?} × {fb:?} — dropping tangency-graze line section {:?}..{:?}",
                         raw.p_start,
@@ -2317,7 +2358,7 @@ fn restrict_curves_to_faces(
             // boundary edges; defers (None) otherwise, so all other sections
             // keep the sample-clip below.
             if let Some(arcs) =
-                trim_torus_oval_to_box_face(topo, fa, fb, surf_a, surf_b, &raw, &ext_a, &ext_b, tol)
+                trim_torus_oval_to_box_face(topo, fa, fb, surf_a, surf_b, &raw, ext_a, ext_b, tol)
             {
                 out.extend(arcs);
                 continue;
@@ -2338,13 +2379,13 @@ fn restrict_curves_to_faces(
             // point on the shared edge and on the cone lies on BOTH faces'
             // conics).
             if let Some(pieces) = trim_open_curve_to_plane_face_lines(
-                topo, fa, surf_a, surf_b, &raw, &ext_a, &ext_b, tol,
+                topo, fa, surf_a, surf_b, &raw, ext_a, ext_b, tol,
             ) {
                 out.extend(pieces);
                 continue;
             }
             if let Some(pieces) = trim_open_curve_to_plane_face_lines(
-                topo, fb, surf_b, surf_a, &raw, &ext_b, &ext_a, tol,
+                topo, fb, surf_b, surf_a, &raw, ext_b, ext_a, tol,
             ) {
                 out.extend(pieces);
                 continue;
@@ -2393,7 +2434,7 @@ fn restrict_curves_to_faces(
             };
             if n_fine <= N {
                 out.extend(rescue_corner_crossing(
-                    topo, fa, fb, &raw, &ext_a, &ext_b, &inb, tol, junctions,
+                    topo, fa, fb, &raw, ext_a, ext_b, &inb, tol, junctions,
                 ));
                 continue;
             }
@@ -2411,13 +2452,13 @@ fn restrict_curves_to_faces(
             let (f0, f1) = longest_inboth_run(&inb_fine, closed);
             if f1 - f0 < 2 {
                 out.extend(rescue_corner_crossing(
-                    topo, fa, fb, &raw, &ext_a, &ext_b, &inb_fine, tol, junctions,
+                    topo, fa, fb, &raw, ext_a, ext_b, &inb_fine, tol, junctions,
                 ));
                 continue;
             }
             if closed && f1 - f0 < n_fine && !matches!(raw.curve, EdgeCurve::Circle(_)) {
                 emit_closed_curve_windows(
-                    topo, fa, fb, &raw, &ext_a, &ext_b, &inb_fine, n_fine, tol, junctions, &mut out,
+                    topo, fa, fb, &raw, ext_a, ext_b, &inb_fine, n_fine, tol, junctions, &mut out,
                 );
                 continue;
             }
@@ -2426,7 +2467,7 @@ fn restrict_curves_to_faces(
             // a peg cap's disc is 4 % of the converted wall's carrier width.
             if nurbs_pair && !closed && (f0 > 0 || f1 < n_fine) {
                 emit_open_curve_windows(
-                    topo, fa, fb, &raw, &ext_a, &ext_b, &inb_fine, n_fine, tol, junctions, &mut out,
+                    topo, fa, fb, &raw, ext_a, ext_b, &inb_fine, n_fine, tol, junctions, &mut out,
                 );
                 continue;
             }
@@ -2512,7 +2553,7 @@ fn restrict_curves_to_faces(
             // boundary-junction snapping — sample-index endpoints sit ~0.03
             // off the junction and never weld.
             emit_closed_curve_windows(
-                topo, fa, fb, &raw, &ext_a, &ext_b, &inb, N, tol, junctions, &mut out,
+                topo, fa, fb, &raw, ext_a, ext_b, &inb, N, tol, junctions, &mut out,
             );
             continue;
         }
@@ -2520,7 +2561,7 @@ fn restrict_curves_to_faces(
         // pair is trimmed to its in-both windows; nothing downstream will.
         if nurbs_pair && !closed && (b0 > 0 || b1 < N) {
             emit_open_curve_windows(
-                topo, fa, fb, &raw, &ext_a, &ext_b, &inb, N, tol, junctions, &mut out,
+                topo, fa, fb, &raw, ext_a, ext_b, &inb, N, tol, junctions, &mut out,
             );
             continue;
         }
@@ -3803,6 +3844,80 @@ fn nearest_parameter(raw: &RawCurve, p: Point3, t_guess: f64, radius: f64) -> f6
     if dist(t) <= dist(t_guess) { t } else { t_guess }
 }
 
+/// A lower bound on the distance from `p` to any point the curve evaluates
+/// to, or `None` when the curve kind has no cheap bound (lines, hyperbolas,
+/// parabolas, NURBS with a non-positive weight).
+///
+/// The bound is the distance to an axis-aligned box holding the whole
+/// curve: `centre ± (a·|u_i| + b·|v_i|)` per axis for circles and ellipses
+/// (every evaluated point is `centre + a·cos·u + b·sin·v`, whatever the
+/// axes' rounding), and the control points' box for a positive-weight NURBS
+/// (convex hull). A rounding slack well above the evaluation error is taken
+/// off, so the bound never exceeds a distance the sampling could measure.
+fn curve_box_distance(curve: &EdgeCurve, p: Point3) -> Option<f64> {
+    let (lo, hi) = match curve {
+        EdgeCurve::Circle(circle) => conic_box(
+            circle.center(),
+            circle.u_axis(),
+            circle.v_axis(),
+            circle.radius(),
+            circle.radius(),
+        ),
+        EdgeCurve::Ellipse(ellipse) => conic_box(
+            ellipse.center(),
+            ellipse.u_axis(),
+            ellipse.v_axis(),
+            ellipse.semi_major(),
+            ellipse.semi_minor(),
+        ),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            if !nurbs.weights().iter().all(|&w| w > 0.0) {
+                return None;
+            }
+            let mut points = nurbs.control_points().iter();
+            let first = *points.next()?;
+            let (mut lo, mut hi) = (
+                [first.x(), first.y(), first.z()],
+                [first.x(), first.y(), first.z()],
+            );
+            for q in points {
+                for (axis, value) in [q.x(), q.y(), q.z()].into_iter().enumerate() {
+                    lo[axis] = lo[axis].min(value);
+                    hi[axis] = hi[axis].max(value);
+                }
+            }
+            (lo, hi)
+        }
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+    };
+    let mut gap_squared = 0.0;
+    let mut scale = 1.0_f64;
+    for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+        let outside = (lo[axis] - value).max(value - hi[axis]).max(0.0);
+        gap_squared += outside * outside;
+        scale = scale
+            .max(lo[axis].abs())
+            .max(hi[axis].abs())
+            .max(value.abs());
+    }
+    let gap = gap_squared.sqrt() - 1e-12 * scale;
+    gap.is_finite().then_some(gap)
+}
+
+/// Per-axis box of `centre + a·cos(t)·u + b·sin(t)·v` over all `t`.
+fn conic_box(centre: Point3, u: Vec3, v: Vec3, a: f64, b: f64) -> ([f64; 3], [f64; 3]) {
+    let c = [centre.x(), centre.y(), centre.z()];
+    let (u, v) = ([u.x(), u.y(), u.z()], [v.x(), v.y(), v.z()]);
+    let mut lo = [0.0; 3];
+    let mut hi = [0.0; 3];
+    for axis in 0..3 {
+        let reach = (a * u[axis]).abs() + (b * v[axis]).abs();
+        lo[axis] = c[axis] - reach;
+        hi[axis] = c[axis] + reach;
+    }
+    (lo, hi)
+}
+
 /// Snap a fitted section endpoint onto the nearest boundary curve of either
 /// face (outer or inner wires) within the trigger band, then refine along
 /// that boundary to its exact crossing with the PARTNER face's surface — the
@@ -3864,6 +3979,14 @@ fn snap_to_boundary_junction_band(
                 }
                 continue;
             }
+            // Every point the search below evaluates lies in the curve's box,
+            // so an edge whose box is farther than the band can never be
+            // adopted: skip its sampling. On a face carrying many holes this
+            // is nearly every edge, and the result is unchanged.
+            if curve_box_distance(edge.curve(), p).is_some_and(|gap| gap > weld) {
+                continue;
+            }
+            crate::perf::bump_junction_curve_scan();
             let mut best_k = 0;
             let mut best_d = f64::MAX;
             for k in 0..=NS {
@@ -8506,6 +8629,7 @@ mod tests {
                         vec![raw],
                         tol,
                         &mut JunctionRegistry::default(),
+                        &mut FaceExtents::default(),
                     )
                     .unwrap();
                     assert_eq!(
@@ -10280,3 +10404,6 @@ mod helper_oracle_tests;
 
 #[cfg(test)]
 mod ruled_plane_tests;
+
+#[cfg(test)]
+mod junction_snap_oracle_tests;

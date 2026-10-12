@@ -264,6 +264,7 @@ Quick reference — find the right file for any task:
 | Deterministic work counters (complexity guards) | `perf.rs` |
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
 | Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
+| Differential oracle for the phase-FF junction snap's box gate (the ungated search kept verbatim) and the box bound against sampled curve distances (tests) | `pave_filler/phase_ff/junction_snap_oracle_tests.rs` |
 | Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
 | Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
