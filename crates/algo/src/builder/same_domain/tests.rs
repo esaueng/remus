@@ -106,7 +106,7 @@ fn rect_sub_face(
 fn detects_within_rank_planar_containment() {
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // Large outer face (rank A) and small contained face (also rank A).
@@ -152,7 +152,7 @@ fn detects_within_rank_planar_containment() {
 fn adjacent_coplanar_faces_not_duplicates() {
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // Two side-by-side rectangles, sharing one edge but not overlapping.
@@ -193,7 +193,7 @@ fn adjacent_coplanar_faces_not_duplicates() {
 fn cross_rank_geometric_containment_marks_overlapping() {
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // Rank A: large face. Rank B: small face fully inside A's outline,
@@ -238,7 +238,7 @@ fn cross_rank_geometric_containment_marks_overlapping() {
 fn reversed_face_flips_same_orientation() {
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     let face_a = rect_sub_face(
@@ -287,7 +287,7 @@ fn reversed_face_flips_same_orientation() {
 fn cross_rank_partial_overlap_marks_overlapping() {
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // A: [0,10]x[0,10] (area 100). B: [3,13]x[0,10] (area 100), shifted +3x.
@@ -338,7 +338,7 @@ fn cross_rank_partial_overlap_marks_overlapping() {
 fn cross_rank_small_overlap_not_paired() {
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // A: [0,10]x[0,10] (area 100). B: [9,19]x[0,10] (area 100), shifted +9x.
@@ -849,7 +849,7 @@ fn coaxial_cone_eighth_in_quarter_pairs() {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     let half_angle = std::f64::consts::FRAC_PI_6; // 30°
@@ -896,7 +896,7 @@ fn coaxial_cone_disjoint_z_bands_do_not_pair() {
     use std::f64::consts::FRAC_PI_2;
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     let half_angle = std::f64::consts::FRAC_PI_6;
@@ -942,7 +942,7 @@ fn coaxial_cylinder_eighth_in_quarter_pairs() {
     use std::f64::consts::FRAC_PI_4;
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // Body upper eighth: u in [0, π/4], z in [13.3, 16].
@@ -998,7 +998,7 @@ fn coaxial_cylinder_thin_partial_overlap_does_not_pair() {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8};
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // Patch A: u in [0, π/4], z in [13.3, 16].
@@ -1045,7 +1045,7 @@ fn coaxial_cylinder_disjoint_z_bands_do_not_pair() {
     use std::f64::consts::FRAC_PI_2;
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // Lower patch z in [0, 10] and upper patch z in [10, 20], same angular span.
@@ -1089,7 +1089,7 @@ fn coaxial_cylinder_opposite_sides_do_not_pair() {
     use std::f64::consts::{FRAC_PI_4, PI};
     let mut topo = Topology::new();
     let arena = GfaArena::new();
-    let face_ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let face_ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let tol = Tolerance::new();
 
     // +X side: u in [0, π/4]; opposite (−X) side: u in [π, π + π/4].
@@ -1181,7 +1181,7 @@ fn chord_split_disc_halves_are_not_duplicates() {
         },
     ];
     let arena = GfaArena::new();
-    let ranks: HashMap<FaceId, Rank> = HashMap::new();
+    let ranks: DetHashMap<FaceId, Rank> = DetHashMap::default();
     let result = detect_same_domain(&topo, &arena, &sub_faces, &ranks, Tolerance::new());
     assert!(
         result.within_rank_dups.is_empty(),
@@ -1377,7 +1377,7 @@ fn complementary_coplanar_pieces_each_receive_cross_rank_selection() {
         &topo,
         &GfaArena::new(),
         &faces,
-        &HashMap::new(),
+        &DetHashMap::default(),
         Tolerance::new(),
     );
     assert_eq!(result.pairs.len(), 2);
@@ -1455,7 +1455,7 @@ fn planar_nurbs_support_participates_in_containment_without_carrier_replacement(
         &topo,
         &GfaArena::new(),
         &faces,
-        &HashMap::new(),
+        &DetHashMap::default(),
         Tolerance::new(),
     );
     assert_eq!(result.pairs.len(), 1);

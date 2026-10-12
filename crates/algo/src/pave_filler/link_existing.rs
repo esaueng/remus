@@ -10,6 +10,7 @@
 //! pattern: section edges that coincide with face boundary edges are
 //! linked so `MakeSplitEdges` creates one shared edge entity.
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -74,14 +75,12 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
         )
     };
 
-    let mut boundary_index: std::collections::HashMap<QPair, Vec<PaveBlockId>> =
-        std::collections::HashMap::new();
+    let mut boundary_index: DetHashMap<QPair, Vec<PaveBlockId>> = DetHashMap::default();
 
     // Secondary index for full closed circle blocks (start == end vertex):
     // their endpoint is an arbitrary seam vertex, so endpoint-pair keys
     // cannot match across differently-seamed but coincident circles.
-    let mut closed_index: std::collections::HashMap<QCircle, Vec<PaveBlockId>> =
-        std::collections::HashMap::new();
+    let mut closed_index: DetHashMap<QCircle, Vec<PaveBlockId>> = DetHashMap::default();
 
     let all_edge_pbs: Vec<Vec<PaveBlockId>> = arena
         .edge_pave_blocks

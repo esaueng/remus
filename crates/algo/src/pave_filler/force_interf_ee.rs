@@ -5,8 +5,7 @@
 //! iterating leaf PaveBlocks to find pairs with matching 3D endpoints
 //! and compatible curve geometry.
 
-use std::collections::{HashMap, HashSet};
-
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -80,7 +79,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     // endpoints coincide within tolerance, so we spatially hash each block by
     // the quantized cell of its (unordered) endpoint pair and only compare
     // blocks that share a candidate cell — collapsing the scan to ~O(n).
-    let mut overlap_map: HashMap<PaveBlockId, Vec<PaveBlockId>> = HashMap::new();
+    let mut overlap_map: DetHashMap<PaveBlockId, Vec<PaveBlockId>> = DetHashMap::default();
     let n = leaf_data.len();
 
     // Cell size covers the largest possible pair band, so matching block
@@ -110,7 +109,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     };
 
     // Bucket each leaf block by its midpoint cell.
-    let mut buckets: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut buckets: DetHashMap<(i64, i64, i64), Vec<usize>> = DetHashMap::default();
     for (i, leaf) in leaf_data.iter().enumerate() {
         buckets
             .entry(key(midpoint(leaf.start, leaf.end)))
@@ -193,7 +192,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     }
 
     // Build transitive closure and create CommonBlocks
-    let mut visited: HashSet<PaveBlockId> = HashSet::new();
+    let mut visited: DetHashSet<PaveBlockId> = DetHashSet::default();
 
     for leaf in &leaf_data {
         let pb_id = leaf.pave_block;

@@ -10,8 +10,9 @@
 //! 3. **`perform_areas`** — Growth vs Hole classification
 //! 4. **Assemble** — build final Solid from shells
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
+use remus_math::det_hash::{DetHashMap, DetHashSet, DetState};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeDomainError, EdgeId};
@@ -258,7 +259,7 @@ pub fn build_solids_with_origins(
     // Snapshot provenance now that face_ids / sources are final and parallel:
     // map each result-bound face to the input face it derives from (None for a
     // synthesised cap). Queried after assembly against the actual result faces.
-    let face_source: std::collections::HashMap<FaceId, Option<FaceId>> = face_ids
+    let face_source: DetHashMap<FaceId, Option<FaceId>> = face_ids
         .iter()
         .copied()
         .zip(sources.iter().copied())
@@ -376,7 +377,7 @@ pub(super) fn orient_revolved_face_wires(
     topo: &mut Topology,
     selected: &[SelectedFace],
 ) -> Result<(), AlgoError> {
-    let mut processed = HashSet::new();
+    let mut processed = DetHashSet::default();
     for selected_face in selected {
         let face_id = selected_face.face_id;
         if !processed.insert(face_id) {
@@ -881,7 +882,7 @@ fn perform_shapes_to_avoid(
 
     loop {
         let edge_map = build_edge_face_map(topo, faces)?;
-        let mut to_remove: HashSet<FaceId> = HashSet::new();
+        let mut to_remove: DetHashSet<FaceId> = DetHashSet::default();
 
         // Only remove faces where EVERY edge is free (≤1 face). Removing a
         // face with *any* free edge would strip valid multi-region faces.
@@ -928,11 +929,11 @@ fn perform_loops(topo: &Topology, faces: &[FaceId]) -> Result<Vec<Vec<FaceId>>, 
     let edge_map = build_adjacency_edge_face_map(topo, faces)?;
     let edge_positions = build_adjacency_edge_positions(topo, faces)?;
 
-    let mut visited: HashSet<FaceId> = HashSet::new();
+    let mut visited: DetHashSet<FaceId> = DetHashSet::default();
     let mut shells: Vec<Vec<FaceId>> = Vec::new();
 
     // Pre-compute face → edge keys for neighbor lookup
-    let face_edges: HashMap<FaceId, Vec<EdgeAdjacencyKey>> = faces
+    let face_edges: DetHashMap<FaceId, Vec<EdgeAdjacencyKey>> = faces
         .iter()
         .filter_map(|&fid| Some((fid, face_adjacency_keys(topo, fid).ok()?)))
         .collect();
@@ -946,7 +947,7 @@ fn perform_loops(topo: &Topology, faces: &[FaceId]) -> Result<Vec<Vec<FaceId>>, 
         let mut queue = VecDeque::new();
 
         // Track edges already filled (2 faces) in this shell
-        let mut shell_edge_count: HashMap<EdgeAdjacencyKey, u32> = HashMap::new();
+        let mut shell_edge_count: DetHashMap<EdgeAdjacencyKey, u32> = DetHashMap::default();
 
         visited.insert(start_face);
         shell.push(start_face);
@@ -1454,7 +1455,7 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
             shell_is_outward_oriented(topo, shell).unwrap_or(false)
         };
         if std::env::var("BK_AREAS").is_ok() {
-            let mut mix: HashMap<&str, usize> = HashMap::new();
+            let mut mix: DetHashMap<&str, usize> = DetHashMap::default();
             for &fid in shell {
                 if let Ok(f) = topo.face(fid) {
                     *mix.entry(f.surface().type_tag()).or_default() += 1;
@@ -1489,7 +1490,7 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
 /// Whether a shell is closed: every quantized boundary edge is shared by an
 /// even number of the shell's own faces (a watertight, manifold lump).
 fn shell_is_closed(topo: &Topology, faces: &[FaceId]) -> bool {
-    let mut edge_counts: HashMap<EdgeAdjacencyKey, u32> = HashMap::new();
+    let mut edge_counts: DetHashMap<EdgeAdjacencyKey, u32> = DetHashMap::default();
     for &fid in faces {
         let Ok(keys) = face_adjacency_keys(topo, fid) else {
             return false;
@@ -1631,7 +1632,8 @@ fn oriented_edges_form_closed_loop(topo: &Topology, oes: &[OrientedEdge]) -> boo
 /// once in the list. Such a wire cannot be a simple loop: the repeat encloses
 /// zero area and marks degenerate hole debris from coplanar section splitting.
 fn has_repeated_oriented_edge(oes: &[OrientedEdge]) -> bool {
-    let mut seen: HashSet<(usize, bool)> = HashSet::with_capacity(oes.len());
+    let mut seen: DetHashSet<(usize, bool)> =
+        DetHashSet::with_capacity_and_hasher(oes.len(), DetState);
     for oe in oes {
         if !seen.insert((oe.edge().index(), oe.is_forward())) {
             return true;
@@ -1752,7 +1754,7 @@ fn prune_dangling_edges(topo: &Topology, oes: &mut Vec<OrientedEdge>) -> bool {
         let Some(ends) = oriented_edge_endpoints(topo, oes) else {
             return changed;
         };
-        let mut degree: HashMap<QPos, usize> = HashMap::new();
+        let mut degree: DetHashMap<QPos, usize> = DetHashMap::default();
         for (s, e) in &ends {
             *degree.entry(*s).or_insert(0) += 1;
             *degree.entry(*e).or_insert(0) += 1;
@@ -1797,7 +1799,7 @@ fn order_edges_sequential(topo: &Topology, oes: &mut Vec<OrientedEdge>) -> bool 
     if (0..n).all(|i| ends[i].1 == ends[(i + 1) % n].0) {
         return false;
     }
-    let mut by_start: HashMap<QPos, usize> = HashMap::with_capacity(n);
+    let mut by_start: DetHashMap<QPos, usize> = DetHashMap::with_capacity_and_hasher(n, DetState);
     for (i, (s, _)) in ends.iter().enumerate() {
         if by_start.insert(*s, i).is_some() {
             return false;
@@ -1931,13 +1933,13 @@ fn log_open_growth_shell(
     topo: &Topology,
     gs: &[FaceId],
     all: &[FaceId],
-    face_source: &HashMap<FaceId, Option<FaceId>>,
+    face_source: &DetHashMap<FaceId, Option<FaceId>>,
 ) {
     if std::env::var("BK_OPEN_SHELL").is_err() {
         return;
     }
-    let in_lump: HashSet<FaceId> = gs.iter().copied().collect();
-    let mut uses: HashMap<EdgeId, usize> = HashMap::new();
+    let in_lump: DetHashSet<FaceId> = gs.iter().copied().collect();
+    let mut uses: DetHashMap<EdgeId, usize> = DetHashMap::default();
     for &fid in gs {
         let Ok(f) = topo.face(fid) else { continue };
         for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
@@ -2095,7 +2097,7 @@ fn log_open_growth_shell(
         lo[2],
         hi[2]
     );
-    let mut allmix: HashMap<&str, usize> = HashMap::new();
+    let mut allmix: DetHashMap<&str, usize> = DetHashMap::default();
     for &ofid in all {
         if let Ok(f) = topo.face(ofid) {
             *allmix.entry(f.surface().type_tag()).or_default() += 1;
@@ -2244,7 +2246,7 @@ fn assemble_regions(
     topo: &mut Topology,
     growth_shells: Vec<Vec<FaceId>>,
     hole_shells: Vec<Vec<FaceId>>,
-    face_source: &HashMap<FaceId, Option<FaceId>>,
+    face_source: &DetHashMap<FaceId, Option<FaceId>>,
 ) -> Result<Vec<SolidId>, AlgoError> {
     let all_faces: Vec<FaceId> = growth_shells
         .iter()
@@ -2446,7 +2448,7 @@ struct EdgeEntry {
 /// identical candidate set with O(V + Σ cells-per-segment) work.
 struct PointGrid {
     inv_cell: f64,
-    buckets: HashMap<(i64, i64, i64), Vec<usize>>,
+    buckets: DetHashMap<(i64, i64, i64), Vec<usize>>,
 }
 
 impl PointGrid {
@@ -2457,7 +2459,7 @@ impl PointGrid {
     fn new(points: &[Point3], min_cell: f64) -> Self {
         let cell = Self::choose_cell(points, min_cell);
         let inv_cell = 1.0 / cell;
-        let mut buckets: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+        let mut buckets: DetHashMap<(i64, i64, i64), Vec<usize>> = DetHashMap::default();
         for (i, p) in points.iter().enumerate() {
             buckets
                 .entry(Self::cell_of(*p, inv_cell))
@@ -2657,7 +2659,7 @@ fn is_degenerate_line_sliver(topo: &Topology, fid: FaceId) -> bool {
     let Ok(wire) = topo.wire(face.outer_wire()) else {
         return false;
     };
-    let mut positions: HashSet<QPos> = HashSet::new();
+    let mut positions: DetHashSet<QPos> = DetHashSet::default();
     for oe in wire.edges() {
         let Ok(edge) = topo.edge(oe.edge()) else {
             return false;
@@ -2707,9 +2709,9 @@ fn weld_coincident_vertices(
     let snap = MERGE_TOL * 10.0;
 
     // Collect distinct vertices (id + position) referenced by the faces.
-    let mut seen: HashSet<VertexId> = HashSet::new();
+    let mut seen: DetHashSet<VertexId> = DetHashSet::default();
     let mut verts: Vec<(VertexId, Point3)> = Vec::new();
-    let mut nurbs_vertices = HashSet::new();
+    let mut nurbs_vertices = DetHashSet::default();
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -2742,8 +2744,8 @@ fn weld_coincident_vertices(
             (p.z() * s).floor() as i64,
         )
     };
-    let mut buckets: HashMap<(i64, i64, i64), Vec<(VertexId, Point3)>> = HashMap::new();
-    let mut weld: HashMap<VertexId, VertexId> = HashMap::new();
+    let mut buckets: DetHashMap<(i64, i64, i64), Vec<(VertexId, Point3)>> = DetHashMap::default();
+    let mut weld: DetHashMap<VertexId, VertexId> = DetHashMap::default();
     for &(vid, p) in &verts {
         let c = cell(p);
         // Pick the lowest-index canonical within `snap` across the 27 cells,
@@ -2811,7 +2813,7 @@ fn weld_coincident_vertices(
     let resolve = |vid: VertexId| -> VertexId { weld.get(&vid).copied().unwrap_or(vid) };
 
     // Cache rewritten edges so a shared EdgeId is rebuilt once and stays shared.
-    let mut edge_remap: HashMap<EdgeId, Option<EdgeId>> = HashMap::new();
+    let mut edge_remap: DetHashMap<EdgeId, Option<EdgeId>> = DetHashMap::default();
     for fid in face_ids.iter_mut() {
         let (surface, is_reversed, outer_oes, inner_oes_list) = {
             let face = topo.face(*fid)?;
@@ -2943,9 +2945,9 @@ fn split_edges_at_collinear_vertices(
     let snap = tol * 10.0;
 
     // Canonical vertex per quantized position, and unique Line edges.
-    let mut vert_at: HashMap<QPos, (VertexId, Point3)> = HashMap::new();
+    let mut vert_at: DetHashMap<QPos, (VertexId, Point3)> = DetHashMap::default();
     let mut line_edges: Vec<(EdgeId, VertexId, VertexId, Point3, Point3)> = Vec::new();
-    let mut seen_edges: HashSet<EdgeId> = HashSet::new();
+    let mut seen_edges: DetHashSet<EdgeId> = DetHashSet::default();
 
     // A boundary used TWICE by ONE face and by nothing else is a SEAM — the
     // generator a periodic face was cut open along. Refining a seam buys
@@ -2964,7 +2966,7 @@ fn split_edges_at_collinear_vertices(
     // are still separate edge entities at this stage — they only become one in
     // `merge_duplicate_edges` below — so an id-keyed test would never see them
     // as a pair.
-    let mut seam_pairs: HashMap<QPosEdge, Vec<usize>> = HashMap::new();
+    let mut seam_pairs: DetHashMap<QPosEdge, Vec<usize>> = DetHashMap::default();
     for (fi, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -3019,7 +3021,7 @@ fn split_edges_at_collinear_vertices(
     let positions: Vec<Point3> = verts.iter().map(|&(_, p)| p).collect();
     let grid = PointGrid::new(&positions, snap);
 
-    let mut replacements: HashMap<EdgeId, Vec<OrientedEdge>> = HashMap::new();
+    let mut replacements: DetHashMap<EdgeId, Vec<OrientedEdge>> = DetHashMap::default();
     for (eid, sv, ev, sp, ep) in line_edges {
         let dir = ep - sp;
         let len2 = dir.dot(dir);
@@ -3237,14 +3239,14 @@ fn split_arc_edges_at_collinear_vertices(
     let snap = tol * 10.0;
 
     // Canonical vertex per quantized position, and unique arc edges.
-    let mut vert_at: HashMap<QPos, (VertexId, Point3)> = HashMap::new();
+    let mut vert_at: DetHashMap<QPos, (VertexId, Point3)> = DetHashMap::default();
     // Curve supports incident at each vertex. An ambiguous open major arc may
     // only be refined at vertices that already partition the same geometric
     // conic; an arbitrary selected-face vertex on the carrier curve is not
     // evidence that the edge follows the long endpoint span.
-    let mut curve_support_at: HashMap<QPos, Vec<EdgeCurve>> = HashMap::new();
+    let mut curve_support_at: DetHashMap<QPos, Vec<EdgeCurve>> = DetHashMap::default();
     let mut arc_edges: Vec<ArcEdge> = Vec::new();
-    let mut seen_edges: HashSet<EdgeId> = HashSet::new();
+    let mut seen_edges: DetHashSet<EdgeId> = DetHashSet::default();
 
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
@@ -3303,7 +3305,7 @@ fn split_arc_edges_at_collinear_vertices(
     let positions: Vec<Point3> = verts.iter().map(|&(_, p)| p).collect();
     let grid = PointGrid::new(&positions, snap);
 
-    let mut replacements: HashMap<EdgeId, Vec<OrientedEdge>> = HashMap::new();
+    let mut replacements: DetHashMap<EdgeId, Vec<OrientedEdge>> = DetHashMap::default();
     for ArcEdge {
         edge_id: eid,
         start_vertex: sv,
@@ -4052,7 +4054,7 @@ fn merge_needs_flip(
 fn unification_collapses_wire(
     topo: &Topology,
     face_ids: &[FaceId],
-    replacements: &HashMap<EdgeId, (EdgeId, bool)>,
+    replacements: &DetHashMap<EdgeId, (EdgeId, bool)>,
     canonical: EdgeId,
     dup: EdgeId,
 ) -> Result<bool, AlgoError> {
@@ -4067,14 +4069,15 @@ fn unification_collapses_wire(
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             let wire = topo.wire(wid)?;
-            let pre: HashSet<EdgeId> = wire.edges().iter().map(|oe| resolve(oe.edge())).collect();
+            let pre: DetHashSet<EdgeId> =
+                wire.edges().iter().map(|oe| resolve(oe.edge())).collect();
             if pre.len() <= 1 || !pre.contains(&dup) {
                 continue;
             }
             if pre
                 .iter()
                 .map(|&eid| if eid == dup { resolved_canonical } else { eid })
-                .collect::<HashSet<_>>()
+                .collect::<DetHashSet<_>>()
                 .len()
                 <= 1
             {
@@ -4152,7 +4155,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     }
 
     // Find groups where multiple DIFFERENT EdgeIds share the same qpair.
-    let mut groups: HashMap<QPosEdge, Vec<EdgeId>> = HashMap::new();
+    let mut groups: DetHashMap<QPosEdge, Vec<EdgeId>> = DetHashMap::default();
     for entry in &entries {
         groups.entry(entry.qpair).or_default().push(entry.edge_id);
     }
@@ -4168,7 +4171,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     // unless the unification would collapse a face loop to a single repeated
     // edge (B68). Groups are edge-disjoint, so group order cannot affect the
     // replacement set.
-    let mut replacements: HashMap<EdgeId, (EdgeId, bool)> = HashMap::new();
+    let mut replacements: DetHashMap<EdgeId, (EdgeId, bool)> = DetHashMap::default();
     for edge_ids in groups.values() {
         // Deduplicate edge IDs (same edge may appear multiple times from different faces)
         let mut unique: Vec<EdgeId> = edge_ids.clone();
@@ -4417,7 +4420,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     // structurally identical wires across runs. Downstream flood-fill in
     // `perform_loops` can be sensitive to those ID orderings at
     // near-degenerate geometry, so fix the order here.
-    let faces_to_rebuild: HashSet<usize> = entries
+    let faces_to_rebuild: DetHashSet<usize> = entries
         .iter()
         .filter(|e| replacements.contains_key(&e.edge_id))
         .map(|e| e.face_idx)
@@ -4630,7 +4633,7 @@ fn remove_doubled_faces(
     // Key = sorted outer- AND inner-wire edge-ID multiset, so a face only
     // matches a TRULY identical one — a holed face never collides with a
     // coincident spurious non-holed copy (which would otherwise drop it).
-    let mut groups: HashMap<Vec<EdgeId>, Vec<usize>> = HashMap::new();
+    let mut groups: DetHashMap<Vec<EdgeId>, Vec<usize>> = DetHashMap::default();
     for (fi, &fid) in face_ids.iter().enumerate() {
         let Ok(face) = topo.face(fid) else { continue };
         let Ok(wire) = topo.wire(face.outer_wire()) else {
@@ -4646,7 +4649,7 @@ fn remove_doubled_faces(
         groups.entry(key).or_default().push(fi);
     }
 
-    let mut drop_idx: HashSet<usize> = HashSet::new();
+    let mut drop_idx: DetHashSet<usize> = DetHashSet::default();
     for members in groups.values() {
         if members.len() >= 2 && !group_is_complementary_curved_patches(topo, face_ids, members) {
             for &m in members {
@@ -4708,7 +4711,7 @@ fn group_is_complementary_curved_patches(
     // a plane disc and a sphere cap sharing one circle bound a lens (B64),
     // not the same region twice. Keep the whole group.
     {
-        let mut tags: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+        let mut tags: DetHashSet<&'static str> = DetHashSet::default();
         for &m in members {
             let Some(&fid) = face_ids.get(m) else {
                 return false;
@@ -4723,7 +4726,7 @@ fn group_is_complementary_curved_patches(
         }
     }
 
-    let mut walks: Vec<HashSet<(EdgeId, bool)>> = Vec::with_capacity(members.len());
+    let mut walks: Vec<DetHashSet<(EdgeId, bool)>> = Vec::with_capacity(members.len());
     for &m in members {
         let Some(&fid) = face_ids.get(m) else {
             return false;
@@ -4765,8 +4768,8 @@ fn group_is_complementary_curved_patches(
 fn build_edge_face_map(
     topo: &Topology,
     faces: &[FaceId],
-) -> Result<HashMap<VPair, Vec<FaceId>>, AlgoError> {
-    let mut map: HashMap<VPair, Vec<FaceId>> = HashMap::new();
+) -> Result<DetHashMap<VPair, Vec<FaceId>>, AlgoError> {
+    let mut map: DetHashMap<VPair, Vec<FaceId>> = DetHashMap::default();
 
     for &fid in faces {
         for key in face_edge_keys(topo, fid)? {
@@ -4790,8 +4793,8 @@ struct EdgeAdjacencyKey {
 fn build_adjacency_edge_face_map(
     topo: &Topology,
     faces: &[FaceId],
-) -> Result<HashMap<EdgeAdjacencyKey, Vec<FaceId>>, AlgoError> {
-    let mut map: HashMap<EdgeAdjacencyKey, Vec<FaceId>> = HashMap::new();
+) -> Result<DetHashMap<EdgeAdjacencyKey, Vec<FaceId>>, AlgoError> {
+    let mut map: DetHashMap<EdgeAdjacencyKey, Vec<FaceId>> = DetHashMap::default();
     for &fid in faces {
         for key in face_adjacency_keys(topo, fid)? {
             map.entry(key).or_default().push(fid);
@@ -4917,8 +4920,8 @@ fn face_adjacency_keys(topo: &Topology, fid: FaceId) -> Result<Vec<EdgeAdjacency
 fn build_adjacency_edge_positions(
     topo: &Topology,
     faces: &[FaceId],
-) -> Result<HashMap<EdgeAdjacencyKey, (Point3, Point3)>, AlgoError> {
-    let mut map = HashMap::new();
+) -> Result<DetHashMap<EdgeAdjacencyKey, (Point3, Point3)>, AlgoError> {
+    let mut map = DetHashMap::default();
     for &fid in faces {
         let face = topo.face(fid)?;
         for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -4979,7 +4982,7 @@ fn cap_partial_overlap_free_loops(
     // Collect free edges: those whose quantized vertex-pair key is incident to
     // exactly one selected face.
     let edge_map = build_edge_face_map(topo, face_ids)?;
-    let free_keys: HashSet<VPair> = edge_map
+    let free_keys: DetHashSet<VPair> = edge_map
         .iter()
         .filter(|(_, faces)| faces.len() == 1)
         .map(|(k, _)| *k)
@@ -4992,7 +4995,7 @@ fn cap_partial_overlap_free_loops(
     // edge per key — duplicates were merged earlier). Record each edge's
     // endpoints so we can walk loops by quantized position.
     let mut free_edges: Vec<(EdgeId, QPos, QPos)> = Vec::new();
-    let mut seen_keys: HashSet<VPair> = HashSet::new();
+    let mut seen_keys: DetHashSet<VPair> = DetHashSet::default();
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -5013,7 +5016,7 @@ fn cap_partial_overlap_free_loops(
 
     // Build an undirected adjacency over quantized vertices, vertex -> list of
     // (edge index, other-endpoint). A closed loop walks vertices of degree 2.
-    let mut adj: HashMap<QPos, Vec<(usize, QPos)>> = HashMap::new();
+    let mut adj: DetHashMap<QPos, Vec<(usize, QPos)>> = DetHashMap::default();
     for (i, &(_, qs, qe)) in free_edges.iter().enumerate() {
         adj.entry(qs).or_default().push((i, qe));
         adj.entry(qe).or_default().push((i, qs));
@@ -5026,7 +5029,7 @@ fn cap_partial_overlap_free_loops(
     }
 
     let mut used_edge: Vec<bool> = vec![false; free_edges.len()];
-    let mut pos3d: HashMap<QPos, Point3> = HashMap::new();
+    let mut pos3d: DetHashMap<QPos, Point3> = DetHashMap::default();
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -5156,7 +5159,7 @@ fn cap_partial_overlap_free_loops(
             .enumerate()
             .filter_map(|(i, (ci, _, _))| (*ci == cap_index).then_some(i))
             .collect();
-        let mut parents: HashMap<usize, usize> = HashMap::new();
+        let mut parents: DetHashMap<usize, usize> = DetHashMap::default();
         for &child in &indices {
             let child_point = cap_loops[child].2[0];
             let child_area = planar_loop_area(&cap_loops[child].2, cap_planes[cap_index].normal);
@@ -5186,7 +5189,7 @@ fn cap_partial_overlap_free_loops(
         for &outer in &indices {
             let mut depth = 0;
             let mut ancestor = outer;
-            let mut visited = HashSet::new();
+            let mut visited = DetHashSet::default();
             while let Some(&parent) = parents.get(&ancestor) {
                 if !visited.insert(ancestor) {
                     return Err(AlgoError::AssemblyFailed(
@@ -5831,8 +5834,7 @@ mod tests {
             let outer = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
             let second = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
             let ids: Vec<_> = remus_topology::explorer::solid_faces(&topo, second).unwrap();
-            let mut moved: std::collections::HashSet<remus_topology::vertex::VertexId> =
-                std::collections::HashSet::new();
+            let mut moved: DetHashSet<remus_topology::vertex::VertexId> = DetHashSet::default();
             for &fid in &ids {
                 let face = topo.face(fid).unwrap();
                 let wires: Vec<_> = std::iter::once(face.outer_wire())
@@ -5937,9 +5939,10 @@ mod tests {
                 d: 0.0,
             },
         ));
-        let aliases = HashMap::from([(alias_arc, (canonical_arc, false))]);
+        let aliases: DetHashMap<_, _> =
+            std::iter::once((alias_arc, (canonical_arc, false))).collect();
         let without_alias =
-            unification_collapses_wire(&topo, &[face], &HashMap::new(), line, canonical_arc)
+            unification_collapses_wire(&topo, &[face], &DetHashMap::default(), line, canonical_arc)
                 .unwrap();
         let with_alias =
             unification_collapses_wire(&topo, &[face], &aliases, line, canonical_arc).unwrap();

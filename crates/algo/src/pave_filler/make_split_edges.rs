@@ -8,7 +8,7 @@
 //! edge is created for the entire group. All PBs in the CB reference the
 //! same edge entity.
 
-use std::collections::HashSet;
+use remus_math::det_hash::DetHashSet;
 
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -32,7 +32,7 @@ use crate::error::AlgoError;
 /// Returns [`AlgoError`] if a topology lookup fails.
 pub fn perform(topo: &mut Topology, arena: &mut GfaArena) -> Result<(), AlgoError> {
     // Track processed CommonBlocks to avoid creating duplicate edges
-    let mut processed_cbs: HashSet<CommonBlockId> = HashSet::new();
+    let mut processed_cbs: DetHashSet<CommonBlockId> = DetHashSet::default();
 
     let leaf_ids: Vec<_> = arena
         .pave_blocks

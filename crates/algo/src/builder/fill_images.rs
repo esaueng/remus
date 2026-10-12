@@ -4,7 +4,7 @@
 //! original edge maps to one or more leaf pave blocks, each of which
 //! has a `split_edge` pointing to the new topology edge.
 
-use std::collections::HashMap;
+use remus_math::det_hash::DetHashMap;
 
 use remus_topology::edge::EdgeId;
 
@@ -18,8 +18,8 @@ use crate::ds::GfaArena;
 /// (the single leaf pave block). The split edges are in parameter order
 /// so that wire reconstruction can iterate them in sequence.
 #[must_use]
-pub fn fill_edge_images(arena: &GfaArena) -> HashMap<EdgeId, Vec<EdgeId>> {
-    let mut images: HashMap<EdgeId, Vec<EdgeId>> = HashMap::new();
+pub fn fill_edge_images(arena: &GfaArena) -> DetHashMap<EdgeId, Vec<EdgeId>> {
+    let mut images: DetHashMap<EdgeId, Vec<EdgeId>> = DetHashMap::default();
 
     for (&original_edge, pb_ids) in &arena.edge_pave_blocks {
         let leaves = arena.collect_leaf_pave_blocks(pb_ids);

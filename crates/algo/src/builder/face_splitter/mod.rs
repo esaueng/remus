@@ -30,6 +30,7 @@ pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 pub use conversion::collect_wire_points;
 
 use remus_math::context::OperationContext;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -156,8 +157,7 @@ fn split_sections_at_t_junctions(
         )
     };
     let mut endpoints: Vec<Point3> = Vec::new();
-    let mut fine_grid: std::collections::HashMap<(i64, i64, i64), Vec<Point3>> =
-        std::collections::HashMap::new();
+    let mut fine_grid: DetHashMap<(i64, i64, i64), Vec<Point3>> = DetHashMap::default();
     let mut len_sum = 0.0_f64;
     let mut len_cnt = 0.0_f64;
     for e in &all_edges[section_start..] {
@@ -226,8 +226,7 @@ fn split_sections_at_t_junctions(
             (z * coarse_inv).floor() as i64,
         )
     };
-    let mut coarse_grid: std::collections::HashMap<(i64, i64, i64), Vec<Point3>> =
-        std::collections::HashMap::new();
+    let mut coarse_grid: DetHashMap<(i64, i64, i64), Vec<Point3>> = DetHashMap::default();
     for &p in &endpoints {
         coarse_grid
             .entry(coarse_cell(p.x(), p.y(), p.z()))
@@ -279,8 +278,7 @@ fn split_sections_at_t_junctions(
         .filter_map(|e| e.source_edge_idx)
         .max()
         .map_or(section_start, |m| m + 1);
-    let mut piece_src: std::collections::HashMap<(i64, i64, i64, i64, i64, i64), usize> =
-        std::collections::HashMap::new();
+    let mut piece_src: DetHashMap<(i64, i64, i64, i64, i64, i64), usize> = DetHashMap::default();
     let key = |a: Point3, b: Point3| -> (i64, i64, i64, i64, i64, i64) {
         let q = |x: f64| (x / tol).round() as i64;
         let ka = (q(a.x()), q(a.y()), q(a.z()));
@@ -1141,8 +1139,7 @@ fn split_loop_at_pinch_vertices(
             out.push(lp);
             continue;
         }
-        let mut seen: std::collections::HashMap<(i64, i64), usize> =
-            std::collections::HashMap::new();
+        let mut seen: DetHashMap<(i64, i64), usize> = DetHashMap::default();
         let mut pinch: Option<(usize, usize)> = None;
         for (i, edge) in lp.iter().enumerate() {
             if let Some(&j) = seen.get(&qkey(edge.start_uv)) {
@@ -1202,7 +1199,7 @@ fn wire_loops_self_cross(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bool {
         if wire.len() < 3 {
             continue;
         }
-        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        let mut seen: DetHashSet<(i64, i64)> = DetHashSet::default();
         for e in wire {
             if !seen.insert(qkey(e.start_uv)) {
                 return true;
@@ -1230,7 +1227,6 @@ fn wire_loops_self_cross(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bool {
 /// legitimately traverses its seam edge twice, and that pair merging into one
 /// edge used forward+reverse is correct topology.
 fn split_coendpoint_loop_arcs(loops: &mut [Vec<OrientedPCurveEdge>], surface: &FaceSurface) {
-    use std::collections::HashMap;
     use std::f64::consts::TAU;
 
     type QP = (i64, i64, i64);
@@ -1259,7 +1255,7 @@ fn split_coendpoint_loop_arcs(loops: &mut [Vec<OrientedPCurveEdge>], surface: &F
         Some(c.evaluate(s_ang + 0.5 * span))
     };
 
-    let mut pair_mids: HashMap<(QP, QP), Vec<QP>> = HashMap::new();
+    let mut pair_mids: DetHashMap<(QP, QP), Vec<QP>> = DetHashMap::default();
     for lp in loops.iter() {
         for e in lp {
             let Some(mid) = arc_mid(e) else { continue };
@@ -1268,7 +1264,7 @@ fn split_coendpoint_loop_arcs(loops: &mut [Vec<OrientedPCurveEdge>], surface: &F
             pair_mids.entry(key).or_default().push(q3(mid));
         }
     }
-    let colliding: std::collections::HashSet<(QP, QP)> = pair_mids
+    let colliding: DetHashSet<(QP, QP)> = pair_mids
         .into_iter()
         .filter(|(_, mids)| mids.iter().any(|m| *m != mids[0]))
         .map(|(k, _)| k)
@@ -2337,7 +2333,6 @@ fn winding_section_chains(
     surface: &FaceSurface,
     tol: f64,
 ) -> Option<Vec<Vec<(usize, bool)>>> {
-    use std::collections::HashMap;
     use std::f64::consts::{PI, TAU};
 
     let (Some(_), _) = super::pcurve_compute::surface_periods(surface) else {
@@ -2358,7 +2353,7 @@ fn winding_section_chains(
     let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
 
     // Endpoint-keyed adjacency: (piece index, leaves-from-start).
-    let mut adj: HashMap<(i64, i64, i64), Vec<(usize, bool)>> = HashMap::new();
+    let mut adj: DetHashMap<(i64, i64, i64), Vec<(usize, bool)>> = DetHashMap::default();
     for (i, s) in sections.iter().enumerate() {
         adj.entry(q3(s.start)).or_default().push((i, true));
         adj.entry(q3(s.end)).or_default().push((i, false));
@@ -2427,8 +2422,6 @@ fn winding_section_chains(
 /// Whether every section endpoint is shared by exactly two sections — the
 /// sections form closed chains among themselves and reach nothing else.
 fn sections_form_closed_chains(sections: &[SectionEdge], tol: f64) -> bool {
-    use std::collections::HashMap;
-
     if sections.is_empty() {
         return false;
     }
@@ -2440,7 +2433,7 @@ fn sections_form_closed_chains(sections: &[SectionEdge], tol: f64) -> bool {
             (p.z() * qscale).round() as i64,
         )
     };
-    let mut degree: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let mut degree: DetHashMap<(i64, i64, i64), usize> = DetHashMap::default();
     for s in sections {
         // A closed single-section loop meets itself at one point, which counts
         // as both of that point's two incidences.
@@ -2538,7 +2531,6 @@ fn winding_section_chain(
     surface: &FaceSurface,
     tol: f64,
 ) -> Option<(Vec<(usize, bool)>, f64)> {
-    use std::collections::HashMap;
     use std::f64::consts::{PI, TAU};
 
     let (Some(_), _) = super::pcurve_compute::surface_periods(surface) else {
@@ -2559,7 +2551,7 @@ fn winding_section_chain(
     let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
 
     // Endpoint-keyed adjacency: (piece index, leaves-from-start).
-    let mut adj: HashMap<(i64, i64, i64), Vec<(usize, bool)>> = HashMap::new();
+    let mut adj: DetHashMap<(i64, i64, i64), Vec<(usize, bool)>> = DetHashMap::default();
     for (i, s) in sections.iter().enumerate() {
         adj.entry(q3(s.start)).or_default().push((i, true));
         adj.entry(q3(s.end)).or_default().push((i, false));
@@ -2706,7 +2698,7 @@ fn wire_loops_duplicate_cover(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bo
         Some(q3(c.evaluate(s_ang + 0.5 * span)))
     };
     for lp in loops {
-        let mut seen: std::collections::HashSet<_> = std::collections::HashSet::new();
+        let mut seen: DetHashSet<_> = DetHashSet::default();
         for e in lp {
             let Some(mid) = arc_mid_key(e) else { continue };
             if !seen.insert((ekey(e), mid)) {
@@ -2722,7 +2714,7 @@ fn wire_loops_duplicate_cover(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bo
             if i == j || big.len() < small.len() {
                 continue;
             }
-            let keys: std::collections::HashSet<_> = big.iter().map(&ekey).collect();
+            let keys: DetHashSet<_> = big.iter().map(&ekey).collect();
             if small.iter().all(|e| keys.contains(&ekey(e))) {
                 return true;
             }
@@ -2933,7 +2925,6 @@ struct ArrInput {
 /// inputs participate in collision detection so a section arc stays distinct
 /// from its chord; only section arcs are split, leaving boundaries unchanged.
 fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &PlaneFrame, tol: f64) {
-    use std::collections::HashMap;
     type Q2 = (i64, i64);
     let qscale = 1.0 / tol.max(1e-12);
     let q2 = |p: Point2| -> Q2 {
@@ -2958,7 +2949,7 @@ fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &Plane
         }
         Some(c.evaluate(s_ang + 0.5 * span))
     };
-    let mut pair_mids: HashMap<(Q2, Q2), Vec<Q2>> = HashMap::new();
+    let mut pair_mids: DetHashMap<(Q2, Q2), Vec<Q2>> = DetHashMap::default();
     for inp in inputs.iter() {
         let mid = if inp.is_section && inp.is_arc {
             arc_mid(&inp.edge)
@@ -2975,7 +2966,7 @@ fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &Plane
             .or_default()
             .push(q2(frame.project(mid)));
     }
-    let colliding: std::collections::HashSet<(Q2, Q2)> = pair_mids
+    let colliding: DetHashSet<(Q2, Q2)> = pair_mids
         .into_iter()
         .filter(|(_, mids)| mids.iter().any(|m| *m != mids[0]))
         .map(|(k, _)| k)
@@ -3298,14 +3289,12 @@ fn arrangement_regions_from_inputs(
             (p.y() / snap_band).round() as i64,
         )
     };
-    let mut vert_pos: std::collections::HashMap<(i64, i64), Point2> =
-        std::collections::HashMap::new();
-    let mut coarse: std::collections::HashMap<(i64, i64), Vec<Point2>> =
-        std::collections::HashMap::new();
-    let mut endpoint_keys: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    let mut vert_pos: DetHashMap<(i64, i64), Point2> = DetHashMap::default();
+    let mut coarse: DetHashMap<(i64, i64), Vec<Point2>> = DetHashMap::default();
+    let mut endpoint_keys: DetHashSet<(i64, i64)> = DetHashSet::default();
     let mut register = |p: Point2,
-                        map: &mut std::collections::HashMap<(i64, i64), Point2>,
-                        endpoints: &std::collections::HashSet<(i64, i64)>,
+                        map: &mut DetHashMap<(i64, i64), Point2>,
+                        endpoints: &DetHashSet<(i64, i64)>,
                         allow_computed_weld: bool,
                         wide_endpoint_targets: &[(i64, i64)]|
      -> (i64, i64) {
@@ -3351,8 +3340,7 @@ fn arrangement_regions_from_inputs(
     // neighbouring faces' copy of the same vertex, minting a twin edge that
     // never welds. Boundary inputs register first, so their exact positions
     // win over section endpoints at the same vertex.
-    let mut exact3d: std::collections::HashMap<(i64, i64), Point3> =
-        std::collections::HashMap::new();
+    let mut exact3d: DetHashMap<(i64, i64), Point3> = DetHashMap::default();
     let mut input_endpoint_keys = Vec::with_capacity(inputs.len());
     for inp in &inputs {
         let ka = register(inp.a, &mut vert_pos, &endpoint_keys, false, &[]);
@@ -3836,8 +3824,7 @@ fn arrangement_regions_from_inputs(
     }
 
     // Outgoing half-edges per vertex.
-    let mut out_at: std::collections::HashMap<(i64, i64), Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut out_at: DetHashMap<(i64, i64), Vec<usize>> = DetHashMap::default();
     for (hi, h) in halfs.iter().enumerate() {
         out_at.entry(h.from).or_default().push(hi);
     }
@@ -4297,7 +4284,7 @@ fn arrangement_regions_from_inputs(
         k.sort_unstable();
         k
     };
-    let mut by_key: std::collections::HashMap<Vec<usize>, usize> = std::collections::HashMap::new();
+    let mut by_key: DetHashMap<Vec<usize>, usize> = DetHashMap::default();
     for (i, f) in interior.iter().enumerate() {
         by_key.insert(face_key(f, false), i);
     }
@@ -4456,7 +4443,6 @@ fn split_cylinder_band_by_arrangement(
     face_id: FaceId,
     tol: f64,
 ) -> Option<Vec<SplitSubFace>> {
-    use std::collections::HashMap;
     use std::f64::consts::TAU;
 
     use remus_math::curves::Circle3D;
@@ -4525,11 +4511,11 @@ fn split_cylinder_band_by_arrangement(
     // Vertex registry: quantized (u_shift, v) key -> (u_shift, v, exact 3D).
     // Prefer the exact input endpoint 3D (a shared pave vertex) over a recomputed
     // point so reconstructed sub-edges match the adjacent faces' edges exactly.
-    let mut verts: HashMap<(i64, i64), (f64, f64, Point3)> = HashMap::new();
+    let mut verts: DetHashMap<(i64, i64), (f64, f64, Point3)> = DetHashMap::default();
     let register = |u: f64,
                     v: f64,
                     p3: Point3,
-                    verts: &mut HashMap<(i64, i64), (f64, f64, Point3)>|
+                    verts: &mut DetHashMap<(i64, i64), (f64, f64, Point3)>|
      -> (i64, i64) {
         let k = ((u / u_weld).round() as i64, (v / v_weld).round() as i64);
         verts.entry(k).or_insert((u, v, p3));
@@ -4814,7 +4800,7 @@ fn split_cylinder_band_by_arrangement(
     }
 
     // Shifted-uv position per vertex, for angles / areas / interior sampling.
-    let pos: HashMap<(i64, i64), Point2> = verts
+    let pos: DetHashMap<(i64, i64), Point2> = verts
         .iter()
         .map(|(&k, &(u, v, _))| (k, Point2::new(u, v)))
         .collect();
@@ -4840,7 +4826,7 @@ fn split_cylinder_band_by_arrangement(
         });
     }
 
-    let mut out_at: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut out_at: DetHashMap<(i64, i64), Vec<usize>> = DetHashMap::default();
     for (hi, h) in halfs.iter().enumerate() {
         out_at.entry(h.from).or_default().push(hi);
     }
@@ -5453,11 +5439,7 @@ pub fn split_face_2d(
     tol: &remus_math::tolerance::Tolerance,
     frame: Option<&PlaneFrame>,
     info: Option<&SurfaceInfo>,
-    edge_images: &std::collections::HashMap<
-        remus_topology::edge::EdgeId,
-        Vec<remus_topology::edge::EdgeId>,
-        impl std::hash::BuildHasher,
-    >,
+    edge_images: &DetHashMap<remus_topology::edge::EdgeId, Vec<remus_topology::edge::EdgeId>>,
     context: &OperationContext,
     split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
@@ -5703,11 +5685,7 @@ fn split_face_2d_impl(
     tol: &remus_math::tolerance::Tolerance,
     frame: Option<&PlaneFrame>,
     info: Option<&SurfaceInfo>,
-    edge_images: &std::collections::HashMap<
-        remus_topology::edge::EdgeId,
-        Vec<remus_topology::edge::EdgeId>,
-        impl std::hash::BuildHasher,
-    >,
+    edge_images: &DetHashMap<remus_topology::edge::EdgeId, Vec<remus_topology::edge::EdgeId>>,
     context: &OperationContext,
     mut split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
@@ -6049,7 +6027,7 @@ fn split_face_2d_impl(
                 (p.z() * scale).round() as i64,
             )
         };
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = DetHashSet::default();
         deduped_sections = sections
             .iter()
             .filter(|s| {
@@ -6462,8 +6440,7 @@ fn split_face_2d_impl(
         // Only consume anchors belonging to section curves on this face.  The
         // registry spans the whole boolean; flattening it here made every
         // curved face probe every earlier anchor against every NURBS boundary.
-        let pave_blocks: std::collections::HashSet<_> =
-            sections.iter().filter_map(|s| s.pave_block_id).collect();
+        let pave_blocks: DetHashSet<_> = sections.iter().filter_map(|s| s.pave_block_id).collect();
         split_pts_3d.extend(
             pave_blocks
                 .into_iter()
@@ -6755,7 +6732,7 @@ fn split_face_2d_impl(
             WEAVE_SECTION_SRC_BASE,
         )? {
             all_edges.extend(extra);
-            let pass: std::collections::HashSet<usize> = passthrough.into_iter().collect();
+            let pass: DetHashSet<usize> = passthrough.into_iter().collect();
             woven_hole_indices = (0..original_inner_wires.len())
                 .filter(|i| !pass.contains(i))
                 .collect();
@@ -6789,8 +6766,7 @@ fn split_face_2d_impl(
             }
             ((a + d * t) - p).length() < tol.linear * 10.0
         };
-        let woven_set: std::collections::HashSet<usize> =
-            woven_hole_indices.iter().copied().collect();
+        let woven_set: DetHashSet<usize> = woven_hole_indices.iter().copied().collect();
         for (i, orig_hole) in original_inner_wires.iter().enumerate() {
             // The pave-split expansion carries the exact minted vertices the
             // coincidence test needs; fall back to the stored wire otherwise.
@@ -6941,7 +6917,7 @@ fn split_face_2d_impl(
         .map(|&i| original_inner_wires[i].clone())
         .collect();
     let passthrough_inner_wires: Vec<Vec<OrientedPCurveEdge>> = if holes_integrated {
-        let woven: std::collections::HashSet<usize> = woven_hole_indices.iter().copied().collect();
+        let woven: DetHashSet<usize> = woven_hole_indices.iter().copied().collect();
         (0..original_inner_wires.len())
             .filter(|i| !woven.contains(i))
             .map(|i| original_inner_wires[i].clone())
@@ -7146,8 +7122,7 @@ fn split_face_2d_impl(
                 (p.z() * inv).floor() as i64,
             )
         };
-        let mut ep_grid: std::collections::HashMap<(i64, i64, i64), Vec<Point3>> =
-            std::collections::HashMap::new();
+        let mut ep_grid: DetHashMap<(i64, i64, i64), Vec<Point3>> = DetHashMap::default();
         let mut section_endpoints: Vec<Point3> = Vec::new();
         for e in &all_edges[n_boundary_edges..] {
             for p in [e.start_3d, e.end_3d] {
@@ -8983,8 +8958,6 @@ fn plane_internal_line_loops(
     boundary_edges: &[OrientedPCurveEdge],
     tol_linear: f64,
 ) -> Option<Vec<SectionEdge>> {
-    use std::collections::{HashMap, HashSet};
-
     type QPt = (i64, i64, i64);
 
     // Accept Line and open arc (Circle/Ellipse) sections: a rounded-rect
@@ -9030,7 +9003,7 @@ fn plane_internal_line_loops(
         (frame.evaluate(uv.x(), uv.y()) - p).length() <= margin
     };
 
-    let mut seen: HashSet<(QPt, QPt)> = HashSet::new();
+    let mut seen: DetHashSet<(QPt, QPt)> = DetHashSet::default();
     let mut deduped: Vec<SectionEdge> = Vec::new();
     for s in sections {
         // A section can only bound a sub-face of this plane if it lies on
@@ -9085,7 +9058,7 @@ fn plane_internal_line_loops(
             (p.z() * grid_inv).floor() as i64,
         )
     };
-    let mut ep_grid: HashMap<QPt, Vec<Point3>> = HashMap::new();
+    let mut ep_grid: DetHashMap<QPt, Vec<Point3>> = DetHashMap::default();
     for &p in &endpoints {
         ep_grid.entry(cell_of(p)).or_default().push(p);
     }
@@ -9149,7 +9122,7 @@ fn plane_internal_line_loops(
         true
     });
 
-    let mut degree: HashMap<QPt, u32> = HashMap::new();
+    let mut degree: DetHashMap<QPt, u32> = DetHashMap::default();
     for s in &deduped {
         *degree.entry(quant(s.start)).or_insert(0) += 1;
         *degree.entry(quant(s.end)).or_insert(0) += 1;
@@ -9265,7 +9238,7 @@ mod tests {
                     &remus_math::tolerance::Tolerance::default(),
                     None,
                     None,
-                    &std::collections::HashMap::new(),
+                    &DetHashMap::default(),
                     &OperationContext::new(),
                     None,
                 )
@@ -9479,7 +9452,7 @@ mod tests {
 
         // No region may traverse the same undirected edge twice (a slit).
         for sub in &result {
-            let mut seen = std::collections::HashMap::new();
+            let mut seen = DetHashMap::default();
             for e in &sub.outer_wire {
                 let q = |p: Point3| {
                     (
@@ -9610,7 +9583,7 @@ mod tests {
         // at both u = u_s and u = u_s + 2π, which are distinct UV points, so a
         // correct partition never lands two edges on the same UV vertex.
         for sub in &result {
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = DetHashSet::default();
             for e in &sub.outer_wire {
                 let key = (
                     (e.start_uv.x() * 1.0e6).round() as i64,
@@ -9944,7 +9917,7 @@ mod tests {
                 d: 0.0,
             },
         ));
-        let images = std::collections::HashMap::<EdgeId, Vec<EdgeId>>::new();
+        let images = DetHashMap::<EdgeId, Vec<EdgeId>>::default();
         let split = split_face_2d(
             &topo,
             face,
@@ -10064,7 +10037,7 @@ mod tests {
                 u_periodic: true,
                 v_periodic: false,
             }),
-            &std::collections::HashMap::new(),
+            &DetHashMap::default(),
             &OperationContext::new(),
             None,
         )
