@@ -1,8 +1,8 @@
 # Local boolean for sequential cuts
 
-**Status (2026-10-12):** stage 1 implemented — the qualified through-hole
-cell in `crates/operations/src/boolean/local_cut.rs`. Later stages are
-design only.
+**Status (2026-10-12):** stage 1 (through holes) and the first stage 2
+widening (blind holes) are implemented in
+`crates/operations/src/boolean/local_cut.rs`. Later stages are design only.
 
 ## Problem
 
@@ -41,7 +41,7 @@ Two costs are separate:
 
 A cut whose tool is a right circular cylinder drilled straight through two
 parallel planar faces, clear of everything else, has a closed-form result.
-`local_cut::try_local_through_hole` proves the cell and builds that result
+`local_cut::try_local_hole` proves the cell and builds that result
 by local surgery; anything outside the cell returns `None` and the general
 GFA runs unchanged.
 
@@ -113,7 +113,7 @@ alternated) for `examples/sequential_cut_profile.rs`:
 
 - 144 through-holes: 8.89 G → 0.707 G instructions (−92%), 1.85 G → 0.136 G
   cycles.
-- Blind holes, which the cell always declines: 631–641 M on both binaries.
+- Blind holes, which stage 1 declined: 631–641 M on both binaries.
   Declining costs nothing measurable.
 
 The remaining per-cut slope is the contractual deep copy of the blank and
@@ -143,7 +143,6 @@ but those coordinates differ by a few ulps (the rotated-frame case bounds
 the drift at 1e-9).
 
 The tests also check that the cell declines:
-- blind holes;
 - coplanar caps;
 - tilted tools;
 - side-wall breakouts;
@@ -161,11 +160,90 @@ The tests also check that the cell declines:
 - Blank faces must be manifold. A boundary use shared by more than two faces
   declines the cell rather than being ordered.
 
+## Stage 2, first widening: blind holes (implemented)
+
+A blind hole has one pierced face instead of two. When exactly one blank
+face comes within the clearance of the tool's box, and it qualifies as a
+pierced face under the stage 1 rules, the cell is a blind hole:
+
+- The slab of the tool on the side opposite the entry face's outward
+  normal lies inside `A`. That slab ends at one of the tool's own caps,
+  which the box test puts at least the clearance away from every other
+  face, so the cap is strictly inside `A`.
+- The slab on the other side, the protruding end, lies wholly outside `A`.
+
+So `A − B` is `A` with the entry disc removed, a reversed wall from the
+entry plane to the buried cap, and that cap, reversed, as the floor. The
+module docs carry the argument for both cells.
+
+**Construction.** It mirrors the GFA's representation:
+
+- The floor is a reversed copy of the tool's buried cap. It keeps the
+  cap's own rim edge (curve, trim and tolerance unchanged) and that rim's
+  vertex, used as the cap's wire uses it.
+- The tool's seam is split at the entry rim. The new seam keeps the tool
+  seam's direction, from the `s0` end to the `s1` end.
+- The wall loop is the tool's natural rectangle (`s0` rim forward, seam up,
+  `s1` rim back, seam down). The entry rim, reversed, replaces the
+  protruding cap's rim. The cell requires the tool's wall to have that
+  loop, which `make_cylinder` produces under any rigid placement.
+- Faces follow the same breadth-first shell order. The floor joins the walk
+  through its rim.
+
+**Rim anchoring.** The GFA anchors a section rim at the wall surface
+evaluated at the seam vertex's `u` and the section's `v`, and takes the
+circle reference from that point. At small coordinates the rounding of
+`cos(3π/2)` surfaces in the reference and the vertex: the magnet pockets
+at x = 4 have a vertex at y = 3.9999999999999996. Both cells now use the
+same arithmetic, so those cases are bit-identical as well.
+
+**Attributes.** GFA results carry no solid or face attributes. Stage 1's
+copy kept the blank's, so an attributed blank came out differently
+depending on which path ran. Spliced copies now drop them, and the oracle
+dump compares attributes.
+
+**Evidence.** Main at `957201b8` against this stage, Apple M5 Pro, shared
+machine, `RAYON_NUM_THREADS=1`.
+
+Instruction counts (`/usr/bin/time -l`, base and candidate binaries
+alternated, three rounds) for `examples/sequential_cut_profile.rs 12`:
+
+| run | main | stage 2 |
+| --- | ---: | ---: |
+| 144 blind holes, instructions | 8.64–8.65 G | 0.525–0.526 G (−94%) |
+| 144 blind holes, cycles | 1.91–1.96 G | 0.114–0.125 G |
+| 144 blind holes, wall clock | 445–457 ms | 23–25 ms |
+| 144 through holes, instructions | 0.707–0.713 G | 0.704–0.716 G (unchanged) |
+
+Criterion, `gridfinity 3x3 baseplate (grid+holes)`, the four magnet
+pockets: 955 µs → 92–96 µs (−90%, both rounds). `multi-boolean model` and
+`boolean 64 cuts`, which take only through holes, showed no reproducible
+change. A reverse-order rerun swung the same pair by ±10%, and the
+instruction counts above are equal.
+
+`boolean/local_cut_tests.rs` adds full-dump oracles for blind holes:
+
+- drilled into the top face, the bottom face, downward and into a side
+  wall;
+- a 16-hole grid mixing through holes and three kinds of blind hole,
+  compared after every hole;
+- the gridfinity magnet pockets (0.15 floor), compared after every hole.
+
+A rotated-frame blind hole matches structure for structure, with drift
+below 1e-9.
+
+It also checks that the cell declines:
+
+- a floor within the clearance of the opposite face;
+- a blind hole overlapping an existing hole;
+- a hole drilled sideways out of a hole's wall;
+- a side-wall entry that breaks out near a corner;
+- a steeply tilted plate, whose tilted faces' boxes reach the tool's.
+
 ## Later stages (design)
 
-1. **Widen the cell.** Each extension needs its own proof and oracle cases:
-   - blind holes, where one cap lies strictly inside `A` and becomes the
-     hole floor;
+1. **Widen the cell further.** Each extension needs its own proof and
+   oracle cases:
    - rectangular and polygonal prism tools;
    - planes oblique to the axis, giving exact ellipse sections;
    - holes through cylindrical blank faces, such as cross-drilled shafts;

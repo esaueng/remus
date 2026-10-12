@@ -423,7 +423,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 |------|---------|
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
-| Qualified local through-hole cut (stage 1 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
+| Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |

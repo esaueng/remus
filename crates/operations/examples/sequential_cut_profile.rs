@@ -8,7 +8,7 @@
 //!
 //! Run with
 //! `cargo run --profile profiling -p remus-operations --example sequential_cut_profile -- [n] [blind]`.
-//! `blind` drills blind holes instead, which stay on the general GFA path.
+//! `blind` drills blind holes (6 deep) instead.
 
 #![allow(clippy::unwrap_used, clippy::print_stdout, missing_docs)]
 
