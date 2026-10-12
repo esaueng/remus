@@ -1969,6 +1969,29 @@ fn pave_filler_n_rejects_malformed_candidate_pairs() {
 }
 
 #[test]
+fn fuse_n_candidate_pairs_are_checked_before_the_single_source_copy() {
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let mut topo = Topology::default();
+    let only = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let context = OperationContext::new();
+    let before = format!("{topo:?}");
+    for pairs in [vec![(0, 1)], vec![(1, 0)], vec![(0, 0)]] {
+        assert!(
+            crate::gfa::fuse_n_with_candidate_pairs(&mut topo, &[only], &pairs, &context).is_err(),
+            "{pairs:?} accepted for one source"
+        );
+    }
+    let over_budget = vec![(0, 1); crate::gfa::MAX_NWAY_SOURCE_PAIRS + 1];
+    assert!(
+        crate::gfa::fuse_n_with_candidate_pairs(&mut topo, &[only], &over_budget, &context)
+            .is_err()
+    );
+    assert_eq!(format!("{topo:?}"), before, "a refusal changed the arena");
+    let copy = crate::gfa::fuse_n_with_candidate_pairs(&mut topo, &[only], &[], &context).unwrap();
+    assert_ne!(copy, only);
+}
+
+#[test]
 fn pave_filler_n_empty_sources_errors() {
     let mut topo = Topology::default();
     let tol = remus_math::tolerance::Tolerance::default();

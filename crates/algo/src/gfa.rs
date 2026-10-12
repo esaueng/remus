@@ -536,6 +536,11 @@ fn fuse_n_with_context_impl(
     candidate_pairs: Option<&[(usize, usize)]>,
     context: &OperationContext,
 ) -> Result<SolidId, AlgoError> {
+    // A caller-built candidate list is checked before the single-source fast
+    // path, which never reaches the pave filler's own check.
+    if let Some(pairs) = candidate_pairs {
+        pave_filler::validate_candidate_pairs(pairs, sources.len())?;
+    }
     // Same up-front refusal as `boolean_with_tolerance`; see that function.
     for &sid in sources {
         reject_unsupported_curves(topo, sid)?;

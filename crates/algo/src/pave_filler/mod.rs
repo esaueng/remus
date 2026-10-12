@@ -470,11 +470,25 @@ fn init_pave_blocks_n(
 }
 
 /// Check that `pairs` is a strictly increasing list of `(i, j)` with
-/// `i < j < source_count` — a subsequence of `source_pairs`' order.
-fn validate_candidate_pairs(
+/// `i < j < source_count` — a subsequence of `source_pairs`' order — and
+/// within the source-pair budget. Callers with a fast path that skips the
+/// pave filler (a single source) run it first so a malformed list is never
+/// silently accepted.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::AssemblyFailed`] for an over-budget, out-of-range,
+/// non-`i < j` or not strictly increasing list.
+pub fn validate_candidate_pairs(
     pairs: &[(usize, usize)],
     source_count: usize,
 ) -> Result<(), AlgoError> {
+    if pairs.len() > MAX_SOURCE_PAIRS {
+        return Err(AlgoError::AssemblyFailed(format!(
+            "N-way pave filler needs {} source pairs; limit is {MAX_SOURCE_PAIRS}",
+            pairs.len()
+        )));
+    }
     for (index, &(i, j)) in pairs.iter().enumerate() {
         if i >= j || j >= source_count {
             return Err(AlgoError::AssemblyFailed(format!(
