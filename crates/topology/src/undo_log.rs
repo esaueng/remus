@@ -7,26 +7,33 @@
 //!
 //! # Cost model
 //!
-//! A scope mark is O(1): three lengths and a tick count. Every record is
-//! proportional to state the scope actually wrote: one cloned entity per
-//! overwritten slot, one `(arena, index)` pair per allocation, one old key
-//! value per registry/attribute write, and the created ordinal pairs per
-//! journal record. A changed-clone or unrelated full restore inside a live
-//! scope takes one document-sized inverse; ordinary mutation-local scopes
-//! do not. Records live only while scopes are active: the last commit clears
-//! the log, and a rewind drops everything above its mark.
+//! A scope mark is O(1): three lengths, a tick count and the ten per-arena
+//! slot counts. Every record is proportional to state the scope actually
+//! wrote: one cloned entity per overwritten slot that predates the innermost
+//! live scope, one old key value per registry/attribute write, and the
+//! created ordinal pairs per journal record. Allocations, and writes to
+//! slots the innermost live scope allocated, record nothing: a rewind
+//! retires every slot at or above its mark's slot counts. A changed-clone or
+//! unrelated full restore inside a live scope takes one document-sized
+//! inverse; ordinary mutation-local scopes do not. Records live only while
+//! scopes are active: the last commit clears the log, and a rewind drops
+//! everything above its mark.
 //!
 //! # Soundness argument
 //!
 //! The log and the live state satisfy one invariant: popping every record
-//! above a surviving mark's length and applying the inverses in reverse
-//! yields exactly the mark's entry state. The invariant holds initially
-//! (empty log) and is preserved because every mutation route in
-//! [`Topology`](crate::Topology) records before writing (see the write-guard
-//! rule in `docs/design/perf-t02-t03-transactions.md`), rewinds apply exact
-//! inverses, and an unchanged same-lineage restore truncates to its source
-//! prefix. A changed clone or unrelated restore instead records the complete
-//! pre-restore state so older records remain valid after that inverse lands.
+//! above a surviving mark's length, applying the inverses in reverse, and
+//! then retiring every slot at or above the mark's slot counts yields
+//! exactly the mark's entry state, up to the contents of inaccessible
+//! tombstones. The invariant holds initially (empty log) and is preserved
+//! because every mutation route in [`Topology`](crate::Topology) records
+//! before writing a slot that was live at some surviving mark (see the
+//! write-guard rule and its §8 amendment in
+//! `docs/design/perf-t02-t03-transactions.md`), slots are never reused and
+//! slot counts never shrink, rewinds apply exact inverses, and an unchanged
+//! same-lineage restore truncates to its source prefix. A changed clone or
+//! unrelated restore instead records the complete pre-restore state so older
+//! records remain valid after that inverse lands.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +46,7 @@ use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
 use crate::face_loop::{Loop, LoopId};
 use crate::journal::{EntityKey, Journal, JournalOrdinal};
-use crate::pcurve::PCurveKey;
+use crate::pcurve::{PCurveKey, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
 use crate::vertex::Vertex;
@@ -81,51 +88,53 @@ impl ArenaTag {
 
 /// One reversible state change, recorded before the write lands.
 ///
-/// Slot records carry the previous live value (`Some`) or mark a fresh
-/// allocation (`None`, whose inverse retires the slot and keeps it as a
-/// tombstone so the handle stays stale forever). Key records carry the
-/// previous index/attribute value (`None` means the key was absent).
+/// Slot records carry the previous live value of a slot that existed when
+/// the innermost live scope opened. Allocations are not recorded: a rewind
+/// retires every slot at or above its mark's per-arena slot counts (see
+/// [`UndoMark::slot_marks`]), keeping each as a tombstone so the handle
+/// stays stale forever. Key records carry the previous index/attribute
+/// value (`None` means the key was absent).
 #[derive(Debug, Clone)]
 pub enum UndoRecord {
     Vertex {
         index: usize,
-        old: Option<Vertex>,
+        old: Vertex,
     },
     Edge {
         index: usize,
-        old: Option<Edge>,
+        old: Edge,
     },
     Wire {
         index: usize,
-        old: Option<Wire>,
+        old: Wire,
     },
     Face {
         index: usize,
-        old: Option<Face>,
+        old: Face,
     },
     Shell {
         index: usize,
-        old: Option<Shell>,
+        old: Shell,
     },
     Solid {
         index: usize,
-        old: Option<Solid>,
+        old: Solid,
     },
     Compound {
         index: usize,
-        old: Option<Compound>,
+        old: Compound,
     },
     CompSolid {
         index: usize,
-        old: Option<CompSolid>,
+        old: CompSolid,
     },
     Loop {
         index: usize,
-        old: Option<Loop>,
+        old: Loop,
     },
     Coedge {
         index: usize,
-        old: Option<Coedge>,
+        old: Coedge,
     },
     PcurveUse {
         key: PCurveKey,
@@ -154,25 +163,8 @@ pub enum UndoRecord {
     },
 }
 
-impl UndoRecord {
-    /// Builds the allocation record for `tag` (no previous value).
-    pub(crate) fn alloc(tag: ArenaTag, index: usize) -> Self {
-        match tag {
-            ArenaTag::Vertex => Self::Vertex { index, old: None },
-            ArenaTag::Edge => Self::Edge { index, old: None },
-            ArenaTag::Wire => Self::Wire { index, old: None },
-            ArenaTag::Face => Self::Face { index, old: None },
-            ArenaTag::Shell => Self::Shell { index, old: None },
-            ArenaTag::Solid => Self::Solid { index, old: None },
-            ArenaTag::Compound => Self::Compound { index, old: None },
-            ArenaTag::CompSolid => Self::CompSolid { index, old: None },
-            ArenaTag::Loop => Self::Loop { index, old: None },
-            ArenaTag::Coedge => Self::Coedge { index, old: None },
-        }
-    }
-}
-
-/// A scope's entry position: log length, journal length, and tick count.
+/// A scope's entry position: log length, journal length, tick count, and
+/// per-arena slot counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UndoMark {
     /// Sequence number giving marks a total order (equal log lengths occur
@@ -184,6 +176,14 @@ pub struct UndoMark {
     pub(crate) journal_len: usize,
     /// Mutation-tick count at capture.
     pub(crate) ticks: u64,
+    /// Per-arena slot counts at capture, in [`ArenaTag`] order.
+    ///
+    /// Arena slots are never reused and slot counts never shrink, so every
+    /// slot at or above these counts came into existence after the scope
+    /// opened — by allocation, or by a foreign restore that grew the arena.
+    /// None of them was live at the mark, which is why allocations need no
+    /// record: a rewind retires the whole range instead.
+    pub(crate) slot_marks: [usize; 10],
 }
 
 /// One live scope entry in the topology's scope stack.
@@ -195,6 +195,13 @@ pub struct ActiveScope {
     /// snapshot leaves a dead entry that the next transaction access
     /// reclaims as a commit (records merge into the enclosing scope).
     pub(crate) alive: Arc<()>,
+}
+
+impl ActiveScope {
+    /// Whether the owning snapshot still exists.
+    fn is_alive(&self) -> bool {
+        Arc::strong_count(&self.alive) > 1
+    }
 }
 
 /// The owning half of a scope entry, handed to the capturing snapshot.
@@ -288,25 +295,83 @@ impl UndoLog {
 
     /// See [`Topology::scopes_alive`]. Lives on the log so a caller holding
     /// another `Topology` field mutably (the pcurve registry) can still gate.
+    ///
+    /// Every record gate calls this, so the common case — the innermost
+    /// entry is live — answers without scanning the stack. Dead entries
+    /// below a live innermost scope are left for the next full purge: a
+    /// dead entry only marks where its records merge into the enclosing
+    /// scope, and every operation that reads marks (begin, commit, rewind,
+    /// foreign restore) purges first. When the innermost entry is live, it
+    /// is also the innermost *live* scope that [`Self::keeps_slot_record`]
+    /// consults.
+    #[inline]
     fn scopes_alive(&mut self) -> bool {
-        self.purge_dead_scopes();
-        !self.scopes.is_empty()
+        match self.scopes.last() {
+            Some(scope) if scope.is_alive() => true,
+            // Untransacted mutation: nothing to purge or release.
+            None if self.records.is_empty() => false,
+            _ => {
+                self.purge_dead_scopes();
+                !self.scopes.is_empty()
+            }
+        }
     }
 
     /// See [`Topology::purge_dead_scopes`].
     fn purge_dead_scopes(&mut self) {
-        let live = self
-            .scopes
-            .iter()
-            .filter(|scope| Arc::strong_count(&scope.alive) > 1)
-            .count();
-        if live < self.scopes.len() {
-            self.scopes
-                .retain(|scope| Arc::strong_count(&scope.alive) > 1);
+        if !self.scopes.iter().all(ActiveScope::is_alive) {
+            self.scopes.retain(ActiveScope::is_alive);
         }
         if self.scopes.is_empty() && !self.records.is_empty() {
             self.records.clear();
         }
+    }
+
+    /// Whether an overwrite or retirement of slot `index` in arena `tag`
+    /// must be recorded before it lands.
+    ///
+    /// Nothing is recorded without a live scope. Inside one, a slot at or
+    /// above the innermost live scope's slot mark did not exist when that
+    /// scope opened, nor when any enclosing scope opened (outer marks are
+    /// never higher). Rewinding to any live mark therefore retires the slot
+    /// without consulting a record, and restoring its pre-write value would
+    /// only rewrite an inaccessible tombstone: the record is skipped and the
+    /// tombstone keeps the slot's last value — exactly what
+    /// [`Arena::restore_for_rollback`](crate::arena::Arena) leaves behind for
+    /// post-snapshot slots. A retirement record would not even change the
+    /// tombstone (retiring never writes the value).
+    ///
+    /// Index, attribute and journal records are never skipped: their
+    /// inverses remove entries that would otherwise outlive the retired slot.
+    pub(crate) fn keeps_slot_record(&mut self, tag: ArenaTag, index: usize) -> bool {
+        self.scopes_alive()
+            && self
+                .scopes
+                .last()
+                .is_some_and(|scope| index < scope.mark.slot_marks[tag as usize])
+    }
+
+    /// Field-level [`Topology::index_pcurve_use`], for callers that hold
+    /// other `Topology` fields borrowed: indexes one authoritative coedge
+    /// use with a single key lookup, guarding and recording the previous
+    /// value before the write lands.
+    pub(crate) fn index_pcurve_use(
+        &mut self,
+        pcurves: &mut PCurveRegistry,
+        key: PCurveKey,
+        coedge: CoedgeId,
+    ) -> Result<(), TopologyError> {
+        pcurves.upsert_use(key, coedge, |old| {
+            // Only an occupied key may fail: `upsert_use` has already grown
+            // the table for a vacant one.
+            if old.is_some() {
+                self.guard_append_use(key.edge, key.face)?;
+            }
+            if self.scopes_alive() {
+                self.records.push(UndoRecord::PcurveUse { key, old });
+            }
+            Ok(())
+        })
     }
 
     /// See [`Topology::guard_append_use`].
@@ -347,17 +412,18 @@ macro_rules! undo_slot_api {
                 return Err(TopologyError::$err(id));
             }
             self.guard_append_slot($tag, id.index())?;
-            if !self.scopes_alive() {
+            if !self.undo.keeps_slot_record($tag, id.index()) {
                 return Ok(());
             }
-            // Cloned only once a record is kept: untransacted writes (a bare
-            // `add_face`, say) would otherwise deep-copy the entity to drop it.
+            // Cloned only once a record is kept: untransacted writes, and
+            // writes to slots the innermost scope allocated, would otherwise
+            // deep-copy the entity to drop it.
             let Some(old) = self.$field.get(id).cloned() else {
                 return Err(TopologyError::$err(id));
             };
             self.undo.records.push(UndoRecord::$variant {
                 index: id.index(),
-                old: Some(old),
+                old,
             });
             Ok(())
         }
@@ -372,12 +438,12 @@ macro_rules! undo_slot_api {
                 return Ok(());
             }
             self.guard_append_slot($tag, id.index())?;
-            if self.scopes_alive()
+            if self.undo.keeps_slot_record($tag, id.index())
                 && let Some(old) = self.$field.get(id).cloned()
             {
                 self.undo.records.push(UndoRecord::$variant {
                     index: id.index(),
-                    old: Some(old),
+                    old,
                 });
             }
             self.$field.retire(id);
@@ -402,17 +468,18 @@ macro_rules! undo_record_only {
                 return Err(TopologyError::$err(id));
             }
             self.guard_append_slot($tag, id.index())?;
-            if !self.scopes_alive() {
+            if !self.undo.keeps_slot_record($tag, id.index()) {
                 return Ok(());
             }
-            // Cloned only once a record is kept: untransacted writes (a bare
-            // `add_face`, say) would otherwise deep-copy the entity to drop it.
+            // Cloned only once a record is kept: untransacted writes, and
+            // writes to slots the innermost scope allocated, would otherwise
+            // deep-copy the entity to drop it.
             let Some(old) = self.$field.get(id).cloned() else {
                 return Err(TopologyError::$err(id));
             };
             self.undo.records.push(UndoRecord::$variant {
                 index: id.index(),
-                old: Some(old),
+                old,
             });
             Ok(())
         }
@@ -508,15 +575,6 @@ impl Topology {
         CoedgeNotFound,
         Coedge
     );
-
-    /// Records a fresh allocation. Allocations always append above the
-    /// high-water mark, so they never trip the append-only guard.
-    pub(crate) fn record_alloc(&mut self, tag: ArenaTag, index: usize) {
-        if !self.scopes_alive() {
-            return;
-        }
-        self.undo.records.push(UndoRecord::alloc(tag, index));
-    }
 
     /// Current per-arena slot counts, in [`ArenaTag`] order.
     pub(crate) fn slot_mark_lens(&self) -> [usize; 10] {
@@ -618,19 +676,11 @@ impl Topology {
         forward: bool,
         coedge: CoedgeId,
     ) -> Result<(), TopologyError> {
-        let key = PCurveKey::new(edge, face, forward);
-        let undo = &mut self.undo;
-        self.pcurves.upsert_use(key, coedge, |old| {
-            // Only an occupied key may fail: `upsert_use` has already grown
-            // the table for a vacant one.
-            if old.is_some() {
-                undo.guard_append_use(edge, face)?;
-            }
-            if undo.scopes_alive() {
-                undo.records.push(UndoRecord::PcurveUse { key, old });
-            }
-            Ok(())
-        })
+        self.undo.index_pcurve_use(
+            &mut self.pcurves,
+            PCurveKey::new(edge, face, forward),
+            coedge,
+        )
     }
 
     /// Records a solid-attribute write. Any write to a pre-existing solid
@@ -700,6 +750,7 @@ impl Topology {
             log_len: self.undo.records.len(),
             journal_len: self.journal.len(),
             ticks: self.mutation_ticks,
+            slot_marks: self.slot_mark_lens(),
         };
         self.undo.next_seq = self.undo.next_seq.wrapping_add(1);
         let alive = Arc::new(());
@@ -738,12 +789,13 @@ impl Topology {
     }
 
     /// Rewinds to a scope mark, undoing every record above it in reverse,
-    /// truncating the journal tail, and restoring the tick count. Scopes at
-    /// or above the mark are closed; surviving outer scopes keep their
-    /// records. Rewinding past available records saturates (a hand-rolled
-    /// double restore leaves the foreign state in place; the transaction
-    /// API restores each snapshot at most once, so this is unreachable
-    /// through it).
+    /// retiring every slot at or above the mark's slot counts (the scope's
+    /// allocations), truncating the journal tail, and restoring the tick
+    /// count. Scopes at or above the mark are closed; surviving outer scopes
+    /// keep their records. Rewinding past available records saturates (a
+    /// hand-rolled double restore leaves the foreign state in place; the
+    /// transaction API restores each snapshot at most once, so this is
+    /// unreachable through it).
     pub(crate) fn undo_rewind_scope(&mut self, mark: UndoMark) {
         // Any rewind invalidates persistent preparation, even when the
         // restored tick equals an earlier generation (ABA). The cache
@@ -764,6 +816,9 @@ impl Topology {
                     other => self.apply_undo_record(other),
                 }
             }
+            // After every record inverse: a foreign-restore inverse may
+            // revive a slot the scope allocated before that restore.
+            self.retire_slots_from(mark.slot_marks);
             self.journal.rollback_scope(mark.journal_len, &created);
             self.mutation_ticks = mark.ticks;
         }
@@ -821,10 +876,26 @@ impl Topology {
         }
     }
 
+    /// Retires every live slot at or above `marks` (in [`ArenaTag`] order):
+    /// the allocations of a rewound scope. Each slot keeps its last value as
+    /// an inaccessible tombstone, so the handle stays stale forever without
+    /// its index ever being reused.
+    fn retire_slots_from(&mut self, marks: [usize; 10]) {
+        let [v, e, w, f, sh, so, c, cs, l, ce] = marks;
+        self.vertices.retire_from(v);
+        self.edges.retire_from(e);
+        self.wires.retire_from(w);
+        self.faces.retire_from(f);
+        self.shells.retire_from(sh);
+        self.solids.retire_from(so);
+        self.compounds.retire_from(c);
+        self.compsolids.retire_from(cs);
+        self.loops.retire_from(l);
+        self.coedges.retire_from(ce);
+    }
+
     /// Applies one record's inverse. Slot restores write the old value back
-    /// and revive liveness; allocation records retire the slot, keeping its
-    /// post-scope value as an inaccessible tombstone so the handle stays
-    /// stale forever without reusing its index.
+    /// and revive liveness.
     fn apply_undo_record(&mut self, record: UndoRecord) {
         match record {
             UndoRecord::Vertex { index, old } => self.vertices.rewind_slot(index, old),
@@ -1057,8 +1128,8 @@ mod tests {
                 assert!(matches!(
                     topo.undo.records.as_slice(),
                     [
-                        UndoRecord::Vertex { old: Some(old_vertex), .. },
-                        UndoRecord::Face { old: Some(old_face), .. },
+                        UndoRecord::Vertex { old: old_vertex, .. },
+                        UndoRecord::Face { old: old_face, .. },
                     ] if format!("{:?}", Some(old_vertex)) == vertex
                         && format!("{:?}", Some(old_face)) == face
                 ));
@@ -1067,5 +1138,344 @@ mod tests {
             }
             drop(ticket);
         }
+    }
+
+    /// Live model state: every live slot, the use index, attributes, the
+    /// journal and the tick count. Tombstone contents are excluded.
+    fn live_state(topo: &Topology) -> String {
+        let mut rows = vec![
+            format!("{:?}", topo.vertices.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.edges.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.wires.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.faces.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.shells.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.solids.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.loops.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.coedges.iter().collect::<Vec<_>>()),
+            format!("{:?}", topo.pcurves),
+            format!("{:?}", topo.journal),
+            format!("{}", topo.mutation_ticks),
+        ];
+        for (id, _) in topo.faces.iter() {
+            rows.push(format!("{:?}", topo.attributes.face(id)));
+        }
+        rows.join("\n")
+    }
+
+    /// The spec-copying `add_face` body that `install_fresh_face_loops`
+    /// replaced, kept as its oracle.
+    fn legacy_add_face(topo: &mut Topology, mut value: Face) -> FaceId {
+        let mut wire_ids = vec![value.outer_wire()];
+        wire_ids.extend(value.inner_wires().iter().copied());
+        let specs = topo.boundary_loop_specs(&wire_ids, None);
+        value.replace_boundary_loops(Vec::new());
+        topo.mutation_ticks = topo.mutation_ticks.saturating_add(1);
+        topo.bump_cache_generation();
+        let face_id = topo.faces.alloc(value);
+        if let Ok(specs) = specs {
+            let _ = topo.install_face_loop_specs_carrying(
+                face_id,
+                specs,
+                std::collections::HashMap::new(),
+                false,
+            );
+        }
+        face_id
+    }
+
+    /// A closed polygon wire over fresh vertices and edges.
+    fn polygon(topo: &mut Topology, points: &[(f64, f64)]) -> WireId {
+        let v: Vec<_> = points
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .collect();
+        let edges = (0..v.len())
+            .map(|i| {
+                let edge = topo.add_edge(Edge::new(v[i], v[(i + 1) % v.len()], EdgeCurve::Line));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        topo.add_wire(Wire::new(edges, true).unwrap())
+    }
+
+    type FaceBuild = fn(&mut Topology, [EdgeId; 2], (WireId, EdgeId)) -> Face;
+
+    #[test]
+    fn fresh_face_install_matches_the_spec_install_oracle() {
+        let mut base = Topology::new();
+        let (_, [e0, e1, _]) = triangle(&mut base);
+        // Stale handles: allocated inside a rolled-back scope.
+        let mut stale = None;
+        let _ = run_transacted(&mut base, |topo| {
+            let wire = polygon(topo, &[(5.0, 5.0), (6.0, 5.0), (6.0, 6.0)]);
+            stale = Some((wire, topo.wire(wire)?.edges()[0].edge()));
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        let stale = stale.unwrap();
+
+        let cases: &[(&str, FaceBuild)] = &[
+            ("outer only", |topo, _, _| {
+                let outer = polygon(topo, &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+                Face::new(outer, vec![], plane())
+            }),
+            ("outer and inner", |topo, _, _| {
+                let outer = polygon(topo, &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+                let inner = polygon(topo, &[(1.0, 1.0), (1.0, 2.0), (2.0, 1.0)]);
+                let hole = polygon(topo, &[(3.0, 3.0), (3.0, 3.5), (3.5, 3.0)]);
+                Face::new_reversed(outer, vec![inner, hole], plane())
+            }),
+            ("open wire over pre-existing edges", |topo, [e0, e1], _| {
+                let uses = vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, false)];
+                let wire = topo.add_wire(Wire::new(uses, false).unwrap());
+                Face::new(wire, vec![], plane())
+            }),
+            ("duplicated pre-existing use", |topo, [e0, _], _| {
+                let uses = vec![OrientedEdge::new(e0, true), OrientedEdge::new(e0, true)];
+                let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+                Face::new(wire, vec![], plane())
+            }),
+            ("stale outer wire", |_, _, (wire, _)| {
+                Face::new(wire, vec![], plane())
+            }),
+            ("stale inner edge", |topo, [e0, _], (_, edge)| {
+                let outer = polygon(topo, &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)]);
+                let uses = vec![OrientedEdge::new(e0, false), OrientedEdge::new(edge, true)];
+                let inner = topo.add_wire(Wire::new(uses, true).unwrap());
+                Face::new(outer, vec![inner], plane())
+            }),
+        ];
+        for &(name, build) in cases {
+            for (scope, guard) in [(false, false), (true, false), (true, true)] {
+                let run = |legacy: bool| {
+                    let mut topo = base.clone();
+                    let ticket = scope.then(|| topo.undo_begin_scope());
+                    if guard {
+                        topo.arm_append();
+                    }
+                    let face = build(&mut topo, [e0, e1], stale);
+                    let id = if legacy {
+                        legacy_add_face(&mut topo, face)
+                    } else {
+                        topo.add_face(face)
+                    };
+                    let tripped = guard && topo.disarm_append();
+                    let generation = topo.cache_identity().generation;
+                    let outcome = (id, tripped, snapshot(&topo), generation);
+                    drop(ticket);
+                    outcome
+                };
+                let outcome = run(false);
+                assert_eq!(outcome, run(true), "{name}, scope {scope}, guard {guard}");
+                let expect_trip = guard && name == "duplicated pre-existing use";
+                assert_eq!(outcome.1, expect_trip, "{name}");
+            }
+        }
+    }
+
+    /// Builds an axis-aligned unit box from scratch (8 vertices, 12 edges,
+    /// 6 wires and faces, a shell and a solid).
+    fn unit_box(topo: &mut Topology, ox: f64) -> SolidId {
+        let corner = |i: usize| {
+            let bit = |set: bool| if set { 1.0 } else { 0.0 };
+            Point3::new(
+                ox + bit(matches!(i % 4, 1 | 2)),
+                bit(matches!(i % 4, 2 | 3)),
+                bit(i >= 4),
+            )
+        };
+        let v: Vec<_> = (0..8)
+            .map(|i| topo.add_vertex(Vertex::new(corner(i), 1e-7)))
+            .collect();
+        let pairs = [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+        let e: Vec<_> = pairs
+            .iter()
+            .map(|&(a, b)| topo.add_edge(Edge::new(v[a], v[b], EdgeCurve::Line)))
+            .collect();
+        let faces = [
+            [(0, false), (3, false), (2, false), (1, false)],
+            [(4, true), (5, true), (6, true), (7, true)],
+            [(0, true), (9, true), (4, false), (8, false)],
+            [(2, true), (11, true), (6, false), (10, false)],
+            [(3, true), (8, true), (7, false), (11, false)],
+            [(1, true), (10, true), (5, false), (9, false)],
+        ]
+        .map(|uses| {
+            let uses = uses
+                .iter()
+                .map(|&(i, forward)| OrientedEdge::new(e[i], forward))
+                .collect();
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            topo.add_face(Face::new(wire, vec![], plane()))
+        });
+        let shell = topo.add_shell(Shell::new(faces.to_vec()).unwrap());
+        topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    /// Work guard: construction inside a scope records exactly one entry per
+    /// indexed boundary use (24 for a box) — no allocation or fresh-slot
+    /// overwrite records — whatever the size of the surrounding document,
+    /// and a rewind still retires every staged slot.
+    #[test]
+    fn construction_in_a_scope_records_only_index_uses() {
+        for preexisting in [0_u8, 1, 8] {
+            let mut topo = Topology::new();
+            for i in 0..preexisting {
+                unit_box(&mut topo, f64::from(i) * 2.0);
+            }
+            let before = live_state(&topo);
+            let slots = topo.slot_mark_lens();
+            let ticket = topo.undo_begin_scope();
+            let solid = unit_box(&mut topo, -5.0);
+            let staged = crate::explorer::solid_faces(&topo, solid).unwrap();
+            // Fresh-slot writes through the public API record nothing.
+            topo.solid_mut(solid).unwrap();
+            topo.face_mut(staged[0]).unwrap().set_reversed(true);
+            assert_eq!(topo.undo_record_count(), 24, "preexisting {preexisting}");
+            assert!(
+                topo.undo
+                    .records
+                    .iter()
+                    .all(|record| matches!(record, UndoRecord::PcurveUse { old: None, .. })),
+                "only pure index additions are recorded"
+            );
+            topo.undo_rewind_scope(ticket.mark);
+            drop(ticket);
+            assert_eq!(live_state(&topo), before, "preexisting {preexisting}");
+            assert_eq!(topo.undo_record_count(), 0);
+            assert!(topo.solid(solid).is_err());
+            for face in staged {
+                assert!(topo.face(face).is_err());
+                assert!(topo.pcurves_for_face(face).is_empty());
+            }
+            // Staged slots stay allocated as tombstones; none is reissued.
+            let after = topo.slot_mark_lens();
+            for (tag, (&now, then)) in after.iter().zip(slots).enumerate() {
+                let grown = !matches!(tag, 6 | 7); // no compounds or comp-solids
+                assert_eq!(now > then, grown, "arena {tag}");
+            }
+            assert!(topo.add_empty_solid().index() > solid.index());
+        }
+    }
+
+    #[test]
+    fn nested_overwrite_of_an_outer_allocation_still_restores() {
+        let point = |x: f64| Point3::new(x, 0.0, 0.0);
+        let mut topo = Topology::new();
+        let (face, _) = triangle(&mut topo);
+        let before = live_state(&topo);
+        let outer = topo.undo_begin_scope();
+
+        // Writes to the scope's own allocation record nothing.
+        let v = topo.add_vertex(Vertex::new(point(1.0), 1e-7));
+        topo.vertex_mut(v).unwrap().set_point(point(2.0));
+        assert_eq!(topo.undo_record_count(), 0);
+        // A pre-existing face still records its prior value.
+        topo.face_mut(face).unwrap().set_reversed(true);
+        assert_eq!(topo.undo_record_count(), 1);
+
+        // For a nested scope the outer allocation is pre-existing: the
+        // overwrite is recorded and a caught inner failure restores it.
+        let inner = topo.undo_begin_scope();
+        topo.vertex_mut(v).unwrap().set_point(point(3.0));
+        assert_eq!(topo.undo_record_count(), 2);
+        let w = topo.add_vertex(Vertex::new(point(4.0), 1e-7));
+        topo.vertex_mut(w).unwrap().set_point(point(5.0));
+        topo.record_vertex_retire(w).unwrap();
+        assert_eq!(
+            topo.undo_record_count(),
+            2,
+            "inner-own slots record nothing"
+        );
+        topo.undo_rewind_scope(inner.mark);
+        drop(inner);
+        assert_eq!(topo.vertex(v).unwrap().point(), point(2.0));
+        assert!(topo.vertex(w).is_err());
+        assert_eq!(topo.undo_record_count(), 1);
+
+        // A dropped (lazily committed) inner scope hands its records to the
+        // outer scope; afterwards the outer allocation is own-slot again.
+        {
+            let dropped = topo.undo_begin_scope();
+            topo.vertex_mut(v).unwrap().set_point(point(6.0));
+            assert_eq!(topo.undo_record_count(), 2);
+            drop(dropped);
+        }
+        topo.vertex_mut(v).unwrap().set_point(point(7.0));
+        assert_eq!(topo.undo_record_count(), 2);
+
+        // The outer rewind retires the allocation and restores the face.
+        topo.undo_rewind_scope(outer.mark);
+        drop(outer);
+        assert!(topo.vertex(v).is_err());
+        assert_eq!(live_state(&topo), before);
+        assert_eq!(topo.undo_record_count(), 0);
+        let fresh = topo.add_vertex(Vertex::new(point(8.0), 1e-7));
+        assert!(
+            fresh.index() > w.index(),
+            "rolled-back slots are never reissued"
+        );
+    }
+
+    #[test]
+    fn foreign_restores_keep_skipped_slots_rewindable() {
+        let point = |x: f64| Point3::new(x, 0.0, 0.0);
+        // Same-lineage clone taken after the allocation: the restore brings
+        // back the clone-time value, and the scope rewind still retires it.
+        let mut topo = Topology::new();
+        let (face, _) = triangle(&mut topo);
+        let before = live_state(&topo);
+        let mut staged = None;
+        let result = run_transacted(&mut topo, |topo| {
+            let v = topo.add_vertex(Vertex::new(point(1.0), 1e-7));
+            staged = Some(v);
+            let snapshot = topo.clone();
+            topo.vertex_mut(v)?.set_point(point(2.0));
+            topo.restore_for_rollback(&snapshot);
+            assert_eq!(topo.vertex(v)?.point(), point(1.0));
+            topo.vertex_mut(v)?.set_point(point(3.0));
+            topo.face_mut(face)?.set_reversed(true);
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        assert!(result.is_err());
+        assert_eq!(live_state(&topo), before);
+        assert!(topo.vertex(staged.unwrap()).is_err());
+
+        // Unrelated, larger snapshot: its slots above the scope's marks are
+        // written without records; the full pre-restore inverse plus the
+        // slot-mark retirement still return the exact entry state.
+        let mut larger = Topology::new();
+        for i in 0..3 {
+            unit_box(&mut larger, f64::from(i) * 2.0);
+        }
+        let mut topo = Topology::new();
+        let (face, _) = triangle(&mut topo);
+        let before = live_state(&topo);
+        let marks = topo.slot_mark_lens();
+        let result = run_transacted(&mut topo, |topo| {
+            topo.restore_for_rollback(&larger);
+            let high = marks[ArenaTag::Vertex as usize] + 2;
+            let high = topo.vertex_id_from_index(high).unwrap();
+            let low = topo.vertex_id_from_index(0).unwrap();
+            topo.vertex_mut(high)?.set_point(point(9.0));
+            topo.vertex_mut(low)?.set_point(point(9.0));
+            topo.add_vertex(Vertex::new(point(10.0), 1e-7));
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        assert!(result.is_err());
+        assert_eq!(live_state(&topo), before);
+        assert!(topo.face(face).is_ok());
     }
 }

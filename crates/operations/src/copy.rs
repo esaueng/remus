@@ -132,14 +132,26 @@ fn planned<T: Copy>(copies: &[T], ordinal: usize) -> Result<T, crate::Operations
 }
 
 fn face_coedges(topo: &Topology, face_id: FaceId) -> Result<Vec<CoedgeId>, crate::OperationsError> {
+    let mut uses = Vec::new();
+    face_coedges_into(topo, face_id, &mut uses)?;
+    Ok(uses)
+}
+
+/// [`face_coedges`] into a caller-owned buffer, replacing its contents, so
+/// a per-face walk reuses one allocation.
+fn face_coedges_into(
+    topo: &Topology,
+    face_id: FaceId,
+    uses: &mut Vec<CoedgeId>,
+) -> Result<(), crate::OperationsError> {
+    uses.clear();
     let loop_ids = topo
         .loops_of_face(face_id)
         .ok_or(remus_topology::TopologyError::LoopWireMismatch { face: face_id })?;
-    let mut uses = Vec::new();
     for &loop_id in loop_ids {
         uses.extend(topo.face_loop(loop_id)?.coedges().iter().copied());
     }
-    Ok(uses)
+    Ok(())
 }
 
 fn snapshot_face_coedge_authority(
@@ -253,6 +265,13 @@ fn build_copy_plan(
         wire_ordinals.reserve(face_count);
         plan.edge_ordinals.reserve(face_count.saturating_mul(2));
         vertex_ordinals.reserve(face_count.saturating_mul(2));
+        // Capacity hints only (a box needs exactly these); larger shells
+        // still grow by doubling.
+        plan.wires.reserve(face_count);
+        plan.edges.reserve(face_count.saturating_mul(2));
+        plan.vertices.reserve(face_count.saturating_mul(2));
+        plan.authority.reserve(face_count.saturating_mul(4));
+        plan.authority_edges.reserve(face_count.saturating_mul(4));
         let mut faces = Vec::with_capacity(face_count);
         for &face_id in shell.faces() {
             let face = source.face(face_id)?;
@@ -505,6 +524,7 @@ fn restore_planned_authority(
     authority_edges: &[usize],
     edges: &[(usize, EdgeId)],
 ) -> Result<(), crate::OperationsError> {
+    let mut coedges = Vec::new();
     for (range, target) in ranges.iter().zip(last_visit_targets(faces)) {
         let (Some(snapshots), Some(snapshot_edges)) = (
             authority.get_mut(range.clone()),
@@ -517,7 +537,7 @@ fn restore_planned_authority(
         if snapshots.is_empty() {
             continue;
         }
-        let coedges = face_coedges(topo, target)?;
+        face_coedges_into(topo, target, &mut coedges)?;
         if matches_by_position(topo, &coedges, snapshots, snapshot_edges, edges) {
             for (&coedge, snapshot) in coedges.iter().zip(snapshots) {
                 topo.set_coedge_periodic_winding(coedge, snapshot.periodic_winding)?;

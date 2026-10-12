@@ -198,13 +198,13 @@ pub fn validate_face_loops(
         return Err(TopologyError::LoopWireMismatch { face: face_id });
     };
     let face = topo.face(face_id)?;
-    let mut wire_ids = vec![face.outer_wire()];
-    wire_ids.extend(face.inner_wires().iter().copied());
+    // Outer wire first, then inner wires: the loop order `add_face` installs.
+    let wire_ids = std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied());
 
-    if loop_ids.len() != wire_ids.len() {
+    if loop_ids.len() != 1 + face.inner_wires().len() {
         return Err(TopologyError::LoopWireMismatch { face: face_id });
     }
-    for (&loop_id, &wire_id) in loop_ids.iter().zip(&wire_ids) {
+    for (&loop_id, wire_id) in loop_ids.iter().zip(wire_ids) {
         let boundary_loop = topo.face_loop(loop_id)?;
         let wire = topo.wire(wire_id)?;
         if boundary_loop.face() != face_id
