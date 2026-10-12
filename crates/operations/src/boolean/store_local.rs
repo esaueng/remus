@@ -1,32 +1,36 @@
-//! Opt-in store-local cut: the GFA run on the faces a cut touches, spliced
-//! back onto the faces it does not (stage 4 of
-//! `docs/performance/perf-local-boolean.md`).
+//! Opt-in store-local booleans: the GFA run on the faces of the blank (the
+//! first operand) that the tool (the second) touches, spliced back onto the
+//! faces it does not (stage 4 of `docs/performance/perf-local-boolean.md`).
 //!
 //! The general GFA copies the whole blank into its store, pave-fills,
 //! splits, classifies and assembles every face, and copies the whole result
-//! back, so a cut through a body with many faces pays for all of them. This
+//! back, so a boolean on a body with many faces pays for all of them. This
 //! path partitions the blank instead:
 //!
 //! - **touched** faces: those whose outer box comes within the clearance of
 //!   the tool's box;
 //! - **untouched** faces: the rest. Each lies farther than the clearance from
-//!   the tool, so it does not meet it, and it lies outside the tool, so a cut
-//!   keeps it as it is. Every edge it shares with a touched face is one of its
-//!   own edges, so that edge is equally far from the tool and the cut leaves it
-//!   untouched too.
+//!   the tool, so it does not meet it, and it lies outside the tool. A cut or
+//!   a fuse keeps such a face as it is; an intersect drops it. Every edge it
+//!   shares with a touched face is one of its own edges, so that edge is
+//!   equally far from the tool and the boolean leaves it untouched too.
 //!
-//! [`remus_algo::gfa::cut_patch`] runs the GFA on the touched faces and the
-//! whole tool: it classifies tool pieces against the whole blank, and it
-//! returns the patch faces after assembly's cleanup passes, without closing
-//! them into a shell. The patch is then spliced into a copy of the
-//! untouched faces, sharing the blank's own edges and vertices wherever the
-//! cut left them unchanged. The result must pass the strict boolean-result
-//! gate, or the attempt is rolled back and the general path runs.
+//! [`remus_algo::gfa::boolean_patch`] runs the GFA on the touched faces and
+//! the whole tool: it classifies tool pieces against the whole blank, and it
+//! returns the faces the operation keeps after assembly's cleanup passes,
+//! without closing them into a shell. For a cut or fuse the patch is then
+//! spliced into a copy of the untouched faces, sharing the blank's own edges
+//! and vertices wherever the boolean left them unchanged; for an intersect
+//! the patch is the whole result. The result must pass the strict
+//! boolean-result gate and form one connected shell (the general GFA keeps
+//! separate lumps as separate solids), or the attempt is rolled back and the
+//! general path runs.
 //!
 //! The result equals the general GFA's in geometry and topology (the oracle
 //! tests compare faces, edges, vertices, volume and validity), but not in
 //! face order or entity numbering. That is why the path is off unless a
-//! thread enables it (`set_thread_store_local_cuts`).
+//! thread enables it (`set_thread_store_local_cuts`, which covers fuse and
+//! intersect as well as cut).
 //!
 //! Assumption: the untouched faces need none of assembly's cleanup (vertex
 //! welds, T-junction splits, duplicate-edge merges), as holds for a clean
@@ -57,39 +61,43 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
-    /// Cuts this thread built store-locally, so tests can tell which path ran.
+    /// Booleans this thread built store-locally, so tests can tell which path
+    /// ran.
     pub(super) static BUILT: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Turn the store-local cut on or off for this thread (off by default).
+/// Turn store-local booleans on or off for this thread (off by default).
 ///
-/// When on, a cut whose tool reaches only part of the blank runs the GFA on
-/// that part and splices the result back. Its result equals the general
-/// path's in geometry and topology, but faces and entities come out in a
-/// different order.
+/// When on, a cut, fuse or intersect whose tool (second operand) reaches
+/// only part of the blank (first operand) runs the GFA on that part and
+/// splices the result back. Its result equals the general path's in geometry
+/// and topology, but faces and entities come out in a different order. The
+/// name predates fuse and intersect.
 pub fn set_thread_store_local_cuts(enabled: bool) {
     ENABLED.with(|flag| flag.set(enabled));
 }
 
-/// Whether this thread runs store-local cuts.
+/// Whether this thread runs store-local booleans.
 #[must_use]
 pub fn thread_store_local_cuts_enabled() -> bool {
     ENABLED.with(Cell::get)
 }
 
-/// Cut `b` from `a` store-locally when enabled and the cut touches less
-/// than half of the blank's faces.
+/// Run `op` on `a` and `b` store-locally when enabled and the tool `b`
+/// touches less than half of the blank `a`'s faces.
 ///
 /// Returns `Ok(None)`, having changed nothing, when the path is off, does
-/// not apply, the patch GFA fails, or the spliced result fails the strict
-/// boolean-result gate; the caller then runs the general path.
+/// not apply, the patch GFA fails, or the result fails the strict
+/// boolean-result gate or is not one connected shell; the caller then runs
+/// the general path.
 ///
 /// # Errors
 ///
 /// Returns an error only for a failed topology lookup while reading the
 /// operands.
-pub(super) fn try_store_local_cut(
+pub(super) fn try_store_local_boolean(
     topo: &mut Topology,
+    op: super::BooleanOp,
     a: SolidId,
     b: SolidId,
     context: &OperationContext,
@@ -101,25 +109,48 @@ pub(super) fn try_store_local_cut(
     let Some((touched, untouched)) = partition(topo, a, b, tol)? else {
         return Ok(None);
     };
-    let patch = match remus_algo::gfa::cut_patch(topo, a, &touched, b, context) {
+    let algo_op = match op {
+        super::BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+        super::BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+        super::BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+    };
+    let patch = match remus_algo::gfa::boolean_patch(topo, algo_op, a, &touched, b, context) {
         Ok(patch) => patch,
         Err(error) => {
-            log::debug!("store-local cut declined: patch GFA failed: {error}");
+            log::debug!("store-local {op:?} declined: patch GFA failed: {error}");
             return Ok(None);
         }
     };
-    let Some(splice) = patch_splice(topo, &touched, &untouched, &patch)? else {
+    if patch.faces.is_empty() {
+        return Ok(None);
+    }
+    // A cut or fuse keeps the untouched faces; an intersect drops them, and
+    // its patch is the whole result.
+    let kept = match op {
+        super::BooleanOp::Fuse | super::BooleanOp::Cut => untouched.clone(),
+        super::BooleanOp::Intersect => Vec::new(),
+    };
+    let replaced: Vec<FaceId> = match op {
+        super::BooleanOp::Fuse | super::BooleanOp::Cut => touched.clone(),
+        super::BooleanOp::Intersect => touched.iter().chain(&untouched).copied().collect(),
+    };
+    let Some(splice) = patch_splice(topo, &touched, &kept, replaced, &patch)? else {
         return Ok(None);
     };
     let attempt = remus_topology::transaction::run_transacted(topo, |topo| {
         let result = crate::copy::copy_solid_spliced(topo, a, &splice)?;
         super::assembly::validate_boolean_result_with_tolerance(topo, result, tol)?;
+        if !shell_is_connected(topo, result)? {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "store-local result is not one connected shell".into(),
+            });
+        }
         Ok::<_, crate::OperationsError>(result)
     });
     match attempt {
         Ok(result) => {
             log::debug!(
-                "Cut built store-locally: {} of {} faces touched",
+                "{op:?} built store-locally: {} of {} faces touched",
                 touched.len(),
                 touched.len() + untouched.len()
             );
@@ -128,7 +159,7 @@ pub(super) fn try_store_local_cut(
             Ok(Some(result))
         }
         Err(error) => {
-            log::debug!("store-local cut declined after splicing: {error}");
+            log::debug!("store-local {op:?} declined after splicing: {error}");
             Ok(None)
         }
     }
@@ -254,7 +285,8 @@ fn point_key(p: remus_math::vec::Point3) -> [u64; 3] {
 fn patch_splice(
     topo: &Topology,
     touched: &[FaceId],
-    untouched: &[FaceId],
+    kept: &[FaceId],
+    replaced: Vec<FaceId>,
     patch: &remus_algo::gfa::CutPatch,
 ) -> Result<Option<Splice>, crate::OperationsError> {
     let mut caller_edges: DetHashMap<Vec<u64>, (EdgeId, bool)> = DetHashMap::default();
@@ -274,7 +306,7 @@ fn patch_splice(
     }
     let store = &patch.topo;
     let mut splice = Splice {
-        replaced: touched.to_vec(),
+        replaced,
         ..Splice::default()
     };
     let mut new_vertices: DetHashMap<usize, usize> = DetHashMap::default();
@@ -350,10 +382,48 @@ fn patch_splice(
         splice.outer_shell.push(ShellSlot::Spliced(slot));
     }
     let patch_slots = std::mem::take(&mut splice.outer_shell);
-    splice.outer_shell = untouched
+    splice.outer_shell = kept
         .iter()
         .map(|&face| ShellSlot::Source(face))
         .chain(patch_slots)
         .collect();
     Ok(Some(splice))
+}
+
+/// Whether the result's outer shell is one edge-connected piece. A fuse can
+/// leave the patch as a lump of its own (a tool that the clearance reached
+/// but that does not meet the blank), which the general path would return
+/// as a separate solid.
+fn shell_is_connected(topo: &Topology, solid: SolidId) -> Result<bool, crate::OperationsError> {
+    let faces = topo
+        .shell(topo.solid(solid)?.outer_shell())?
+        .faces()
+        .to_vec();
+    let mut edge_faces: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
+    let mut face_edges = Vec::with_capacity(faces.len());
+    for (ordinal, &face_id) in faces.iter().enumerate() {
+        let face = topo.face(face_id)?;
+        let mut edges = Vec::new();
+        for &wire_id in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let edge = oriented.edge().index();
+                edge_faces.entry(edge).or_default().push(ordinal);
+                edges.push(edge);
+            }
+        }
+        face_edges.push(edges);
+    }
+    let mut seen = vec![false; faces.len()];
+    let mut stack = vec![0];
+    let mut reached = 0;
+    while let Some(ordinal) = stack.pop() {
+        if std::mem::replace(&mut seen[ordinal], true) {
+            continue;
+        }
+        reached += 1;
+        for edge in &face_edges[ordinal] {
+            stack.extend(edge_faces[edge].iter().filter(|&&next| !seen[next]));
+        }
+    }
+    Ok(reached == faces.len())
 }
