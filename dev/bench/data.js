@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791784864414,
+  "lastUpdate": 1791787231268,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -92479,6 +92479,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 83383,
             "range": "± 1354",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54e6f10755b06dc1a984c3fff7f744cd797c3fa8",
+          "message": "perf(boolean): count only interacting pairs in the N-way cluster fuse (#992)\n\n* perf(boolean): count only interacting pairs in the N-way cluster fuse\n\n`fuse_cluster` fuses a connected cluster in one N-way GFA arrangement,\nbut the N-way pave filler enumerated every source pair and refused any\ncluster with more than 4096 of them (n > 91), even though a lattice body\ntouches only its neighbours. The refusal sent large clusters to the\nsequential left-fold the N-way path exists to avoid: a 12x12 overlapping\nbox grid took 4.7 s, 16x16 took 24 s, 22x22 took 40 s.\n\n- `run_pave_filler_n_with_pairs` / `gfa::fuse_n_with_candidate_pairs`\n  take a caller-proven candidate list (a strictly increasing subsequence\n  of the all-pairs order, validated); the pair budget counts only those.\n  `fuse_n` and `run_pave_filler_n_with_context` keep intersecting every\n  pair.\n- `build_fuse_n` classifies each sub-face only against its source's\n  candidate rivals, in the same ascending order, so the first decisive\n  answer is unchanged; it no longer rebuilds an analytic classifier for\n  every sub-face x every source.\n- `fuse_cluster` derives the candidates from the conservative solid\n  boxes the compound fuse already trusts for its disjoint partition,\n  each grown by its largest vertex/edge tolerance plus 32x the linear\n  tolerance (the widest pave-filler window is tol_a + tol_b + tol).\n\nTests: on lattices small enough for the all-pairs path (3x3 and 6x6\noverlapping, 4x4 touching, a cylinder row) the pruned run reproduces the\nwhole all-pairs arena (Debug of the topology and result); a 121-box\nlattice that the all-pairs budget refuses now fuses in one arrangement\nwith the exact volume; candidate pairs grow linearly with the lattice;\nmalformed candidate lists are rejected. `fuse_perf` gains N=144 cases.\n\nClusters above the old budget now return the N-way result instead of the\nsequential fold's. Material and validity are the same; face fragmentation\ncan differ (12x12 overlapping: 1150 faces vs 1084).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(roadmap): record the N-way candidate-pair slice of PERF-B07\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(algo): drop the private intra-doc link from fuse_n_with_candidate_pairs\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* fix(boolean): stop collecting N-way candidate pairs at the pair budget\n\nA dense cluster (most conservative boxes overlapping) materialized all\nn·(n−1)/2 candidate pairs before the N-way pave filler refused them over\nits 4096-pair budget; the all-pairs path it replaced refused in O(1)\nbefore allocating. `cluster_candidate_pairs` now stops as soon as the list\nwould exceed the budget (exported once as\n`remus_algo::gfa::MAX_NWAY_SOURCE_PAIRS` instead of a second literal) and\nreports `ClusterPairs::OverBudget`, which goes straight to the sequential\nfallback the refusal led to. A 92-box coincident cluster pins the stop;\n91 boxes (4095 pairs) still yield the full list.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* fix(algo): validate N-way candidate pairs before the single-source copy\n\n`fuse_n_with_candidate_pairs` with one source took the copy fast path\nbefore the pave filler, the only place that checked the list, so a\nmalformed or over-budget list (e.g. `(0, 1)` for one solid) succeeded.\nCheck the list (shape and budget, now one shared validator) up front in\n`fuse_n_with_context_impl`. A test pins the refusals for one source, that\na refusal leaves the arena untouched, and that an empty list still copies.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T01:33:45-05:00",
+          "tree_id": "e287d0fa8d275377eabcaf8eead34c135c74c455",
+          "url": "https://github.com/esaueng/remus/commit/54e6f10755b06dc1a984c3fff7f744cd797c3fa8"
+        },
+        "date": 1791787229093,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 652380,
+            "range": "± 29155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 715795,
+            "range": "± 22712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10966,
+            "range": "± 149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4827064,
+            "range": "± 96696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 4746777,
+            "range": "± 19908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4675049,
+            "range": "± 42423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 387778,
+            "range": "± 1728",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 1882291,
+            "range": "± 72630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 18165877,
+            "range": "± 412988",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 19,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 33,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 137,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 105,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 477,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 105,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 212,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 127,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 324,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 488,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2174,
+            "range": "± 79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 47,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 48,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 312183,
+            "range": "± 9403",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1893640,
+            "range": "± 21974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 96529,
+            "range": "± 1719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 267093,
+            "range": "± 2918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 219779,
+            "range": "± 1886",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 39124,
+            "range": "± 665",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 517042,
+            "range": "± 29103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6556894,
+            "range": "± 766711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 332055,
+            "range": "± 2484",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 648976,
+            "range": "± 5619",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 53255,
+            "range": "± 1633",
             "unit": "ns/iter"
           }
         ]
