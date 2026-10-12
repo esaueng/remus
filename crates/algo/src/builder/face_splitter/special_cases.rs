@@ -3117,7 +3117,10 @@ pub(super) fn split_face_with_internal_loops(
             let mut sum = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
             let mut count = 0_usize;
             for edge in loop_edges.iter() {
-                let (t0, t1) = edge.domain();
+                // The arc the use covers: `domain()` is the counter-clockwise
+                // arc between the traversal endpoints, the complement of a
+                // clockwise use.
+                let (t0, t1) = edge.traversal_domain();
                 for k in 0..n_samples {
                     #[allow(clippy::cast_precision_loss)]
                     let t = t0 + (t1 - t0) * (k as f64 / n_samples as f64);
@@ -3136,7 +3139,13 @@ pub(super) fn split_face_with_internal_loops(
             );
             // With nested holes the sub-face is an annulus, and the loop
             // centroid falls in the hole rather than on the kept material.
-            let centroid = nested_interior_by_loop[li].unwrap_or(centroid);
+            // On a cylinder/cone wall the centroid of a window cut into it
+            // lies off the wall altogether (inside the bore), where it says
+            // nothing about the window: search the loop's own region instead.
+            let centroid = match nested_interior_by_loop[li] {
+                Some(interior) => interior,
+                None => cylinder_cone_loop_interior(surface, loop_edges).unwrap_or(centroid),
+            };
             // Offset along the face normal by a small amount to ensure
             // the point is clearly inside the opposing solid (not on the
             // coplanar boundary). Use the surface normal direction.
@@ -4137,6 +4146,127 @@ pub fn converted_wall_remainder_interior(remainder: &SplitSubFace) -> Option<Poi
     })
 }
 
+/// 3D samples of closed loops on a cylinder/cone wall, with the chart
+/// `(u, v)` segments `point_in_hole_loops_uv` tests containment against.
+type WallLoopSamples = (Vec<Point3>, Vec<(f64, f64, f64, f64)>);
+
+/// Densely sample closed loops on a cylinder/cone wall.
+///
+/// Each edge use is sampled over its traversal domain: the arc it actually
+/// covers, start to end. `OrientedPCurveEdge::domain` reconstructs the
+/// counter-clockwise arc between the traversal endpoints, which for a use
+/// running clockwise is the complement — sampling it puts the loop's polygon
+/// on the wrong part of the wall (a window's arcs then enclose the band around
+/// it instead of the window).
+fn sample_wall_loops<'a>(
+    surface: &FaceSurface,
+    loops: impl IntoIterator<Item = &'a [OrientedPCurveEdge]>,
+) -> WallLoopSamples {
+    use std::f64::consts::{PI, TAU};
+    const SAMPLES_PER_EDGE: u32 = 48;
+    let mut points: Vec<Point3> = Vec::new();
+    // Loop (u, v) segments, unwrapped across the seam, for the even-odd
+    // vertical-ray containment test.
+    let mut segments: Vec<(f64, f64, f64, f64)> = Vec::new();
+    for wire in loops {
+        let mut prev_uv: Option<(f64, f64)> = None;
+        for edge in wire {
+            let (t0, t1) = edge.traversal_domain();
+            for k in 0..=SAMPLES_PER_EDGE {
+                let t = t0 + (t1 - t0) * (f64::from(k) / f64::from(SAMPLES_PER_EDGE));
+                let p = edge
+                    .curve_3d
+                    .evaluate_with_endpoints(t, edge.start_3d, edge.end_3d);
+                points.push(p);
+                if let Some((u, v)) = surface.project_point(p) {
+                    if let Some((pu, pv)) = prev_uv {
+                        // Unwrap `u` relative to the previous sample so a
+                        // seam-crossing step is a single continuous segment in an
+                        // extended u-frame (`pu → pu + wrapped_delta`, |Δ| ≤ π)
+                        // instead of being dropped. `point_in_hole_loops_uv` tests
+                        // every 2π translate, so a segment living past the seam is
+                        // still matched for a query on the other side — the loop
+                        // boundary stays closed.
+                        let wrapped_delta = ((u - pu + PI).rem_euclid(TAU)) - PI;
+                        let u_unwrapped = pu + wrapped_delta;
+                        let (a_u, a_v, b_u, b_v) = if pu <= u_unwrapped {
+                            (pu, pv, u_unwrapped, v)
+                        } else {
+                            (u_unwrapped, v, pu, pv)
+                        };
+                        segments.push((a_u, a_v, b_u, b_v));
+                        prev_uv = Some((u_unwrapped, v));
+                    } else {
+                        prev_uv = Some((u, v));
+                    }
+                }
+            }
+        }
+    }
+    (points, segments)
+}
+
+/// Interior point on a cylinder/cone sub-face bounded by ONE contractible loop
+/// that another solid cut into the wall (a window).
+///
+/// The loop's 3D centroid is no sample here: it lies off the wall (inside the
+/// bore of a drilled hole), so classifying it says nothing about the window.
+/// Search the loop's own chart extent instead and return the wall point
+/// inside the loop farthest from it. Returns `None` when the loop wraps the
+/// axis or no grid point is contained, so the caller keeps its fallback.
+pub(super) fn cylinder_cone_loop_interior(
+    surface: &FaceSurface,
+    loop_edges: &[OrientedPCurveEdge],
+) -> Option<Point3> {
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+        return None;
+    }
+    let (loop_pts, loop_segs) = sample_wall_loops(surface, [loop_edges]);
+    // The segments are unwrapped along the loop, so a contractible loop's
+    // chart extent is one interval in u even across the seam.
+    let (mut u_lo, mut u_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v_lo, mut v_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &(a_u, a_v, b_u, b_v) in &loop_segs {
+        u_lo = u_lo.min(a_u);
+        u_hi = u_hi.max(b_u);
+        v_lo = v_lo.min(a_v.min(b_v));
+        v_hi = v_hi.max(a_v.max(b_v));
+    }
+    // A loop spanning the whole revolution is not a window: its chart polygon
+    // does not bound one region.
+    if !(u_lo.is_finite() && v_lo.is_finite())
+        || u_hi - u_lo >= std::f64::consts::TAU - 1e-9
+        || u_hi - u_lo <= 0.0
+        || v_hi - v_lo <= 0.0
+    {
+        return None;
+    }
+    let search = |n_u: u32, n_v: u32| -> Option<Point3> {
+        let mut best: Option<(f64, Point3)> = None;
+        for iu in 1..n_u {
+            let u = (u_hi - u_lo).mul_add(f64::from(iu) / f64::from(n_u), u_lo);
+            for iv in 1..n_v {
+                let v = (v_hi - v_lo).mul_add(f64::from(iv) / f64::from(n_v), v_lo);
+                if !point_in_hole_loops_uv(&loop_segs, u, v) {
+                    continue;
+                }
+                let Some(p) = surface.evaluate(u, v) else {
+                    continue;
+                };
+                let clearance = loop_pts
+                    .iter()
+                    .map(|q| (*q - p).length())
+                    .fold(f64::INFINITY, f64::min);
+                if best.is_none_or(|(b, _)| clearance > b) {
+                    best = Some((clearance, p));
+                }
+            }
+        }
+        best.map(|(_, p)| p)
+    };
+    search(24, 9).or_else(|| search(256, 65))
+}
+
 /// Interior point on a cylinder/cone lateral remainder face that carries
 /// CURVED hole loops (the lens loops where another quadric crosses the wall).
 ///
@@ -4148,50 +4278,12 @@ pub fn converted_wall_remainder_interior(remainder: &SplitSubFace) -> Option<Poi
 /// kept wall well clear of every lens. Returns `None` if the surface evaluator
 /// or boundary v-range is unusable, so the caller keeps the unset interior.
 pub fn cylinder_cone_remainder_interior(remainder: &SplitSubFace) -> Option<Point3> {
-    use std::f64::consts::{PI, TAU};
-    // Densely sample every hole loop into 3D points AND project each to a (u, v)
-    // polyline so candidate interior points can be tested for face containment
-    // (outside every hole). Endpoint UVs are unusable here — a lens hole is one
-    // closed edge whose start/end UV coincide — so sample the curve.
-    let mut hole_pts: Vec<Point3> = Vec::new();
-    // Inner-loop (u, v) segments (split at the seam), for the even-odd
-    // vertical-ray hole-containment test below.
-    let mut hole_segs: Vec<(f64, f64, f64, f64)> = Vec::new();
-    let n = 48;
-    for hole in &remainder.inner_wires {
-        let mut prev_uv: Option<(f64, f64)> = None;
-        for edge in hole {
-            let (t0, t1) = edge.domain();
-            for k in 0..=n {
-                #[allow(clippy::cast_precision_loss)]
-                let t = t0 + (t1 - t0) * (k as f64 / f64::from(n));
-                let p = edge
-                    .curve_3d
-                    .evaluate_with_endpoints(t, edge.start_3d, edge.end_3d);
-                hole_pts.push(p);
-                if let Some((u, v)) = remainder.surface.project_point(p) {
-                    if let Some((pu, pv)) = prev_uv {
-                        // Unwrap `u` relative to the previous sample so a
-                        // seam-crossing step is a single continuous segment in an
-                        // extended u-frame (`pu → pu + wrapped_delta`, |Δ| ≤ π)
-                        // instead of being dropped. `point_in_hole_loops_uv` tests
-                        // every 2π translate, so a segment living past the seam is
-                        // still matched for a query on the other side — the lens
-                        // boundary stays closed.
-                        let wrapped_delta = ((u - pu + PI).rem_euclid(TAU)) - PI;
-                        let u_unwrapped = pu + wrapped_delta;
-                        let (a_u, a_v, b_u, b_v) = if pu <= u_unwrapped {
-                            (pu, pv, u_unwrapped, v)
-                        } else {
-                            (u_unwrapped, v, pu, pv)
-                        };
-                        hole_segs.push((a_u, a_v, b_u, b_v));
-                    }
-                    prev_uv = Some((u, v));
-                }
-            }
-        }
-    }
+    // Endpoint UVs are unusable here — a lens hole is one closed edge whose
+    // start/end UV coincide — so sample the curves.
+    let (hole_pts, hole_segs) = sample_wall_loops(
+        &remainder.surface,
+        remainder.inner_wires.iter().map(Vec::as_slice),
+    );
     if hole_pts.is_empty() {
         return None;
     }
@@ -4206,7 +4298,7 @@ pub fn cylinder_cone_remainder_interior(remainder: &SplitSubFace) -> Option<Poin
     let mut v_min = f64::INFINITY;
     let mut v_max = f64::NEG_INFINITY;
     for e in &remainder.outer_wire {
-        let (t0, t1) = e.domain();
+        let (t0, t1) = e.traversal_domain();
         let n = 16;
         for k in 0..=n {
             #[allow(clippy::cast_precision_loss)]
