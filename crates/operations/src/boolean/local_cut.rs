@@ -266,7 +266,10 @@ fn qualify_blank(
 
     let mut candidates = Vec::with_capacity(2);
     for &face_id in faces {
-        let bounds = crate::measure::conservative_face_set_bounding_box(topo, &[face_id])?;
+        let bounds = match ruled_face_bound(topo, face_id)? {
+            Some(bounds) => bounds,
+            None => crate::measure::conservative_face_set_bounding_box(topo, &[face_id])?,
+        };
         if !reach.intersects(bounds) {
             continue;
         }
@@ -297,6 +300,66 @@ fn qualify_blank(
         return Ok(None);
     }
     Ok(Some((lower, upper)))
+}
+
+/// An outer box for a planar, cylindrical or conical face bounded only by
+/// lines and circles, or `None` for any other face.
+///
+/// Such a patch lies in its boundary's box: a planar region lies in the
+/// hull of its boundary, and on a cylinder or cone every point sits on a
+/// ruling whose linear extremes are reached where the ruling leaves the
+/// compact patch — on the boundary, or at the cone apex, which is added.
+/// Each circle contributes its whole circle's box, a superset of any arc.
+/// This is the cheap bound for the common faces; others take the general
+/// conservative box.
+pub(super) fn ruled_face_bound(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Option<Aabb3>, crate::OperationsError> {
+    let face = topo.face(face_id)?;
+    let apex = match face.surface() {
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) => None,
+        FaceSurface::Cone(cone) => Some(cone.apex()),
+        _ => return Ok(None),
+    };
+    let mut bounds: Option<Aabb3> = apex.map(|apex| Aabb3 {
+        min: apex,
+        max: apex,
+    });
+    let mut include = |lo: Point3, hi: Point3| {
+        let next = Aabb3 { min: lo, max: hi };
+        bounds = Some(bounds.map_or(next, |current| current.union(next)));
+    };
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire_id)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            match edge.curve() {
+                EdgeCurve::Line => {
+                    for vertex in [edge.start(), edge.end()] {
+                        let point = topo.vertex(vertex)?.point();
+                        include(point, point);
+                    }
+                }
+                EdgeCurve::Circle(circle) => {
+                    let n = circle.normal();
+                    let r = circle.radius();
+                    let reach = |component: f64| r * (1.0 - component * component).max(0.0).sqrt();
+                    let half = Vec3::new(reach(n.x()), reach(n.y()), reach(n.z()));
+                    let c = circle.center();
+                    include(
+                        Point3::new(c.x() - half.x(), c.y() - half.y(), c.z() - half.z()),
+                        Point3::new(c.x() + half.x(), c.y() + half.y(), c.z() + half.z()),
+                    );
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+    Ok(bounds.filter(|bounds| {
+        [bounds.min, bounds.max]
+            .iter()
+            .all(|p| p.x().is_finite() && p.y().is_finite() && p.z().is_finite())
+    }))
 }
 
 /// Axis-aligned box of the tool cylinder.

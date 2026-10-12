@@ -437,3 +437,71 @@ fn cell_declines_unqualified_cuts() {
     let block = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
     assert_declined(&topo, rod, block, "box tool");
 }
+
+#[test]
+fn blind_magnet_holes_stay_on_the_gfa() {
+    // The gridfinity baseplate bench: Ø6 magnet pockets whose tool tops out
+    // at z = 4.5 inside a 4.65-thick unit. They are blind, so the cell must
+    // leave them to the GFA, and the result must keep the pocket floors.
+    let mut topo = Topology::new();
+    let unit = make_box(&mut topo, 42.0, 42.0, 4.65).unwrap();
+    let mut local = topo.clone();
+    let mut general = topo.clone();
+    let mut local_unit = unit;
+    let mut general_unit = unit;
+    for (x, y) in [(4.0, 4.0), (38.0, 4.0), (4.0, 38.0), (38.0, 38.0)] {
+        let at = Mat4::translation(x, y, -0.5);
+        let tool = drill(&mut local, 3.0, 5.0, &at);
+        let before = BUILT.with(std::cell::Cell::get);
+        local_unit = boolean(&mut local, BooleanOp::Cut, local_unit, tool).unwrap();
+        assert_eq!(
+            BUILT.with(std::cell::Cell::get),
+            before,
+            "blind pocket built locally"
+        );
+        let tool = drill(&mut general, 3.0, 5.0, &at);
+        DISABLED.with(|disabled| disabled.set(true));
+        general_unit = boolean(&mut general, BooleanOp::Cut, general_unit, tool).unwrap();
+        DISABLED.with(|disabled| disabled.set(false));
+    }
+    let expected = 42.0 * 42.0 * 4.65 - 4.0 * PI * 9.0 * 4.5;
+    for (topo, solid) in [(&local, local_unit), (&general, general_unit)] {
+        let measured = volume(topo, solid);
+        assert!((measured - expected).abs() < 1e-6 * expected, "{measured}");
+    }
+}
+
+#[test]
+fn ruled_face_bound_encloses_every_meshed_point() {
+    let mut topo = Topology::new();
+    let blank = plate(&mut topo);
+    let tool = drill(&mut topo, 2.0, 20.0, &Mat4::translation(10.0, 10.0, -5.0));
+    let drilled = boolean(&mut topo, BooleanOp::Cut, blank, tool).unwrap();
+    let rod = make_cylinder(&mut topo, 3.0, 7.0).unwrap();
+    let rod = placed(
+        &mut topo,
+        rod,
+        &(Mat4::translation(5.0, -2.0, 1.0) * Mat4::rotation_x(0.7)),
+    );
+    let cone = crate::primitives::make_cone(&mut topo, 4.0, 0.0, 6.0).unwrap();
+    let frustum = crate::primitives::make_cone(&mut topo, 4.0, 1.5, 6.0).unwrap();
+    let mut checked = 0;
+    for solid in [drilled, rod, cone, frustum] {
+        for face in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let Some(bounds) = super::local_cut::ruled_face_bound(&topo, face).unwrap() else {
+                continue;
+            };
+            let grown = bounds.expanded(1e-9);
+            let mesh = crate::tessellate::tessellate(&topo, face, 0.01).unwrap();
+            for point in &mesh.positions {
+                assert!(
+                    grown.contains_point(*point),
+                    "face {} point {point:?} outside {bounds:?}",
+                    face.index()
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 12, "checked only {checked} faces");
+}
