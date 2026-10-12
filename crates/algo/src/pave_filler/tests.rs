@@ -1933,6 +1933,65 @@ fn source_pairs_include_every_pair() {
 }
 
 #[test]
+fn pave_filler_n_rejects_malformed_candidate_pairs() {
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let mut topo = Topology::default();
+    let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
+    let c = make_unit_cube_manifold_at(&mut topo, 1.0, 0.0, 0.0);
+    let context = OperationContext::new();
+    for pairs in [
+        vec![(1, 0)],
+        vec![(0, 0)],
+        vec![(0, 3)],
+        vec![(1, 2), (0, 1)],
+        vec![(0, 1), (0, 1)],
+    ] {
+        let mut arena = GfaArena::new();
+        let result = crate::pave_filler::run_pave_filler_n_with_pairs(
+            &mut topo,
+            &[a, b, c],
+            Some(&pairs),
+            &context,
+            &mut arena,
+        );
+        assert!(result.is_err(), "{pairs:?} accepted");
+    }
+    let mut arena = GfaArena::new();
+    crate::pave_filler::run_pave_filler_n_with_pairs(
+        &mut topo,
+        &[a, b, c],
+        Some(&[(0, 1), (1, 2)]),
+        &context,
+        &mut arena,
+    )
+    .unwrap();
+}
+
+#[test]
+fn fuse_n_candidate_pairs_are_checked_before_the_single_source_copy() {
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let mut topo = Topology::default();
+    let only = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let context = OperationContext::new();
+    let before = format!("{topo:?}");
+    for pairs in [vec![(0, 1)], vec![(1, 0)], vec![(0, 0)]] {
+        assert!(
+            crate::gfa::fuse_n_with_candidate_pairs(&mut topo, &[only], &pairs, &context).is_err(),
+            "{pairs:?} accepted for one source"
+        );
+    }
+    let over_budget = vec![(0, 1); crate::gfa::MAX_NWAY_SOURCE_PAIRS + 1];
+    assert!(
+        crate::gfa::fuse_n_with_candidate_pairs(&mut topo, &[only], &over_budget, &context)
+            .is_err()
+    );
+    assert_eq!(format!("{topo:?}"), before, "a refusal changed the arena");
+    let copy = crate::gfa::fuse_n_with_candidate_pairs(&mut topo, &[only], &[], &context).unwrap();
+    assert_ne!(copy, only);
+}
+
+#[test]
 fn pave_filler_n_empty_sources_errors() {
     let mut topo = Topology::default();
     let tol = remus_math::tolerance::Tolerance::default();
@@ -2082,6 +2141,7 @@ fn build_fuse_n_two_interpenetrating_boxes_matches_two_solid() {
         arena,
         &store.sources,
         &store.face_source,
+        None,
         tol,
         &OperationContext::new(),
     )
@@ -2121,6 +2181,7 @@ fn build_fuse_n_three_interpenetrating_boxes_is_watertight() {
         arena,
         &store.sources,
         &store.face_source,
+        None,
         tol,
         &OperationContext::new(),
     )
@@ -2158,6 +2219,7 @@ fn nway_fuse(offsets: &[[f64; 3]]) -> (Topology, remus_topology::solid::SolidId)
         arena,
         &store.sources,
         &store.face_source,
+        None,
         tol,
         &OperationContext::new(),
     )
