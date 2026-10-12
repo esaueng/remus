@@ -1784,19 +1784,20 @@ pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<
 
     let cdt_triangles = cdt.triangles();
 
-    let mut cdt_to_input: DetHashMap<usize, usize> = DetHashMap::default();
+    // CDT vertex -> first input vertex inserted as it. CDT indices are dense
+    // (`0..cdt.vertices().len()`), so a table replaces a hash map.
+    let mut cdt_to_input: Vec<Option<usize>> = vec![None; cdt.vertices().len()];
     for (input_idx, &cdt_idx) in cdt_indices.iter().enumerate() {
-        cdt_to_input.entry(cdt_idx).or_insert(input_idx);
+        if let Some(slot) = cdt_to_input.get_mut(cdt_idx) {
+            slot.get_or_insert(input_idx);
+        }
     }
+    let input_of = |cdt_idx: usize| cdt_to_input.get(cdt_idx).copied().flatten();
 
     let mut indices = Vec::with_capacity(cdt_triangles.len() * 3);
     let mut mapped = 0usize;
     for &(v0, v1, v2) in &cdt_triangles {
-        if let (Some(&i0), Some(&i1), Some(&i2)) = (
-            cdt_to_input.get(&v0),
-            cdt_to_input.get(&v1),
-            cdt_to_input.get(&v2),
-        ) {
+        if let (Some(i0), Some(i1), Some(i2)) = (input_of(v0), input_of(v1), input_of(v2)) {
             mapped += 1;
             #[allow(clippy::cast_possible_truncation)]
             {
