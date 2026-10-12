@@ -5,7 +5,11 @@
 //! no point the search evaluates can be adopted there. The function below is
 //! the search as it was before the gate, kept verbatim, and the tests compare
 //! the two bit for bit over a plate holding circular, elliptical and NURBS
-//! holes, and check the box bound against sampled curve distances.
+//! holes, and check the box bound against sampled curve distances. The
+//! per-face boundary cache phase FF's registry keeps (`snap_with_boundaries`)
+//! is compared the same way, one cache serving every query. A last test
+//! checks the untouched-face box gate: a face keeps its conservative box
+//! only where its sampled box is rejected against every partner too.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +25,8 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use super::{
     Edge, EdgeCurve, FaceId, FaceSurface, Point3, Tolerance, Topology, Vec3, Vertex,
-    curve_box_distance, snap_to_boundary_junction_band,
+    compute_face_bbox, compute_face_bboxes_against, conservative_face_bbox, curve_box_distance,
+    snap_to_boundary_junction_band, snap_with_boundaries,
 };
 
 /// `snap_to_boundary_junction_band` before the box gate, verbatim.
@@ -403,6 +408,8 @@ fn gated_junction_snap_matches_the_ungated_oracle_bit_for_bit() {
     let tol = Tolerance::default();
     let mut snapped = 0;
     let mut compared = 0;
+    // One boundary cache for every query, as a phase-FF pass keeps it.
+    let mut boundaries = remus_math::det_hash::DetHashMap::default();
     for point in query_points(&topo, top) {
         for weld in [1e-3, 2.5] {
             for (fa, fb) in walls.iter().flat_map(|&wall| [(top, wall), (wall, top)]) {
@@ -412,6 +419,12 @@ fn gated_junction_snap_matches_the_ungated_oracle_bit_for_bit() {
                     gated.map(bits),
                     oracle.map(bits),
                     "snap of {point:?} (weld {weld}) differs from the ungated search"
+                );
+                let cached = snap_with_boundaries(&mut boundaries, &topo, fa, fb, point, tol, weld);
+                assert_eq!(
+                    cached.map(bits),
+                    oracle.map(bits),
+                    "cached-boundary snap of {point:?} (weld {weld}) differs"
                 );
                 compared += 1;
                 snapped += usize::from(gated.is_some());
@@ -474,4 +487,62 @@ fn curve_box_distance_never_exceeds_a_sampled_distance() {
         }
     }
     assert!(curve_box_distance(&EdgeCurve::Line, Point3::new(0.0, 0.0, 0.0)).is_none());
+}
+
+#[test]
+fn face_box_gate_only_replaces_boxes_the_rejection_refuses() {
+    let mut topo = Topology::new();
+    let (top, walls) = holed_plate(&mut topo);
+    let tol = Tolerance::default();
+    let mut faces = vec![top];
+    faces.extend(&walls);
+    let sampled: Vec<_> = faces
+        .iter()
+        .map(|&f| compute_face_bbox(&topo, f, tol).unwrap())
+        .collect();
+    for (&face, sampled) in faces.iter().zip(&sampled) {
+        let conservative = conservative_face_bbox(&topo, face).unwrap().unwrap();
+        assert!(
+            conservative.contains_point(sampled.min) && conservative.contains_point(sampled.max),
+            "conservative box {conservative:?} misses sampled {sampled:?}"
+        );
+    }
+    // Partners near one wall, far from another, and spanning everything.
+    let partner = |lo: Point3, hi: Point3| remus_math::aabb::Aabb3 { min: lo, max: hi };
+    let partner_sets = [
+        vec![partner(
+            Point3::new(29.0, 10.0, 5.0),
+            Point3::new(30.5, 12.0, 15.0),
+        )],
+        vec![partner(
+            Point3::new(70.0, 70.0, 70.0),
+            Point3::new(71.0, 71.0, 71.0),
+        )],
+        vec![
+            partner(Point3::new(-1.0, -1.0, -1.0), Point3::new(61.0, 61.0, 21.0)),
+            partner(
+                Point3::new(10.0, 39.9, 9.0),
+                Point3::new(11.0, 40.0 - 1e-6, 11.0),
+            ),
+        ],
+    ];
+    let mut kept = 0;
+    for partners in &partner_sets {
+        let gated = compute_face_bboxes_against(&topo, &faces, partners, tol).unwrap();
+        for (i, (gated, sampled)) in gated.iter().zip(&sampled).enumerate() {
+            if gated == sampled {
+                continue;
+            }
+            kept += 1;
+            for partner in partners {
+                assert!(
+                    !sampled
+                        .expanded(tol.linear)
+                        .intersects(partner.expanded(tol.linear)),
+                    "face {i} kept its conservative box against a partner its sampled box meets"
+                );
+            }
+        }
+    }
+    assert!(kept > 0, "the gate never applied");
 }

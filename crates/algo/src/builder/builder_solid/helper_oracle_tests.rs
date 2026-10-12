@@ -18,7 +18,8 @@ use remus_topology::wire::Wire;
 
 use super::{
     EdgeCurve, EdgeId, Face, FaceId, FaceSurface, OrientedEdge, Point3, SelectedFace, Topology,
-    Vec3, WireId, closed_pair_traversal_flipped, conics_share_support, orient_revolved_face_wires,
+    Vec3, WireId, closed_pair_traversal_flipped, conics_share_support,
+    measure_revolved_wire_uv_area, orient_revolved_face_wires, revolved_wire_uv_area,
 };
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
@@ -407,4 +408,72 @@ fn a_hole_in_a_pointed_cone_whose_rim_has_no_uv_area_is_still_rewound() {
             );
         }
     }
+}
+
+// ── wire area memo ──────────────────────────────────────────────────────
+
+/// Patch loops on a cylinder and a cone, both windings, built into a fresh
+/// topology each call (so equal content arrives under new entity ids).
+fn area_fixtures() -> (Topology, Vec<(WireId, FaceSurface)>) {
+    let mut topo = Topology::new();
+    let mut wires = Vec::new();
+    for carrier in [Revolved::cylinder(), Revolved::cone()] {
+        for (th, zs) in [((0.4, 1.9), (0.5, 2.0)), ((-2.0, 3.5), (1.0, 1.5))] {
+            for ccw in [true, false] {
+                let wire = carrier.patch_loop(&mut topo, th, zs, ccw);
+                wires.push((wire, carrier.surface.clone()));
+            }
+        }
+    }
+    (topo, wires)
+}
+
+fn area_bits(topo: &Topology, wires: &[(WireId, FaceSurface)]) -> Vec<Option<u64>> {
+    wires
+        .iter()
+        .map(|(wire, surface)| {
+            revolved_wire_uv_area(topo, *wire, surface)
+                .unwrap()
+                .map(f64::to_bits)
+        })
+        .collect()
+}
+
+#[test]
+fn memoized_wire_areas_are_bit_identical_and_keyed_on_content() {
+    use crate::wire_area_memo::{
+        enable_thread_wire_area_memo, set_thread_wire_area_memo_capacity,
+        thread_wire_area_memo_stats,
+    };
+    let (topo, wires) = area_fixtures();
+    let measured: Vec<Option<u64>> = wires
+        .iter()
+        .map(|(wire, surface)| {
+            measure_revolved_wire_uv_area(&topo, *wire, surface)
+                .unwrap()
+                .map(f64::to_bits)
+        })
+        .collect();
+    assert!(
+        measured.iter().all(Option::is_some),
+        "fixtures must have area"
+    );
+
+    set_thread_wire_area_memo_capacity(0);
+    let off = area_bits(&topo, &wires);
+    enable_thread_wire_area_memo();
+    let stored = area_bits(&topo, &wires);
+    // The same content under new ids is a hit.
+    let (fresh_topo, fresh_wires) = area_fixtures();
+    let recalled = area_bits(&fresh_topo, &fresh_wires);
+    let stats = thread_wire_area_memo_stats();
+    set_thread_wire_area_memo_capacity(0);
+
+    assert_eq!(off, measured);
+    assert_eq!(stored, measured);
+    assert_eq!(recalled, measured);
+    // Each loop and its reverse have their own key: one miss each while
+    // storing, then one hit each.
+    let n = wires.len() as u64;
+    assert_eq!((stats.misses, stats.hits), (n, n), "{stats:?}");
 }

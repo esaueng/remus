@@ -15,6 +15,14 @@ use remus_topology::{BodyClass, BodyId, Topology};
 
 use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 
+/// The box of a solid's vertices alone: the base [`solid_bounding_box`]
+/// grows, so it always lies inside that box. `None` when the solid has no
+/// vertices or a lookup fails.
+pub fn solid_vertex_bounding_box(topo: &Topology, solid: SolidId) -> Option<Aabb3> {
+    let points = collect_solid_vertex_points(topo, solid).ok()?;
+    Aabb3::try_from_points(points.iter().copied())
+}
+
 /// Compute the axis-aligned bounding box of a solid.
 ///
 /// Uses vertex positions as the base AABB, then expands for non-planar

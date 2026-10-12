@@ -7259,10 +7259,14 @@ fn scaling_perforated_cut_is_subquadratic() {
 /// | `junction_curve_scans` | 0 → 0 | 576 → 2304 (×4) | absolute `< 64` |
 /// | `face_extent_builds` | 6 → 6 (once per face) | 32 → 32 (twice per pair and face) | absolute `<= 8` |
 /// | `hole_containment_samplings` | 0 → 0 | 288 → 1152 (×4) | absolute `< 64` |
+/// | `face_bbox_builds` | 14 → 14 | 54 → 162 | absolute `< 32` |
+/// | `face_outline_samplings` | 12 → 12 | 48 → 156 | absolute `< 32` |
 ///
-/// The last is the face splitter's hole-containment test, which resampled
+/// The third is the face splitter's hole-containment test, which resampled
 /// every round hole for every query point until a box gate skipped the holes
-/// a query lies outside.
+/// a query lies outside. The last two are the frozen-untouched-faces stage:
+/// phase FF sampled every blank face's box, and phase EF every face's
+/// outline, though the slot cannot reach the hole walls.
 ///
 /// Runs only with `--features perf-counters`, in the `test(scaling_)` step.
 #[cfg(feature = "perf-counters")]
@@ -7299,13 +7303,18 @@ fn scaling_slot_cut_does_not_rescan_touched_face_loops() {
     let large = slot_counts(12);
     eprintln!(
         "touched-face loop guard @ 36→144 holes: junction_curve_scans {}->{}, \
-         face_extent_builds {}->{}, hole_containment_samplings {}->{}",
+         face_extent_builds {}->{}, hole_containment_samplings {}->{}, \
+         face_bbox_builds {}->{}, face_outline_samplings {}->{}",
         small.junction_curve_scans,
         large.junction_curve_scans,
         small.face_extent_builds,
         large.face_extent_builds,
         small.hole_containment_samplings,
         large.hole_containment_samplings,
+        small.face_bbox_builds,
+        large.face_bbox_builds,
+        small.face_outline_samplings,
+        large.face_outline_samplings,
     );
     // The snap's box gate leaves only rims within its band of a section
     // endpoint, and no hole is: an ungated snap samples every rim per call.
@@ -7332,15 +7341,34 @@ fn scaling_slot_cut_does_not_rescan_touched_face_loops() {
         "hole containment resamples every hole: {} samplings at 144 holes",
         large.hole_containment_samplings
     );
+    // Untouched faces: a hole wall far from the slot needs neither a sampled
+    // box (its conservative one already misses every slot face) nor an
+    // outline (an analytic curved face takes no outline containment).
+    assert!(
+        large.face_bbox_builds > 0 && large.face_outline_samplings > 0,
+        "face box or outline instrumentation not exercised"
+    );
+    assert!(
+        large.face_bbox_builds < 32,
+        "phase FF samples untouched faces' boxes: {} at 144 holes",
+        large.face_bbox_builds
+    );
+    assert!(
+        large.face_outline_samplings < 32,
+        "phase EF samples untouched faces' outlines: {} at 144 holes",
+        large.face_outline_samplings
+    );
 }
 
-/// The planar arc pcurve memo (stage 3 of the local boolean) must not change
-/// a boolean's result. A slot is cut through a drilled plate with the memo
-/// off, then again on a fresh copy with the memo warmed by the same cut, and
-/// the two results are compared entity by entity, every float exactly.
+/// The GFA's content-keyed memos (planar arc pcurves, revolved wire areas)
+/// must not change a boolean's result. A slot is cut through a drilled plate
+/// with the memos off, then again on a fresh copy with them warmed by the
+/// same cut, and the two results are compared entity by entity, every float
+/// exactly.
 #[test]
-fn warm_pcurve_memo_leaves_a_slot_cut_bit_identical() {
+fn warm_content_memos_leave_a_slot_cut_bit_identical() {
     use crate::primitives::{make_box, make_cylinder};
+    use remus_algo::{pcurve_memo, wire_area_memo};
     use remus_math::mat::Mat4;
     use std::fmt::Write;
 
@@ -7393,17 +7421,32 @@ fn warm_pcurve_memo_leaves_a_slot_cut_bit_identical() {
         out
     };
 
-    remus_algo::pcurve_memo::set_thread_pcurve_memo_capacity(0);
+    pcurve_memo::set_thread_pcurve_memo_capacity(0);
+    wire_area_memo::set_thread_wire_area_memo_capacity(0);
     let mut cold = topo.clone();
     let cold_result = boolean(&mut cold, BooleanOp::Cut, plate, slot).unwrap();
-    remus_algo::pcurve_memo::enable_thread_pcurve_memo();
+    pcurve_memo::enable_thread_pcurve_memo();
+    wire_area_memo::enable_thread_wire_area_memo();
     let mut warming = topo.clone();
     boolean(&mut warming, BooleanOp::Cut, plate, slot).unwrap();
-    let before = remus_algo::pcurve_memo::thread_pcurve_memo_stats();
+    let before = pcurve_memo::thread_pcurve_memo_stats();
+    let areas_before = wire_area_memo::thread_wire_area_memo_stats();
     let mut warm = topo.clone();
     let warm_result = boolean(&mut warm, BooleanOp::Cut, plate, slot).unwrap();
-    let after = remus_algo::pcurve_memo::thread_pcurve_memo_stats();
-    remus_algo::pcurve_memo::set_thread_pcurve_memo_capacity(0);
+    let after = pcurve_memo::thread_pcurve_memo_stats();
+    let areas_after = wire_area_memo::thread_wire_area_memo_stats();
+    pcurve_memo::set_thread_pcurve_memo_capacity(0);
+    wire_area_memo::set_thread_wire_area_memo_capacity(0);
+
+    // Every hole wall's wire area comes from the memo on the warm cut.
+    assert!(
+        areas_after.hits >= areas_before.hits + 5,
+        "the warm cut re-measured hole walls: {areas_before:?} -> {areas_after:?}"
+    );
+    assert_eq!(
+        areas_after.misses, areas_before.misses,
+        "an identical warm cut re-measured wire areas"
+    );
 
     assert!(
         after.hits > before.hits,

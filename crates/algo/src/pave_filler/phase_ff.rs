@@ -92,6 +92,140 @@ struct JunctionRegistry {
     /// geometry instead of a fixed length. Cached because `resolve` runs per
     /// section endpoint and a face AABB costs a surface sampling pass.
     extents: DetHashMap<(usize, usize), f64>,
+    /// Each face's boundary edges as the junction snap reads them, built on
+    /// the face's first snap (see [`BoundaryEdge`]).
+    boundaries: DetHashMap<FaceId, Option<Vec<BoundaryEdge>>>,
+    /// Each face's sampled box for `pair_extent`, `None` where it failed. A
+    /// face's box is the same for every pair it is in, and sampling it once
+    /// per pair walked a holed face's every rim again.
+    face_boxes: DetHashMap<FaceId, Option<Aabb3>>,
+}
+
+/// One boundary edge of a face, in wire order (outer wire, then inner
+/// wires), with what the junction snap reads from it: endpoints, domain and,
+/// for a curve, the box of [`curve_box`].
+///
+/// Phase FF only adds vertices and edges, so a face's boundary is fixed for
+/// the pass, and reading it once per face instead of once per snap returns
+/// the same values. On a face carrying many holes the per-snap walk visited
+/// every rim (topology lookups, domain, box) for each section endpoint.
+#[derive(Clone)]
+struct BoundaryEdge {
+    edge: remus_topology::edge::EdgeId,
+    start: Point3,
+    end: Point3,
+    domain: (f64, f64),
+    curve: BoundaryCurve,
+}
+
+/// What the junction snap reads from a boundary edge's curve.
+#[derive(Clone, Copy)]
+enum BoundaryCurve {
+    /// A line, measured in closed form.
+    Line,
+    /// A curve, sampled unless its box (when it has one) is out of reach.
+    Curve(Option<([f64; 3], [f64; 3])>),
+}
+
+/// The boundary edges of `face_id` in the order
+/// [`snap_to_boundary_junction_band`] walks them, skipping the same missing
+/// entities it skips. `None` when an edge lacks an authoritative domain,
+/// where that walk returns `None` outright; a missing face reads as no
+/// edges, which that walk skips.
+fn boundary_edges(topo: &Topology, face_id: FaceId) -> Option<Vec<BoundaryEdge>> {
+    let Ok(face) = topo.face(face_id) else {
+        return Some(Vec::new());
+    };
+    let mut out = Vec::new();
+    for wire in std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .filter_map(|wid| topo.wire(wid).ok())
+    {
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                continue;
+            };
+            let domain = super::helpers::authoritative_edge_domain(
+                edge,
+                oe.edge(),
+                "boundary-junction search",
+            )
+            .ok()?;
+            out.push(BoundaryEdge {
+                edge: oe.edge(),
+                start: sv.point(),
+                end: ev.point(),
+                domain,
+                curve: if matches!(edge.curve(), EdgeCurve::Line) {
+                    BoundaryCurve::Line
+                } else {
+                    BoundaryCurve::Curve(curve_box(edge.curve()))
+                },
+            });
+        }
+    }
+    Some(out)
+}
+
+/// [`snap_to_boundary_junction_band`] reading each face's boundary from
+/// `boundaries`, built on the face's first use: the same candidates in the
+/// same order with the same arithmetic, so the same answer.
+fn snap_with_boundaries(
+    boundaries: &mut DetHashMap<FaceId, Option<Vec<BoundaryEdge>>>,
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    p: Point3,
+    tol: Tolerance,
+    weld: f64,
+) -> Option<Point3> {
+    for fid in [fa, fb] {
+        boundaries
+            .entry(fid)
+            .or_insert_with(|| boundary_edges(topo, fid));
+    }
+    let (Some(Some(edges_a)), Some(Some(edges_b))) = (boundaries.get(&fa), boundaries.get(&fb))
+    else {
+        return snap_to_boundary_junction_band(topo, fa, fb, p, tol, weld);
+    };
+    let mut best: Option<BoundaryFoot> = None;
+    for (fid, edges) in [(fa, edges_a), (fb, edges_b)] {
+        for entry in edges {
+            let (sp, ep, (d0, d1)) = (entry.start, entry.end, entry.domain);
+            let BoundaryCurve::Curve(bounds) = entry.curve else {
+                let direction = ep - sp;
+                let length_squared = direction.length_squared();
+                if length_squared > 0.0 {
+                    let parameter =
+                        ((p - sp).dot(direction) / length_squared).clamp(d0.min(d1), d0.max(d1));
+                    let foot = sp + direction * parameter;
+                    let distance = (foot - p).length();
+                    if distance < weld && best.as_ref().is_none_or(|b| distance < b.0) {
+                        best = Some((distance, foot, parameter, fid, entry.edge));
+                    }
+                }
+                continue;
+            };
+            if bounds
+                .and_then(|(lo, hi)| box_gap(&lo, &hi, p))
+                .is_some_and(|gap| gap > weld)
+            {
+                continue;
+            }
+            let Ok(edge) = topo.edge(entry.edge) else {
+                continue;
+            };
+            crate::perf::bump_junction_curve_scan();
+            let (d, foot, tm) = curved_edge_foot(edge.curve(), sp, ep, (d0, d1), p);
+            if d < weld && best.as_ref().is_none_or(|b| d < b.0) {
+                best = Some((d, foot, tm, fid, entry.edge));
+            }
+        }
+    }
+    refine_boundary_junction(topo, fa, fb, best?, tol, weld)
 }
 
 #[derive(Clone, Copy)]
@@ -202,7 +336,8 @@ impl JunctionRegistry {
         // returned point is recomputed on a boundary of this exact face pair.
         // Never adopt a registry point directly from the untrusted fitted
         // endpoint, because an unrelated nearby feature could redirect it.
-        let Some(boundary_junction) = snap_to_boundary_junction_band(topo, fa, fb, p, tol, trigger)
+        let Some(boundary_junction) =
+            snap_with_boundaries(&mut self.boundaries, topo, fa, fb, p, tol, trigger)
         else {
             return p;
         };
@@ -247,8 +382,15 @@ impl JunctionRegistry {
                 if !shares_face && !face_uses_source {
                     return None;
                 }
-                let validated =
-                    snap_to_boundary_junction_band(topo, fa, fb, entry.point, tol, trigger)?;
+                let validated = snap_with_boundaries(
+                    &mut self.boundaries,
+                    topo,
+                    fa,
+                    fb,
+                    entry.point,
+                    tol,
+                    trigger,
+                )?;
                 ((validated - entry.point).length() <= weld).then_some(entry.point)
             })
             .collect::<Vec<_>>();
@@ -291,11 +433,14 @@ impl JunctionRegistry {
         if let Some(&cached) = self.extents.get(&key) {
             return cached;
         }
-        let extent = match (
-            compute_face_bbox(topo, fa, tol),
-            compute_face_bbox(topo, fb, tol),
-        ) {
-            (Ok(a), Ok(b)) => {
+        let mut face_box = |face_id: FaceId| {
+            *self
+                .face_boxes
+                .entry(face_id)
+                .or_insert_with(|| compute_face_bbox(topo, face_id, tol).ok())
+        };
+        let extent = match (face_box(fa), face_box(fb)) {
+            (Some(a), Some(b)) => {
                 let dx = a.max.x().max(b.max.x()) - a.min.x().min(b.min.x());
                 let dy = a.max.y().max(b.max.y()) - a.min.y().min(b.min.y());
                 let dz = a.max.z().max(b.max.z()) - a.min.z().min(b.min.z());
@@ -449,9 +594,17 @@ fn perform_seeded(
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
-    // Pre-compute face AABBs for rejection
-    let bboxes_a = compute_face_bboxes(topo, &faces_a, tol)?;
-    let bboxes_b = compute_face_bboxes(topo, &faces_b, tol)?;
+    // Pre-compute face AABBs for rejection. A face of `a` whose conservative
+    // box misses every face of `b` keeps that box instead: every pair it
+    // forms is rejected either way (see `compute_face_bboxes_against`).
+    // `a` is still read first whenever `b` fails, so an error reports as
+    // before.
+    let bboxes_b = compute_face_bboxes(topo, &faces_b, tol);
+    let bboxes_a = match &bboxes_b {
+        Ok(partners) => compute_face_bboxes_against(topo, &faces_a, partners, tol)?,
+        Err(_) => compute_face_bboxes(topo, &faces_a, tol)?,
+    };
+    let bboxes_b = bboxes_b?;
 
     // Collect all surface data upfront so we don't borrow topo immutably
     // while mutating it later.
@@ -486,6 +639,9 @@ fn perform_seeded(
         DetHashMap::default();
 
     let ff_trace = ff_trace_x();
+    // Read once per pass: the per-pair debug dumps below used to look the
+    // variable up for every face pair, rejected ones included.
+    let raw_curve_dump = std::env::var("BK_RAWC").is_ok();
     let mut face_extents = FaceExtents::default();
 
     for (idx_a, &fa) in faces_a.iter().enumerate() {
@@ -509,7 +665,7 @@ fn perform_seeded(
                 .expanded(tol.linear)
                 .intersects(bbox_b.expanded(tol.linear))
             {
-                if std::env::var("BK_RAWC").is_ok() {
+                if raw_curve_dump {
                     log::debug!(
                         "RAWC-REJ a[{idx_a}]={} b[{idx_b}]={} A[{:.3},{:.3},{:.3}..{:.3},{:.3},{:.3}] B[{:.3},{:.3},{:.3}..{:.3},{:.3},{:.3}]",
                         surfs_a[idx_a].type_tag(),
@@ -597,7 +753,7 @@ fn perform_seeded(
             // smuggle an invalid parameter span into a sampler that would
             // quietly classify every NaN point as outside and drop the curve.
             validate_raw_curve_collection("compute_raw_curves", &raw_curves)?;
-            if std::env::var("BK_RAWC").is_ok() {
+            if raw_curve_dump {
                 log::debug!(
                     "RAWC a[{idx_a}]={} b[{idx_b}]={} n={}",
                     surf_a.type_tag(),
@@ -3855,6 +4011,12 @@ fn nearest_parameter(raw: &RawCurve, p: Point3, t_guess: f64, radius: f64) -> f6
 /// (convex hull). A rounding slack well above the evaluation error is taken
 /// off, so the bound never exceeds a distance the sampling could measure.
 fn curve_box_distance(curve: &EdgeCurve, p: Point3) -> Option<f64> {
+    curve_box(curve).and_then(|(lo, hi)| box_gap(&lo, &hi, p))
+}
+
+/// The box [`curve_box_distance`] measures against, or `None` when the curve
+/// kind has no cheap bound.
+fn curve_box(curve: &EdgeCurve) -> Option<([f64; 3], [f64; 3])> {
     let (lo, hi) = match curve {
         EdgeCurve::Circle(circle) => conic_box(
             circle.center(),
@@ -3890,6 +4052,12 @@ fn curve_box_distance(curve: &EdgeCurve, p: Point3) -> Option<f64> {
         }
         EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
     };
+    Some((lo, hi))
+}
+
+/// Distance from `p` to the box `lo..hi`, less the rounding slack
+/// [`curve_box_distance`] documents; `None` when not finite.
+fn box_gap(lo: &[f64; 3], hi: &[f64; 3], p: Point3) -> Option<f64> {
     let mut gap_squared = 0.0;
     let mut scale = 1.0_f64;
     for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
@@ -3934,10 +4102,8 @@ fn snap_to_boundary_junction_band(
     tol: Tolerance,
     weld: f64,
 ) -> Option<Point3> {
-    const NS: usize = 64;
-    let surf_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
     // (distance, foot, foot's curve param, owning face, edge)
-    let mut best: Option<(f64, Point3, f64, FaceId, remus_topology::edge::EdgeId)> = None;
+    let mut best: Option<BoundaryFoot> = None;
     for fid in [fa, fb] {
         let Ok(face) = topo.face(fid) else { continue };
         // Inner (hole) wires are legitimate exit boundaries too: a corner
@@ -3987,41 +4153,74 @@ fn snap_to_boundary_junction_band(
                 continue;
             }
             crate::perf::bump_junction_curve_scan();
-            let mut best_k = 0;
-            let mut best_d = f64::MAX;
-            for k in 0..=NS {
-                #[allow(clippy::cast_precision_loss)]
-                let t = d0 + (d1 - d0) * (k as f64) / (NS as f64);
-                let d = (edge.curve().evaluate_with_endpoints(t, sp, ep) - p).length();
-                if d < best_d {
-                    best_d = d;
-                    best_k = k;
-                }
-            }
-            #[allow(clippy::cast_precision_loss)]
-            let mut lo = d0 + (d1 - d0) * (best_k.saturating_sub(1) as f64) / (NS as f64);
-            #[allow(clippy::cast_precision_loss)]
-            let mut hi = d0 + (d1 - d0) * ((best_k + 1).min(NS) as f64) / (NS as f64);
-            for _ in 0..48 {
-                let m1 = lo + (hi - lo) / 3.0;
-                let m2 = hi - (hi - lo) / 3.0;
-                let f1 = (edge.curve().evaluate_with_endpoints(m1, sp, ep) - p).length();
-                let f2 = (edge.curve().evaluate_with_endpoints(m2, sp, ep) - p).length();
-                if f1 < f2 {
-                    hi = m2;
-                } else {
-                    lo = m1;
-                }
-            }
-            let tm = 0.5 * (lo + hi);
-            let foot = edge.curve().evaluate_with_endpoints(tm, sp, ep);
-            let d = (foot - p).length();
+            let (d, foot, tm) = curved_edge_foot(edge.curve(), sp, ep, (d0, d1), p);
             if d < weld && best.as_ref().is_none_or(|b| d < b.0) {
                 best = Some((d, foot, tm, fid, oe.edge()));
             }
         }
     }
-    let (_, foot, tm, owner_fid, eid) = best?;
+    refine_boundary_junction(topo, fa, fb, best?, tol, weld)
+}
+
+/// `(distance, foot, foot's curve parameter, owning face, edge)` of the
+/// boundary curve nearest a section endpoint.
+type BoundaryFoot = (f64, Point3, f64, FaceId, remus_topology::edge::EdgeId);
+
+/// Nearest point of a curved boundary edge to `p`: a 65-sample scan, then
+/// 48 ternary steps around the best sample. Returns `(distance, foot,
+/// parameter)`.
+fn curved_edge_foot(
+    curve: &EdgeCurve,
+    sp: Point3,
+    ep: Point3,
+    (d0, d1): (f64, f64),
+    p: Point3,
+) -> (f64, Point3, f64) {
+    const NS: usize = 64;
+    let mut best_k = 0;
+    let mut best_d = f64::MAX;
+    for k in 0..=NS {
+        #[allow(clippy::cast_precision_loss)]
+        let t = d0 + (d1 - d0) * (k as f64) / (NS as f64);
+        let d = (curve.evaluate_with_endpoints(t, sp, ep) - p).length();
+        if d < best_d {
+            best_d = d;
+            best_k = k;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mut lo = d0 + (d1 - d0) * (best_k.saturating_sub(1) as f64) / (NS as f64);
+    #[allow(clippy::cast_precision_loss)]
+    let mut hi = d0 + (d1 - d0) * ((best_k + 1).min(NS) as f64) / (NS as f64);
+    for _ in 0..48 {
+        let m1 = lo + (hi - lo) / 3.0;
+        let m2 = hi - (hi - lo) / 3.0;
+        let f1 = (curve.evaluate_with_endpoints(m1, sp, ep) - p).length();
+        let f2 = (curve.evaluate_with_endpoints(m2, sp, ep) - p).length();
+        if f1 < f2 {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let tm = 0.5 * (lo + hi);
+    let foot = curve.evaluate_with_endpoints(tm, sp, ep);
+    ((foot - p).length(), foot, tm)
+}
+
+/// Refine the nearest boundary foot to the triple junction it marks: the
+/// boundary edge's own vertex when it lies on the partner surface, else the
+/// boundary curve's crossing with the partner surface (see
+/// [`snap_to_boundary_junction_band`]).
+fn refine_boundary_junction(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    (_, foot, tm, owner_fid, eid): BoundaryFoot,
+    tol: Tolerance,
+    weld: f64,
+) -> Option<Point3> {
+    let surf_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
     let other = if owner_fid == fa { fb } else { fa };
     let other_surf = surf_of(other)?;
     let dist_to_surf = |q: Point3| -> f64 {
@@ -5131,6 +5330,7 @@ fn longest_inboth_run(inb: &[bool], closed: bool) -> (usize, usize) {
 
 /// Compute AABB for a face by sampling its boundary edges.
 fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result<Aabb3, AlgoError> {
+    crate::perf::bump_face_bbox_build();
     let edges = remus_topology::explorer::face_edges(topo, face_id)?;
     // Nine samples per edge; conic axis extrema (at most six) grow it rarely.
     let mut points = Vec::with_capacity(edges.len() * 9);
@@ -5358,6 +5558,69 @@ fn face_boundary_all_degenerate(
 }
 
 /// Compute AABBs for a list of faces.
+/// [`compute_face_bboxes`] for faces that only meet `partners`: a face whose
+/// conservative box, expanded by the rejection's tolerance, intersects no
+/// expanded partner box gets that conservative box instead of its sampled
+/// one.
+///
+/// The sampled box lies inside the conservative one (every sample and conic
+/// extremum is a point of a boundary curve, and [`conservative_curve_aabb`]
+/// holds the whole curve; a coordinate slack covers evaluation rounding), so
+/// the pair loop's rejection test refuses every pair such a face forms,
+/// either box. Those pairs never read the box again. Spheres and tori, whose
+/// box also takes surface extent, always take the sampled box, as does any
+/// face with a curve that has no conservative box. The lookups match the
+/// sampled box's, and edge domains were validated before this phase, so the
+/// same errors surface.
+///
+/// [`conservative_curve_aabb`]: super::helpers::conservative_curve_aabb
+fn compute_face_bboxes_against(
+    topo: &Topology,
+    faces: &[FaceId],
+    partners: &[Aabb3],
+    tol: Tolerance,
+) -> Result<Vec<Aabb3>, AlgoError> {
+    let reach: Vec<Aabb3> = partners.iter().map(|b| b.expanded(tol.linear)).collect();
+    let mut bboxes = Vec::with_capacity(faces.len());
+    for &fid in faces {
+        let conservative = match topo.face(fid)?.surface() {
+            FaceSurface::Sphere(_) | FaceSurface::Torus(_) => None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_) => conservative_face_bbox(topo, fid)?,
+        };
+        match conservative {
+            Some(bbox)
+                if !reach
+                    .iter()
+                    .any(|partner| bbox.expanded(tol.linear).intersects(*partner)) =>
+            {
+                bboxes.push(bbox);
+            }
+            Some(_) | None => bboxes.push(compute_face_bbox(topo, fid, tol)?),
+        }
+    }
+    Ok(bboxes)
+}
+
+/// The union of a face's boundary curves' conservative boxes, grown by a
+/// coordinate slack, or `None` when a curve has none.
+fn conservative_face_bbox(topo: &Topology, face_id: FaceId) -> Result<Option<Aabb3>, AlgoError> {
+    let mut bbox: Option<Aabb3> = None;
+    for eid in remus_topology::explorer::face_edges(topo, face_id)? {
+        let edge = topo.edge(eid)?;
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let Some(curve_box) = super::helpers::conservative_curve_aabb(edge.curve(), start, end)
+        else {
+            return Ok(None);
+        };
+        bbox = Some(bbox.map_or(curve_box, |b| b.union(curve_box)));
+    }
+    Ok(bbox.map(|b| b.expanded(super::helpers::coordinate_slack(b))))
+}
+
 fn compute_face_bboxes(
     topo: &Topology,
     faces: &[FaceId],
