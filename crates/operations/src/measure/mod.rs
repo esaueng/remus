@@ -12,6 +12,7 @@ mod volume_memo;
 pub use area::{
     body_surface_area, face_area, sheet_center_of_area, sheet_surface_area, solid_surface_area,
 };
+pub(crate) use bounding_box::solid_vertex_bounding_box;
 pub(crate) use bounding_box::{
     conservative_face_set_bounding_box, conservative_solid_bounding_box,
 };

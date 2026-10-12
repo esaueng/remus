@@ -244,6 +244,8 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the O2.3b arrangement engine: intersections, tangent order, ray crossing, distance, work budgets, periodic quotient (tests) | `builder/face_splitter/arrangement/oracle_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Opt-in per-thread content-keyed memo of planar arc pcurves (bit-identical hits; the WASM kernel enables it) | `pcurve_memo.rs` |
+| Opt-in per-thread content-keyed memo of revolved-face wire areas for shell-assembly orientation (bit-identical hits; the WASM kernel enables it) | `wire_area_memo.rs` |
+| Bounded content-keyed FIFO store shared by the opt-in memos | `memo.rs` |
 | Differential oracle for the hole-containment box gate (the ungated test kept verbatim, tests) | `builder/face_splitter/containment/gate_oracle_tests.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
@@ -266,7 +268,7 @@ Quick reference — find the right file for any task:
 | Deterministic work counters (complexity guards) | `perf.rs` |
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
 | Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
-| Differential oracle for the phase-FF junction snap's box gate (the ungated search kept verbatim) and the box bound against sampled curve distances (tests) | `pave_filler/phase_ff/junction_snap_oracle_tests.rs` |
+| Differential oracle for the phase-FF junction snap's box gate and per-face boundary cache (the ungated search kept verbatim), the box bound against sampled curve distances, and the untouched-face box gate (tests) | `pave_filler/phase_ff/junction_snap_oracle_tests.rs` |
 | Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
 | Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
