@@ -280,6 +280,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "gcsSolve"
         | "gcsSolveDetailed"
         | "gcsDof" => Some(BatchOpKind::ReadOnly),
+        // Session settings: they never touch the topology.
+        "setStoreLocalCuts" | "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
         "makeBox"
         | "makeCompound"
         | "fuseJournaled"
@@ -1305,6 +1307,14 @@ impl BrepKernel {
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
+            "setStoreLocalCuts" => {
+                let enabled = get_bool(args, "enabled")?;
+                remus_operations::boolean::set_thread_store_local_cuts(enabled);
+                Ok(serde_json::json!(enabled))
+            }
+            "storeLocalCutsEnabled" => Ok(serde_json::json!(
+                remus_operations::boolean::thread_store_local_cuts_enabled()
+            )),
             "fuseAll" => {
                 let handles = get_u32_array(args, "solids")?;
                 let solids = handles
