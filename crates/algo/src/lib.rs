@@ -21,8 +21,12 @@ pub mod bop;
 pub mod diagnostic;
 pub mod error;
 pub mod gfa;
+mod memo;
 pub mod pcurve_memo;
 pub mod perf;
+pub mod wire_area_memo;
+
+pub use memo::MemoStats;
 
 mod builder;
 pub mod classifier;

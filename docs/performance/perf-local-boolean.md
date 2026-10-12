@@ -449,3 +449,100 @@ remaining per-hole cost is untouched-face work outside the splitter. Shell
 assembly and `orient_revolved_face_wires` revisit every hole wall, and the
 GFA store copies every face in and out. That is the next stage, frozen
 untouched faces.
+
+## Frozen untouched faces, part 1 (implemented)
+
+The design item says a face of `A` that cannot meet `B` needs no pair setup
+in the pave filler and no-op work in assembly, each with its own exactness
+argument. A slot cut through a drilled plate meets two faces of the blank.
+Every hole wall, and every rim on the faces it touches, is untouched work.
+Part 1 removes the passes that paid for them:
+
+- **Phase EF outline sampling.** `build_face_containment` sampled every
+  face's outline. For cylinder, cone, sphere and torus faces it then
+  returned an empty containment, because a sampled box is not conservative
+  on a curved patch. Those faces now return it before sampling. `perform`
+  validates every edge domain of both solids first, so the sampling could
+  not have failed.
+- **Phase FF face boxes.** `compute_face_bbox` sampled every blank face.
+  A face whose conservative box misses every expanded tool-face box now
+  keeps that box. The conservative box is the union of
+  `conservative_curve_aabb` over the face's edges, grown by a coordinate
+  slack, and it contains the sampled one. So the rejection test refuses
+  every pair such a face forms with either box, and no rejected pair reads
+  the box again. Spheres and tori, whose boxes take surface extent, always
+  sample.
+- **Phase FF junction-snap boundaries.** Each snap walked every boundary
+  edge of both faces: topology lookups, domain, box. The registry now
+  keeps each face's boundary once per pass and walks the same candidates
+  in the same order. A face with an edge lacking domain authority falls
+  back to the walk, which returns `None` as before.
+- **Phase FF pair extents.** The junction snap's band sampled both faces'
+  boxes once per face pair. It now caches them once per face.
+- **Assembly wire areas.** `orient_revolved_face_wires` measures every
+  cylinder and cone wire's chart area: 33 samples per edge, each projected
+  onto the surface. A content-keyed memo (`remus_algo::wire_area_memo`)
+  keys on the exact bits of the surface and the wire's edges (direction,
+  curve, endpoints, domain). A hit is bit-identical, so an unchanged hole
+  wall is free on every later cut. It is opt-in and enabled by the WASM
+  kernel, like the pcurve memo. The two now share one bounded store
+  (`memo.rs`).
+- **The operations wrapper's bounds check.** `result_within_operand_bounds`
+  sampled the blank's full box on every boolean. It first tries the
+  operands' vertex boxes, which lie inside the full ones. When every
+  result vertex lies inside the allowed box built from them, with its
+  margin, the full test would accept too. Otherwise the full test runs.
+- `BK_RAWC` is read once per FF pass rather than once per face pair.
+
+**Exactness.**
+- `junction_snap_oracle_tests.rs` compares the cached-boundary snap with
+  the verbatim ungated search on every query.
+- The same file checks that a face keeps its conservative box only where
+  its sampled box is rejected against every partner, and that the
+  conservative box contains the sampled one.
+- `memoized_wire_areas_are_bit_identical_and_keyed_on_content` compares
+  memoized and measured areas bitwise. It covers cylinder and cone loops in
+  both windings, and the same content under new entity ids hits.
+- `warm_content_memos_leave_a_slot_cut_bit_identical` now warms both
+  memos. The warm cut answers every wall's area from the memo.
+- The scaling guard adds two counters. `face_bbox_builds` reads 14 → 14 and
+  `face_outline_samplings` 12 → 12 from 36 to 144 holes; with the gates
+  removed they read 54 → 162 and 48 → 156.
+
+**Evidence.** Stage 3 part 2 (`0f7b50c8`) against this part, Apple M5 Pro,
+shared machine, `RAYON_NUM_THREADS=1`. Instruction counts
+(`/usr/bin/time -l`, binaries alternated, three rounds):
+
+| run | part 2 | this part |
+| --- | ---: | ---: |
+| 100 slots on a 324-hole plate, memos off | 53.19–53.38 G | 49.04–49.19 G (−8%) |
+| the same, memos on (kernel) | 50.55–50.62 G | 44.95–45.05 G (−11%) |
+| 2000 slots on a blank plate | 13.51 G | 13.21–13.23 G (−2%) |
+| 1000 cross-drilled shafts | 21.22–21.27 G | 21.17–21.21 G |
+| 1000 gridfinity magnet-pocket sets, 1000 box − cylinder cuts | 1.066–1.069 G, 0.268 G | 1.067–1.068 G, 0.268–0.269 G |
+
+Slot cuts are about 85% of the 324-hole runs, so a slot costs about 9% less
+with the memos off and 13% less with them on. The blank-plate gain is the
+operand bounds shortcut, which every boolean takes.
+
+Criterion over the boolean benches, two rounds. Consistent wins:
+
+| bench | change |
+| --- | ---: |
+| `multi-boolean model` | −15 to −17% |
+| `cut_box_box` | −9 to −12% |
+| `cut(box,cyl) x10` | −4 to −5% |
+| `gridfinity 3x3` | −4% |
+
+`cross_drilled_cylinder` read +5% and +2%, and the `torus_notch` trio up to
++3%. Neither held up by instruction count. The cross-drilled count is above,
+and 300 torus-notch cuts, fuses and intersects count 15.0–15.3 G on both
+branches, within their ±0.6% run-to-run spread.
+
+**What remains.** About 10% of the slot cut is the GFA store copying every
+face in and out, which is stage 4 (store-local subsets). Shell assembly's
+linear passes (`perform_loops`, collinear-vertex arc splitting,
+duplicate-edge merge) are another 20%. They visit every face once with
+hashing-heavy bookkeeping. Skipping untouched faces there needs the open
+patch assembly of stage 4. Short of that, only cheaper constant factors
+help.

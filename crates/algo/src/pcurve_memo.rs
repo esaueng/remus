@@ -18,10 +18,10 @@
 //! bounded: past its capacity, the oldest entries are dropped first.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 
 use remus_math::curves2d::Curve2D;
-use remus_math::det_hash::DetHashMap;
+
+use crate::memo::BoundedMemo;
 
 /// Default number of pcurves a thread keeps once enabled.
 ///
@@ -38,17 +38,8 @@ pub(crate) type PcurveKey = [u64; PCURVE_KEY_WORDS];
 /// axes).
 pub(crate) const PCURVE_KEY_WORDS: usize = 1 + 3 + 3 + 2 + 3 + 3 + 3 + 3 + 2 + 4 + 3 + 3 + 3;
 
-#[derive(Default)]
-struct PcurveMemo {
-    capacity: usize,
-    curves: DetHashMap<PcurveKey, Curve2D>,
-    order: VecDeque<PcurveKey>,
-    hits: u64,
-    misses: u64,
-}
-
 thread_local! {
-    static MEMO: RefCell<PcurveMemo> = RefCell::new(PcurveMemo::default());
+    static MEMO: RefCell<BoundedMemo<PcurveKey, Curve2D>> = RefCell::new(BoundedMemo::default());
 }
 
 /// Statistics of this thread's memo.
@@ -68,10 +59,8 @@ pub struct PcurveMemoStats {
 /// is already enabled (then its capacity and contents are kept).
 pub fn enable_thread_pcurve_memo() {
     MEMO.with(|memo| {
-        if let Ok(mut memo) = memo.try_borrow_mut()
-            && memo.capacity == 0
-        {
-            memo.capacity = DEFAULT_PCURVE_MEMO_CAPACITY;
+        if let Ok(mut memo) = memo.try_borrow_mut() {
+            memo.enable(DEFAULT_PCURVE_MEMO_CAPACITY);
         }
     });
 }
@@ -81,8 +70,7 @@ pub fn enable_thread_pcurve_memo() {
 pub fn set_thread_pcurve_memo_capacity(capacity: usize) {
     MEMO.with(|memo| {
         if let Ok(mut memo) = memo.try_borrow_mut() {
-            memo.capacity = capacity;
-            memo.evict_to_capacity();
+            memo.set_capacity(capacity);
         }
     });
 }
@@ -90,36 +78,16 @@ pub fn set_thread_pcurve_memo_capacity(capacity: usize) {
 /// This thread's memo statistics.
 #[must_use]
 pub fn thread_pcurve_memo_stats() -> PcurveMemoStats {
-    MEMO.with(|memo| {
-        memo.try_borrow().map_or(
-            PcurveMemoStats {
-                hits: 0,
-                misses: 0,
-                len: 0,
-                capacity: 0,
-            },
-            |memo| PcurveMemoStats {
-                hits: memo.hits,
-                misses: memo.misses,
-                len: memo.curves.len(),
-                capacity: memo.capacity,
-            },
-        )
-    })
-}
-
-impl PcurveMemo {
-    fn evict_to_capacity(&mut self) {
-        while self.curves.len() > self.capacity {
-            let Some(oldest) = self.order.pop_front() else {
-                self.curves.clear();
-                break;
-            };
-            self.curves.remove(&oldest);
-        }
-        if self.capacity == 0 {
-            self.order.clear();
-        }
+    let stats = MEMO.with(|memo| {
+        memo.try_borrow()
+            .map(|memo| memo.stats())
+            .unwrap_or_default()
+    });
+    PcurveMemoStats {
+        hits: stats.hits,
+        misses: stats.misses,
+        len: stats.len,
+        capacity: stats.capacity,
     }
 }
 
@@ -129,30 +97,14 @@ pub(crate) fn memoized<E>(
     key: &PcurveKey,
     compute: impl FnOnce() -> Result<Curve2D, E>,
 ) -> Result<Curve2D, E> {
-    let stored = MEMO.with(|memo| {
-        let mut memo = memo.try_borrow_mut().ok()?;
-        if memo.capacity == 0 {
-            return None;
-        }
-        let found = memo.curves.get(key).cloned();
-        if found.is_some() {
-            memo.hits += 1;
-        }
-        found
-    });
+    let stored = MEMO.with(|memo| memo.try_borrow_mut().ok()?.get(key));
     if let Some(curve) = stored {
         return Ok(curve);
     }
     let curve = compute()?;
     MEMO.with(|memo| {
-        if let Ok(mut memo) = memo.try_borrow_mut()
-            && memo.capacity > 0
-        {
-            memo.misses += 1;
-            if memo.curves.insert(*key, curve.clone()).is_none() {
-                memo.order.push_back(*key);
-                memo.evict_to_capacity();
-            }
+        if let Ok(mut memo) = memo.try_borrow_mut() {
+            memo.insert(key, &curve);
         }
     });
     Ok(curve)

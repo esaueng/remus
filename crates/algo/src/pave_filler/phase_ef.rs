@@ -329,6 +329,27 @@ fn build_face_containment(
     let face = topo.face(fid)?;
     let surface = face.surface().clone();
 
+    // An analytic curved face takes no containment from its outline (a
+    // sampled boundary box is not conservative on a curved patch; see the
+    // end of this function), so sampling it is wasted: every hole wall of a
+    // drilled plate paid for it on every cut. The sampling cannot fail
+    // either — `perform` validated every edge domain of both solids first —
+    // so returning early changes nothing.
+    if matches!(
+        surface,
+        FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+    ) {
+        return Ok(FaceContainment {
+            bbox: None,
+            planar: None,
+            nurbs: None,
+        });
+    }
+
+    crate::perf::bump_face_outline_sampling();
     let (outer_points, mut max_boundary_error) = sample_wire_outline(topo, face.outer_wire(), tol)?;
     let mut all_points = outer_points.clone();
 
