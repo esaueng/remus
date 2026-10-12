@@ -4,7 +4,7 @@
 //! edge crosses or touches the face surface. Records EF interferences
 //! and adds extra paves to the edge for later splitting.
 
-use std::collections::HashSet;
+use remus_math::det_hash::DetHashSet;
 
 use crate::builder::classify_2d::{distance_to_polygon_boundary, point_in_polygon_2d};
 use crate::builder::plane_frame::PlaneFrame;
@@ -113,7 +113,7 @@ pub(super) fn perform_with(
 fn collect_face_boundary_edges(
     topo: &Topology,
     faces: &[FaceId],
-) -> Result<Vec<HashSet<EdgeId>>, AlgoError> {
+) -> Result<Vec<DetHashSet<EdgeId>>, AlgoError> {
     let mut result = Vec::with_capacity(faces.len());
     for &fid in faces {
         let edges = remus_topology::explorer::face_edges(topo, fid)?;
@@ -250,12 +250,11 @@ fn sample_wire_outline(
     wire_id: remus_topology::wire::WireId,
     tol: Tolerance,
 ) -> Result<(Vec<Point3>, f64), AlgoError> {
-    let mut points = Vec::new();
     let mut max_boundary_error = 0.0_f64;
     let wire = topo.wire(wire_id)?;
-    let oriented: Vec<_> = wire.edges().to_vec();
+    let mut points = Vec::with_capacity(wire.edges().len() * (N_BOUNDARY_SAMPLES + 1));
     let mut prev: Option<Point3> = None;
-    for oe in &oriented {
+    for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
@@ -460,7 +459,7 @@ fn check_edge_face_pairs(
     topo: &mut Topology,
     edges: &[EdgeId],
     faces: &[FaceId],
-    face_boundary_edges: &[HashSet<EdgeId>],
+    face_boundary_edges: &[DetHashSet<EdgeId>],
     tol: Tolerance,
     arena: &mut GfaArena,
     analytic_gates: bool,
@@ -1474,7 +1473,7 @@ mod tests {
             &mut topo,
             &[rim],
             &[face],
-            &[HashSet::new()],
+            &[DetHashSet::default()],
             Tolerance::default(),
             &mut arena,
             true,

@@ -7,8 +7,7 @@
 //!
 //! [`FaceInfo`]: crate::ds::FaceInfo
 
-use std::collections::HashSet;
-
+use remus_math::det_hash::DetHashSet;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
@@ -78,7 +77,7 @@ pub fn perform_with_tolerance(
 /// For each face, find its boundary edges and map their leaf pave blocks
 /// into `pave_blocks_on`.
 fn fill_boundary_on(topo: &Topology, arena: &mut GfaArena) -> Result<(), AlgoError> {
-    let mut all_faces: HashSet<FaceId> = arena.face_info.keys().copied().collect();
+    let mut all_faces: DetHashSet<FaceId> = arena.face_info.keys().copied().collect();
     for interf in &arena.interference.ff {
         if let Interference::FF { f1, f2, .. } = interf {
             all_faces.insert(*f1);
@@ -89,7 +88,7 @@ fn fill_boundary_on(topo: &Topology, arena: &mut GfaArena) -> Result<(), AlgoErr
     for fid in all_faces {
         let face = topo.face(fid)?;
 
-        let mut boundary_edges: HashSet<EdgeId> = HashSet::new();
+        let mut boundary_edges: DetHashSet<EdgeId> = DetHashSet::default();
 
         let outer_wire = topo.wire(face.outer_wire())?;
         for oe in outer_wire.edges() {

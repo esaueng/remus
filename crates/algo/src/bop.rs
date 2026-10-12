@@ -15,7 +15,7 @@
 //!   For a geometric-containment pair this is the smaller (contained) face,
 //!   whose footprint is bounded by the interior of both solids.
 
-use std::collections::HashSet;
+use remus_math::det_hash::DetHashSet;
 
 use crate::builder::same_domain::{SameDomainPair, WithinRankDuplicate};
 use crate::builder::{FaceClass, SubFace};
@@ -78,14 +78,14 @@ pub(crate) fn select_faces(
     // the same input solid. No operation-specific logic: the duplicate is
     // just removed from the selection. Filter by valid index in case the
     // upstream pipeline produces stale records after a split.
-    let dup_indices: HashSet<usize> = within_rank_dups
+    let dup_indices: DetHashSet<usize> = within_rank_dups
         .iter()
         .filter(|d| d.duplicate < sub_faces.len() && d.representative < sub_faces.len())
         .map(|d| d.duplicate)
         .collect();
 
     // Step 2: Identify which sub-face indices are part of valid SD pairs
-    let sd_indices: HashSet<usize> = valid_sd_pairs
+    let sd_indices: DetHashSet<usize> = valid_sd_pairs
         .iter()
         .flat_map(|p| [p.idx_a, p.idx_b])
         .collect();
@@ -136,7 +136,7 @@ pub(crate) fn select_faces(
     // Step 4: Apply SD-specific selection on valid pairs only
     apply_sd_selection(sub_faces, op, &valid_sd_pairs, &mut selected);
     // Several complementary faces can share one containing representative.
-    let mut emitted = HashSet::new();
+    let mut emitted = DetHashSet::default();
     selected.retain(|face| emitted.insert((face.face_id, face.reversed)));
 
     selected

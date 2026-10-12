@@ -1,26 +1,6 @@
 # Production files in the geometry crates that still use std::collections::HashMap/HashSet.
 # Grandfathered by scripts/check-det-hash.sh — unaudited for iteration-order-dependent
 # output. Remove an entry when the file migrates to remus_math::det_hash or BTreeMap.
-crates/algo/src/bop.rs
-crates/algo/src/builder/builder_solid.rs
-crates/algo/src/builder/face_splitter/conversion.rs
-crates/algo/src/builder/face_splitter/mod.rs
-crates/algo/src/builder/face_splitter/special_cases.rs
-crates/algo/src/builder/fill_images.rs
-crates/algo/src/builder/fill_images_faces.rs
-crates/algo/src/builder/mod.rs
-crates/algo/src/builder/same_domain.rs
-crates/algo/src/builder/wire_builder.rs
-crates/algo/src/ds/pave_vertex_index.rs
-crates/algo/src/ds/shape_store.rs
-crates/algo/src/gfa.rs
-crates/algo/src/pave_filler/fill_face_info.rs
-crates/algo/src/pave_filler/force_interf_ee.rs
-crates/algo/src/pave_filler/link_existing.rs
-crates/algo/src/pave_filler/make_split_edges.rs
-crates/algo/src/pave_filler/phase_ef.rs
-crates/algo/src/pave_filler/phase_ff.rs
-crates/algo/src/pave_filler/phase_vf.rs
 crates/blend/src/chamfer_builder.rs
 crates/blend/src/fillet_builder.rs
 crates/blend/src/g1_chain.rs

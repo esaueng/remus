@@ -4,8 +4,7 @@
 //! lies on the face surface. If so, records a VF interference and
 //! adds the vertex to the face's `vertices_in` set.
 
-use std::collections::HashSet;
-
+use remus_math::det_hash::DetHashSet;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -56,11 +55,11 @@ pub fn perform(
 fn collect_face_edge_vertices(
     topo: &Topology,
     faces: &[FaceId],
-) -> Result<Vec<HashSet<VertexId>>, AlgoError> {
+) -> Result<Vec<DetHashSet<VertexId>>, AlgoError> {
     let mut result = Vec::with_capacity(faces.len());
     for &fid in faces {
         let edges = remus_topology::explorer::face_edges(topo, fid)?;
-        let mut verts = HashSet::new();
+        let mut verts = DetHashSet::default();
         for eid in edges {
             let edge = topo.edge(eid)?;
             verts.insert(edge.start());
@@ -77,7 +76,7 @@ fn check_vertex_face_pairs(
     topo: &Topology,
     vertices: &[VertexId],
     faces: &[FaceId],
-    face_edge_verts: &[HashSet<VertexId>],
+    face_edge_verts: &[DetHashSet<VertexId>],
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
