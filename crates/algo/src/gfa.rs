@@ -503,9 +503,9 @@ pub fn fuse_n_with_context(
 /// `candidate_pairs` indexes `sources`. It must be strictly increasing with
 /// `i < j`, and every omitted pair must be proven separated by more than the
 /// operation tolerance using conservative bounds (bounds enclosing the whole
-/// trimmed geometry, not only its vertices); see
-/// [`pave_filler::run_pave_filler_n_with_pairs`]. A pair that cannot be
-/// proven separated must be listed. The source-pair budget then counts only
+/// trimmed geometry, not only its vertices), widened by the solids' own
+/// vertex/edge tolerances. A pair that cannot be proven separated must be
+/// listed. The source-pair budget then counts only
 /// the listed pairs, so a large sparse lattice is fused in one arrangement.
 ///
 /// # Errors
