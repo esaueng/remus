@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791784240440,
+  "lastUpdate": 1791784864414,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -92239,6 +92239,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 72100,
             "range": "± 946",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "600e442a1f577dad435ff9627d9bde2a8b2d12c3",
+          "message": "perf(topology): cut per-entity undo and index cost of construction and copy (#995)\n\n* perf(topology): cut per-entity undo and index cost of construction\n\nConstruction profiles (makeBox, copy_solid) were dominated by bookkeeping\nwhose inverse was already implied, plus SipHash and temporary vectors:\n\n- Scope marks now capture the ten per-arena slot counts. A rewind retires\n  every slot at or above them, so allocations no longer push one\n  192-byte undo record each. Slots are never reused and slot counts never\n  shrink, so that range is exactly what the scope created.\n- Overwrites and retirements of a slot the innermost live scope allocated\n  record nothing (add_face's fresh loop and face writes, copy-and-transform\n  writes to fresh faces and coedges). Any live-mark rewind retires such a\n  slot, so its pre-write value could only land in an inaccessible tombstone.\n  Writes to slots below the innermost mark, index, attribute and journal\n  records are unchanged.\n- The record gate answers from the innermost scope entry when it is live,\n  instead of scanning and purging the scope stack on every write.\n- The pcurve-use registry hashes keys with the fixed-seed FNV map, and\n  PCurveKey hashes one packed word instead of three fields.\n- add_face installs loops straight from the face's wires instead of\n  copying boundary specs. validate_face_loops no longer allocates a wire\n  list.\n\nLive state and full Debug dumps (tombstones included) of box, cylinder,\nsphere, copy, transform, pattern and boolean workloads are byte-identical\nbefore and after. A rolled-back slot can now keep its last in-scope value\nas its inaccessible tombstone, which is what restore_for_rollback already\nleaves. The design doc gains a section 8 amendment.\n\nTests: full-snapshot oracle over rewritten, re-derived, retired and nested\nin-scope allocations; nested overwrites of outer allocations; dropped inner\nscopes; foreign restores; a work guard (a box built in a scope records\nexactly its 24 boundary-use entries at any document size); and a\ndifferential test of the new add_face install against the spec install.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf(operations): pre-size copy plans and reuse the coedge buffer\n\nbuild_copy_plan now reserves its vertex, edge, wire and authority vectors\nfrom the shell's face count, using the same hint its ordinal maps already\nuse. A box needs exactly that capacity, and larger shells still grow by\ndoubling. restore_planned_authority collects each face's coedges into one\nreused buffer instead of a new Vec per face. Both changes affect capacity\nonly; copied topology is byte-identical.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* docs(roadmap): record PERF-T02/T03 construction slice\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* test(topology): rewrite own-allocation wires through replace_boundary_wire\n\nThe repository policy (RFC 0002 Issue 2.0d) bans direct boundary mutation\nthrough wire_mut outside the reviewed list. The two oracle stages now build\na reversed wire and install it with replace_boundary_wire, which still\nrewrites the wire slot and re-derives the face's loops inside the\nallocating scope and inside a nested scope.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T00:50:33-05:00",
+          "tree_id": "dce460c3b1bc2608add72390cb91ffdb27d03580",
+          "url": "https://github.com/esaueng/remus/commit/600e442a1f577dad435ff9627d9bde2a8b2d12c3"
+        },
+        "date": 1791784861971,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1139991,
+            "range": "± 2141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1222192,
+            "range": "± 13929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 18505,
+            "range": "± 54",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7310035,
+            "range": "± 10204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7281770,
+            "range": "± 3298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7150592,
+            "range": "± 768930",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 638437,
+            "range": "± 2458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2920778,
+            "range": "± 5676",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29076689,
+            "range": "± 374342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 41,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 119,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 231,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 167,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 881,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 396,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 210,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 564,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 733,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3496,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 499642,
+            "range": "± 3815",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2939954,
+            "range": "± 8269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 144823,
+            "range": "± 14003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 439344,
+            "range": "± 1522",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 360329,
+            "range": "± 443",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 61336,
+            "range": "± 1039",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 832447,
+            "range": "± 37667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9517593,
+            "range": "± 79775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 585916,
+            "range": "± 5101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1157022,
+            "range": "± 4257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 83383,
+            "range": "± 1354",
             "unit": "ns/iter"
           }
         ]
