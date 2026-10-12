@@ -161,15 +161,17 @@ fn boolean_with_context_impl(
     Ok(result)
 }
 
-/// The result of [`cut_patch`]: the faces a cut leaves where it touches the
-/// blank, in the store topology they were built in.
+/// The result of [`boolean_patch`]: the faces a boolean leaves where the
+/// tool touches the blank, in the store topology they were built in.
 pub struct CutPatch {
     /// The store topology holding the patch.
     pub topo: Topology,
-    /// The patch faces: the touched blank faces' surviving pieces and the
-    /// tool pieces inside the blank, reversed, after assembly's cleanup
-    /// passes. They do not close on their own; the blank's untouched faces
-    /// close them.
+    /// The patch faces after assembly's cleanup passes: the touched blank
+    /// faces' pieces and the tool pieces the operation keeps (for a cut, the
+    /// blank's pieces outside the tool and the tool's inside the blank,
+    /// reversed). For a cut or fuse they do not close on their own; the
+    /// blank's untouched faces close them. For an intersect they are the
+    /// whole result.
     pub faces: Vec<FaceId>,
     /// Store input edge index → caller edge index, for the edges copied in.
     /// A patch edge listed here is the caller edge unchanged.
@@ -178,22 +180,40 @@ pub struct CutPatch {
     pub vertex_to_caller: DetHashMap<usize, usize>,
 }
 
-/// Cut `b` from the faces `faces_a` of the blank `a` only: the store-local
-/// GFA behind the operations crate's opt-in store-local cut (stage 4 of
-/// `docs/performance/perf-local-boolean.md`).
-///
-/// The store holds `faces_a` as an open patch and the whole tool. The pave
-/// filler and face splitting run on them as on whole operands; tool pieces
-/// are classified against the whole blank in `topo`; selection and
-/// assembly's cleanup passes run on the patch, which is returned without
-/// being closed into a shell. The caller proves that no other face of `a`
-/// meets `b` and splices the patch back onto them.
+/// [`boolean_patch`] for a cut.
 ///
 /// # Errors
 ///
 /// Returns [`AlgoError`] for unsupported curves or any GFA stage failure.
 pub fn cut_patch(
     topo: &Topology,
+    a: SolidId,
+    faces_a: &[FaceId],
+    b: SolidId,
+    context: &OperationContext,
+) -> Result<CutPatch, AlgoError> {
+    boolean_patch(topo, BooleanOp::Cut, a, faces_a, b, context)
+}
+
+/// Run `op` on the faces `faces_a` of the blank `a` and the whole tool `b`.
+///
+/// This is the store-local GFA behind the operations crate's opt-in
+/// store-local booleans (stage 4 of `docs/performance/perf-local-boolean.md`).
+///
+/// The store holds `faces_a` as an open patch and the whole tool. The pave
+/// filler and face splitting run on them as on whole operands; tool pieces
+/// are classified against the whole blank in `topo`; selection for `op` and
+/// assembly's cleanup passes run on the patch, which is returned without
+/// being closed into a shell. The caller proves that no other face of `a`
+/// meets `b` (so each lies outside it: a cut or fuse keeps it, an intersect
+/// drops it) and splices the patch back.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] for unsupported curves or any GFA stage failure.
+pub fn boolean_patch(
+    topo: &Topology,
+    op: BooleanOp,
     a: SolidId,
     faces_a: &[FaceId],
     b: SolidId,
@@ -225,7 +245,7 @@ pub fn cut_patch(
     builder.perform_against_full_a((topo, a))?;
 
     context.check_cancelled()?;
-    let (patch_topo, faces, _sources) = builder.build_patch(BooleanOp::Cut)?;
+    let (patch_topo, faces, _sources) = builder.build_patch(op)?;
     Ok(CutPatch {
         topo: patch_topo,
         faces,

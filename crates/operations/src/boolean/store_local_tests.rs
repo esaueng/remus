@@ -1,7 +1,7 @@
-//! Equivalence oracle for the opt-in store-local cut.
+//! Equivalence oracle for the opt-in store-local booleans.
 //!
-//! Every case is cut twice from the same topology: once with the
-//! store-local path on, once with the general GFA. The two results must be
+//! Every case runs twice from the same topology: once with the store-local
+//! path on, once with the general GFA. The two results must be
 //! the same solid up to face order and entity numbering: the same multiset
 //! of faces, each with its surface, orientation and wires (every edge's
 //! curve, trim and endpoints exactly), the same entity counts, the same
@@ -128,12 +128,24 @@ fn assert_equivalent(
     tool: SolidId,
     label: &str,
 ) -> (Topology, SolidId) {
+    assert_equivalent_op(topo, BooleanOp::Cut, blank, tool, label)
+}
+
+/// Run `op` store-locally and through the general GFA; the two must be the
+/// same solid. Returns the store-local result.
+fn assert_equivalent_op(
+    topo: &Topology,
+    op: BooleanOp,
+    blank: SolidId,
+    tool: SolidId,
+    label: &str,
+) -> (Topology, SolidId) {
     let mut general = topo.clone();
-    let general_result = boolean(&mut general, BooleanOp::Cut, blank, tool).unwrap();
+    let general_result = boolean(&mut general, op, blank, tool).unwrap();
     let mut local = topo.clone();
     let built = BUILT.with(std::cell::Cell::get);
     set_thread_store_local_cuts(true);
-    let local_result = boolean(&mut local, BooleanOp::Cut, blank, tool);
+    let local_result = boolean(&mut local, op, blank, tool);
     set_thread_store_local_cuts(false);
     let local_result = local_result.unwrap();
     assert_eq!(
@@ -285,36 +297,147 @@ fn successive_slots_stay_equivalent() {
     assert_sound(&local, local_plate, "successive slots");
 }
 
-/// Complexity guard for the store-local cut: the GFA store holds the faces
-/// the cut touches and the tool, not the whole blank. A slot through plates
-/// with 9 and 16 holes copies 8 faces into the store either way (the
-/// plate's top and bottom and the slot's six); the general path copies 54
-/// at 16 holes (the 28-face plate and slot, copied more than once). Runs only
-/// with `--features perf-counters`, in the `test(scaling_)` step.
+#[test]
+fn rib_fused_onto_a_drilled_plate_is_equivalent() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // Sunk 2 into the top face between the hole rows, standing 2 proud.
+    let rib = make_box(&mut topo, 6.0, 3.0, 4.0).unwrap();
+    let rib = placed(&mut topo, rib, &Mat4::translation(11.0, 12.5, 8.0));
+    let (local, result) = assert_equivalent_op(&topo, BooleanOp::Fuse, plate, rib, "rib");
+    let expected = 64.0 * 64.0 * 10.0 - 9.0 * PI * 4.0 * 10.0 + 6.0 * 3.0 * 2.0;
+    let measured = volume(&local, result);
+    assert!((measured - expected).abs() < 1e-6 * expected, "{measured}");
+}
+
+#[test]
+fn boss_fused_into_a_drilled_plate_is_equivalent() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // A cylinder embedded 3 deep in the top face, clear of the holes.
+    let boss = make_cylinder(&mut topo, 3.0, 6.0).unwrap();
+    let boss = placed(&mut topo, boss, &Mat4::translation(26.0, 14.0, 7.0));
+    assert_equivalent_op(&topo, BooleanOp::Fuse, plate, boss, "boss");
+}
+
+#[test]
+fn boss_standing_on_a_drilled_plate_is_equivalent() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // Its base lies on the top face: a coplanar contact.
+    let boss = make_box(&mut topo, 6.0, 3.0, 5.0).unwrap();
+    let boss = placed(&mut topo, boss, &Mat4::translation(11.0, 12.5, 10.0));
+    assert_equivalent_op(&topo, BooleanOp::Fuse, plate, boss, "standing boss");
+}
+
+#[test]
+fn lug_fused_across_a_side_wall_is_equivalent() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // Out through the x = 64 side, inside the plate's height.
+    let lug = make_box(&mut topo, 10.0, 6.0, 4.0).unwrap();
+    let lug = placed(&mut topo, lug, &Mat4::translation(60.0, 23.0, 3.0));
+    assert_equivalent_op(&topo, BooleanOp::Fuse, plate, lug, "lug");
+}
+
+#[test]
+fn corner_of_a_drilled_plate_intersected_is_equivalent() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // Keeps a 20 × 20 window holding four holes; the untouched faces drop.
+    let window = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    let window = placed(&mut topo, window, &Mat4::translation(4.0, 4.0, -5.0));
+    let (local, result) =
+        assert_equivalent_op(&topo, BooleanOp::Intersect, plate, window, "window");
+    let expected = 20.0 * 20.0 * 10.0 - 4.0 * PI * 4.0 * 10.0;
+    let measured = volume(&local, result);
+    assert!((measured - expected).abs() < 1e-6 * expected, "{measured}");
+}
+
+#[test]
+fn window_through_one_hole_intersected_is_equivalent() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // Cuts off part of the hole at (32, 32) and keeps a thinner slab.
+    let window = make_box(&mut topo, 8.0, 6.0, 6.0).unwrap();
+    let window = placed(&mut topo, window, &Mat4::translation(28.0, 31.0, 2.0));
+    assert_equivalent_op(&topo, BooleanOp::Intersect, plate, window, "half hole");
+}
+
+#[test]
+fn fuse_with_a_tool_clear_of_the_material_declines() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    // Inside the hole at (20, 20) without touching its wall: the hole
+    // wall's box reaches it, but the fuse leaves two lumps.
+    let pin = make_box(&mut topo, 1.0, 1.0, 20.0).unwrap();
+    let pin = placed(&mut topo, pin, &Mat4::translation(19.5, 19.5, -5.0));
+    let mut general = topo.clone();
+    let general_result = boolean(&mut general, BooleanOp::Fuse, plate, pin);
+    let mut local = topo.clone();
+    let built = BUILT.with(std::cell::Cell::get);
+    set_thread_store_local_cuts(true);
+    let local_result = boolean(&mut local, BooleanOp::Fuse, plate, pin);
+    set_thread_store_local_cuts(false);
+    assert_eq!(
+        BUILT.with(std::cell::Cell::get),
+        built,
+        "built two lumps store-locally"
+    );
+    match (general_result, local_result) {
+        (Ok(theirs), Ok(ours)) => assert_eq!(
+            canonical(&local, ours),
+            canonical(&general, theirs),
+            "declined, yet the result differs"
+        ),
+        (Err(_), Err(_)) => {}
+        (theirs, ours) => panic!("general {theirs:?} vs store-local {ours:?}"),
+    }
+}
+
+/// Complexity guard for the store-local booleans: the GFA store holds the
+/// faces the tool touches and the tool, not the whole blank. A slot cut, a
+/// rib fuse and a window intersect on plates with 9 and 16 holes copy as
+/// many faces into the store either way (the slot: the plate's top and
+/// bottom and its own six); the general path copies far more at 16 holes
+/// (54 for the slot: the 28-face plate and the slot, copied more than
+/// once). Runs only with `--features perf-counters`, in the
+/// `test(scaling_)` step.
 #[cfg(feature = "perf-counters")]
 #[test]
-fn scaling_store_local_slot_copies_only_touched_faces() {
-    let store_faces = |n: u32, local: bool| -> u64 {
-        let mut topo = Topology::new();
-        let plate = drilled_plate(&mut topo, n);
-        let slot = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
-        let slot = placed(&mut topo, slot, &Mat4::translation(13.0, 11.0, -5.0));
-        remus_algo::perf::reset();
-        set_thread_store_local_cuts(local);
-        let cut = boolean(&mut topo, BooleanOp::Cut, plate, slot);
-        set_thread_store_local_cuts(false);
-        cut.unwrap();
-        remus_algo::perf::snapshot().store_faces_copied
-    };
-    let (small, large) = (store_faces(3, true), store_faces(4, true));
-    let general = store_faces(4, false);
-    eprintln!("store-local guard: store faces {small} -> {large}, general {general}");
-    assert!(large > 0, "store copy instrumentation not exercised");
-    assert_eq!(small, large, "store-local store grows with untouched faces");
-    assert!(
-        large * 4 < general,
-        "store-local store {large} faces against the general path's {general}"
-    );
+fn scaling_store_local_booleans_copy_only_touched_faces() {
+    // (op, tool size, tool corner)
+    let cases = [
+        (BooleanOp::Cut, (2.0, 6.0, 20.0), (13.0, 11.0, -5.0)),
+        (BooleanOp::Fuse, (6.0, 3.0, 4.0), (11.0, 12.5, 8.0)),
+        (BooleanOp::Intersect, (20.0, 20.0, 20.0), (4.0, 4.0, -5.0)),
+    ];
+    for (op, (dx, dy, dz), (x, y, z)) in cases {
+        let store_faces = |n: u32, local: bool| -> u64 {
+            let mut topo = Topology::new();
+            let plate = drilled_plate(&mut topo, n);
+            let tool = make_box(&mut topo, dx, dy, dz).unwrap();
+            let tool = placed(&mut topo, tool, &Mat4::translation(x, y, z));
+            remus_algo::perf::reset();
+            set_thread_store_local_cuts(local);
+            let result = boolean(&mut topo, op, plate, tool);
+            set_thread_store_local_cuts(false);
+            result.unwrap();
+            remus_algo::perf::snapshot().store_faces_copied
+        };
+        let (small, large) = (store_faces(3, true), store_faces(4, true));
+        let general = store_faces(4, false);
+        eprintln!("store-local guard {op:?}: store faces {small} -> {large}, general {general}");
+        assert!(
+            large > 0,
+            "{op:?}: store copy instrumentation not exercised"
+        );
+        assert_eq!(small, large, "{op:?}: store grows with untouched faces");
+        assert!(
+            large * 2 < general,
+            "{op:?}: store-local store {large} faces against the general path's {general}"
+        );
+    }
 }
 
 #[test]

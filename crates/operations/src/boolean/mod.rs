@@ -816,11 +816,9 @@ fn boolean_with_context_impl(
         return Ok(result);
     }
 
-    // Opt-in: a cut whose tool reaches only part of the blank runs the GFA
-    // on that part and splices it back onto the rest (see `store_local`).
-    if op == BooleanOp::Cut
-        && let Some(result) = store_local::try_store_local_cut(topo, a, b, context)?
-    {
+    // Opt-in: a boolean whose tool reaches only part of the blank runs the
+    // GFA on that part and splices it back onto the rest (see `store_local`).
+    if let Some(result) = store_local::try_store_local_boolean(topo, op, a, b, context)? {
         return Ok(result);
     }
 
