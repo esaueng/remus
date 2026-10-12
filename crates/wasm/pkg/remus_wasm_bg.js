@@ -6714,6 +6714,28 @@ export class BrepKernel {
         wasm.brepkernel_setPerformanceTracing(this.__wbg_ptr, enabled);
     }
     /**
+     * Turn the store-local cut on or off (off by default).
+     *
+     * When on, a cut whose tool reaches only part of the blank (`cut`,
+     * batch `cut`, and the other cuts that run the plain boolean;
+     * evolution-tracking cuts keep the general path) runs the boolean on
+     * that part and splices the result back onto the faces it does not
+     * touch.
+     * On a body with many faces, such as a drilled plate, a cut costs
+     * about half as much. The result is the same solid as with the switch
+     * off (same faces, edges, vertices and volume), but its faces and
+     * entities come out in a different order and numbering.
+     *
+     * The setting is per thread, like the kernel's content-keyed memos: it
+     * applies to every kernel in this module instance (one browser worker),
+     * not only to this one. A cut that does not qualify, or whose spliced
+     * result fails the boolean-result gate, runs the general path.
+     * @param {boolean} enabled
+     */
+    setStoreLocalCuts(enabled) {
+        wasm.brepkernel_setStoreLocalCuts(this.__wbg_ptr, enabled);
+    }
+    /**
      * Sew loose faces into a connected solid.
      *
      * `face_handles` is an array of face handles. Returns a solid handle.
@@ -7207,6 +7229,14 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Whether store-local cuts are on (see `setStoreLocalCuts`).
+     * @returns {boolean}
+     */
+    storeLocalCutsEnabled() {
+        const ret = wasm.brepkernel_storeLocalCutsEnabled(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * Compute the total surface area of a solid.
