@@ -49,6 +49,15 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* Add `setStoreLocalCuts(enabled)` and `storeLocalCutsEnabled()` (direct and
+  batch), the switch for the store-local cut (off by default). When on, a
+  cut whose tool reaches only part of the blank runs the boolean on that
+  part and splices it back onto the untouched faces: about half the cost of
+  a slot cut through a drilled plate. The result is the same solid (faces,
+  edges, vertices, volume) with faces and entities in a different order
+  and numbering. The setting is per thread, so it applies to every kernel
+  in the module instance.
+
 * Add `transformDetailed` and `copyAndTransformSolidDetailed` (direct and
   batch), typed O4.7 twins of `transformSolid` and `copyAndTransformSolid`
   (B74). Same engine, matrix contract (16 row-major values), and validation
