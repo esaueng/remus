@@ -678,29 +678,67 @@ pub(crate) struct Splice {
     pub(crate) leading_inner: Vec<(FaceId, usize)>,
     /// The copied outer shell, in order.
     pub(crate) outer_shell: Vec<ShellSlot>,
+    /// Source outer-shell faces the splice replaces: not copied, and absent
+    /// from `outer_shell`.
+    pub(crate) replaced: Vec<FaceId>,
+}
+
+/// A spliced edge's endpoint: a new vertex, or a source vertex shared with
+/// the copied faces.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SpliceVertex {
+    /// The splice vertex with this index.
+    New(usize),
+    /// The copy of this source vertex.
+    Source(VertexId),
+}
+
+/// An edge use in a spliced wire: a new edge, or a source edge shared with
+/// the copied faces.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SpliceEdgeRef {
+    /// The splice edge with this index.
+    New(usize),
+    /// The copy of this source edge.
+    Source(EdgeId),
 }
 
 /// A spliced edge.
 #[derive(Debug)]
 pub(crate) struct SpliceEdge {
-    pub(crate) start: usize,
-    pub(crate) end: usize,
+    pub(crate) start: SpliceVertex,
+    pub(crate) end: SpliceVertex,
     pub(crate) curve: EdgeCurve,
     pub(crate) trim: Option<(f64, f64)>,
     pub(crate) tolerance: Option<f64>,
 }
 
-/// A spliced wire: `(splice edge, forward)` per use.
+/// A spliced wire: `(edge, forward)` per use.
 #[derive(Debug)]
 pub(crate) struct SpliceWire {
-    pub(crate) edges: Vec<(usize, bool)>,
+    pub(crate) edges: Vec<(SpliceEdgeRef, bool)>,
     pub(crate) closed: bool,
 }
 
-/// A spliced face without inner wires.
+impl SpliceWire {
+    /// A closed wire of new splice edges.
+    pub(crate) fn of_new(uses: &[(usize, bool)]) -> Self {
+        Self {
+            edges: uses
+                .iter()
+                .map(|&(edge, forward)| (SpliceEdgeRef::New(edge), forward))
+                .collect(),
+            closed: true,
+        }
+    }
+}
+
+/// A spliced face.
 #[derive(Debug)]
 pub(crate) struct SpliceFace {
     pub(crate) outer: usize,
+    /// Inner wires, indexing the splice's wires.
+    pub(crate) inner: Vec<usize>,
     pub(crate) surface: FaceSurface,
     pub(crate) reversed: bool,
 }
@@ -759,6 +797,13 @@ fn build_spliced_copy_plan(
             "spliced copy needs an outer shell listing each face once".to_owned(),
         ));
     }
+    for face_id in &splice.replaced {
+        if !unvisited.remove(face_id) {
+            return Err(plan_error(format!(
+                "spliced copy replaces {face_id:?}, not an outer face"
+            )));
+        }
+    }
     let mut plan = CopyPlan {
         vertices: Vec::new(),
         edges: Vec::new(),
@@ -801,7 +846,14 @@ fn build_spliced_copy_plan(
                     .iter()
                     .filter(|&&(target, _)| target == face_id)
                 {
-                    inner.push(plan_spliced_wire(splice, wire, &mut plan, &mut ordinals)?);
+                    inner.push(plan_spliced_wire(
+                        source,
+                        splice,
+                        wire,
+                        &mut plan,
+                        &mut ordinals,
+                        &mut vertex_ordinals,
+                    )?);
                 }
                 let mut source_inner = Vec::with_capacity(face.inner_wires().len());
                 for &wire_id in face.inner_wires() {
@@ -845,11 +897,32 @@ fn build_spliced_copy_plan(
                     .faces
                     .get(index)
                     .ok_or_else(|| plan_error(format!("splice has no face {index}")))?;
-                let outer = plan_spliced_wire(splice, face.outer, &mut plan, &mut ordinals)?;
+                let outer = plan_spliced_wire(
+                    source,
+                    splice,
+                    face.outer,
+                    &mut plan,
+                    &mut ordinals,
+                    &mut vertex_ordinals,
+                )?;
+                let inner = face
+                    .inner
+                    .iter()
+                    .map(|&wire| {
+                        plan_spliced_wire(
+                            source,
+                            splice,
+                            wire,
+                            &mut plan,
+                            &mut ordinals,
+                            &mut vertex_ordinals,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 faces.push(PlanFace {
                     old_index: spliced_index(index),
                     outer,
-                    inner: Vec::new(),
+                    inner,
                     surface: face.surface.clone(),
                     reversed: face.reversed,
                     attributes: None,
@@ -917,12 +990,14 @@ fn build_spliced_copy_plan(
 }
 
 /// The plan ordinal of spliced wire `index`, planning it (and its unseen
-/// spliced edges and vertices) on first sight.
+/// spliced or source edges and vertices) on first sight.
 fn plan_spliced_wire(
+    source: &Topology,
     splice: &Splice,
     index: usize,
     plan: &mut CopyPlan,
     ordinals: &mut SpliceOrdinals,
+    vertex_ordinals: &mut DetHashMap<usize, usize>,
 ) -> Result<usize, crate::OperationsError> {
     let missing = |kind: &str, at: usize| plan_error(format!("splice has no {kind} {at}"));
     if let Some(ordinal) = *ordinals
@@ -936,7 +1011,17 @@ fn plan_spliced_wire(
     ordinals.wires[index] = Some(ordinal);
     let wire = &splice.wires[index];
     let mut edges = Vec::with_capacity(wire.edges.len());
-    for &(edge_index, forward) in &wire.edges {
+    for &(edge_ref, forward) in &wire.edges {
+        let edge_index = match edge_ref {
+            SpliceEdgeRef::New(edge_index) => edge_index,
+            SpliceEdgeRef::Source(edge_id) => {
+                edges.push((
+                    plan_source_edge_ordinal(source, edge_id, plan, vertex_ordinals)?,
+                    forward,
+                ));
+                continue;
+            }
+        };
         let seen = *ordinals
             .edges
             .get(edge_index)
@@ -947,7 +1032,18 @@ fn plan_spliced_wire(
             let edge_ordinal = plan.edges.len();
             ordinals.edges[edge_index] = Some(edge_ordinal);
             let edge = &splice.edges[edge_index];
-            let mut vertex = |at: usize| -> Result<usize, crate::OperationsError> {
+            let mut vertex = |at: SpliceVertex| -> Result<usize, crate::OperationsError> {
+                let at = match at {
+                    SpliceVertex::New(at) => at,
+                    SpliceVertex::Source(vertex_id) => {
+                        return plan_vertex_ordinal(
+                            source,
+                            vertex_id,
+                            &mut plan.vertices,
+                            vertex_ordinals,
+                        );
+                    }
+                };
                 if let Some(seen) = *ordinals
                     .vertices
                     .get(at)
@@ -984,6 +1080,33 @@ fn plan_spliced_wire(
         closed: wire.closed,
     });
     Ok(ordinal)
+}
+
+/// The plan ordinal of source edge `edge_id`, planning it (and its unseen
+/// vertices) on first sight, as a copied face's wire does.
+fn plan_source_edge_ordinal(
+    source: &Topology,
+    edge_id: EdgeId,
+    plan: &mut CopyPlan,
+    vertex_ordinals: &mut DetHashMap<usize, usize>,
+) -> Result<usize, crate::OperationsError> {
+    if let Some(&seen) = plan.edge_ordinals.get(&edge_id.index()) {
+        return Ok(seen);
+    }
+    let edge_ordinal = plan.edges.len();
+    plan.edge_ordinals.insert(edge_id.index(), edge_ordinal);
+    let edge = source.edge(edge_id)?;
+    let start = plan_vertex_ordinal(source, edge.start(), &mut plan.vertices, vertex_ordinals)?;
+    let end = plan_vertex_ordinal(source, edge.end(), &mut plan.vertices, vertex_ordinals)?;
+    plan.edges.push(PlanEdge {
+        old_index: edge_id.index(),
+        start,
+        end,
+        curve: edge.curve().clone(),
+        tolerance: edge.tolerance(),
+        trim: edge.trim(),
+    });
+    Ok(edge_ordinal)
 }
 
 /// Copies a solid within one arena.

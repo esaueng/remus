@@ -91,6 +91,7 @@ std::thread_local! {
     static HOLE_CONTAINMENT_SAMPLINGS: Cell<u64> = const { Cell::new(0) };
     static FACE_BBOX_BUILDS: Cell<u64> = const { Cell::new(0) };
     static FACE_OUTLINE_SAMPLINGS: Cell<u64> = const { Cell::new(0) };
+    static STORE_FACES_COPIED: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -330,6 +331,13 @@ pub(crate) fn bump_face_bbox_build() {
     increment(&FACE_BBOX_BUILDS);
 }
 
+/// Count one operand face deep-copied into a GFA store. Crate-internal.
+#[inline]
+pub(crate) fn bump_store_face_copied() {
+    #[cfg(feature = "perf-counters")]
+    increment(&STORE_FACES_COPIED);
+}
+
 /// Count one face whose outline phase EF sampled for its containment test.
 /// Crate-internal.
 #[inline]
@@ -409,6 +417,8 @@ pub struct PerfSnapshot {
     pub face_bbox_builds: u64,
     /// Faces whose outline phase EF sampled for containment.
     pub face_outline_samplings: u64,
+    /// Operand faces deep-copied into a GFA store.
+    pub store_faces_copied: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -433,6 +443,7 @@ pub fn reset() {
     HOLE_CONTAINMENT_SAMPLINGS.set(0);
     FACE_BBOX_BUILDS.set(0);
     FACE_OUTLINE_SAMPLINGS.set(0);
+    STORE_FACES_COPIED.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -460,6 +471,7 @@ pub fn snapshot() -> PerfSnapshot {
         hole_containment_samplings: HOLE_CONTAINMENT_SAMPLINGS.get(),
         face_bbox_builds: FACE_BBOX_BUILDS.get(),
         face_outline_samplings: FACE_OUTLINE_SAMPLINGS.get(),
+        store_faces_copied: STORE_FACES_COPIED.get(),
     }
 }
 

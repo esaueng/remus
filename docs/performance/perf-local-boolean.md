@@ -4,8 +4,9 @@
 widening (blind holes) are implemented in
 `crates/operations/src/boolean/local_cut.rs`. Stage 3 makes the GFA's work
 on a touched face follow the loops a cut meets. Its two parts are
-implemented in `remus-algo` (the last two sections): phase FF, then the
-face splitter's untouched holes. The rest is design only.
+implemented in `remus-algo`: phase FF, then the face splitter's untouched
+holes. The frozen-untouched-faces stage is implemented in part. Stage 4,
+the store-local cut, is implemented as an opt-in path (last section).
 
 ## Problem
 
@@ -546,3 +547,89 @@ duplicate-edge merge) are another 20%. They visit every face once with
 hashing-heavy bookkeeping. Skipping untouched faces there needs the open
 patch assembly of stage 4. Short of that, only cheaper constant factors
 help.
+
+## Stage 4, part 1: the opt-in store-local cut (implemented)
+
+**Design decision.** A store-local result equals the general GFA's in
+geometry and topology, but not in face order or entity numbering. The GFA's
+shell assembly orders faces and allocates entities across the whole shell,
+and replicating that for a spliced result would mean replicating the whole
+assembly. So the path is opt-in (`set_thread_store_local_cuts(true)`) and
+off by default, and its oracle is equivalence rather than bit-identity.
+Enabling it by default is a separate decision.
+
+**What it does.** `boolean::store_local` handles `Cut` only. It partitions
+the blank's outer-shell faces:
+
+- **Touched:** a face whose outer box (`ruled_face_bound`, else the
+  conservative box) comes within the clearance of the tool's box. The
+  clearance is 1000 linear tolerances plus both operands' largest entity
+  tolerance, as in the local cells.
+- **Untouched:** every other face. It does not meet the tool, it lies
+  outside the tool, and so a cut keeps it as it is. Each edge it shares
+  with a touched face is one of its own edges, so that edge lies as far
+  from the tool and the cut cannot change it either.
+
+The path runs when no shell is a cavity and at least half the faces are
+untouched. `remus_algo::gfa::cut_patch` then does the following:
+
+1. Copies only the touched faces into the store, as an open shell
+   (`GfaShapeStore::with_face_subset`), plus the whole tool.
+2. Runs the pave filler unchanged, since every phase reads operands only
+   through their faces, edges and vertices.
+3. Classifies tool pieces against the **whole blank** in the caller's
+   topology (`Builder::perform_against_full_a`). It runs the same three
+   tests the general path runs against its store copy. The coincident-plane
+   and cylinder-resample helpers now take the opposing solid's topology
+   separately from the sub-face's.
+4. Selects faces and runs assembly's cleanup passes
+   (`builder_solid::clean_selected_faces`, factored out of
+   `build_solids_with_origins`), but forms no shell.
+
+Operations then splices the patch into a copy of the blank in place of the
+touched faces (`copy_solid_spliced`, whose splices can now reference source
+edges and vertices, carry inner wires and replace faces):
+
+- The builder rebuilds every patch face from fresh entities, so the patch
+  is matched back by geometry. A patch edge equal bit for bit to an edge of
+  a touched face (curve, trim, endpoints; lines in either direction) is
+  that edge, and the same holds for a patch vertex at a touched vertex's
+  position.
+- A border the cut changed in any bit stays spliced, which leaves the shell
+  open. The strict boolean-result gate then refuses the result, rolls it
+  back, and the general path runs.
+
+**Assumption.** The untouched faces need none of assembly's cleanup (vertex
+welds, T-junction splits, duplicate-edge merges). That holds for a clean
+blank, such as a primitive or an earlier boolean's result. The general GFA
+would also run those passes on them.
+
+**Exactness.** `boolean/store_local_tests.rs` cuts each case both ways. It
+compares the sorted multiset of faces, each with its surface, orientation
+and wires: every edge's curve, trim and endpoints exactly, with lines
+compared by traversal direction. It also compares entity counts and
+volume, and checks that both results are valid and watertight. The cases:
+
+- a slot through a drilled plate;
+- a blind pocket;
+- a slot turned about the axis;
+- a notch out of a side wall;
+- a cylinder breaking out of the plate edge;
+- a slot cut into an existing hole, whose wall joins the patch;
+- three successive slots, compared after each.
+
+It also checks that the path is off by default and declines a tool that
+touches every face. `scaling_store_local_slot_copies_only_touched_faces`
+(`perf-counters`) shows the store holding 8 faces for a slot through plates
+with 9 and 16 holes, against 54 on the general path.
+
+<!--STAGE4-EVIDENCE-->
+
+**Next.**
+
+- **Remaining cost:** what still grows with a blank's size is the touched
+  faces' own loops, which a drilled plate's top and bottom carry for every
+  hole.
+- **Wider coverage:** fuse and intersect, cavity shells, and faces with
+  stored pcurves (NURBS), which the path declines today.
+- **Exposure:** a WASM switch, so the app can try the path.
