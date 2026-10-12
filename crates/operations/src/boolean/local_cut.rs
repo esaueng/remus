@@ -177,7 +177,11 @@ fn recognize_tool(
                 wall = Some((cylinder.clone(), face.outer_wire()));
             }
             FaceSurface::Plane { normal, d } => caps.push((*normal, *d)),
-            _ => return Ok(None),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Ok(None),
         }
     }
     let (Some((surface, wall_wire)), [cap_a, cap_b]) = (wall, caps.as_slice()) else {
@@ -320,7 +324,7 @@ pub(super) fn ruled_face_bound(
     let apex = match face.surface() {
         FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) => None,
         FaceSurface::Cone(cone) => Some(cone.apex()),
-        _ => return Ok(None),
+        FaceSurface::Nurbs(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_) => return Ok(None),
     };
     let mut bounds: Option<Aabb3> = apex.map(|apex| Aabb3 {
         min: apex,
@@ -351,7 +355,10 @@ pub(super) fn ruled_face_bound(
                         Point3::new(c.x() + half.x(), c.y() + half.y(), c.z() + half.z()),
                     );
                 }
-                _ => return Ok(None),
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => return Ok(None),
             }
         }
     }
@@ -514,7 +521,10 @@ fn edge_clearance(
             }
             Ok(Some((center - start).length().min((center - end).length())))
         }
-        _ => Ok(None),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => Ok(None),
     }
 }
 
@@ -598,7 +608,10 @@ fn sample_edge(
             }
             Ok(true)
         }
-        _ => Ok(false),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => Ok(false),
     }
 }
 
