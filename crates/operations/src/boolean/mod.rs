@@ -803,12 +803,13 @@ fn boolean_with_context_impl(
         return run_mesh_fallback(topo, op, a, b, budget, tol, opts);
     }
 
-    // A straight through-hole into two parallel planar faces, clear of the
-    // rest of the blank, is built by local surgery instead of re-running the
-    // GFA over every face (see `local_cut`). It proves its own cell and
-    // declines — changing nothing — for every other pair.
+    // A straight drilled hole — through two parallel planar faces, or blind
+    // into one — clear of the rest of the blank, is built by local surgery
+    // instead of re-running the GFA over every face (see `local_cut`). It
+    // proves its own cell and declines — changing nothing — for every other
+    // pair.
     if op == BooleanOp::Cut
-        && let Some(result) = local_cut::try_local_through_hole(topo, a, b, tol)?
+        && let Some(result) = local_cut::try_local_hole(topo, a, b, tol)?
     {
         return Ok(result);
     }
