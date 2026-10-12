@@ -137,7 +137,8 @@ mutation lands:
   scoped because there is nothing to roll back to. Failed lookups (`None`)
   record nothing and return the typed not-found error unchanged.
 - Allocation records `(arena, index)` with no old value; rollback retires
-  the slot (tombstone retained, never reused).
+  the slot (tombstone retained, never reused). *Superseded by §8: scope
+  marks carry per-arena slot counts and a rewind retires the whole range.*
 - Retirement and in-place arena writes (`get_mut` commits, `retire`) record
   the previous live value first.
 - Registry/attribute writes record the previous per-key value first.
@@ -269,3 +270,52 @@ constructor:
 A mechanism that cannot meet both the correctness gate (section 7,
 equivalence) and the measurable-benefit gate (section 5, benchmark) is not
 shipped: the evidence is retained and the milestone is reported undelivered.
+
+## 8. Amendment (2026-10-12): slot marks replace allocation records
+
+Construction profiles showed the log dominated by records whose inverse
+was already implied: one `(arena, index)` record per allocation, plus an
+overwrite record (a full entity clone) every time a constructor wrote a
+slot it had just allocated (`add_face` writes each fresh loop and face
+after allocating its coedges). Both are removed without changing what a
+rewind restores.
+
+- **Slot marks.** Every `UndoMark` also captures the ten per-arena slot
+  counts at capture time. Slots are never reused and slot counts never
+  shrink (restores keep post-snapshot slots as tombstones), so every slot
+  at or above a mark came into existence after that scope opened and was
+  not live at its mark.
+- **No allocation records.** A rewind applies its record inverses as
+  before, then retires every live slot at or above the mark's slot counts.
+  That range is exactly the scope's allocations, plus any slots a foreign
+  restore added, which were not live at the mark either. Retirement runs
+  after every record inverse, so a foreign-restore inverse that revives a
+  slot allocated before the restore is still undone. The cost stays
+  proportional to what the scope allocated.
+- **Fresh-slot writes are not recorded.** An overwrite or retirement of a
+  slot at or above the innermost live scope's slot mark records nothing.
+  Rewinding to that scope or to any enclosing one retires the slot (outer
+  marks are never higher), so its pre-write value would only ever land in
+  an inaccessible tombstone. A nested scope still records writes to the
+  outer scope's allocations, because those slots sit below the nested mark.
+  Index (pcurve-use), attribute and journal records are never skipped:
+  their inverses remove entries that would otherwise outlive the retired
+  slot.
+- **Tombstone contents.** A rolled-back slot keeps its last value, as
+  `Arena::restore_for_rollback` already does for post-snapshot slots (§1.2).
+  Tombstones are unreachable through every lookup. They stay visible to
+  `Debug` and to the retained-payload memory estimate.
+- **Dead scope entries.** The record gate checks only the innermost scope
+  entry when it is live. Dead entries below it are reclaimed by the next
+  begin, commit, rewind or foreign restore. Each of those still purges
+  before it reads any marks.
+
+Equivalence tests: the full-snapshot oracle over in-scope allocations that
+are rewritten, re-derived, retired and nested
+(`transaction/savepoint_tests.rs::rewriting_own_allocations_matches_full_snapshot_oracle`);
+nested overwrites of outer allocations, dropped inner scopes, and
+same-lineage or larger unrelated foreign restores
+(`topology/src/undo_log.rs` tests); a work guard showing that building a box in
+a scope records exactly its 24 boundary-use index entries at any document
+size; and a differential test of the copy-free `add_face` loop install
+against the spec-copying install it replaced.

@@ -451,6 +451,14 @@ fn nested_success_commits_and_dropped_scopes_release_storage() {
     let committed = {
         let snapshot = RollbackSnapshot::capture(&mut t);
         let w = seed(&mut t);
+        assert_eq!(
+            t.undo_record_count(),
+            0,
+            "allocations are covered by the scope's slot marks"
+        );
+        t.vertex_mut(v)
+            .unwrap()
+            .set_point(Point3::new(1.0, 2.0, 3.0));
         assert!(t.undo_record_count() > 0);
         (snapshot, w)
     };
@@ -458,6 +466,7 @@ fn nested_success_commits_and_dropped_scopes_release_storage() {
         t.vertex(committed.1).is_ok(),
         "dropped scope committed its work"
     );
+    assert_eq!(t.vertex(v).unwrap().point(), Point3::new(1.0, 2.0, 3.0));
     drop(committed.0);
     let _ = RollbackSnapshot::capture(&mut t);
     assert_eq!(
@@ -972,4 +981,166 @@ fn append_only_scopes_nest_and_rewind_with_the_outer_scope() {
     assert_eq!(state(&t), before);
     assert!(t.vertex(inner_staged.unwrap()).is_err());
     assert!(t.vertex(outer_staged.unwrap()).is_err());
+}
+
+/// Handles a scope allocated while rewriting its own allocations: the undo
+/// path records none of those writes (the slot marks retire them), so these
+/// stages pin it to the full-snapshot oracle.
+struct Staged {
+    face: crate::FaceId,
+    solid: crate::SolidId,
+    vertex: crate::VertexId,
+    edge: crate::EdgeId,
+}
+
+// Every stage rewrites entities the same scope allocated, including from
+// nested scopes (where they count as pre-existing) and after re-deriving or
+// retiring them. Each prefix can fail.
+fn rewrite_own_allocations(
+    legacy: bool,
+    t: &mut Topology,
+    stop: usize,
+    staged: &mut Vec<Staged>,
+) -> Result<(), TopologyError> {
+    let face = triangle_face(t);
+    let solid = t.add_empty_solid();
+    let vertex = t.vertices().iter().last().unwrap().0;
+    let edge = t.edges().iter().last().unwrap().0;
+    staged.push(Staged {
+        face,
+        solid,
+        vertex,
+        edge,
+    });
+    let first_coedge = |t: &Topology| -> Result<crate::CoedgeId, TopologyError> {
+        Ok(t.face_loop(t.loops_of_face(face).unwrap()[0])?.coedges()[0])
+    };
+    for stage in 0..11 {
+        match stage {
+            0 => {
+                t.face_mut(face)?.set_reversed(true);
+                t.vertex_mut(vertex)?.set_point(Point3::new(4.0, 5.0, 6.0));
+            }
+            1 => {
+                t.set_face_attributes(face, attributes("own"))?;
+                t.set_solid_attributes(solid, attributes("own"))?;
+            }
+            2 => {
+                let cid = first_coedge(t)?;
+                t.set_coedge_pcurve(
+                    cid,
+                    PCurve::new(
+                        Curve2D::Line(
+                            Line2D::new(Point2::new(0.5, 0.5), Vec2::new(1.0, 0.0)).unwrap(),
+                        ),
+                        0.0,
+                        1.0,
+                    ),
+                )?;
+                t.set_coedge_periodic_winding(cid, crate::coedge::PeriodicWinding::new(1, 0))?;
+            }
+            3 => {
+                // Retires the fresh loops and coedges, allocates new ones.
+                let wire = t.face(face)?.outer_wire();
+                t.set_face_boundary_wires(face, wire, vec![])?;
+            }
+            4 => {
+                // A caught nested failure: for the inner scope the outer
+                // allocations are pre-existing and must come back exactly.
+                let inner_before = state(t);
+                let result = run(legacy, t, |t| {
+                    t.face_mut(face)?.set_reversed(false);
+                    t.edge_mut(edge)?.set_trim(Some((0.25, 0.5)));
+                    let wire = t.face(face)?.outer_wire();
+                    t.wire_mut(wire)?.edges_mut().reverse();
+                    let replacement = t.wire(wire)?.clone();
+                    t.replace_boundary_wire(wire, replacement)?;
+                    t.set_face_attributes(face, attributes("inner"))?;
+                    t.delete_solid(solid)
+                        .map_err(|_| TopologyError::WireNotClosed)?;
+                    seed(t);
+                    // Distinct from every stage error: the whole body ran.
+                    Err::<(), _>(TopologyError::Empty { entity: "injected" })
+                });
+                assert!(
+                    matches!(result, Err(TopologyError::Empty { entity: "injected" })),
+                    "{result:?}"
+                );
+                assert_eq!(state(t), inner_before, "caught inner failure");
+            }
+            5 => {
+                // A committed nested write to an outer allocation.
+                run(legacy, t, |t| {
+                    t.edge_mut(edge)?.set_trim(Some((0.0, 0.75)));
+                    t.remove_coedge_pcurve(first_coedge(t)?)?;
+                    Ok(())
+                })?;
+            }
+            6 => {
+                let wire = t.face(face)?.outer_wire();
+                t.wire_mut(wire)?.edges_mut().reverse();
+                t.build_face_loops(face)?;
+            }
+            7 => {
+                let pending = t.journal_begin("own-allocations");
+                let mut draft = EvolutionDraft::construction();
+                draft.push(
+                    EntityKey::face(face.index()),
+                    EventDraft::Generated {
+                        sources: vec![EntityKey::vertex(vertex.index())],
+                    },
+                );
+                t.journal_record_evolution(pending, draft)?;
+            }
+            8 => {
+                t.delete_solid(solid)
+                    .map_err(|_| TopologyError::WireNotClosed)?;
+            }
+            9 => {
+                let pre_existing = t.vertices().iter().next().unwrap().0;
+                t.vertex_mut(pre_existing)?
+                    .set_point(Point3::new(-1.0, -1.0, -1.0));
+            }
+            _ => {
+                t.edge_mut(edge)?.set_trim(None);
+            }
+        }
+        if stage == stop {
+            return Err(TopologyError::WireNotClosed);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rewriting_own_allocations_matches_full_snapshot_oracle() {
+    // `stop` past the last stage commits: both paths must then agree too.
+    for stop in 0..12 {
+        let mut outcomes = Vec::new();
+        for legacy in [true, false] {
+            let (mut t, _, _, _) = fixture();
+            let before = state(&t);
+            let mut staged = Vec::new();
+            let result = run(legacy, &mut t, |t| {
+                // Twice: the second pass runs over the first pass's
+                // allocations as well as its own.
+                rewrite_own_allocations(legacy, t, 99, &mut staged)?;
+                rewrite_own_allocations(legacy, t, stop, &mut staged)
+            });
+            if stop < 11 {
+                assert!(result.is_err(), "stop {stop}");
+                assert_eq!(state(&t), before, "stop {stop}, legacy {legacy}");
+                for entity in &staged {
+                    assert!(t.face(entity.face).is_err());
+                    assert!(t.solid(entity.solid).is_err());
+                    assert!(t.vertex(entity.vertex).is_err());
+                    assert!(t.edge(entity.edge).is_err());
+                }
+            } else {
+                result.unwrap();
+            }
+            outcomes.push(state(&t));
+        }
+        assert_eq!(outcomes[0], outcomes[1], "stop {stop}");
+    }
 }
