@@ -31,6 +31,7 @@
 mod adjacency;
 mod collinear;
 mod constraints;
+mod incircle;
 mod insert;
 mod locate;
 #[cfg(test)]
@@ -82,8 +83,20 @@ fn fast_in_circle(a: Point2, b: Point2, c: Point2, d: Point2) -> f64 {
     if det > errbound || det < -errbound {
         det
     } else {
-        // Near zero — use exact predicate
-        in_circle(a, b, c, d)
+        // Near zero — use an exact predicate. Callers read only the sign,
+        // and both evaluations below return the exact sign (see
+        // `incircle`'s module docs); the integer one is far cheaper on the
+        // cocircular corners every rectangular face produces.
+        #[cfg(test)]
+        if work::legacy_predicates() {
+            work::bump(&work::ROBUST_IN_CIRCLE);
+            return in_circle(a, b, c, d);
+        }
+        incircle::exact_in_circle_sign(a, b, c, d).unwrap_or_else(|| {
+            #[cfg(test)]
+            work::bump(&work::ROBUST_IN_CIRCLE);
+            in_circle(a, b, c, d)
+        })
     }
 }
 
@@ -110,8 +123,9 @@ pub struct Cdt {
     constraints: DetHashSet<(usize, usize)>,
     /// Number of super-triangle vertices at the start of the vertex list.
     super_count: usize,
-    /// Spatial hash for O(1) amortized duplicate point detection.
-    dup_grid: std::collections::HashMap<(i64, i64), Vec<usize>>,
+    /// Duplicate point detection: a scan while the CDT is small, then a
+    /// spatial hash (see [`DupIndex`]).
+    dup_index: DupIndex,
     /// Last successfully located triangle — used as starting point for the
     /// walking search to exploit spatial coherence in insertion order.
     last_located: usize,
@@ -121,7 +135,49 @@ pub struct Cdt {
     /// Coordinate index for [`Cdt::insert_constraint`]'s collinear-vertex
     /// query, built lazily.
     collinear_index: collinear::CollinearIndex,
+    /// Scratch stack reused by every [`Cdt::legalize`] call.
+    legalize_stack: Vec<(usize, usize, usize)>,
 }
+
+/// Duplicate point detection for [`Cdt::insert_point`].
+///
+/// The grid answers a query by visiting the 3×3 cells around the query's
+/// cell in `(dx, dy)` order, each cell's vertices in insertion order, and
+/// returning the first vertex within [`DUP_TOL`]. Every inserted vertex is
+/// filed under its cell as it is created, so insertion order is index order.
+/// Below [`DUP_SCAN_MAX`] vertices the CDT answers the same query by scanning
+/// every vertex instead: it applies the same distance test, keeps only
+/// vertices filed in one of those nine cells, and returns the one the grid
+/// would reach first, the smallest `(dx, dy)` and then the smallest index.
+/// The answer is therefore the grid's, without hashing nine cells per point
+/// for the polygons of a handful of vertices most faces are. Crossing the
+/// threshold files every existing vertex in index order, which is the grid
+/// the CDT would have built incrementally. Both offset computations wrap,
+/// so the two agree even at saturated cell indices.
+enum DupIndex {
+    /// No grid yet; queries scan the vertices.
+    Scan,
+    /// Spatial hash from cell to the vertices filed under it.
+    Grid(std::collections::HashMap<(i64, i64), Vec<usize>>),
+}
+
+impl DupIndex {
+    /// The index a new CDT starts with.
+    fn initial() -> Self {
+        #[cfg(test)]
+        if work::legacy_predicates() {
+            return Self::Grid(std::collections::HashMap::new());
+        }
+        Self::Scan
+    }
+}
+
+/// Boundary length above which [`Cdt::remove_exterior`] hashes the boundary
+/// edges instead of scanning them.
+const BOUNDARY_SCAN_MAX: usize = 16;
+
+/// Non-super vertex count from which duplicate detection uses the grid.
+const DUP_SCAN_MAX: usize = 32;
 
 /// Duplicate point detection tolerance.
 ///
@@ -183,10 +239,11 @@ impl Cdt {
             triangles,
             constraints: DetHashSet::default(),
             super_count: 3,
-            dup_grid: std::collections::HashMap::new(),
+            dup_index: DupIndex::initial(),
             last_located: 0,
             vertex_tri,
             collinear_index: collinear::CollinearIndex::default(),
+            legalize_stack: Vec::new(),
         }
     }
 
@@ -202,25 +259,14 @@ impl Cdt {
     /// located in any triangle (should not happen for valid inputs).
     pub fn insert_point(&mut self, p: Point2) -> Result<usize, MathError> {
         let cell = dup_grid_cell(p);
-        // Check the cell and its 8 neighbors to handle points near cell boundaries.
-        for dx in -1..=1_i64 {
-            for dy in -1..=1_i64 {
-                let neighbor = (cell.0 + dx, cell.1 + dy);
-                if let Some(indices) = self.dup_grid.get(&neighbor) {
-                    for &i in indices {
-                        let d = p - self.vertices[i];
-                        if d.length_squared() < DUP_TOL * DUP_TOL {
-                            return Ok(i);
-                        }
-                    }
-                }
-            }
+        if let Some(i) = self.find_duplicate(p, cell) {
+            return Ok(i);
         }
 
         let vi = self.vertices.len();
         self.vertices.push(p);
         self.vertex_tri.push(0); // will be updated by split_triangle/split_edge
-        self.dup_grid.entry(cell).or_default().push(vi);
+        self.file_vertex(vi, cell);
 
         let (tri_idx, location) = self.locate_point(p)?;
         self.last_located = tri_idx;
@@ -235,6 +281,67 @@ impl Cdt {
         }
 
         Ok(vi)
+    }
+
+    /// The existing vertex within [`DUP_TOL`] of `p` that the duplicate
+    /// grid returns, if any (see [`DupIndex`]).
+    fn find_duplicate(&self, p: Point2, cell: (i64, i64)) -> Option<usize> {
+        match &self.dup_index {
+            DupIndex::Grid(grid) => {
+                // Check the cell and its 8 neighbors to handle points near
+                // cell boundaries. Wrapping: a coordinate past ~9.2e13
+                // saturates its cell index, where `+ 1` would overflow.
+                for dx in -1..=1_i64 {
+                    for dy in -1..=1_i64 {
+                        let neighbor = (cell.0.wrapping_add(dx), cell.1.wrapping_add(dy));
+                        if let Some(indices) = grid.get(&neighbor) {
+                            for &i in indices {
+                                let d = p - self.vertices[i];
+                                if d.length_squared() < DUP_TOL * DUP_TOL {
+                                    return Some(i);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            DupIndex::Scan => {
+                let mut first: Option<((i64, i64), usize)> = None;
+                for (i, &v) in self.vertices.iter().enumerate().skip(self.super_count) {
+                    let d = p - v;
+                    if d.length_squared() < DUP_TOL * DUP_TOL {
+                        // The grid reaches `v` at offset `(dx, dy)` when `v`
+                        // is filed under `cell + (dx, dy)`.
+                        let filed = dup_grid_cell(v);
+                        let offset = (filed.0.wrapping_sub(cell.0), filed.1.wrapping_sub(cell.1));
+                        let reached = (-1..=1).contains(&offset.0) && (-1..=1).contains(&offset.1);
+                        if reached && first.is_none_or(|(best, _)| offset < best) {
+                            first = Some((offset, i));
+                        }
+                    }
+                }
+                first.map(|(_, i)| i)
+            }
+        }
+    }
+
+    /// File the new vertex `vi` under `cell`, switching from the scan to the
+    /// grid once the CDT has [`DUP_SCAN_MAX`] non-super vertices.
+    fn file_vertex(&mut self, vi: usize, cell: (i64, i64)) {
+        match &mut self.dup_index {
+            DupIndex::Grid(grid) => grid.entry(cell).or_default().push(vi),
+            DupIndex::Scan => {
+                if self.vertices.len() - self.super_count >= DUP_SCAN_MAX {
+                    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+                        std::collections::HashMap::new();
+                    for (i, &v) in self.vertices.iter().enumerate().skip(self.super_count) {
+                        grid.entry(dup_grid_cell(v)).or_default().push(i);
+                    }
+                    self.dup_index = DupIndex::Grid(grid);
+                }
+            }
+        }
     }
 
     /// Bulk-insert points sorted by Hilbert curve for O(1) amortized locate.
@@ -364,13 +471,16 @@ impl Cdt {
     /// constraint edges. Also removes any triangle that references a
     /// super-triangle vertex.
     pub fn remove_exterior(&mut self, boundary: &[(usize, usize)]) {
-        // Build the constraint set for boundary edges.
-        let boundary_set: DetHashSet<(usize, usize)> =
-            boundary.iter().map(|&(a, b)| sorted_pair(a, b)).collect();
-
-        // Merge with existing constraints for the flood-fill barrier.
-        let all_constraints: DetHashSet<(usize, usize)> =
-            self.constraints.union(&boundary_set).copied().collect();
+        // The flood-fill barrier is every boundary edge plus every existing
+        // constraint. Testing membership in either is testing membership in
+        // their union, without building it. A short boundary is scanned
+        // rather than hashed.
+        let boundary_set: Option<DetHashSet<(usize, usize)>> = (boundary.len() > BOUNDARY_SCAN_MAX)
+            .then(|| boundary.iter().map(|&(a, b)| sorted_pair(a, b)).collect());
+        let on_boundary = |key: (usize, usize)| match &boundary_set {
+            Some(set) => set.contains(&key),
+            None => boundary.iter().any(|&(a, b)| sorted_pair(a, b) == key),
+        };
 
         // Start flood-fill from triangles touching super-triangle vertices.
         let mut stack: Vec<usize> = Vec::new();
@@ -398,7 +508,7 @@ impl Cdt {
                 let vb = self.triangles[ti].v[(local + 2) % 3];
                 let edge_key = sorted_pair(va, vb);
 
-                if all_constraints.contains(&edge_key) {
+                if on_boundary(edge_key) || self.constraints.contains(&edge_key) {
                     continue; // Don't cross constraint edges.
                 }
 
@@ -822,6 +932,17 @@ mod work {
         pub(super) static SEED_WALK_STEPS: Cell<usize> = const { Cell::new(0) };
         /// One-seed flood lookups (`locate_point`, then a linear scan).
         pub(super) static SEED_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+        /// `true` makes new CDTs take the pre-scan duplicate grid and
+        /// `robust::incircle` for every filtered in-circle test, the
+        /// reference the differential tests compare against.
+        pub(super) static LEGACY_PREDICATES: Cell<bool> = const { Cell::new(false) };
+        /// In-circle tests the float filter left to `robust::incircle`.
+        pub(super) static ROBUST_IN_CIRCLE: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Whether [`LEGACY_PREDICATES`] is set on this thread.
+    pub(super) fn legacy_predicates() -> bool {
+        LEGACY_PREDICATES.with(Cell::get)
     }
 
     pub(super) fn bump(counter: &'static LocalKey<Cell<usize>>) {

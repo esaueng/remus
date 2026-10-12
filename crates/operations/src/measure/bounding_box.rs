@@ -1,6 +1,5 @@
 //! Bounding box computation for B-rep solids.
 
-use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use remus_math::aabb::Aabb3;
@@ -158,7 +157,7 @@ pub fn face_set_vertex_bounding_box(
     faces: &[FaceId],
 ) -> Result<Aabb3, crate::OperationsError> {
     crate::preflight_face_edge_domains(topo, faces, "face-set bounding-box sampling")?;
-    let mut vertex_ids = HashSet::new();
+    let mut vertex_ids = Vec::new();
     for &fid in faces {
         let face = topo.face(fid)?;
         for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -166,11 +165,13 @@ pub fn face_set_vertex_bounding_box(
             let wire = topo.wire(wire_id)?;
             for oe in wire.edges() {
                 let edge = topo.edge(oe.edge())?;
-                vertex_ids.insert(edge.start());
-                vertex_ids.insert(edge.end());
+                vertex_ids.push(edge.start());
+                vertex_ids.push(edge.end());
             }
         }
     }
+    vertex_ids.sort_unstable();
+    vertex_ids.dedup();
 
     let mut points = Vec::with_capacity(vertex_ids.len());
     for vid in vertex_ids {

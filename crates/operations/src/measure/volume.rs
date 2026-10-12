@@ -10,6 +10,8 @@ use crate::tessellate;
 
 use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 
+mod planar_outline;
+
 /// Volume of a solid that contains a bored quadric — a sphere (or torus) face
 /// carrying a full-revolution latitude-circle hole (a drilled tunnel rim) — via
 /// exact per-face Gauss quadrature on the analytic surfaces.
@@ -278,16 +280,21 @@ fn torus_wire_wraps_tube(
 
 /// Count mesh edges incident to a number of triangles other than 2 (boundary or
 /// non-manifold edges). Zero means a closed 2-manifold.
+///
+/// The undirected edge keys are sorted rather than hashed: each run of equal
+/// keys is one edge and its length the edge's triangle count, so the count
+/// is the hash-map census's exactly (see the oracle in this module's tests).
 fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
-    use remus_math::det_hash::DetHashMap;
-    let mut counts: DetHashMap<(u32, u32), usize> = DetHashMap::default();
+    let mut keys: Vec<(u32, u32)> = Vec::with_capacity(mesh.indices.len());
     for tri in mesh.indices.chunks_exact(3) {
         for &(i, j) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
-            let key = if i < j { (i, j) } else { (j, i) };
-            *counts.entry(key).or_insert(0) += 1;
+            keys.push(if i < j { (i, j) } else { (j, i) });
         }
     }
-    counts.values().filter(|&&c| c != 2).count()
+    keys.sort_unstable();
+    keys.chunk_by(|a, b| a == b)
+        .filter(|run| run.len() != 2)
+        .count()
 }
 
 /// Whether `BK_VOL_TRACE` is set, resolved once per process.
@@ -2568,21 +2575,23 @@ fn local_reference(points: impl IntoIterator<Item = Point3>) -> Option<Point3> {
 /// when their signed tetrahedra sum is the same about every point. A mesh
 /// with a hole fails it, and so does a closed one with a face wound the
 /// wrong way, whose edges run twice in the same direction.
-fn directed_edges_cancel<K: Copy + Ord + std::hash::Hash>(
-    triangles: impl IntoIterator<Item = [K; 3]>,
-) -> bool {
-    use remus_math::det_hash::DetHashMap;
-    let mut net: DetHashMap<(K, K), i64> = DetHashMap::default();
+///
+/// Each directed edge becomes its undirected key with `+1` or `−1`; sorting
+/// groups each edge's uses into one run, whose sum is its net use.
+fn directed_edges_cancel<K: Copy + Ord>(triangles: impl IntoIterator<Item = [K; 3]>) -> bool {
+    let mut uses: Vec<((K, K), i64)> = Vec::new();
     for [a, b, c] in triangles {
         for (p, q) in [(a, b), (b, c), (c, a)] {
             match p.cmp(&q) {
-                std::cmp::Ordering::Less => *net.entry((p, q)).or_insert(0) += 1,
-                std::cmp::Ordering::Greater => *net.entry((q, p)).or_insert(0) -= 1,
+                std::cmp::Ordering::Less => uses.push(((p, q), 1)),
+                std::cmp::Ordering::Greater => uses.push(((q, p), -1)),
                 std::cmp::Ordering::Equal => {}
             }
         }
     }
-    net.values().all(|&n| n == 0)
+    uses.sort_unstable_by_key(|&(key, _)| key);
+    uses.chunk_by(|x, y| x.0 == y.0)
+        .all(|run| run.iter().map(|&(_, sign)| sign).sum::<i64>() == 0)
 }
 
 /// The point a whole-body triangle sum is taken about: the
@@ -3905,6 +3914,28 @@ fn planar_face_area_is_consistent(
     } else {
         deflection
     };
+    let budget =
+        SLACK * (2.0 / 3.0) * exact.arc_length * probe.max(0.0) + 1e-9 * exact.area.abs().max(1.0);
+    // A small straight-edged outline in a coordinate plane is proven to pass
+    // the mesh comparison below without building the mesh (see
+    // `planar_outline`); anything it cannot certify is meshed as before.
+    if planar_outline::outline_area_is_certified(topo, face_id, exact.area, budget) {
+        return true;
+    }
+    face_mesh_area_agrees(topo, face_id, exact.area, probe, budget)
+}
+
+/// The mesh half of [`planar_face_area_is_consistent`]: whether the face's
+/// own tessellation at `probe` has an area within `budget` of `area`.
+fn face_mesh_area_agrees(
+    topo: &Topology,
+    face_id: FaceId,
+    area: f64,
+    probe: f64,
+    budget: f64,
+) -> bool {
+    #[cfg(test)]
+    PROBE_MESHES.with(|count| count.set(count.get() + 1));
     let Ok(mesh) = tessellate::tessellate(topo, face_id, probe) else {
         return false;
     };
@@ -3916,9 +3947,13 @@ fn planar_face_area_is_consistent(
         };
         mesh_area += (p(1) - p(0)).cross(p(2) - p(0)).length() / 2.0;
     }
-    let budget =
-        SLACK * (2.0 / 3.0) * exact.arc_length * probe.max(0.0) + 1e-9 * exact.area.abs().max(1.0);
-    (exact.area - mesh_area).abs() <= budget
+    (area - mesh_area).abs() <= budget
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Face meshes [`face_mesh_area_agrees`] has built on this thread.
+    static PROBE_MESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Compute volume by tessellating each face and summing signed tetrahedra
@@ -4346,6 +4381,12 @@ fn center_of_mass_from_faces(
 
     Ok(reference + moment * (1.0 / (4.0 * total_vol)))
 }
+
+#[cfg(test)]
+mod edge_census_oracle_tests;
+
+#[cfg(test)]
+mod planar_outline_tests;
 
 /// B56: the mesh sums are taken about a local reference point. The public
 /// routes are covered in `tests/regress_b56_volume_local_reference.rs`; these
