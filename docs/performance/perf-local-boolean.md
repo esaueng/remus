@@ -98,16 +98,28 @@ just its geometry:
 The result passes `validate_boolean_result_with_tolerance` inside a nested
 transaction, or the attempt is rolled back and the GFA runs.
 
-**Evidence.**
+**Evidence.** Criterion, `RAYON_NUM_THREADS=1`, Apple M5 Pro, main at
+`f30d6853` against this stage:
 
-| cut | main | stage 1 |
-| ---: | ---: | ---: |
-| 1 | 2.4 ms | 0.24 ms |
-| 128 | 10.4 ms | 0.66 ms |
-| 256 | 19.7 ms | 1.34 ms |
+| bench | main | stage 1 |
+| --- | ---: | ---: |
+| `boolean 64 cuts (8x8 grid)` | 121.5 ms | 4.39 ms |
+| `sequential_cylinder_cuts/N=64` | 124.1 ms | 9.54 ms |
+| `multi-boolean model` (16 holes) | 1.50 ms | 178 µs |
+| `boolean/cut_cylinder_through_box` | 250 µs | 10.8 µs |
 
-The remaining slope is the contractual deep copy of the blank, plus one
-conservative box per face.
+Instruction counts (`/usr/bin/time -l`, base and candidate binaries
+alternated) for `examples/sequential_cut_profile.rs`:
+
+- 144 through-holes: 8.89 G → 0.707 G instructions (−92%), 1.85 G → 0.136 G
+  cycles.
+- Blind holes, which the cell always declines: 631–641 M on both binaries.
+  Declining costs nothing measurable.
+
+The remaining per-cut slope is the contractual deep copy of the blank and
+one cheap outer box per face. Lines and circles bound planar, cylindrical
+and conical faces exactly; every other face takes the general conservative
+box.
 
 `boolean/local_cut_tests.rs` cuts every qualified case twice, once locally
 and once with the cell disabled, and compares a full dump of both results:
