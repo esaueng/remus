@@ -56,7 +56,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
 
-use crate::copy::{ShellSlot, Splice, SpliceEdge, SpliceFace, SpliceWire};
+use crate::copy::{ShellSlot, Splice, SpliceEdge, SpliceFace, SpliceVertex, SpliceWire};
 
 /// Clearance, in linear tolerances, the cell demands between the tool and
 /// every piece of geometry it must not touch. Contacts closer than this are
@@ -536,7 +536,7 @@ fn tool_box(tool: &ToolCylinder) -> Aabb3 {
 
 /// Largest vertex or stored edge tolerance of `solid`, or `None` when the
 /// solid cannot be walked or a tolerance is not finite.
-fn max_entity_tolerance(topo: &Topology, solid: SolidId) -> Option<f64> {
+pub(super) fn max_entity_tolerance(topo: &Topology, solid: SolidId) -> Option<f64> {
     let mut largest = 0.0_f64;
     for vertex in remus_topology::explorer::solid_vertices(topo, solid).ok()? {
         largest = largest.max(topo.vertex(vertex).ok()?.tolerance());
@@ -836,8 +836,8 @@ fn section_rim(
     Ok((
         (anchor, tol.linear),
         SpliceEdge {
-            start: vertex,
-            end: vertex,
+            start: SpliceVertex::New(vertex),
+            end: SpliceVertex::New(vertex),
             curve: EdgeCurve::Circle(circle),
             trim: Some((0.0, std::f64::consts::TAU)),
             tolerance: Some(tol.linear),
@@ -849,8 +849,8 @@ fn section_rim(
 /// `end`.
 fn seam(start: usize, end: usize, tol: Tolerance) -> SpliceEdge {
     SpliceEdge {
-        start,
-        end,
+        start: SpliceVertex::New(start),
+        end: SpliceVertex::New(end),
         curve: EdgeCurve::Line,
         trim: None,
         tolerance: Some(tol.linear),
@@ -860,16 +860,14 @@ fn seam(start: usize, end: usize, tol: Tolerance) -> SpliceEdge {
 /// A pierced face's new hole: its rim, traversed clockwise seen from
 /// outside (the rim's circle normal is the face's outward normal).
 fn hole(rim: usize) -> SpliceWire {
-    SpliceWire {
-        edges: vec![(rim, false)],
-        closed: true,
-    }
+    SpliceWire::of_new(&[(rim, false)])
 }
 
 /// The wall: a reversed copy of the tool's cylinder.
 fn wall(tool: &ToolCylinder, outer: usize) -> SpliceFace {
     SpliceFace {
         outer,
+        inner: Vec::new(),
         surface: FaceSurface::Cylinder(tool.surface.clone()),
         reversed: true,
     }
@@ -908,17 +906,11 @@ fn through_hole_splice(
     Ok(Splice {
         vertices: vec![lower_vertex, upper_vertex],
         edges: vec![lower_rim, upper_rim, seam(0, 1, tol)],
-        wires: vec![
-            hole(0),
-            hole(1),
-            SpliceWire {
-                edges: wall_loop,
-                closed: true,
-            },
-        ],
+        wires: vec![hole(0), hole(1), SpliceWire::of_new(&wall_loop)],
         faces: vec![wall(tool, 2)],
         leading_inner: vec![(lower.face, 0), (upper.face, 1)],
         outer_shell,
+        replaced: Vec::new(),
     })
 }
 
@@ -952,8 +944,8 @@ fn blind_hole_splice(
     let floor_vertex = (floor_vertex.point(), floor_vertex.tolerance());
     let floor_edge = topo.edge(rim.edge)?;
     let floor_rim = SpliceEdge {
-        start: 1,
-        end: 1,
+        start: SpliceVertex::New(1),
+        end: SpliceVertex::New(1),
         curve: floor_edge.curve().clone(),
         trim: floor_edge.trim(),
         tolerance: floor_edge.tolerance(),
@@ -961,6 +953,7 @@ fn blind_hole_splice(
     let cap = topo.face(rim.cap)?;
     let floor_face = SpliceFace {
         outer: 2,
+        inner: Vec::new(),
         surface: cap.surface().clone(),
         reversed: !cap.is_reversed(),
     };
@@ -991,18 +984,13 @@ fn blind_hole_splice(
         edges: vec![entry_rim, floor_rim, seam_edge],
         wires: vec![
             hole(0),
-            SpliceWire {
-                edges: wall_loop,
-                closed: true,
-            },
-            SpliceWire {
-                edges: vec![(1, rim.cap_forward)],
-                closed: true,
-            },
+            SpliceWire::of_new(&wall_loop),
+            SpliceWire::of_new(&[(1, rim.cap_forward)]),
         ],
         faces: vec![wall(tool, 1), floor_face],
         leading_inner: vec![(entry.face, 0)],
         outer_shell,
+        replaced: Vec::new(),
     })
 }
 

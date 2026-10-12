@@ -77,6 +77,56 @@ impl GfaShapeStore {
         })
     }
 
+    /// Create a store holding only `faces_a` of solid A, as an open shell,
+    /// and the whole of solid B: the store a store-local boolean runs in.
+    ///
+    /// The store's rank-A solid is that open patch. Every pave-filler phase
+    /// reads operands only through their faces, edges and vertices, so it
+    /// runs unchanged; classification against A must read the caller's full
+    /// solid instead (`Builder::perform_against_full_a`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if `faces_a` is empty or a topology lookup fails.
+    pub(crate) fn with_face_subset(
+        source: &Topology,
+        faces_a: &[FaceId],
+        orig_b: SolidId,
+    ) -> Result<Self, AlgoError> {
+        let mut topo = Topology::default();
+        let (shells, maps_a) =
+            deep_copy_face_groups_with_maps(source, &mut topo, &[faces_a.to_vec()])?;
+        let patch = *shells
+            .first()
+            .ok_or_else(|| AlgoError::AssemblyFailed("empty patch".into()))?;
+        let solid_a = topo.add_solid(Solid::new(patch, Vec::new()));
+        let (solid_b, maps_b) = deep_copy_solid_with_maps(source, &mut topo, orig_b)?;
+
+        let mut input_face_to_caller = DetHashMap::default();
+        let mut input_edge_to_caller = DetHashMap::default();
+        let mut input_vertex_to_caller = DetHashMap::default();
+        for maps in [maps_a, maps_b] {
+            for (caller_idx, store_face) in maps.faces {
+                input_face_to_caller.insert(store_face.index(), caller_idx);
+            }
+            for (caller_idx, store_edge) in maps.edges {
+                input_edge_to_caller.insert(store_edge.index(), caller_idx);
+            }
+            for (caller_idx, store_vertex) in maps.vertices {
+                input_vertex_to_caller.insert(store_vertex.index(), caller_idx);
+            }
+        }
+
+        Ok(Self {
+            topo,
+            solid_a,
+            solid_b,
+            input_face_to_caller,
+            input_edge_to_caller,
+            input_vertex_to_caller,
+        })
+    }
+
     /// Export a result solid from this store back to the caller's Topology.
     ///
     /// Deep-copies all entities from the store solid into `target`,
@@ -262,11 +312,25 @@ fn deep_copy_solid_with_maps(
     Ok((target.add_solid(Solid::new(new_outer, new_inner)), maps))
 }
 
-#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 fn deep_copy_shells_with_maps(
     source: &Topology,
     target: &mut Topology,
     all_shell_ids: &[ShellId],
+) -> Result<(Vec<ShellId>, DeepCopyMaps), AlgoError> {
+    let groups = all_shell_ids
+        .iter()
+        .map(|&shell_id| Ok(source.shell(shell_id)?.faces().to_vec()))
+        .collect::<Result<Vec<_>, AlgoError>>()?;
+    deep_copy_face_groups_with_maps(source, target, &groups)
+}
+
+/// Deep-copy each group of `source` faces into one new shell of `target`,
+/// with every wire, edge and vertex they use (shared ones copied once).
+#[allow(clippy::too_many_lines, clippy::items_after_statements)]
+fn deep_copy_face_groups_with_maps(
+    source: &Topology,
+    target: &mut Topology,
+    face_groups: &[Vec<FaceId>],
 ) -> Result<(Vec<ShellId>, DeepCopyMaps), AlgoError> {
     // ── Snapshot phase ──────────────────────────────────────────────
 
@@ -309,18 +373,18 @@ fn deep_copy_shells_with_maps(
     let mut vertex_snaps: Vec<VertexSnap> = Vec::new();
     let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
     let mut wire_snaps: Vec<WireSnap> = Vec::new();
-    let mut shell_snaps: Vec<ShellSnap> = Vec::with_capacity(all_shell_ids.len());
+    let mut shell_snaps: Vec<ShellSnap> = Vec::with_capacity(face_groups.len());
     let mut coedge_authority_snaps = Vec::new();
 
     let mut seen_vertices = DetHashSet::default();
     let mut seen_edges = DetHashSet::default();
     let mut seen_wires = DetHashSet::default();
 
-    for &shell_id in all_shell_ids {
-        let shell = source.shell(shell_id)?;
-        let mut face_snaps = Vec::with_capacity(shell.faces().len());
+    for faces in face_groups {
+        let mut face_snaps = Vec::with_capacity(faces.len());
 
-        for &face_id in shell.faces() {
+        for &face_id in faces {
+            crate::perf::bump_store_face_copied();
             let face = source.face(face_id)?;
             for &loop_id in face.boundary_loops() {
                 for &coedge_id in source.face_loop(loop_id)?.coedges() {

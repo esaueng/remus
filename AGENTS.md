@@ -223,6 +223,7 @@ Quick reference — find the right file for any task:
 | Task | File(s) |
 |------|---------|
 | GFA entry point | `gfa.rs` |
+| Store-local patch GFA (`cut_patch`: face-subset store, tool pieces classified against the whole blank, open-patch cleanup without shell assembly) | `gfa.rs`, `ds/shape_store.rs`, `builder/mod.rs`, `builder/builder_solid.rs` |
 | Boolean operation selection | `bop.rs` |
 | Error types | `error.rs` |
 | GFA data structures (Pave, PaveBlock, GfaArena) | `ds/pave.rs`, `ds/arena.rs` |
@@ -429,6 +430,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
+| Opt-in store-local cut: the GFA on the faces a cut touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |

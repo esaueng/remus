@@ -139,12 +139,17 @@ pub fn classify_point_cached_with_tolerance(
 /// Returns `None` when there is no coincident opposing face, the sub-face is
 /// not a wholly-exterior wedge, or the depth probe finds the plane is internal.
 ///
+/// `topo` holds the sub-face and `opposing_topo` the opposing solid: the same
+/// arena in a whole-operand boolean, the caller's when a store-local boolean
+/// classifies tool pieces against the full blank.
+///
 /// # Errors
 ///
 /// Returns [`AlgoError`] on a topology lookup failure.
 #[allow(clippy::too_many_arguments)]
 pub fn classify_coincident_coplanar(
     topo: &Topology,
+    opposing_topo: &Topology,
     opposing_solid: SolidId,
     geoms: Option<&ray_cast::RayCastGeoms>,
     sub_face_id: remus_topology::face::FaceId,
@@ -155,9 +160,9 @@ pub fn classify_coincident_coplanar(
 ) -> Result<Option<FaceClass>, AlgoError> {
     let plane_tol = tol.linear.max(1e-7);
     let n_tol = 1e-6_f64;
-    let faces = remus_topology::explorer::solid_faces(topo, opposing_solid)?;
+    let faces = remus_topology::explorer::solid_faces(opposing_topo, opposing_solid)?;
     for fid in faces {
-        let face = topo.face(fid)?;
+        let face = opposing_topo.face(fid)?;
         let FaceSurface::Plane {
             normal: fn_raw,
             d: fd_raw,
@@ -175,7 +180,7 @@ pub fn classify_coincident_coplanar(
         if !(coplanar_same || coplanar_flip) {
             continue;
         }
-        let Some((outer, holes, region_normal)) = planar_face_polygons(topo, fid)? else {
+        let Some((outer, holes, region_normal)) = planar_face_polygons(opposing_topo, fid)? else {
             continue;
         };
         let Some(sub_verts) = sub_face_outer_vertices(topo, sub_face_id)? else {
@@ -363,8 +368,8 @@ pub fn classify_coincident_coplanar(
                     ray_cast::ray_cast_inside_votes_cached(g, probe_b)?,
                 ),
                 None => (
-                    ray_cast_inside_votes(topo, opposing_solid, probe_a)?,
-                    ray_cast_inside_votes(topo, opposing_solid, probe_b)?,
+                    ray_cast_inside_votes(opposing_topo, opposing_solid, probe_a)?,
+                    ray_cast_inside_votes(opposing_topo, opposing_solid, probe_b)?,
                 ),
             };
             if av >= 2 || bv >= 2 {
