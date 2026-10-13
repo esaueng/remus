@@ -638,3 +638,232 @@ pub(super) fn clip_section(
         surface_residual_bounds: bounds,
     })
 }
+
+/// Outward-rounded whole-span distance to a cylindrical carrier and the
+/// range of its radial normal projected on `direction`. The latter's sign
+/// distinguishes regular cylinder-cylinder quadratic branches. Coefficients
+/// describe the actual stored Bezier span; no numerical knot refinement runs.
+pub(super) fn bezier_cylinder_residual_bound(
+    points: &[Point3],
+    weights: &[f64],
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    direction: remus_math::vec::Vec3,
+) -> Option<(f64, [f64; 2])> {
+    if points.len() < 2
+        || points.len() > 4
+        || weights.len() != points.len()
+        || points.iter().any(|p| p.0.iter().any(|x| !x.is_finite()))
+        || weights.iter().any(|w| !w.is_finite() || *w <= 0.0)
+        || direction.0.iter().any(|x| !x.is_finite())
+        || !cylinder.radius().is_finite()
+        || cylinder.radius() <= 0.0
+    {
+        return None;
+    }
+    let h = bernstein::homogeneous(points, weights, cylinder.origin());
+    let degree = points.len() - 1;
+    let axis = cylinder.axis().0.map(I::exact);
+    let direction = direction.0.map(I::exact);
+    let axis_squared = axis.into_iter().fold(I::exact(0.0), |s, x| s.add(x.mul(x)));
+    let axis_direction = (0..3).fold(I::exact(0.0), |s, j| s.add(axis[j].mul(direction[j])));
+    if !axis_squared.lo.is_finite() || axis_squared.lo <= 0.0 {
+        return None;
+    }
+    let mut squared = vec![I::exact(0.0); 2 * degree + 1];
+    let mut along = vec![I::exact(0.0); degree + 1];
+    let mut toward = vec![I::exact(0.0); degree + 1];
+    for j in 0..3 {
+        for (sum, value) in squared.iter_mut().zip(bernstein::product(&h[j], &h[j])) {
+            *sum = sum.add(value);
+        }
+        for k in 0..=degree {
+            along[k] = along[k].add(h[j][k].mul(axis[j]));
+            toward[k] = toward[k].add(h[j][k].mul(direction[j]));
+        }
+    }
+    let along_squared = bernstein::product(&along, &along);
+    let weight_squared = bernstein::product(&h[3], &h[3]);
+    let radius_squared = I::exact(cylinder.radius()).mul(I::exact(cylinder.radius()));
+    let bound = squared
+        .iter()
+        .zip(&along_squared)
+        .zip(&weight_squared)
+        .map(|((s, a), w)| {
+            s.mul(axis_squared)
+                .sub(*a)
+                .sub(w.mul(radius_squared).mul(axis_squared))
+                .abs_max()
+        })
+        .fold(0.0, f64::max);
+    let weight_lo = h[3].iter().map(|w| w.lo).fold(f64::INFINITY, f64::min);
+    let weight_hi = h[3].iter().map(|w| w.hi).fold(f64::NEG_INFINITY, f64::max);
+    let denominator = I::exact(axis_squared.lo)
+        .mul(I::exact(weight_lo))
+        .mul(I::exact(weight_lo))
+        .lo;
+    if !denominator.is_finite() || denominator <= 0.0 || weight_lo <= 0.0 {
+        return None;
+    }
+    // Stored frame axes are normalized in floating point. Bound the defect
+    // of their projected Gram matrix from the identity, rather than assuming
+    // an exactly orthonormal radial basis. Its maximum absolute row sum d
+    // bounds each squared singular-value defect; for d < 1, |sigma-1| <= d.
+    // Thus radius*d bounds the distance between the stored parametric carrier
+    // and the ideal axis/radius cylinder used by the radial polynomial.
+    let radial_axes = [
+        cylinder.x_axis().0.map(I::exact),
+        cylinder.y_axis().0.map(I::exact),
+    ];
+    let dot = |a: [I; 3], b: [I; 3]| (0..3).fold(I::exact(0.0), |sum, j| sum.add(a[j].mul(b[j])));
+    let axial = radial_axes.map(|x| dot(x, axis));
+    let gxx = dot(radial_axes[0], radial_axes[0]).sub(axial[0].mul(axial[0]).div(axis_squared));
+    let gyy = dot(radial_axes[1], radial_axes[1]).sub(axial[1].mul(axial[1]).div(axis_squared));
+    let gxy = dot(radial_axes[0], radial_axes[1]).sub(axial[0].mul(axial[1]).div(axis_squared));
+    let off_diagonal = I::exact(gxy.abs_max());
+    let defect = I::exact(gxx.sub(I::exact(1.0)).abs_max())
+        .add(off_diagonal)
+        .hi
+        .max(
+            I::exact(gyy.sub(I::exact(1.0)).abs_max())
+                .add(off_diagonal)
+                .hi,
+        );
+    if !defect.is_finite() || defect >= 1.0 {
+        return None;
+    }
+    // |rho-r| = |rho²-r²|/(rho+r) <= |rho²-r²|/r.
+    let radial = I::exact(bound)
+        .div(I::exact(denominator))
+        .div(I::exact(cylinder.radius()))
+        .add(I::exact(cylinder.radius()).mul(I::exact(defect)))
+        .hi;
+    let projected: Vec<_> = toward
+        .iter()
+        .zip(&along)
+        .map(|(a, b)| a.sub(b.mul(axis_direction).div(axis_squared)))
+        .collect();
+    let projected = I {
+        lo: projected.iter().map(|x| x.lo).fold(f64::INFINITY, f64::min),
+        hi: projected
+            .iter()
+            .map(|x| x.hi)
+            .fold(f64::NEG_INFINITY, f64::max),
+    }
+    .div(I {
+        lo: weight_lo,
+        hi: weight_hi,
+    });
+    (radial.is_finite() && projected.lo.is_finite() && projected.hi.is_finite())
+        .then_some((radial, [projected.lo, projected.hi]))
+}
+
+/// Sign range of `(curve-origin) × curve' · axis` over a stored Bezier
+/// span. Positive weights leave this sign unchanged in homogeneous form;
+/// a strict sign proves angular monotonicity around the cylinder axis.
+pub(super) fn bezier_cylinder_angular_direction(
+    points: &[Point3],
+    weights: &[f64],
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Option<[f64; 2]> {
+    if !(2..=4).contains(&points.len())
+        || points.len() != weights.len()
+        || points.iter().any(|p| p.0.iter().any(|x| !x.is_finite()))
+        || weights.iter().any(|w| !w.is_finite() || *w <= 0.0)
+    {
+        return None;
+    }
+    let h = bernstein::homogeneous(points, weights, cylinder.origin());
+    let position: bernstein::V = std::array::from_fn(|j| h[j].clone());
+    let degree = I::exact(f64::from(u32::try_from(points.len() - 1).ok()?));
+    let derivative: bernstein::V = std::array::from_fn(|j| {
+        h[j].windows(2)
+            .map(|w| w[1].sub(w[0]).mul(degree))
+            .collect()
+    });
+    let cross = bernstein::cross(&position, &derivative);
+    let axis = cylinder.axis().0.map(I::exact);
+    let dot: Vec<_> = (0..cross[0].len())
+        .map(|k| (0..3).fold(I::exact(0.0), |sum, j| sum.add(cross[j][k].mul(axis[j]))))
+        .collect();
+    let lo = dot.iter().map(|x| x.lo).fold(f64::INFINITY, f64::min);
+    let hi = dot.iter().map(|x| x.hi).fold(f64::NEG_INFINITY, f64::max);
+    (lo.is_finite() && hi.is_finite()).then_some([lo, hi])
+}
+
+/// Whole-point distance to a cylinder's axial cap plane, including arithmetic
+/// and axis-normalization roundoff. `cap` is its stored axial dot coordinate.
+pub(super) fn point_cylinder_cap_distance_bound(
+    point: Point3,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    cap: f64,
+) -> Option<f64> {
+    if !cap.is_finite() || point.0.iter().any(|x| !x.is_finite()) {
+        return None;
+    }
+    let axis = cylinder.axis().0.map(I::exact);
+    let origin = cylinder.origin();
+    let coordinate = (0..3).fold(I::exact(0.0), |sum, j| {
+        sum.add(I::exact(point.0[j]).sub(I::exact(origin.0[j])).mul(axis[j]))
+    });
+    let norm_squared = axis
+        .into_iter()
+        .fold(I::exact(0.0), |sum, x| sum.add(x.mul(x)));
+    let norm_lo = norm_squared.lo.sqrt().next_down();
+    if !norm_lo.is_finite() || norm_lo <= 0.0 {
+        return None;
+    }
+    let distance = I::exact(coordinate.sub(I::exact(cap)).abs_max())
+        .div(I::exact(norm_lo))
+        .hi;
+    distance.is_finite().then_some(distance)
+}
+
+/// Whole-span upper bound on distance outside a finite cylinder's axial
+/// interval. Positive rational weights preserve the control-point hull of
+/// this linear coordinate. Limits use the cylinder's stored axial dot
+/// coordinate; dividing by a lower axis norm gives physical distance.
+pub(super) fn bezier_cylinder_finite_distance_bound(
+    points: &[Point3],
+    weights: &[f64],
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    limits: (f64, f64),
+) -> Option<f64> {
+    if !(2..=4).contains(&points.len())
+        || points.len() != weights.len()
+        || points.iter().any(|p| p.0.iter().any(|x| !x.is_finite()))
+        || weights.iter().any(|w| !w.is_finite() || *w <= 0.0)
+        || !limits.0.is_finite()
+        || !limits.1.is_finite()
+        || limits.0 > limits.1
+    {
+        return None;
+    }
+    let axis = cylinder.axis().0.map(I::exact);
+    let origin = cylinder.origin();
+    let coordinate = |point: Point3| {
+        (0..3).fold(I::exact(0.0), |sum, j| {
+            sum.add(I::exact(point.0[j]).sub(I::exact(origin.0[j])).mul(axis[j]))
+        })
+    };
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &point in points {
+        let value = coordinate(point);
+        lo = lo.min(value.lo);
+        hi = hi.max(value.hi);
+    }
+    let norm_squared = axis
+        .into_iter()
+        .fold(I::exact(0.0), |sum, x| sum.add(x.mul(x)));
+    let norm_lo = norm_squared.lo.sqrt().next_down();
+    if !lo.is_finite() || !hi.is_finite() || !norm_lo.is_finite() || norm_lo <= 0.0 {
+        return None;
+    }
+    let outside = I::exact(limits.0)
+        .sub(I::exact(lo))
+        .hi
+        .max(I::exact(hi).sub(I::exact(limits.1)).hi)
+        .max(0.0);
+    let distance = I::exact(outside).div(I::exact(norm_lo)).hi;
+    distance.is_finite().then_some(distance)
+}
