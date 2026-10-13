@@ -927,12 +927,17 @@ mod tests {
         );
         assert!(findings.warnings.is_empty() && findings.failures.is_empty());
 
-        // Over the raw hard limit: exit status 1 still yields the report.
-        bytes.resize(10 * 1024 * 1024 + 1, 0);
+        // Over the raw hard limit (12 MiB): exit status 1 still yields the
+        // report.
+        let over = 12 * 1024 * 1024 + 1;
+        bytes.resize(over, 0);
         fs::write(&wasm, &bytes).unwrap();
         let findings = size_policy_findings(&run_size_policy(&wasm).unwrap()).unwrap();
         assert_eq!(findings.failures.len(), 1);
-        assert!(findings.failures[0].starts_with("kernel-raw-hard: raw bytes 10485761"));
+        assert!(
+            findings.failures[0]
+                .starts_with(&format!("kernel-raw-hard: raw bytes {over} (budget 12582912)"))
+        );
 
         fs::write(&wasm, b"not wasm").unwrap();
         assert!(run_size_policy(&wasm).is_err());
