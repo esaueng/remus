@@ -306,12 +306,19 @@ bytes against main's kernel (raw 10,484,484 / gzip 3,673,721).
 | --- | --- |
 | W0.1 opt-level | **Rejected.** Whole-graph `s` is 18–70% slower in steady state; no per-crate split is both smaller and within noise (see Optimization level). |
 | W0.2 gate parity | PR #1028: `scripts/wasm-size-policy.mjs` is the single source of the kernel policy (raw, Node gzip, Brotli q11); xtask enforces it. |
-| W1 growth control | In progress (stacked on #1028). |
-| W2 ceiling step 1 | In progress: 11/12 MiB raw, 4.5 MiB gzip, 3 MiB Brotli, on #1028 and a paired OpenZCAD PR. Without the `s` saving the runway from today's kernel is about 2.1 MB raw (≈ 4 weeks at 0.5 MB/week) and 1.05 MB gzip (≈ 6 weeks). |
+| W1 growth control | PR #1030: CI fails a PR over any hard limit, or growing the kernel more than 64 KiB raw without a `WASM-Size:` line naming a tier; wired into `CI Pass`. It edits fleet workflows, so it needs an owner CI bypass and a merge-commit landing (fleet pins must be main ancestors). |
+| W2 ceiling step 1 | PR #1028 + OpenZCAD #658: 11/12 MiB raw, 4.5 MiB gzip, 3 MiB Brotli, with the seven-point evidence recorded in OpenZCAD `docs/kernel-wasm-size-policy.md`. |
 | W3.1 one dispatch path | **Not worth it.** Deleting every `executeBatch` arm saves only 157 KB raw / 29 KB gzip; a shared implementation projects to about 34 KB, and many direct/batch pairs differ in validation on purpose. The earlier −0.3 to −0.6 MB estimate counted kernel code inlined into bindings. |
-| W3.2 generic bloat | In progress. |
-| W3.3 serde | Retargeted to the arena-document codec (`parse_document` keeps ≈ 210 KB reachable, mostly serde-derive); in progress. tsify and `serde_wasm_bindgen` total only 12 KB. |
+| W3.2 generic bloat | PR #1031: the largest family was stable sort (≈ 1.07 MB in 267 per-comparator copies), not hash tables (≈ 145 KB after `wasm-opt` merging). A shared `CompactSort` on ≈ 205 cold sites, 31 measured hot sites unchanged: **−754 KB raw / −106 KB gzip**, outputs identical, instruction counts within spread on all 113 native cases and WASM suites. |
+| W3.3 serde | PR #1029: hand-written arena and persistent-reference codec, byte-identical output and error kinds against a verbatim oracle: **−267 KB raw / −78 KB gzip** in the kernel (−208 KB in the translator), 5–33% fewer instructions in serialize/deserialize. |
 | W4 lazy modules | **No candidate clears 250 KiB.** The sketch solver split saves 254 KiB today but only 151 KiB once any size profile applies, and its 1.5–2 µs module round trip makes 10-parameter solves 5–10% slower. Repair + analysis + NURBS reuse + projection together: 175 KiB. A prototype is kept unpublished for a later re-check if the solver grows by about 100 KiB. |
 | W5 tier rule | PR #1027. |
 | W6 load gates | OpenZCAD #657: desktop cold ≈ 47–77 ms p95, mobile-class cold ≈ 3.5 s p95 (download-dominated, ≈ +89 ms per 100 KB gzip); review budgets 110/110 ms desktop and 3,800/150 ms mobile, cold/warm. |
 | W7 | Deferred to H4/H5 (owner decision 5). |
+
+With #1029 and #1031 the kernel is estimated at about 9.46 MB raw / 3.49 MB gzip (the
+two PRs were measured separately and change disjoint code; the combined build is not yet measured). From
+there the step-1 ceiling leaves about 3.1 MB raw (≈ 6 weeks at 0.5 MB/week)
+and 1.2 MB gzip (≈ 7 weeks), and mobile-class cold load drops by about
+0.16 s. Keeping new cold code on `CompactSort` and new capabilities on the
+tier rule is what keeps that runway.
