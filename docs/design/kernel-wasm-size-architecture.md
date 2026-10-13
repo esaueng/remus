@@ -84,12 +84,17 @@ a Remus type counts toward that crate:
 | `remus_operations` | 19.0% |
 | Binding layer and glue (`BrepKernel`, wasm-bindgen, serde, tsify) | 14.9% |
 | `remus_algo` | 11.4% |
-| math, topology, check, blend, heal, offset, sketch, io, geometry | 18.0% |
-| Other (`robust`, `.rodata`, misc.) | 2.9% |
+| math, topology, check, blend, heal, offset, sketch, io, geometry | 19.3% |
+| Other (`robust`, std formatting/panic, `remus_wasm`, misc.) | 3.0% |
+
+The groups total 100.0% of function bytes; the name section and data segments
+are excluded.
 
 - Generic monomorphization (twiggy `monos`) totals about 4.0 MB, roughly 30%
-  of code. The largest single family is `hashbrown::RawTable::reserve_rehash`
-  with 282 instances (258 KB), then `Vec::from_iter` (230 KB).
+  of code. Before `wasm-opt` the largest family looks like
+  `hashbrown::RawTable::reserve_rehash` (282 instances, 258 KB), then
+  `Vec::from_iter` (230 KB); after `wasm-opt` merges identical copies it is
+  stable sort, about 1.07 MB in 267 per-comparator copies (see W3.2 below).
 - serde, serde_json and tsify account for about 0.55 MB; `batch.rs` dispatch
   for 0.15 MB.
 - Most ops exist twice: a direct `#[wasm_bindgen]` method (392 `js_name`
