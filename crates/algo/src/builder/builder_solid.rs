@@ -1518,6 +1518,56 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
     Some(flux > 0.0)
 }
 
+/// Whether every edge the shell uses exactly twice is used once in each
+/// direction, with face reversal applied.
+///
+/// The same rule as the check crate's shell-orientation validation, kept here
+/// because `algo` cannot depend on `check`. Purely topological: it compares
+/// edge identities and use directions, with no tolerance.
+///
+/// This runs before `normalize_face_wires`, so each wire is counted as that
+/// normalization will leave it: inner wires that repeat an oriented edge are
+/// skipped and dangling edges are pruned. That debris is dropped at assembly
+/// and must not make an otherwise consistent shell read inconsistent.
+fn shell_orientation_is_consistent(topo: &Topology, faces: &[FaceId]) -> bool {
+    let mut uses: DetHashMap<EdgeId, (u32, u32)> = DetHashMap::default();
+    for &fid in faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        let reversed = face.is_reversed();
+        let outer = face.outer_wire();
+        for wire_id in std::iter::once(outer).chain(face.inner_wires().iter().copied()) {
+            let Ok(wire) = topo.wire(wire_id) else {
+                return false;
+            };
+            let mut oes = wire.edges().to_vec();
+            if wire_id == outer {
+                // Mirrors `normalize_face_wires`: the outer wire is never emptied.
+                prune_dangling_edges(topo, &mut oes);
+                if oes.is_empty() {
+                    oes = wire.edges().to_vec();
+                }
+            } else {
+                if has_repeated_oriented_edge(&oes) {
+                    continue;
+                }
+                prune_dangling_edges(topo, &mut oes);
+            }
+            for oe in &oes {
+                let entry = uses.entry(oe.edge()).or_insert((0, 0));
+                if oe.is_forward() == reversed {
+                    entry.1 += 1;
+                } else {
+                    entry.0 += 1;
+                }
+            }
+        }
+    }
+    uses.values()
+        .all(|&(forward, backward)| forward + backward != 2 || (forward == 1 && backward == 1))
+}
+
 /// Classify shells as Growth (outer) or Hole (inner).
 ///
 /// Uses signed volume: positive → outward normals (growth),
@@ -1564,7 +1614,11 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
             // volume degenerates to zero (e.g. the B64 wall caps) can sign-flip
             // to a tiny negative under translation rounding; outward flux
             // keeps such lumps as growth, inward (or inconclusive) stays hole.
-            shell_is_outward_oriented(topo, shell).unwrap_or(false)
+            // The flux only means something on a consistently oriented shell:
+            // a negative shell whose shared edges disagree on direction is a
+            // mis-assembled fragment, not a growth lump, and stays a hole.
+            shell_orientation_is_consistent(topo, shell)
+                && shell_is_outward_oriented(topo, shell).unwrap_or(false)
         };
         if std::env::var("BK_AREAS").is_ok() {
             let mut mix: DetHashMap<&str, usize> = DetHashMap::default();
@@ -5879,6 +5933,72 @@ mod tests {
             shell_is_outward_oriented(&topo, &faces),
             Some(false),
             "an all-faces-reversed (inward) cube shell must read inward (rejected)"
+        );
+    }
+
+    /// The consistency check ignores wire debris that `normalize_face_wires`
+    /// drops at assembly (an inner wire repeating an oriented edge, dangling
+    /// edges) but still rejects a genuinely flipped face.
+    #[test]
+    fn shell_orientation_consistency_ignores_normalized_away_debris_but_not_a_flipped_face() {
+        use remus_topology::edge::Edge;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let mut faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert!(
+            shell_orientation_is_consistent(&topo, &faces),
+            "a manifold cube is consistently oriented"
+        );
+
+        let with_inner = |topo: &mut Topology, fid: FaceId, inner: Vec<WireId>| -> FaceId {
+            let face = topo.face(fid).unwrap();
+            let (outer, surface) = (face.outer_wire(), face.surface().clone());
+            let copy = if face.is_reversed() {
+                Face::new_reversed(outer, inner, surface)
+            } else {
+                Face::new(outer, inner, surface)
+            };
+            topo.add_face(copy)
+        };
+        // Fresh edges used only by the debris: counted raw, each would be used
+        // twice in one direction and read as inconsistent.
+        let fresh_edge = |topo: &mut Topology, y: f64| {
+            let a = topo.add_vertex(Vertex::new(Point3::new(0.25, y, 0.0), 1e-7));
+            let b = topo.add_vertex(Vertex::new(Point3::new(0.5, y, 0.0), 1e-7));
+            topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
+        };
+
+        let spur = OrientedEdge::new(fresh_edge(&mut topo, 0.25), true);
+        let debris = topo.add_wire(Wire::new(vec![spur, spur], false).unwrap());
+        faces[0] = with_inner(&mut topo, faces[0], vec![debris]);
+        assert!(
+            shell_orientation_is_consistent(&topo, &faces),
+            "an inner wire repeating an oriented edge is debris and is ignored"
+        );
+
+        // One dangling edge in two faces, the same way round once face
+        // reversal is applied: pruning removes it from both.
+        let dangling = fresh_edge(&mut topo, 0.75);
+        for fi in [2, 3] {
+            let forward = !topo.face(faces[fi]).unwrap().is_reversed();
+            let wire = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(dangling, forward)], false).unwrap());
+            faces[fi] = with_inner(&mut topo, faces[fi], vec![wire]);
+        }
+        assert!(
+            shell_orientation_is_consistent(&topo, &faces),
+            "a dangling edge is pruned at assembly and is ignored"
+        );
+
+        let flipped = faces[1];
+        let was_reversed = topo.face(flipped).unwrap().is_reversed();
+        topo.face_mut(flipped).unwrap().set_reversed(!was_reversed);
+        assert!(
+            !shell_orientation_is_consistent(&topo, &faces),
+            "a flipped face leaves its shared edges used twice in one direction"
         );
     }
 

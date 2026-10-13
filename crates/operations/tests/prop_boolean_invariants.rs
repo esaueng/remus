@@ -4151,3 +4151,49 @@ fn b68_box_cylinder_intersect_lens() {
         );
     }
 }
+
+/// Regression for a proptest-found wrong cut (refresh CI, 2026-10-12, seed
+/// `59abb9be`): cylinder(1.5, 1) minus cylinder(4, 4) rotated π about x and
+/// placed at (-1.25, 2.25, 0.75). The tool covers the blank below z = 0.75
+/// except a thin sliver outside its wall, so the exact result is the slab
+/// above the tool's cap plus that sliver: `π·1.5²·1 − 0.75·L`, with `L` the
+/// lens area of the two discs. Since B64 (#884) the assembler's multi-shell
+/// flux override promoted a mis-assembled negative fragment to growth: a
+/// 4-face solid with inconsistent edge orientations measuring 0.0288 instead
+/// of 1.8104, at every scale. The override now requires a consistently
+/// oriented shell. A typed refusal is an accepted outcome; a success must be
+/// valid and have the exact volume.
+#[test]
+fn b26_finding_cylinder_cut_dropped_slab() {
+    let (r1, r2) = (1.5_f64, 4.0_f64);
+    let d = 1.25_f64.hypot(2.25);
+    let lens = r2.mul_add(
+        r2 * ((d * d + r2 * r2 - r1 * r1) / (2.0 * d * r2)).acos(),
+        r1 * r1 * ((d * d + r1 * r1 - r2 * r2) / (2.0 * d * r1)).acos(),
+    ) - 0.5 * ((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2)).sqrt();
+    let exact_unit = std::f64::consts::PI.mul_add(r1 * r1, -0.75 * lens);
+    for scale in [1.0, 1000.0] {
+        let input = BoolPairInput {
+            a: GenPrim::Cylinder { r: 1.5, h: 1.0 },
+            b: GenPrim::Cylinder { r: 4.0, h: 4.0 },
+            axis: 0,
+            angle: std::f64::consts::PI,
+            offset: (-1.25, 2.25, 0.75),
+            scale,
+        };
+        match run_pair_op(&input, BooleanOp::Cut) {
+            Err(ProptestVerdict::Refuse) => {}
+            Err(other) => panic!("scale {scale}: cut must succeed or refuse typed, got {other:?}"),
+            Ok((topo, solid)) => {
+                check_valid_closed_oriented(&topo, solid, "dropped-slab cut")
+                    .unwrap_or_else(|e| panic!("scale {scale}: {e}"));
+                let expected = exact_unit * scale.powi(3);
+                let measured = vol(&topo, solid);
+                assert!(
+                    rel_err(measured, expected) <= REL_SLACK,
+                    "scale {scale}: volume {measured} vs exact {expected}"
+                );
+            }
+        }
+    }
+}
