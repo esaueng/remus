@@ -16,6 +16,12 @@
 //! 4. the typed decode of the version's schema;
 //! 5. the table and reference budgets of [`check_document_limits`].
 //!
+//! Documents whose first key is the `version` (every writer emits it first)
+//! take a single typed pass instead: a typed decode that succeeds has
+//! checked every byte, and the journal budget is counted before the journal
+//! is materialized, so it reaches the same result as steps 2-4. Any failure
+//! on that path reruns the staged steps, which decide the error kind.
+//!
 //! Struct rules follow `serde`'s derive: an object keyed by field name
 //! (unknown keys skipped, repeated keys refused, `Option` fields optional)
 //! or an array of fields in declaration order (only `#[serde(default)]`
@@ -65,10 +71,22 @@ pub(super) fn parse_document(
     limits: ImportLimits,
 ) -> Result<ParsedDocument, IoError> {
     ensure_input_size(bytes.len(), limits)?;
-    let header =
-        scan_header(bytes).map_err(|error| parse_error("arena deserialization failed", error))?;
+    // One reader, so the input's UTF-8 is validated once for all passes.
+    let mut reader = Reader::new(bytes);
+    if let Some(version) = leading_version(bytes) {
+        let budget = Some(limits.max_model_entities);
+        if let Ok(document) = read_document(&mut reader, version, budget)
+            && reader.at_end()
+        {
+            check_document_limits(&document, limits)?;
+            return Ok(document);
+        }
+        reader.seek(0);
+    }
+    let header = scan_header(&mut reader)
+        .map_err(|error| parse_error("arena deserialization failed", error))?;
     if header.version != LEGACY_SINGLE_SOLID_VERSION {
-        preflight_journal(bytes, &header.journals, limits.max_model_entities)?;
+        preflight_journal(&mut reader, &header.journals, limits.max_model_entities)?;
     }
     let version = header.version;
     let context = match version {
@@ -85,11 +103,36 @@ pub(super) fn parse_document(
             });
         }
     };
-    let mut reader = Reader::new(bytes);
+    reader.seek(0);
     let document =
-        read_document(&mut reader, version).map_err(|error| parse_error(context, error))?;
+        read_document(&mut reader, version, None).map_err(|error| parse_error(context, error))?;
     check_document_limits(&document, limits)?;
     Ok(document)
+}
+
+/// The version of a document that opens with `{"version":<u32>` followed by
+/// `,` or `}`, which is how every writer starts one; `None` when the
+/// document starts any other way or names an unsupported version.
+fn leading_version(bytes: &[u8]) -> Option<u32> {
+    let mut reader = Reader::new_unvalidated(bytes);
+    reader.begin_object().ok()?;
+    let rest = bytes.get(reader.pos()..)?;
+    let rest = rest.strip_prefix(b"\"version\"")?;
+    let mut reader = Reader::new_unvalidated(rest);
+    if reader.peek() != Some(b':') {
+        return None;
+    }
+    reader.seek(reader.pos() + 1);
+    if !matches!(reader.peek(), Some(b'1'..=b'9')) {
+        return None;
+    }
+    let version = reader.read_u32().ok()?;
+    if !matches!(reader.peek(), Some(b',' | b'}')) {
+        return None;
+    }
+    (LEGACY_SINGLE_SOLID_VERSION..=WIRE_ROOT_FORMAT_VERSION)
+        .contains(&version)
+        .then_some(version)
 }
 
 /// The document's `version` and the offsets of its top-level `journal`
@@ -103,8 +146,7 @@ struct Header {
 /// old `VersionHeader` pass: the root must be an object (an array root never
 /// survives the later passes), every top-level key must be valid UTF-8, and
 /// `version` must appear exactly once as a `u32`.
-fn scan_header(bytes: &[u8]) -> Res<Header> {
-    let mut reader = Reader::new(bytes);
+fn scan_header(reader: &mut Reader<'_>) -> Res<Header> {
     let mut version = None;
     let mut journals = Vec::new();
     if reader.peek() == Some(b'{') {
@@ -154,12 +196,15 @@ impl From<Error> for Preflight {
 /// visited as typed data (valid strings, finite numbers, bounded nesting)
 /// in document order, and the first element past `limit` refuses the
 /// document.
-fn preflight_journal(bytes: &[u8], journals: &[usize], limit: usize) -> Result<(), IoError> {
+fn preflight_journal(
+    reader: &mut Reader<'_>,
+    journals: &[usize],
+    limit: usize,
+) -> Result<(), IoError> {
     let mut used = 0_usize;
-    let mut reader = Reader::new(bytes);
     for &position in journals {
         reader.seek(position);
-        match count_journal_items(&mut reader, 2, &mut used, limit) {
+        match count_journal_items(reader, 2, &mut used, limit) {
             Ok(()) => {}
             Err(Preflight::Limit(actual)) => {
                 return Err(IoError::LimitExceeded {
@@ -354,7 +399,14 @@ fn names_of<T>(fields: &[(&'static str, T)]) -> ([&'static str; 16], usize) {
 }
 
 #[inline(never)]
-fn read_document(reader: &mut Reader<'_>, version: u32) -> Res<ParsedDocument> {
+/// Reads the typed document. With a `journal_budget`, a `journal` value is
+/// first counted like the staged preflight and refused if it exceeds the
+/// budget, before anything of it is materialized.
+fn read_document(
+    reader: &mut Reader<'_>,
+    version: u32,
+    journal_budget: Option<usize>,
+) -> Res<ParsedDocument> {
     let fields = match version {
         LEGACY_SINGLE_SOLID_VERSION => V1_FIELDS,
         LEGACY_MULTI_ROOT_VERSION => V2_FIELDS,
@@ -406,6 +458,14 @@ fn read_document(reader: &mut Reader<'_>, version: u32) -> Res<ParsedDocument> {
                 // Repeats are refused by `read_struct`, so `null` and an
                 // absent field both leave `None`.
                 DocField::Journal => {
+                    if let Some(limit) = journal_budget {
+                        let start = reader.pos();
+                        let mut used = 0;
+                        if count_journal_items(reader, 2, &mut used, limit).is_err() {
+                            return Err(reader.error("journal over budget"));
+                        }
+                        reader.seek(start);
+                    }
                     if !reader.null()? {
                         values.journal = Some(read_journal(reader)?);
                     }
@@ -874,6 +934,8 @@ fn read_boundary(reader: &mut Reader<'_>) -> Res<SerBoundaryAuthority> {
 enum Part {
     F64(f64),
     Usize(usize),
+    Coords3([f64; 3]),
+    Coords2([f64; 2]),
     F64s(Vec<f64>),
     Points3(Vec<Point3>),
     Points2(Vec<Point2>),
@@ -886,6 +948,8 @@ impl Part {
         match self {
             Self::F64(value) => Shape::F64(*value),
             Self::Usize(value) => Shape::Usize(*value),
+            Self::Coords3(coords) => Shape::F64s(coords),
+            Self::Coords2(coords) => Shape::F64s(coords),
             Self::F64s(values) => Shape::F64s(values),
             Self::Points3(points) => Shape::Points3(points),
             Self::Points2(points) => Shape::Points2(points),
@@ -948,7 +1012,6 @@ impl serde::de::Error for ShapeError {
 impl<'de> serde::Deserializer<'de> for Shape<'_> {
     type Error = ShapeError;
 
-    #[inline(never)]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
         match self {
             Self::F64(value) => visitor.visit_f64(value),
@@ -975,7 +1038,20 @@ struct ShapeSeq<'s> {
 impl<'de> SeqAccess<'de> for ShapeSeq<'_> {
     type Error = ShapeError;
 
-    #[inline(never)]
+    /// The exact remaining length, so the derived `Vec` impls allocate once.
+    fn size_hint(&self) -> Option<usize> {
+        let len = match self.shape {
+            Shape::F64s(values) => values.len(),
+            Shape::Points3(points) => points.len(),
+            Shape::Points2(points) => points.len(),
+            Shape::Grid3(rows) => rows.len(),
+            Shape::Grid(rows) => rows.len(),
+            Shape::Fields(fields) => fields.len(),
+            Shape::F64(_) | Shape::Usize(_) => 0,
+        };
+        Some(len.saturating_sub(self.index))
+    }
+
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
@@ -1005,15 +1081,15 @@ fn read_part(reader: &mut Reader<'_>, kind: Kind) -> Res<Part> {
     Ok(match kind {
         Kind::F64 => Part::F64(reader.read_f64()?),
         Kind::Usize => Part::Usize(reader.read_usize()?),
-        Kind::Coords3 => Part::F64s(reader.read_f64s::<3>()?.to_vec()),
-        Kind::Coords2 => Part::F64s(reader.read_f64s::<2>()?.to_vec()),
-        Kind::F64s => Part::F64s(reader.read_vec(Reader::read_f64)?),
+        Kind::Coords3 => Part::Coords3(reader.read_f64s::<3>()?),
+        Kind::Coords2 => Part::Coords2(reader.read_f64s::<2>()?),
+        Kind::F64s => Part::F64s(reader.read_f64_vec()?),
         Kind::Points3 => Part::Points3(reader.read_vec(read_point3)?),
         Kind::Points2 => {
             Part::Points2(reader.read_vec(|reader| reader.read_f64s::<2>().map(Position))?)
         }
         Kind::Grid3 => Part::Grid3(reader.read_vec(|reader| reader.read_vec(read_point3))?),
-        Kind::Grid => Part::Grid(reader.read_vec(|reader| reader.read_vec(Reader::read_f64))?),
+        Kind::Grid => Part::Grid(reader.read_vec(Reader::read_f64_vec)?),
     })
 }
 

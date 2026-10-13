@@ -64,12 +64,79 @@ pub enum Num {
 /// Forward-only JSON reader over a byte slice.
 pub struct Reader<'a> {
     bytes: &'a [u8],
+    /// The whole input as text when it is valid UTF-8 (the usual case), so
+    /// strings and numbers are sliced out of it without re-validation.
+    text: Option<&'a str>,
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    pub const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            text: std::str::from_utf8(bytes).ok(),
+            pos: 0,
+        }
+    }
+
+    /// A reader that validates UTF-8 per string instead of up front, for
+    /// short reads of a larger input.
+    pub const fn new_unvalidated(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            text: None,
+            pos: 0,
+        }
+    }
+
+    /// The text of `start..end`, a range delimited by ASCII bytes, or `None`
+    /// when it is not valid UTF-8.
+    fn text(&self, start: usize, end: usize) -> Option<&'a str> {
+        match self.text {
+            Some(text) => text.get(start..end),
+            None => std::str::from_utf8(self.bytes.get(start..end)?).ok(),
+        }
+    }
+
+    /// The offset of the first byte at or after `at` that is not an ASCII
+    /// digit.
+    fn digits_end(&self, mut at: usize) -> usize {
+        let bytes = self.bytes;
+        while at < bytes.len() && bytes[at].is_ascii_digit() {
+            at += 1;
+        }
+        at
+    }
+
+    /// Advances to the next quote, backslash or control character, eight
+    /// bytes at a time while none is in sight (as `serde_json` does).
+    fn skip_plain_string_bytes(&mut self) {
+        const ONES: u64 = u64::MAX / 255;
+        const HIGH: u64 = ONES << 7;
+        let bytes = self.bytes;
+        let mut at = self.pos;
+        while let Some(chunk) = bytes.get(at..at + 8) {
+            let mut word = [0_u8; 8];
+            word.copy_from_slice(chunk);
+            let word = u64::from_le_bytes(word);
+            let quote = word ^ (ONES * u64::from(b'"'));
+            let backslash = word ^ (ONES * u64::from(b'\\'));
+            let found = (word.wrapping_sub(ONES * 0x20) & !word)
+                | (quote.wrapping_sub(ONES) & !quote)
+                | (backslash.wrapping_sub(ONES) & !backslash);
+            if found & HIGH != 0 {
+                break;
+            }
+            at += 8;
+        }
+        while at < bytes.len() {
+            let byte = bytes[at];
+            if byte == b'"' || byte == b'\\' || byte < 0x20 {
+                break;
+            }
+            at += 1;
+        }
+        self.pos = at;
     }
 
     /// Current byte offset.
@@ -245,6 +312,7 @@ impl<'a> Reader<'a> {
     /// Skips the body of a string whose opening quote was consumed.
     fn skip_string(&mut self) -> Res<()> {
         loop {
+            self.skip_plain_string_bytes();
             match self.byte() {
                 None => return self.fail("EOF while parsing a string"),
                 Some(b'"') => {
@@ -308,6 +376,7 @@ impl<'a> Reader<'a> {
         let mut decoded: Option<Vec<u8>> = None;
         let mut run = start;
         loop {
+            self.skip_plain_string_bytes();
             match self.byte() {
                 None => return self.fail("EOF while parsing a string"),
                 Some(b'"') => {
@@ -315,9 +384,9 @@ impl<'a> Reader<'a> {
                     self.pos += 1;
                     let bytes = self.bytes.get(run..end).unwrap_or_default();
                     return match decoded {
-                        None => match std::str::from_utf8(bytes) {
-                            Ok(text) => Ok(Cow::Borrowed(text)),
-                            Err(_) => self.fail("invalid unicode code point"),
+                        None => match self.text(run, end) {
+                            Some(text) => Ok(Cow::Borrowed(text)),
+                            None => self.fail("invalid unicode code point"),
                         },
                         Some(mut buffer) => {
                             buffer.extend_from_slice(bytes);
@@ -409,10 +478,7 @@ impl<'a> Reader<'a> {
                 }
             }
             Some(b'1'..=b'9') => {
-                self.pos += 1;
-                while matches!(self.byte(), Some(b'0'..=b'9')) {
-                    self.pos += 1;
-                }
+                self.pos = self.digits_end(self.pos + 1);
             }
             None => return self.fail("EOF while parsing a value"),
             Some(_) => {
@@ -425,9 +491,7 @@ impl<'a> Reader<'a> {
             integer = false;
             self.pos += 1;
             let digits = self.pos;
-            while matches!(self.byte(), Some(b'0'..=b'9')) {
-                self.pos += 1;
-            }
+            self.pos = self.digits_end(digits);
             if self.pos == digits {
                 return self.fail("invalid number");
             }
@@ -439,15 +503,12 @@ impl<'a> Reader<'a> {
                 self.pos += 1;
             }
             match self.byte() {
-                Some(b'0'..=b'9') => self.pos += 1,
+                Some(b'0'..=b'9') => self.pos = self.digits_end(self.pos + 1),
                 None => return self.fail("EOF while parsing a value"),
                 Some(_) => {
                     self.pos += 1;
                     return self.fail("invalid number");
                 }
-            }
-            while matches!(self.byte(), Some(b'0'..=b'9')) {
-                self.pos += 1;
             }
         }
         Ok((start, self.pos, integer))
@@ -459,41 +520,52 @@ impl<'a> Reader<'a> {
         if !matches!(self.peek(), Some(b'-' | b'0'..=b'9')) {
             return self.fail("invalid type: expected a number");
         }
-        let (start, end, integer) = self.scan_number()?;
-        let token = self.bytes.get(start..end).unwrap_or_default();
-        if integer {
-            let (negative, digits) = match token.split_first() {
-                Some((b'-', digits)) => (true, digits),
-                _ => (false, token),
-            };
-            let mut significand = 0_u64;
-            let mut fits = true;
-            for &digit in digits {
-                if let Some(value) = significand
-                    .checked_mul(10)
-                    .and_then(|value| value.checked_add(u64::from(digit - b'0')))
-                {
-                    significand = value;
-                } else {
-                    fits = false;
-                    break;
-                }
+        let start = self.pos;
+        // Integers, the bulk of an arena document, take one pass.
+        let negative = self.byte() == Some(b'-');
+        let digits = start + usize::from(negative);
+        let mut significand = 0_u64;
+        let mut fits = true;
+        let mut at = digits;
+        while let Some(&byte) = self.bytes.get(at) {
+            if !byte.is_ascii_digit() {
+                break;
             }
-            if fits {
-                if !negative {
-                    return Ok(Num::U64(significand));
-                }
-                // `serde_json` keeps `-0` and values below `i64::MIN` as floats.
-                if significand == 0 {
-                    return Ok(Num::F64(-0.0));
-                }
-                return Ok(match 0_i64.checked_sub_unsigned(significand) {
-                    Some(value) => Num::I64(value),
-                    None => Num::F64(-(significand as f64)),
-                });
+            match significand
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(u64::from(byte - b'0')))
+            {
+                Some(value) => significand = value,
+                None => fits = false,
             }
+            at += 1;
         }
-        let text = std::str::from_utf8(token).map_err(|_| self.error("invalid number"))?;
+        let plain = at > digits
+            && !(at > digits + 1 && self.bytes.get(digits) == Some(&b'0'))
+            && !matches!(self.bytes.get(at), Some(b'.' | b'e' | b'E'));
+        let (end, integer) = if plain {
+            self.pos = at;
+            (at, true)
+        } else {
+            let (_, end, integer) = self.scan_number()?;
+            (end, integer)
+        };
+        if integer && fits {
+            if !negative {
+                return Ok(Num::U64(significand));
+            }
+            // `serde_json` keeps `-0` and values below `i64::MIN` as floats.
+            if significand == 0 {
+                return Ok(Num::F64(-0.0));
+            }
+            return Ok(match 0_i64.checked_sub_unsigned(significand) {
+                Some(value) => Num::I64(value),
+                None => Num::F64(-(significand as f64)),
+            });
+        }
+        let text = self
+            .text(start, end)
+            .ok_or_else(|| self.error("invalid number"))?;
         match text.parse::<f64>() {
             Ok(value) if value.is_finite() => Ok(Num::F64(value)),
             _ => Err(Error {
@@ -761,6 +833,18 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// Reads a `Vec<f64>`, the hottest sequence in geometry documents.
+    #[inline(never)]
+    pub fn read_f64_vec(&mut self) -> Res<Vec<f64>> {
+        self.begin_array()?;
+        let mut values = Vec::new();
+        let mut first = true;
+        while self.next_element(&mut first)? {
+            values.push(self.read_f64()?);
+        }
+        Ok(values)
+    }
+
     /// Reads a fixed-size array or tuple of `N` floats.
     pub fn read_f64s<const N: usize>(&mut self) -> Res<[f64; N]> {
         self.begin_array()?;
@@ -910,14 +994,11 @@ impl Writer {
         }
     }
 
-    /// Runs a `serde_json` formatter call that appends a short token, then
-    /// takes the token back out if it broke the budget.
-    fn formatted(&mut self, write: impl FnOnce(&mut Vec<u8>) -> std::io::Result<()>) {
-        if self.exceeded {
-            return;
-        }
-        let before = self.out.len();
-        if write(&mut self.out).is_err() || self.out.len() > self.limit {
+    /// Undoes the writes since `before` and stops the writer if they broke
+    /// the byte budget. Numbers and arrays are appended first and checked
+    /// once, which overshoots the budget by at most one array in memory.
+    fn settle(&mut self, before: usize) {
+        if self.out.len() > self.limit {
             self.out.truncate(before);
             self.exceeded = true;
         }
@@ -925,25 +1006,30 @@ impl Writer {
 
     #[inline(never)]
     pub fn u64(&mut self, value: u64) {
-        self.formatted(|out| CompactFormatter.write_u64(out, value));
-    }
-
-    pub fn usize(&mut self, value: usize) {
-        self.u64(value as u64);
+        if !self.exceeded {
+            let before = self.out.len();
+            push_u64(&mut self.out, value);
+            self.settle(before);
+        }
     }
 
     #[inline(never)]
     pub fn i64(&mut self, value: i64) {
-        self.formatted(|out| CompactFormatter.write_i64(out, value));
+        if !self.exceeded {
+            let before = self.out.len();
+            // Writing into a `Vec` cannot fail.
+            let _ = CompactFormatter.write_i64(&mut self.out, value);
+            self.settle(before);
+        }
     }
 
     /// Writes a float like `serde_json`: `null` when not finite.
     #[inline(never)]
     pub fn f64(&mut self, value: f64) {
-        if value.is_finite() {
-            self.formatted(|out| CompactFormatter.write_f64(out, value));
-        } else {
-            self.raw(b"null");
+        if !self.exceeded {
+            let before = self.out.len();
+            push_f64(&mut self.out, value);
+            self.settle(before);
         }
     }
 
@@ -992,40 +1078,55 @@ impl Writer {
     /// Writes `[f64, ...]`.
     #[inline(never)]
     pub fn f64s(&mut self, values: &[f64]) {
-        self.byte(b'[');
+        if self.exceeded {
+            return;
+        }
+        let before = self.out.len();
+        self.out.push(b'[');
         for (index, &value) in values.iter().enumerate() {
             if index > 0 {
-                self.byte(b',');
+                self.out.push(b',');
             }
-            self.f64(value);
+            push_f64(&mut self.out, value);
         }
-        self.byte(b']');
+        self.out.push(b']');
+        self.settle(before);
     }
 
     /// Writes `[u64, ...]`.
     #[inline(never)]
     pub fn u64s(&mut self, values: &[u64]) {
-        self.byte(b'[');
+        if self.exceeded {
+            return;
+        }
+        let before = self.out.len();
+        self.out.push(b'[');
         for (index, &value) in values.iter().enumerate() {
             if index > 0 {
-                self.byte(b',');
+                self.out.push(b',');
             }
-            self.u64(value);
+            push_u64(&mut self.out, value);
         }
-        self.byte(b']');
+        self.out.push(b']');
+        self.settle(before);
     }
 
     /// Writes `[usize, ...]`.
     #[inline(never)]
     pub fn usizes(&mut self, values: &[usize]) {
-        self.byte(b'[');
+        if self.exceeded {
+            return;
+        }
+        let before = self.out.len();
+        self.out.push(b'[');
         for (index, &value) in values.iter().enumerate() {
             if index > 0 {
-                self.byte(b',');
+                self.out.push(b',');
             }
-            self.usize(value);
+            push_u64(&mut self.out, value as u64);
         }
-        self.byte(b']');
+        self.out.push(b']');
+        self.settle(before);
     }
 
     #[inline(never)]
@@ -1072,6 +1173,22 @@ impl Writer {
     pub fn key_usizes(&mut self, key: &[u8], values: &[usize]) {
         self.raw(key);
         self.usizes(values);
+    }
+}
+
+/// Appends an unsigned integer as `serde_json` formats it.
+fn push_u64(out: &mut Vec<u8>, value: u64) {
+    // Writing into a `Vec` cannot fail.
+    let _ = CompactFormatter.write_u64(out, value);
+}
+
+/// Appends a float as `serde_json` formats it: `null` when not finite.
+fn push_f64(out: &mut Vec<u8>, value: f64) {
+    if value.is_finite() {
+        // Writing into a `Vec` cannot fail.
+        let _ = CompactFormatter.write_f64(out, value);
+    } else {
+        out.extend_from_slice(b"null");
     }
 }
 
