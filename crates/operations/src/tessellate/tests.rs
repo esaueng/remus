@@ -3724,7 +3724,7 @@ fn split_rim_anchor_is_independent_of_neighbor_wire_orientation() {
 /// A cross-drilled shaft whose bore radius is smaller than the shaft's, so the
 /// bore leaves a wall of its own. These tests exercise the general quartic
 /// seam rather than the exact equal-radius Steinmetz ellipses.
-fn shaft_drilled_with(bore: f64) -> (Topology, remus_topology::solid::SolidId) {
+pub(super) fn shaft_drilled_with(bore: f64) -> (Topology, remus_topology::solid::SolidId) {
     use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
