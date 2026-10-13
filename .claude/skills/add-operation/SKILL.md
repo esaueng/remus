@@ -33,7 +33,7 @@ You are creating or substantially extending an operation in `crates/operations/s
 7. **Run the verification bar** (reference.md "Verification bar" has the exact APIs and checkpoint expectations). If the op touches analytic geometry, run the approx census; a fallback probe firing for your op means you degraded analytic surfaces to NURBS or mesh, see the analytic-preservation skill.
 8. **Expose to wasm in the declared tier** per CLAUDE.md Recipe 4; details in the wasm-bindings skill (binding module choice, `batch_*` companion, contract tests via `execute_batch()`). A `core` op goes on `BrepKernel`; a lazy op goes in its module's package; a `native` op gets no binding.
 9. **Run the gate commands** from the quick reference before pushing.
-10. **Review the size.** On the PR, read the CI "WASM Binary Size" comment. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR description naming the capability and its tier (CI enforcement is landing separately; follow the rule now). Size work never buys bytes with speed: no workload in `scripts/performance` or the criterion benches may get slower.
+10. **Review the size.** On the PR, read the CI "WASM Binary Size" comment. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR description naming the capability and its tier; the `WASM Size Gate` job in `CI Pass` fails without it. Size work never buys bytes with speed: no workload in `scripts/performance` or the criterion benches may get slower.
 
 ## Where tests go
 

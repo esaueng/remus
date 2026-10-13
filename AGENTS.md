@@ -134,6 +134,7 @@ row or design doc **before implementation**:
   PR. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR
   description naming the capability and its tier, for example
   `WASM-Size: +120 KiB raw, curve projection (P-Class 7.4), Tier: core (writes the journal)`.
+  The `WASM Size Gate` job in `CI Pass` enforces it.
 
 ## Module Map
 
