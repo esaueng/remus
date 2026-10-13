@@ -1,5 +1,11 @@
 # O06 subset: whole-solid feature recognition and edge relations
 
+Current priority, 2026-10-13: the [committed-package refresh](face-drag-refresh-2026-10-13.md)
+measures recognition graph construction as the remaining stage; per-call
+preparation already ships and candidate matching is tiny on that workload.
+Profile the graph's area and relation work before selecting another optimization.
+The sampled profiles below describe their pinned historical builds.
+
 Follow-up, 2026-10-10: the line-NURBS Newton solver now uses the existing
 specialized first-partial scratch solve, while retaining its original position
 evaluation. A bounded scalar memo also serves repeated standalone NURBS face
