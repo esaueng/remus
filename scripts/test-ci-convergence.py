@@ -271,6 +271,20 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("PR_BODY: ${{ github.event.pull_request.body }}", gate)
         self.assertEqual(FLEET.count("github.event.pull_request.body"), 1)
 
+    def test_size_artifacts_survive_a_failed_kernel_validation(self):
+        # A kernel over a hard limit fails `cargo xtask wasm-build` after it is
+        # built; the report must still see that build, and never the
+        # committed package from the checkout.
+        wasm = JOBS["wasm"]
+        self.assertLess(wasm.index('touch "$RUNNER_TEMP/wasm-build-start"'),
+                        wasm.index("run: cargo xtask wasm-build"))
+        prepare = wasm.split("      - name: Prepare WASM size artifacts\n", 1)[1].split("      - ", 1)[0]
+        self.assertIn("if: ${{ !cancelled() && github.event_name == 'pull_request' }}", prepare)
+        self.assertIn('[ "$built" -nt "$marker" ]', prepare)
+        self.assertIn('echo "ready=true" >> "$GITHUB_OUTPUT"', prepare)
+        upload = wasm.split("name: wasm-size-pr", 1)[0].rsplit("      - uses: actions/upload-artifact@", 1)[1]
+        self.assertIn("if: ${{ !cancelled() && steps.size-artifacts.outputs.ready == 'true' }}", upload)
+
     def test_size_comment_keeps_its_write_token_outside_the_required_suite(self):
         self.assertNotIn("wasm-size", JOBS)
         caller_jobs = jobs(CALLER)

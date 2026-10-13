@@ -81,7 +81,7 @@ Cheap path first: brepjs already aliases `'remus-wasm'` in `$BREPJS/vitest.confi
 
 Small wasm size is a headline competitive property of this kernel (several times smaller than the reference kernel's wasm). The `wasm-size` CI job posts a PR comment ("WASM Binary Size") with kernel raw, gzip and Brotli deltas; read it as a review item on every wasm-touching PR. The `WASM Size Gate` job in `CI Pass` enforces the kernel's hard limits and the growth rule below. Rules:
 
-- A kernel growth above **64 KiB raw** requires a `WASM-Size:` line in the PR description naming the capability and its tier, e.g. `WASM-Size: +120 KiB raw, curve projection (P-Class 7.4), Tier: core (writes the journal)`. The line must start the line (not indented, not inside an HTML comment) and contain `Tier: core`, `Tier: lazy:<module>` or `Tier: native`. After adding it, re-run the failed size jobs; they read the current description.
+- A kernel growth above **64 KiB raw** requires a `WASM-Size:` line in the PR description naming the capability and its tier, e.g. `WASM-Size: +120 KiB raw, curve projection (P-Class 7.4), Tier: core (writes the journal)`. The line must start the line (not indented, not inside an HTML comment), name the capability (a size figure alone does not count) and contain `Tier: core`, `Tier: lazy:<module>` or `Tier: native`, the tier ending at a space, `(`, `,`, `;` or the line end. After adding it, re-run the failed size jobs; they read the current description.
 - A new dependency in the wasm graph always needs a justification sentence in the PR body, whatever the delta.
 - Growth that belongs in an existing lazy module goes there, not into the kernel.
 

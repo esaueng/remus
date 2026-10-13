@@ -86,11 +86,48 @@ test('only lines that start with the prefix count', () => {
 });
 
 test('a WASM-Size line without a module tier does not satisfy the rule', () => {
-  for (const line of ['WASM-Size:', 'WASM-Size:   ', 'WASM-Size: +120 KiB raw, curve projection', 'WASM-Size: Tier: kernel']) {
+  for (const line of [
+    'WASM-Size:',
+    'WASM-Size:   ',
+    'WASM-Size: +120 KiB raw, curve projection',
+    'WASM-Size: Tier: kernel',
+    // The tier token must end: end of line, whitespace, `(`, `,` or `;`.
+    'WASM-Size: +120 KiB raw, curve projection, Tier: corejunk',
+    'WASM-Size: +120 KiB raw, curve projection, Tier: native2',
+    'WASM-Size: +120 KiB raw, curve projection, Tier: lazy:',
+    'WASM-Size: +120 KiB raw, curve projection, Tier: lazy:io/x',
+  ]) {
     assert.equal(isValidDeclaration(line), false, line);
     assert.deepEqual(codes(gate(grown(120 * KIB), line)), ['growth-declaration-incomplete'], line);
   }
   assert.equal(isValidDeclaration(LINE), true);
+});
+
+test('a WASM-Size line must name a capability besides the tier and the size', () => {
+  for (const line of [
+    'WASM-Size: Tier: core',
+    'WASM-Size: Tier: core (writes the journal)',
+    'WASM-Size: +120 KiB raw, Tier: core',
+    'WASM-Size: +120 KiB, Tier: lazy:io (arena documents)',
+    'WASM-Size: 70000 B raw; Tier: native',
+    'WASM-Size: ok, Tier: core',
+  ]) {
+    assert.equal(isValidDeclaration(line), false, line);
+    assert.deepEqual(codes(gate(grown(120 * KIB), line)), ['growth-declaration-incomplete'], line);
+  }
+  for (const line of [
+    // The AGENTS.md / skill example and the PR template example.
+    'WASM-Size: +120 KiB raw, curve projection (P-Class 7.4), Tier: core (writes the journal)',
+    'WASM-Size: +120 KiB raw, curve projection, Tier: core (writes the journal)',
+    'WASM-Size: Tier: core (writes the journal), curve projection',
+    'WASM-Size: +80 KiB raw, STEP import repair, Tier: lazy:remus-wasm-repair',
+    'WASM-Size: +80 KiB raw, sketch solver, Tier: lazy:remus_wasm_sketch;',
+    'WASM-Size: +80 KiB raw; mesh export; Tier: native',
+    'WASM-Size: blend reconstruction Tier: CORE',
+  ]) {
+    assert.equal(isValidDeclaration(line), true, line);
+    assert.equal(gate(grown(120 * KIB), line).pass, true, line);
+  }
 });
 
 test('a shrinking or unchanged kernel passes without a declaration', () => {
@@ -200,6 +237,17 @@ test('command line: a PR kernel over the raw hard limit exits 1', (t) => {
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /FAIL kernel-raw-hard/);
   assert.doesNotMatch(result.stdout, /growth-undeclared/);
+});
+
+test('command line: a kernel-only artifact (failed build, translator never built) still reports', (t) => {
+  const policy = JSON.parse(spawnSync(process.execPath, [POLICY_SCRIPT, '--policy'], { encoding: 'utf8' }).stdout);
+  const f = fixture(t, policy.rawHardBytes, policy.rawHardBytes + 1);
+  rmSync(join(f.prDir, MODULES.io.pr));
+  const result = run(f, '');
+  assert.equal(result.status, 1, result.stderr);
+  const markdown = readFileSync(f.markdown, 'utf8');
+  assert.match(markdown, /kernel-raw-hard/);
+  assert.doesNotMatch(markdown, /Translator/);
 });
 
 test('command line: missing input is an error, never a verdict', (t) => {
