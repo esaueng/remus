@@ -13,8 +13,8 @@
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
-//! - material/mesh findings (F3/F6) must validate clean with their
-//!   degenerate/open signatures intact through batch.
+//! - fixed material finding F3 must retain its independently integrated
+//!   remainder and mesh watertight; F6 retains its open-mesh signature.
 //!
 //! A mismatch between the native verdict and the batch signature separates
 //! engine defects from binding, package-provenance, and harness defects:
@@ -116,9 +116,9 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-rotated-cut-material.json",
             signature: Signature::Probes {
-                volume_near: (0.0, 0.05),
+                volume_near: (30.240_105_421_226_68, 1e-4),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {

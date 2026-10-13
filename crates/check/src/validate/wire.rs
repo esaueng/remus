@@ -205,7 +205,12 @@ fn check_wire_self_intersection_impl(
             }
             remus_topology::edge::EdgeCurve::Ellipse(e) => {
                 let is_closed = edge.start() == edge.end();
-                let (t0, t1) = if is_closed {
+                let (t0, t1) = if let Some(trim) = edge.trim() {
+                    // The edge's declared arc is independent of its coedge
+                    // direction. Reversing a split ellipse must reverse that
+                    // arc, rather than sample the complementary carrier span.
+                    trim
+                } else if is_closed {
                     (0.0, std::f64::consts::TAU)
                 } else {
                     let mut ta = e.project(p0);
@@ -1108,6 +1113,58 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn explicit_ellipse_trim_is_preserved_in_both_wire_directions() {
+        for reversed in [false, true] {
+            for crossing in [false, true] {
+                let mut topo = Topology::new();
+                let ellipse = Ellipse3D::with_axes(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    2.0,
+                    1.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                )
+                .unwrap();
+                let a = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
+                let b = topo.add_vertex(Vertex::new(
+                    ellipse.evaluate(std::f64::consts::FRAC_PI_2),
+                    1e-7,
+                ));
+                let arc = topo.add_edge(Edge::new(a, b, EdgeCurve::Ellipse(ellipse)));
+                topo.edge_mut(arc)
+                    .unwrap()
+                    .set_trim(Some((0.0, std::f64::consts::FRAC_PI_2)));
+                let c = vtx(&mut topo, -3.0, 1.0);
+                let y = if crossing { 0.5 } else { -0.5 };
+                let d = vtx(&mut topo, -3.0, y);
+                let e = vtx(&mut topo, 3.0, y);
+                let mut edges = vec![
+                    oriented(arc, true),
+                    oriented(line_edge(&mut topo, b, c), true),
+                    oriented(line_edge(&mut topo, c, d), true),
+                    oriented(line_edge(&mut topo, d, e), true),
+                    oriented(line_edge(&mut topo, e, a), true),
+                ];
+                if reversed {
+                    edges.reverse();
+                    edges = edges
+                        .into_iter()
+                        .map(|edge| oriented(edge.edge(), !edge.is_forward()))
+                        .collect();
+                }
+                let wire = add_wire(edges, true, &mut topo);
+                let issues = check_wire_self_intersection(&topo, wire, 1e-6).unwrap();
+                assert_eq!(
+                    !issues.is_empty(),
+                    crossing,
+                    "reversed={reversed}, crossing={crossing}: {issues:?}"
+                );
+            }
+        }
     }
 
     #[test]
