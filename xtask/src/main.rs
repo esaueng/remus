@@ -40,6 +40,7 @@ enum Command {
 fn build_packages(simd: bool, kernel_io: bool) -> anyhow::Result<()> {
     wasm::check_tools()?;
     wasm::check_versions_match()?;
+    wasm::test_size_policy()?;
     for spec in wasm::packages(kernel_io) {
         wasm::build_both_targets(&spec, simd)?;
         wasm::merge_packages(&spec)?;
