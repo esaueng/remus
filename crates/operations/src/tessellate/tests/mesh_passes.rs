@@ -432,7 +432,7 @@ pub(super) fn assert_bit_identical(
 /// Bodies whose display meshes exercise every pass: circle contact
 /// insertions (fillets, drilled holes, boolean rims), coincident triangles
 /// left by a coplanar fuse, cavities and the analytic primitives.
-fn bodies(topo: &mut Topology) -> Vec<(&'static str, SolidId)> {
+pub(in crate::tessellate) fn bodies(topo: &mut Topology) -> Vec<(&'static str, SolidId)> {
     use crate::boolean::{BooleanOp, boolean};
     use crate::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
     use crate::transform::transform_solid;
