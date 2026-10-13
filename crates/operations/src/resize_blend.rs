@@ -6,6 +6,7 @@
 //! fillet construction at the requested radius. Any ambiguity is a refusal and
 //! the topology arena is restored to its pre-call state.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use remus_blend::BlendResult;
@@ -4610,7 +4611,7 @@ fn common_boundary_direction(
             }
         }
     }
-    candidates.sort_by(|left, right| {
+    candidates.compact_sort_by(|left, right| {
         left.0
             .x()
             .total_cmp(&right.0.x())

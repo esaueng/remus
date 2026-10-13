@@ -1,7 +1,12 @@
 //! Exact body editing versus unrelated arena size. Run in release mode:
 //! `cargo run --release -p remus-operations --example body_edit_probe`.
 //! Setup, validation, and cleanup are excluded from operation/mesh timings.
-#![allow(clippy::print_stdout, clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::print_stdout,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 
 use std::time::Instant;
 

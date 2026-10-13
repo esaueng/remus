@@ -1,6 +1,6 @@
 //! Issue #953: exact sketch-on-face booleans with a Bezier prism.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::expect_used)]
 
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::vec::{Point3, Vec3};

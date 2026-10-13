@@ -3,6 +3,7 @@
 //! [`Topology`] is the single owner of every arena. All operations that
 //! create or query topological entities take a reference to this struct.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1111,7 +1112,7 @@ impl Topology {
         }
 
         // Deterministic write order regardless of upstream ordering.
-        writes.sort_by_key(|(index, _)| *index);
+        writes.compact_sort_by_key(|(index, _)| *index);
         for (index, attributes) in writes {
             if let Some(face) = self.faces.id_from_index(index)
                 && self.set_face_attributes(face, attributes).is_ok()

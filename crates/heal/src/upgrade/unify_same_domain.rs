@@ -7,6 +7,7 @@
 //! detects adjacent faces on the same plane/cylinder/cone/sphere/torus
 //! and merges them back, dramatically reducing face count.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_topology::Topology;
@@ -634,7 +635,7 @@ fn trace_face_regions(
                 inherited.push(target);
             }
         }
-        inherited.sort_by_key(|target| target.index());
+        inherited.compact_sort_by_key(|target| target.index());
         regions.push((source, inherited));
     }
     Ok(Some(regions))

@@ -5,6 +5,7 @@
 //! sharing. Post-assembly passes refine boundary edges and split non-manifold
 //! edges to ensure a valid manifold result.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet, DetState};
 
 use remus_math::aabb::Aabb3;
@@ -1412,7 +1413,7 @@ fn build_manifold_shell(
         .into_iter()
         .filter(|(_, faces)| faces.len() > 2)
         .collect();
-    nonmanifold.sort_by_key(|(eid, _)| eid.index());
+    nonmanifold.compact_sort_by_key(|(eid, _)| eid.index());
 
     if nonmanifold.is_empty() {
         return Ok(face_ids.to_vec());
@@ -2008,7 +2009,7 @@ pub(super) fn refine_boundary_edges(
 
         if !intermediates.is_empty() {
             intermediates
-                .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                .compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             intermediates.dedup_by_key(|(_, vid)| *vid);
             edge_splits.insert(eid, intermediates.into_iter().map(|(_, vid)| vid).collect());
         }
@@ -2488,7 +2489,7 @@ pub(super) fn split_nonmanifold_edges(
         .into_iter()
         .filter(|(_, faces)| faces.len() > 2)
         .collect();
-    nonmanifold.sort_by_key(|(eid, _)| *eid);
+    nonmanifold.compact_sort_by_key(|(eid, _)| *eid);
 
     if nonmanifold.is_empty() {
         return Ok(());
@@ -2604,7 +2605,8 @@ pub(super) fn split_nonmanifold_edges(
             face_angles.push((fi, is_fwd, angle));
         }
 
-        face_angles.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        face_angles
+            .compact_sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
         // Pair consecutive faces (in angular order) and assign edge copies.
         let n = face_angles.len();
@@ -3002,7 +3004,7 @@ pub(super) fn build_manifold_shells(
     }
 
     // Sort by face count descending — largest first (outer shell).
-    shells.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    shells.compact_sort_by_key(|s| std::cmp::Reverse(s.len()));
 
     let outer_shell = Shell::new(shells[0].clone()).map_err(crate::OperationsError::Topology)?;
     let outer_id = topo.add_shell(outer_shell);

@@ -332,6 +332,8 @@ pub fn build_wire_loops_dcel(
             .push((ang, i));
     }
     for list in node_out.values_mut() {
+        // hot: 16,384+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         list.sort_by(|a, b| {
             a.0.partial_cmp(&b.0)
                 .unwrap_or(std::cmp::Ordering::Equal)

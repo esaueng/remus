@@ -2,6 +2,7 @@
 
 mod quarter_cylinder;
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::analytic_intersection::{
@@ -899,7 +900,7 @@ fn build_topology_preserving_wires<
 
     let mut wire_map: HashMap<usize, WireId> = HashMap::new();
     let mut faces: Vec<_> = data.offset_faces.keys().copied().collect();
-    faces.sort_by_key(|face| face.index());
+    faces.compact_sort_by_key(|face| face.index());
     for face in faces {
         let source_wires = face_wires(topo, face)?;
         let mut rebuilt_wires = Vec::with_capacity(source_wires.len());
@@ -1020,7 +1021,8 @@ fn rebuild_vertex_point<const REPLACEMENT: bool, V: std::ops::Deref<Target = [Fa
             }
         }
     }
-    candidates.sort_by(|a, b| distance_sq(*a, predicted).total_cmp(&distance_sq(*b, predicted)));
+    candidates
+        .compact_sort_by(|a, b| distance_sq(*a, predicted).total_cmp(&distance_sq(*b, predicted)));
 
     let point = if let Some(point) = candidates
         .into_iter()

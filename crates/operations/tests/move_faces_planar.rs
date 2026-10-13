@@ -1,6 +1,7 @@
 //! Phase 4.1 regression coverage for topology-preserving planar face moves.
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,

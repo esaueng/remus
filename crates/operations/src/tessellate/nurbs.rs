@@ -1,5 +1,6 @@
 //! NURBS adaptive quadtree tessellation.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -398,7 +399,7 @@ where
         return full_turn();
     }
 
-    angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    angles.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     angles.dedup_by(|a, b| (*a - *b).abs() < remus_math::tolerance::Tolerance::default().linear);
 
     if angles.len() < 3 {

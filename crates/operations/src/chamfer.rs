@@ -14,6 +14,7 @@
 //! bevel strips and corner patches are newly minted geometry, and new geometry
 //! cannot carry a hole.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use remus_blend::BlendFaceOrigins;
@@ -904,7 +905,7 @@ fn chamfer_core(
                 .normalize()
                 .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
             let binormal = outward.cross(ref_dir);
-            corner_verts.sort_by(|a, b| {
+            corner_verts.compact_sort_by(|a, b| {
                 let da = *a - center;
                 let db = *b - center;
                 let angle_a = da.dot(binormal).atan2(da.dot(ref_dir));
@@ -999,7 +1000,7 @@ fn chamfer_core(
             FaceSpecOrigin::Modified(source) => face_origins.survived.push((*source, *face)),
             FaceSpecOrigin::Generated(sources) => {
                 let mut sources = sources.clone();
-                sources.sort_by_key(|source| source.index());
+                sources.compact_sort_by_key(|source| source.index());
                 sources.dedup();
                 if sources.is_empty() {
                     face_origins.created_unattributed.push(*face);
@@ -1013,7 +1014,9 @@ fn chamfer_core(
         .into_values()
         .filter_map(|(source, present)| (!present).then_some(source))
         .collect();
-    face_origins.deleted.sort_by_key(|source| source.index());
+    face_origins
+        .deleted
+        .compact_sort_by_key(|source| source.index());
     for face in remus_topology::explorer::solid_faces(topo, result)? {
         if !named.contains(&face.index()) {
             face_origins.created_unattributed.push(face);

@@ -1,5 +1,6 @@
 //! Affine transforms applied to topological shapes.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
@@ -413,9 +414,11 @@ impl TransformRecorder {
     /// Assemble the report, sorting change lists by entity index so repeated
     /// runs agree regardless of arena iteration order.
     pub(crate) fn into_report(mut self, determinant: f64, similarity: bool) -> TransformReport {
-        self.face_changes.sort_by_key(|change| change.face.index());
-        self.edge_changes.sort_by_key(|change| change.edge.index());
-        self.fitted.sort_by_key(|fit| fit.face.index());
+        self.face_changes
+            .compact_sort_by_key(|change| change.face.index());
+        self.edge_changes
+            .compact_sort_by_key(|change| change.edge.index());
+        self.fitted.compact_sort_by_key(|fit| fit.face.index());
         let quality = if self.fitted.is_empty() {
             TransformQuality::Exact
         } else {
@@ -760,7 +763,7 @@ pub fn preflight_solid_transform(
         .iter()
         .map(|fid| plan_face_surface(topo, *fid, similarity, &identity))
         .collect::<Result<_, _>>()?;
-    plans.sort_by_key(|plan| plan.face.index());
+    plans.compact_sort_by_key(|plan| plan.face.index());
     Ok(plans)
 }
 

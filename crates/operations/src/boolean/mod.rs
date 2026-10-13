@@ -15,6 +15,7 @@ pub(crate) use assembly::{
 };
 use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
+use remus_math::compact_sort::CompactSort;
 pub use store_local::{set_thread_store_local_cuts, thread_store_local_cuts_enabled};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
@@ -269,9 +270,9 @@ fn identity_boolean_region(
     let mut faces = remus_topology::explorer::solid_faces(topo, solid)?;
     let mut edges = remus_topology::explorer::solid_edges(topo, solid)?;
     let mut vertices = remus_topology::explorer::solid_vertices(topo, solid)?;
-    faces.sort_by_key(|id| id.index());
-    edges.sort_by_key(|id| id.index());
-    vertices.sort_by_key(|id| id.index());
+    faces.compact_sort_by_key(|id| id.index());
+    edges.compact_sort_by_key(|id| id.index());
+    vertices.compact_sort_by_key(|id| id.index());
     Ok(remus_algo::gfa::BooleanRegion {
         solid,
         evolution: EntityEvolution {
@@ -5654,7 +5655,7 @@ fn component_interior_probe(
             n.normalize().ok().map(|unit| (n.length(), centroid, unit))
         })
         .collect();
-    seeds.sort_by(|x, y| y.0.total_cmp(&x.0));
+    seeds.compact_sort_by(|x, y| y.0.total_cmp(&x.0));
     let mut candidates = Vec::new();
     for &(_, centroid, unit) in seeds.iter().take(MAX_SEED_TRIANGLES) {
         for fraction in [1e-2, 3e-3] {

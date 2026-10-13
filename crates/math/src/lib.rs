@@ -5,6 +5,10 @@
 //!
 //! This is the foundation layer (L0) with no workspace dependencies.
 
+// Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
+// sort copies that `clippy.toml` disallows in production code do not matter there.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 /// Errors from math operations.
 #[derive(Debug, thiserror::Error)]
 pub enum MathError {
@@ -124,6 +128,7 @@ pub mod analytic_intersection;
 pub mod bvh;
 pub mod cdt;
 pub mod chord;
+pub mod compact_sort;
 pub mod context;
 pub mod convex_hull;
 pub mod curvature;

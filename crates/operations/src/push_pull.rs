@@ -9,6 +9,7 @@
 //! seams the boolean leaves behind, and refuse to return a result whose shell
 //! is not closed.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::PI;
 
@@ -1897,7 +1898,7 @@ fn ensure_resized_cylinder(
         }
     }
 
-    requested.sort_by(|a, b| a.0.total_cmp(&b.0));
+    requested.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut covered = 0.0;
     for &(lo, hi) in &requested {
         if lo > covered + linear_tol {

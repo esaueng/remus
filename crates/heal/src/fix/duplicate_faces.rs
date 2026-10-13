@@ -66,6 +66,7 @@
 //! prefix (dense coincident inputs still cost O(n²) time, reported honestly
 //! via the plan stats).
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -365,7 +366,7 @@ fn fix_shell_duplicate_faces(
             descriptors.push(descriptor);
         }
     }
-    descriptors.sort_by_key(|d| d.face.index());
+    descriptors.compact_sort_by_key(|d| d.face.index());
 
     // A vetoed face remains an anchor for later candidates. Decide attribute
     // compatibility during grouping, before marking a geometric match removed.
@@ -497,7 +498,7 @@ fn describe_face(
     let mut starts: Vec<Point3> = outer.iter().map(bucket_anchor).collect();
     // Summation order must not depend on the wire's cyclic start: large
     // coordinates can otherwise round equal loops into different cells.
-    starts.sort_by(|a, b| {
+    starts.compact_sort_by(|a, b| {
         a.x()
             .total_cmp(&b.x())
             .then(a.y().total_cmp(&b.y()))
@@ -1407,7 +1408,7 @@ mod tests {
                 out.push(descriptor);
             }
         }
-        out.sort_by_key(|d| d.face.index());
+        out.compact_sort_by_key(|d| d.face.index());
         out
     }
 
@@ -1573,8 +1574,8 @@ mod tests {
         // Both orders are deterministic; only the sets must agree.
         let mut planned = plan.pairs.clone();
         let mut expected = reference.clone();
-        planned.sort_by_key(|p| (p.0.index(), p.1.index()));
-        expected.sort_by_key(|p| (p.0.index(), p.1.index()));
+        planned.compact_sort_by_key(|p| (p.0.index(), p.1.index()));
+        expected.compact_sort_by_key(|p| (p.0.index(), p.1.index()));
         assert_eq!(
             planned, expected,
             "indexed plan must equal the all-pairs reference (survivor, removals)"
@@ -2365,8 +2366,8 @@ mod tests {
                 let reference = reference_all_pairs(&descriptors, 1e-7);
                 let mut planned = plan.pairs.clone();
                 let mut expected = reference.clone();
-                planned.sort_by_key(|p| (p.0.index(), p.1.index()));
-                expected.sort_by_key(|p| (p.0.index(), p.1.index()));
+                planned.compact_sort_by_key(|p| (p.0.index(), p.1.index()));
+                expected.compact_sort_by_key(|p| (p.0.index(), p.1.index()));
                 assert_eq!(planned, expected, "plan must equal reference");
                 let dense = all_pairs_plan(
                     &descriptors,

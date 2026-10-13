@@ -1,6 +1,7 @@
 //! Plane-NURBS surface intersection.
 
 use crate::MathError;
+use crate::compact_sort::CompactSort;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Vec3;
 
@@ -188,7 +189,7 @@ fn restore_open_isoparametric_order(
     } else {
         return Ok(());
     };
-    curve.points.sort_by(|a, b| {
+    curve.points.compact_sort_by(|a, b| {
         let param = |p: &IntersectionPoint| if along_u { p.param1.0 } else { p.param1.1 };
         param(a).total_cmp(&param(b))
     });

@@ -6,6 +6,7 @@
 //! split into separate vertices. This module detects such vertices and
 //! splits them into separate connected groups based on face adjacency.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use remus_topology::Topology;
@@ -297,7 +298,7 @@ fn split_vertex(
     ));
 
     if let Some(history) = history {
-        descendants.sort_by_key(|id| id.index());
+        descendants.compact_sort_by_key(|id| id.index());
         history.vertices.push((vertex_id, descendants));
     }
     Ok(new_vertices_created)

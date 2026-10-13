@@ -3,6 +3,7 @@
 //! Removing a face leaves a gap in the shell. [`defeature`] closes that gap
 //! exactly, or refuses; it never returns a shell it could not close.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use remus_math::tolerance::Tolerance;
@@ -1161,7 +1162,7 @@ fn resolve_corner(
         match corners_on(&candidates, &required, eps) {
             Corners::One(p) => return Ok(p),
             Corners::Many(mut points) if prefer_nearest => {
-                points.sort_by(|first, second| {
+                points.compact_sort_by(|first, second| {
                     (*first - original)
                         .length()
                         .total_cmp(&(*second - original).length())
