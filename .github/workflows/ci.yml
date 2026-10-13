@@ -78,7 +78,7 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci.yml@9d12ecc18c48ae99ae09b62ca066f3f1cdb840c8
+    uses: esaueng/remus/.github/workflows/fleet-ci.yml@6fde3afb2b174d5033e681a8bc5825e8de6afc96
 
   # Posts the WASM size report as a PR comment. It needs a write token, so it
   # stays outside `checks`; the same policy gates CI Pass through
@@ -87,7 +87,7 @@ jobs:
   wasm-size:
     needs: checks
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.checks.outputs.wasm == 'true' }}
-    uses: esaueng/remus/.github/workflows/fleet-wasm-size.yml@9d12ecc18c48ae99ae09b62ca066f3f1cdb840c8
+    uses: esaueng/remus/.github/workflows/fleet-wasm-size.yml@6fde3afb2b174d5033e681a8bc5825e8de6afc96
     permissions:
       contents: read
       pull-requests: write
