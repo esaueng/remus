@@ -1525,8 +1525,9 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
 /// because `algo` cannot depend on `check`. Purely topological: it compares
 /// edge identities and use directions, with no tolerance.
 ///
-/// This runs before `normalize_face_wires`, so inner wires that repeat an
-/// oriented edge are skipped: that zero-area debris is dropped at assembly
+/// This runs before `normalize_face_wires`, so each wire is counted as that
+/// normalization will leave it: inner wires that repeat an oriented edge are
+/// skipped and dangling edges are pruned. That debris is dropped at assembly
 /// and must not make an otherwise consistent shell read inconsistent.
 fn shell_orientation_is_consistent(topo: &Topology, faces: &[FaceId]) -> bool {
     let mut uses: DetHashMap<EdgeId, (u32, u32)> = DetHashMap::default();
@@ -1540,10 +1541,20 @@ fn shell_orientation_is_consistent(topo: &Topology, faces: &[FaceId]) -> bool {
             let Ok(wire) = topo.wire(wire_id) else {
                 return false;
             };
-            if wire_id != outer && has_repeated_oriented_edge(wire.edges()) {
-                continue;
+            let mut oes = wire.edges().to_vec();
+            if wire_id == outer {
+                // Mirrors `normalize_face_wires`: the outer wire is never emptied.
+                prune_dangling_edges(topo, &mut oes);
+                if oes.is_empty() {
+                    oes = wire.edges().to_vec();
+                }
+            } else {
+                if has_repeated_oriented_edge(&oes) {
+                    continue;
+                }
+                prune_dangling_edges(topo, &mut oes);
             }
-            for oe in wire.edges() {
+            for oe in &oes {
                 let entry = uses.entry(oe.edge()).or_insert((0, 0));
                 if oe.is_forward() == reversed {
                     entry.1 += 1;
@@ -5925,11 +5936,11 @@ mod tests {
         );
     }
 
-    /// The flux-override guard's consistency check skips inner wires that
-    /// repeat an oriented edge (debris that `normalize_face_wires` drops at
-    /// assembly) but still rejects a genuinely flipped face.
+    /// The consistency check ignores wire debris that `normalize_face_wires`
+    /// drops at assembly (an inner wire repeating an oriented edge, dangling
+    /// edges) but still rejects a genuinely flipped face.
     #[test]
-    fn shell_orientation_consistency_ignores_repeated_edge_debris_but_not_a_flipped_face() {
+    fn shell_orientation_consistency_ignores_normalized_away_debris_but_not_a_flipped_face() {
         use remus_topology::edge::Edge;
         use remus_topology::vertex::Vertex;
         use remus_topology::wire::{OrientedEdge, Wire};
@@ -5942,29 +5953,44 @@ mod tests {
             "a manifold cube is consistently oriented"
         );
 
-        let (outer, surface, reversed) = {
-            let face = topo.face(faces[0]).unwrap();
-            (
-                face.outer_wire(),
-                face.surface().clone(),
-                face.is_reversed(),
-            )
+        let with_inner = |topo: &mut Topology, fid: FaceId, inner: Vec<WireId>| -> FaceId {
+            let face = topo.face(fid).unwrap();
+            let (outer, surface) = (face.outer_wire(), face.surface().clone());
+            let copy = if face.is_reversed() {
+                Face::new_reversed(outer, inner, surface)
+            } else {
+                Face::new(outer, inner, surface)
+            };
+            topo.add_face(copy)
         };
-        // A fresh edge used only by the debris: without the skip it would
-        // count twice in one direction and read as inconsistent.
-        let a = topo.add_vertex(Vertex::new(Point3::new(0.25, 0.25, 0.0), 1e-7));
-        let b = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.25, 0.0), 1e-7));
-        let spur = OrientedEdge::new(topo.add_edge(Edge::new(a, b, EdgeCurve::Line)), true);
+        // Fresh edges used only by the debris: counted raw, each would be used
+        // twice in one direction and read as inconsistent.
+        let fresh_edge = |topo: &mut Topology, y: f64| {
+            let a = topo.add_vertex(Vertex::new(Point3::new(0.25, y, 0.0), 1e-7));
+            let b = topo.add_vertex(Vertex::new(Point3::new(0.5, y, 0.0), 1e-7));
+            topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
+        };
+
+        let spur = OrientedEdge::new(fresh_edge(&mut topo, 0.25), true);
         let debris = topo.add_wire(Wire::new(vec![spur, spur], false).unwrap());
-        let copy = if reversed {
-            Face::new_reversed(outer, vec![debris], surface)
-        } else {
-            Face::new(outer, vec![debris], surface)
-        };
-        faces[0] = topo.add_face(copy);
+        faces[0] = with_inner(&mut topo, faces[0], vec![debris]);
         assert!(
             shell_orientation_is_consistent(&topo, &faces),
             "an inner wire repeating an oriented edge is debris and is ignored"
+        );
+
+        // One dangling edge in two faces, the same way round once face
+        // reversal is applied: pruning removes it from both.
+        let dangling = fresh_edge(&mut topo, 0.75);
+        for fi in [2, 3] {
+            let forward = !topo.face(faces[fi]).unwrap().is_reversed();
+            let wire = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(dangling, forward)], false).unwrap());
+            faces[fi] = with_inner(&mut topo, faces[fi], vec![wire]);
+        }
+        assert!(
+            shell_orientation_is_consistent(&topo, &faces),
+            "a dangling edge is pruned at assembly and is ignored"
         );
 
         let flipped = faces[1];
