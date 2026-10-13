@@ -13,7 +13,7 @@ Deep catalog behind SKILL.md. Everything here was verified against the repo; whe
 
 It asserts every one of those resolved to `success` or `skipped`. Branch protection on `main` requires it under the context name `checks / CI Pass`, with up-to-date branches (see "Repo merge settings"). It is the only required check.
 
-Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `doc-paths`, and `wasm-size`. Read them yourself.
+Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `doc-paths`, and the `wasm-size` comment job. Read them yourself. The size policy is enforced inside the fan-in by `wasm-size-gate`.
 
 | Job | Display name | In `CI Pass`? | What it runs |
 |-----|--------------|---------------|--------------|
@@ -35,11 +35,12 @@ Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `
 | `secrets-scan` | Secrets Scan | yes | committed-secret scan |
 | `taplo` | TOML Format | yes | `taplo fmt --check` |
 | `doc-paths` | Doc Paths | **no** | `./scripts/check-doc-paths.sh` |
-| `wasm-size` | WASM Size Report | **no** | PR-only size delta comment (informational) |
+| `wasm-size-gate` | WASM Size Gate | yes (skips without a package build or outside PRs) | base commit's `scripts/wasm-size-gate.mjs`: kernel hard limits, and a `WASM-Size:` line for kernel growth above 64 KiB raw |
+| `wasm-size` | WASM Size Report | **no** | PR-only comment with the same report; fails with the gate |
 
 `benchmark.yml` contributes `Boolean perf` and `Publish benchmark` on PRs; neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is the CI runner provider, not a reviewer or a quality check.
 
-The `wasm-size` comment's first column is *labelled* `main`, but that label is a hardcoded string in `ci.yml`. The job actually checks out `ref: ${{ github.base_ref }}` — your PR's real base. The two coincide today only because PRs target `main`; the header would still read `main` for a PR based on anything else, so never read it as evidence of what was compared. Because the baseline IS your base, a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) is NOT explained away by a stale baseline and deserves a second look. `Cargo.lock` is committed, so both builds resolve from their checked-in locks; if your diff does not touch the lockfile, resolution is identical on both sides and a delta on a test-only diff is genuinely unexplained — investigate rather than blaming dependency drift.
+The size jobs check out `ref: ${{ github.event.pull_request.base.sha }}` (your PR's real base) and compare the PR build with the package COMMITTED there, not with a build of the base source. If a kernel change merged into the base and its package refresh has not landed yet, its growth shows up in your delta (and can trip the 64 KiB `WASM-Size:` rule); wait for the refresh or declare it. Otherwise a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) deserves a second look. `Cargo.lock` is committed, so both builds resolve from their checked-in locks; if your diff does not touch the lockfile, resolution is identical on both sides and a delta on a test-only diff is genuinely unexplained — investigate rather than blaming dependency drift.
 
 Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only when the binaries are installed (the hook skips them silently otherwise). Everything else (tests, boundaries, deny, docs) first runs in CI unless you run it yourself. Before pushing, run at minimum the tests for touched crates and, on any `Cargo.toml` change, `./scripts/check-boundaries.sh`.
 
@@ -169,7 +170,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | `gh pr update-branch` prints usage text | The installed `gh` predates that subcommand | `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` |
 | A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged (`delete_branch_on_merge` is on); GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
-| `WASM Size Report` shows a delta on a test-only diff | NOT a stale baseline — the job builds `github.base_ref`, your real base; the `main` column label is hardcoded. Both sides build from committed `Cargo.lock`s, so unless your diff touches the lockfile, resolution is identical | Confirm your diff cannot reach the binary or the lockfile, then report the delta as unexplained rather than calling it expected drift |
+| `WASM Size Report` shows a delta on a test-only diff | Either a base package that predates a merged kernel change (the baseline is the package committed on your base, not a build of it) or a real change. Both sides build from committed `Cargo.lock`s, so unless your diff touches the lockfile, resolution is identical | Check whether the base has kernel commits after its last package refresh; if not, confirm your diff cannot reach the binary or the lockfile, then report the delta as unexplained rather than calling it expected drift |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
 | CI `taplo` or `machete` fails but pre-commit passed | Tool not installed locally; the hook skips it silently | `cargo install taplo-cli cargo-machete`, fix, re-commit |
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |

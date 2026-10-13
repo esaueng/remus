@@ -33,21 +33,24 @@ TIER2 = {"coverage", "msrv", "fuzz-check", "render", "deny", "audit"}
 PACKAGE = {"wasm"}
 HEAVY = TIER1 | TIER2 | PACKAGE
 ALWAYS = {"changes", "repo-policy", "secrets-scan"}
+# W1: the read-only size gate runs after the package build on wasm-affecting PRs.
+SIZE_GATE = "wasm-size-gate"
 
 
 class ConvergenceTests(unittest.TestCase):
-    def complete(self, results, heavy="true", docs="true", full=None, wasm=None):
+    def complete(self, results, heavy="true", docs="true", full=None, wasm=None,
+                 event="pull_request"):
         command = JOBS["ci-pass"].rsplit("        run: |\n", 1)[1]
         full = heavy if full is None else full
         wasm = full if wasm is None else wasm
         return subprocess.run(
             ["bash", "-c", command], capture_output=True, text=True,
             env=dict(os.environ, NEEDS=json.dumps(results), HEAVY=heavy, DOCS=docs,
-                     FULL=full, WASM=wasm),
+                     FULL=full, WASM=wasm, EVENT=event),
         ).returncode
 
     def success(self):
-        return {name: {"result": "success"} for name in HEAVY | ALWAYS | {"docs"}}
+        return {name: {"result": "success"} for name in HEAVY | ALWAYS | {"docs", SIZE_GATE}}
 
     def concurrency(self, event, ref, run_id):
         github = {"event_name": event, "ref": ref, "run_id": str(run_id)}
@@ -138,7 +141,7 @@ class ConvergenceTests(unittest.TestCase):
 
     def test_every_required_job_is_in_completion_gate(self):
         names = re.search(r"needs: \[([^]]+)\]", JOBS["ci-pass"])[1]
-        self.assertEqual(set(names.split(", ")), HEAVY | ALWAYS | {"docs"})
+        self.assertEqual(set(names.split(", ")), HEAVY | ALWAYS | {"docs", SIZE_GATE})
         self.assertNotIn("continue-on-error", FLEET)
 
     def test_full_suite_passes(self):
@@ -154,7 +157,7 @@ class ConvergenceTests(unittest.TestCase):
 
     def test_pr_tier_can_skip_only_second_tier_and_package_jobs(self):
         results = self.success()
-        for name in TIER2 | PACKAGE:
+        for name in TIER2 | PACKAGE | {SIZE_GATE}:
             results[name]["result"] = "skipped"
         self.assertEqual(self.complete(results, full="false", wasm="false"), 0)
         # The package build is still required when the classifier selected it.
@@ -166,8 +169,10 @@ class ConvergenceTests(unittest.TestCase):
             altered[name]["result"] = "skipped"
             with self.subTest(job=name):
                 self.assertNotEqual(self.complete(altered, full="false", wasm="false"), 0)
-        # A wasm-affecting PR runs the package build without tier 2.
+        # A wasm-affecting PR runs the package build and the size gate without tier 2.
         results["wasm"]["result"] = "success"
+        self.assertNotEqual(self.complete(results, full="false", wasm="true"), 0)
+        results[SIZE_GATE]["result"] = "success"
         self.assertEqual(self.complete(results, full="false", wasm="true"), 0)
         # A tier-2 or package selection without a heavy selection is inconsistent.
         self.assertNotEqual(self.complete(self.success(), heavy="false", full="true", wasm="true"), 0)
@@ -175,7 +180,7 @@ class ConvergenceTests(unittest.TestCase):
 
     def test_docs_and_metadata_can_skip_only_unselected_jobs(self):
         results = self.success()
-        for name in HEAVY:
+        for name in HEAVY | {SIZE_GATE}:
             results[name]["result"] = "skipped"
         self.assertEqual(self.complete(results, heavy="false"), 0)
         results["docs"]["result"] = "skipped"
@@ -233,13 +238,67 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", BENCH_CALLER)
         self.assertIn("test(scaling_)", JOBS["test"])
 
-    def test_advisory_size_report_cannot_block_required_gate(self):
+    def test_size_gate_is_required_only_where_it_can_run(self):
+        # The gate compares a PR's build with its base: it is required on a
+        # wasm-affecting PR and may skip only when no package was built or the
+        # run is not a PR (push, merge group, dispatch).
+        results = self.success()
+        self.assertEqual(self.complete(results, wasm="true"), 0)
+        results[SIZE_GATE]["result"] = "skipped"
+        self.assertNotEqual(self.complete(results, wasm="true"), 0)
+        for event in ("push", "merge_group", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.assertEqual(self.complete(results, wasm="true", event=event), 0)
+        self.assertEqual(self.complete(results, full="false", wasm="false"), 0)
+        self.assertNotEqual(self.complete(results, wasm="true", event=""), 0)
+        for result in ("failure", "cancelled"):
+            results[SIZE_GATE]["result"] = result
+            for event in ("pull_request", "push"):
+                with self.subTest(result=result, event=event):
+                    self.assertNotEqual(self.complete(results, wasm="true", event=event), 0)
+
+    def test_size_gate_runs_trusted_base_code_without_write_access(self):
+        gate = JOBS[SIZE_GATE]
+        self.assertIn("needs: [changes, wasm]", gate)
+        self.assertIn("if: github.event_name == 'pull_request' && "
+                      "needs.changes.outputs.wasm == 'true'", gate)
+        self.assertNotIn("always()", gate)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", gate)
+        self.assertNotIn("write", gate)
+        self.assertIn("node scripts/wasm-size-gate.mjs --github-pr-body", gate)
+        self.assertIn('exit "$status"', gate)
+        # The untrusted description reaches the script only as data.
+        self.assertIn("PR_BODY: ${{ github.event.pull_request.body }}", gate)
+        self.assertEqual(FLEET.count("github.event.pull_request.body"), 1)
+
+    def test_size_artifacts_survive_a_failed_kernel_validation(self):
+        # A kernel over a hard limit fails `cargo xtask wasm-build` after it is
+        # built; the report must still see that build, and never the
+        # committed package from the checkout.
+        wasm = JOBS["wasm"]
+        self.assertLess(wasm.index('touch "$RUNNER_TEMP/wasm-build-start"'),
+                        wasm.index("run: cargo xtask wasm-build"))
+        prepare = wasm.split("      - name: Prepare WASM size artifacts\n", 1)[1].split("      - ", 1)[0]
+        self.assertIn("if: ${{ !cancelled() && github.event_name == 'pull_request' }}", prepare)
+        self.assertIn('[ "$built" -nt "$marker" ]', prepare)
+        self.assertIn('echo "ready=true" >> "$GITHUB_OUTPUT"', prepare)
+        upload = wasm.split("name: wasm-size-pr", 1)[0].rsplit("      - uses: actions/upload-artifact@", 1)[1]
+        self.assertIn("if: ${{ !cancelled() && steps.size-artifacts.outputs.ready == 'true' }}", upload)
+
+    def test_size_comment_keeps_its_write_token_outside_the_required_suite(self):
         self.assertNotIn("wasm-size", JOBS)
         caller_jobs = jobs(CALLER)
         self.assertIn("needs: checks", caller_jobs["wasm-size"])
         self.assertIn("needs.checks.outputs.wasm == 'true'", caller_jobs["wasm-size"])
-        self.assertNotIn("wasm-size", JOBS["ci-pass"])
+        self.assertIn("!cancelled()", caller_jobs["wasm-size"])
         self.assertIn("pull-requests: read", caller_jobs["checks"])
+        self.assertNotIn("pull-requests: write", caller_jobs["checks"])
+        comment = (ROOT / ".github/workflows/fleet-wasm-size.yml").read_text()
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", comment)
+        self.assertIn("node scripts/wasm-size-gate.mjs --github-pr-body", comment)
+        self.assertIn("if: steps.gate.outputs.status == '1'", comment)
+        self.assertIn("PR_BODY: ${{ github.event.pull_request.body }}", comment)
+        self.assertEqual(comment.count("github.event.pull_request.body"), 1)
 
     def test_queue_configuration_preserves_every_merge_validation(self):
         config = json.loads((ROOT / ".github/merge-queue-ruleset.json").read_text())

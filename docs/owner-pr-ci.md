@@ -126,9 +126,12 @@ Jane's two registered slots bound actual server execution to two jobs across
 all workflows and repositories. Jobs wait for a free slot without oversubscribing
 the host. Two coverage jobs may run together when both slots are available.
 
-The advisory WASM size report runs in its own immutable callee after the suite,
-so a reporting failure cannot fail the required completion gate. There is no
-additional hosted completion wrapper. Existing PR branches must pick up the
+The WASM size report comment runs in its own immutable callee after the
+suite, because it needs a write token that the suite never receives. The size
+policy itself is enforced inside the suite: the read-only `wasm-size-gate` job
+runs the base commit's `scripts/wasm-size-gate.mjs` on the PR's built modules
+and is part of the completion gate (it may skip only when no package was built
+or the run is not a PR). There is no additional hosted completion wrapper. Existing PR branches must pick up the
 new caller before their runs stop using the old admission queue.
 
 ### Required-check migration

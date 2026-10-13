@@ -82,7 +82,8 @@ class OwnerRoutingTests(unittest.TestCase):
                 run = subprocess.run(
                     ["bash", "-c", command],
                     env=dict(os.environ, NEEDS=json.dumps(needs), HEAVY="false", DOCS="false",
-                             FULL="false", WASM="false"), capture_output=True)
+                             FULL="false", WASM="false", EVENT="pull_request"),
+                    capture_output=True)
                 self.assertEqual(run.returncode, expected, run.stderr.decode())
 
     def test_policy_regressions_run_in_repository_policy(self):
