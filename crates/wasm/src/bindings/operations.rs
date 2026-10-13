@@ -2929,15 +2929,21 @@ mod tests {
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let before = topology_counts(kernel.topo());
 
-        let mut unguarded = kernel.topo().clone();
+        let mut native_topology = kernel.topo().clone();
+        let slots_before = native_topology.allocated_slot_count();
         let solid_id = kernel.resolve_solid(solid).unwrap();
-        remus_operations::offset_v2::offset_solid_v2(&mut unguarded, solid_id, -6.0)
-            .expect_err("collapsed offset must fail its postcondition");
-        assert_ne!(
-            topology_counts(&unguarded),
-            before,
+        let error =
+            remus_operations::offset_v2::offset_solid_v2(&mut native_topology, solid_id, -6.0)
+                .expect_err("collapsed offset must fail its postcondition");
+        assert!(error.to_string().contains("collapsed"));
+        // Native offsets now roll back too. Retired arena slots prove that
+        // this still exercises a post-allocation failure rather than merely
+        // refusing the input before construction.
+        assert!(
+            native_topology.allocated_slot_count() > slots_before,
             "witness must exercise a failure after topology allocation"
         );
+        assert_eq!(topology_counts(&native_topology), before);
 
         let error = kernel
             .offset_solid_impl(solid, -6.0)

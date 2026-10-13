@@ -144,10 +144,12 @@ pub fn build_offset_faces(
                         ),
                     });
                 }
-                FaceSurface::Torus(ToroidalSurface::new(
+                FaceSurface::Torus(ToroidalSurface::with_axis_and_ref_dir(
                     tor.center(),
                     tor.major_radius(),
                     new_minor,
+                    tor.z_axis(),
+                    tor.x_axis(),
                 )?)
             }
 

@@ -34,7 +34,7 @@ pub fn read_obj_with_limits(
     ensure_input_size(input.len(), limits)?;
     let mut positions: Vec<Point3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
+    let mut corners: Vec<(u32, Option<u32>)> = Vec::new();
 
     for line in input.lines() {
         let line = line.trim();
@@ -47,7 +47,11 @@ pub fn read_obj_with_limits(
             Some("v") => {
                 let coords = parse_3_floats(&mut parts, line)?;
                 positions.push(Point3::new(coords[0], coords[1], coords[2]));
-                ensure_limit("OBJ vertices", positions.len(), limits.max_model_entities)?;
+                ensure_limit(
+                    "OBJ vertices",
+                    positions.len() + normals.len(),
+                    limits.max_model_entities,
+                )?;
             }
             Some("vn") => {
                 let coords = parse_3_floats(&mut parts, line)?;
@@ -73,19 +77,19 @@ pub fn read_obj_with_limits(
                 // lets one hostile face allocate ~3N indices past the budget.
                 ensure_limit(
                     "OBJ triangles",
-                    indices.len() / 3 + face_indices.len().saturating_sub(2),
+                    corners.len() / 3 + face_indices.len().saturating_sub(2),
                     limits.max_model_entities,
                 )?;
                 // Fan triangulation: v0-v1-v2, v0-v2-v3, v0-v3-v4, ...
                 let v0 = face_indices[0];
                 for i in 1..face_indices.len() - 1 {
-                    indices.push(v0);
-                    indices.push(face_indices[i]);
-                    indices.push(face_indices[i + 1]);
+                    corners.push(v0);
+                    corners.push(face_indices[i]);
+                    corners.push(face_indices[i + 1]);
                 }
                 ensure_limit(
                     "OBJ triangles",
-                    indices.len() / 3,
+                    corners.len() / 3,
                     limits.max_model_entities,
                 )?;
             }
@@ -95,11 +99,60 @@ pub fn read_obj_with_limits(
         }
     }
 
-    if normals.is_empty() {
-        normals = compute_vertex_normals(&positions, &indices);
+    // OBJ indexes positions and normals independently. Reuse a vertex only
+    // when both corner identities agree; split shared positions at normal seams.
+    let source_count = positions.len();
+    let mut assigned = vec![false; source_count];
+    let mut normal_supplied = vec![false; source_count];
+    let mut output_normals = vec![Vec3::new(0., 0., 0.); source_count];
+    let mut corner_vertices = std::collections::BTreeMap::new();
+    let mut indices = Vec::with_capacity(corners.len());
+    for corner @ (position, normal) in corners {
+        let source = position as usize;
+        if source >= source_count || normal.is_some_and(|n| n as usize >= normals.len()) {
+            return Err(crate::IoError::ParseError {
+                reason: "OBJ face position or normal reference out of range".into(),
+            });
+        }
+        let index = if let Some(&index) = corner_vertices.get(&corner) {
+            index
+        } else {
+            let index = if assigned[source] {
+                ensure_limit(
+                    "OBJ expanded vertices",
+                    positions.len() + 1,
+                    limits.max_model_entities,
+                )?;
+                let index =
+                    u32::try_from(positions.len()).map_err(|_| crate::IoError::ParseError {
+                        reason: "OBJ expanded vertex index exceeds u32".into(),
+                    })?;
+                positions.push(positions[source]);
+                output_normals.push(Vec3::new(0., 0., 0.));
+                normal_supplied.push(false);
+                index
+            } else {
+                assigned[source] = true;
+                position
+            };
+            if let Some(normal) = normal {
+                output_normals[index as usize] = normals[normal as usize];
+                normal_supplied[index as usize] = true;
+            }
+            corner_vertices.insert(corner, index);
+            index
+        };
+        indices.push(index);
     }
-
-    normals.resize(positions.len(), Vec3::new(0.0, 0.0, 1.0));
+    let computed = compute_vertex_normals(&positions, &indices);
+    for ((normal, supplied), computed) in
+        output_normals.iter_mut().zip(normal_supplied).zip(computed)
+    {
+        if !supplied {
+            *normal = computed;
+        }
+    }
+    let normals = output_normals;
 
     Ok(TriangleMesh {
         positions,
@@ -137,12 +190,25 @@ fn parse_face_index(token: &str, line: &str) -> Result<u32, crate::IoError> {
 fn parse_face_indices(
     parts: &mut std::str::SplitWhitespace<'_>,
     line: &str,
-) -> Result<Vec<u32>, crate::IoError> {
-    let mut result = Vec::new();
-    for token in parts {
-        result.push(parse_face_index(token, line)?);
-    }
-    Ok(result)
+) -> Result<Vec<(u32, Option<u32>)>, crate::IoError> {
+    parts
+        .map(|token| {
+            let mut fields = token.split('/');
+            let position = parse_face_index(fields.next().unwrap_or(""), line)?;
+            let _texture = fields.next();
+            let normal = fields
+                .next()
+                .filter(|field| !field.is_empty())
+                .map(|field| parse_face_index(field, line))
+                .transpose()?;
+            if fields.next().is_some() {
+                return Err(crate::IoError::ParseError {
+                    reason: format!("invalid OBJ face corner: {token}"),
+                });
+            }
+            Ok((position, normal))
+        })
+        .collect()
 }
 
 fn parse_3_floats(
