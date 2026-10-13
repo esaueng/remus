@@ -1,5 +1,5 @@
 {
-  "description": "WebAssembly bindings for remus — browser-native B-Rep solid modeling",
+  "description": "WebAssembly bindings for remus \u2014 browser-native B-Rep solid modeling",
   "exports": {
     ".": {
       "node": "./remus_wasm_node.cjs",
@@ -38,6 +38,6 @@
   ],
   "type": "module",
   "types": "remus_wasm.d.ts",
-  "version": "2026.1.55",
+  "version": "2026.1.56",
   "homepage": "https://github.com/esaueng/remus"
 }

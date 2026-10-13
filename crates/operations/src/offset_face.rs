@@ -601,9 +601,14 @@ fn offset_torus_face(
         });
     }
 
-    let new_torus =
-        remus_math::surfaces::ToroidalSurface::new(torus.center(), torus.major_radius(), new_minor)
-            .map_err(OperationsError::Math)?;
+    let new_torus = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
+        torus.center(),
+        torus.major_radius(),
+        new_minor,
+        torus.z_axis(),
+        torus.x_axis(),
+    )
+    .map_err(OperationsError::Math)?;
 
     let z_axis = torus.z_axis();
     let center = torus.center();

@@ -151,15 +151,26 @@ pub fn curve_to_curve<C1: ParametricCurve, C2: ParametricCurve>(
     let (t1_start, t1_end) = t1_range;
     let (t2_start, t2_end) = t2_range;
 
-    // Degenerate ranges: evaluate endpoints directly.
-    if t1_end <= t1_start || t2_end <= t2_start {
+    // A collapsed range fixes only that curve, not its partner.
+    if t1_end <= t1_start {
         let p1 = c1.evaluate(t1_start);
-        let p2 = c2.evaluate(t2_start);
+        let projection = super::point_to_curve(p1, c2, t2_start, t2_end);
         return ExtremaSolution {
-            distance: (p1 - p2).length(),
+            distance: projection.distance,
             point_a: p1,
-            point_b: p2,
+            point_b: projection.point,
             param_a: t1_start,
+            param_b: projection.parameter,
+        };
+    }
+    if t2_end <= t2_start {
+        let p2 = c2.evaluate(t2_start);
+        let projection = super::point_to_curve(p2, c1, t1_start, t1_end);
+        return ExtremaSolution {
+            distance: projection.distance,
+            point_a: projection.point,
+            point_b: p2,
+            param_a: projection.parameter,
             param_b: t2_start,
         };
     }
