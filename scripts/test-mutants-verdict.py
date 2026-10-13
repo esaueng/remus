@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,6 +78,17 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("| examined | 3 |", text)
         self.assertIn("| remus-operations | 1 | 200 | 40 |", text)
         self.assertEqual(unexamined, "")
+
+    def test_cost_mean_includes_missed_and_unviable_slot_times(self):
+        listed = [mutant(A), mutant(B), mutant(C)]
+        outcomes = [BASELINE, outcome(A, "CaughtMutant", build=10.0, test=10.0),
+                    outcome(B, "MissedMutant", build=40.0, test=100.0),
+                    outcome(C, "Unviable", build=5.0)]
+        code, text, _ = self.run_verdict(listed, outcomes, 2)
+        self.assertEqual(code, 1, "a cost report must not soften the missed verdict")
+        # (20 + 140 + 5) / 3 = 55 occupied slot-seconds. Adding phase medians
+        # would give 65 and dropping missed mutants would give 12.5.
+        self.assertIn("| remus-algo | 3 | 10 | 55 | 55 |", text)
 
     def test_no_mutants_in_scope_passes(self):
         self.assertEqual(self.run_verdict(None, [], 0, make_dir=False)[0], 0)
@@ -172,14 +184,15 @@ class PlanTests(unittest.TestCase):
                                  {"mutants": "0", "shards": "0", "matrix": "[]"})
 
     def test_shards_cover_the_estimated_cost(self):
-        week = ([mutant(f"a{i}") for i in range(2067)]
-                + [mutant(f"o{i}", "remus-operations") for i in range(718)]
-                + [mutant(f"m{i}", "remus-math") for i in range(420)]
-                + [mutant(f"b{i}", "remus-blend") for i in range(170)])
+        week = ([mutant(f"a{i}") for i in range(1500)]
+                + [mutant(f"o{i}", "remus-operations") for i in range(500)]
+                + [mutant(f"m{i}", "remus-math") for i in range(300)]
+                + [mutant(f"b{i}", "remus-blend") for i in range(100)])
         counts, estimate, capacity, needed, shards = PLAN.plan(week, 300)
-        self.assertEqual(sum(counts.values()), 3375)
+        self.assertEqual(sum(counts.values()), 2400)
         self.assertGreaterEqual(shards * capacity, estimate)
-        self.assertLess((shards - 1) * capacity, estimate)
+        self.assertLess((needed - 1) * capacity, estimate)
+        self.assertLessEqual(max(PLAN.round_robin_costs(week, shards)), capacity)
         out = self.run_plan(week)
         self.assertEqual(json.loads(out["matrix"]), list(range(int(out["shards"]))))
 
@@ -188,11 +201,71 @@ class PlanTests(unittest.TestCase):
         _, estimate, _, _, _ = PLAN.plan([mutant("x", "remus-new")], 300)
         self.assertEqual(estimate, max(PLAN.SECONDS_PER_MUTANT.values()))
 
+    def test_round_robin_imbalance_requires_more_than_the_aggregate_minimum(self):
+        week = [mutant("h0", "heavy"), mutant("l0", "light"),
+                mutant("h1", "heavy"), mutant("l1", "light")]
+        with mock.patch.dict(PLAN.SECONDS_PER_MUTANT, {"heavy": 40.0, "light": 10.0}, clear=True), \
+                mock.patch.object(PLAN, "SHARD_OVERHEAD_SECONDS", 0), \
+                mock.patch.object(PLAN, "JOBS_PER_SHARD", 1), \
+                mock.patch.object(PLAN, "TARGET_UTILIZATION", 1):
+            # 100 / 60 suggests two shards, but i % 2 assigns both expensive
+            # mutants to one shard (80/20). Three fit (50/10/40).
+            _, _, capacity, needed, shards = PLAN.plan(week, 1, max_shards=4)
+            self.assertEqual((needed, shards), (2, 3))
+            self.assertEqual(PLAN.round_robin_costs(week, 2), [80.0, 20.0])
+            self.assertLessEqual(max(PLAN.round_robin_costs(week, shards)), capacity)
+
+    def test_capped_imbalance_warns_even_when_total_cost_fits_the_cap(self):
+        week = [mutant("h0", "heavy"), mutant("l0", "light"),
+                mutant("h1", "heavy"), mutant("l1", "light")]
+        with mock.patch.dict(PLAN.SECONDS_PER_MUTANT, {"heavy": 40.0, "light": 10.0}, clear=True), \
+                mock.patch.object(PLAN, "SHARD_OVERHEAD_SECONDS", 0), \
+                mock.patch.object(PLAN, "JOBS_PER_SHARD", 1), \
+                mock.patch.object(PLAN, "TARGET_UTILIZATION", 1), \
+                tempfile.TemporaryDirectory(prefix="remus-plan-imbalance-") as tmp:
+            listing = Path(tmp) / "week.json"
+            listing.write_text(json.dumps(week))
+            summary = Path(tmp) / "summary.md"
+            output = Path(tmp) / "out"
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                PLAN.main([str(listing), "--budget-minutes", "1", "--max-shards", "2",
+                           "--summary", str(summary), "--github-output", str(output)])
+            self.assertIn("shards=2", output.read_text())
+            self.assertIn("::warning::", stdout.getvalue())
+            self.assertIn("total-cost lower bound 2, cap 2", summary.read_text())
+            self.assertIn("retain unexamined.txt", summary.read_text())
+            self.assertIn("| 0 | 0.0 | no |", summary.read_text())
+
+    def test_single_over_budget_mutant_does_not_create_empty_shards(self):
+        with mock.patch.dict(PLAN.SECONDS_PER_MUTANT, {"heavy": 100.0}, clear=True), \
+                mock.patch.object(PLAN, "SHARD_OVERHEAD_SECONDS", 0), \
+                mock.patch.object(PLAN, "JOBS_PER_SHARD", 1), \
+                mock.patch.object(PLAN, "TARGET_UTILIZATION", 1):
+            self.assertEqual(PLAN.plan([mutant("h", "heavy")], 1)[-1], 1)
+
+    def test_round_robin_zero_shards_is_rejected(self):
+        with self.assertRaises(ValueError):
+            PLAN.round_robin_costs([], 0)
+
     def test_overflowing_week_is_capped_and_warned(self):
         huge = [mutant(f"o{i}", "remus-operations") for i in range(20000)]
         _, _, _, needed, shards = PLAN.plan(huge, 300)
         self.assertGreater(needed, PLAN.MAX_SHARDS)
         self.assertEqual(shards, PLAN.MAX_SHARDS)
+
+    def test_former_3375_mutant_fixture_is_now_explicitly_over_capacity(self):
+        # Preserve the former planner fixture: the updated measured costs
+        # must expose its insufficient budget rather than shrink its scope.
+        week = ([mutant(f"a{i}") for i in range(2067)]
+                + [mutant(f"o{i}", "remus-operations") for i in range(718)]
+                + [mutant(f"m{i}", "remus-math") for i in range(420)]
+                + [mutant(f"b{i}", "remus-blend") for i in range(170)])
+        counts, estimate, capacity, needed, shards = PLAN.plan(week, 300)
+        self.assertEqual(sum(counts.values()), 3375)
+        self.assertGreater(estimate, shards * capacity)
+        self.assertGreater(needed, PLAN.MAX_SHARDS)
+        self.assertEqual(shards, PLAN.MAX_SHARDS)
+        self.assertGreater(max(PLAN.round_robin_costs(week, shards)), capacity)
 
     def test_probe_cap_bounds_the_matrix(self):
         week = [mutant(f"o{i}", "remus-operations") for i in range(2000)]

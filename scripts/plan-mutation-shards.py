@@ -5,10 +5,10 @@ Input: the JSON array printed by `cargo mutants --list --json --in-diff ...`
 (an empty file when the diff selects nothing). Output: GitHub step outputs
 `mutants`, `shards` and `matrix`, plus a Markdown estimate for the run summary.
 
-The cost model is per-package wall seconds per mutant on the hosted 4-vCPU
-runner with `--jobs 2`, measured from the weekly job's own outcomes. Each
-shard's verdict (`scripts/mutants-verdict.py`) prints the medians it observed,
-so these constants can be re-tuned from any week's summary. They live here,
+The cost model is per-package occupied-slot seconds per mutant with `--jobs 2`,
+measured from the weekly job's own outcomes. Each shard's verdict
+(`scripts/mutants-verdict.py`) prints the means and medians it observed,
+so these constants can be re-tuned from a run's summary. They live here,
 read from the checkout at run time, so tuning them needs no workflow pin bump.
 """
 
@@ -22,35 +22,45 @@ import sys
 # Mean wall seconds each mutant occupies one of the two `--jobs 2` slots,
 # build plus test, under the `.cargo/mutants.toml` settings (ci-test profile,
 # first-failure stop, long-tail pins excluded), unviable mutants included.
-# Measured on the hosted runner, 2026-09-24:
-# - remus-operations: 305 s mean over 30 mutants (dispatch run 36055955228):
-#   caught 211 s build + 74 s test (medians), missed 215 s + 272 s, unviable
-#   12 s. That run still built the 17 examples `--tests` now skips.
-# - remus-algo: 57 s over 3 (same run; builds contend with the other slot's
-#   operations build).
-# - remus-math / remus-blend: 24 s / 31 s over 113 / 7 in math-and-blend-only
-#   shards (probe run 36059529895); 84 s for the one math mutant next to
-#   operations builds, so mixed shards are costed higher.
-# - remus-offset: 80 s over 1.
+# Operations/algo/math remeasured from scheduled run 38123404817 (2026-10-11,
+# source 82f79173291eeddb2532fb0fe65c80705296d32c), inspected shards 0 and 5.
+# Round each package's larger observed shard mean upward: 637.59 / 84.62 /
+# 102.81 s. Includes missed, timed-out and unviable outcomes, not only catches.
+# These are planning estimates, not upper bounds; other shards can be slower.
+# Blend/offset retain the 2026-09-24 estimates (no samples in these two shards).
+# Source-pinned counts/timings: docs/kernel-maturity/mutation-plan-2026-10-13.md.
 SECONDS_PER_MUTANT = {
-    "remus-operations": 300.0,
-    "remus-algo": 60.0,
-    "remus-math": 50.0,
+    "remus-operations": 650.0,
+    "remus-algo": 90.0,
+    "remus-math": 110.0,
     "remus-blend": 40.0,
     "remus-offset": 80.0,
 }
-# Per shard: toolchain and cache restore (~1 min), the cold ci-test baseline
-# (229 s build + 133 s test on the runner) and the second scratch directory's
-# cold build.
-SHARD_OVERHEAD_SECONDS = 12 * 60
+# Baseline alone reached 285 s build + 503 s test in shard 0. Reserve another
+# ~6 min for setup and the second scratch directory's cold operations build.
+SHARD_OVERHEAD_SECONDS = 20 * 60
 JOBS_PER_SHARD = 2
-# Plan each shard to 85% of its slot time: round-robin evens the package mix,
-# but not which mutants survive and run their package's whole suite.
+# Plan each shard to 85% of its slot time. Test the actual round-robin package
+# assignment: equal mutant counts do not imply equal estimated work.
 TARGET_UTILIZATION = 0.85
-# 24 shards at 300 minutes cover every 2026-09 week except the one that added
-# the operations/blend/offset scope; with `max-parallel: 8` that is at most
-# three waves. A larger week fails its shards' verdicts as incomplete.
+# Preserve the 24-shard resource cap (three waves at max-parallel 8). A larger
+# or uneven week is explicitly over capacity; the verdict still fails any tail.
 MAX_SHARDS = 24
+
+
+def round_robin_costs(mutants, shards):
+    """Match cargo-mutants 27: mutant i belongs to shard i % shards.
+
+    `--shuffle` only changes execution order after this partition, so the
+    listing's order is authoritative for the per-shard package mix.
+    """
+    if shards < 1:
+        raise ValueError("the shard count must be at least one")
+    costs = [0.0] * shards
+    fallback = max(SECONDS_PER_MUTANT.values())
+    for index, mutant in enumerate(mutants):
+        costs[index % shards] += SECONDS_PER_MUTANT.get(mutant["package"], fallback)
+    return costs
 
 
 def plan(mutants, budget_minutes, max_shards=MAX_SHARDS):
@@ -65,7 +75,13 @@ def plan(mutants, budget_minutes, max_shards=MAX_SHARDS):
     if max_shards < 1:
         raise ValueError("the shard cap must be at least one")
     needed = math.ceil(estimate / capacity) if mutants else 0
-    shards = min(max(needed, 1), max_shards) if mutants else 0
+    shards = min(len(mutants), max_shards)
+    # Total cost is only a lower bound. Search every eligible matrix size,
+    # because round-robin imbalance is not monotone as the divisor changes.
+    for candidate in range(max(needed, 1), shards + 1):
+        if max(round_robin_costs(mutants, candidate)) <= capacity:
+            shards = candidate
+            break
     return counts, estimate, capacity, needed, shards
 
 
@@ -96,14 +112,28 @@ def main(argv=None):
         f"Capacity per shard: {capacity / 3600:.1f} slot-hours "
         f"({args.budget_minutes} min budget, {JOBS_PER_SHARD} jobs, {SHARD_OVERHEAD_SECONDS // 60} min overhead, "
         f"{TARGET_UTILIZATION:.0%} planned utilization).",
-        f"Shards: {shards} (needed {needed}, cap {args.max_shards}).",
+        f"Shards: {shards} (total-cost lower bound {needed}, cap {args.max_shards}).",
         "",
     ]
+    shard_costs = round_robin_costs(mutants, shards) if shards else []
+    peak = max(shard_costs, default=0.0)
+    if shard_costs:
+        lines += [
+            "| Shard | Est. slot-hours | Within capacity |",
+            "| ---: | ---: | --- |",
+            *[f"| {index} | {cost / 3600:.1f} | {'yes' if cost <= capacity else 'no'} |"
+              for index, cost in enumerate(shard_costs)],
+            "",
+        ]
     warning = None
-    if needed > args.max_shards:
-        warning = (f"the week's estimated {estimate / 3600:.0f} slot-hours need {needed} shards but the cap is "
-                   f"{args.max_shards}: expect unexamined mutants and an incomplete verdict")
+    if peak > capacity:
+        warning = (f"the capped {shards}-shard round-robin matrix has a peak estimate of "
+                   f"{peak / 3600:.1f} slot-hours above {capacity / 3600:.1f} capacity "
+                   f"(total-cost lower bound {needed}, cap {args.max_shards}): expect "
+                   "unexamined mutants and an incomplete verdict; retain unexamined.txt "
+                   "for an explicitly scoped catch-up run")
         lines.append(f"**Warning:** {warning}.")
+    lines.append("Estimates do not certify completion; missed, timed-out and unexamined mutants still fail.")
     text = "\n".join(lines) + "\n"
     print(text)
     if warning:
