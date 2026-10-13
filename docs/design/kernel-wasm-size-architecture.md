@@ -1,6 +1,7 @@
 # Browser kernel size architecture
 
-Status: **in progress** (owner decisions recorded at the end). Baseline:
+Status: **in progress**; owner decisions and measured outcomes are recorded at
+the end and supersede the estimates in the workstream sections. Baseline:
 `259683c5` (committed packages v2026.1.55, built from `ed2754cd`).
 Roadmap rows: [PERF-W06](../kernel-maturity/roadmap.md#perf-w06) (separate
 load and code-size budgets) and [PERF-P03](../kernel-maturity/roadmap.md#perf-p03)
@@ -61,9 +62,15 @@ variants):
 | `s` | 1.8–1.9 ms | 18.1–18.6 ms | 9.9–10.5 ms | 6.3–6.7 ms |
 | `z` | 2.5–2.7 ms | 27.8–28.4 ms | 21.4–21.7 ms | 13.0–13.6 ms |
 
-`s` is roughly speed-neutral (booleans 5–10% slower, fillet and tessellation
-faster); `z` costs 1.3–1.6×. The `scripts/performance` suite must confirm `s`
-before it ships.
+**Superseded (W0, PR #1028):** this micro-benchmark was dominated by
+first-run compile time, which a smaller module wins. Measured on the committed
+`scripts/performance` suites with instruction counts and full V8 tiering,
+whole-graph `s` is **18–70% slower in steady state** (sketch `drag_1000`
++30 to +34%, `coupled_chain_1000` +25 to +28%, body edit +38%, booleans
++5 to +15%); only one-shot processes get faster. A per-crate search found no
+smaller configuration within noise on every workload: the only no-regression
+variant saves 52 KB raw and adds 1 KB gzip. `wasm-opt -Oz --converge` saves
+6.6 KB. Under owner decision 1 the optimization level stays as it is.
 
 ### Attribution
 
@@ -289,3 +296,22 @@ gates green and the same seven-point evidence.
    removes at least 250 KiB from the core after the duplicated shared code is
    counted.
 5. **W7** stays deferred until H4/H5 capabilities land.
+
+## Outcomes (2026-10-13)
+
+Measured results replace the estimates above. Sizes are shipped-pipeline
+bytes against main's kernel (raw 10,484,484 / gzip 3,673,721).
+
+| Workstream | Outcome |
+| --- | --- |
+| W0.1 opt-level | **Rejected.** Whole-graph `s` is 18–70% slower in steady state; no per-crate split is both smaller and within noise (see Optimization level). |
+| W0.2 gate parity | PR #1028: `scripts/wasm-size-policy.mjs` is the single source of the kernel policy (raw, Node gzip, Brotli q11); xtask enforces it. |
+| W1 growth control | In progress (stacked on #1028). |
+| W2 ceiling step 1 | In progress: 11/12 MiB raw, 4.5 MiB gzip, 3 MiB Brotli, on #1028 and a paired OpenZCAD PR. Without the `s` saving the runway from today's kernel is about 2.1 MB raw (≈ 4 weeks at 0.5 MB/week) and 1.05 MB gzip (≈ 6 weeks). |
+| W3.1 one dispatch path | **Not worth it.** Deleting every `executeBatch` arm saves only 157 KB raw / 29 KB gzip; a shared implementation projects to about 34 KB, and many direct/batch pairs differ in validation on purpose. The earlier −0.3 to −0.6 MB estimate counted kernel code inlined into bindings. |
+| W3.2 generic bloat | In progress. |
+| W3.3 serde | Retargeted to the arena-document codec (`parse_document` keeps ≈ 210 KB reachable, mostly serde-derive); in progress. tsify and `serde_wasm_bindgen` total only 12 KB. |
+| W4 lazy modules | **No candidate clears 250 KiB.** The sketch solver split saves 254 KiB today but only 151 KiB once any size profile applies, and its 1.5–2 µs module round trip makes 10-parameter solves 5–10% slower. Repair + analysis + NURBS reuse + projection together: 175 KiB. A prototype is kept unpublished for a later re-check if the solver grows by about 100 KiB. |
+| W5 tier rule | PR #1027. |
+| W6 load gates | OpenZCAD #657: desktop cold ≈ 47–77 ms p95, mobile-class cold ≈ 3.5 s p95 (download-dominated, ≈ +89 ms per 100 KB gzip); review budgets 110/110 ms desktop and 3,800/150 ms mobile, cold/warm. |
+| W7 | Deferred to H4/H5 (owner decision 5). |
