@@ -1,5 +1,6 @@
 //! Planar and simple analytic face tessellation.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
@@ -650,7 +651,7 @@ pub(super) fn tessellate_revolved_with_holes(
                     (position, (u, v))
                 })
                 .collect();
-            samples.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
+            samples.compact_sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
             (positions, uvs) = samples.into_iter().unzip();
             if let (Some(&(first_u, first_v)), Some(&(last_u, last_v))) = (uvs.first(), uvs.last())
             {
@@ -707,7 +708,7 @@ pub(super) fn tessellate_revolved_with_holes(
         for &range in &band_ranges {
             crossings.extend(cylinder_band_crossings(&all_uvs, range, u));
         }
-        crossings.sort_by(f64::total_cmp);
+        crossings.compact_sort_by(f64::total_cmp);
         crossings.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
         for limits in crossings.windows(2) {
             let v = f64::midpoint(limits[0], limits[1]);
@@ -1649,7 +1650,7 @@ pub(super) fn hole_removal_seeds(
     // turns concentric inputs from an all-pairs containment pass into one test
     // per wire.
     let mut order: Vec<usize> = (0..polys.len()).collect();
-    order.sort_by(|&a, &b| {
+    order.compact_sort_by(|&a, &b| {
         let area = |bbox: Option<(f64, f64, f64, f64)>| {
             bbox.map_or(f64::INFINITY, |(x0, y0, x1, y1)| (x1 - x0) * (y1 - y0))
         };

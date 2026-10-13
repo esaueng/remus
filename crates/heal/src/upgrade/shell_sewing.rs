@@ -11,6 +11,7 @@
 //! pair is sampled along its interior before it is merged, and a pair that
 //! disagrees is declined rather than reported as sewn.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::det_hash::DetHashMap;
@@ -931,8 +932,12 @@ fn apply_merges(
             .keys()
             .map(|&source| (source, resolve_vertex(&vertex_map, source)))
             .collect();
-        history.edges.sort_by_key(|(source, _)| source.index());
-        history.vertices.sort_by_key(|(source, _)| source.index());
+        history
+            .edges
+            .compact_sort_by_key(|(source, _)| source.index());
+        history
+            .vertices
+            .compact_sort_by_key(|(source, _)| source.index());
     }
     Ok(())
 }
@@ -1897,7 +1902,7 @@ mod tests {
                 }
             })
             .collect();
-        free.sort_by_key(|e| e.id.index());
+        free.compact_sort_by_key(|e| e.id.index());
         free
     }
 

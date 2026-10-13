@@ -5,6 +5,7 @@
 //! (cylinder, cone, sphere, torus, NURBS) use tensor-product Gauss-Legendre
 //! quadrature over the UV domain.
 
+use remus_math::compact_sort::CompactSort;
 use std::cell::Cell;
 
 use remus_math::nurbs::surface::DerivativeScratch;
@@ -979,7 +980,7 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
             .into_iter()
             .map(|(u, v)| (v.rem_euclid(TAU), u))
             .collect();
-        ring.sort_by(|a, b| a.0.total_cmp(&b.0));
+        ring.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
         if ring.windows(2).any(|pair| {
             (pair[1].0 - pair[0].0).abs() < 1e-12
                 && ((pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI).abs() > 1e-8
@@ -1015,7 +1016,7 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     for ring in &rings {
         breaks.extend(ring.iter().map(|point| point.0));
     }
-    breaks.sort_by(f64::total_cmp);
+    breaks.compact_sort_by(f64::total_cmp);
     breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
     let sweep = |v: f64| {
         let a = at(&rings[0], v);
@@ -1603,6 +1604,8 @@ impl<'a> UvTrim<'a> {
                 }
             }
         }
+        // hot: n up to 513, ~526k n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         breaks.sort_by(f64::total_cmp);
         breaks
     }
@@ -1667,6 +1670,8 @@ impl<'a> UvTrim<'a> {
             );
         }
         cuts.retain(|c| c.is_finite() && *c >= v0 && *c <= v1);
+        // hot: 289,218+ calls (native_mass_properties) in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         cuts.sort_by(f64::total_cmp);
 
         // Cuts closer together than this carry no width worth integrating, and
@@ -3315,7 +3320,7 @@ fn interior_knots(knots: &[f64], range: (f64, f64)) -> Vec<f64> {
         .copied()
         .filter(|&k| k.is_finite() && k > lo && k < hi)
         .collect();
-    inside.sort_by(f64::total_cmp);
+    inside.compact_sort_by(f64::total_cmp);
     inside.dedup();
     inside
 }
@@ -3360,7 +3365,7 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
         };
         let (knots_u, knots_v) = rule.knots.unwrap_or((&[], &[]));
         breaks.extend(interior_knots(knots_u, u_range));
-        breaks.sort_by(f64::total_cmp);
+        breaks.compact_sort_by(f64::total_cmp);
         breaks.dedup();
         let inner_knots = interior_knots(knots_v, v_range);
         // With cells aligned to the knots, one Gauss rule per knot span is the

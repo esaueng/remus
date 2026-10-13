@@ -15,6 +15,7 @@
 
 #![allow(
     clippy::print_stdout,
+    clippy::disallowed_methods,
     clippy::unwrap_used,
     clippy::expect_used,
     missing_docs

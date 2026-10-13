@@ -1,6 +1,7 @@
 //! Rolling-ball fillet algorithm producing G1-continuous blend surfaces —
 //! exact cylinders where the swept geometry is one, NURBS elsewhere.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_blend::BlendFaceOrigins;
@@ -98,14 +99,14 @@ fn origins_from_face_specs(
         let unknown = unattributed.remove(&result_index);
         match (modified, generated, unknown) {
             (Some((result, mut sources)), None, None) => {
-                sources.sort_by_key(|face| face.index());
+                sources.compact_sort_by_key(|face| face.index());
                 sources.dedup();
                 origins
                     .survived
                     .extend(sources.into_iter().map(|source| (source, result)));
             }
             (None, Some((result, mut sources)), None) if !sources.is_empty() => {
-                sources.sort_by_key(|face| face.index());
+                sources.compact_sort_by_key(|face| face.index());
                 sources.dedup();
                 origins.created.push((result, sources));
             }
@@ -125,7 +126,7 @@ fn origins_from_face_specs(
         .into_values()
         .filter_map(|(source, present)| (!present).then_some(source))
         .collect();
-    origins.deleted.sort_by_key(|source| source.index());
+    origins.deleted.compact_sort_by_key(|source| source.index());
     origins
 }
 
@@ -504,7 +505,7 @@ fn insert_tangency_splits(poly: Vec<Point3>, qs: &[Point3], tol: Tolerance) -> V
                 hits.push((t, *q));
             }
         }
-        hits.sort_by(|x, y| x.0.total_cmp(&y.0));
+        hits.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
         for (_, q) in hits {
             out.push(q);
         }
@@ -653,7 +654,7 @@ fn edge_tangency_splits(pos: Point3, far: Point3, qs: &[Point3], tol: Tolerance)
             hits.push((t, *q));
         }
     }
-    hits.sort_by(|x, y| x.0.total_cmp(&y.0));
+    hits.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
     hits.into_iter().map(|(_, q)| q).collect()
 }
 
@@ -3415,7 +3416,7 @@ pub fn fillet_rolling_ball_with_origins(
                         .find(|face| face.index() == *face_index)
                 })
                 .collect();
-            corner_sources.sort_by_key(|face| face.index());
+            corner_sources.compact_sort_by_key(|face| face.index());
             corner_sources.dedup();
             let corner_origin = if corner_sources.is_empty() {
                 FaceSpecOrigin::Unattributed
@@ -3772,7 +3773,7 @@ pub fn fillet_rolling_ball_with_origins(
                 })
                 .collect();
             indexed_points
-                .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                .compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
             let ordered_points: Vec<Point3> = indexed_points.into_iter().map(|(_, p)| p).collect();
 

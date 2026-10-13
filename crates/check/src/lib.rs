@@ -12,6 +12,10 @@
 //! - **distance** — minimum distance and extrema between shapes
 //! - **analyze** — surface interrogation (curvature reports, minimum radius)
 
+// Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
+// sort copies that `clippy.toml` disallows in production code do not matter there.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 pub mod analyze;
 pub mod classify;
 pub mod distance;

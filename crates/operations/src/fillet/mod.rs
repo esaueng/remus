@@ -39,6 +39,7 @@ pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 pub use rolling_ball::fillet_rolling_ball;
 pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::frame::Frame3;
@@ -1566,7 +1567,7 @@ fn fillet_variable_transacted(
                 reason: format!("setback cap at vertex {vertex_index} has no stable frame"),
             }
         })?;
-        contacts.sort_by(|a, b| {
+        contacts.compact_sort_by(|a, b| {
             let radial_a = *a - center;
             let radial_b = *b - center;
             let angle_a = radial_a.dot(frame.y).atan2(radial_a.dot(frame.x));

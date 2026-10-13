@@ -37,7 +37,12 @@
 //!     uses, and its triangle mesh watertight — and encloses the volume the
 //!     closed form says it should.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::collections::HashMap;
 use std::f64::consts::PI;

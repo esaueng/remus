@@ -196,6 +196,7 @@ Quick reference — find the right file for any task:
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
+| Stable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
 | Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
 | Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
 | Qualified intersection results (contact kind, quality) | `intersect.rs` |
@@ -534,8 +535,13 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | PLY read/write | `ply/reader.rs`, `ply/writer.rs` |
 | glTF read/write | `gltf/reader.rs`, `gltf/writer.rs` |
 | Exact arena (sub-topology) serialization | `arena_io.rs` |
+| Hand-written arena document JSON codec (`serde_json`-exact reads and writes) | `arena_io/codec.rs` |
+| Differential oracle: the derived `serde_json` arena codec kept verbatim (tests) | `arena_io/codec_oracle_tests.rs` |
+| Minimal non-generic JSON reader/writer shared by the arena and reference codecs | `json.rs` |
+| Differential tests of the JSON reader/writer against `serde_json`, shared mutation fuzzer (tests) | `json/oracle_tests.rs`, `json/mutation.rs` |
 | Resource limits for untrusted imports | `limits.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
+| Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
@@ -935,6 +941,11 @@ Workspace-level strict lints:
 - `panic = "deny"` — no panic
 - `clippy::pedantic`, `clippy::nursery` = warn
 - `missing_docs` = warn
+- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` in the kernel
+  crates (math through operations; their own `clippy.toml`): use
+  `remus_math::compact_sort::CompactSort`. A measured hot sort keeps `sort_by`
+  behind a statement-level `#[allow(clippy::disallowed_methods)]` with a
+  `// hot: <evidence>` line. Test code is exempt.
 
 ## Testing
 

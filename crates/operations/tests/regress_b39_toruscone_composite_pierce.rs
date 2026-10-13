@@ -31,7 +31,12 @@
 //! expected side). The check crate's ray-cast classifier is NOT used: it
 //! misreads trimmed torus bands in general (the already-landed B45 band
 //! fixture disagrees with it at ~14 % of sample points).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 

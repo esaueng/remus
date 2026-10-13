@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4df54683ec17633a0fc5807ce72892d3bacf7b19cba9824a504581316251d520 # shrinks to seed = 1248873177055025297, mutations = [DuplicateMember { container: 14063867413370418838, member: 0 }], entities = 18446744073709551615
+cc 864ebb3ba7f730b090adc995119f9df7534a0b2c466dd8088f14ed2852490a76 # shrinks to seed = 31371896337337, mutations = [Scalar { scalar: 1588483808824227219, token: 5 }], entities = 18446744073709551615
+cc e2c134dd7a4c126bc634fecedb3b840ef5f8c9ee49eef9eee372853c5fa90163 # shrinks to seed = 3143811395457610457, mutations = [ToArray { container: 16201202493754850465, drop: 1, extra: false }], entities = 18446744073709551615
+cc 17b097ac39e29a6d48b230531be304d1c5e2a72aeb59bc3c2f673fa045ba0b2d # shrinks to seed = 8650178726298992528, mutations = [RemoveMember { container: 16197530491739551791, member: 0 }], entities = 0

@@ -14,7 +14,12 @@
 //! the other ten vertices are all-convex (sphere caps). Oversized radii
 //! still reject atomically (out of scope for any corner patch).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::collections::HashMap;
 

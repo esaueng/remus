@@ -55,6 +55,7 @@
 //! exact. See the module docs of [`super::face_bounds`] for the soundness
 //! argument and the locality documentation in the equivalence tests.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
@@ -408,7 +409,7 @@ impl<'a> PreparedDistanceSolid<'a> {
                 lower_sq,
             });
         }
-        scratch.order.sort_by(|a, b| {
+        scratch.order.compact_sort_by(|a, b| {
             a.lower_sq
                 .total_cmp(&b.lower_sq)
                 .then_with(|| a.face.index().cmp(&b.face.index()))

@@ -3,6 +3,7 @@
 use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
 pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashSet;
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -1351,7 +1352,7 @@ fn fillet_by_feature(
     for &group in &groups {
         ordered.push((is_planar_line_blend(topo, solid, group)?, group));
     }
-    ordered.sort_by_key(|&(planar, _)| planar);
+    ordered.compact_sort_by_key(|&(planar, _)| planar);
 
     let mut current = solid;
     let mut engine: Option<BlendEngine> = None;

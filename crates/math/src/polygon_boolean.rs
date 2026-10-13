@@ -492,6 +492,8 @@ fn split_polygon(
         )?;
         // Snap-deduplicate parameters and clamp to the open interval.
         params.retain(|&t| t > 0.0 && t < 1.0);
+        // hot: 4,096+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         params.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
         dedup_params(&mut params, a1, a2, tol);
 

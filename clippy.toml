@@ -1,2 +1,5 @@
+# The kernel crates (math, topology, geometry, algo, blend, check, heal, offset,
+# operations) carry their own clippy.toml, which Clippy uses instead of this
+# file. Mirror any change here into them.
 avoid-breaking-exported-api = false
 cognitive-complexity-threshold = 25

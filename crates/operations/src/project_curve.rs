@@ -34,6 +34,7 @@
 //! Face/solid entry points run inside `run_append_only`; a refusal leaves the
 //! topology untouched.
 
+use remus_math::compact_sort::CompactSort;
 use std::f64::consts::TAU;
 
 use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
@@ -398,7 +399,7 @@ fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
         return vec![0.0];
     }
     let mut roots = vec![q / a, c / q];
-    roots.sort_by(f64::total_cmp);
+    roots.compact_sort_by(f64::total_cmp);
     roots
 }
 
@@ -625,7 +626,7 @@ fn seam_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, ProjectCurve
         .map(remus_topology::OrientedEdge::edge)
         .filter(|edge| counts.get(&edge.index()).is_some_and(|count| *count == 2))
         .collect();
-    seams.sort_by_key(|edge| edge.index());
+    seams.compact_sort_by_key(|edge| edge.index());
     seams.dedup();
     Ok(seams)
 }
@@ -2102,7 +2103,7 @@ fn polynomial_roots_in(coefficients: &[f64], lo: f64, hi: f64) -> Vec<f64> {
     let mut cuts = vec![lo];
     cuts.extend(polynomial_roots_in(&derivative, lo, hi));
     cuts.push(hi);
-    cuts.sort_by(f64::total_cmp);
+    cuts.compact_sort_by(f64::total_cmp);
     let residual_guard = 64.0 * f64::EPSILON * coefficients.iter().map(|c| c.abs()).sum::<f64>();
     let mut roots: Vec<f64> = cuts
         .iter()
@@ -2133,7 +2134,7 @@ fn polynomial_roots_in(coefficients: &[f64], lo: f64, hi: f64) -> Vec<f64> {
         }
         roots.push(0.5 * (a + b));
     }
-    roots.sort_by(f64::total_cmp);
+    roots.compact_sort_by(f64::total_cmp);
     roots.dedup_by(|a, b| (*a - *b).abs() <= PARAM_DEDUPE);
     roots
 }
@@ -2508,7 +2509,7 @@ fn collect_candidates(
     clip.push((source.domain.0, None));
     clip.push((source.domain.1, None));
     // Sort, clamp into the domain, dedupe (keep known points).
-    clip.sort_by(|a, b| a.0.total_cmp(&b.0));
+    clip.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     let (lo, hi) = source.domain;
     let mut merged: Vec<(f64, Option<Point3>)> = Vec::new();
     for (s, point) in clip {
@@ -2527,7 +2528,7 @@ fn collect_candidates(
         merged.push((s, point));
     }
     for seam_list in &mut seams {
-        seam_list.sort_by(|a, b| a.0.total_cmp(&b.0));
+        seam_list.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
         seam_list.retain(|(s, _)| *s > lo + PARAM_DEDUPE && *s < hi - PARAM_DEDUPE);
     }
     Ok((merged, seams))
@@ -4590,7 +4591,7 @@ fn first_support_root(
     scale: f64,
 ) -> Option<Point3> {
     let mut roots = ray_roots(target, point, direction);
-    roots.sort_by(f64::total_cmp);
+    roots.compact_sort_by(f64::total_cmp);
     for lambda in roots {
         if lambda < -PARAM_DEDUPE * scale {
             continue;
@@ -4704,7 +4705,7 @@ fn approximate_slab(
     if rims.len() != 2 {
         return Err(ProjectCurveError::ApproximateClipUnsupported);
     }
-    rims.sort_by(|a, b| a.lo.total_cmp(&b.lo));
+    rims.compact_sort_by(|a, b| a.lo.total_cmp(&b.lo));
     let slab = ApproximateSlab {
         origin,
         axis,

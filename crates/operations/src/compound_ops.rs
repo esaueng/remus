@@ -5,6 +5,7 @@
 //! and computing compound-level measurements.
 
 use remus_math::aabb::Aabb3;
+use remus_math::compact_sort::CompactSort;
 use remus_topology::Topology;
 use remus_topology::compound::CompoundId;
 use remus_topology::solid::SolidId;
@@ -353,7 +354,7 @@ fn fuse_parallel_cylinder_cluster_impl(
             angles.push((center_angle - half).rem_euclid(std::f64::consts::TAU));
             angles.push((center_angle + half).rem_euclid(std::f64::consts::TAU));
         }
-        angles.sort_by(f64::total_cmp);
+        angles.compact_sort_by(f64::total_cmp);
         angles.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
         for pair in angles.windows(2) {
             let start = pair[0];

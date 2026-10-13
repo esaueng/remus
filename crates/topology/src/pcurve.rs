@@ -19,6 +19,7 @@
 //! [`TopologyError::SeamPcurveAmbiguous`](crate::TopologyError::SeamPcurveAmbiguous)
 //! when both branches are present, instead of answering arbitrarily.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 
@@ -139,7 +140,7 @@ impl std::fmt::Debug for PCurveRegistry {
         // Rollback rebuilds this map; diagnostics must not depend on its hash seed.
         let Self { uses } = self;
         let mut uses: Vec<_> = uses.iter().collect();
-        uses.sort_by_key(|(key, _)| (key.edge.index(), key.face.index(), key.forward));
+        uses.compact_sort_by_key(|(key, _)| (key.edge.index(), key.face.index(), key.forward));
         f.debug_struct("PCurveRegistry")
             .field("uses", &uses)
             .finish()
@@ -252,7 +253,7 @@ impl PCurveRegistry {
             .filter(|(k, _)| k.face == face)
             .map(|(k, v)| (k.edge, k.forward, *v))
             .collect();
-        out.sort_by_key(|(e, forward, _)| (e.index(), !forward));
+        out.compact_sort_by_key(|(e, forward, _)| (e.index(), !forward));
         out
     }
 
@@ -264,7 +265,7 @@ impl PCurveRegistry {
             .filter(|(k, _)| k.edge == edge)
             .map(|(k, v)| (k.face, k.forward, *v))
             .collect();
-        out.sort_by_key(|(f, forward, _)| (f.index(), !forward));
+        out.compact_sort_by_key(|(f, forward, _)| (f.index(), !forward));
         out
     }
 }
