@@ -1,0 +1,13 @@
+{
+  "measuredSource": "8a40740dc764f57aa3796012f24d49dce7693135",
+  "deliverySource": "414a22418a9faaf8e3846c3d742dc1fcc056bd03",
+  "rebasedOnto": "1f8d2950c019a95d9bfb03aaea0d45afb51ab058",
+  "changedFilesOnlyCommittedPackages": [
+    "crates/wasm-io/pkg/package.json",
+    "crates/wasm/pkg/package.json",
+    "crates/wasm/pkg/remus_wasm_bg.wasm"
+  ],
+  "runtimeSourceCargoBenchScriptsIdentical": true,
+  "measuredSourcePreservedRef": "codex/quantity-mesh-measured-8a40740d",
+  "capturedUtc": "2026-10-13T23:20:57.827567+00:00"
+}

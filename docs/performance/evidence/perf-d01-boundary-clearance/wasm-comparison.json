@@ -1,0 +1,3356 @@
+{
+  "manifest": {
+    "command": [
+      "<repository>/scripts/perf/filleted-face-edit/run_wasm_edit_comparison.py",
+      "--old-kernel",
+      "<audit-artifacts>/main611-baseline-packages/crates/wasm/pkg",
+      "--old-io",
+      "<audit-artifacts>/main611-baseline-packages/crates/wasm-io/pkg",
+      "--new-kernel",
+      "<audit-artifacts>/candidate-immutable-packages/crates/wasm/pkg",
+      "--new-io",
+      "<audit-artifacts>/candidate-immutable-packages/crates/wasm-io/pkg",
+      "--out",
+      "<audit-artifacts>/wasm-quiet-comparison",
+      "--warmup",
+      "2",
+      "--samples",
+      "6",
+      "--rounds",
+      "2",
+      "--order",
+      "both",
+      "--cpu",
+      "auto"
+    ],
+    "python": "3.12.3 (main, Jul 15 2026, 23:46:41) [GCC 13.3.0]",
+    "platform": "Linux-7.1.5-76070105-generic-x86_64-with-glibc2.39",
+    "cpuPin": 0,
+    "startedUtc": "2026-10-13T23:16:56Z",
+    "warmup": 2,
+    "samplesPerProcess": 6,
+    "rounds": 2,
+    "workflows": [
+      "geometry-first",
+      "volume-first"
+    ],
+    "comparisonPolicy": {
+      "featureRecords": "exact recursive equality",
+      "indicesAndFaceOffsets": "byte exact",
+      "arena": "byte exact reported; near permits <=64*f64epsilon*max(1,|a|,|b|), integers exact",
+      "volume": "exact f64 bits required; near relative <=64*f64epsilon reported separately",
+      "meshFloats": "f32 bytes reported; near <=4*f32epsilon*max(1,|a|,|b|) per component"
+    }
+  },
+  "qualified": true,
+  "stages": {
+    "geometry-first": {
+      "move": {
+        "old": {
+          "n": 12,
+          "medianMs": 57.48636949999991,
+          "p10Ms": 49.13078800000039,
+          "p90Ms": 88.8205199999993,
+          "p95Ms": 89.9767069999998,
+          "minMs": 49.12418500000058,
+          "maxMs": 89.9767069999998,
+          "meanMs": 61.3855332499999,
+          "stdevMs": 14.366622251239205
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 58.26537299999973,
+          "p10Ms": 49.67487600000004,
+          "p90Ms": 89.00532899999962,
+          "p95Ms": 89.3975419999997,
+          "minMs": 49.12086899999849,
+          "maxMs": 89.3975419999997,
+          "meanMs": 61.77806574999977,
+          "stdevMs": 14.104407803324271
+        },
+        "medianSpeedup": 0.9866300778680362,
+        "pairedSpeedupMedian": 0.9924509874513607,
+        "qualifiedForComparison": true
+      },
+      "validate": {
+        "old": {
+          "n": 12,
+          "medianMs": 1.791723500000444,
+          "p10Ms": 1.4137439999994967,
+          "p90Ms": 1.8983100000004924,
+          "p95Ms": 4.274724000000788,
+          "minMs": 1.413712999999916,
+          "maxMs": 4.274724000000788,
+          "meanMs": 1.9083432500000679,
+          "stdevMs": 0.7702196737651786
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 1.6012335000000348,
+          "p10Ms": 1.4253260000004957,
+          "p90Ms": 1.8896740000000136,
+          "p95Ms": 1.8987609999994675,
+          "minMs": 1.4117699999997058,
+          "maxMs": 1.8987609999994675,
+          "meanMs": 1.6400994999999057,
+          "stdevMs": 0.22155928706298253
+        },
+        "medianSpeedup": 1.1189645357784515,
+        "pairedSpeedupMedian": 1.0046981704365152,
+        "qualifiedForComparison": true
+      },
+      "bbox": {
+        "old": {
+          "n": 12,
+          "medianMs": 0.7516265000008389,
+          "p10Ms": 0.7364330000000336,
+          "p90Ms": 2.339103999999679,
+          "p95Ms": 8.20759199999975,
+          "minMs": 0.7344190000003437,
+          "maxMs": 8.20759199999975,
+          "meanMs": 1.5800181666667565,
+          "stdevMs": 2.1480129314661682
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 0.7502040000003944,
+          "p10Ms": 0.7466920000006212,
+          "p90Ms": 1.7020290000000386,
+          "p95Ms": 1.9392070000003514,
+          "minMs": 0.7458799999994881,
+          "maxMs": 1.9392070000003514,
+          "meanMs": 0.9303645833335091,
+          "stdevMs": 0.4189635985620927
+        },
+        "medianSpeedup": 1.0018961509142095,
+        "pairedSpeedupMedian": 0.996269633211055,
+        "qualifiedForComparison": true
+      },
+      "meshKernel": {
+        "old": {
+          "n": 12,
+          "medianMs": 29.17905950000022,
+          "p10Ms": 28.289651999999478,
+          "p90Ms": 58.94953700000042,
+          "p95Ms": 59.06084800000008,
+          "minMs": 28.277720000000045,
+          "maxMs": 59.06084800000008,
+          "meanMs": 34.0414861666668,
+          "stdevMs": 11.683023258053012
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 29.393058999999994,
+          "p10Ms": 28.641147000000274,
+          "p90Ms": 43.82343000000037,
+          "p95Ms": 44.004251999999724,
+          "minMs": 28.528443000000152,
+          "maxMs": 44.004251999999724,
+          "meanMs": 32.08704474999998,
+          "stdevMs": 5.671658981829301
+        },
+        "medianSpeedup": 0.9927193865735522,
+        "pairedSpeedupMedian": 0.9975546321969702,
+        "qualifiedForComparison": true
+      },
+      "meshTransfer": {
+        "old": {
+          "n": 12,
+          "medianMs": 0.13846649999959482,
+          "p10Ms": 0.13428399999975227,
+          "p90Ms": 0.1707829999995738,
+          "p95Ms": 0.1831769999998869,
+          "minMs": 0.13097800000105053,
+          "maxMs": 0.1831769999998869,
+          "meanMs": 0.1456254166666895,
+          "stdevMs": 0.016123626568326117
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 0.144037500000195,
+          "p10Ms": 0.13546599999972386,
+          "p90Ms": 0.17584199999964767,
+          "p95Ms": 0.18110300000080315,
+          "minMs": 0.13352200000008452,
+          "maxMs": 0.18110300000080315,
+          "meanMs": 0.14822616666666968,
+          "stdevMs": 0.015183434644732022
+        },
+        "medianSpeedup": 0.9613225722426962,
+        "pairedSpeedupMedian": 0.9869825512967904,
+        "qualifiedForComparison": true
+      },
+      "mesh": {
+        "old": {
+          "n": 12,
+          "medianMs": 29.3186740000001,
+          "p10Ms": 28.428185000000667,
+          "p90Ms": 59.08796800000073,
+          "p95Ms": 59.19513199999983,
+          "minMs": 28.428092999998626,
+          "maxMs": 59.19513199999983,
+          "meanMs": 34.18711158333349,
+          "stdevMs": 11.679232714350706
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 29.541560000000118,
+          "p10Ms": 28.783645999999862,
+          "p90Ms": 43.962964000000284,
+          "p95Ms": 44.13971799999945,
+          "minMs": 28.664800999999898,
+          "maxMs": 44.13971799999945,
+          "meanMs": 32.23527091666665,
+          "stdevMs": 5.669901531101885
+        },
+        "medianSpeedup": 0.9924551716293921,
+        "pairedSpeedupMedian": 0.9976184266376626,
+        "qualifiedForComparison": true
+      },
+      "volume": {
+        "old": {
+          "n": 12,
+          "medianMs": 492.39281800000117,
+          "p10Ms": 489.66258500000004,
+          "p90Ms": 497.16472299999987,
+          "p95Ms": 499.82045500000004,
+          "minMs": 489.6199230000002,
+          "maxMs": 499.82045500000004,
+          "meanMs": 493.1607911666667,
+          "stdevMs": 3.6255997735115697
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 254.2287494999996,
+          "p10Ms": 251.37628099999893,
+          "p90Ms": 258.9011419999997,
+          "p95Ms": 260.59755900000073,
+          "minMs": 250.7014139999992,
+          "maxMs": 260.59755900000073,
+          "meanMs": 254.75066458333313,
+          "stdevMs": 3.3139204173715924
+        },
+        "medianSpeedup": 1.9368101324826834,
+        "pairedSpeedupMedian": 1.9285177792711736,
+        "qualifiedForComparison": true
+      },
+      "recognize": {
+        "old": {
+          "n": 12,
+          "medianMs": 346.28274550000015,
+          "p10Ms": 344.5582680000007,
+          "p90Ms": 349.3147849999996,
+          "p95Ms": 351.2500339999997,
+          "minMs": 344.3998389999997,
+          "maxMs": 351.2500339999997,
+          "meanMs": 346.77837100000033,
+          "stdevMs": 2.0276943165811727
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 348.51939100000027,
+          "p10Ms": 347.22022300000026,
+          "p90Ms": 354.00836100000015,
+          "p95Ms": 355.9914310000004,
+          "minMs": 346.93882100000064,
+          "maxMs": 355.9914310000004,
+          "meanMs": 349.37245775000036,
+          "stdevMs": 2.780607046196039
+        },
+        "medianSpeedup": 0.9935824359913445,
+        "pairedSpeedupMedian": 0.9923310761343285,
+        "qualifiedForComparison": true
+      },
+      "kernelPipeline": {
+        "old": {
+          "n": 12,
+          "medianMs": 934.3845050000018,
+          "p10Ms": 914.6510940000007,
+          "p90Ms": 967.6278870000006,
+          "p95Ms": 972.0878999999995,
+          "minMs": 914.6217189999988,
+          "maxMs": 972.0878999999995,
+          "meanMs": 938.8545430000005,
+          "stdevMs": 21.994004322987674
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 696.3938270000003,
+          "p10Ms": 680.0751599999967,
+          "p90Ms": 727.5256770000005,
+          "p95Ms": 727.7753319999993,
+          "minMs": 679.3670789999996,
+          "maxMs": 727.7753319999993,
+          "meanMs": 700.5586969166667,
+          "stdevMs": 18.898946999205236
+        },
+        "medianSpeedup": 1.34174725388541,
+        "pairedSpeedupMedian": 1.3433628016540968,
+        "qualifiedForComparison": true
+      },
+      "pipelineWithTransfer": {
+        "old": {
+          "n": 12,
+          "medianMs": 934.5270600000017,
+          "p10Ms": 914.7855880000006,
+          "p90Ms": 967.7663180000009,
+          "p95Ms": 972.2221839999993,
+          "minMs": 914.760159999998,
+          "maxMs": 972.2221839999993,
+          "meanMs": 939.0001684166672,
+          "stdevMs": 22.001894776563738
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 696.5423280000005,
+          "p10Ms": 680.2086819999968,
+          "p90Ms": 727.7067800000013,
+          "p95Ms": 727.9511739999989,
+          "minMs": 679.5112520000002,
+          "maxMs": 727.9511739999989,
+          "meanMs": 700.7069230833333,
+          "stdevMs": 18.90779024444241
+        },
+        "medianSpeedup": 1.3416658578141731,
+        "pairedSpeedupMedian": 1.343278224316034,
+        "qualifiedForComparison": true
+      },
+      "restoredPipeline": {
+        "old": {
+          "n": 12,
+          "medianMs": 941.4342230000025,
+          "p10Ms": 920.225830000003,
+          "p90Ms": 973.8010820000009,
+          "p95Ms": 978.6302119999991,
+          "minMs": 919.0102779999997,
+          "maxMs": 978.6302119999991,
+          "meanMs": 944.7074721666676,
+          "stdevMs": 21.875358399871825
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 703.4907024999998,
+          "p10Ms": 686.2343870000004,
+          "p90Ms": 731.5696260000022,
+          "p95Ms": 731.8381649999992,
+          "minMs": 685.6326390000013,
+          "maxMs": 731.8381649999992,
+          "meanMs": 706.4866162500001,
+          "stdevMs": 18.55828349115686
+        },
+        "medianSpeedup": 1.338232644233138,
+        "pairedSpeedupMedian": 1.340759936064261,
+        "qualifiedForComparison": true
+      }
+    },
+    "volume-first": {
+      "move": {
+        "old": {
+          "n": 12,
+          "medianMs": 56.87854500000003,
+          "p10Ms": 49.51784000000043,
+          "p90Ms": 85.44575799999984,
+          "p95Ms": 88.83404599999994,
+          "minMs": 49.04203899999993,
+          "maxMs": 88.83404599999994,
+          "meanMs": 61.20380974999981,
+          "stdevMs": 13.496847844209864
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 56.93917050000027,
+          "p10Ms": 49.17898799999966,
+          "p90Ms": 88.75663900000018,
+          "p95Ms": 88.8264909999998,
+          "minMs": 49.01811400000042,
+          "maxMs": 88.8264909999998,
+          "meanMs": 61.27104166666678,
+          "stdevMs": 14.132607658188421
+        },
+        "medianSpeedup": 0.9989352584614797,
+        "pairedSpeedupMedian": 1.0033232562470737,
+        "qualifiedForComparison": true
+      },
+      "validate": {
+        "old": {
+          "n": 12,
+          "medianMs": 1.8306219999999485,
+          "p10Ms": 1.4288020000003598,
+          "p90Ms": 1.9019870000010997,
+          "p95Ms": 10.387724999999591,
+          "minMs": 1.4263979999996081,
+          "maxMs": 10.387724999999591,
+          "meanMs": 2.421961250000019,
+          "stdevMs": 2.516941516559357
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 1.876678499999798,
+          "p10Ms": 1.4254960000007486,
+          "p90Ms": 4.823441999999886,
+          "p95Ms": 6.447903999999653,
+          "minMs": 1.4227300000002288,
+          "maxMs": 6.447903999999653,
+          "meanMs": 2.4686427500001478,
+          "stdevMs": 1.5720984258930775
+        },
+        "medianSpeedup": 0.9754585028816313,
+        "pairedSpeedupMedian": 1.0000679653768698,
+        "qualifiedForComparison": true
+      },
+      "bbox": {
+        "old": {
+          "n": 12,
+          "medianMs": 0.7524029999995037,
+          "p10Ms": 0.7438070000007428,
+          "p90Ms": 1.9566809999996622,
+          "p95Ms": 3.112065999999686,
+          "minMs": 0.739317999999912,
+          "maxMs": 3.112065999999686,
+          "meanMs": 1.146313833333276,
+          "stdevMs": 0.7748536304035673
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 0.7481695000001309,
+          "p10Ms": 0.7377350000006118,
+          "p90Ms": 1.9514099999996688,
+          "p95Ms": 1.9585440000000744,
+          "minMs": 0.7364930000003369,
+          "maxMs": 1.9585440000000744,
+          "meanMs": 0.9481355000001107,
+          "stdevMs": 0.4703519871703254
+        },
+        "medianSpeedup": 1.0056584771223258,
+        "pairedSpeedupMedian": 1.0029835126634032,
+        "qualifiedForComparison": true
+      },
+      "meshKernel": {
+        "old": {
+          "n": 12,
+          "medianMs": 29.651898999999958,
+          "p10Ms": 28.66525300000012,
+          "p90Ms": 60.19592399999965,
+          "p95Ms": 60.72233000000051,
+          "minMs": 28.489761000000726,
+          "maxMs": 60.72233000000051,
+          "meanMs": 34.60030383333318,
+          "stdevMs": 12.100104953254863
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 29.655620499999714,
+          "p10Ms": 28.170657000000574,
+          "p90Ms": 44.18155800000022,
+          "p95Ms": 44.426901000000726,
+          "minMs": 27.9353229999997,
+          "maxMs": 44.426901000000726,
+          "meanMs": 31.879565083333244,
+          "stdevMs": 5.924359701214257
+        },
+        "medianSpeedup": 0.9998745094542953,
+        "pairedSpeedupMedian": 1.0112518478201176,
+        "qualifiedForComparison": true
+      },
+      "meshTransfer": {
+        "old": {
+          "n": 12,
+          "medianMs": 1.1979904999998325,
+          "p10Ms": 0.15669600000001083,
+          "p90Ms": 2.300290999999561,
+          "p95Ms": 2.3144369999990886,
+          "minMs": 0.1555740000003425,
+          "maxMs": 2.3144369999990886,
+          "meanMs": 1.2254784166664194,
+          "stdevMs": 1.0918969942341832
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 0.1571820000003754,
+          "p10Ms": 0.15152600000055827,
+          "p90Ms": 3.4837989999996353,
+          "p95Ms": 3.588386000000355,
+          "minMs": 0.14712900000085938,
+          "maxMs": 3.588386000000355,
+          "meanMs": 1.0810001666667783,
+          "stdevMs": 1.409877412833623
+        },
+        "medianSpeedup": 7.62167741851466,
+        "pairedSpeedupMedian": 1.0261766137801913,
+        "qualifiedForComparison": true
+      },
+      "mesh": {
+        "old": {
+          "n": 12,
+          "medianMs": 30.85636149999982,
+          "p10Ms": 28.858016999999563,
+          "p90Ms": 62.39465199999904,
+          "p95Ms": 63.02262100000007,
+          "minMs": 28.687014000001,
+          "maxMs": 63.02262100000007,
+          "meanMs": 35.8257822499996,
+          "stdevMs": 12.663575478812737
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 30.650612499999625,
+          "p10Ms": 28.322183000001132,
+          "p90Ms": 44.33496800000012,
+          "p95Ms": 44.574030000001585,
+          "minMs": 28.088101999999708,
+          "maxMs": 44.574030000001585,
+          "meanMs": 32.96056525000002,
+          "stdevMs": 5.624404015449425
+        },
+        "medianSpeedup": 1.0067127206674973,
+        "pairedSpeedupMedian": 0.9983424451392566,
+        "qualifiedForComparison": true
+      },
+      "volume": {
+        "old": {
+          "n": 12,
+          "medianMs": 495.57875799999965,
+          "p10Ms": 490.43509599999925,
+          "p90Ms": 499.24328400000013,
+          "p95Ms": 510.5846930000007,
+          "minMs": 490.3750020000007,
+          "maxMs": 510.5846930000007,
+          "meanMs": 496.16655083333325,
+          "stdevMs": 5.6085859676621315
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 253.75203800000008,
+          "p10Ms": 249.3844740000004,
+          "p90Ms": 258.09161099999983,
+          "p95Ms": 258.19548699999996,
+          "minMs": 249.27139999999963,
+          "maxMs": 258.19548699999996,
+          "meanMs": 253.28449675000002,
+          "stdevMs": 2.9082860031965154
+        },
+        "medianSpeedup": 1.9530040503556447,
+        "pairedSpeedupMedian": 1.9631084452145395,
+        "qualifiedForComparison": true
+      },
+      "recognize": {
+        "old": {
+          "n": 12,
+          "medianMs": 347.73675000000003,
+          "p10Ms": 346.10089700000026,
+          "p90Ms": 351.2509259999997,
+          "p95Ms": 351.8361530000002,
+          "minMs": 345.5891580000007,
+          "maxMs": 351.8361530000002,
+          "meanMs": 348.33542725000007,
+          "stdevMs": 2.129945181860862
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 346.8837975000006,
+          "p10Ms": 346.35234200000014,
+          "p90Ms": 351.3167400000002,
+          "p95Ms": 351.7141420000007,
+          "minMs": 346.2663789999997,
+          "maxMs": 351.7141420000007,
+          "meanMs": 347.7106574166669,
+          "stdevMs": 1.8716565720064011
+        },
+        "medianSpeedup": 1.002458899799145,
+        "pairedSpeedupMedian": 1.0008778102043816,
+        "qualifiedForComparison": true
+      },
+      "kernelPipeline": {
+        "old": {
+          "n": 12,
+          "medianMs": 936.540233499999,
+          "p10Ms": 918.3770110000005,
+          "p90Ms": 972.7629679999991,
+          "p95Ms": 984.7860460000002,
+          "minMs": 918.3680960000002,
+          "maxMs": 984.7860460000002,
+          "meanMs": 943.8743667499996,
+          "stdevMs": 23.321183746424733
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 695.288586000001,
+          "p10Ms": 678.0979199999992,
+          "p90Ms": 724.4877219999998,
+          "p95Ms": 725.5616019999989,
+          "minMs": 677.3718760000011,
+          "maxMs": 725.5616019999989,
+          "meanMs": 697.5625391666672,
+          "stdevMs": 17.270560142004882
+        },
+        "medianSpeedup": 1.3469805953351255,
+        "pairedSpeedupMedian": 1.350663363355815,
+        "qualifiedForComparison": true
+      },
+      "pipelineWithTransfer": {
+        "old": {
+          "n": 12,
+          "medianMs": 937.744134999999,
+          "p10Ms": 918.5715789999995,
+          "p90Ms": 974.9616959999985,
+          "p95Ms": 987.0863369999997,
+          "minMs": 918.5653490000004,
+          "maxMs": 987.0863369999997,
+          "meanMs": 945.099845166666,
+          "stdevMs": 23.432459759179626
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 697.1068750000009,
+          "p10Ms": 678.2497269999994,
+          "p90Ms": 726.7913879999996,
+          "p95Ms": 727.876710999999,
+          "minMs": 677.5306960000016,
+          "maxMs": 727.876710999999,
+          "meanMs": 698.6435393333339,
+          "stdevMs": 17.792495286832533
+        },
+        "medianSpeedup": 1.3451942143017852,
+        "pairedSpeedupMedian": 1.3512147624363267,
+        "qualifiedForComparison": true
+      },
+      "restoredPipeline": {
+        "old": {
+          "n": 12,
+          "medianMs": 944.7296364999993,
+          "p10Ms": 924.7678199999991,
+          "p90Ms": 981.0357029999977,
+          "p95Ms": 993.2725060000002,
+          "minMs": 924.6614460000001,
+          "maxMs": 993.2725060000002,
+          "meanMs": 950.9556249999988,
+          "stdevMs": 23.143043373452883
+        },
+        "new": {
+          "n": 12,
+          "medianMs": 704.130102000001,
+          "p10Ms": 683.6425650000019,
+          "p90Ms": 730.6674989999992,
+          "p95Ms": 731.6876189999984,
+          "minMs": 682.892206999999,
+          "maxMs": 731.6876189999984,
+          "meanMs": 704.3688598333341,
+          "stdevMs": 17.450671278072157
+        },
+        "medianSpeedup": 1.3416975553475172,
+        "pairedSpeedupMedian": 1.3482551398386695,
+        "qualifiedForComparison": true
+      }
+    }
+  },
+  "qualificationSummary": {
+    "pairsIncludingSourceAndWarmup": 36,
+    "arenaByteExact": 36,
+    "arenaNear": 36,
+    "volumeBitsExact": 36,
+    "volumeNear": 36,
+    "featuresExact": 36,
+    "displayPositionsByteExact": 36,
+    "displayPositionsNear": 36,
+    "displayNormalsByteExact": 36,
+    "displayNormalsNear": 36,
+    "displayMaxAbsolutePositionDifference": 0.0
+  },
+  "comparisons": [
+    {
+      "workflow": "geometry-first",
+      "round": 0,
+      "source": {
+        "qualified": true,
+        "geometry": {
+          "byteExact": true,
+          "semanticExact": true,
+          "near": true,
+          "numericDifferences": 0,
+          "maxAbsoluteDifference": 0.0,
+          "firstFailures": []
+        },
+        "mesh": {
+          "positions": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "normals": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "indices": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 174858,
+            "newElements": 174858
+          },
+          "faceOffsets": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 161,
+            "newElements": 161
+          }
+        },
+        "featuresExact": true,
+        "featureJsonByteExact": true,
+        "volumeExact": true,
+        "volumeNear": true,
+        "volumeAbsoluteDifference": 0.0,
+        "volumeRelativeDifference": 0.0,
+        "discreteGeometryExact": true,
+        "validAndWatertight": true
+      },
+      "records": [
+        {
+          "iteration": 0,
+          "warmup": true,
+          "distance": 5,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 1,
+          "warmup": true,
+          "distance": 5.02,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "distance": 5.04,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 3,
+          "warmup": false,
+          "distance": 5.06,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 4,
+          "warmup": false,
+          "distance": 5.08,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 5,
+          "warmup": false,
+          "distance": 5.1,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 6,
+          "warmup": false,
+          "distance": 5.12,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 7,
+          "warmup": false,
+          "distance": 5.14,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        }
+      ]
+    },
+    {
+      "workflow": "geometry-first",
+      "round": 1,
+      "source": {
+        "qualified": true,
+        "geometry": {
+          "byteExact": true,
+          "semanticExact": true,
+          "near": true,
+          "numericDifferences": 0,
+          "maxAbsoluteDifference": 0.0,
+          "firstFailures": []
+        },
+        "mesh": {
+          "positions": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "normals": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "indices": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 174858,
+            "newElements": 174858
+          },
+          "faceOffsets": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 161,
+            "newElements": 161
+          }
+        },
+        "featuresExact": true,
+        "featureJsonByteExact": true,
+        "volumeExact": true,
+        "volumeNear": true,
+        "volumeAbsoluteDifference": 0.0,
+        "volumeRelativeDifference": 0.0,
+        "discreteGeometryExact": true,
+        "validAndWatertight": true
+      },
+      "records": [
+        {
+          "iteration": 0,
+          "warmup": true,
+          "distance": 5,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 1,
+          "warmup": true,
+          "distance": 5.02,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "distance": 5.04,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 3,
+          "warmup": false,
+          "distance": 5.06,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 4,
+          "warmup": false,
+          "distance": 5.08,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 5,
+          "warmup": false,
+          "distance": 5.1,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 6,
+          "warmup": false,
+          "distance": 5.12,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 7,
+          "warmup": false,
+          "distance": 5.14,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        }
+      ]
+    },
+    {
+      "workflow": "volume-first",
+      "round": 0,
+      "source": {
+        "qualified": true,
+        "geometry": {
+          "byteExact": true,
+          "semanticExact": true,
+          "near": true,
+          "numericDifferences": 0,
+          "maxAbsoluteDifference": 0.0,
+          "firstFailures": []
+        },
+        "mesh": {
+          "positions": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "normals": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "indices": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 174858,
+            "newElements": 174858
+          },
+          "faceOffsets": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 161,
+            "newElements": 161
+          }
+        },
+        "featuresExact": true,
+        "featureJsonByteExact": true,
+        "volumeExact": true,
+        "volumeNear": true,
+        "volumeAbsoluteDifference": 0.0,
+        "volumeRelativeDifference": 0.0,
+        "discreteGeometryExact": true,
+        "validAndWatertight": true
+      },
+      "records": [
+        {
+          "iteration": 0,
+          "warmup": true,
+          "distance": 5,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 1,
+          "warmup": true,
+          "distance": 5.02,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "distance": 5.04,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 3,
+          "warmup": false,
+          "distance": 5.06,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 4,
+          "warmup": false,
+          "distance": 5.08,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 5,
+          "warmup": false,
+          "distance": 5.1,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 6,
+          "warmup": false,
+          "distance": 5.12,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 7,
+          "warmup": false,
+          "distance": 5.14,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        }
+      ]
+    },
+    {
+      "workflow": "volume-first",
+      "round": 1,
+      "source": {
+        "qualified": true,
+        "geometry": {
+          "byteExact": true,
+          "semanticExact": true,
+          "near": true,
+          "numericDifferences": 0,
+          "maxAbsoluteDifference": 0.0,
+          "firstFailures": []
+        },
+        "mesh": {
+          "positions": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "normals": {
+            "byteExact": true,
+            "near": true,
+            "elements": 87423,
+            "differentBits": 0,
+            "differentValues": 0,
+            "maxAbsoluteDifference": 0.0,
+            "maxScaledDifference": 0.0,
+            "firstFailures": []
+          },
+          "indices": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 174858,
+            "newElements": 174858
+          },
+          "faceOffsets": {
+            "byteExact": true,
+            "near": true,
+            "oldElements": 161,
+            "newElements": 161
+          }
+        },
+        "featuresExact": true,
+        "featureJsonByteExact": true,
+        "volumeExact": true,
+        "volumeNear": true,
+        "volumeAbsoluteDifference": 0.0,
+        "volumeRelativeDifference": 0.0,
+        "discreteGeometryExact": true,
+        "validAndWatertight": true
+      },
+      "records": [
+        {
+          "iteration": 0,
+          "warmup": true,
+          "distance": 5,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 1,
+          "warmup": true,
+          "distance": 5.02,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "distance": 5.04,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 3,
+          "warmup": false,
+          "distance": 5.06,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 4,
+          "warmup": false,
+          "distance": 5.08,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 5,
+          "warmup": false,
+          "distance": 5.1,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 6,
+          "warmup": false,
+          "distance": 5.12,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        },
+        {
+          "iteration": 7,
+          "warmup": false,
+          "distance": 5.14,
+          "qualified": true,
+          "geometry": {
+            "byteExact": true,
+            "semanticExact": true,
+            "near": true,
+            "numericDifferences": 0,
+            "maxAbsoluteDifference": 0.0,
+            "firstFailures": []
+          },
+          "mesh": {
+            "positions": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "normals": {
+              "byteExact": true,
+              "near": true,
+              "elements": 87423,
+              "differentBits": 0,
+              "differentValues": 0,
+              "maxAbsoluteDifference": 0.0,
+              "maxScaledDifference": 0.0,
+              "firstFailures": []
+            },
+            "indices": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 174858,
+              "newElements": 174858
+            },
+            "faceOffsets": {
+              "byteExact": true,
+              "near": true,
+              "oldElements": 161,
+              "newElements": 161
+            }
+          },
+          "featuresExact": true,
+          "featureJsonByteExact": true,
+          "volumeExact": true,
+          "volumeNear": true,
+          "volumeAbsoluteDifference": 0.0,
+          "volumeRelativeDifference": 0.0,
+          "discreteGeometryExact": true,
+          "validAndWatertight": true
+        }
+      ]
+    }
+  ],
+  "elapsedSeconds": 81.05419325828552,
+  "runs": [
+    {
+      "workflow": "geometry-first",
+      "round": 0,
+      "order": [
+        "old",
+        "new"
+      ],
+      "oldMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9560400,
+          "wasmSha256": "368d2eb930828e9bcc265343f71550cf4141b53b2cbfa6b04c632a0a7ebc9c6f",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2705941,
+          "wasmSha256": "e6e689baea1029087f6c4cfbd9522fa4a7cf30b60d1e1b9f2e0d6c5240ecb0d7",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "geometry-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "meshKernel",
+            "meshTransfer",
+            "volume",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 159.276298
+      },
+      "newMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9563178,
+          "wasmSha256": "ccf8437b0ad95cbda83c6173aab3d6c1508ae42ac6255d27ded3ee1065de2a93",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2708719,
+          "wasmSha256": "67733cd58e704acf863d4ee4bede774a5109e5b2bc058a4c14bb77740b5382c3",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "geometry-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "meshKernel",
+            "meshTransfer",
+            "volume",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 161.37798299999997
+      }
+    },
+    {
+      "workflow": "geometry-first",
+      "round": 1,
+      "order": [
+        "new",
+        "old"
+      ],
+      "oldMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9560400,
+          "wasmSha256": "368d2eb930828e9bcc265343f71550cf4141b53b2cbfa6b04c632a0a7ebc9c6f",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2705941,
+          "wasmSha256": "e6e689baea1029087f6c4cfbd9522fa4a7cf30b60d1e1b9f2e0d6c5240ecb0d7",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "geometry-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "meshKernel",
+            "meshTransfer",
+            "volume",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 163.053922
+      },
+      "newMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9563178,
+          "wasmSha256": "ccf8437b0ad95cbda83c6173aab3d6c1508ae42ac6255d27ded3ee1065de2a93",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2708719,
+          "wasmSha256": "67733cd58e704acf863d4ee4bede774a5109e5b2bc058a4c14bb77740b5382c3",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "geometry-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "meshKernel",
+            "meshTransfer",
+            "volume",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 154.490727
+      }
+    },
+    {
+      "workflow": "volume-first",
+      "round": 0,
+      "order": [
+        "old",
+        "new"
+      ],
+      "oldMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9560400,
+          "wasmSha256": "368d2eb930828e9bcc265343f71550cf4141b53b2cbfa6b04c632a0a7ebc9c6f",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2705941,
+          "wasmSha256": "e6e689baea1029087f6c4cfbd9522fa4a7cf30b60d1e1b9f2e0d6c5240ecb0d7",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "volume-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "volume",
+            "meshKernel",
+            "meshTransfer",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 166.101957
+      },
+      "newMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9563178,
+          "wasmSha256": "ccf8437b0ad95cbda83c6173aab3d6c1508ae42ac6255d27ded3ee1065de2a93",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2708719,
+          "wasmSha256": "67733cd58e704acf863d4ee4bede774a5109e5b2bc058a4c14bb77740b5382c3",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "volume-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "volume",
+            "meshKernel",
+            "meshTransfer",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 162.888379
+      }
+    },
+    {
+      "workflow": "volume-first",
+      "round": 1,
+      "order": [
+        "new",
+        "old"
+      ],
+      "oldMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9560400,
+          "wasmSha256": "368d2eb930828e9bcc265343f71550cf4141b53b2cbfa6b04c632a0a7ebc9c6f",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/main611-baseline-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2705941,
+          "wasmSha256": "e6e689baea1029087f6c4cfbd9522fa4a7cf30b60d1e1b9f2e0d6c5240ecb0d7",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "volume-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "volume",
+            "meshKernel",
+            "meshTransfer",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 164.66415700000002
+      },
+      "newMetadata": {
+        "kernel": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm/pkg",
+          "name": "remus-wasm",
+          "version": "2026.1.58",
+          "wasmBytes": 9563178,
+          "wasmSha256": "ccf8437b0ad95cbda83c6173aab3d6c1508ae42ac6255d27ded3ee1065de2a93",
+          "wrapperSha256": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8"
+        },
+        "io": {
+          "directory": "<audit-artifacts>/candidate-immutable-packages/crates/wasm-io/pkg",
+          "name": "remus-wasm-io",
+          "version": "2026.1.58",
+          "wasmBytes": 2708719,
+          "wasmSha256": "67733cd58e704acf863d4ee4bede774a5109e5b2bc058a4c14bb77740b5382c3",
+          "wrapperSha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+        },
+        "fixture": {
+          "path": "<repository>/crates/io/tests/data/shapr3d_hammer_holder.step",
+          "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+        },
+        "node": "v24.14.0",
+        "versions": {
+          "node": "24.14.0",
+          "acorn": "8.15.0",
+          "ada": "3.4.2",
+          "amaro": "1.1.7",
+          "ares": "1.34.6",
+          "brotli": "1.2.0",
+          "cldr": "48.0",
+          "icu": "78.2",
+          "llhttp": "9.3.0",
+          "merve": "1.0.0",
+          "modules": "137",
+          "napi": "10",
+          "nbytes": "0.1.1",
+          "ncrypto": "0.0.1",
+          "nghttp2": "1.68.0",
+          "openssl": "3.5.5",
+          "simdjson": "4.2.4",
+          "simdutf": "6.4.0",
+          "sqlite": "3.51.2",
+          "tz": "2025c",
+          "undici": "7.21.0",
+          "unicode": "17.0",
+          "uv": "1.51.0",
+          "uvwasi": "0.0.23",
+          "v8": "13.6.233.17-node.41",
+          "zlib": "1.3.1-e00f703",
+          "zstd": "1.5.7"
+        },
+        "platform": "linux",
+        "architecture": "x64",
+        "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+        "affinity": "0",
+        "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+        "timingStatus": "measured",
+        "timingsExcluded": false,
+        "policy": {
+          "displayDeflection": 0.02,
+          "displayAngle": 0.35,
+          "measureDeflection": 0.08,
+          "distance": "5 + iteration * 0.02",
+          "selectionAreaTolerance": 0.0001,
+          "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+          "workflow": "volume-first",
+          "order": [
+            "move",
+            "validate",
+            "bbox",
+            "volume",
+            "meshKernel",
+            "meshTransfer",
+            "recognize"
+          ],
+          "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+        },
+        "importMs": 159.391256
+      }
+    }
+  ]
+}
