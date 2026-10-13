@@ -49,9 +49,9 @@ export const MODULES = Object.freeze({
 
 const POLICY_SCRIPT = fileURLToPath(new URL('./wasm-size-policy.mjs', import.meta.url));
 const DECLARATION_PREFIX = 'WASM-Size:';
-// A tier token ends at the end of the line, whitespace, `(`, `,` or `;`, so
-// `Tier: corejunk` is no tier. A parenthesized reason may follow it.
-const TIER = /\bTier:\s*(?:core|native|lazy:[A-Za-z0-9_-]+)(?=$|[\s(,;])(?:\s*\([^)]*\))?/i;
+// Parenthesized reasons are removed before matching tiers. Match every tier
+// so a second tier cannot stand in for the capability. Tokens must be complete.
+const TIER = /\bTier:\s*(?:core|native|lazy:[A-Za-z0-9][A-Za-z0-9_-]*)(?=$|[\s,;])/gi;
 // A clause that only states a size, such as `+120 KiB raw`, names no capability.
 const SIZE_ONLY = /^[+-]?\s*[0-9][0-9.,]*\s*(?:B|bytes?|KB|KiB|MB|MiB)?(?:\s+(?:raw|gzip|brotli))?$/i;
 const EXAMPLE = 'WASM-Size: +120 KiB raw, curve projection, Tier: core (writes the journal)';
@@ -73,12 +73,18 @@ export function sizeDeclarations(body) {
 }
 
 /**
- * A declaration names a module tier and, besides the tier and any size
- * figure, a capability: at least one clause with a word of three letters.
+ * A declaration names a complete module tier and, besides tiers, parenthesized
+ * reasons and size figures, a capability: a clause with a word of three letters.
  */
 export function isValidDeclaration(line) {
-  const rest = line.slice(DECLARATION_PREFIX.length);
-  if (!TIER.test(rest)) return false;
+  if (!line.startsWith(DECLARATION_PREFIX)) return false;
+  let rest = line.slice(DECLARATION_PREFIX.length);
+  // Remove nested reasons too, and reject an unfinished parenthetical rather
+  // than treating its text as the capability or part of a tier token.
+  while (/\([^()]*\)/.test(rest)) rest = rest.replace(/\([^()]*\)/g, ' ');
+  if (/[()]/.test(rest)) return false;
+  const tiers = rest.match(TIER) ?? [];
+  if (tiers.length === 0 || tiers.length !== (rest.match(/\bTier:/gi) ?? []).length) return false;
   return rest
     .replace(TIER, ',')
     .split(/[,;]/)
