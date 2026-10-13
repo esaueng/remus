@@ -223,7 +223,7 @@ Quick reference — find the right file for any task:
 | Task | File(s) |
 |------|---------|
 | GFA entry point | `gfa.rs` |
-| Store-local patch GFA (`cut_patch`: face-subset store, tool pieces classified against the whole blank, open-patch cleanup without shell assembly) | `gfa.rs`, `ds/shape_store.rs`, `builder/mod.rs`, `builder/builder_solid.rs` |
+| Store-local patch GFA (`boolean_patch`/`cut_patch`: face-subset store, tool pieces classified against the whole blank, open-patch cleanup without shell assembly; full assembly for an intersect) | `gfa.rs`, `ds/shape_store.rs`, `builder/mod.rs`, `builder/builder_solid.rs` |
 | Boolean operation selection | `bop.rs` |
 | Error types | `error.rs` |
 | GFA data structures (Pave, PaveBlock, GfaArena) | `ds/pave.rs`, `ds/arena.rs` |
@@ -430,7 +430,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
-| Opt-in store-local cut: the GFA on the faces a cut touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
+| Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |
@@ -577,6 +577,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Per-edge convexity + face material-sense qualification (B16) | `bindings/qualify_edge_relations_tests.rs` |
 | Ordered wire traversal contract (B16) | `bindings/wire_traversal_contract_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
+| Store-local boolean switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)

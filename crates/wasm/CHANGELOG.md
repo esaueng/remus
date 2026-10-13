@@ -49,6 +49,16 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* Add `setStoreLocalCuts(enabled)` and `storeLocalCutsEnabled()` (direct and
+  batch), the switch for store-local booleans (off by default; despite the
+  name it covers cut, fuse and intersect). When on, a boolean whose second
+  solid reaches only part of the first runs on that part and is spliced
+  back onto the untouched faces: on a 576-hole drilled plate, a slot cut
+  costs 46% less, a rib fuse 68% and a slot intersect 37%. The result is the same solid (faces,
+  edges, vertices, volume) with faces and entities in a different order
+  and numbering. The setting is per thread, so it applies to every kernel
+  in the module instance.
+
 * Add `transformDetailed` and `copyAndTransformSolidDetailed` (direct and
   batch), typed O4.7 twins of `transformSolid` and `copyAndTransformSolid`
   (B74). Same engine, matrix contract (16 row-major values), and validation
