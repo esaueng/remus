@@ -1,0 +1,22 @@
+{
+  "source": "a68e2639d191d68c07584a4f755c76c6a55ceac5",
+  "sourceRestored": true,
+  "diagnosticOnly": true,
+  "timingClaimsExcluded": true,
+  "artifacts": {
+    "count_volume.cjs": "171b3eb23196614d55a5a04adb18448a836a9244f96821ba061c8788a6517e32",
+    "counter-package/remus_wasm_bg.wasm": "30193a1efc97e9c2c766462112d4700d46d4201f3a8f9d3acd94c578d2c95167",
+    "counter-package/remus_wasm_node.cjs": "415f8da6e547e228d8f5ef99ccd35a400941cdf61c418c15f799f2038ecf4dc8",
+    "diagnostic-overlay.patch": "6b0ecdc5d4eb547a60fdc8b0c98a2dd2266f6dd140d48e3438160fb3eb2eefe2",
+    "nonplanar.original.rs": "5f601e5c29ca17faecee02d80e8b16cf96685d92313f5736474e0738b6019d38",
+    "shipping-attribution.json": "367059aca4b7da2cf90007ddb8ae443c47f561f3a09a0488c939ea7e8c508a01",
+    "work-count-summary.json": "8a4361c359b3130646a461ed116e3db66aa1aef58c866a65583dc03f94e8b1df"
+  },
+  "publicPayloadEncoding": {
+    "diagnostic-overlay.patch": {
+      "file": "diagnostic-overlay.json",
+      "field": "patch",
+      "decodedBytesMatchOriginalSha256": true
+    }
+  }
+}
