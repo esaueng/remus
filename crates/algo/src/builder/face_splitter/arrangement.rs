@@ -4,6 +4,7 @@
 //! pcurve-to-source parameter correspondence. No projection, fitting or
 //! production splitter fallback happens here. Coincidence is never a weld.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_2;
 
@@ -359,7 +360,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         }
     }
     for (i, list) in cuts.iter_mut().enumerate() {
-        list.sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
+        list.compact_sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
         for pair in 0..list.len().saturating_sub(1) {
             work.step()?;
             let (left, right) = (list[pair], list[pair + 1]);
@@ -525,7 +526,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         for _ in 0..rotation.len().saturating_mul(rotation.len()) {
             work.step()?;
         }
-        rotation.sort_by(|&a, &b| tangent_order(&halves[a], &halves[b], &lookup));
+        rotation.compact_sort_by(|&a, &b| tangent_order(&halves[a], &halves[b], &lookup));
         for pair in rotation.windows(2) {
             if tangent_order(&halves[pair[0]], &halves[pair[1]], &lookup).is_eq() {
                 return Err(ArrangementError::AmbiguousContact);

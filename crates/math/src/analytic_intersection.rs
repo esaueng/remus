@@ -4,6 +4,7 @@
 //! and torus surfaces with planes, as well as a general marching approach
 //! for analytic-analytic surface intersections.
 
+use crate::compact_sort::CompactSort;
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, SQRT_2, TAU};
 
 use crate::MathError;
@@ -1758,7 +1759,7 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
             *t -= f / df;
         }
     }
-    roots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    roots.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     roots
 }
 
@@ -4902,7 +4903,7 @@ mod tests {
             })
             .collect();
         assert_eq!(zs.len(), 2, "both sections must be exact circles");
-        zs.sort_by(f64::total_cmp);
+        zs.compact_sort_by(f64::total_cmp);
         let z = 27.0_f64.sqrt();
         assert!((zs[0] + z).abs() < 1e-9 && (zs[1] - z).abs() < 1e-9);
     }

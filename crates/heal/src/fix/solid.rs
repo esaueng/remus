@@ -3,6 +3,7 @@
 //! Orchestrates shell, face, wire, and edge fixes, plus solid-level
 //! repairs such as coincident vertex merging and small face removal.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashMap;
 
 use remus_math::vec::Point3;
@@ -177,7 +178,7 @@ fn merge_coincident_vertices(
             }
         }
     }
-    edge_ids.sort_by_key(|e| e.index());
+    edge_ids.compact_sort_by_key(|e| e.index());
     edge_ids.dedup_by_key(|e| e.index());
 
     let updates: Vec<_> = edge_ids

@@ -5,6 +5,7 @@
 //! point. Uses rotation-minimizing frames (double-reflection method) to avoid
 //! Frenet-frame singularities on straight segments and inflection points.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface_fitting::interpolate_surface;
@@ -416,7 +417,7 @@ pub fn densify_path_points(points: &[Point3]) -> Vec<Point3> {
     if gaps.is_empty() {
         return points.to_vec();
     }
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    gaps.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median = gaps[gaps.len() / 2];
     let max_gap = median * GAP_RATIO;
     if max_gap <= 0.0 {
@@ -2591,7 +2592,7 @@ pub fn multi_section_sweep(
     // The loft joins profiles in order along the spine, so place them by
     // ascending parameter regardless of the caller's ordering.
     let mut ordered: Vec<(FaceId, f64)> = sections.to_vec();
-    ordered.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    ordered.compact_sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut placed: Vec<FaceId> = Vec::with_capacity(ordered.len());
     for (face_id, p) in ordered {

@@ -1,3 +1,4 @@
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::FRAC_PI_2;
 
@@ -110,7 +111,7 @@ pub(super) fn validate_clearance<V: std::ops::Deref<Target = [FaceId]>>(
             "quarter-wall requires four distinct planar supports",
         ));
     }
-    levels.sort_by(f64::total_cmp);
+    levels.compact_sort_by(f64::total_cmp);
     if levels[1] - levels[0] <= tolerance.linear {
         return Err(unsupported(selected, "quarter-wall has no axial span"));
     }
@@ -141,7 +142,7 @@ pub(super) fn validate_clearance<V: std::ops::Deref<Target = [FaceId]>>(
             ));
         }
     }
-    caps.sort_by(f64::total_cmp);
+    caps.compact_sort_by(f64::total_cmp);
     if radial_normals.len() != 2
         || caps.len() != 2
         || radial_normals[0].dot(radial_normals[1]).abs() > tolerance.angular

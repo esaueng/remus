@@ -5,6 +5,7 @@
 //! mutual intersections and assembles them into closed wire loops for each
 //! offset face.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::tolerance::Tolerance;
@@ -43,7 +44,7 @@ pub fn build_wire_loops(topo: &mut Topology, data: &mut OffsetData) -> Result<()
         .filter(|(_, of)| of.status == OffsetStatus::Done)
         .map(|(&fid, _)| fid)
         .collect();
-    active_faces.sort_by_key(|face_id| face_id.index());
+    active_faces.compact_sort_by_key(|face_id| face_id.index());
 
     // Planar faces reconstruct their corners independently from the same
     // geometric lines. Keep one tolerance-deduplicated vertex and one
@@ -611,7 +612,7 @@ fn build_loops_via_line_intersection(
         if corners.len() < 2 {
             continue;
         }
-        corners.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        corners.compact_sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         for pair in corners.windows(2) {
             let v_start = pair[0].0;
             let v_end = pair[1].0;

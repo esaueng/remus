@@ -1,5 +1,6 @@
 //! Non-planar CDT and fallback paths for face tessellation.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -184,7 +185,7 @@ pub(super) fn tessellate_band_face_local(
         }) {
             return Ok(None);
         }
-        pts.sort_by(|a, b| {
+        pts.compact_sort_by(|a, b| {
             project(*a)
                 .0
                 .partial_cmp(&project(*b).0)
@@ -1010,7 +1011,7 @@ pub(super) fn tessellate_torus_two_rim_band(
             .iter()
             .map(|&(u, v, g)| if lat_mode { (u, g) } else { (v, g) })
             .collect();
-        ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        ring.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let max_gap = ring
             .windows(2)
             .map(|w| w[1].0 - w[0].0)
@@ -1178,7 +1179,7 @@ fn collect_torus_phi_ring(
     if ring.len() < 3 {
         return Ok(None);
     }
-    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ring.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(Some((ring, winding)))
 }
 
@@ -1240,7 +1241,7 @@ fn table_u_fold_vs(table: &[(f64, f64)]) -> Vec<f64> {
         }
     }
     // One column per corner: merge detections within 0.02 rad of tube angle.
-    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    out.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mut merged: Vec<f64> = Vec::with_capacity(out.len());
     for v in out {
         if merged.last().is_none_or(|&last| (v - last).abs() > 0.02) {
@@ -1392,7 +1393,7 @@ pub(super) fn tessellate_torus_notch_band(
             }
         }
     }
-    col_v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    col_v.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let deltas: Vec<f64> = col_v.iter().map(|&v| delta(v)).collect();
     // Loops touching (or crossing) in u bound no band here: defer.
     if deltas
@@ -1436,7 +1437,7 @@ pub(super) fn tessellate_torus_notch_band(
             });
             row.push((v, gid));
         }
-        row.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        row.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         row
     };
 
@@ -1603,7 +1604,7 @@ pub(super) fn tessellate_latitude_band_shared(
             (*v_outer, ring_outer.clone()),
             (*v_inner, ring_inner.clone()),
         ];
-        rings.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        rings.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let (v_lo, ring_lo) = (&rings[0].0, &rings[0].1);
         let (v_hi, ring_hi) = (&rings[1].0, &rings[1].1);
         let (v_lo, v_hi) = (*v_lo, *v_hi);
@@ -1892,7 +1893,7 @@ fn collect_constant_v_ring(
     if (v_max - v_min) > 1e-6 {
         return Ok(None);
     }
-    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ring.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Full-revolution check: the largest angular gap between consecutive
     // longitudes (including the wrap-around) must be well under a full turn —
@@ -1983,7 +1984,7 @@ fn collect_var_v_ring(
             return Ok(None);
         }
     }
-    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ring.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Full-revolution check: the largest longitude gap (including wrap-around)
     // must be under a full turn — else it is a partial arc, not a closed loop.
@@ -2300,7 +2301,7 @@ pub(super) fn tessellate_converted_wall_band_shared(
                 (u * TAU, gid)
             })
             .collect();
-        ring.sort_by(|a, b| a.0.total_cmp(&b.0));
+        ring.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
         rings.push(ring);
     }
     let project = {
@@ -2404,7 +2405,7 @@ pub(super) fn tessellate_nurbs_blend_band_shared(
             .collect::<LatRing>();
         rims.push((projected.u, ring));
     }
-    rims.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rims.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let (u0, u1) = surface.domain_u();
     let (v0, v1) = surface.domain_v();
@@ -3903,7 +3904,7 @@ fn stepped_rim_interior_points(
             levels.push(level);
         }
     }
-    levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    levels.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     levels.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
     if levels.len() < 3 {
         return Ok(None);
@@ -3980,7 +3981,7 @@ fn stepped_rim_interior_points(
             }
         }
     }
-    rows.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    rows.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     rows.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
     if rows.is_empty() {
         return Ok(None);
@@ -4017,7 +4018,7 @@ fn stepped_rim_interior_points(
             }
         }
     }
-    corner_us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    corner_us.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     corner_us.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
 
     let emitted_columns = if n_u > 1 { columns } else { corner_us.len() };
@@ -4515,7 +4516,7 @@ fn fill_sphere_latitude_cap(
     if ring.len() < 3 || v_max - v_min > 1e-6 {
         return false;
     }
-    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ring.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let max_gap = ring
         .windows(2)
@@ -5244,7 +5245,7 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
     if ring.len() < 3 {
         return decline(merged, point_to_global);
     }
-    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ring.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let max_gap = ring
         .windows(2)
         .map(|pair| pair[1].0 - pair[0].0)

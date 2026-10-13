@@ -4,6 +4,7 @@
 //! discover sections or invoke recognition, fitting, GFA, or the arrangement.
 //! Whole-span homogeneous residual and normal bounds precede trim decisions.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::context::OperationContext;
 use remus_math::curves2d::Curve2D;
 use remus_math::nurbs::{curve::NurbsCurve, surface::NurbsSurface};
@@ -580,7 +581,7 @@ pub(super) fn clip_section(
             }
         }
     }
-    events.sort_by(|a, b| a.0.total_cmp(&b.0));
+    events.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     for pair in events.windows(2) {
         if pair[0].1.hi >= pair[1].1.lo {
             let (a, b) = (&pair[0], &pair[1]);
@@ -600,7 +601,7 @@ pub(super) fn clip_section(
     }
     let mut cuts = vec![0.0, 1.0];
     cuts.extend(events.iter().map(|e| e.0));
-    cuts.sort_by(f64::total_cmp);
+    cuts.compact_sort_by(f64::total_cmp);
     cuts.dedup_by(|a, b| same(*a, *b));
     let mut intervals = Vec::new();
     for w in cuts.windows(2) {

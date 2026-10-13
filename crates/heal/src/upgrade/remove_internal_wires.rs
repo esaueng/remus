@@ -1,5 +1,6 @@
 //! Remove internal (hole) wires from faces.
 
+use remus_math::compact_sort::CompactSort;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::solid::SolidId;
@@ -88,8 +89,10 @@ fn remove_internal_wires_impl(
         }
         history.edges = edges.into_iter().collect();
         history.vertices = vertices.into_iter().collect();
-        history.edges.sort_by_key(|edge| edge.index());
-        history.vertices.sort_by_key(|vertex| vertex.index());
+        history.edges.compact_sort_by_key(|edge| edge.index());
+        history
+            .vertices
+            .compact_sort_by_key(|vertex| vertex.index());
     }
     Ok(removed)
 }

@@ -3,6 +3,7 @@ use super::{
     Arrangement, ArrangementError, CurveUse, DomainIdentification, ParamDomain, PeriodicRegion,
     Result, Work, geometry,
 };
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves2d::Curve2D;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
@@ -107,7 +108,7 @@ pub(super) fn quotient(
         a.vertices[e.from].uv.y().min(a.vertices[e.to].uv.y())
     };
     for edges in &mut seam_edges {
-        edges.sort_by(|&x, &y| lower(x).total_cmp(&lower(y)));
+        edges.compact_sort_by(|&x, &y| lower(x).total_cmp(&lower(y)));
     }
     if seam_edges[0].len() != seam_edges[1].len() {
         return Err(ArrangementError::UnsupportedDomain);
@@ -130,8 +131,8 @@ pub(super) fn quotient(
         let ey = &a.half_edges[y];
         let mut vx = [ex.from, ex.to];
         let mut vy = [ey.from, ey.to];
-        vx.sort_by(|&x, &y| a.vertices[x].uv.y().total_cmp(&a.vertices[y].uv.y()));
-        vy.sort_by(|&x, &y| a.vertices[x].uv.y().total_cmp(&a.vertices[y].uv.y()));
+        vx.compact_sort_by(|&x, &y| a.vertices[x].uv.y().total_cmp(&a.vertices[y].uv.y()));
+        vy.compact_sort_by(|&x, &y| a.vertices[x].uv.y().total_cmp(&a.vertices[y].uv.y()));
         for (x, y) in vx.into_iter().zip(vy) {
             work.step()?;
             // Declared seam equivalence is the certificate; the `v` coordinates
@@ -177,7 +178,7 @@ pub(super) fn quotient(
         adjacency[fx].push(fy);
         adjacency[fy].push(fx);
     }
-    a.identifications.sort_by_key(|p| p.vertices);
+    a.identifications.compact_sort_by_key(|p| p.vertices);
     let mut seen = vec![false; a.regions.len()];
     for region in 0..a.regions.len() {
         work.step()?;

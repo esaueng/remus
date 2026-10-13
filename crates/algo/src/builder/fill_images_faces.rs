@@ -22,6 +22,7 @@
 //! recognized diagnostic families) must name a probe family to observe it:
 //! an unlisted prefix reads as a false zero.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::BTreeMap;
 
 /// Quantized 3D position pair for CommonBlock edge matching.
@@ -1643,7 +1644,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
         }
 
         // Strictly ordered in v at every u, or there is no band between them.
-        loops.sort_by(|a, b| {
+        loops.compact_sort_by(|a, b| {
             mean_v(&a.1)
                 .partial_cmp(&mean_v(&b.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -1914,7 +1915,7 @@ fn presplit_closed_winding_loops(
                     .then_some(hit.parameter)
             })
             .collect();
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         ts.dedup_by(|a, b| (*a - *b).abs() < margin);
         if ts.len() < 2 {
             out.push(s.clone());
@@ -3133,7 +3134,7 @@ fn line_section_boundary_extensions(
     if cover.is_empty() {
         return Vec::new();
     }
-    cover.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cover.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut exts = Vec::new();
     let mut cur = 0.0_f64;
     for &(lo, hi) in &cover {
@@ -4911,7 +4912,7 @@ fn presplit_sections_at_registry(
             out.push(s.clone());
             continue;
         }
-        cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        cuts.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         cuts.dedup_by(|a, b| (a.1 - b.1).length() < guard);
         let mut prev = s.start;
         for (_, p) in &cuts {

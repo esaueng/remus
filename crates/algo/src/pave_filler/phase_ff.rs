@@ -7,6 +7,7 @@
 //! Each raw curve also gets a pave block spanning its full parameter
 //! range, with topology vertices and an edge created at the endpoints.
 
+use remus_math::compact_sort::CompactSort;
 use std::borrow::Cow;
 
 use remus_math::aabb::Aabb3;
@@ -394,7 +395,7 @@ impl JunctionRegistry {
                 ((validated - entry.point).length() <= weld).then_some(entry.point)
             })
             .collect::<Vec<_>>();
-        proven.sort_by(|a, b| {
+        proven.compact_sort_by(|a, b| {
             (*a - boundary_junction)
                 .length_squared()
                 .partial_cmp(&(*b - boundary_junction).length_squared())
@@ -3570,7 +3571,7 @@ fn trim_torus_oval_to_box_face(
         best_f
     };
     let mut marks: Vec<(f64, Point3)> = crossings.iter().map(|&p| (frac_of(p), p)).collect();
-    marks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    marks.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if marks.len() < 2 {
         return None;
     }
@@ -4599,7 +4600,7 @@ fn trim_ellipse_to_boundary_crossings(
         .into_iter()
         .map(|p| (sec.project(p).rem_euclid(std::f64::consts::TAU), p))
         .collect();
-    t_pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    t_pts.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     // Drop near-duplicate parameters (a crossing hit by two adjacent edges).
     t_pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9);
     if t_pts.len() < 2 {
@@ -5142,7 +5143,7 @@ fn trim_open_curve_to_plane_face_lines(
     };
     let mut ts: Vec<f64> = Vec::with_capacity(crossings.len() + 2);
     ts.push(raw.t_range.0);
-    crossings.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    crossings.compact_sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     ts.extend(crossings);
     ts.push(raw.t_range.1);
     ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
@@ -7670,7 +7671,7 @@ fn closed_circle_boundary_crossings(
         }
     }
 
-    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    hits.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
 
     // Midpoint-split spans whose BOTH ends were minted by the same boundary
     // ARC edge: the span between them shares both endpoints with that arc (a
@@ -7697,7 +7698,7 @@ fn closed_circle_boundary_crossings(
         for (t, p) in mids {
             hits.push((t, p, None));
         }
-        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        hits.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     }
 
     log::trace!(
@@ -7833,7 +7834,7 @@ fn hits_are_inscribed_polygon(hits: &[(f64, Point3)]) -> bool {
         return false;
     }
     let mut angles: Vec<f64> = hits.iter().map(|(t, _)| t.rem_euclid(TAU)).collect();
-    angles.sort_by(f64::total_cmp);
+    angles.compact_sort_by(f64::total_cmp);
     #[allow(clippy::cast_precision_loss)]
     let expected = TAU / angles.len() as f64;
     // Relative slack so coarse polygons (few segments) and fine ones (many)

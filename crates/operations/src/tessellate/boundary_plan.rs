@@ -36,6 +36,7 @@
 //! (PERF-D01) and broader parallelism (PERF-D04) build on; neither is
 //! implemented here.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -435,7 +436,7 @@ impl BoundaryPlan {
             let Some(mut run) = grouped.remove(&key) else {
                 continue;
             };
-            run.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            run.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
             let mut deduped: Vec<(f64, u32)> = Vec::with_capacity(run.len());
             let mut seen: DetHashSet<u32> = DetHashSet::default();
             for (t, gid) in run {

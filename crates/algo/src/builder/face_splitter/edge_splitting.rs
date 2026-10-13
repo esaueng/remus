@@ -1,5 +1,6 @@
 //! Curve-specific edge splitting at 3D intersection points.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Point3;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
@@ -349,7 +350,7 @@ pub(super) fn find_splits_on_circle(
         }
         splits.push((t_norm, closest));
     }
-    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     // Only once the rim is actually being cut. An UNSPLIT closed rim is a full
     // circle, which `domain_with_endpoints` recovers from the curve's own
@@ -409,7 +410,7 @@ fn subdivide_ambiguous_closed_rim_pieces(
                 splits.push((t, circle.evaluate(angle)));
             }
         }
-        splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     }
     let mut bounds: Vec<f64> = Vec::with_capacity(splits.len() + 2);
     bounds.push(0.0);
@@ -434,7 +435,7 @@ fn subdivide_ambiguous_closed_rim_pieces(
         return;
     }
     splits.extend(added);
-    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 }
 
 /// True when a circle boundary edge is an open iso-v rim on a cylinder/cone —
@@ -553,7 +554,7 @@ pub(super) fn find_splits_on_nurbs_section(
         }
         splits.push((t, sp));
     }
-    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
@@ -600,7 +601,7 @@ pub(super) fn find_splits_on_section_arc(
         }
         splits.push((t_norm, sp));
     }
-    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
@@ -649,7 +650,7 @@ pub(super) fn find_splits_on_section_ellipse(
         }
         splits.push((t_norm, sp));
     }
-    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
@@ -680,7 +681,7 @@ pub(super) fn find_splits_on_ellipse(
         }
         splits.push((t_norm, sp));
     }
-    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    splits.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }

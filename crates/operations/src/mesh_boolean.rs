@@ -13,6 +13,7 @@
 use remus_math::aabb::Aabb3;
 use remus_math::bvh::Bvh;
 use remus_math::cdt::Cdt;
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
 use remus_math::predicates::orient3d;
 use remus_math::vec::{Point2, Point3, Vec3};
@@ -1025,7 +1026,7 @@ fn split_mesh_conforming(
                     on_seg.push((t, k));
                 }
             }
-            on_seg.sort_by(|x, y| x.0.total_cmp(&y.0));
+            on_seg.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
             let mut prev = i0;
             for &(_, k) in &on_seg {
                 if prev != k {
@@ -1093,7 +1094,7 @@ fn split_mesh_conforming(
                     .map(|&p| ((p - ea).dot(dir) / len_sq, p))
                     .filter(|&(t, _)| t > 0.0 && t < 1.0)
                     .collect();
-                with_t.sort_by(|x, y| x.0.total_cmp(&y.0));
+                with_t.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
                 edge_pts[e] = with_t.into_iter().map(|(_, p)| p).collect();
             }
         }

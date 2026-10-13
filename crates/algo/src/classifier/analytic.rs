@@ -9,6 +9,7 @@
 //! logic. Bug fixes should be applied here first; the operations copy
 //! will be deleted during the GFA step 5 switchover.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -782,7 +783,7 @@ fn try_build_cone_classifier(
         }
     }
 
-    caps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    caps.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let (mut z_min, mut z_max) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut r_at_z_min, mut r_at_z_max) = (0.0, 0.0);
@@ -1089,7 +1090,7 @@ fn try_build_composite_classifier(
         // Sort and dedup within tolerance; more than 2 distinct offsets on
         // an axis means extra faces the box cannot represent.
         let sort_dedup = |v: &mut Vec<f64>| -> bool {
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            v.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             v.dedup_by(|a, b| (*a - *b).abs() < tol.linear);
             v.len() <= 2
         };

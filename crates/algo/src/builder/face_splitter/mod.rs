@@ -29,6 +29,7 @@ pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 
 pub use conversion::collect_wire_points;
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::context::OperationContext;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point2, Point3, Vec3};
@@ -514,7 +515,7 @@ fn split_plane_boundary_arcs_at_points(
                 Vec::new()
             }
         };
-        splits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        splits.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         splits.dedup_by(|a, b| (*a - *b).abs() < tol);
         if splits.is_empty() {
             result.push(edge);
@@ -777,7 +778,7 @@ fn integrate_holes_plane(
                 any_crossing = true;
             }
         }
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         ts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
         for w in ts.windows(2) {
             let (ta, tb) = (w[0], w[1]);
@@ -834,7 +835,7 @@ fn integrate_holes_plane(
                 any_crossing = true;
             }
         }
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         ts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
         for w in ts.windows(2) {
             let (ta, tb) = (w[0], w[1]);
@@ -1715,7 +1716,7 @@ fn split_periodic_face_by_winding_chain(
         });
     }
 
-    separators.sort_by(|a, b| {
+    separators.compact_sort_by(|a, b| {
         a.v_seam
             .partial_cmp(&b.v_seam)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -2501,7 +2502,7 @@ fn is_wall_transverse_section_ring(sections: &[SectionEdge], surface: &FaceSurfa
     // Covered span = period minus the largest gap between sorted samples. A
     // transverse ring covers the whole period (span ≈ period); a partial arc
     // leaves a large gap.
-    us.sort_by(f64::total_cmp);
+    us.compact_sort_by(f64::total_cmp);
     let mut max_gap = 0.0_f64;
     for w in us.windows(2) {
         max_gap = max_gap.max(w[1] - w[0]);
@@ -4627,7 +4628,7 @@ fn split_cylinder_band_by_arrangement(
             gens.push((u, v0, v1));
         }
     }
-    gens.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    gens.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     // Each removed sector is bounded by a generator pair. Going around from the
     // seam (kept material -- it is an original boundary edge), the arcs alternate
     // kept / removed, so consecutive sorted generators pair (0,1),(2,3),... into
@@ -4720,7 +4721,7 @@ fn split_cylinder_band_by_arrangement(
                 breaks.push(hv);
             }
         }
-        breaks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        breaks.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         breaks.dedup_by(|a, b| (*a - *b).abs() <= tol);
         for w in breaks.windows(2) {
             let (va, vb) = (w[0], w[1]);
@@ -4742,7 +4743,7 @@ fn split_cylinder_band_by_arrangement(
                 breaks.push(vu);
             }
         }
-        breaks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        breaks.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         breaks.dedup_by(|a, b| (*a - *b).abs() <= cov);
         // Keep every ring piece under a half turn. An open circle edge is
         // read downstream as the SHORTER arc between its endpoints (the
@@ -4785,7 +4786,7 @@ fn split_cylinder_band_by_arrangement(
     }
 
     // Dedup undirected sub-edges by their vertex-key pair.
-    sub.sort_by(|l, r| {
+    sub.compact_sort_by(|l, r| {
         let lk = if l.0 <= l.1 { (l.0, l.1) } else { (l.1, l.0) };
         let rk = if r.0 <= r.1 { (r.0, r.1) } else { (r.1, r.0) };
         lk.cmp(&rk)
@@ -5288,7 +5289,7 @@ fn clip_sections_to_outer_region(
             kept.push(s);
             continue;
         }
-        cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        cuts.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let mut piece_bounds: Vec<(f64, Point3)> = Vec::with_capacity(cuts.len() + 2);
         piece_bounds.push((0.0, s.start));
         piece_bounds.extend(cuts.iter().copied());
@@ -5966,7 +5967,7 @@ fn split_face_2d_impl(
                     }
                 }
             }
-            ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
             Ok(ts
                 .windows(2)
@@ -6884,7 +6885,7 @@ fn split_face_2d_impl(
                     rebuilt.push(e);
                     continue;
                 }
-                ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+                ts.compact_sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
                 ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
                 for w in ts.windows(2) {
                     let (ta, tb) = (w[0], w[1]);
@@ -7056,7 +7057,7 @@ fn split_face_2d_impl(
             .flat_map(|e| [e.start_uv.x(), e.end_uv.x()])
             .map(|u| u.rem_euclid(u_period))
             .collect();
-        us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        us.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         if us.len() >= 2 {
             let mut gap_start = us[us.len() - 1];
             let mut max_gap = u_period - (us[us.len() - 1] - us[0]);
