@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791849747527,
+  "lastUpdate": 1791853678366,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -95599,6 +95599,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 73393,
             "range": "± 1103",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ef1713309c2da22ed75d927780bf22ad633f659",
+          "message": "fix(algo): trust the multi-shell flux override only on consistent shells (#1021)\n\n* fix(algo): trust the multi-shell flux override only on consistent shells\n\nB64 (#884) let a negative shell in a multi-shell assembly count as growth\nwhen its surface-normal flux reads outward, to keep lumps whose corner-fan\nvolume rounds to a tiny negative. That flux is only meaningful on a\nconsistently oriented shell. A mis-assembled fragment whose shared edges\ndisagree on direction could read outward and was kept as the result.\n\nProptest found one: cylinder(1.5, 1) minus cylinder(4, 4) rotated pi about\nx at (-1.25, 2.25, 0.75). The cut returned a 4-face solid with four\ninconsistently oriented edges and volume 0.0288 instead of the exact\n1.8104, at every scale; before #884 it refused. The override now also\nrequires every twice-used edge to be used once in each direction, the\ncheck crate's orientation rule, so the fragment stays a hole and the cut\nrefuses again. The B64/B65 lidded-box suite still passes.\n\nRegression: the proptest seed is added to the regressions file, and\nb26_finding_cylinder_cut_dropped_slab pins the case against the closed-form\nvolume (a typed refusal is accepted).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XmUrsvhcEH4mLLT5UfB162\n\n* fix(algo): skip repeated-edge debris wires in the shell consistency check\n\nshell_orientation_is_consistent runs in perform_areas, before\nnormalize_face_wires drops inner wires that repeat an oriented edge.\nCounted there, such zero-area debris made an otherwise consistent shell\nread inconsistent, so a genuine outward lump could lose the flux override\nand be classified as a hole. Skip the same wires the normalizer drops.\n\nA unit test pins both directions: a cube with a repeated-edge debris inner\nwire on a fresh edge stays consistent, and a flipped face does not. The\ntest fails with the skip removed.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XmUrsvhcEH4mLLT5UfB162\n\n* fix(algo): count shell consistency on wires as normalization leaves them\n\nThe flux-override guard skipped repeated-edge inner wires but not the\ndangling edges `normalize_face_wires` also prunes, so a dangling section\nedge used once in each of two faces in the same direction read as\ninconsistent. Prune dangling edges (never emptying the outer wire) before\ncounting, mirroring the normalizer.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XmUrsvhcEH4mLLT5UfB162\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-12T19:59:00-05:00",
+          "tree_id": "e8de018b45c281c520369eb54dc6d3390717ad16",
+          "url": "https://github.com/esaueng/remus/commit/5ef1713309c2da22ed75d927780bf22ad633f659"
+        },
+        "date": 1791853676002,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1144608,
+            "range": "± 6252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1224917,
+            "range": "± 3337",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 19301,
+            "range": "± 248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7488554,
+            "range": "± 115143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7483352,
+            "range": "± 36618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7349227,
+            "range": "± 39455",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 25864,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3614569,
+            "range": "± 28690",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 30071557,
+            "range": "± 484430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 41,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 232,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 168,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 878,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 395,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 210,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 572,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 735,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3501,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 492296,
+            "range": "± 1932",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2922094,
+            "range": "± 5117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 144791,
+            "range": "± 236",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 435733,
+            "range": "± 13414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 360032,
+            "range": "± 844",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 69244,
+            "range": "± 3791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 830361,
+            "range": "± 4635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9704079,
+            "range": "± 50345",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 526443,
+            "range": "± 4552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1155741,
+            "range": "± 2946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 82897,
+            "range": "± 1003",
             "unit": "ns/iter"
           }
         ]
