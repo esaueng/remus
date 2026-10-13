@@ -24,7 +24,12 @@ const _: () = assert!(MIN_WASM_SIZE < MAX_LAZY_WASM_SIZE);
 /// `scripts/bundle-size-policy.mjs`; change the limits there and in the
 /// script together, never here.
 const SIZE_POLICY_SCRIPT: &str = "scripts/wasm-size-policy.mjs";
-const SIZE_POLICY_TESTS: &str = "scripts/test-wasm-size-policy.mjs";
+/// Boundary tests of the size policy and of the per-PR size gate built on it
+/// (`scripts/wasm-size-gate.mjs`, run by CI from the base commit).
+const SIZE_POLICY_TESTS: [&str; 2] = [
+    "scripts/test-wasm-size-policy.mjs",
+    "scripts/test-wasm-size-gate.mjs",
+];
 
 /// Which limits apply to one distributable `.wasm`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,14 +533,16 @@ fn wasm_size_error(size: u64, budget: &SizeBudget) -> Option<String> {
     }
 }
 
-/// Run the boundary tests of the shared size policy before trusting it.
+/// Run the boundary tests of the shared size policy and the per-PR size gate
+/// before trusting them.
 pub fn test_size_policy() -> Result<()> {
-    run_cmd(
-        Command::new("node")
-            .arg("--test")
-            .arg(project_root()?.join(SIZE_POLICY_TESTS)),
-    )
-    .context("testing the WASM size policy")
+    let root = project_root()?;
+    let mut cmd = Command::new("node");
+    cmd.arg("--test");
+    for tests in SIZE_POLICY_TESTS {
+        cmd.arg(root.join(tests));
+    }
+    run_cmd(&mut cmd).context("testing the WASM size policy")
 }
 
 /// Measure one module with [`SIZE_POLICY_SCRIPT`] and return its JSON report.
