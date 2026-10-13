@@ -102,8 +102,8 @@ Both CI numbers are the shipped artifact: `cargo xtask wasm-build` runs `wasm-op
 
 ### Budget rule
 
-- An unexplained size increase above roughly 1% of the base size needs a justification sentence in the PR body.
-- Adding any new dependency to the wasm dependency tree always needs one, even if the measured delta is small.
+- A kernel growth above 64 KiB raw needs a `WASM-Size:` line in the PR description naming the capability and its module tier (`core`, `lazy:<module>` or `native`; see CLAUDE.md "WASM module tiers").
+- Adding any new dependency to the wasm dependency tree always needs a justification sentence in the PR body, even if the measured delta is small.
 
 ### Diagnosis recipe
 
@@ -134,7 +134,7 @@ cargo tree -p remus-wasm --target wasm32-unknown-unknown -e normal
 
 - A new crate pulled into the wasm graph, often transitively. The `cargo tree` diff finds it.
 - Format and panic string bloat: `format!` in error paths, derived `Debug` on large types, long message literals. Shows up in twiggy as `core::fmt` frames and data-segment growth.
-- Code that should be feature-gated. `crates/wasm/Cargo.toml` defines `default = ["io"]` and `io = ["dep:remus-io"]`; a heavy optional capability should follow that pattern instead of landing unconditionally.
+- Code that should be feature-gated or live in a lazy module (CLAUDE.md "WASM module tiers"). `crates/wasm/Cargo.toml` defines `default = ["io"]` and `io = ["dep:remus-io"]`; a heavy optional capability should follow that pattern instead of landing unconditionally.
 - Monomorphization bloat from a generic instantiated with many types. `twiggy monos` lists it.
 
 The release profile is already size-conscious (`codegen-units = 1`, `lto = true` in the root `Cargo.toml` `[profile.release]`). Attribute the growth before reaching for profile tweaks.

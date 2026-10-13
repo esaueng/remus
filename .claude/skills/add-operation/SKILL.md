@@ -13,23 +13,27 @@ You are creating or substantially extending an operation in `crates/operations/s
 
 | Step | Command / API | Expect |
 |------|---------------|--------|
+| Tier | CLAUDE.md "WASM module tiers" | `Tier: core \| lazy:<module> \| native` recorded in the roadmap row or design doc before code |
 | Scaffold | CLAUDE.md Recipe 3 | file, fn, `lib.rs` module, wasm binding, batch dispatch |
 | Measure | `crate::measure::solid_volume(&topo, solid, 0.001)` | relative error < 1% vs closed form |
 | Validate | `crate::validate::validate_solid(&topo, solid)` | `report.is_valid()` true |
 | Watertight | `tessellate_solid_with_tolerance` + `tessellate::is_watertight` | 0 boundary + 0 non-manifold edges (index-based); also re-check with the positional-weld helper from `tessellate_watertight.rs` |
 | Census | `cargo run --release --example approx_census -p remus-operations` | no new `remus_approx` probe fires for your op |
 | Gate | `cargo clippy --all-targets -- -D warnings && cargo fmt --all && ./scripts/check-boundaries.sh` | clean |
+| Size | CI "WASM Binary Size" PR comment | kernel growth above 64 KiB raw: `WASM-Size:` line in the PR description |
 
 ## Procedure
 
-1. **Scaffold per CLAUDE.md Recipe 3.** Signature `pub fn op_name(topo: &mut Topology, ...) -> Result<SolidId, OperationsError>`.
-2. **Walk faces correctly.** Any solid-scoped loop over faces must use `remus_topology::explorer::solid_faces` (there is also `solid_edges`). See CLAUDE.md "Walking faces in a solid" for the exception rule for per-shell operations. Iterating only `outer_shell()` compiles, passes on simple boxes, and silently skips cavity faces on hollow solids.
-3. **Respect the borrow pattern and error rules.** Snapshot-then-allocate and closure return type annotations: see CLAUDE.md Common Pitfalls. The workspace denies `unwrap_used`, `panic`, and `unsafe_code` in production code; test modules opt out with `#![allow(clippy::unwrap_used, clippy::expect_used)]`.
-4. **If your op copies edges that may carry periodic curves** (`EdgeCurve::Circle` or `Ellipse`), read reference.md "Periodic edge copies" before writing the copy loop. Getting this wrong recovers the complementary arc (minor instead of major) and only reversed edges expose it.
-5. **Write tests** (placement below). Every geometry-producing op needs at least: a volume-vs-closed-form test, a `validate_solid` test, and a watertight-tessellation test.
-6. **Run the verification bar** (reference.md "Verification bar" has the exact APIs and checkpoint expectations). If the op touches analytic geometry, run the approx census; a fallback probe firing for your op means you degraded analytic surfaces to NURBS or mesh, see the analytic-preservation skill.
-7. **Expose to wasm** per CLAUDE.md Recipe 4; details in the wasm-bindings skill (binding module choice, `batch_*` companion, contract tests via `execute_batch()`).
-8. **Run the gate commands** from the quick reference before pushing.
+1. **Declare the WASM module tier before writing code.** A new capability records `Tier: core | lazy:<module> | native` in its roadmap row or design doc (CLAUDE.md "WASM module tiers"). `core` is the exception: name the live-session state the op edits (handles, journal/evolution, persistent naming, checkpoints, transactions). Document-in/document-out or session-independent work belongs in a lazy module reached through arena documents, the way the translators live in `remus-wasm-io`; server, render and qualification tooling is `native`. Extending an existing op keeps its tier.
+2. **Scaffold per CLAUDE.md Recipe 3.** Signature `pub fn op_name(topo: &mut Topology, ...) -> Result<SolidId, OperationsError>`.
+3. **Walk faces correctly.** Any solid-scoped loop over faces must use `remus_topology::explorer::solid_faces` (there is also `solid_edges`). See CLAUDE.md "Walking faces in a solid" for the exception rule for per-shell operations. Iterating only `outer_shell()` compiles, passes on simple boxes, and silently skips cavity faces on hollow solids.
+4. **Respect the borrow pattern and error rules.** Snapshot-then-allocate and closure return type annotations: see CLAUDE.md Common Pitfalls. The workspace denies `unwrap_used`, `panic`, and `unsafe_code` in production code; test modules opt out with `#![allow(clippy::unwrap_used, clippy::expect_used)]`.
+5. **If your op copies edges that may carry periodic curves** (`EdgeCurve::Circle` or `Ellipse`), read reference.md "Periodic edge copies" before writing the copy loop. Getting this wrong recovers the complementary arc (minor instead of major) and only reversed edges expose it.
+6. **Write tests** (placement below). Every geometry-producing op needs at least: a volume-vs-closed-form test, a `validate_solid` test, and a watertight-tessellation test.
+7. **Run the verification bar** (reference.md "Verification bar" has the exact APIs and checkpoint expectations). If the op touches analytic geometry, run the approx census; a fallback probe firing for your op means you degraded analytic surfaces to NURBS or mesh, see the analytic-preservation skill.
+8. **Expose to wasm in the declared tier** per CLAUDE.md Recipe 4; details in the wasm-bindings skill (binding module choice, `batch_*` companion, contract tests via `execute_batch()`). A `core` op goes on `BrepKernel`; a lazy op goes in its module's package; a `native` op gets no binding.
+9. **Run the gate commands** from the quick reference before pushing.
+10. **Review the size.** On the PR, read the CI "WASM Binary Size" comment. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR description naming the capability and its tier (CI enforcement is landing separately; follow the rule now). Size work never buys bytes with speed: no workload in `scripts/performance` or the criterion benches may get slower.
 
 ## Where tests go
 
