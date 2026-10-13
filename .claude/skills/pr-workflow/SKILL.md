@@ -35,7 +35,7 @@ Hooks live in `.husky/`. Read the hook files themselves when in doubt; the "Git 
 
 Hard rules:
 - Never `--no-verify`, never `HUSKY=0`, never edit a hook to get past it. If a hook fails on pre-existing breakage you did not cause, stop and report; do not bypass.
-- CI is the real signal: fmt, clippy, test (nextest workspace + doc tests), platform tests, coverage, MSRV, wasm, fuzz-check, render, boundaries, deny, audit, docs, machete, secrets-scan, taplo, all fanned into one aggregate check named `CI Pass`. It is an aggregate, not a *required* check — nothing enforces it (see the gate section). `Apache Lineage`, `Doc Paths`, and `WASM Size Report` run on PRs but are NOT in the `CI Pass` fan-in, so read them separately. Job catalog: see [reference.md](reference.md), "CI jobs".
+- CI is the real signal: fmt, clippy, test (nextest workspace + doc tests), platform tests, coverage, MSRV, wasm, fuzz-check, render, boundaries, deny, audit, docs, machete, secrets-scan, taplo, all fanned into one aggregate check named `CI Pass`. It is an aggregate, not a *required* check — nothing enforces it (see the gate section). `Apache Lineage`, `Doc Paths`, and the `WASM Size Report` comment run on PRs but are NOT in the `CI Pass` fan-in, so read them separately; the size policy itself is enforced inside `CI Pass` by `WASM Size Gate` (a kernel growth above 64 KiB raw needs a `WASM-Size:` line in the PR description). Job catalog: see [reference.md](reference.md), "CI jobs".
 
 ## Procedure: land a change
 

@@ -158,7 +158,7 @@ class DirectFleetTests(unittest.TestCase):
         jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", TEXT, re.M | re.S))
         pooled = {name for name, block in jobs.items() if "fleet-light-runner" in block}
         self.assertEqual(pooled, {"changes", "repo-policy", "secrets-scan",
-                                  "docs", "deny", "audit", "ci-pass"})
+                                  "docs", "deny", "audit", "wasm-size-gate", "ci-pass"})
         for name in ("coverage", "wasm", "test", "wasm-no-io", "approx-census",
                      "msrv", "fuzz-check", "render"):
             self.assertRegex(jobs[name], r"runs-on: [*&]fleet-runner")
