@@ -468,6 +468,50 @@ jobs:
           name: w9-preflight
           path: target/w9-preflight.json
           if-no-files-found: warn
+  wasm-size-gate:
+    # W1 of docs/design/kernel-wasm-size-architecture.md, inside CI Pass: the
+    # PR kernel stays within the hard limits of scripts/wasm-size-policy.mjs,
+    # and a kernel growth above 64 KiB raw needs a `WASM-Size:` line in the PR
+    # description. Read-only: it runs the BASE commit's scripts on the PR's
+    # built modules (data); ci.yml's wasm-size job posts the same report.
+    name: WASM Size Gate
+    needs: [changes, wasm]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.wasm == 'true'
+    runs-on: *fleet-light-runner
+    steps:
+      - *fleet-source
+      - *fleet-isolation
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-size-pr
+          path: ${{ runner.temp }}/wasm-size
+      - name: Enforce the kernel size policy and growth review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Bootstrap: a base from before the gate has no script to trust yet.
+          if [ ! -f scripts/wasm-size-gate.mjs ]; then
+            echo "::notice::The base commit predates scripts/wasm-size-gate.mjs; the size gate applies from the next base."
+            exit 0
+          fi
+          report="$RUNNER_TEMP/wasm-size-report.md"
+          status=0
+          node scripts/wasm-size-gate.mjs --github-pr-body --base-dir . \
+            --pr-dir "$RUNNER_TEMP/wasm-size" --markdown "$report" || status=$?
+          if [ -f "$report" ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # 0 pass, 1 policy or growth failure, anything else a measurement error.
+          exit "$status"
   fuzz-check:
     name: Fuzz Targets Compile
     needs: [changes, repo-policy, secrets-scan]
@@ -595,7 +639,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [changes, repo-policy, test, approx-census, coverage, msrv, wasm, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
+    needs: [changes, repo-policy, test, approx-census, coverage, msrv, wasm, wasm-size-gate, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
     runs-on: *fleet-light-runner
     steps:
       - *fleet-source
@@ -607,11 +651,14 @@ jobs:
           DOCS: ${{ needs.changes.outputs.docs }}
           FULL: ${{ needs.changes.outputs.full }}
           WASM: ${{ needs.changes.outputs.wasm }}
+          EVENT: ${{ github.event_name }}
         run: |
           # A skipped job passes only when the classifier deselected its
           # tier: docs by `docs`, the package build by `wasm`, the second
-          # tier by `full`, and the PR tier by `heavy`.
-          echo "$NEEDS" | jq -e --arg heavy "$HEAVY" --arg docs "$DOCS" --arg full "$FULL" --arg wasm "$WASM" '
+          # tier by `full`, and the PR tier by `heavy`. The size gate
+          # compares a PR with its base, so it also skips outside PRs.
+          echo "$NEEDS" | jq -e --arg heavy "$HEAVY" --arg docs "$DOCS" --arg full "$FULL" --arg wasm "$WASM" --arg event "$EVENT" '
+            ($event != "") and
             ($heavy == "true" or $heavy == "false") and
             ($docs == "true" or $docs == "false") and
             ($full == "true" or $full == "false") and
@@ -626,6 +673,7 @@ jobs:
                (.key as $job |
                 if $job == "docs" then $docs == "false"
                 elif $job == "wasm" then $wasm == "false"
+                elif $job == "wasm-size-gate" then ($wasm == "false" or $event != "pull_request")
                 elif (["coverage", "msrv", "fuzz-check", "render", "deny", "audit"] | index($job)) != null then $full == "false"
                 else $heavy == "false" end))
             ))' > /dev/null
