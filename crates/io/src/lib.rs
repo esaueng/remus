@@ -16,6 +16,7 @@ pub mod arena_io;
 pub mod gltf;
 #[cfg(feature = "formats")]
 pub mod iges;
+mod json;
 pub mod limits;
 pub mod naming_io;
 #[cfg(feature = "formats")]
