@@ -72,6 +72,31 @@ pub enum Constraint {
     Parallel(PointIdx, PointIdx, PointIdx, PointIdx),
 }
 
+impl Constraint {
+    /// Validate every legacy point index against the current point array.
+    ///
+    /// # Errors
+    /// Returns `SketchError::InvalidHandle` for an out-of-range reference.
+    pub fn validate_point_references(&self, point_count: usize) -> Result<(), SketchError> {
+        let valid = |index: &usize| *index < point_count;
+        let valid = match self {
+            Self::FixX(p, _) | Self::FixY(p, _) => valid(p),
+            Self::Coincident(a, b)
+            | Self::Distance(a, b, _)
+            | Self::Vertical(a, b)
+            | Self::Horizontal(a, b) => valid(a) && valid(b),
+            Self::Angle(a, b, c, d, _)
+            | Self::Perpendicular(a, b, c, d)
+            | Self::Parallel(a, b, c, d) => valid(a) && valid(b) && valid(c) && valid(d),
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(SketchError::InvalidHandle)
+        }
+    }
+}
+
 /// A 2D constraint sketch using the legacy point-index API.
 ///
 /// Internally delegates to [`GcsSystem`].
@@ -125,6 +150,9 @@ impl Sketch {
             if !p.x.is_finite() || !p.y.is_finite() {
                 return Err(SketchError::InvalidValue);
             }
+        }
+        for constraint in &self.constraints {
+            constraint.validate_point_references(self.points.len())?;
         }
         let mut sys = GcsSystem::new();
 
@@ -413,5 +441,34 @@ mod tests {
         assert!((sketch.points[p2].y - 20.0).abs() < eps, "p2.y = 20");
         assert!((sketch.points[p3].x).abs() < eps, "p3.x = 0");
         assert!((sketch.points[p3].y - 20.0).abs() < eps, "p3.y = 20");
+    }
+}
+
+#[cfg(test)]
+mod invalid_reference_regressions {
+    use super::*;
+
+    #[test]
+    fn every_legacy_constraint_refuses_invalid_point_indices_without_mutation() {
+        for constraint in [
+            Constraint::FixX(9, 0.),
+            Constraint::FixY(9, 0.),
+            Constraint::Coincident(0, 9),
+            Constraint::Distance(0, 9, 1.),
+            Constraint::Horizontal(0, 9),
+            Constraint::Vertical(0, 9),
+            Constraint::Angle(0, 0, 0, 9, 1.),
+            Constraint::Perpendicular(0, 0, 0, 9),
+            Constraint::Parallel(0, 0, 0, 9),
+        ] {
+            let mut sketch = Sketch::new();
+            sketch.add_point(SketchPoint::new(1., 2.));
+            sketch.add_constraint(constraint);
+            assert!(matches!(
+                sketch.solve(10, 1e-7),
+                Err(SketchError::InvalidHandle)
+            ));
+            assert_eq!((sketch.points[0].x, sketch.points[0].y), (1., 2.));
+        }
     }
 }
