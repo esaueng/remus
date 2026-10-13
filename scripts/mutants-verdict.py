@@ -119,12 +119,15 @@ def verdict(output_dir, exit_code, label):
         examined[name] += 1
         summary = outcome.get("summary", "missing")
         by_summary.setdefault(summary, []).append(name)
-        stats = per_package.setdefault(package, {"n": 0, "build": [], "test": []})
+        stats = per_package.setdefault(package, {"n": 0, "build": [], "test": [], "slot": []})
         stats["n"] += 1
+        slot_seconds = 0.0
         for phase, key in (("Build", "build"), ("Test", "test")):
             seconds = phase_seconds(outcome, phase)
             if seconds is not None:
                 stats[key].append(seconds)
+                slot_seconds += seconds
+        stats["slot"].append(slot_seconds)
 
     listed_counts = Counter(listed_names)
     unknown = examined - listed_counts
@@ -154,13 +157,15 @@ def verdict(output_dir, exit_code, label):
     ]
     if per_package:
         lines += [
-            "| Package | Examined | Median build (s) | Median test (s) |",
-            "| --- | ---: | ---: | ---: |",
+            "| Package | Examined | Median build (s) | Median test (s) | Mean occupied slot (s) |",
+            "| --- | ---: | ---: | ---: | ---: |",
         ]
         for package in sorted(per_package):
             stats = per_package[package]
             median = lambda xs: f"{statistics.median(xs):.0f}" if xs else "-"
-            lines.append(f"| {package} | {stats['n']} | {median(stats['build'])} | {median(stats['test'])} |")
+            mean_slot = statistics.mean(stats["slot"])
+            lines.append(f"| {package} | {stats['n']} | {median(stats['build'])} | "
+                         f"{median(stats['test'])} | {mean_slot:.0f} |")
         lines.append("")
 
     for key, label_text in (("MissedMutant", "missed"), ("Timeout", "timed out")):
