@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791898544701,
+  "lastUpdate": 1791900800518,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -97759,6 +97759,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 52634,
             "range": "± 1066",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "89a3eac5a2ff5008f3c020fe200903bb906f7755",
+          "message": "perf: trim generic sort bloat in the kernel crates (−803 KB raw WASM) (#1031)\n\n* perf(math): add CompactSort, a stable sort compiled once\n\n`sort_by` and `sort_by_key` instantiate the whole standard stable sort\nfor every comparator closure. `CompactSort` gives the same order, ties\nincluded, by stable-sorting an index permutation through one\ntype-erased comparator, so the sort body is compiled once; each call\nsite keeps only its comparator and a per-element-type permutation step.\nShort slices (up to 32) keep their index buffer on the stack.\n\nProptests compare both methods against std on tie-heavy keys and on a\nnon-Copy payload.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf: route cold stable sorts through CompactSort\n\nConverts the stable sorts in math, topology, geometry, algo, blend,\ncheck, heal, offset and operations that are not a measurable share of\nany workload (about 210 call sites) to `compact_sort_by` /\n`compact_sort_by_key`. Their order is unchanged by construction.\n\nSorts that are hot stay on `sort_by`: every site that reached 1,000\ncalls or about 10,000 n*log2(n) element-comparisons in one pass of the\ncriterion benches (`--test`) or the native performance cases (GFA\nbuilder, classifier, face splitter, face integrator, nonplanar mesher),\nplus the BVH and CDT builders.\n\nThe shipped kernel module drops about 754 KB raw (7.2%), 106 KB gzip\nand 59 KB Brotli at today's per-crate opt-level 3, and about 396 KB raw\nat whole-graph opt-level s.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* perf: convert the cold sorts the first pass missed\n\nThe rewrite stopped at the first inline test module of each file, so\neleven production sorts placed after one stayed on `sort_by`: entity\nevolution export (gfa.rs), the phase-FF polygon clip, the boundary-plan\nrefinement in tessellate/solid.rs and the evolution source ordering.\nNone reaches the hot threshold: over the criterion benches and the native\nperformance cases the clip sorts at most 5 elements 40 times, and the\nothers do not run; the tessellation tests sort at most 6.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* build(clippy): disallow sort_by in the kernel crates\n\nEach kernel crate (math, topology, geometry, algo, blend, check, heal,\noffset, operations) gets its own clippy.toml with a `disallowed-methods`\nentry for `slice::sort_by` and `slice::sort_by_key` that points at\n`CompactSort`. Clippy reads the nearest clippy.toml without merging, so\nthese files mirror the root settings; the root file says so. The sketch,\nio, wasm, wasm-io, render and facade crates keep the root config and are\nout of scope.\n\nThe 31 measured hot sorts keep `sort_by` behind a statement-level\n`#[allow(clippy::disallowed_methods)]` with a `// hot:` line giving the\ncalls and work recorded over the criterion benches and the native\nperformance cases. CompactSort's own shared instantiation is allowed\nthe same way. Unit tests are exempt through\n`#![cfg_attr(test, allow(clippy::disallowed_methods))]` at each crate\nroot; integration tests and examples that sort add the lint to their\nexisting crate-level allow list.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T09:06:51-05:00",
+          "tree_id": "98b937e98a0966ba73e50504d9aef1edb8151050",
+          "url": "https://github.com/esaueng/remus/commit/89a3eac5a2ff5008f3c020fe200903bb906f7755"
+        },
+        "date": 1791900798464,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 633534,
+            "range": "± 22425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 677695,
+            "range": "± 19473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10784,
+            "range": "± 105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4709464,
+            "range": "± 40050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 4676722,
+            "range": "± 78663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4620339,
+            "range": "± 167920",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 14845,
+            "range": "± 440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2262721,
+            "range": "± 25747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 16705871,
+            "range": "± 261331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 58,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 31,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 137,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 104,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 477,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 105,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 204,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 128,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 310,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 463,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2145,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 46,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 47,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 310733,
+            "range": "± 8288",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1792324,
+            "range": "± 17243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 95976,
+            "range": "± 1760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 265805,
+            "range": "± 2627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 218465,
+            "range": "± 1268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 38018,
+            "range": "± 507",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 506740,
+            "range": "± 33977",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6209689,
+            "range": "± 206808",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 297071,
+            "range": "± 1913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 650595,
+            "range": "± 2534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 50971,
+            "range": "± 1348",
             "unit": "ns/iter"
           }
         ]
