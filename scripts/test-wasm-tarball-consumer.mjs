@@ -18,6 +18,7 @@ import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regress
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
+import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -88,6 +89,7 @@ try {
   runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);
+  runWasmParserReferencesPackaged(packageExports);
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });

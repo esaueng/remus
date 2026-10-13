@@ -17,6 +17,7 @@ import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
+import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
 import {
@@ -62,6 +63,7 @@ const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_
 
 runSecurityResourceRegressions({ BrepKernel, RemusIo });
 runTruckNurbsReusePackaged({ BrepKernel });
+runWasmParserReferencesPackaged({ BrepKernel });
 
 const DEFLECTION = 0.1;
 
