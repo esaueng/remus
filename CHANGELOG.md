@@ -109,6 +109,11 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo,operations,wasm:** planar closed line sections that cross or touch an
+  existing line-boundary hole are partitioned with that boundary instead of
+  becoming overlapping inner wires. Ribbed and pocketed plate booleans retain
+  exact B-Rep results; disjoint and nested footprints keep their existing path.
+
 * **wasm:** checkpoint restore retires later opaque sketch, GCS entity,
   assembly, and component handles without reusing their numbers. Restore and
   discard never reuse checkpoint IDs; repeated restore preserves the allocation
