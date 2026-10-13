@@ -21,6 +21,10 @@
 //! let (new_solid, result) = fix_shape(&mut topo, solid_id, &config)?;
 //! ```
 
+// Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
+// sort copies that `clippy.toml` disallows in production code do not matter there.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 pub mod analysis;
 pub mod construct;
 pub mod context;

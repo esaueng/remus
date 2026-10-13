@@ -14,6 +14,7 @@ pub mod prepared;
 pub use edge::point_to_edge;
 pub use prepared::{DistanceOptions, DistanceScratch, PreparedDistanceSolid};
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashSet;
 
 use remus_math::aabb::Aabb3;
@@ -178,7 +179,7 @@ fn point_to_solid_impl(
             mandatory.push(*fid);
         }
     }
-    prunable.sort_by(|a, b| {
+    prunable.compact_sort_by(|a, b| {
         a.lower_sq
             .total_cmp(&b.lower_sq)
             .then_with(|| a.face.index().cmp(&b.face.index()))

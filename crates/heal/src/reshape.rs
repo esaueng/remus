@@ -7,6 +7,7 @@
 //!
 //! Modelled after industry-standard B-Rep reshape utilities.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use remus_topology::Topology;
@@ -107,7 +108,7 @@ impl ReShape {
         }
         let descendants = self.applied_vertex_splits.entry(source).or_default();
         descendants.extend(targets);
-        descendants.sort_by_key(|id| id.index());
+        descendants.compact_sort_by_key(|id| id.index());
         descendants.dedup();
         Ok(())
     }
@@ -568,7 +569,7 @@ impl ReShape {
                 }
             }
         }
-        edge_ids.sort_by_key(|e| e.index());
+        edge_ids.compact_sort_by_key(|e| e.index());
         edge_ids.dedup_by_key(|e| e.index());
 
         let mut updates = Vec::new();

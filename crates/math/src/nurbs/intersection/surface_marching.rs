@@ -2,6 +2,7 @@
 //! branch detection, RKF45 adaptive stepping, and singular tangent analysis.
 
 use crate::MathError;
+use crate::compact_sort::CompactSort;
 use crate::context::OperationContext;
 use crate::nurbs::surface::{DerivativeScratch, NurbsSurface};
 use crate::vec::{Point3, Vec3};
@@ -341,7 +342,7 @@ fn null_directions(a: f64, b: f64, d: f64, e1: Vec3, e2: Vec3, norm: f64, det: f
         // Deterministic order: sort by (x, y, z) so swapped parameters and
         // re-runs agree; both nulls are valid intersection directions, the
         // caller picks continuity, this order only breaks ties.
-        dirs.sort_by(|p, q| {
+        dirs.compact_sort_by(|p, q| {
             p.x()
                 .total_cmp(&q.x())
                 .then(p.y().total_cmp(&q.y()))

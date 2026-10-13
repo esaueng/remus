@@ -19,6 +19,7 @@
 //! never degrades into an unsplit face. Construction is atomic: collection,
 //! arrangement and emission are pure and allocate no topology.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
@@ -315,7 +316,7 @@ pub(super) fn collect_cylinder_uses(
         }
         rim_vs.push((v, *entry));
     }
-    rim_vs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    rim_vs.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if rim_vs.len() != 2 || (rim_vs[1].0 - rim_vs[0].0).abs() < close_tol {
         return Ok(None);
     }
@@ -402,8 +403,8 @@ pub(super) fn collect_cylinder_uses(
         // established paths handle coplanar-cap interactions.
         return Ok(None);
     }
-    lats.sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
-    ruls.sort_by(|a, b| {
+    lats.compact_sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
+    ruls.compact_sort_by(|a, b| {
         a.u_rel
             .partial_cmp(&b.u_rel)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -1133,7 +1134,7 @@ pub(super) fn emit_cylinder_subfaces(
     }
     // Deterministic order: sort by interior (v, then u) for permutation
     // invariance across shuffled section inputs.
-    subfaces.sort_by(|a, b| {
+    subfaces.compact_sort_by(|a, b| {
         let ia = a.precomputed_interior.unwrap_or(Point3::new(0.0, 0.0, 0.0));
         let ib = b.precomputed_interior.unwrap_or(Point3::new(0.0, 0.0, 0.0));
         ia.z()

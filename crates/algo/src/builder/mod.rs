@@ -29,6 +29,7 @@ pub mod wire_builder;
 
 pub use face_class::FaceClass;
 
+use remus_math::compact_sort::CompactSort;
 use std::fmt::Write as _;
 
 use remus_math::context::OperationContext;
@@ -106,7 +107,7 @@ fn log_source_face_partition(topo: &Topology, subs: &[SubFace], selected: &[bop:
             .map(|(src, (tot, n, sel))| (face_area_estimate(topo, src) - tot, src, tot, n, sel))
             .filter(|(gap, _, _, _, _)| gap.abs() > 1e-6)
             .collect();
-        rows.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+        rows.compact_sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
         // A source whose pieces TILE it but where NONE was selected leaves a
         // hole in the result boundary just as surely as an under-partition, and
         // an area-gap scan cannot see it — the pieces all exist.
@@ -115,7 +116,7 @@ fn log_source_face_partition(topo: &Topology, subs: &[SubFace], selected: &[bop:
             .filter(|(_, (_, _, sel))| *sel == 0)
             .map(|(src, (tot, n, _))| (*src, *tot, *n))
             .collect();
-        dropped.sort_by(|a, b| b.1.total_cmp(&a.1));
+        dropped.compact_sort_by(|a, b| b.1.total_cmp(&a.1));
         log::debug!(
             "SRCPART scan: {} source faces do not tile, {} fully dropped (no piece selected)",
             rows.len(),

@@ -14,6 +14,7 @@
 //! E6: exact `defeature` removal restores the sharp edge and original volume.
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,

@@ -29,7 +29,12 @@
 //! position, sibling placement, carrier census, and edge-count deltas, or fail
 //! loudly. Tessellation success is never used as proof.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use remus_math::mat::Mat4;
 use remus_math::tolerance::Tolerance;

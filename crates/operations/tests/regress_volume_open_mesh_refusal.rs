@@ -46,7 +46,12 @@
 //! premise, the B-Rep's own boundary-trimmed Gauss integral
 //! (`mass_properties`) agrees with it, so the body is right and only the
 //! measurement route is at fault.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::f64::consts::{FRAC_PI_4, PI, TAU};
 

@@ -7,6 +7,7 @@
 //! which is rejected unless the strict p-curve validator proves a full-interval
 //! error bound at the kernel's standard tolerance.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet};
 
 use remus_algo::{PlaneFrame, compute_pcurve_on_surface_in_domain};
@@ -201,7 +202,7 @@ fn line_sphere_roots(origin: Point3, direction: Vec3, center: Point3, radius: f6
         closest - direction * parameter_span,
         closest + direction * parameter_span,
     ];
-    points.sort_by(|left, right| {
+    points.compact_sort_by(|left, right| {
         left.x()
             .total_cmp(&right.x())
             .then_with(|| left.y().total_cmp(&right.y()))
@@ -646,7 +647,7 @@ fn extended_circle_trim(
             candidates.push(((candidate - old_terminal).abs(), domain));
         }
     }
-    candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
+    candidates.compact_sort_by(|left, right| left.0.total_cmp(&right.0));
     let Some((_, domain)) = candidates.first().copied() else {
         return Err(reconstruction(
             "extended sphere boundary has no unambiguous periodic trim",
@@ -921,7 +922,7 @@ fn register_pcurve(
                     ((represented_midpoint - midpoint_2d).length(), candidate)
                 })
                 .collect::<Vec<_>>();
-            candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
+            candidates.compact_sort_by(|left, right| left.0.total_cmp(&right.0));
             let Some((midpoint_error, a1_unwrapped)) = candidates.first().copied() else {
                 return Err(reconstruction(
                     "planar circle p-curve has no periodic branch",

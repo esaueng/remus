@@ -3,6 +3,7 @@
 //! Provides repair operations for common geometry issues encountered
 //! in imported CAD files and boolean results.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::tolerance::Tolerance;
@@ -556,7 +557,7 @@ pub fn merge_coincident_vertices(
             edge_ids.push(oe.edge());
         }
     }
-    edge_ids.sort_by_key(|e| e.index());
+    edge_ids.compact_sort_by_key(|e| e.index());
     edge_ids.dedup_by_key(|e| e.index());
 
     let updates: Vec<_> = edge_ids
@@ -1841,7 +1842,7 @@ fn plan_unify(
         }
         // Deduplicate face IDs (same face can appear multiple times)
         let mut unique: Vec<FaceId> = faces.clone();
-        unique.sort_by_key(|f| f.index());
+        unique.compact_sort_by_key(|f| f.index());
         unique.dedup();
         if unique.len() < 2 {
             continue;

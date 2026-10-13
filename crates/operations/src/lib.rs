@@ -20,6 +20,10 @@
 //! | **Tessellation** | [`tessellate`] | Mesh generation |
 //! | **Infrastructure** | [`assembly`], [`compound_ops`], [`evolution`], [`sketch`] | Utilities |
 
+// Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
+// sort copies that `clippy.toml` disallows in production code do not matter there.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 use remus_math::vec::{Point3, Vec3};
 
 pub mod extrude;

@@ -1,5 +1,6 @@
 //! Solid-level tessellation orchestration.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -932,7 +933,7 @@ fn tessellate_faces_core(
         // segment and interpolation parameter both preserves polyline order
         // and puts coincident requests next to one another for linear dedup.
         for (edge_idx, mut insertions) in refinements {
-            insertions.sort_by(|(at_a, t_a, _), (at_b, t_b, _)| {
+            insertions.compact_sort_by(|(at_a, t_a, _), (at_b, t_b, _)| {
                 at_a.cmp(at_b).then_with(|| t_a.total_cmp(t_b))
             });
             insertions.dedup_by(|(at_b, _, point_b), (at_a, _, point_a)| {
@@ -1099,7 +1100,7 @@ fn tessellate_faces_core(
                             samples.push((t, gid));
                         }
                     }
-                    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    samples.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
                     samples.dedup_by_key(|sample| sample.1);
                     plan.edge_chains
                         .insert(edge_idx, samples.into_iter().map(|(_, gid)| gid).collect());
@@ -1191,7 +1192,7 @@ fn tessellate_faces_core(
                 continue;
             }
 
-            insertions.sort_by(|a, b| a.0.total_cmp(&b.0));
+            insertions.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
             insertions.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-8);
 
             let mut all_with_t: Vec<(f64, u32)> = existing_gids_vec
@@ -1203,7 +1204,7 @@ fn tessellate_faces_core(
                 .collect();
             plan.metrics.contact_circle_insertions += insertions.len();
             all_with_t.extend(insertions);
-            all_with_t.sort_by(|a, b| a.0.total_cmp(&b.0));
+            all_with_t.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut seen_gids = DetHashSet::default();
             all_with_t.retain(|(_, gid)| seen_gids.insert(*gid));
 
@@ -1407,7 +1408,7 @@ fn tessellate_faces_core(
                 }
             }
             for ((i, j), mut run) in per_segment {
-                run.sort_by(|a, b| a.0.total_cmp(&b.0));
+                run.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
                 let (Some(gi), Some(gj)) = (job.all_global_ids[i], job.all_global_ids[j]) else {
                     continue;
                 };
@@ -1773,9 +1774,9 @@ pub(super) fn split_triangles_spanning_boundary_splits(
     let mut chains: Vec<Vec<u32>> = Vec::with_capacity(splits.len());
     let mut member: DetHashMap<u32, Vec<(usize, usize)>> = DetHashMap::default();
     let mut keys: Vec<_> = splits.into_iter().collect();
-    keys.sort_by_key(|&(key, _)| key);
+    keys.compact_sort_by_key(|&(key, _)| key);
     for ((lo, hi), mut points) in keys {
-        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        points.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut chain = vec![lo];
         for (_, gid) in points {
             if !chain.contains(&gid) && gid != hi {

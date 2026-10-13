@@ -43,6 +43,8 @@ pub fn fill_edge_images(arena: &GfaArena) -> DetHashMap<EdgeId, Vec<EdgeId>> {
         // stored trim is authoritative reverse traversal, so sorting those
         // children numerically upward would invert the rebuilt wire.
         let descending = leaves_direction_is_descending(arena, &leaves);
+        // hot: 65,536+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         split_with_param.sort_by(|a, b| {
             let order = a.0.total_cmp(&b.0);
             if descending { order.reverse() } else { order }

@@ -4,6 +4,10 @@
 //! Newton-Raphson walking algorithm. It produces G1-continuous fillet
 //! and chamfer surfaces for all combinations of analytic and NURBS faces.
 
+// Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
+// sort copies that `clippy.toml` disallows in production code do not matter there.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 #[allow(dead_code)]
 pub(crate) mod adaptive_tolerance;
 pub(crate) mod analytic;

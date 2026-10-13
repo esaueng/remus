@@ -1,6 +1,11 @@
 //! Qualification tests for exact Compound-returning boolean regions.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use std::collections::BTreeSet;
 

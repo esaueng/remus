@@ -29,6 +29,7 @@
     clippy::used_underscore_binding
 )]
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
 
 use remus_math::tolerance::Tolerance;
@@ -862,7 +863,7 @@ fn fit_linear_pattern(group: &[HolePatternInfo]) -> Option<(Vec<usize>, f64)> {
         }
         ordered.push((parameter, hole.feature_index));
     }
-    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    ordered.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let spacing = (ordered.last()?.0 - ordered.first()?.0) / (ordered.len() - 1) as f64;
     if spacing <= tolerance.linear {
@@ -937,7 +938,7 @@ fn fit_circular_pattern(group: &[HolePatternInfo]) -> Option<(Vec<usize>, f64)> 
             (angle, hole.feature_index)
         })
         .collect::<Vec<_>>();
-    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    ordered.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let expected_angle = std::f64::consts::TAU / ordered.len() as f64;
     let angle_tolerance = tolerance.angular.max(expected_angle * 0.01);

@@ -32,6 +32,7 @@
 //! both — an unanswerable question under the first claim, and a plain fact under
 //! the second.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use remus_math::vec::{Point3, Vec3};
@@ -588,7 +589,7 @@ pub fn build_evolution_by_geometry_with_scale(
             evo.add_unresolved(out_idx, Vec::new());
             continue;
         }
-        by_dist.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        by_dist.compact_sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         let (nearest, nearest_d) = by_dist[0];
         let tie_band = SCORE_TIE * score_denom;
         let contenders: Vec<usize> = by_dist
@@ -929,7 +930,7 @@ pub fn propagate_face_attributes(
 
     let modified_outputs: BTreeSet<_> = by_output.keys().copied().collect();
     for (output_idx, mut sources) in by_output {
-        sources.sort_by_key(|(source, _)| *source);
+        sources.compact_sort_by_key(|(source, _)| *source);
         let first = &sources[0].1;
         let name = sources
             .iter()

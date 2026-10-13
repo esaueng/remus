@@ -4,6 +4,7 @@
 //! and torus surfaces with planes, as well as a general marching approach
 //! for analytic-analytic surface intersections.
 
+use crate::compact_sort::CompactSort;
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, SQRT_2, TAU};
 
 use crate::MathError;
@@ -1311,6 +1312,8 @@ pub fn intersect_plane_torus(
             let closing_gap = (pts[pts.len() - 1] - pts[0]).length();
             let median_spacing = {
                 let mut spac: Vec<f64> = pts.windows(2).map(|w| (w[1] - w[0]).length()).collect();
+                // hot: n up to 149, ~18k n*log2(n) work in one criterion --test + native perf pass.
+                #[allow(clippy::disallowed_methods)]
                 spac.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 spac.get(spac.len() / 2).copied().unwrap_or(0.0)
             };
@@ -1758,7 +1761,7 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
             *t -= f / df;
         }
     }
-    roots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    roots.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     roots
 }
 
@@ -4902,7 +4905,7 @@ mod tests {
             })
             .collect();
         assert_eq!(zs.len(), 2, "both sections must be exact circles");
-        zs.sort_by(f64::total_cmp);
+        zs.compact_sort_by(f64::total_cmp);
         let z = 27.0_f64.sqrt();
         assert!((zs[0] + z).abs() < 1e-9 && (zs[1] - z).abs() < 1e-9);
     }
