@@ -1,6 +1,6 @@
 ---
 name: wasm-bindings
-description: Use when adding or changing methods on BrepKernel in crates/wasm, wiring ops into executeBatch, writing tests for bindings, building the wasm package (wasm-pack or cargo xtask wasm-build), testing a local kernel build inside brepjs or another JS consumer, or debugging wasm-only failures such as tests that will not compile with JsError, panics that abort the wasm instance, "recursive use of an object" errors, or a JS app silently loading a stale wasm build. Also use when the CI "WASM Binary Size" PR comment shows growth or a change adds a dependency to the wasm graph.
+description: Use when adding or changing methods on BrepKernel in crates/wasm, wiring ops into executeBatch, writing tests for bindings, building the wasm package (wasm-pack or cargo xtask wasm-build), testing a local kernel build inside brepjs or another JS consumer, or debugging wasm-only failures such as tests that will not compile with JsError, panics that abort the wasm instance, "recursive use of an object" errors, or a JS app silently loading a stale wasm build. Also use when the CI "WASM Binary Size" PR comment shows growth, a change adds a dependency to the wasm graph, or a new capability must declare its WASM module tier (core, lazy module, or native).
 ---
 
 # wasm-bindings
@@ -8,6 +8,16 @@ description: Use when adding or changing methods on BrepKernel in crates/wasm, w
 The WASM layer ships two modules. The kernel package `remus-wasm` exports one class, `BrepKernel` (`crates/wasm/src/kernel.rs`). JS holds opaque `u32` handles (arena indices into the kernel's `Topology`, NOT batch result indices). Bindings live in `crates/wasm/src/bindings/<domain>.rs`, one `#[wasm_bindgen] impl BrepKernel` block per module (wasm-bindgen supports multiple impl blocks across files; non-exported helpers go in a separate plain `impl BrepKernel` block).
 
 The translator package `remus-wasm-io` (`crates/wasm-io/src/lib.rs`) exports `RemusIo`: every STEP/IGES/STL/3MF/OBJ/PLY/glTF import and export, loaded by the consumer only around file I/O. It never sees kernel handles: exports take the bytes of `kernel.serializeSolids(ids)` (or `serializeSheets`), imports return bytes for `kernel.deserializeSolids` / `deserializeSheets`. The arena codec (`bindings/arena.rs`) is always in the kernel; the format bindings in `bindings/io.rs` exist only under the crate's `io` feature, which the shipped package is built without (`cargo xtask wasm-build --kernel-io` restores the single-module layout). Adding a format binding means adding it to `RemusIo` first.
+
+## Choose the module tier first
+
+Every new capability declares `Tier: core | lazy:<module> | native` in its roadmap row or design doc before any binding is written (CLAUDE.md "WASM module tiers").
+
+- **`core`** (`BrepKernel` in `remus-wasm`, loaded eagerly): only for work that edits the live session — handles, journal/evolution, persistent naming, checkpoints, transactions. It is the exception; the PR names the session state that forces it.
+- **`lazy:<module>`** (its own package `remus-wasm-<module>`, like `remus-wasm-io`): document-in/document-out or session-independent work. Bodies cross as exact arena documents (`serializeSolids` / `deserializeSolids`); the module never sees kernel handles, the journal or checkpoints. Only `remus-wasm-io` exists today; `remus-wasm-sketch` (the GCS solver; sketch state stays in core) and `remus-wasm-repair` (import repair, read-only analysis) are planned.
+- **`native`**: no binding at all.
+
+Consumers preload lazy modules at idle so first use is not slower than a core call. Size work never trades speed: no workload may get measurably slower.
 
 ## Quick reference
 
@@ -25,6 +35,7 @@ Never `wasm-pack build --target web` for node consumption: the web target's init
 
 CLAUDE.md Recipe 4 covers the skeleton (js_name, `validate_positive`/`validate_finite`, `?` via the blanket `From<E> for JsError`). What it omits or gets stale:
 
+0. Confirm the capability's tier is `core` (above). A lazy capability goes in its module's crate instead, a native one gets no binding.
 1. Pick or create `crates/wasm/src/bindings/<domain>.rs`. Do not add bindings to `kernel.rs` (it holds the struct, constructor, and private helpers only, despite Recipe 1's stale wording).
 2. Reads go through `self.topo` / `self.topo()`; writes MUST go through `self.topo_mut()` (it is `Rc::make_mut` copy-on-write shared with checkpoints; rg: `fn topo_mut` in `kernel.rs`).
 3. Resolve incoming handles with `resolve_solid` / `resolve_face` / etc. from `crates/wasm/src/handles.rs`; convert results back with `*_id_to_u32`.
@@ -68,7 +79,13 @@ Cheap path first: brepjs already aliases `'remus-wasm'` in `$BREPJS/vitest.confi
 
 ## Binary size
 
-Small wasm size is a headline competitive property of this kernel (several times smaller than the reference kernel's wasm). The `wasm-size` CI job only posts a PR comment ("WASM Binary Size") and never fails, so read that comment as a review item on every wasm-touching PR. Rule: an unexplained increase above roughly 1% needs a justification sentence in the PR body; a new dependency in the wasm graph always does. Measurement details and the twiggy diagnosis recipe: [reference.md](reference.md) section 6.
+Small wasm size is a headline competitive property of this kernel (several times smaller than the reference kernel's wasm). The `wasm-size` CI job posts a PR comment ("WASM Binary Size"); read it as a review item on every wasm-touching PR. Rules:
+
+- A kernel growth above **64 KiB raw** requires a `WASM-Size:` line in the PR description naming the capability and its tier, e.g. `WASM-Size: +120 KiB raw, curve projection (P-Class 7.4), Tier: core (writes the journal)`. CI enforcement of this line lands separately; follow the rule now.
+- A new dependency in the wasm graph always needs a justification sentence in the PR body, whatever the delta.
+- Growth that belongs in an existing lazy module goes there, not into the kernel.
+
+Measurement details and the twiggy diagnosis recipe: [reference.md](reference.md) section 6.
 
 ## Related skills
 
