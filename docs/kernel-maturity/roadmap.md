@@ -1187,8 +1187,10 @@ No requirement is considered complete merely because its document was consolidat
    A new capability records its WASM module tier first
    (`Tier: core | lazy:<module> | native`; see [decisions](#decisions-and-exclusions)).
 3. Verify with independent oracles and the repository checks appropriate to the
-   change. Geometry changes retain native/direct/batch WASM, transactional refusal,
-   scale, census and regression requirements from the existing specifications.
+   change. Geometry changes retain native coverage, the WASM coverage their tier
+   requires (direct and batch for `core`, the module package's own bindings for
+   `lazy:<module>`, none for `native`), transactional refusal, scale, census and
+   regression requirements from the existing specifications.
    A documentation edit does not establish new geometry or benchmark evidence.
 4. Update state and remaining scope **here**, with the exact PR/artifact evidence.
    If blocked, record the blocker in the selected row and stop; do not switch
