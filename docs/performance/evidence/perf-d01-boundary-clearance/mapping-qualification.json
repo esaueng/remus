@@ -1,0 +1,80 @@
+{
+  "exactShippingBytes": true,
+  "strippedSha256": "f2636194857e0cb48d6753fca0729c91f9e3abbb497a5f5f210b85b285f5864a",
+  "shippingSha256": "f2636194857e0cb48d6753fca0729c91f9e3abbb497a5f5f210b85b285f5864a",
+  "namedBytes": 9977861,
+  "strippedBytes": 9412128,
+  "shippingBytes": 9412128,
+  "sections": [
+    [
+      1,
+      null,
+      3811
+    ],
+    [
+      2,
+      null,
+      2811
+    ],
+    [
+      3,
+      null,
+      7025
+    ],
+    [
+      4,
+      null,
+      11
+    ],
+    [
+      5,
+      null,
+      3
+    ],
+    [
+      6,
+      null,
+      25
+    ],
+    [
+      7,
+      null,
+      11924
+    ],
+    [
+      9,
+      null,
+      2353
+    ],
+    [
+      12,
+      null,
+      2
+    ],
+    [
+      10,
+      null,
+      9048700
+    ],
+    [
+      11,
+      null,
+      335179
+    ],
+    [
+      0,
+      "name",
+      565729
+    ],
+    [
+      0,
+      "producers",
+      124
+    ],
+    [
+      0,
+      "target_features",
+      116
+    ]
+  ]
+}

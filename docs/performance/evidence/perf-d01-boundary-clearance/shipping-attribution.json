@@ -1,0 +1,2713 @@
+{
+  "diagnosticOnly": true,
+  "timingClaimsExcluded": true,
+  "symbolMappingExactShippingBytes": true,
+  "profiles": [
+    {
+      "file": "volume-2.cpuprofile",
+      "samples": 3271,
+      "leaf": [
+        {
+          "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+          "samples": 1419
+        },
+        {
+          "name": "core::iter::traits::iterator::Iterator::any::check::\\7b\\7bclosure\\7d\\7d::hb38e779415501d16",
+          "samples": 447
+        },
+        {
+          "name": "remus_math::cdt::insert::<impl\\20remus_math::cdt::Cdt>::legalize_batch::h44d22355ddf91f1f",
+          "samples": 269
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_point::he1d1293057cfee0a",
+          "samples": 108
+        },
+        {
+          "name": "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+          "samples": 99
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+          "samples": 84
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+          "samples": 78
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hd4e7a7dad15ff38f",
+          "samples": 77
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h13e71412965489fe",
+          "samples": 74
+        },
+        {
+          "name": "remus_math::cdt::locate::<impl\\20remus_math::cdt::Cdt>::locate_point::hd54f457530561a68",
+          "samples": 41
+        },
+        {
+          "name": "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+          "samples": 40
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h892fbf9f564d69af",
+          "samples": 36
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+          "samples": 33
+        },
+        {
+          "name": "__multi3",
+          "samples": 30
+        },
+        {
+          "name": "remus_math::cdt::adjacency::<impl\\20remus_math::cdt::Cdt>::flip_edge::h943001a4ee7a66d9",
+          "samples": 30
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+          "samples": 28
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+          "samples": 24
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::sin::sin",
+          "samples": 20
+        },
+        {
+          "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+          "samples": 20
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+          "samples": 19
+        },
+        {
+          "name": "<std\\5bf839c7267e543978\\5d::hash::random::DefaultHasher\\20as\\20core\\5b2c5ad5f686fcca5c\\5d::hash::Hasher>::write\\5b2\\5d",
+          "samples": 18
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::cos::cos",
+          "samples": 15
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_alloc_zeroed",
+          "samples": 11
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h83475b8b47de7e84",
+          "samples": 10
+        },
+        {
+          "name": "remus_operations::tessellate::mesh_ops::HalfEdgeTable::new::hb16ff2ae484b7246",
+          "samples": 10
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::malloc",
+          "samples": 9
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+          "samples": 9
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+          "samples": 9
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_realloc",
+          "samples": 8
+        },
+        {
+          "name": "std::collections::hash::map::Entry<K\\2cV\\2cA>::or_insert_with::h0fb1a585eb3245c3",
+          "samples": 8
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hee76a39fc528c2e3",
+          "samples": 7
+        },
+        {
+          "name": "remus_operations::measure::volume::mesh_boundary_edge_count::h2b83f91ed01dc933",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+          "samples": 6
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::unlink_chunk",
+          "samples": 6
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h63a4146483b82e3c",
+          "samples": 6
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hafcbb38d0761929a",
+          "samples": 6
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+          "samples": 6
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+          "samples": 6
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::rem_pio2::rem_pio2",
+          "samples": 5
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h56d59766da9ee94c",
+          "samples": 5
+        },
+        {
+          "name": "robust::fast_expansion_sum_zeroelim::h3b8bd667fe12706f",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::cdt::Cdt::remove_exterior::hce562b312231c86b",
+          "samples": 5
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h3d7ca60e50fba3e7",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_constraint::ha41469c0dce6bdaa",
+          "samples": 4
+        },
+        {
+          "name": "core::ptr::drop_in_place<remus_math::cdt::Cdt>::hda55836bd7f81f54",
+          "samples": 4
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::free",
+          "samples": 4
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h92ad99707fe3d0b8",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+          "samples": 3
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h44fbc9122142e67f",
+          "samples": 3
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::remove::h38a5946742bc7a46",
+          "samples": 3
+        },
+        {
+          "name": "robust::scale_expansion_zeroelim::hba5b8bf5c0eda30f",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::vec::Vector<2_usize>::dot::h7612bd8345626330",
+          "samples": 3
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::extend_with::h8e784f9adf341194",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+          "samples": 3
+        },
+        {
+          "name": "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h9e895bef3b58c018",
+          "samples": 2
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::h9aca4c898a6e1e34",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::cdt::constraints::<impl\\20remus_math::cdt::Cdt>::edge_triangle_fan::h3901faf267750d94",
+          "samples": 2
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hbb0fff50a98765b0",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::hbbd2ecc72e8f790f",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::haf07f281fc4b359b",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+          "samples": 2
+        },
+        {
+          "name": "round",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::cross::hb7fe00acd6a44e43",
+          "samples": 2
+        },
+        {
+          "name": "post",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::h45d94ba64d7eb48a",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::edge::Edge::strict_domain::h6bead0026d598c3d",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::hac13b4fbe32110c4",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::quicksort::quicksort::h71ed0f80ef373b78",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::topology::Topology::face::haf55a52fed4a99b8",
+          "samples": 1
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::acos::acos",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::derivatives::hbdb866089ca1d1be",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::ha569d4e703b93874",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort4_stable::hbc8948c714466287",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h005d76e95141c6d3",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::contains_key::h4aebce70b8d99828",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::boundary_plan::BoundaryPlan::collect_wire_vertices::h47b23c7a5e8b78a1",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::cdt::Cdt::flood_from::he13f0285950ea6a8",
+          "samples": 1
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::finish_grow::ha6de6a3b348d890b",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::h23120700d54573ff",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::contains_key::hc58a53a1f1c45eae",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::chord::segments_for_chord_deviation_with_angle::h13d3c2fff41d698f",
+          "samples": 1
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h353592191f98fb4b",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::surfaces::ConicalSurface::normal::h72923bd8c1b1ccc7",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+          "samples": 1
+        },
+        {
+          "name": "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h2f3173776af6b139",
+          "samples": 1
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_dealloc",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::h3462d294381bb957",
+          "samples": 1
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::insert_large_chunk",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTableInner::fallible_with_capacity::h83852b2d19cc285d",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::is_periodic_u::h0fe48a14e6c5bc53",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::pcurve::PCurveRegistry::get_use::hc21258ab6ff9f04d",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::topology::Topology::wire::h0eea4e3f202535ad",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::cdt::Cdt::triangles::hf2543245e976c69c",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+          "samples": 1
+        },
+        {
+          "name": "byn$mgfn-shared$hashbrown::raw::RawTableInner::fallible_with_capacity::hb1a1d27b0fcc978a",
+          "samples": 1
+        },
+        {
+          "name": "core::ptr::drop_in_place<alloc::collections::btree::map::BTreeMap<usize\\2csmallvec::SmallVec<\\5bremus_topology::arena::Id<remus_topology::face::Face>\\3b\\202\\5d>>>::h717e58bc7231f6e2",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+          "samples": 1
+        },
+        {
+          "name": "wrappedFn",
+          "samples": 1
+        }
+      ],
+      "inclusive": [
+        {
+          "name": "(root)",
+          "samples": 3271
+        },
+        {
+          "name": "",
+          "samples": 3256
+        },
+        {
+          "name": "main",
+          "samples": 3256
+        },
+        {
+          "name": "wrapModuleLoad",
+          "samples": 3256
+        },
+        {
+          "name": "quantity",
+          "samples": 3256
+        },
+        {
+          "name": "executeUserEntryPoint",
+          "samples": 3256
+        },
+        {
+          "name": "volume",
+          "samples": 3254
+        },
+        {
+          "name": "timed",
+          "samples": 3254
+        },
+        {
+          "name": "brepkernel_volume\\20multivalue\\20shim",
+          "samples": 3254
+        },
+        {
+          "name": "js-to-wasm::",
+          "samples": 3254
+        },
+        {
+          "name": "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4",
+          "samples": 3254
+        },
+        {
+          "name": "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a",
+          "samples": 3248
+        },
+        {
+          "name": "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+          "samples": 3242
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+          "samples": 2997
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+          "samples": 2997
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+          "samples": 2791
+        },
+        {
+          "name": "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+          "samples": 1710
+        },
+        {
+          "name": "core::iter::traits::iterator::Iterator::any::check::\\7b\\7bclosure\\7d\\7d::hb38e779415501d16",
+          "samples": 1606
+        },
+        {
+          "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+          "samples": 1419
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+          "samples": 560
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_point::he1d1293057cfee0a",
+          "samples": 521
+        },
+        {
+          "name": "remus_math::cdt::insert::<impl\\20remus_math::cdt::Cdt>::legalize_batch::h44d22355ddf91f1f",
+          "samples": 335
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+          "samples": 208
+        },
+        {
+          "name": "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+          "samples": 158
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+          "samples": 111
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+          "samples": 98
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+          "samples": 88
+        },
+        {
+          "name": "remus_operations::measure::volume::mesh_boundary_edge_count::h2b83f91ed01dc933",
+          "samples": 86
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+          "samples": 82
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::hed05af5daeacdd1a",
+          "samples": 81
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hd4e7a7dad15ff38f",
+          "samples": 81
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h1173357113c88057",
+          "samples": 79
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h13e71412965489fe",
+          "samples": 79
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+          "samples": 68
+        },
+        {
+          "name": "remus_math::vec::Vector<2_usize>::dot::h7612bd8345626330",
+          "samples": 65
+        },
+        {
+          "name": "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2",
+          "samples": 62
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+          "samples": 62
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+          "samples": 60
+        },
+        {
+          "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+          "samples": 59
+        },
+        {
+          "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+          "samples": 50
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+          "samples": 43
+        },
+        {
+          "name": "remus_math::cdt::locate::<impl\\20remus_math::cdt::Cdt>::locate_point::hd54f457530561a68",
+          "samples": 41
+        },
+        {
+          "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+          "samples": 37
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h892fbf9f564d69af",
+          "samples": 36
+        },
+        {
+          "name": "__multi3",
+          "samples": 30
+        },
+        {
+          "name": "remus_math::cdt::adjacency::<impl\\20remus_math::cdt::Cdt>::flip_edge::h943001a4ee7a66d9",
+          "samples": 30
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::sin::sin",
+          "samples": 23
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+          "samples": 23
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::cross::hb7fe00acd6a44e43",
+          "samples": 23
+        },
+        {
+          "name": "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+          "samples": 20
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+          "samples": 20
+        },
+        {
+          "name": "remus_operations::tessellate::mesh_ops::HalfEdgeTable::new::hb16ff2ae484b7246",
+          "samples": 20
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+          "samples": 19
+        },
+        {
+          "name": "<std\\5bf839c7267e543978\\5d::hash::random::DefaultHasher\\20as\\20core\\5b2c5ad5f686fcca5c\\5d::hash::Hasher>::write\\5b2\\5d",
+          "samples": 18
+        },
+        {
+          "name": "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48",
+          "samples": 17
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+          "samples": 17
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h44fbc9122142e67f",
+          "samples": 16
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::cos::cos",
+          "samples": 16
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h63a4146483b82e3c",
+          "samples": 15
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hafcbb38d0761929a",
+          "samples": 14
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_sphere_cap_shared::h1ff7e6a85c683c3e",
+          "samples": 13
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::finish_grow::ha6de6a3b348d890b",
+          "samples": 13
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+          "samples": 12
+        },
+        {
+          "name": "core::ptr::drop_in_place<remus_math::cdt::Cdt>::hda55836bd7f81f54",
+          "samples": 12
+        },
+        {
+          "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+          "samples": 12
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h83475b8b47de7e84",
+          "samples": 12
+        },
+        {
+          "name": "std::collections::hash::map::Entry<K\\2cV\\2cA>::or_insert_with::h0fb1a585eb3245c3",
+          "samples": 12
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_constraint::ha41469c0dce6bdaa",
+          "samples": 11
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::free",
+          "samples": 11
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_alloc_zeroed",
+          "samples": 11
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+          "samples": 10
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_realloc",
+          "samples": 10
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hbb0fff50a98765b0",
+          "samples": 10
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::tangent::h4d2c3d53201990f9",
+          "samples": 9
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::malloc",
+          "samples": 9
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+          "samples": 8
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::solid_bounding_box::h20cd78d2cac3e662",
+          "samples": 8
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::hbbd2ecc72e8f790f",
+          "samples": 8
+        },
+        {
+          "name": "byn$mgfn-shared$alloc::raw_vec::RawVec<T\\2cA>::grow_one::h0b78904cdf2e5d7c",
+          "samples": 8
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hee76a39fc528c2e3",
+          "samples": 8
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+          "samples": 8
+        },
+        {
+          "name": "remus_operations::tessellate::edge_sampling::measure_max_chord_deviation::h5890bb0f91d3cc77",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::derivatives::hbdb866089ca1d1be",
+          "samples": 7
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h56d59766da9ee94c",
+          "samples": 7
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h6e401f4bcf0029be",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+          "samples": 6
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::unlink_chunk",
+          "samples": 6
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+          "samples": 6
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::rem_pio2::rem_pio2",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+          "samples": 5
+        },
+        {
+          "name": "robust::fast_expansion_sum_zeroelim::h3b8bd667fe12706f",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::cdt::Cdt::remove_exterior::hce562b312231c86b",
+          "samples": 5
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::extend_with::h8e784f9adf341194",
+          "samples": 5
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h3d7ca60e50fba3e7",
+          "samples": 5
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle::hb07d54d54dfd1880",
+          "samples": 4
+        },
+        {
+          "name": "alloc::raw_vec::RawVec<T\\2cA>::grow_one::hdb7c020096e379de",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::nurbs::projection::SurfaceSeedGrid::for_surface::h9de36fc08346ba8d",
+          "samples": 4
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h92ad99707fe3d0b8",
+          "samples": 4
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::h9aca4c898a6e1e34",
+          "samples": 3
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::h23120700d54573ff",
+          "samples": 3
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::remove::h38a5946742bc7a46",
+          "samples": 3
+        },
+        {
+          "name": "robust::scale_expansion_zeroelim::hba5b8bf5c0eda30f",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+          "samples": 3
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_dealloc",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+          "samples": 3
+        },
+        {
+          "name": "post",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::h45d94ba64d7eb48a",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::measure::helpers::compute_angular_range::h53f0d2bc5282c95b",
+          "samples": 2
+        },
+        {
+          "name": "remus_topology::edge::EdgeCurve::evaluate_with_endpoints::h7253f3605796e70d",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::face_boundary_samples::h28fd2b7456fbfd6e",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h9e895bef3b58c018",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h0a4ffda5cda4233c",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::cdt::constraints::<impl\\20remus_math::cdt::Cdt>::recover_edge_depth::hf1dd99eac0786e33",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::cdt::constraints::<impl\\20remus_math::cdt::Cdt>::edge_triangle_fan::h3901faf267750d94",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h61e573860c1ef829",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::haf07f281fc4b359b",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+          "samples": 2
+        },
+        {
+          "name": "round",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::tessellate::planar::cdt_triangulate_simple::h35aa1af6d463984b",
+          "samples": 2
+        },
+        {
+          "name": "remus_topology::edge::Edge::strict_domain::h6bead0026d598c3d",
+          "samples": 1
+        },
+        {
+          "name": "byn$mgfn-shared$<\\5bT\\5d\\20as\\20remus_math::compact_sort::CompactSort<T>>::compact_sort_by::h42f52a1e9f318b52",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::volume::quadric_wall_is_notched_band::hb5c98d1f02a0a8f9",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::hac13b4fbe32110c4",
+          "samples": 1
+        },
+        {
+          "name": "<\\5bT\\5d\\20as\\20remus_math::compact_sort::CompactSort<T>>::compact_sort_by::h42f52a1e9f318b52",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::compact_sort::Order::sort::h93ee2a45c0ed9fec",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::quicksort::quicksort::h71ed0f80ef373b78",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::topology::Topology::face::haf55a52fed4a99b8",
+          "samples": 1
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::acos::acos",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::ha569d4e703b93874",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::curves::Circle3D::evaluate::h79cf22d757f918a7",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort4_stable::hbc8948c714466287",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h005d76e95141c6d3",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::contains_key::h4aebce70b8d99828",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::boundary_plan::BoundaryPlan::collect_wire_vertices::h47b23c7a5e8b78a1",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::cdt::Cdt::flood_from::he13f0285950ea6a8",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::cdt::Cdt::flood_remove_from_points::h50a500b5f3bc58e0",
+          "samples": 1
+        },
+        {
+          "name": "alloc::raw_vec::RawVec<T\\2cA>::grow_one::hcc0c4bae6519f97b",
+          "samples": 1
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::resize::h6d2223b7ac3e6b3d",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::contains_key::hc58a53a1f1c45eae",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::chord::segments_for_chord_deviation_with_angle::h13d3c2fff41d698f",
+          "samples": 1
+        },
+        {
+          "name": "alloc::raw_vec::RawVec<T\\2cA>::grow_one::h3df431de5fdbb032",
+          "samples": 1
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h353592191f98fb4b",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::heae31602be4c859f",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_band_face_local::\\7b\\7bclosure\\7d\\7d::h4f997a328ebdd4ed",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_revolution_band_shared::\\7b\\7bclosure\\7d\\7d::hf9f2b522cc30b06b",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::surfaces::ConicalSurface::normal::h72923bd8c1b1ccc7",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::quicksort::quicksort::h5350520a788e1230",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::h4668debacb8a82cc",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_band_face_local::\\7b\\7bclosure\\7d\\7d::hfeb5eefa2f98a766",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h2f3173776af6b139",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::h3462d294381bb957",
+          "samples": 1
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::insert_large_chunk",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::nurbs_estimated_radius::haa8c2b62e0e15b5f",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTableInner::fallible_with_capacity::h83852b2d19cc285d",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::is_periodic_u::h0fe48a14e6c5bc53",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::pcurve::PCurveRegistry::get_use::hc21258ab6ff9f04d",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::topology::Topology::wire::h0eea4e3f202535ad",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::cdt::Cdt::triangles::hf2543245e976c69c",
+          "samples": 1
+        },
+        {
+          "name": "alloc::sync::Arc<T\\2cA>::drop_slow::hd7f102f4d0313f56",
+          "samples": 1
+        },
+        {
+          "name": "byn$mgfn-shared$core::ptr::drop_in_place<remus_math::nurbs::surface::NurbsSurface>::h3388946afb0b5ef0",
+          "samples": 1
+        },
+        {
+          "name": "core::ptr::drop_in_place<remus_math::nurbs::surface::NurbsSurface>::h77218eccac18435e",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTableInner::fallible_with_capacity::hb1a1d27b0fcc978a",
+          "samples": 1
+        },
+        {
+          "name": "byn$mgfn-shared$hashbrown::raw::RawTableInner::fallible_with_capacity::hb1a1d27b0fcc978a",
+          "samples": 1
+        },
+        {
+          "name": "core::ptr::drop_in_place<alloc::collections::btree::map::BTreeMap<usize\\2csmallvec::SmallVec<\\5bremus_topology::arena::Id<remus_topology::face::Face>\\3b\\202\\5d>>>::h717e58bc7231f6e2",
+          "samples": 1
+        },
+        {
+          "name": "wrappedFn",
+          "samples": 1
+        }
+      ],
+      "fmaPaths": [
+        {
+          "callers": [
+            "core::iter::traits::iterator::Iterator::any::check::\\7b\\7bclosure\\7d\\7d::hb38e779415501d16",
+            "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 1159
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<2_usize>::dot::h7612bd8345626330",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 62
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905"
+          ],
+          "samples": 25
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<3_usize>::cross::hb7fe00acd6a44e43",
+            "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a"
+          ],
+          "samples": 21
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+            "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 20
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6"
+          ],
+          "samples": 18
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+            "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6"
+          ],
+          "samples": 15
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+            "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b"
+          ],
+          "samples": 15
+        },
+        {
+          "callers": [
+            "(root)"
+          ],
+          "samples": 14
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+            "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2"
+          ],
+          "samples": 12
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+            "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a"
+          ],
+          "samples": 10
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 7
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::hbbd2ecc72e8f790f",
+            "remus_operations::tessellate::nonplanar::tessellate_sphere_cap_shared::h1ff7e6a85c683c3e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 6
+        },
+        {
+          "callers": [
+            "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 5
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+            "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52"
+          ],
+          "samples": 4
+        },
+        {
+          "callers": [
+            "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+            "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 3
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 3
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::curve::NurbsCurve::tangent::h4d2c3d53201990f9",
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48",
+            "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "remus_operations::tessellate::edge_sampling::measure_max_chord_deviation::h5890bb0f91d3cc77",
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+            "remus_math::nurbs::curve::NurbsCurve::derivatives::hbdb866089ca1d1be",
+            "remus_math::nurbs::curve::NurbsCurve::tangent::h4d2c3d53201990f9",
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_math::cdt::Cdt::insert_point::he1d1293057cfee0a",
+            "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a",
+            "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+            "remus_operations::measure::bounding_box::solid_bounding_box::h20cd78d2cac3e662",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a",
+            "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "remus_operations::tessellate::nonplanar::tessellate_band_face_local::\\7b\\7bclosure\\7d\\7d::hfeb5eefa2f98a766",
+            "core::slice::sort::stable::quicksort::quicksort::h5350520a788e1230",
+            "core::slice::sort::stable::drift::sort::h4668debacb8a82cc"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_math::nurbs::projection::SurfaceSeedGrid::for_surface::h9de36fc08346ba8d",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::nurbs_estimated_radius::haa8c2b62e0e15b5f",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 1
+        }
+      ]
+    },
+    {
+      "file": "volume-3.cpuprofile",
+      "samples": 3282,
+      "leaf": [
+        {
+          "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+          "samples": 1424
+        },
+        {
+          "name": "core::iter::traits::iterator::Iterator::any::check::\\7b\\7bclosure\\7d\\7d::hb38e779415501d16",
+          "samples": 449
+        },
+        {
+          "name": "remus_math::cdt::insert::<impl\\20remus_math::cdt::Cdt>::legalize_batch::h44d22355ddf91f1f",
+          "samples": 274
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_point::he1d1293057cfee0a",
+          "samples": 96
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+          "samples": 92
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+          "samples": 90
+        },
+        {
+          "name": "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+          "samples": 80
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h13e71412965489fe",
+          "samples": 76
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hd4e7a7dad15ff38f",
+          "samples": 71
+        },
+        {
+          "name": "remus_math::cdt::locate::<impl\\20remus_math::cdt::Cdt>::locate_point::hd54f457530561a68",
+          "samples": 52
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+          "samples": 43
+        },
+        {
+          "name": "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+          "samples": 41
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+          "samples": 28
+        },
+        {
+          "name": "remus_math::cdt::adjacency::<impl\\20remus_math::cdt::Cdt>::flip_edge::h943001a4ee7a66d9",
+          "samples": 28
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+          "samples": 26
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+          "samples": 26
+        },
+        {
+          "name": "<std\\5bf839c7267e543978\\5d::hash::random::DefaultHasher\\20as\\20core\\5b2c5ad5f686fcca5c\\5d::hash::Hasher>::write\\5b2\\5d",
+          "samples": 25
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h892fbf9f564d69af",
+          "samples": 23
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::sin::sin",
+          "samples": 21
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::malloc",
+          "samples": 17
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h83475b8b47de7e84",
+          "samples": 17
+        },
+        {
+          "name": "__multi3",
+          "samples": 16
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h44fbc9122142e67f",
+          "samples": 12
+        },
+        {
+          "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+          "samples": 11
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+          "samples": 11
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::cos::cos",
+          "samples": 11
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h63a4146483b82e3c",
+          "samples": 11
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_alloc_zeroed",
+          "samples": 10
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_realloc",
+          "samples": 9
+        },
+        {
+          "name": "remus_operations::tessellate::mesh_ops::HalfEdgeTable::new::hb16ff2ae484b7246",
+          "samples": 8
+        },
+        {
+          "name": "remus_operations::measure::volume::mesh_boundary_edge_count::h2b83f91ed01dc933",
+          "samples": 8
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h56d59766da9ee94c",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::cdt::Cdt::remove_exterior::hce562b312231c86b",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::vec::Vector<2_usize>::dot::h7612bd8345626330",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+          "samples": 6
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::atan::atan",
+          "samples": 5
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::free",
+          "samples": 5
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+          "samples": 5
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::unlink_chunk",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+          "samples": 5
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hee76a39fc528c2e3",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_constraint::ha41469c0dce6bdaa",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+          "samples": 4
+        },
+        {
+          "name": "std::collections::hash::map::Entry<K\\2cV\\2cA>::or_insert_with::h0fb1a585eb3245c3",
+          "samples": 4
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::rem_pio2::rem_pio2",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+          "samples": 4
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h92ad99707fe3d0b8",
+          "samples": 4
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h14850ab4a1607d43",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::cdt::constraints::<impl\\20remus_math::cdt::Cdt>::edge_triangle_fan::h3901faf267750d94",
+          "samples": 3
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hafcbb38d0761929a",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+          "samples": 3
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hbb0fff50a98765b0",
+          "samples": 3
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h2f3173776af6b139",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+          "samples": 2
+        },
+        {
+          "name": "robust::fast_expansion_sum_zeroelim::h3b8bd667fe12706f",
+          "samples": 2
+        },
+        {
+          "name": "round",
+          "samples": 2
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::h6cf587c63bef3a31",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::cross::hb7fe00acd6a44e43",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::new::h211baa5849d1c02e",
+          "samples": 2
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::extend_with::h8e784f9adf341194",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::is_periodic_u::h0fe48a14e6c5bc53",
+          "samples": 2
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::insert_large_chunk",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+          "samples": 2
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_dealloc",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h3d7ca60e50fba3e7",
+          "samples": 2
+        },
+        {
+          "name": "post",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h26d1524904883916",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::derivatives::hbdb866089ca1d1be",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::ha569d4e703b93874",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::vec::Vector<_>::length_squared::he08c0d83b1c4d1f3",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::hf1b5ad8450547b1d",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::haf07f281fc4b359b",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::h708405348d318e17",
+          "samples": 1
+        },
+        {
+          "name": "fmod",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::h23120700d54573ff",
+          "samples": 1
+        },
+        {
+          "name": "byn$mgfn-shared$alloc::raw_vec::RawVec<T\\2cA>::grow_one::h0b78904cdf2e5d7c",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+          "samples": 1
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::resize::h6d2223b7ac3e6b3d",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::h4668debacb8a82cc",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+          "samples": 1
+        },
+        {
+          "name": "atan2",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::topology::Topology::wire::h0eea4e3f202535ad",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+          "samples": 1
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::acos::acos",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::h9aca4c898a6e1e34",
+          "samples": 1
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::finish_grow::ha6de6a3b348d890b",
+          "samples": 1
+        },
+        {
+          "name": "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2",
+          "samples": 1
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle::hb07d54d54dfd1880",
+          "samples": 1
+        },
+        {
+          "name": "fma",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::interior_grid_resolution::\\7b\\7bclosure\\7d\\7d::h04c1aecd5a17926d",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::face_cache::FaceMeshCache::find::hc8e0536ffa58bca2",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::chord::segments_for_chord_deviation_with_angle::h13d3c2fff41d698f",
+          "samples": 1
+        },
+        {
+          "name": "get",
+          "samples": 1
+        }
+      ],
+      "inclusive": [
+        {
+          "name": "(root)",
+          "samples": 3282
+        },
+        {
+          "name": "",
+          "samples": 3263
+        },
+        {
+          "name": "main",
+          "samples": 3263
+        },
+        {
+          "name": "wrapModuleLoad",
+          "samples": 3263
+        },
+        {
+          "name": "quantity",
+          "samples": 3263
+        },
+        {
+          "name": "executeUserEntryPoint",
+          "samples": 3263
+        },
+        {
+          "name": "volume",
+          "samples": 3262
+        },
+        {
+          "name": "timed",
+          "samples": 3262
+        },
+        {
+          "name": "brepkernel_volume\\20multivalue\\20shim",
+          "samples": 3262
+        },
+        {
+          "name": "js-to-wasm::",
+          "samples": 3262
+        },
+        {
+          "name": "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4",
+          "samples": 3262
+        },
+        {
+          "name": "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a",
+          "samples": 3255
+        },
+        {
+          "name": "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+          "samples": 3250
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+          "samples": 3007
+        },
+        {
+          "name": "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+          "samples": 3006
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+          "samples": 2801
+        },
+        {
+          "name": "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+          "samples": 1717
+        },
+        {
+          "name": "core::iter::traits::iterator::Iterator::any::check::\\7b\\7bclosure\\7d\\7d::hb38e779415501d16",
+          "samples": 1634
+        },
+        {
+          "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+          "samples": 1424
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+          "samples": 564
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_point::he1d1293057cfee0a",
+          "samples": 529
+        },
+        {
+          "name": "remus_math::cdt::insert::<impl\\20remus_math::cdt::Cdt>::legalize_batch::h44d22355ddf91f1f",
+          "samples": 319
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+          "samples": 223
+        },
+        {
+          "name": "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+          "samples": 157
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+          "samples": 125
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+          "samples": 99
+        },
+        {
+          "name": "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+          "samples": 86
+        },
+        {
+          "name": "remus_operations::measure::volume::mesh_boundary_edge_count::h2b83f91ed01dc933",
+          "samples": 86
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+          "samples": 81
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+          "samples": 80
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::hed05af5daeacdd1a",
+          "samples": 79
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h1173357113c88057",
+          "samples": 78
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h13e71412965489fe",
+          "samples": 78
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hd4e7a7dad15ff38f",
+          "samples": 78
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+          "samples": 76
+        },
+        {
+          "name": "remus_math::vec::Vector<2_usize>::dot::h7612bd8345626330",
+          "samples": 67
+        },
+        {
+          "name": "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2",
+          "samples": 59
+        },
+        {
+          "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+          "samples": 58
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+          "samples": 58
+        },
+        {
+          "name": "remus_math::cdt::locate::<impl\\20remus_math::cdt::Cdt>::locate_point::hd54f457530561a68",
+          "samples": 52
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+          "samples": 50
+        },
+        {
+          "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+          "samples": 41
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h44fbc9122142e67f",
+          "samples": 37
+        },
+        {
+          "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+          "samples": 33
+        },
+        {
+          "name": "remus_math::cdt::adjacency::<impl\\20remus_math::cdt::Cdt>::flip_edge::h943001a4ee7a66d9",
+          "samples": 28
+        },
+        {
+          "name": "<std\\5bf839c7267e543978\\5d::hash::random::DefaultHasher\\20as\\20core\\5b2c5ad5f686fcca5c\\5d::hash::Hasher>::write\\5b2\\5d",
+          "samples": 25
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h83475b8b47de7e84",
+          "samples": 25
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+          "samples": 25
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::sin::sin",
+          "samples": 24
+        },
+        {
+          "name": "core::hash::BuildHasher::hash_one::h892fbf9f564d69af",
+          "samples": 23
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::cross::hb7fe00acd6a44e43",
+          "samples": 22
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::finish_grow::ha6de6a3b348d890b",
+          "samples": 21
+        },
+        {
+          "name": "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+          "samples": 19
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+          "samples": 19
+        },
+        {
+          "name": "remus_operations::tessellate::mesh_ops::HalfEdgeTable::new::hb16ff2ae484b7246",
+          "samples": 18
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::malloc",
+          "samples": 17
+        },
+        {
+          "name": "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48",
+          "samples": 17
+        },
+        {
+          "name": "__multi3",
+          "samples": 16
+        },
+        {
+          "name": "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+          "samples": 15
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_realloc",
+          "samples": 14
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+          "samples": 14
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h63a4146483b82e3c",
+          "samples": 13
+        },
+        {
+          "name": "byn$mgfn-shared$alloc::raw_vec::RawVec<T\\2cA>::grow_one::h0b78904cdf2e5d7c",
+          "samples": 12
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+          "samples": 12
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hafcbb38d0761929a",
+          "samples": 12
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::cos::cos",
+          "samples": 12
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+          "samples": 12
+        },
+        {
+          "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+          "samples": 12
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::free",
+          "samples": 10
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_alloc_zeroed",
+          "samples": 10
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::solid_bounding_box::h20cd78d2cac3e662",
+          "samples": 9
+        },
+        {
+          "name": "remus_operations::tessellate::edge_sampling::measure_max_chord_deviation::h5890bb0f91d3cc77",
+          "samples": 9
+        },
+        {
+          "name": "remus_math::cdt::Cdt::insert_constraint::ha41469c0dce6bdaa",
+          "samples": 9
+        },
+        {
+          "name": "core::ptr::drop_in_place<remus_math::cdt::Cdt>::hda55836bd7f81f54",
+          "samples": 9
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_sphere_cap_shared::h1ff7e6a85c683c3e",
+          "samples": 9
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+          "samples": 9
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+          "samples": 8
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::hbb0fff50a98765b0",
+          "samples": 8
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::tangent::h4d2c3d53201990f9",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::nurbs::curve::NurbsCurve::derivatives::hbdb866089ca1d1be",
+          "samples": 7
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::h56d59766da9ee94c",
+          "samples": 7
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h6e401f4bcf0029be",
+          "samples": 7
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::hee76a39fc528c2e3",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::cdt::Cdt::remove_exterior::hce562b312231c86b",
+          "samples": 7
+        },
+        {
+          "name": "std::collections::hash::map::Entry<K\\2cV\\2cA>::or_insert_with::h0fb1a585eb3245c3",
+          "samples": 7
+        },
+        {
+          "name": "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+          "samples": 6
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::hbbd2ecc72e8f790f",
+          "samples": 6
+        },
+        {
+          "name": "remus_operations::tessellate::planar::cdt_triangulate_simple::h35aa1af6d463984b",
+          "samples": 6
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::atan::atan",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+          "samples": 5
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::unlink_chunk",
+          "samples": 5
+        },
+        {
+          "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+          "samples": 5
+        },
+        {
+          "name": "atan2",
+          "samples": 4
+        },
+        {
+          "name": "alloc::raw_vec::RawVec<T\\2cA>::grow_one::hdb7c020096e379de",
+          "samples": 4
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::rem_pio2::rem_pio2",
+          "samples": 4
+        },
+        {
+          "name": "alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle::hb07d54d54dfd1880",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::nurbs::projection::SurfaceSeedGrid::for_surface::h9de36fc08346ba8d",
+          "samples": 4
+        },
+        {
+          "name": "__rustc\\5b8068f81614cfe5c\\5d::__rust_dealloc",
+          "samples": 4
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h92ad99707fe3d0b8",
+          "samples": 4
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h14850ab4a1607d43",
+          "samples": 4
+        },
+        {
+          "name": "remus_math::cdt::constraints::<impl\\20remus_math::cdt::Cdt>::edge_triangle_fan::h3901faf267750d94",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::cdt::constraints::<impl\\20remus_math::cdt::Cdt>::recover_edge_depth::hf1dd99eac0786e33",
+          "samples": 3
+        },
+        {
+          "name": "alloc::raw_vec::RawVec<T\\2cA>::grow_one::h1cd25b4e4049905a",
+          "samples": 3
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h2f3173776af6b139",
+          "samples": 3
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::extend_with::h8e784f9adf341194",
+          "samples": 3
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+          "samples": 3
+        },
+        {
+          "name": "remus_topology::edge::EdgeCurve::evaluate_with_endpoints::h7253f3605796e70d",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+          "samples": 2
+        },
+        {
+          "name": "robust::fast_expansion_sum_zeroelim::h3b8bd667fe12706f",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::h23120700d54573ff",
+          "samples": 2
+        },
+        {
+          "name": "round",
+          "samples": 2
+        },
+        {
+          "name": "alloc::raw_vec::RawVec<T\\2cA>::grow_one::h3df431de5fdbb032",
+          "samples": 2
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::h6cf587c63bef3a31",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_revolution_band_shared::\\7b\\7bclosure\\7d\\7d::hf9f2b522cc30b06b",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::h4668debacb8a82cc",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::new::h211baa5849d1c02e",
+          "samples": 2
+        },
+        {
+          "name": "remus_math::nurbs::surface::NurbsSurface::is_periodic_u::h0fe48a14e6c5bc53",
+          "samples": 2
+        },
+        {
+          "name": "<dlmalloc\\5be7770d3bef70d9dc\\5d::dlmalloc::Dlmalloc<dlmalloc\\5be7770d3bef70d9dc\\5d::sys::System>>::insert_large_chunk",
+          "samples": 2
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::interior_grid_resolution::\\7b\\7bclosure\\7d\\7d::h04c1aecd5a17926d",
+          "samples": 2
+        },
+        {
+          "name": "core::slice::sort::shared::pivot::median3_rec::h3d7ca60e50fba3e7",
+          "samples": 2
+        },
+        {
+          "name": "post",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::helpers::collect_solid_vertex_points::h9cc913904b83e0af",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::bounding_box::face_boundary_samples::h28fd2b7456fbfd6e",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::drift::sort::h45d94ba64d7eb48a",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::helpers::compute_angular_range::h53f0d2bc5282c95b",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort8_stable::h26d1524904883916",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::quicksort::quicksort::h71ed0f80ef373b78",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::surfaces::SphericalSurface::project_point::h12a9c4b6e43c8d8b",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::volume::gauss_unqualified_face::h6540d94d64caf513",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::measure::volume::torus_wire_wraps_tube::hccf49db868a74f25",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::ha569d4e703b93874",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::vec::Vector<_>::length_squared::he08c0d83b1c4d1f3",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::hf1b5ad8450547b1d",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::curves::Circle3D::evaluate::h79cf22d757f918a7",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::quicksort::quicksort::haf07f281fc4b359b",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::unstable::ipnsort::h61e573860c1ef829",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::raw::RawTable<T\\2cA>::reserve_rehash::h708405348d318e17",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::rustc_entry::<impl\\20hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>>::rustc_entry::h64c77497e201d22f",
+          "samples": 1
+        },
+        {
+          "name": "fmod",
+          "samples": 1
+        },
+        {
+          "name": "alloc::vec::Vec<T\\2cA>::resize::h6d2223b7ac3e6b3d",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::stable::quicksort::quicksort::h5350520a788e1230",
+          "samples": 1
+        },
+        {
+          "name": "core::slice::sort::shared::smallsort::sort4_stable::h6d736cf3aeba427c",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::nonplanar::tessellate_band_face_local::\\7b\\7bclosure\\7d\\7d::hfeb5eefa2f98a766",
+          "samples": 1
+        },
+        {
+          "name": "remus_topology::topology::Topology::wire::h0eea4e3f202535ad",
+          "samples": 1
+        },
+        {
+          "name": "compiler_builtins\\5b3552e40272914b90\\5d::math::libm_math::acos::acos",
+          "samples": 1
+        },
+        {
+          "name": "hashbrown::map::HashMap<K\\2cV\\2cS\\2cA>::insert::h9aca4c898a6e1e34",
+          "samples": 1
+        },
+        {
+          "name": "fma",
+          "samples": 1
+        },
+        {
+          "name": "remus_operations::tessellate::face_cache::FaceMeshCache::find::hc8e0536ffa58bca2",
+          "samples": 1
+        },
+        {
+          "name": "core::ptr::drop_in_place<std::collections::hash::map::HashMap<remus_check::validate::checks::CheckId\\2cf64>>::h954c013e40f1f425",
+          "samples": 1
+        },
+        {
+          "name": "byn$mgfn-shared$core::ptr::drop_in_place<std::collections::hash::map::HashMap<remus_check::validate::checks::CheckId\\2cf64>>::h954c013e40f1f425",
+          "samples": 1
+        },
+        {
+          "name": "remus_math::chord::segments_for_chord_deviation_with_angle::h13d3c2fff41d698f",
+          "samples": 1
+        },
+        {
+          "name": "<remus_operations::performance::Span\\20as\\20core::ops::drop::Drop>::drop::hf4ced3411f3ef207",
+          "samples": 1
+        },
+        {
+          "name": "__wbg_now_aca6ff702e646588",
+          "samples": 1
+        },
+        {
+          "name": "get",
+          "samples": 1
+        },
+        {
+          "name": "wasm-to-js",
+          "samples": 1
+        },
+        {
+          "name": "remus_wasm::bindings::performance::now_ms::h5db5cd9d80ec4cb9",
+          "samples": 1
+        }
+      ],
+      "fmaPaths": [
+        {
+          "callers": [
+            "core::iter::traits::iterator::Iterator::any::check::\\7b\\7bclosure\\7d\\7d::hb38e779415501d16",
+            "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 1185
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<2_usize>::dot::h7612bd8345626330",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 60
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+            "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 20
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<3_usize>::cross::hb7fe00acd6a44e43",
+            "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a"
+          ],
+          "samples": 20
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6"
+          ],
+          "samples": 18
+        },
+        {
+          "callers": [
+            "(root)"
+          ],
+          "samples": 16
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905"
+          ],
+          "samples": 15
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+            "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b"
+          ],
+          "samples": 15
+        },
+        {
+          "callers": [
+            "remus_math::vec::Vector<3_usize>::dot::h8ac96d60d8e5e963",
+            "remus_operations::measure::volume::whole_mesh_six_volume::h40504f0b2eee0e59",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a"
+          ],
+          "samples": 13
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+            "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6"
+          ],
+          "samples": 12
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+            "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52"
+          ],
+          "samples": 9
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 7
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::fill_sphere_cap_web::\\7b\\7bclosure\\7d\\7d::hbbd2ecc72e8f790f",
+            "remus_operations::tessellate::nonplanar::tessellate_sphere_cap_shared::h1ff7e6a85c683c3e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 6
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+            "remus_math::nurbs::curve::NurbsCurve::derivatives::hbdb866089ca1d1be",
+            "remus_math::nurbs::curve::NurbsCurve::tangent::h4d2c3d53201990f9",
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48"
+          ],
+          "samples": 4
+        },
+        {
+          "callers": [
+            "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+            "remus_topology::face::FaceSurface::evaluate::h9dcf4a88a735c990",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::\\7b\\7bclosure\\7d\\7d::h8f6a8795769377d6",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 3
+        },
+        {
+          "callers": [
+            "core::iter::adapters::flatten::and_then_or_clear::h023297cbefb185b2",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 3
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::nurbs_axis_bending::he7ee552a3090d5ec",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 3
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "remus_operations::tessellate::edge_sampling::measure_max_chord_deviation::h5890bb0f91d3cc77",
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "remus_operations::tessellate::nonplanar::chart_uv::hea0098b6497e8f57",
+            "<core::iter::adapters::GenericShunt<I\\2cR>\\20as\\20core::iter::traits::iterator::Iterator>::next::h7da65d6eedb46ff2"
+          ],
+          "samples": 2
+        },
+        {
+          "callers": [
+            "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+            "remus_operations::measure::bounding_box::solid_bounding_box::h20cd78d2cac3e662",
+            "remus_operations::measure::volume::solid_volume::h42a1db29a981cdd4",
+            "brepkernel_volume\\20multivalue\\20shim"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::surfaces::SphericalSurface::project_point::h12a9c4b6e43c8d8b",
+            "remus_operations::measure::bounding_box::expand_aabb_for_face::h9f5a693bfbb7e589",
+            "remus_operations::measure::bounding_box::solid_bounding_box::h20cd78d2cac3e662",
+            "remus_operations::measure::volume::solid_volume_uncached::h5b226af1c66e815a"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48",
+            "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::edge_sampling::measure_max_chord_deviation::h5890bb0f91d3cc77",
+            "remus_operations::tessellate::edge_sampling::edge_sample_count::h2f3fc457a4f37d48",
+            "remus_operations::tessellate::edge_sampling::sample_edge_with_params::h9a6d4501e9966ea4",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::cdt::Cdt::insert_point::he1d1293057cfee0a",
+            "remus_math::cdt::Cdt::insert_points_hilbert::h3619a7cf6d117879",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_operations::tessellate::nonplanar::tessellate_sphere_cap_shared::h1ff7e6a85c683c3e",
+            "remus_operations::tessellate::solid::tessellate_faces_core::h8e1b022cb2d89823",
+            "remus_operations::tessellate::solid::tessellate_solid_for_measurement::h5b5c47473f5a9a25",
+            "remus_operations::measure::volume::required_closed_mesh_volume::h4328c681f0b17905"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce"
+          ],
+          "samples": 1
+        },
+        {
+          "callers": [
+            "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "remus_math::nurbs::projection::SurfaceSeedGrid::for_surface::h9de36fc08346ba8d",
+            "remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt::h0ecd40f2874b798e"
+          ],
+          "samples": 1
+        }
+      ]
+    }
+  ]
+}
