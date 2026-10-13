@@ -99,7 +99,10 @@ REMAINING_MISSING_TRIM_PATHS: tuple[str, ...] = ()
 # each tuple length must match the pinned path weight.
 FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
     "phase_ff::perform_with_context": ("ae74656113fafcf9",),
-    "phase_ff::emit_exact_arc": ("c4f42adb4b69bf8b",),
+    # F3 moves the same non-Line set_trim(raw.t_range) writer into
+    # emit_exact_arc_with_authority; endpoint certification leaves its
+    # writer-owned span intact (old identity c4f42adb4b69bf8b).
+    "phase_ff::emit_exact_arc": ("f9c7a6573fe64c03",),
     "phase_ff::emit_split_circle_arcs": ("17f3591d66b9ff10",),
     "boolean::assembly::SphereCapFace": ("6f986f643cea279c",),
     "boolean::assembly::CylindricalFace": ("df9761e1ff06714e",),

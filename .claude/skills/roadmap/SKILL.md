@@ -127,6 +127,13 @@ that does not exist yet; without it, stop.
   per case, so no two edges share both endpoints, and leave
   `merge_duplicate_edges` (in `crates/algo/src/builder/builder_solid.rs`) alone. Control
   the geometry you emit; do not make the shared merge smarter.
+- **A periodic seam through a removed patch can fold an otherwise correct
+  boundary into overlapping UV sheets (F3).** A signed boundary integral can
+  still read correctly while classification, Gauss integration and meshing
+  disagree. For qualified full cylinder charts, move the artificial seam only
+  after whole-carrier bounds prove the new meridian clear; preserve the rim
+  carriers and their source ownership. Pin both sides with independent material
+  probes and raw mesh closure (`regress_opseq_rotated_cylinder_cut.rs`).
 
 ## Open items with a repro
 

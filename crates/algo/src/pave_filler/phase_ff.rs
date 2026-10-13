@@ -27,6 +27,9 @@ use remus_topology::vertex::Vertex;
 use crate::ds::{GfaArena, Interference, IntersectionCurveDS, Pave, PaveBlock};
 use crate::error::AlgoError;
 
+mod circular_cap_clip;
+mod cylinder_section_fit;
+
 /// Default number of samples for NURBS intersection.
 const NURBS_SAMPLES: usize = 32;
 
@@ -39,6 +42,14 @@ const NURBS_MARCH_STEP: f64 = 0.01;
 /// callers keep the candidate instead of treating a clamped miss as geometric
 /// proof that the curve is outside.
 const MAX_FINE_SAMPLES: usize = 16_384;
+
+/// Production eligibility for the bounded oblique cap/cylinder repair.
+/// The stored support directions are unit vectors; parallel and perpendicular
+/// pairs retain their established boundary-partition and resource paths.
+fn oblique_support_directions(first: Vec3, second: Vec3) -> bool {
+    let cosine = first.dot(second).abs();
+    cosine > 1e-10 && cosine < 1.0 - 1e-10
+}
 
 fn fine_sample_count(approx_len: f64, min_dim: f64, coarse: usize) -> Option<usize> {
     if !approx_len.is_finite() || !min_dim.is_finite() || approx_len < 0.0 || min_dim <= 0.0 {
@@ -591,6 +602,7 @@ fn perform_seeded(
     arena: &mut GfaArena,
     mut junction_seeds: Cow<'_, JunctionRegistry>,
 ) -> Result<(), AlgoError> {
+    let permit_seed_updates = matches!(junction_seeds, Cow::Owned(_));
     let tol = context.tolerance;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
@@ -851,6 +863,39 @@ fn perform_seeded(
                         }
                         let both_planes = matches!(surf_a, FaceSurface::Plane { .. })
                             && matches!(surf_b, FaceSurface::Plane { .. });
+                        if let (
+                            FaceSurface::Plane { normal: first, .. },
+                            FaceSurface::Plane { normal: second, .. },
+                        ) = (surf_a, surf_b)
+                            // The certified cap-event slice owns genuinely
+                            // oblique supports. Preserve established parallel
+                            // and perpendicular boundary-partition paths.
+                            && oblique_support_directions(*first, *second)
+                        {
+                            match clip_line_to_two_discs(topo, fa, fb, &raw, tol) {
+                                FaceClip::Range((f0, f1)) => {
+                                    return trim_raw_line(&raw, f0, f1, tol).map(|mut piece| {
+                                        piece.p_start = junction_registry.resolve(
+                                            topo,
+                                            fa,
+                                            fb,
+                                            piece.p_start,
+                                            tol,
+                                        );
+                                        piece.p_end = junction_registry.resolve(
+                                            topo,
+                                            fa,
+                                            fb,
+                                            piece.p_end,
+                                            tol,
+                                        );
+                                        piece
+                                    });
+                                }
+                                FaceClip::Empty => return None,
+                                FaceClip::Indeterminate => {}
+                            }
+                        }
                         if !both_planes {
                             // Mixed pair: the exact band trim is the only clip
                             // applied — the plane-polygon clip below is
@@ -947,7 +992,9 @@ fn perform_seeded(
             };
             validate_raw_curve_collection("phase_ff line clipping", &raw_curves)?;
 
-            // Exact faceted-ramp × cylinder/cone arc assembly. A thin planar
+            // Exact finite plane × cylinder/cone arc assembly. Circular caps
+            // use radial and axial boundary events; straight outlines use
+            // their boundary-line crossings. A thin planar
             // tread meeting a corner cylinder yields a closed ellipse whose
             // in-both arc is a sub-millimetre sliver: the 16-sample AABB
             // pre-filter below and the uniform-t restriction both drop it (no
@@ -956,13 +1003,40 @@ fn perform_seeded(
             // ellipse to the EXACT crossings of the tread's boundary lines with
             // the surface — shared between adjacent treads, so the arcs chain.
             // These exact arcs bypass the generic filters below.
+            let mut certified_cap_arc_indices = Vec::new();
             let (exact_arcs, raw_curves): (Vec<RawCurve>, Vec<RawCurve>) = {
                 face_extents.ensure(topo, fa, surf_a, v_range_a, tol)?;
                 face_extents.ensure(topo, fb, surf_b, v_range_b, tol)?;
                 let mut exact = Vec::new();
                 let mut rest = Vec::new();
                 for raw in raw_curves {
-                    if let (Some(ea), Some(eb)) = (face_extents.get(fa), face_extents.get(fb))
+                    if let Some((mut arcs, anchors)) =
+                        circular_cap_clip::clip_closed_ellipse_with_anchors(
+                            topo,
+                            fa,
+                            fb,
+                            surf_a,
+                            surf_b,
+                            &raw,
+                            tol,
+                            junction_registry,
+                        )?
+                    {
+                        canonicalize_cap_anchors(
+                            topo,
+                            arena,
+                            fa,
+                            fb,
+                            &mut arcs,
+                            &anchors,
+                            tol,
+                            junction_registry,
+                            permit_seed_updates,
+                        )?;
+                        certified_cap_arc_indices.extend(exact.len()..exact.len() + arcs.len());
+                        exact.extend(arcs);
+                    } else if let (Some(ea), Some(eb)) =
+                        (face_extents.get(fa), face_extents.get(fb))
                         && let Some(arcs) = trim_ellipse_to_boundary_crossings(
                             topo, fa, fb, surf_a, surf_b, &raw, ea, eb,
                         )
@@ -1143,6 +1217,84 @@ fn perform_seeded(
                 &mut face_extents,
             )?;
             validate_raw_curve_collection("phase_ff face restriction", &raw_curves)?;
+            let raw_curves = if let (FaceSurface::Cylinder(first), FaceSurface::Cylinder(second)) =
+                (surf_a, surf_b)
+                // This production slice owns oblique cap/cylinder junctions.
+                // Perpendicular and parallel pairs retain their established
+                // analytic paths and operation-budget behavior.
+                && oblique_support_directions(first.axis(), second.axis())
+                && let Some(first_limits) = circular_cap_clip::cylinder_limits(topo, fa, first, tol)
+                && let Some(second_limits) =
+                    circular_cap_clip::cylinder_limits(topo, fb, second, tol)
+            {
+                let candidates: Vec<_> = junction_registry
+                    .cells
+                    .values()
+                    .map(|entry| entry.point)
+                    .collect();
+                let mut fitted = Vec::with_capacity(raw_curves.len());
+                let mut early_candidates: Option<Vec<Point3>> = None;
+                for mut raw in raw_curves {
+                    let previous_anchors = [raw.p_start, raw.p_end];
+                    if let EdgeCurve::NurbsCurve(guide) = &raw.curve
+                        && early_candidates.is_none()
+                        && cylinder_section_fit::needs_anchor_recovery(
+                            first,
+                            second,
+                            guide,
+                            raw.t_range,
+                            previous_anchors,
+                            context,
+                        )?
+                    {
+                        early_candidates = Some(
+                            circular_cap_clip::early_cylinder_cap_junctions(topo, fa, fb, context)?
+                                .unwrap_or_default(),
+                        );
+                    }
+                    if let EdgeCurve::NurbsCurve(guide) = &raw.curve
+                        && let Some(curve) = cylinder_section_fit::fit_open_cylinder_section(
+                            first,
+                            second,
+                            guide,
+                            raw.t_range,
+                            [raw.p_start, raw.p_end],
+                            Some([first_limits, second_limits]),
+                            early_candidates.as_deref().unwrap_or(&[]),
+                            &candidates,
+                            context,
+                        )?
+                    {
+                        let points = curve.control_points();
+                        raw.p_start = points[0];
+                        raw.p_end = points[points.len() - 1];
+                        for (index, point) in [raw.p_start, raw.p_end].into_iter().enumerate() {
+                            let changed = point
+                                .0
+                                .into_iter()
+                                .zip(previous_anchors[index].0)
+                                .any(|(new, old)| new.to_bits() != old.to_bits());
+                            if changed {
+                                junction_registry.cells.insert(
+                                    JunctionRegistry::key(point),
+                                    JunctionEntry {
+                                        point,
+                                        faces: Some((fa, fb)),
+                                        source_edge: None,
+                                    },
+                                );
+                            }
+                        }
+                        raw.t_range = curve.domain();
+                        raw.bbox = nurbs_curve_bbox(&curve);
+                        raw.curve = EdgeCurve::NurbsCurve(curve);
+                    }
+                    fitted.push(raw);
+                }
+                fitted
+            } else {
+                raw_curves
+            };
             if traced {
                 log::debug!(
                     "FF_TRACE restrict a={} b={} {} -> {}",
@@ -1156,8 +1308,17 @@ fn perform_seeded(
             // resolution: each arc's endpoints are bit-identical to the shared
             // boundary-line crossing of the adjacent tread's arc, so consult
             // the registry (and pre-existing paves/boundary vertices) and snap.
-            for raw in &exact_arcs {
-                emit_exact_arc(topo, arena, fa, fb, raw, tol, &mut exact_arc_vertices)?;
+            for (index, raw) in exact_arcs.iter().enumerate() {
+                emit_exact_arc_with_authority(
+                    topo,
+                    arena,
+                    fa,
+                    fb,
+                    raw,
+                    tol,
+                    &mut exact_arc_vertices,
+                    certified_cap_arc_indices.contains(&index),
+                )?;
             }
 
             // A sphere's rim arc and its section can share both endpoints
@@ -1359,6 +1520,18 @@ fn perform_seeded(
                         .or_else(|| find_nearby_face_vertex(topo, fb, raw.p_end, tol))
                         .unwrap_or_else(|| topo.add_vertex(Vertex::new(raw.p_end, tol.linear)))
                 };
+                if matches!(raw.curve, EdgeCurve::Line)
+                    && let (
+                        FaceSurface::Plane { normal: first, .. },
+                        FaceSurface::Plane { normal: second, .. },
+                    ) = (surf_a, surf_b)
+                    && oblique_support_directions(*first, *second)
+                    && circular_cap_clip::closed_disc(topo, fa, tol).is_some()
+                    && circular_cap_clip::closed_disc(topo, fb, tol).is_some()
+                {
+                    require_certified_endpoint_vertex(topo, start_vid, raw.p_start, tol)?;
+                    require_certified_endpoint_vertex(topo, end_vid, raw.p_end, tol)?;
+                }
 
                 let mut edge = Edge::new(start_vid, end_vid, raw.curve.clone());
                 // A Line's parameterization is endpoint-local [0, 1], so its
@@ -1486,6 +1659,494 @@ fn validate_split_crossings(crossings: &[(f64, Point3)]) -> Result<(), AlgoError
     Ok(())
 }
 
+/// Replace only a uniquely attributable, generated EF rim pave with the
+/// independently certified cap event. All original source-edge endpoints
+/// remain immutable, and unrelated interference/pave uses refuse.
+#[allow(clippy::too_many_arguments)]
+fn canonicalize_cap_anchors(
+    topo: &mut Topology,
+    arena: &mut GfaArena,
+    fa: FaceId,
+    fb: FaceId,
+    arcs: &mut [RawCurve],
+    anchors: &[circular_cap_clip::CapAnchor],
+    tol: Tolerance,
+    junctions: &mut JunctionRegistry,
+    permit_seed_updates: bool,
+) -> Result<(), AlgoError> {
+    let trigger = (tol.linear * 1000.0)
+        .max(JunctionRegistry::BOUNDARY_TRIGGER_MAX)
+        .min(
+            junctions.pair_extent(topo, fa, fb, tol)
+                * JunctionRegistry::BOUNDARY_TRIGGER_EXTENT_FRACTION,
+        )
+        .max(tol.linear);
+    let mut changed = false;
+    let mut claimed_vertices = Vec::new();
+    for anchor in anchors {
+        let mut selected = None;
+        for record in &arena.interference.ef {
+            if let Interference::EF {
+                edge,
+                face,
+                new_vertex: Some(vertex),
+                parameter: Some(parameter),
+            } = record
+                && *edge == anchor.source_edge
+                && *face == anchor.opposing_face
+            {
+                let vertex = arena.resolve_vertex(*vertex);
+                let point = topo.vertex(vertex)?.point();
+                if !parameter.is_finite() || (point - anchor.point).length() > trigger {
+                    continue;
+                }
+                if selected.is_some_and(|previous| previous != vertex) {
+                    return Err(AlgoError::FaceSplitFailed(
+                        "certified cap event has multiple EF vertices".into(),
+                    ));
+                }
+                selected = Some(vertex);
+            }
+        }
+        if let Some(vertex) = selected {
+            if claimed_vertices
+                .iter()
+                .any(|&(previous, point): &(_, Point3)| {
+                    previous == vertex
+                        && point
+                            .0
+                            .into_iter()
+                            .zip(anchor.point.0)
+                            .any(|(a, b)| a.to_bits() != b.to_bits())
+                })
+            {
+                return Err(AlgoError::FaceSplitFailed(
+                    "distinct certified cap roots claim the same EF vertex".into(),
+                ));
+            }
+            claimed_vertices.push((vertex, anchor.point));
+        }
+        if let Some(vertex) = selected
+            && (topo.vertex(vertex)?.point() - anchor.point).length() > tol.linear * 0.125
+        {
+            if !permit_seed_updates {
+                return Err(AlgoError::FaceSplitFailed(
+                    "certified cap event requires mutable private EF seeds".into(),
+                ));
+            }
+            let is_original = arena.edge_pave_blocks.keys().any(|&edge| {
+                topo.edge(edge).is_ok_and(|edge| {
+                    [edge.start(), edge.end()]
+                        .into_iter()
+                        .any(|end| arena.resolve_vertex(end) == vertex)
+                })
+            });
+            let foreign_ef = arena.interference.ef.iter().any(|record| {
+                if let Interference::EF {
+                    edge,
+                    face,
+                    new_vertex: Some(other),
+                    ..
+                } = record
+                {
+                    arena.resolve_vertex(*other) == vertex
+                        && (*edge != anchor.source_edge || *face != anchor.opposing_face)
+                } else {
+                    false
+                }
+            });
+            let foreign_pave = arena.pave_blocks.iter().any(|(_, pb)| {
+                pb.original_edge != anchor.source_edge
+                    && std::iter::once(pb.start)
+                        .chain(std::iter::once(pb.end))
+                        .chain(pb.extra_paves.iter().copied())
+                        .any(|pave| arena.resolve_vertex(pave.vertex) == vertex)
+            });
+            if is_original || foreign_ef || foreign_pave {
+                return Err(AlgoError::FaceSplitFailed(
+                    "certified cap event cannot retarget original or unrelated vertex authority"
+                        .into(),
+                ));
+            }
+            let old = topo.vertex(vertex)?.point();
+            let has_extra_pave = arena.pave_blocks.iter().any(|(_, pb)| {
+                pb.original_edge == anchor.source_edge
+                    && pb
+                        .extra_paves
+                        .iter()
+                        .any(|pave| arena.resolve_vertex(pave.vertex) == vertex)
+            });
+            if !has_extra_pave {
+                return Err(AlgoError::FaceSplitFailed(
+                    "certified cap event lacks an EF extra pave".into(),
+                ));
+            }
+            let aliases: Vec<_> = arena
+                .pave_blocks
+                .iter()
+                .flat_map(|(_, pb)| pb.extra_paves.iter().map(|pave| pave.vertex))
+                .chain(arena.interference.ef.iter().filter_map(|record| {
+                    if let Interference::EF {
+                        new_vertex: Some(vertex),
+                        ..
+                    } = record
+                    {
+                        Some(*vertex)
+                    } else {
+                        None
+                    }
+                }))
+                .filter(|&other| arena.resolve_vertex(other) == vertex)
+                .collect();
+            topo.vertex_mut(vertex)?.set_point(anchor.point);
+            for (_, pb) in arena.pave_blocks.iter_mut() {
+                if pb.original_edge == anchor.source_edge {
+                    for pave in &mut pb.extra_paves {
+                        if aliases.contains(&pave.vertex) {
+                            pave.parameter = anchor.parameter;
+                        }
+                    }
+                }
+            }
+            for record in &mut arena.interference.ef {
+                if let Interference::EF {
+                    edge,
+                    face,
+                    new_vertex: Some(other),
+                    parameter,
+                } = record
+                    && *edge == anchor.source_edge
+                    && *face == anchor.opposing_face
+                    && aliases.contains(other)
+                {
+                    *parameter = Some(anchor.parameter);
+                }
+            }
+            junctions.cells.retain(|_, entry| {
+                entry.source_edge != Some(anchor.source_edge)
+                    || (entry.point - old).length() > trigger
+            });
+            changed = true;
+        }
+        junctions.cells.insert(
+            JunctionRegistry::key(anchor.point),
+            JunctionEntry {
+                point: anchor.point,
+                faces: Some((fa, fb)),
+                source_edge: Some(anchor.source_edge),
+            },
+        );
+        for arc in &mut *arcs {
+            let native_start =
+                arc.curve
+                    .evaluate_with_endpoints(arc.t_range.0, arc.p_start, arc.p_end);
+            let native_end =
+                arc.curve
+                    .evaluate_with_endpoints(arc.t_range.1, arc.p_start, arc.p_end);
+            let same = |point: Point3| {
+                point
+                    .0
+                    .into_iter()
+                    .zip(anchor.point.0)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            };
+            if same(native_start) {
+                arc.p_start = anchor.point;
+            }
+            if same(native_end) {
+                arc.p_end = anchor.point;
+            }
+        }
+    }
+    if changed {
+        arena.build_pave_vertex_index(topo, tol.linear)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod cap_anchor_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use remus_math::curves::Circle3D;
+    use remus_topology::{
+        edge::EdgeId,
+        face::Face,
+        vertex::VertexId,
+        wire::{OrientedEdge, Wire},
+    };
+
+    struct Fixture {
+        topo: Topology,
+        arena: GfaArena,
+        fa: FaceId,
+        fb: FaceId,
+        rim: EdgeId,
+        original: VertexId,
+        generated: VertexId,
+        circle: Circle3D,
+        anchor: circular_cap_clip::CapAnchor,
+        arcs: Vec<RawCurve>,
+    }
+    fn fixture() -> Fixture {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.5),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let original = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut edge = Edge::new(original, original, EdgeCurve::Circle(circle.clone()));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let rim = topo.add_edge(edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+        let fa = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.5,
+            },
+        ));
+        let fb = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(1.0, 0.0, 0.0),
+                d: 0.0,
+            },
+        ));
+        let parameter = std::f64::consts::FRAC_PI_2;
+        let point = circle.evaluate(parameter);
+        let old = point + Vec3::new(4e-7, -3e-7, 1e-7);
+        let generated = topo.add_vertex(Vertex::new(old, 1e-7));
+        let mut arena = GfaArena::new();
+        let mut pb = PaveBlock::new(
+            rim,
+            Pave::new(original, 0.0),
+            Pave::new(original, std::f64::consts::TAU),
+        );
+        pb.extra_paves.push(Pave::new(generated, parameter + 1e-7));
+        let id = arena.pave_blocks.alloc(pb);
+        arena.edge_pave_blocks.insert(rim, vec![id]);
+        arena.interference.ef.push(Interference::EF {
+            edge: rim,
+            face: fb,
+            new_vertex: Some(generated),
+            parameter: Some(parameter + 1e-7),
+        });
+        arena.build_pave_vertex_index(&topo, 1e-7).unwrap();
+        let anchor = circular_cap_clip::CapAnchor {
+            point,
+            source_edge: rim,
+            opposing_face: fb,
+            parameter,
+        };
+        let end = circle.evaluate(std::f64::consts::PI);
+        let arcs = vec![RawCurve {
+            curve: EdgeCurve::Circle(circle.clone()),
+            bbox: Aabb3::from_points([point, end]),
+            t_range: (parameter, std::f64::consts::PI),
+            p_start: old,
+            p_end: end,
+        }];
+        Fixture {
+            topo,
+            arena,
+            fa,
+            fb,
+            rim,
+            original,
+            generated,
+            circle,
+            anchor,
+            arcs,
+        }
+    }
+    fn apply(f: &mut Fixture, private: bool) -> Result<(), AlgoError> {
+        let mut registry = seed_junctions(&f.topo, &f.arena).registry;
+        canonicalize_cap_anchors(
+            &mut f.topo,
+            &mut f.arena,
+            f.fa,
+            f.fb,
+            &mut f.arcs,
+            std::slice::from_ref(&f.anchor),
+            Tolerance::default(),
+            &mut registry,
+            private,
+        )
+    }
+    #[test]
+    fn certified_event_retargets_generated_seed_and_all_ef_alias_parameters() {
+        let mut f = fixture();
+        let original = f.topo.vertex(f.original).unwrap().point();
+        let alias = f.topo.add_vertex(Vertex::new(
+            f.topo.vertex(f.generated).unwrap().point(),
+            1e-7,
+        ));
+        f.arena.same_domain_vertices.insert(alias, f.generated);
+        f.arena.interference.ef.push(Interference::EF {
+            edge: f.rim,
+            face: f.fb,
+            new_vertex: Some(alias),
+            parameter: Some(1.0),
+        });
+        apply(&mut f, true).unwrap();
+        assert_eq!(f.topo.vertex(f.generated).unwrap().point(), f.anchor.point);
+        assert_eq!(f.topo.vertex(f.original).unwrap().point(), original);
+        assert_eq!(f.arcs[0].p_start, f.anchor.point);
+        for (_, pb) in f.arena.pave_blocks.iter() {
+            assert_eq!(
+                pb.extra_paves[0].parameter.to_bits(),
+                f.anchor.parameter.to_bits()
+            );
+        }
+        for record in &f.arena.interference.ef {
+            if let Interference::EF {
+                parameter: Some(parameter),
+                ..
+            } = record
+            {
+                assert_eq!(parameter.to_bits(), f.anchor.parameter.to_bits());
+            }
+        }
+        assert_eq!(
+            f.arena
+                .pave_vertex_index
+                .as_ref()
+                .unwrap()
+                .find_with_entry_radius(original),
+            Some(f.original)
+        );
+    }
+    #[test]
+    fn shared_seed_retarget_refuses_without_changing_seed_inputs() {
+        let mut f = fixture();
+        let seeds = seed_junctions(&f.topo, &f.arena);
+        let before = f.topo.vertex(f.generated).unwrap().point();
+        assert!(matches!(
+            apply(&mut f, false),
+            Err(AlgoError::FaceSplitFailed(_))
+        ));
+        assert_eq!(f.topo.vertex(f.generated).unwrap().point(), before);
+        assert!(seeds_match_fresh(&seeds, &f.topo, &f.arena));
+    }
+    #[test]
+    fn original_operand_endpoint_cannot_be_retargeted() {
+        let mut f = fixture();
+        f.anchor.parameter = 5e-5;
+        f.anchor.point = f.circle.evaluate(f.anchor.parameter);
+        if let Interference::EF { new_vertex, .. } = &mut f.arena.interference.ef[0] {
+            *new_vertex = Some(f.original);
+        }
+        let before = f.topo.vertex(f.original).unwrap().point();
+        assert!(matches!(
+            apply(&mut f, true),
+            Err(AlgoError::FaceSplitFailed(_))
+        ));
+        assert_eq!(f.topo.vertex(f.original).unwrap().point(), before);
+    }
+    #[test]
+    fn unrelated_interference_or_pave_authority_refuses_retargeting() {
+        for foreign_pave in [false, true] {
+            let mut f = fixture();
+            if foreign_pave {
+                let edge = f
+                    .topo
+                    .add_edge(Edge::new(f.original, f.original, EdgeCurve::Line));
+                f.arena.pave_blocks.alloc(PaveBlock::new(
+                    edge,
+                    Pave::new(f.generated, 0.0),
+                    Pave::new(f.original, 1.0),
+                ));
+            } else {
+                f.arena.interference.ef.push(Interference::EF {
+                    edge: f.rim,
+                    face: f.fa,
+                    new_vertex: Some(f.generated),
+                    parameter: Some(f.anchor.parameter),
+                });
+            }
+            let before = f.topo.vertex(f.generated).unwrap().point();
+            assert!(matches!(
+                apply(&mut f, true),
+                Err(AlgoError::FaceSplitFailed(_))
+            ));
+            assert_eq!(f.topo.vertex(f.generated).unwrap().point(), before);
+        }
+    }
+    #[test]
+    fn distinct_isolated_events_cannot_claim_one_approximate_seed() {
+        let mut f = fixture();
+        let second_parameter = f.anchor.parameter + 1e-5;
+        let second = circular_cap_clip::CapAnchor {
+            point: f.circle.evaluate(second_parameter),
+            source_edge: f.rim,
+            opposing_face: f.fb,
+            parameter: second_parameter,
+        };
+        let mut registry = seed_junctions(&f.topo, &f.arena).registry;
+        assert!(matches!(
+            canonicalize_cap_anchors(
+                &mut f.topo,
+                &mut f.arena,
+                f.fa,
+                f.fb,
+                &mut f.arcs,
+                &[f.anchor, second],
+                Tolerance::default(),
+                &mut registry,
+                true
+            ),
+            Err(AlgoError::FaceSplitFailed(_))
+        ));
+        assert_eq!(
+            f.topo.vertex(f.generated).unwrap().point(),
+            f.circle.evaluate(std::f64::consts::FRAC_PI_2)
+        );
+    }
+
+    #[test]
+    fn certified_writer_refuses_large_tolerance_seed_while_legacy_behavior_stays() {
+        for strict in [false, true] {
+            let mut f = fixture();
+            f.topo
+                .vertex_mut(f.original)
+                .unwrap()
+                .set_tolerance(1e-3)
+                .unwrap();
+            f.arena.build_pave_vertex_index(&f.topo, 1e-7).unwrap();
+            let parameter = 2.5e-6;
+            let raw = RawCurve {
+                curve: EdgeCurve::Circle(f.circle.clone()),
+                bbox: f.arcs[0].bbox,
+                t_range: (parameter, std::f64::consts::FRAC_PI_2),
+                p_start: f.circle.evaluate(parameter),
+                p_end: f.anchor.point,
+            };
+            let mut registry = DetHashMap::default();
+            let result = emit_exact_arc_with_authority(
+                &mut f.topo,
+                &mut f.arena,
+                f.fa,
+                f.fb,
+                &raw,
+                Tolerance::default(),
+                &mut registry,
+                strict,
+            );
+            if strict {
+                assert!(matches!(result, Err(AlgoError::FaceSplitFailed(_))));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+}
+
 /// Quantize a point to a fine grid for the exact-arc vertex registry. The
 /// step (1e-9) is far below the linear tolerance, so only crossings that are
 /// numerically the same point (the same boundary-line × surface root computed
@@ -1504,6 +2165,7 @@ fn exact_arc_key(p: Point3) -> (i64, i64, i64) {
 /// block. Endpoints resolve through the shared-crossing registry first so the
 /// adjacent tread's arc, which ends at the same boundary-line crossing, reuses
 /// the same vertex and the arcs chain into a continuous split curve.
+#[cfg(test)]
 fn emit_exact_arc(
     topo: &mut Topology,
     arena: &mut GfaArena,
@@ -1513,6 +2175,35 @@ fn emit_exact_arc(
     tol: Tolerance,
     registry: &mut DetHashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
 ) -> Result<(), AlgoError> {
+    emit_exact_arc_with_authority(topo, arena, fa, fb, raw, tol, registry, false)
+}
+
+fn require_certified_endpoint_vertex(
+    topo: &Topology,
+    vertex: remus_topology::vertex::VertexId,
+    point: Point3,
+    tol: Tolerance,
+) -> Result<(), AlgoError> {
+    let distance = (topo.vertex(vertex)?.point() - point).length();
+    if !distance.is_finite() || distance > tol.linear * 0.125 {
+        return Err(AlgoError::FaceSplitFailed(
+            "certified cap endpoint cannot reuse an imprecise vertex".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_exact_arc_with_authority(
+    topo: &mut Topology,
+    arena: &mut GfaArena,
+    fa: FaceId,
+    fb: FaceId,
+    raw: &RawCurve,
+    tol: Tolerance,
+    registry: &mut DetHashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    strict: bool,
+) -> Result<(), AlgoError> {
     // Refuse before `resolve` can allocate or register either endpoint.
     validate_section_range("phase_ff exact-arc writer", raw.t_range)?;
 
@@ -1520,21 +2211,27 @@ fn emit_exact_arc(
                    arena: &GfaArena,
                    registry: &mut DetHashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
                    p: Point3|
-     -> remus_topology::vertex::VertexId {
+     -> Result<remus_topology::vertex::VertexId, AlgoError> {
         let key = exact_arc_key(p);
         if let Some(&vid) = registry.get(&key) {
-            return vid;
+            if strict {
+                require_certified_endpoint_vertex(topo, vid, p, tol)?;
+            }
+            return Ok(vid);
         }
         let vid = super::helpers::find_nearby_pave_vertex(topo, arena, p, tol)
             .or_else(|| find_nearby_face_vertex(topo, fa, p, tol))
             .or_else(|| find_nearby_face_vertex(topo, fb, p, tol))
             .unwrap_or_else(|| topo.add_vertex(Vertex::new(p, tol.linear)));
+        if strict {
+            require_certified_endpoint_vertex(topo, vid, p, tol)?;
+        }
         registry.insert(key, vid);
-        vid
+        Ok(vid)
     };
 
-    let start_vid = resolve(topo, arena, registry, raw.p_start);
-    let end_vid = resolve(topo, arena, registry, raw.p_end);
+    let start_vid = resolve(topo, arena, registry, raw.p_start)?;
+    let end_vid = resolve(topo, arena, registry, raw.p_end)?;
 
     let mut edge = Edge::new(start_vid, end_vid, raw.curve.clone());
     if !matches!(raw.curve, EdgeCurve::Line) {
@@ -8246,6 +8943,7 @@ fn trim_raw_line(raw: &RawCurve, f0: f64, f1: f64, tol: Tolerance) -> Option<Raw
 /// could not be built or is non-convex (the caller should conservatively
 /// keep the untrimmed curve, since the Cyrus-Beck clip is only correct
 /// for convex polygons).
+#[derive(Debug)]
 enum FaceClip {
     /// Fractional `[t_min, t_max]` sub-range of the raw line inside the face.
     Range((f64, f64)),
@@ -8253,6 +8951,66 @@ enum FaceClip {
     Empty,
     /// Polygon could not be built or is non-convex — keep raw curve.
     Indeterminate,
+}
+
+/// A pair of full circular caps admits one exact common chord interval.
+/// Testing each disc for an individual hit is insufficient: the two chord
+/// intervals can be disjoint on the same infinite plane-plane line.
+fn clip_line_to_two_discs(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    raw: &RawCurve,
+    tol: Tolerance,
+) -> FaceClip {
+    let (Some(a), Some(b)) = (
+        circular_cap_clip::closed_disc(topo, fa, tol),
+        circular_cap_clip::closed_disc(topo, fb, tol),
+    ) else {
+        return FaceClip::Indeterminate;
+    };
+    let direction = raw.p_end - raw.p_start;
+    let length_squared = direction.length_squared();
+    if !length_squared.is_finite() {
+        return FaceClip::Indeterminate;
+    }
+    if length_squared <= tol.linear * tol.linear {
+        return FaceClip::Empty;
+    }
+    let interval = |circle: remus_math::curves::Circle3D| {
+        let delta = raw.p_start - circle.center();
+        let center_t = -delta.dot(direction) / length_squared;
+        // Keep the closest point relative to the circle center. Adding the
+        // world origin before subtracting it again can round a translated
+        // near-tangent chord entirely outside the disc.
+        let relative_foot = delta + direction * center_t;
+        let radial_squared = relative_foot.length_squared();
+        let half_squared = circle.radius() * circle.radius() - radial_squared;
+        if !center_t.is_finite() || !radial_squared.is_finite() || !half_squared.is_finite() {
+            return Err(());
+        }
+        if half_squared <= 0.0 {
+            return Ok(None);
+        }
+        let half_t = (half_squared / length_squared).sqrt();
+        let bounds = (center_t - half_t, center_t + half_t);
+        if !bounds.0.is_finite() || !bounds.1.is_finite() {
+            return Err(());
+        }
+        Ok(Some(bounds))
+    };
+    let (a, b) = match (interval(a), interval(b)) {
+        (Ok(Some(a)), Ok(Some(b))) => (a, b),
+        (Err(()), _) | (_, Err(())) => return FaceClip::Indeterminate,
+        (Ok(None), _) | (_, Ok(None)) => return FaceClip::Empty,
+    };
+    let lo = a.0.max(b.0).max(0.0);
+    let hi = a.1.min(b.1).min(1.0);
+    if (hi - lo) * length_squared.sqrt() > tol.linear {
+        FaceClip::Range((lo, hi))
+    } else {
+        FaceClip::Empty
+    }
 }
 
 /// Decide plane×plane Line membership exactly when both trimmed faces have a
@@ -10566,7 +11324,25 @@ mod face_bbox_conic_tests {
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
 
-    use super::{compute_face_bbox, conic_arc_axis_extrema};
+    use super::{
+        FaceClip, RawCurve, clip_line_to_two_discs, compute_face_bbox, conic_arc_axis_extrema,
+        oblique_support_directions,
+    };
+
+    #[test]
+    fn oblique_production_supports_preserve_perpendicular_and_parallel_paths() {
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        assert!(!oblique_support_directions(axis, Vec3::new(0.0, 1.0, 0.0)));
+        assert!(!oblique_support_directions(axis, axis));
+        assert!(!oblique_support_directions(axis, -axis));
+        assert!(!oblique_support_directions(
+            axis,
+            Vec3::new(f64::NAN, 0.0, 1.0)
+        ));
+        let tilted = Vec3::new(0.0, 0.5, 3.0_f64.sqrt() * 0.5);
+        assert!(oblique_support_directions(axis, tilted));
+        assert!(oblique_support_directions(-axis, tilted));
+    }
 
     /// A z = 0.5 disc bounded by one closed circle edge.
     fn disc_face(topo: &mut Topology, circle: Circle3D) -> FaceId {
@@ -10583,6 +11359,122 @@ mod face_bbox_conic_tests {
                 d: 0.5,
             },
         ))
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn two_disc_line_clip_intersects_chords_instead_of_individual_hits() {
+        for scale in [1e-3, 1.0, 1e3] {
+            for shift in [0.0, 100.0 * scale] {
+                for (separation, expected) in [(5.0, None), (4.0, None), (3.0, Some((1.0, 2.0)))] {
+                    let mut topo = Topology::new();
+                    let disc = |topo: &mut Topology, x, normal| {
+                        let center = Point3::new(shift + x * scale, shift, shift);
+                        let circle = Circle3D::new(center, normal, 2.0 * scale).unwrap();
+                        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+                        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+                        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+                        let e = topo.add_edge(edge);
+                        let w = topo
+                            .add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
+                        topo.add_face(Face::new(
+                            w,
+                            vec![],
+                            FaceSurface::Plane {
+                                normal,
+                                d: normal.dot(center - Point3::new(0.0, 0.0, 0.0)),
+                            },
+                        ))
+                    };
+                    let a = disc(&mut topo, 0.0, Vec3::new(0.0, 0.0, 1.0));
+                    let b = disc(&mut topo, separation, Vec3::new(0.0, 1.0, 0.0));
+                    let start = Point3::new(shift - 10.0 * scale, shift, shift);
+                    let end = Point3::new(shift + 10.0 * scale, shift, shift);
+                    let raw = RawCurve {
+                        curve: EdgeCurve::Line,
+                        bbox: Aabb3 {
+                            min: start,
+                            max: end,
+                        },
+                        t_range: (0.0, 20.0 * scale),
+                        p_start: start,
+                        p_end: end,
+                    };
+                    let clipped = clip_line_to_two_discs(&topo, a, b, &raw, Tolerance::default());
+                    match (clipped, expected) {
+                        (FaceClip::Empty, None) => {}
+                        (FaceClip::Range((lo, hi)), Some((x0, x1))) => {
+                            assert!((lo - (x0 + 10.0) / 20.0).abs() < 1e-12);
+                            assert!((hi - (x1 + 10.0) / 20.0).abs() < 1e-12);
+                        }
+                        (actual, expected) => panic!(
+                            "scale={scale}, shift={shift}, separation={separation}: {actual:?} vs {expected:?}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn translated_near_tangent_disc_chord_retains_its_resolved_interval() {
+        for shift in [0.0, 1e8] {
+            let mut topo = Topology::new();
+            let center = Point3::new(shift, shift, 0.5);
+            let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+            let a = disc_face(&mut topo, circle.clone());
+            let b = disc_face(&mut topo, circle);
+            let start = Point3::new(shift - 10.0, shift - 7.171_572_878_956_795, 0.5);
+            let end = start + Vec3::new(20.0, 20.0, 0.0);
+            let raw = RawCurve {
+                curve: EdgeCurve::Line,
+                bbox: Aabb3 {
+                    min: start,
+                    max: end,
+                },
+                t_range: (0.0, 800.0_f64.sqrt()),
+                p_start: start,
+                p_end: end,
+            };
+            let FaceClip::Range((lo, hi)) =
+                clip_line_to_two_discs(&topo, a, b, &raw, Tolerance::default())
+            else {
+                panic!("translated resolved chord must survive at shift={shift}");
+            };
+            // Exact stored coordinates give y=x+beta in the local plane,
+            // beta=2.82842712104320526123046875. Independently solving
+            // x²+(x+beta)²=4 with 80-digit decimal arithmetic gives these
+            // parameter fractions and a positive 0.0002046814378 chord.
+            assert!((lo - 0.429_285_703_683_103_26).abs() < 1e-10, "lo={lo}");
+            assert!((hi - 0.429_292_940_264_736_5).abs() < 1e-10, "hi={hi}");
+            assert!((hi - lo) * 800.0_f64.sqrt() > 0.0002);
+        }
+    }
+
+    #[test]
+    fn two_disc_line_clip_declines_unresolved_arithmetic() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.5), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let a = disc_face(&mut topo, circle.clone());
+        let b = disc_face(&mut topo, circle);
+        let start = Point3::new(-1e200, 0.0, 0.5);
+        let end = Point3::new(1e200, 0.0, 0.5);
+        let raw = RawCurve {
+            curve: EdgeCurve::Line,
+            bbox: Aabb3 {
+                min: start,
+                max: end,
+            },
+            t_range: (0.0, 2e200),
+            p_start: start,
+            p_end: end,
+        };
+        assert!(matches!(
+            clip_line_to_two_discs(&topo, a, b, &raw, Tolerance::default()),
+            FaceClip::Indeterminate
+        ));
     }
 
     /// B52: the face broad-phase box must contain the whole rim wherever the

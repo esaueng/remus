@@ -5673,28 +5673,34 @@ fn finding_coax_cylinder_fuse_orientation() {
     );
 }
 
-/// 8.1 finding F3 (retained, kernel untouched): a cut whose tool is a
-/// 30°-rotated cylinder returns a degenerate 3-face solid measuring 0.0
-/// while the paired fuse (170.19 against stock+tool 186.53) implies a ~27.6
-/// remainder.
+/// 8.1 finding F3 regression: before the fix, a cut whose tool is a
+/// 30°-rotated cylinder returned a degenerate 3-face solid measuring 0.0
+/// instead of the independently integrated 30.24010542122668 remainder.
 ///
 /// Minimized from campaign seed `17450404173350609447` (4 ops stay 4 ops;
-/// dims simplify). The result validates clean yet tessellates open at every
+/// dims simplify). The old result validated clean yet tessellated open at every
 /// deflection (36 boundary edges even at 0.1) and the independent Gauss
 /// route declines to measure it — a material-loss wrong success, not a
 /// tessellation-density artifact.
 ///
 /// Acceptance: the harness `ExactOk` verdict (valid topology, watertight
-/// mesh, mass agreement, translation invariance, identities). No geometry
-/// fix in this harness PR.
+/// mesh, mass agreement, translation invariance, identities). Native geometry
+/// regressions also pin independent volume and retained material.
 #[test]
-#[ignore = "8.1 finding F3: rotated-cylinder-tool cut drops its remainder (valid 3-face 0-volume result, open mesh, refused mass route)"]
 fn finding_rotated_cyl_cut_material() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.5,"radius":5.5},"op":"makeCylinder"},{"args":{"height":3.5,"radius":2.0},"op":"makeCylinder"},{"args":{"matrix":[1.0,0.0,0.0,4.0,0.0,0.8660254037844386,-0.5,-2.0,0.0,0.5,0.8660254037844386,-0.5,0.0,0.0,0.0,1.0],"solid":0},"op":"transform"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
     )
     .expect("finding bundle parses");
-    let limits = SeqLimits::default();
+    let mut limits = SeqLimits::default();
+    // This regression retains the full diagonal-derived mesh and translated
+    // volume battery. Its unoptimized replay takes several minutes; CI uses
+    // the optimized test profile. Give this correctness replay
+    // a bounded ten-minute default while preserving an explicit caller budget
+    // and the two-minute default for generated campaigns.
+    if std::env::var_os("OPSEQ81_SEQ_TIMEOUT_MS").is_none() {
+        limits.timeout_ms = 600_000;
+    }
     let report = execute_sequence(&ops, &limits, Fault::None);
     for n in &report.notes {
         println!(
