@@ -1604,6 +1604,8 @@ impl<'a> UvTrim<'a> {
                 }
             }
         }
+        // hot: n up to 513, ~526k n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         breaks.sort_by(f64::total_cmp);
         breaks
     }
@@ -1668,6 +1670,8 @@ impl<'a> UvTrim<'a> {
             );
         }
         cuts.retain(|c| c.is_finite() && *c >= v0 && *c <= v1);
+        // hot: 289,218+ calls (native_mass_properties) in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         cuts.sort_by(f64::total_cmp);
 
         // Cuts closer together than this carry no width worth integrating, and

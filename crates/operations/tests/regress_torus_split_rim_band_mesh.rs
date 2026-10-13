@@ -6,7 +6,12 @@
 //! tessellation. A chain that returns without winding the torus parameter is a
 //! different topology and must not be skinned as though it were a full rim.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};

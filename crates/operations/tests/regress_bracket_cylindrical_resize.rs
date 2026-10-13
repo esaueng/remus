@@ -6,7 +6,12 @@
 //! no-classifier containment shortcut therefore copied the bracket unchanged
 //! and `resize_cylindrical_face` correctly rejected the no-op by volume.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::collections::HashMap;
 use std::f64::consts::PI;

@@ -160,6 +160,8 @@ fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, Ma
     }
 
     // Sort by distance and return the best candidates.
+    // hot: n up to 308, ~33k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Take the top few unique candidates (spatially separated).

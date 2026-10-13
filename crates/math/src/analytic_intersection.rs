@@ -1312,6 +1312,8 @@ pub fn intersect_plane_torus(
             let closing_gap = (pts[pts.len() - 1] - pts[0]).length();
             let median_spacing = {
                 let mut spac: Vec<f64> = pts.windows(2).map(|w| (w[1] - w[0]).length()).collect();
+                // hot: n up to 149, ~18k n*log2(n) work in one criterion --test + native perf pass.
+                #[allow(clippy::disallowed_methods)]
                 spac.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 spac.get(spac.len() / 2).copied().unwrap_or(0.0)
             };

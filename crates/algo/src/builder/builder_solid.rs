@@ -2898,6 +2898,8 @@ fn weld_coincident_vertices(
         }
     }
     // Deterministic clustering order.
+    // hot: n up to 2,200, ~1M n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     verts.sort_by_key(|(vid, _)| vid.index());
 
     // Coarse spatial hash at snap resolution maps a cell to canonical
@@ -3178,6 +3180,8 @@ fn split_edges_at_collinear_vertices(
     }
 
     // Deterministic order for sub-edge allocation.
+    // hot: n up to 4,600, ~1.4M n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     line_edges.sort_by_key(|(eid, ..)| eid.index());
 
     // Index the candidate vertices and bucket them spatially. The cut test
@@ -4342,6 +4346,8 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     for edge_ids in groups.values() {
         // Deduplicate edge IDs (same edge may appear multiple times from different faces)
         let mut unique: Vec<EdgeId> = edge_ids.clone();
+        // hot: 65,536+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         unique.sort_by_key(|e| e.index());
         unique.dedup();
 
@@ -4812,6 +4818,8 @@ fn remove_doubled_faces(
                 key.extend(inner.edges().iter().map(OrientedEdge::edge));
             }
         }
+        // hot: 19,079+ calls, n up to 368 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         key.sort_by_key(|e| e.index());
         groups.entry(key).or_default().push(fi);
     }

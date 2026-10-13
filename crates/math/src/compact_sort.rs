@@ -114,6 +114,8 @@ impl Order {
     /// Not generic, so the standard stable sort is instantiated once here.
     #[inline(never)]
     fn sort(&mut self, compare: &mut dyn FnMut(usize, usize) -> Ordering) {
+        // The one shared instantiation behind CompactSort.
+        #[allow(clippy::disallowed_methods)]
         self.as_mut_slice().sort_by(|&a, &b| compare(a, b));
     }
 }

@@ -940,6 +940,11 @@ Workspace-level strict lints:
 - `panic = "deny"` — no panic
 - `clippy::pedantic`, `clippy::nursery` = warn
 - `missing_docs` = warn
+- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` in the kernel
+  crates (math through operations; their own `clippy.toml`): use
+  `remus_math::compact_sort::CompactSort`. A measured hot sort keeps `sort_by`
+  behind a statement-level `#[allow(clippy::disallowed_methods)]` with a
+  `// hot: <evidence>` line. Test code is exempt.
 
 ## Testing
 

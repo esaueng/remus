@@ -291,6 +291,8 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         work.step()?;
     }
     let mut uses = input.uses.to_vec();
+    // hot: 1,705+ calls, ~66k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     uses.sort_by_key(|u| u.source.use_id);
     for i in 0..uses.len() {
         work.step()?;

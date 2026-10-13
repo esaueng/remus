@@ -256,6 +256,8 @@ fn build_recursive(
     let mut best_split = indices.len() / 2;
 
     for axis in 0..3 {
+        // hot: BVH build sorts every primitive per axis per node; 1,024+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         indices.sort_by(|&a, &b| {
             let ca = centroid_axis(aabbs[a].1, axis);
             let cb = centroid_axis(aabbs[b].1, axis);
@@ -289,6 +291,8 @@ fn build_recursive(
     }
 
     // Re-sort by the best axis.
+    // hot: BVH build re-sort per node; 321+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     indices.sort_by(|&a, &b| {
         let ca = centroid_axis(aabbs[a].1, best_axis);
         let cb = centroid_axis(aabbs[b].1, best_axis);

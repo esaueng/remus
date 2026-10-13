@@ -1430,6 +1430,8 @@ impl<'a> Collector<'a> {
         let mut shift = 0usize;
         for target in targets {
             let mut list = cuts.remove(&target).unwrap_or_default();
+            // hot: 2,048+ calls in one criterion --test + native perf pass.
+            #[allow(clippy::disallowed_methods)]
             list.sort_by(|a, b| a.0.total_cmp(&b.0));
             list.dedup_by(|a, b| (a.0 - b.0).abs() <= 1e-12);
             if !self.split_use_at(target + shift, &list)? {

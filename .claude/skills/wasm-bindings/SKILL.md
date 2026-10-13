@@ -87,7 +87,7 @@ Small wasm size is a headline competitive property of this kernel (several times
 
 Measurement details and the twiggy diagnosis recipe: [reference.md](reference.md) section 6.
 
-Generic code is the largest size lever. Every `sort_by` / `sort_by_key` call compiles its own copy of the standard stable sort (2–5 KB each in the shipped module), because each comparator closure is a distinct type. In kernel code where the sort is not a measurable share of the work, use `remus_math::compact_sort::CompactSort` (`compact_sort_by`, `compact_sort_by_key`): same order, ties included, through one shared sort. Keep `sort_by` in sort-heavy loops (BVH, CDT, the GFA builder's per-edge sorts) and check a candidate with instruction counts before converting a hot one.
+Generic code is the largest size lever. Every `sort_by` / `sort_by_key` call compiles its own copy of the standard stable sort (2–5 KB each in the shipped module), because each comparator closure is a distinct type. In kernel code where the sort is not a measurable share of the work, use `remus_math::compact_sort::CompactSort` (`compact_sort_by`, `compact_sort_by_key`): same order, ties included, through one shared sort. Keep `sort_by` in sort-heavy loops (BVH, CDT, the GFA builder's per-edge sorts) and check a candidate with instruction counts before converting a hot one. Clippy enforces this in the kernel crates (`disallowed_methods` in their `clippy.toml`); a measured hot site keeps `sort_by` under a statement-level `#[allow(clippy::disallowed_methods)]` with a `// hot: <evidence>` line.
 
 ## Related skills
 

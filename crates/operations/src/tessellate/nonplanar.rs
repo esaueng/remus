@@ -576,6 +576,8 @@ pub(super) fn tessellate_revolution_band_shared(
         return Ok(false);
     }
     for rim in &mut rims {
+        // hot: ~23k n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         rim.sort_by(|&a, &b| {
             angle_of(a, merged)
                 .partial_cmp(&angle_of(b, merged))

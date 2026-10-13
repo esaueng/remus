@@ -646,6 +646,8 @@ fn try_build_box_classifier(
     if x_vals.len() != 2 || y_vals.len() != 2 || z_vals.len() != 2 {
         return None;
     }
+    // hot: 65,536+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     let sort =
         |v: &mut Vec<f64>| v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     sort(&mut x_vals);

@@ -235,6 +235,8 @@ pub fn fill_images_faces(
         let mut pool = BTreeMap::new();
         let mut sorted_entries: Vec<(usize, &(Point3, DetHashSet<usize>))> =
             vid_faces.iter().map(|(&k, v)| (k, v)).collect();
+        // hot: n up to 1,152, ~265k n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         sorted_entries.sort_by_key(|(k, _)| *k);
         for (_, (pt, faces)) in sorted_entries {
             if faces.len() >= 2 {
@@ -299,6 +301,8 @@ pub fn fill_images_faces(
     // Plane faces first: their arrangements register section split points
     // (keyed by pave block) that curved faces sharing the same section curves
     // consume, so both sides of a shared curve split at identical 3D points.
+    // hot: n up to 864, ~132k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     sorted_faces.sort_by_key(|(fid, _)| {
         let curved = topo
             .face(*fid)
@@ -3727,6 +3731,8 @@ fn clip_line_to_face_extent(
         return None;
     }
 
+    // hot: 16,384+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     // Opt-in probe: only emits with BK_CLIP set (see module docs).
     if std::env::var("BK_CLIP").is_ok() {
@@ -3832,6 +3838,8 @@ fn clip_line_to_face_extent(
             .map(|t| t.clamp(0.0, 1.0))
             .chain([0.0, 1.0])
             .collect();
+        // hot: 21,846+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         borders.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         borders.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         borders
@@ -4041,6 +4049,8 @@ fn face_u_span(topo: &Topology, face: &remus_topology::face::Face) -> Option<f64
     if us.len() < 2 {
         return None;
     }
+    // hot: ~16k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mut max_gap = TAU - (us[us.len() - 1] - us[0]);
     for w in us.windows(2) {

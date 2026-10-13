@@ -225,6 +225,8 @@ pub(super) fn find_splits_on_line(
             splits.push((t, closest));
         }
     }
+    // hot: 16,384+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     // Fit-error copies of one junction must weld in model space. Comparing
     // normalized fractions with a length tolerance also merges distinct
