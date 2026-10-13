@@ -8701,7 +8701,7 @@ fn clip_line_to_polygon_general(
             ts.push(t.clamp(0.0, 1.0));
         }
     }
-    ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     ts.dedup_by(|a, b| (*a - *b).abs() * d_len <= linear);
 
     let poly_pts: Vec<Point2> = polygon.iter().map(|&(x, y)| Point2::new(x, y)).collect();

@@ -3,6 +3,7 @@
 //! Runs the complete General Fuse Algorithm pipeline:
 //! PaveFiller -> Builder -> BOP -> assemble.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::context::OperationContext;
 use remus_math::det_hash::DetHashMap;
 use remus_math::tolerance::Tolerance;
@@ -1052,7 +1053,7 @@ fn export_entity_evolution(
         .iter()
         .map(|(&store_index, caller_edge)| (caller_edge.index(), resolve_edge(store_index)))
         .collect();
-    edges.sort_by_key(|(index, _)| *index);
+    edges.compact_sort_by_key(|(index, _)| *index);
 
     let mut vertices: Vec<(usize, VertexEvent)> = export
         .vertices
@@ -1067,7 +1068,7 @@ fn export_entity_evolution(
             (caller_vertex.index(), event)
         })
         .collect();
-    vertices.sort_by_key(|(index, _)| *index);
+    vertices.compact_sort_by_key(|(index, _)| *index);
 
     Ok((
         result,

@@ -930,7 +930,7 @@ pub fn propagate_face_attributes(
 
     let modified_outputs: BTreeSet<_> = by_output.keys().copied().collect();
     for (output_idx, mut sources) in by_output {
-        sources.sort_by_key(|(source, _)| *source);
+        sources.compact_sort_by_key(|(source, _)| *source);
         let first = &sources[0].1;
         let name = sources
             .iter()
