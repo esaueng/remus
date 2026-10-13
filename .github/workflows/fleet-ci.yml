@@ -433,11 +433,23 @@ jobs:
       - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.62.30
         with:
           tool: wasm-pack
+      - name: Mark the WASM build start
+        run: touch "$RUNNER_TEMP/wasm-build-start"
       - name: Build and validate WASM
         run: cargo xtask wasm-build
       - name: Prepare WASM size artifacts
-        if: github.event_name == 'pull_request'
+        id: size-artifacts
+        # Also after a failed build: a kernel over a hard limit fails
+        # `validate_output` after it is built, and the size report must still
+        # show it. Only modules this run wrote count; the packages committed
+        # in the checkout are never reported as the PR build.
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         run: |
+          marker="$RUNNER_TEMP/wasm-build-start"
+          if [ ! -f "$marker" ]; then
+            echo "::notice::The WASM build did not start; no size artifacts."
+            exit 0
+          fi
           metadata=$(cargo metadata --no-deps --format-version 1)
           mkdir -p "$RUNNER_TEMP/wasm-size"
           # kernel module first, translator module second
@@ -445,10 +457,17 @@ jobs:
             wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/'"$crate_dir"'/Cargo.toml")) | .name' <<< "$metadata")
             wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
             test -n "$wasm_target"
-            cp "$crate_dir/pkg/${wasm_target}_bg.wasm" "$RUNNER_TEMP/wasm-size/pr-${wasm_target}.wasm"
+            built="$crate_dir/pkg/${wasm_target}_bg.wasm"
+            if [ -f "$built" ] && [ "$built" -nt "$marker" ]; then
+              cp "$built" "$RUNNER_TEMP/wasm-size/pr-${wasm_target}.wasm"
+            elif [ "$crate_dir" = crates/wasm ]; then
+              echo "::notice::No kernel module was built; no size artifacts."
+              exit 0
+            fi
           done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: github.event_name == 'pull_request'
+        if: ${{ !cancelled() && steps.size-artifacts.outputs.ready == 'true' }}
         with:
           name: wasm-size-pr
           path: ${{ runner.temp }}/wasm-size/pr-*.wasm

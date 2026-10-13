@@ -49,7 +49,11 @@ export const MODULES = Object.freeze({
 
 const POLICY_SCRIPT = fileURLToPath(new URL('./wasm-size-policy.mjs', import.meta.url));
 const DECLARATION_PREFIX = 'WASM-Size:';
-const TIER = /\bTier:\s*(?:core|native|lazy:[A-Za-z0-9_.-]+)/i;
+// A tier token ends at the end of the line, whitespace, `(`, `,` or `;`, so
+// `Tier: corejunk` is no tier. A parenthesized reason may follow it.
+const TIER = /\bTier:\s*(?:core|native|lazy:[A-Za-z0-9_-]+)(?=$|[\s(,;])(?:\s*\([^)]*\))?/i;
+// A clause that only states a size, such as `+120 KiB raw`, names no capability.
+const SIZE_ONLY = /^[+-]?\s*[0-9][0-9.,]*\s*(?:B|bytes?|KB|KiB|MB|MiB)?(?:\s+(?:raw|gzip|brotli))?$/i;
 const EXAMPLE = 'WASM-Size: +120 KiB raw, curve projection, Tier: core (writes the journal)';
 
 /**
@@ -68,10 +72,18 @@ export function sizeDeclarations(body) {
     .map((line) => line.trim());
 }
 
-/** A declaration names something after the prefix and a module tier. */
+/**
+ * A declaration names a module tier and, besides the tier and any size
+ * figure, a capability: at least one clause with a word of three letters.
+ */
 export function isValidDeclaration(line) {
   const rest = line.slice(DECLARATION_PREFIX.length);
-  return /\S/.test(rest) && TIER.test(rest);
+  if (!TIER.test(rest)) return false;
+  return rest
+    .replace(TIER, ',')
+    .split(/[,;]/)
+    .map((clause) => clause.trim())
+    .some((clause) => clause !== '' && !SIZE_ONLY.test(clause) && /[A-Za-z]{3}/.test(clause));
 }
 
 /**
@@ -114,7 +126,7 @@ export function evaluateGate({ base, pr, body, growthReviewBytes = GROWTH_REVIEW
         ? { code: 'growth-undeclared', message: `${growth}, and the PR description has no \`${DECLARATION_PREFIX}\` line. ${fix}` }
         : {
             code: 'growth-declaration-incomplete',
-            message: `${growth}, and no \`${DECLARATION_PREFIX}\` line names a module tier (\`Tier: core\`, \`Tier: lazy:<module>\` or \`Tier: native\`). ${fix}`,
+            message: `${growth}, and no \`${DECLARATION_PREFIX}\` line names both a capability and a module tier (\`Tier: core\`, \`Tier: lazy:<module>\` or \`Tier: native\`). ${fix}`,
           },
     );
   }
