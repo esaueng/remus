@@ -33,7 +33,7 @@
 1 crates/operations/src/feature_recognition.rs
 2 crates/operations/src/fillet/mod.rs
 1 crates/operations/src/fillet/rolling_ball.rs
-3 crates/operations/src/heal.rs
+2 crates/operations/src/heal.rs
 3 crates/operations/src/loft.rs
 2 crates/operations/src/measure/mod.rs
 4 crates/operations/src/offset_face.rs

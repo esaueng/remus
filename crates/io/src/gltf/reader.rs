@@ -13,7 +13,9 @@ use remus_topology::solid::SolidId;
 /// Read a GLB (glTF binary) file and return a triangle mesh.
 ///
 /// Extracts vertex positions, normals, and triangle indices from all
-/// mesh primitives in the file, combining them into a single mesh.
+/// mesh primitives in the file, combining them into a single mesh. Missing
+/// normals are represented by zero vectors, preserving primitive alignment
+/// without supplying an invented direction to solid import.
 ///
 /// # Errors
 ///
@@ -105,8 +107,11 @@ pub fn read_glb_with_limits(
         reason: "GLB JSON is not valid UTF-8".into(),
     })?;
 
-    // Simple JSON parsing for the fields we need
-    let accessors = parse_accessors(json_str);
+    let document: GltfDocument =
+        serde_json::from_str(json_str).map_err(|error| crate::IoError::ParseError {
+            reason: format!("invalid GLB JSON: {error}"),
+        })?;
+    let accessors = document.accessors;
     let declared_accessor_entities = accessors
         .iter()
         .try_fold(0usize, |total, accessor| total.checked_add(accessor.count))
@@ -120,8 +125,12 @@ pub fn read_glb_with_limits(
         declared_accessor_entities,
         limits.max_model_entities,
     )?;
-    let buffer_views = parse_buffer_views(json_str);
-    let primitives = parse_mesh_primitives(json_str);
+    let buffer_views = document.buffer_views;
+    let primitives: Vec<_> = document
+        .meshes
+        .into_iter()
+        .flat_map(|mesh| mesh.primitives)
+        .collect();
 
     if primitives.is_empty() {
         return Err(crate::IoError::ParseError {
@@ -139,19 +148,14 @@ pub fn read_glb_with_limits(
     )?;
     let mut decoded_entities = 0usize;
     for prim in &primitives {
-        if prim.invalid_indices {
-            return Err(crate::IoError::ParseError {
-                reason: "GLB indices accessor must be a nonnegative integer".into(),
-            });
-        }
-        if prim.mode != Some(4) {
+        if prim.mode != 4 {
             return Err(crate::IoError::ParseError {
                 reason: "unsupported GLB primitive mode (expected TRIANGLES=4)".into(),
             });
         }
         for index in [
-            prim.position_accessor,
-            prim.normal_accessor,
+            prim.attributes.position_accessor,
+            prim.attributes.normal_accessor,
             prim.indices_accessor,
         ]
         .into_iter()
@@ -175,7 +179,10 @@ pub fn read_glb_with_limits(
         // Unindexed TRIANGLES materialize an implicit sequential index for
         // each vertex. Charge that output before allocating either vector.
         if prim.indices_accessor.is_none()
-            && let Some(accessor) = prim.position_accessor.and_then(|i| accessors.get(i))
+            && let Some(accessor) = prim
+                .attributes
+                .position_accessor
+                .and_then(|i| accessors.get(i))
         {
             decoded_entities = decoded_entities.checked_add(accessor.count).ok_or(
                 crate::IoError::LimitExceeded {
@@ -199,7 +206,7 @@ pub fn read_glb_with_limits(
     for prim in &primitives {
         let vertex_offset = positions.len();
 
-        if let Some(pos_idx) = prim.position_accessor {
+        if let Some(pos_idx) = prim.attributes.position_accessor {
             let accessor = accessors
                 .get(pos_idx)
                 .ok_or_else(|| crate::IoError::ParseError {
@@ -216,7 +223,7 @@ pub fn read_glb_with_limits(
         }
 
         let vertex_count = positions.len() - vertex_offset;
-        if let Some(norm_idx) = prim.normal_accessor {
+        if let Some(norm_idx) = prim.attributes.normal_accessor {
             let accessor = accessors
                 .get(norm_idx)
                 .ok_or_else(|| crate::IoError::ParseError {
@@ -242,8 +249,9 @@ pub fn read_glb_with_limits(
                 normals.push(Vec3::new(f64::from(x), f64::from(y), f64::from(z)));
             }
         } else {
-            // Pad this primitive, before appending the next one's normals.
-            normals.resize(positions.len(), Vec3::new(0.0, 0.0, 1.0));
+            // Zero means no supplied normal. Keep primitive alignment without
+            // inventing a direction that import_mesh would use to flip winding.
+            normals.resize(positions.len(), Vec3::new(0.0, 0.0, 0.0));
         }
 
         if let Some(idx_accessor_idx) = prim.indices_accessor {
@@ -258,18 +266,22 @@ pub fn read_glb_with_limits(
                     reason: format!("buffer view index {} out of range", accessor.buffer_view),
                 }
             })?;
-            let idx_data = safe_slice(bin, view.byte_offset, view.byte_length)?;
+            if accessor.element_type != "SCALAR"
+                || accessor.normalized
+                || accessor.sparse.is_some()
+                || view.byte_stride.is_some()
+            {
+                return Err(crate::IoError::ParseError {
+                    reason: "unsupported GLB index accessor layout".into(),
+                });
+            }
 
             let v_offset =
                 u32::try_from(vertex_offset).map_err(|_| crate::IoError::ParseError {
                     reason: "glTF vertex offset exceeds u32".into(),
                 })?;
 
-            // The declared `count` gates how many indices are decoded: the
-            // budget sums declared counts, so decoding past `count` would let
-            // an under-declared accessor smuggle unbounded index data through
-            // (the vertex-side twin of this bug). A view that does not hold
-            // exactly `count` elements is malformed.
+            // Decode only the declared count, even when the view is shared.
             let elem_bytes = match accessor.component_type {
                 5123 => 2,
                 5125 => 4,
@@ -281,22 +293,7 @@ pub fn read_glb_with_limits(
                     });
                 }
             };
-            let expected_bytes = accessor.count.checked_mul(elem_bytes).ok_or_else(|| {
-                crate::IoError::ParseError {
-                    reason: "GLB indices accessor count overflows".into(),
-                }
-            })?;
-            if idx_data.len() != expected_bytes {
-                return Err(crate::IoError::ParseError {
-                    reason: format!(
-                        "GLB indices accessor declares {} elements but its buffer view holds {} bytes (expected {})",
-                        accessor.count,
-                        idx_data.len(),
-                        expected_bytes,
-                    ),
-                });
-            }
-
+            let (idx_data, _) = accessor_data(accessor, view, bin, elem_bytes, "indices")?;
             match accessor.component_type {
                 5123 => {
                     // uint16
@@ -307,6 +304,11 @@ pub fn read_glb_with_limits(
                                 reason: "glTF index + vertex offset overflows u32".into(),
                             }
                         })?;
+                        if usize::from(idx) >= vertex_count {
+                            return Err(crate::IoError::ParseError {
+                                reason: "GLB index exceeds primitive POSITION count".into(),
+                            });
+                        }
                         indices.push(global);
                     }
                 }
@@ -319,6 +321,11 @@ pub fn read_glb_with_limits(
                                 reason: "glTF index + vertex offset overflows u32".into(),
                             }
                         })?;
+                        if idx as usize >= vertex_count {
+                            return Err(crate::IoError::ParseError {
+                                reason: "GLB index exceeds primitive POSITION count".into(),
+                            });
+                        }
                         indices.push(global);
                     }
                 }
@@ -377,302 +384,164 @@ fn safe_slice(data: &[u8], offset: usize, length: usize) -> Result<&[u8], crate:
     Ok(&data[offset..end])
 }
 
-struct AccessorInfo {
-    buffer_view: usize,
-    component_type: u32,
-    count: usize,
+// Deserialize metadata as JSON, retaining every array slot and validating
+// integer widths rather than dropping malformed entries and shifting indices.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GltfDocument {
+    #[serde(default)]
+    accessors: Vec<AccessorInfo>,
+    #[serde(default)]
+    buffer_views: Vec<BufferViewInfo>,
+    #[serde(default)]
+    meshes: Vec<GltfMesh>,
 }
 
-/// Decode a POSITION/NORMAL accessor's vertex data, verifying the declared
-/// `count` against the view's byte length first.
-///
-/// An under-declared `count` used to defeat the entity budget (the budget
-/// sums declared counts) while the decoder followed `byteLength` and
-/// materialized far more vertices — a fail-open pair. Decoding exactly
-/// `count` elements keeps the budget honest and the positions/indices
-/// contract intact; a mismatch is a malformed file, refused by name.
+#[derive(serde::Deserialize)]
+struct GltfMesh {
+    primitives: Vec<MeshPrimitive>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccessorInfo {
+    buffer_view: usize,
+    #[serde(deserialize_with = "component_type")]
+    component_type: u32,
+    count: usize,
+    #[serde(rename = "type")]
+    element_type: String,
+    #[serde(default)]
+    byte_offset: usize,
+    #[serde(default)]
+    normalized: bool,
+    sparse: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BufferViewInfo {
+    #[serde(default)]
+    buffer: usize,
+    #[serde(default)]
+    byte_offset: usize,
+    byte_length: usize,
+    byte_stride: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct MeshAttributes {
+    #[serde(rename = "POSITION", default, deserialize_with = "optional_index")]
+    position_accessor: Option<usize>,
+    #[serde(rename = "NORMAL", default, deserialize_with = "optional_index")]
+    normal_accessor: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct MeshPrimitive {
+    attributes: MeshAttributes,
+    #[serde(rename = "indices", default, deserialize_with = "indices_accessor")]
+    indices_accessor: Option<usize>,
+    #[serde(default = "triangle_mode", deserialize_with = "primitive_mode")]
+    mode: u64,
+}
+
+// A missing optional index is legal; an explicitly null/negative/fractional
+// index is malformed and must not silently select implicit indices instead.
+fn optional_index<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    <usize as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
+fn indices_accessor<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    optional_index(deserializer).map_err(|error| {
+        <D::Error as serde::de::Error>::custom(format!("invalid GLB indices accessor: {error}"))
+    })
+}
+
+fn component_type<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    <u32 as serde::Deserialize>::deserialize(deserializer).map_err(|error| {
+        <D::Error as serde::de::Error>::custom(format!("invalid GLB component type: {error}"))
+    })
+}
+
+fn primitive_mode<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    <u64 as serde::Deserialize>::deserialize(deserializer).map_err(|error| {
+        <D::Error as serde::de::Error>::custom(format!("invalid GLB primitive mode: {error}"))
+    })
+}
+
+const fn triangle_mode() -> u64 {
+    4
+}
+
+/// Bound the exact referenced subrange before allocation. Trailing view data
+/// is legal; it is never decoded or charged as additional accessor output.
+fn accessor_data<'a>(
+    accessor: &AccessorInfo,
+    view: &BufferViewInfo,
+    bin: &'a [u8],
+    element_bytes: usize,
+    kind: &str,
+) -> Result<(&'a [u8], usize), crate::IoError> {
+    let invalid = || crate::IoError::ParseError {
+        reason: format!("GLB {kind} accessor range or stride exceeds its buffer view"),
+    };
+    if view.buffer != 0 {
+        return Err(invalid());
+    }
+    let data = safe_slice(bin, view.byte_offset, view.byte_length)?;
+    let stride = view.byte_stride.unwrap_or(element_bytes);
+    if stride < element_bytes
+        || (view.byte_stride.is_some() && (stride > 252 || !stride.is_multiple_of(4)))
+    {
+        return Err(invalid());
+    }
+    let extent = if accessor.count == 0 {
+        0
+    } else {
+        (accessor.count - 1)
+            .checked_mul(stride)
+            .and_then(|n| n.checked_add(element_bytes))
+            .ok_or_else(invalid)?
+    };
+    let end = accessor
+        .byte_offset
+        .checked_add(extent)
+        .ok_or_else(invalid)?;
+    let referenced = data.get(accessor.byte_offset..end).ok_or_else(invalid)?;
+    Ok((referenced, stride))
+}
+
+/// Decode exactly count VEC3/FLOAT values using the accessor's offset and
+/// buffer view's stride. Sparse and normalized layouts remain unsupported.
 fn decode_accessor_vertices(
     accessor: &AccessorInfo,
     view: &BufferViewInfo,
     bin: &[u8],
     kind: &str,
 ) -> Result<Vec<[f32; 3]>, crate::IoError> {
-    let pos_data = safe_slice(bin, view.byte_offset, view.byte_length)?;
-    let expected_bytes =
-        accessor
-            .count
-            .checked_mul(12)
-            .ok_or_else(|| crate::IoError::ParseError {
-                reason: format!("GLB {kind} accessor count overflows"),
-            })?;
-    if pos_data.len() != expected_bytes {
+    if accessor.component_type != 5126
+        || accessor.element_type != "VEC3"
+        || accessor.normalized
+        || accessor.sparse.is_some()
+    {
         return Err(crate::IoError::ParseError {
-            reason: format!(
-                "GLB {kind} accessor declares {} vertices but its buffer view holds {} bytes (expected {})",
-                accessor.count,
-                pos_data.len(),
-                expected_bytes,
-            ),
+            reason: format!("unsupported GLB {kind} accessor (expected nonsparse VEC3/FLOAT)"),
         });
     }
+    let (data, stride) = accessor_data(accessor, view, bin, 12, kind)?;
     let mut out = Vec::with_capacity(accessor.count);
-    for chunk in pos_data.chunks_exact(12) {
+    for chunk in data.chunks(stride).take(accessor.count) {
         let x = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         let y = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
         let z = f32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
         out.push([x, y, z]);
     }
     Ok(out)
-}
-
-struct BufferViewInfo {
-    byte_offset: usize,
-    byte_length: usize,
-}
-
-/// A parsed mesh primitive with accessor indices for attributes and indices.
-#[allow(clippy::struct_field_names)]
-struct MeshPrimitive {
-    position_accessor: Option<usize>,
-    normal_accessor: Option<usize>,
-    indices_accessor: Option<usize>,
-    invalid_indices: bool,
-    // Absent means malformed; glTF's omitted mode defaults to TRIANGLES.
-    mode: Option<u64>,
-}
-
-/// Minimal JSON parsing for accessor array.
-///
-/// Out-of-`u32`-range `componentType` values are dropped (with the accessor):
-/// `extract_int` parses into `usize`, and a hostile value like 5123+2³² must
-/// not truncate silently into a different index width. Dropping keeps this
-/// parser total — the consumer reports the missing accessor — while the
-/// truncation it replaces produced wrong-vertex meshes as success.
-fn parse_accessors(json: &str) -> Vec<AccessorInfo> {
-    let mut accessors = Vec::new();
-
-    // Find "accessors" array
-    let Some(start) = json.find("\"accessors\"") else {
-        return accessors;
-    };
-    let Some(arr_start) = json[start..].find('[') else {
-        return accessors;
-    };
-    let arr_offset = start + arr_start;
-
-    let Some(arr_str) = extract_json_array(json, arr_offset) else {
-        return accessors;
-    };
-
-    for obj in split_json_objects(arr_str) {
-        let count = extract_int(obj, "count");
-        // `extract_int` parses into `usize` (64-bit here), so a hostile
-        // `componentType` like 5123+2³² used to truncate silently via `as
-        // u32` and reinterpret the index width (uint32 read as uint16).
-        // Reject out-of-range values by dropping the accessor instead of
-        // casting it: the consumer then reports the missing accessor
-        // rather than decoding a wrong-width mesh as success.
-        let component_type = extract_int(obj, "componentType")
-            .map(u32::try_from)
-            .transpose()
-            .ok()
-            .flatten();
-        if let (Some(bv), Some(count)) = (extract_int(obj, "bufferView"), count) {
-            accessors.push(AccessorInfo {
-                buffer_view: bv,
-                component_type: component_type.unwrap_or(5126),
-                count,
-            });
-        }
-    }
-
-    accessors
-}
-
-/// Minimal JSON parsing for buffer views array.
-fn parse_buffer_views(json: &str) -> Vec<BufferViewInfo> {
-    let mut views = Vec::new();
-
-    let Some(start) = json.find("\"bufferViews\"") else {
-        return views;
-    };
-    let Some(arr_start) = json[start..].find('[') else {
-        return views;
-    };
-    let arr_offset = start + arr_start;
-
-    let Some(arr_str) = extract_json_array(json, arr_offset) else {
-        return views;
-    };
-
-    for obj in split_json_objects(arr_str) {
-        let offset = extract_int(obj, "byteOffset").unwrap_or(0);
-        let length = extract_int(obj, "byteLength");
-        if let Some(length) = length {
-            views.push(BufferViewInfo {
-                byte_offset: offset,
-                byte_length: length,
-            });
-        }
-    }
-
-    views
-}
-
-/// Parse mesh primitives from the JSON, extracting attribute accessor
-/// indices (`POSITION`, `NORMAL`) and the `indices` accessor index.
-///
-/// Iterates all `meshes[].primitives[]`, so multi-mesh files are supported.
-fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
-    let mut primitives = Vec::new();
-
-    let Some(meshes_start) = json.find("\"meshes\"") else {
-        return primitives;
-    };
-    let Some(arr_start) = json[meshes_start..].find('[') else {
-        return primitives;
-    };
-    let meshes_arr_offset = meshes_start + arr_start;
-    let Some(meshes_str) = extract_json_array(json, meshes_arr_offset) else {
-        return primitives;
-    };
-
-    let mut search_offset = 0;
-    while let Some(prim_key_pos) = meshes_str[search_offset..].find("\"primitives\"") {
-        let prim_key_abs = search_offset + prim_key_pos;
-        if let Some(prim_arr_start) = meshes_str[prim_key_abs..].find('[') {
-            let prim_arr_offset = prim_key_abs + prim_arr_start;
-            let Some(prim_arr_str) = extract_json_array(meshes_str, prim_arr_offset) else {
-                break;
-            };
-
-            for prim_obj in split_json_objects(prim_arr_str) {
-                let pos = extract_attribute_accessor(prim_obj, "POSITION");
-                let norm = extract_attribute_accessor(prim_obj, "NORMAL");
-                let object = serde_json::from_str::<serde_json::Value>(prim_obj).ok();
-                let index_value = object.as_ref().and_then(|object| object.get("indices"));
-                let idx = index_value
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|index| usize::try_from(index).ok());
-                let invalid_indices = index_value.is_some() && idx.is_none();
-                let mode = object.and_then(|object| {
-                    object
-                        .get("mode")
-                        .map_or(Some(4), serde_json::Value::as_u64)
-                });
-
-                // Only add if at least POSITION is present
-                if pos.is_some() {
-                    primitives.push(MeshPrimitive {
-                        position_accessor: pos,
-                        normal_accessor: norm,
-                        indices_accessor: idx,
-                        invalid_indices,
-                        mode,
-                    });
-                }
-            }
-
-            search_offset = prim_arr_offset + 1;
-        } else {
-            break;
-        }
-    }
-
-    // Fallback: if no primitives found via mesh parsing, try legacy
-    // accessor convention (0=positions, 1=normals, 2=indices)
-    if primitives.is_empty() {
-        // Check if there are accessors at all — use hardcoded indices as fallback
-        if json.contains("\"accessors\"") {
-            primitives.push(MeshPrimitive {
-                position_accessor: Some(0),
-                normal_accessor: Some(1),
-                indices_accessor: Some(2),
-                invalid_indices: false,
-                mode: Some(4),
-            });
-        }
-    }
-
-    primitives
-}
-
-/// Extract an accessor index for a named attribute (e.g., `"POSITION":0`).
-///
-/// Looks for the pattern `"ATTR_NAME":N` within a primitive object string.
-fn extract_attribute_accessor(text: &str, attr_name: &str) -> Option<usize> {
-    let pattern = format!("\"{attr_name}\"");
-    let pos = text.find(&pattern)?;
-    let after = &text[pos + pattern.len()..];
-    let colon_pos = after.find(':')?;
-    let value_str = after[colon_pos + 1..].trim();
-
-    let digits: String = value_str.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
-}
-
-/// Extract the text between the `[` at `arr_offset` and its matching `]`.
-///
-/// Returns `None` when no matching closing bracket exists in the remainder
-/// of the string (truncated/hostile JSON) so callers can bail out instead
-/// of forming an inverted slice range and panicking.
-fn extract_json_array(json: &str, arr_offset: usize) -> Option<&str> {
-    let mut depth = 0;
-    // Byte offsets, not char counts: any multi-byte character before the
-    // closing bracket would otherwise slice off a char boundary and panic.
-    for (i, ch) in json[arr_offset..].char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&json[arr_offset + 1..arr_offset + i]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Split a JSON array's inner text into top-level objects by tracking brace depth.
-fn split_json_objects(array_content: &str) -> Vec<&str> {
-    let mut objects = Vec::new();
-    let mut depth = 0;
-    let mut obj_start = None;
-    for (i, ch) in array_content.char_indices() {
-        match ch {
-            '{' => {
-                if depth == 0 {
-                    obj_start = Some(i);
-                }
-                depth += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    if let Some(start) = obj_start {
-                        objects.push(&array_content[start..=i]);
-                    }
-                    obj_start = None;
-                }
-            }
-            _ => {}
-        }
-    }
-    objects
-}
-
-/// Extract an integer value for a given key from a JSON-like string.
-fn extract_int(text: &str, key: &str) -> Option<usize> {
-    let pattern = format!("\"{key}\"");
-    let pos = text.find(&pattern)?;
-    let after = &text[pos + pattern.len()..];
-    let colon_pos = after.find(':')?;
-    let value_str = after[colon_pos + 1..].trim();
-
-    let digits: String = value_str.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
 }
 
 /// Read a GLB (glTF binary) file and import it as a solid with one planar
@@ -726,20 +595,18 @@ mod tests {
     }
 
     #[test]
-    fn extract_int_works() {
-        assert_eq!(extract_int(r#""count":42"#, "count"), Some(42));
-        assert_eq!(extract_int(r#""byteOffset":0"#, "byteOffset"), Some(0));
-        assert_eq!(extract_int(r"no match", "count"), None);
-    }
-
-    #[test]
     fn parse_primitives_from_json() {
         let json = r#"{"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":2,"componentType":5125,"count":6,"type":"SCALAR"}]}"#;
 
-        let prims = parse_mesh_primitives(json);
+        let prims = serde_json::from_str::<GltfDocument>(json)
+            .unwrap()
+            .meshes
+            .into_iter()
+            .flat_map(|mesh| mesh.primitives)
+            .collect::<Vec<_>>();
         assert_eq!(prims.len(), 1);
-        assert_eq!(prims[0].position_accessor, Some(0));
-        assert_eq!(prims[0].normal_accessor, Some(1));
+        assert_eq!(prims[0].attributes.position_accessor, Some(0));
+        assert_eq!(prims[0].attributes.normal_accessor, Some(1));
         assert_eq!(prims[0].indices_accessor, Some(2));
     }
 
@@ -749,10 +616,15 @@ mod tests {
         let json =
             r#"{"meshes":[{"primitives":[{"attributes":{"POSITION":2,"NORMAL":3},"indices":4}]}]}"#;
 
-        let prims = parse_mesh_primitives(json);
+        let prims = serde_json::from_str::<GltfDocument>(json)
+            .unwrap()
+            .meshes
+            .into_iter()
+            .flat_map(|mesh| mesh.primitives)
+            .collect::<Vec<_>>();
         assert_eq!(prims.len(), 1);
-        assert_eq!(prims[0].position_accessor, Some(2));
-        assert_eq!(prims[0].normal_accessor, Some(3));
+        assert_eq!(prims[0].attributes.position_accessor, Some(2));
+        assert_eq!(prims[0].attributes.normal_accessor, Some(3));
         assert_eq!(prims[0].indices_accessor, Some(4));
     }
 
@@ -760,28 +632,27 @@ mod tests {
     fn parse_multi_mesh_primitives() {
         let json = r#"{"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2}]},{"primitives":[{"attributes":{"POSITION":3,"NORMAL":4},"indices":5}]}]}"#;
 
-        let prims = parse_mesh_primitives(json);
+        let prims = serde_json::from_str::<GltfDocument>(json)
+            .unwrap()
+            .meshes
+            .into_iter()
+            .flat_map(|mesh| mesh.primitives)
+            .collect::<Vec<_>>();
         assert_eq!(prims.len(), 2);
-        assert_eq!(prims[0].position_accessor, Some(0));
-        assert_eq!(prims[1].position_accessor, Some(3));
+        assert_eq!(prims[0].attributes.position_accessor, Some(0));
+        assert_eq!(prims[1].attributes.position_accessor, Some(3));
         assert_eq!(prims[1].indices_accessor, Some(5));
     }
 
     #[test]
     fn parse_accessor_component_type() {
         let json = r#"{"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"}]}"#;
-        let accessors = parse_accessors(json);
+        let accessors = serde_json::from_str::<GltfDocument>(json)
+            .unwrap()
+            .accessors;
         assert_eq!(accessors.len(), 2);
         assert_eq!(accessors[0].component_type, 5126);
         assert_eq!(accessors[1].component_type, 5123);
-    }
-
-    #[test]
-    fn extract_attribute_accessor_works() {
-        let text = r#""attributes":{"POSITION":0,"NORMAL":1}"#;
-        assert_eq!(extract_attribute_accessor(text, "POSITION"), Some(0));
-        assert_eq!(extract_attribute_accessor(text, "NORMAL"), Some(1));
-        assert_eq!(extract_attribute_accessor(text, "TANGENT"), None);
     }
 
     #[test]
@@ -1022,21 +893,10 @@ mod tests {
     }
 
     #[test]
-    fn extract_json_array_unterminated_returns_none() {
-        assert!(extract_json_array(r#"{"a":["#, 4).is_none());
-        assert_eq!(extract_json_array(r"[1,2]", 0), Some("1,2"));
-    }
-
-    #[test]
-    fn extract_json_array_slices_on_byte_offsets_with_multibyte_chars() {
-        // Fuzz finding: a multi-byte character before the closing bracket
-        // made the char index land off a char boundary and panic.
-        assert_eq!(extract_json_array(r#"["é",1]"#, 0), Some(r#""é",1"#));
-        assert_eq!(
-            extract_json_array("[\"日本語\",[\"ü\"]]", 0),
-            Some("\"日本語\",[\"ü\"]")
-        );
-        assert_eq!(extract_json_array("[\u{1F600}]", 0), Some("\u{1F600}"));
+    fn metadata_rejects_truncated_json_and_accepts_unicode_strings() {
+        assert!(serde_json::from_str::<GltfDocument>(r#"{"accessors":["#).is_err());
+        let json = r#"{"name":"é 日本語 ü 😀 ] } \"", "meshes":[]}"#;
+        assert!(serde_json::from_str::<GltfDocument>(json).is_ok());
     }
 
     #[test]
@@ -1134,13 +994,10 @@ mod tests {
         );
     }
 
-    /// An accessor whose `count` disagrees with its view's byte length is
-    /// malformed: the old decoder followed `byteLength` and materialized
-    /// whatever it found, so an under-declared `count` defeated the entity
-    /// budget while decoding 100 vertices for `count: 3` (E-4). Both
-    /// directions refuse now.
+    /// Decode only the declared count from a shared view, maintaining the
+    /// entity budget and refusing any range extending beyond the view.
     #[test]
-    fn accessor_count_byte_length_mismatch_is_rejected() {
+    fn accessor_count_bounds_decoding_and_refuses_overruns() {
         // 3 declared vertices but a 4-vertex (48-byte) position view.
         let positions: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let indices: [u16; 3] = [0, 1, 2];
@@ -1154,16 +1011,20 @@ mod tests {
         while bin.len() % 4 != 0 {
             bin.push(0);
         }
-        // count:3 over a 48-byte view (4 vertices): under-declared.
+        // count:3 over a 48-byte view: the fourth vertex is unused view data.
         let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":6}],"buffers":[{"byteLength":54}]}"#;
         let glb = build_glb_bytes(json, &bin);
-        let err = read_glb(&glb)
-            .map(|_| ())
-            .expect_err("count/view mismatch must error");
-        assert!(
-            format!("{err}").contains("declares 3 vertices"),
-            "unexpected error: {err}"
-        );
+        let mesh = read_glb(&glb).expect("a view may contain trailing unused data");
+        assert_eq!(mesh.positions.len(), 3);
+        assert_eq!(mesh.indices, [0, 1, 2]);
+        let limits = ImportLimits {
+            max_model_entities: 5,
+            ..ImportLimits::default()
+        };
+        assert!(matches!(
+            read_glb_with_limits(&glb, limits),
+            Err(crate::IoError::LimitExceeded { .. })
+        ));
 
         // count:4 over a 36-byte view (3 vertices): over-declared.
         let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"buffers":[{"byteLength":42}]}"#;
@@ -1205,9 +1066,8 @@ mod tests {
         // 5123 + 2^32 = 4294972419: truncates to 5123 under `as u32`.
         let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":4294972419,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"buffers":[{"byteLength":42}]}"#;
         let glb = build_glb_bytes(json, &bin);
-        // The accessor is dropped (not truncated to uint16), so the
-        // primitive's indices accessor is missing and the read fails closed
-        // instead of decoding a wrong-width mesh as success.
+        // Reject the invalid component type without truncation or removing
+        // the accessor slot and accidentally retargeting later references.
         let err = read_glb(&glb).map(|_| ()).expect_err(
             "out-of-range componentType must fail closed, not decode as truncated width",
         );
@@ -1435,7 +1295,7 @@ mod tests {
         json["meshes"][0]["primitives"][1]["attributes"]["POSITION"] = serde_json::json!(3);
         json["buffers"][0]["byteLength"] = serde_json::json!(bin.len());
         let mesh = read_glb(&build_glb_bytes(&json.to_string(), &bin)).unwrap();
-        assert_eq!(&mesh.normals[..3], &[Vec3::new(0., 0., 1.); 3]);
+        assert_eq!(&mesh.normals[..3], &[Vec3::new(0., 0., 0.); 3]);
         assert_eq!(&mesh.normals[3..], &[Vec3::new(1., 0., 0.); 3]);
         assert_eq!(mesh.indices, vec![0, 1, 2, 3, 4, 5]);
     }

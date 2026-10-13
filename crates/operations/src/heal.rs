@@ -785,14 +785,15 @@ fn strip_wire_spurs(oes: &mut Vec<OrientedEdge>) -> usize {
     removed
 }
 
-/// Fix face orientations so normals point outward from the solid.
+/// Align planar carriers with their directed outer boundaries.
 ///
-/// Uses the signed volume test: for each face, computes the signed volume
-/// contribution. If the total signed volume is negative, the overall
-/// orientation is flipped. Then checks individual faces against the
-/// expected outward direction.
+/// A face-to-centroid vector cannot prove outward orientation for concave
+/// solids or cavity walls. For straight, closed planar boundaries the signed
+/// area vector instead certifies the carrier's sense. Face reversal (including
+/// cavity material sense) is retained. Curved or unresolved boundaries are left
+/// unchanged rather than guessing their orientation.
 ///
-/// Returns the number of faces whose orientation was fixed.
+/// Returns the number of planar carriers corrected.
 ///
 /// # Errors
 /// Returns an error if topology lookups fail.
@@ -800,95 +801,59 @@ pub fn fix_face_orientations(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<usize, crate::OperationsError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
-
-    let mut center = Vec3::new(0.0, 0.0, 0.0);
-    let mut total_faces: usize = 0;
-
-    for &fid in &face_ids {
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut flips = Vec::new();
+    for fid in face_ids {
         let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        let mut face_center = Vec3::new(0.0, 0.0, 0.0);
-        let edges = wire.edges();
+        let FaceSurface::Plane { normal, d } = face.surface() else {
+            continue;
+        };
+        let edges = topo.wire(face.outer_wire())?.edges();
+        if edges.len() < 3 {
+            continue;
+        }
+        let mut points = Vec::with_capacity(edges.len());
+        let mut previous_end = None;
+        let mut closed = true;
         for oe in edges {
             let edge = topo.edge(oe.edge())?;
-            let pos = topo.vertex(edge.start())?.point();
-            face_center += Vec3::new(pos.x(), pos.y(), pos.z());
-        }
-
-        let vert_count = edges.len();
-        if vert_count > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let inv = 1.0 / vert_count as f64;
-            center += face_center * inv;
-            total_faces += 1;
-        }
-    }
-
-    if total_faces == 0 {
-        return Ok(0);
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    let inv_faces = 1.0 / total_faces as f64;
-    let center_pt = Point3::new(
-        center.x() * inv_faces,
-        center.y() * inv_faces,
-        center.z() * inv_faces,
-    );
-
-    let mut fixed_count = 0;
-    let mut faces_to_flip = Vec::new();
-
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        let first_oe = match wire.edges().first() {
-            Some(oe) => oe,
-            None => continue,
-        };
-        let edge = topo.edge(first_oe.edge())?;
-        let face_point = topo.vertex(edge.start())?.point();
-        let to_face = face_point - center_pt;
-
-        match face.surface() {
-            FaceSurface::Plane { normal, d } => {
-                if normal.dot(to_face) < 0.0 {
-                    faces_to_flip.push((fid, *normal, *d));
-                    fixed_count += 1;
-                }
+            if !matches!(edge.curve(), EdgeCurve::Line) {
+                closed = false;
+                break;
             }
-            FaceSurface::Cylinder(cyl) => {
-                // For cylinders, the outward radial direction should point away from center.
-                let to_pt = Vec3::new(
-                    face_point.x() - cyl.origin().x(),
-                    face_point.y() - cyl.origin().y(),
-                    face_point.z() - cyl.origin().z(),
-                );
-                let h = to_pt.dot(cyl.axis());
-                let radial = to_pt - cyl.axis() * h;
-                if radial.dot(to_face) < 0.0 {
-                    // Cylinder orientation is wrong — but we can only flip planar faces.
-                    // For analytic surfaces, orientation is inherent; skip.
-                }
+            let (start, end) = if oe.is_forward() {
+                (edge.start(), edge.end())
+            } else {
+                (edge.end(), edge.start())
+            };
+            if previous_end.is_some_and(|previous| previous != start) {
+                closed = false;
+                break;
             }
-            // Non-planar faces: orientation is determined by surface parameterization,
-            // not a flippable normal. Skip for now.
-            _ => {}
+            points.push((start, topo.vertex(start)?.point()));
+            previous_end = Some(end);
+        }
+        if !closed || previous_end != points.first().map(|&(id, _)| id) {
+            continue;
+        }
+        // Work about a boundary point to avoid translation cancellation.
+        let origin = points[0].1;
+        let area = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .fold(Vec3::new(0., 0., 0.), |sum, ((_, a), (_, b))| {
+                sum + (*a - origin).cross(*b - origin)
+            });
+        let alignment = area.dot(*normal);
+        if alignment.is_finite() && alignment < 0.0 {
+            flips.push((fid, -*normal, -*d));
         }
     }
-
-    for (fid, normal, d) in faces_to_flip {
-        let face = topo.face_mut(fid)?;
-        face.set_surface(FaceSurface::Plane {
-            normal: -normal,
-            d: -d,
-        });
+    for &(fid, normal, d) in &flips {
+        topo.face_mut(fid)?
+            .set_surface(FaceSurface::Plane { normal, d });
     }
-
-    Ok(fixed_count)
+    Ok(flips.len())
 }
 
 /// Close gaps between consecutive edges in face wires.

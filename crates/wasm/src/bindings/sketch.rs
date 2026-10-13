@@ -25,6 +25,11 @@ struct GcsBuildResult {
 fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     use remus_operations::sketch::GcsConstraint;
 
+    for constraint in &sk.constraints {
+        constraint
+            .validate_point_references(sk.points.len())
+            .map_err(WasmError::from)?;
+    }
     let mut sys = remus_operations::sketch::GcsSystem::new();
 
     // Add points
@@ -46,11 +51,21 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
         })
         .collect::<Result<_, _>>()?;
 
+    let point = |index: usize| {
+        point_ids
+            .get(index)
+            .copied()
+            .ok_or(WasmError::InvalidHandle {
+                entity: "sketch point",
+                index,
+            })
+    };
+
     // Add arcs
     let mut arc_ids = Vec::with_capacity(sk.arcs.len());
     for &(center, start, end) in &sk.arcs {
         let aid = sys
-            .add_arc(point_ids[center], point_ids[start], point_ids[end])
+            .add_arc(point(center)?, point(start)?, point(end)?)
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("failed to add arc: {e}"),
             })?;
@@ -60,11 +75,11 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     // Add circles
     let mut circle_ids = Vec::with_capacity(sk.circles.len());
     for &(center, radius) in &sk.circles {
-        let cid =
-            sys.add_circle(point_ids[center], radius)
-                .map_err(|e| WasmError::InvalidInput {
-                    reason: format!("failed to add circle: {e}"),
-                })?;
+        let cid = sys
+            .add_circle(point(center)?, radius)
+            .map_err(|e| WasmError::InvalidInput {
+                reason: format!("failed to add circle: {e}"),
+            })?;
         circle_ids.push(cid);
     }
 
@@ -75,75 +90,59 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     > = std::collections::HashMap::new();
 
     let mut get_or_create_line = |sys: &mut remus_operations::sketch::GcsSystem,
-                                  ids: &[remus_operations::sketch::PointId],
                                   a: usize,
                                   b: usize|
-     -> Option<remus_operations::sketch::LineId> {
-        if let std::collections::hash_map::Entry::Vacant(e) = line_cache.entry((a, b))
-            && let Ok(lid) = sys.add_line(ids[a], ids[b])
-        {
-            e.insert(lid);
+     -> Result<remus_operations::sketch::LineId, WasmError> {
+        if let Some(&line) = line_cache.get(&(a, b)) {
+            return Ok(line);
         }
-        line_cache.get(&(a, b)).copied()
+        let line = sys
+            .add_line(point(a)?, point(b)?)
+            .map_err(WasmError::from)?;
+        line_cache.insert((a, b), line);
+        Ok(line)
     };
 
     // Convert legacy constraints
     for c in &sk.constraints {
-        let _ = match c {
+        let added = match c {
             remus_operations::sketch::Constraint::Coincident(a, b) => {
-                sys.add_constraint(GcsConstraint::Coincident(point_ids[*a], point_ids[*b]))
+                sys.add_constraint(GcsConstraint::Coincident(point(*a)?, point(*b)?))
             }
             remus_operations::sketch::Constraint::Distance(a, b, d) => {
-                sys.add_constraint(GcsConstraint::Distance(point_ids[*a], point_ids[*b], *d))
+                sys.add_constraint(GcsConstraint::Distance(point(*a)?, point(*b)?, *d))
             }
             remus_operations::sketch::Constraint::FixX(p, v) => {
-                sys.add_constraint(GcsConstraint::FixX(point_ids[*p], *v))
+                sys.add_constraint(GcsConstraint::FixX(point(*p)?, *v))
             }
             remus_operations::sketch::Constraint::FixY(p, v) => {
-                sys.add_constraint(GcsConstraint::FixY(point_ids[*p], *v))
+                sys.add_constraint(GcsConstraint::FixY(point(*p)?, *v))
             }
             remus_operations::sketch::Constraint::Horizontal(a, b) => {
-                if let Some(l) = get_or_create_line(&mut sys, &point_ids, *a, *b) {
-                    sys.add_constraint(GcsConstraint::Horizontal(l))
-                } else {
-                    continue;
-                }
+                let line = get_or_create_line(&mut sys, *a, *b)?;
+                sys.add_constraint(GcsConstraint::Horizontal(line))
             }
             remus_operations::sketch::Constraint::Vertical(a, b) => {
-                if let Some(l) = get_or_create_line(&mut sys, &point_ids, *a, *b) {
-                    sys.add_constraint(GcsConstraint::Vertical(l))
-                } else {
-                    continue;
-                }
+                let line = get_or_create_line(&mut sys, *a, *b)?;
+                sys.add_constraint(GcsConstraint::Vertical(line))
             }
             remus_operations::sketch::Constraint::Angle(a, b, c, d, theta) => {
-                let l1 = get_or_create_line(&mut sys, &point_ids, *a, *b);
-                let l2 = get_or_create_line(&mut sys, &point_ids, *c, *d);
-                if let (Some(l1), Some(l2)) = (l1, l2) {
-                    sys.add_constraint(GcsConstraint::Angle(l1, l2, *theta))
-                } else {
-                    continue;
-                }
+                let l1 = get_or_create_line(&mut sys, *a, *b)?;
+                let l2 = get_or_create_line(&mut sys, *c, *d)?;
+                sys.add_constraint(GcsConstraint::Angle(l1, l2, *theta))
             }
             remus_operations::sketch::Constraint::Perpendicular(a, b, c, d) => {
-                let l1 = get_or_create_line(&mut sys, &point_ids, *a, *b);
-                let l2 = get_or_create_line(&mut sys, &point_ids, *c, *d);
-                if let (Some(l1), Some(l2)) = (l1, l2) {
-                    sys.add_constraint(GcsConstraint::Perpendicular(l1, l2))
-                } else {
-                    continue;
-                }
+                let l1 = get_or_create_line(&mut sys, *a, *b)?;
+                let l2 = get_or_create_line(&mut sys, *c, *d)?;
+                sys.add_constraint(GcsConstraint::Perpendicular(l1, l2))
             }
             remus_operations::sketch::Constraint::Parallel(a, b, c, d) => {
-                let l1 = get_or_create_line(&mut sys, &point_ids, *a, *b);
-                let l2 = get_or_create_line(&mut sys, &point_ids, *c, *d);
-                if let (Some(l1), Some(l2)) = (l1, l2) {
-                    sys.add_constraint(GcsConstraint::Parallel(l1, l2))
-                } else {
-                    continue;
-                }
+                let l1 = get_or_create_line(&mut sys, *a, *b)?;
+                let l2 = get_or_create_line(&mut sys, *c, *d)?;
+                sys.add_constraint(GcsConstraint::Parallel(l1, l2))
             }
         };
+        added.map_err(WasmError::from)?;
     }
 
     // Resolve deferred (arc-referencing) constraints now that we have real IDs
@@ -462,6 +461,9 @@ impl BrepKernel {
         // Try legacy constraint first; fall back to deferred (arc-aware) storage
         match parse_sketch_constraint(&val) {
             Ok(constraint) => {
+                constraint
+                    .validate_point_references(sk.points.len())
+                    .map_err(WasmError::from)?;
                 sk.constraints.push(constraint);
             }
             Err(e) => {

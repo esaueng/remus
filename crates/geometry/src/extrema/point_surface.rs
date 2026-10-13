@@ -161,34 +161,15 @@ pub fn point_to_cone(point: Point3, cone: &ConicalSurface) -> SurfaceProjection 
         };
     }
 
-    // Cone surface point at parameter v along the generatrix.
-    let cone_r = v * cos_a;
-    let cone_h = v * sin_a;
-
-    let (closest, u) = if r_len < 1e-15 {
-        let closest = Point3::new(
-            cone.apex().x() + cone_h * cone.axis().x(),
-            cone.apex().y() + cone_h * cone.axis().y(),
-            cone.apex().z() + cone_h * cone.axis().z(),
-        );
-        (closest, 0.0_f64)
+    // Select an azimuth, then evaluate the carrier itself. Reconstructing a
+    // direction from the small residual of an axial projection can amplify
+    // roundoff into an off-carrier witness after a rigid placement.
+    let u = if r_len < 1e-15 {
+        0.0
     } else {
-        let radial_dir_x = radial.x() / r_len;
-        let radial_dir_y = radial.y() / r_len;
-        let radial_dir_z = radial.z() / r_len;
-        let closest = Point3::new(
-            cone.apex().x() + cone_h * cone.axis().x() + cone_r * radial_dir_x,
-            cone.apex().y() + cone_h * cone.axis().y() + cone_r * radial_dir_y,
-            cone.apex().z() + cone_h * cone.axis().z() + cone_r * radial_dir_z,
-        );
-        let radial_vec = Vec3::new(radial_dir_x, radial_dir_y, radial_dir_z);
-        let u = normalize_angle(
-            radial_vec
-                .dot(cone.y_axis())
-                .atan2(radial_vec.dot(cone.x_axis())),
-        );
-        (closest, u)
+        normalize_angle(radial.dot(cone.y_axis()).atan2(radial.dot(cone.x_axis())))
     };
+    let closest = cone.evaluate(u, v);
 
     SurfaceProjection {
         distance: (point - closest).length(),

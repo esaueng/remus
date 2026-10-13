@@ -70,6 +70,43 @@ const DEFLECTION = 0.1;
 const io = new RemusIo();
 const bodies = (kernel, ...solids) => kernel.serializeSolids(Uint32Array.from(solids));
 
+// Import a translated closed tetrahedron without normals, using an accessor
+// subrange and bracket/brace characters in a legal JSON name. Translation
+// exposes winding corruption that a tetrahedron at the origin can hide.
+{
+  const points = [[10, 20, 30], [11, 20, 30], [10, 21, 30], [10, 20, 31]];
+  const corners = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+  const bin = new Uint8Array(156);
+  const floats = new DataView(bin.buffer);
+  corners.flatMap((index) => points[index]).forEach((value, index) => {
+    floats.setFloat32(12 + index * 4, value, true);
+  });
+  const json = new TextEncoder().encode(JSON.stringify({
+    asset: { version: '2.0' },
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 12, type: 'VEC3', byteOffset: 12, name: 'points ] }' }],
+    bufferViews: [{ buffer: 0, byteLength: bin.length }],
+    buffers: [{ byteLength: bin.length }],
+  }));
+  const jsonLength = Math.ceil(json.length / 4) * 4;
+  const glb = new Uint8Array(28 + jsonLength + bin.length);
+  const header = new DataView(glb.buffer);
+  [0x46546c67, 2, glb.length, jsonLength, 0x4e4f534a].forEach((value, index) => header.setUint32(index * 4, value, true));
+  glb.fill(32, 20, 20 + jsonLength);
+  glb.set(json, 20);
+  header.setUint32(20 + jsonLength, bin.length, true);
+  header.setUint32(24 + jsonLength, 0x004e4942, true);
+  glb.set(bin, 28 + jsonLength);
+  const kernel = new BrepKernel();
+  try {
+    const solids = kernel.deserializeSolids(io.importGlb(glb));
+    assert.equal(solids.length, 1);
+    assert.ok(Math.abs(kernel.volume(solids[0], DEFLECTION) - 1 / 6) < 1e-10,
+      'GLB import must preserve a translated tetrahedron volume');
+  } finally { kernel.free(); }
+  console.log('ok - GLB subrange, JSON strings and omitted normals preserve volume');
+}
+
 const assertCompleteEvolution = (payload, label) => {
   assert.equal(payload.schemaVersion, 1, `${label}: schema version`);
   const source = new Set(payload.source.faces);
@@ -87,6 +124,31 @@ const assertCompleteEvolution = (payload, label) => {
   assert.deepEqual(accountedSources, source, `${label}: source coverage`);
   assert.deepEqual(accountedResults, result, `${label}: result coverage`);
 };
+
+// Legacy constraints must be refused before storage, including when circles
+// select the GCS conversion path. The same session must remain usable.
+{
+  const kernel = new BrepKernel();
+  try {
+    for (const circle of [false, true]) {
+      const sketch = kernel.sketchNew();
+      const point = kernel.sketchAddPoint(sketch, 0, 0, true);
+      if (circle) kernel.sketchAddCircle(sketch, point, 1);
+      for (const constraint of [
+        { type: 'fixX', point: 9, value: 0 },
+        { type: 'distance', p1: 0, p2: 9, value: 1 },
+        { type: 'horizontal', p1: 0, p2: 9 },
+      ]) {
+        assert.throws(() => kernel.sketchAddConstraint(sketch, JSON.stringify(constraint)),
+          (error) => !(error instanceof WebAssembly.RuntimeError),
+          'invalid point reference must be a regular error, never a WASM trap');
+      }
+      assert.doesNotThrow(() => kernel.sketchSolve(sketch, 10, 1e-7));
+      assert.doesNotThrow(() => kernel.sketchDof(sketch));
+    }
+  } finally { kernel.free(); }
+  console.log('ok - legacy sketch refuses invalid references without trapping');
+}
 
 // 1. Kernel creation
 const kernel = new BrepKernel();
