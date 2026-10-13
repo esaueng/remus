@@ -1,5 +1,6 @@
 //! Shape query utilities.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
 
 use remus_math::polygon_boolean::{BooleanOp as PolygonBooleanOp, polygon_boolean_with_budget};
@@ -386,7 +387,7 @@ fn opposing_planar_face_pairs_metered(
             borders_blend: borders_blend(topo, &adjacency, face)?,
         });
     }
-    regions.sort_by_key(|region| region.face.index());
+    regions.compact_sort_by_key(|region| region.face.index());
 
     let mut pairs = Vec::new();
     for (index, a) in regions.iter().enumerate() {

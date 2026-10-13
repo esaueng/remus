@@ -23,6 +23,7 @@
 //! The parametric CDT this path replaces accepts the same samples without
 //! one.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
 use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
@@ -374,7 +375,7 @@ fn interior_grid_points(
                 crossings.push(t.mul_add(b.x() - a.x(), a.x()));
             }
         }
-        crossings.sort_by(f64::total_cmp);
+        crossings.compact_sort_by(f64::total_cmp);
         for span in crossings.chunks_exact(2) {
             let (left, right) = (span[0], span[1]);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

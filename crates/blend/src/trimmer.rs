@@ -8,6 +8,7 @@
 //! straight contact lines, creating new edges, vertices, and wires for the
 //! trimmed result.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
@@ -991,7 +992,7 @@ pub fn trim_face_general(
                 tolerance: distance.max(VERTEX_TOL),
             });
         }
-        hits.sort_by(|left, right| left.tolerance.total_cmp(&right.tolerance));
+        hits.compact_sort_by(|left, right| left.tolerance.total_cmp(&right.tolerance));
         Ok(hits)
     };
     let start_hits = candidates(contact_3d[0], contact_t0)?;
@@ -1047,7 +1048,7 @@ pub fn trim_face_general(
     ];
 
     // Sort hits by edge index (to process in wire order)
-    hits.sort_by_key(|h| (h.edge_idx, (h.t * 1e10) as i64));
+    hits.compact_sort_by_key(|h| (h.edge_idx, (h.t * 1e10) as i64));
 
     let hit_a = &hits[0];
     let hit_b = &hits[1];

@@ -1,5 +1,6 @@
 //! Volume, center of mass, and related computations for B-rep solids.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -722,7 +723,7 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
         return false;
     }
     let mut levels: Vec<f64> = pts.iter().map(|p| axis.dot(*p - origin)).collect();
-    levels.sort_by(f64::total_cmp);
+    levels.compact_sort_by(f64::total_cmp);
     let span = levels[levels.len() - 1] - levels[0];
     if span <= 0.0 {
         return false;
@@ -1667,7 +1668,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
         let origin_vec = Vec3::new(origin.x(), origin.y(), origin.z());
         let mut ts = cap_t_values(origin_vec, axis, &planes);
         if ts.len() >= 2 {
-            ts.sort_by(f64::total_cmp);
+            ts.compact_sort_by(f64::total_cmp);
             if let (Some(&t_min), Some(&t_max)) = (ts.first(), ts.last()) {
                 return Some(PI * r * r * (t_max - t_min));
             }
@@ -3697,7 +3698,7 @@ fn analytic_torus_signed_volume(
     // tessellation rather than integrate the wrong portion.
     let (v_min, v_max) = {
         let mut sorted = v_vals.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         sorted.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
         if sorted.len() < 3 {
             if (v_max - v_min) > std::f64::consts::PI + 1e-9 {

@@ -4,6 +4,7 @@
 //! Used as a secondary filter after BVH broad-phase queries to reject false
 //! positives before expensive narrow-phase intersection tests.
 
+use crate::compact_sort::CompactSort;
 use crate::vec::{Point3, Vec3};
 
 /// A 3D oriented bounding box.
@@ -476,7 +477,7 @@ fn eigen_axes_3x3(cov: [f64; 6]) -> [Vec3; 3] {
     // Sort eigenvectors by decreasing eigenvalue.
     let mut order = [0, 1, 2];
     let eigenvalues = [m[0][0], m[1][1], m[2][2]];
-    order.sort_by(|&a, &b| {
+    order.compact_sort_by(|&a, &b| {
         eigenvalues[b]
             .partial_cmp(&eigenvalues[a])
             .unwrap_or(std::cmp::Ordering::Equal)

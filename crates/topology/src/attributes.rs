@@ -15,6 +15,7 @@
 //! Colors are sRGB with channels in `[0, 1]` (the STEP `COLOUR_RGB` value
 //! range); constructors refuse non-finite or out-of-range channels.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashMap;
 
 use crate::face::FaceId;
@@ -155,7 +156,7 @@ impl AttributeStore {
     #[must_use]
     pub fn faces_with_attributes(&self) -> Vec<(FaceId, &EntityAttributes)> {
         let mut out: Vec<_> = self.faces.iter().map(|(&id, a)| (id, a)).collect();
-        out.sort_by_key(|(id, _)| id.index());
+        out.compact_sort_by_key(|(id, _)| id.index());
         out
     }
 
@@ -163,7 +164,7 @@ impl AttributeStore {
     #[must_use]
     pub fn solids_with_attributes(&self) -> Vec<(SolidId, &EntityAttributes)> {
         let mut out: Vec<_> = self.solids.iter().map(|(&id, a)| (id, a)).collect();
-        out.sort_by_key(|(id, _)| id.index());
+        out.compact_sort_by_key(|(id, _)| id.index());
         out
     }
 

@@ -10,6 +10,7 @@
 //! V=(12,10,6): C2'=(13,11,7)).
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,

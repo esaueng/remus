@@ -226,6 +226,8 @@ pub(super) fn compute_angular_range(u_vals: &mut Vec<f64>) -> (f64, f64) {
     use std::f64::consts::TAU;
     let tol_lin = remus_math::tolerance::Tolerance::default().linear;
 
+    // hot: ~33k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     u_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     u_vals.dedup_by(|a, b| (*a - *b).abs() < tol_lin);
 

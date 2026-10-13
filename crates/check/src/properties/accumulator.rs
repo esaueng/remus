@@ -3,6 +3,7 @@
 //! `GProps` stores mass (volume or area), center of mass, and inertia tensor.
 //! Multiple `GProps` can be combined using Huygens' parallel-axis theorem.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Point3;
 
 /// Accumulated geometric properties of a shape.
@@ -119,7 +120,7 @@ impl GProps {
             (a[1][1], [v[0][1], v[1][1], v[2][1]]),
             (a[2][2], [v[0][2], v[1][2], v[2][2]]),
         ];
-        pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+        pairs.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
         (
             [pairs[0].0, pairs[1].0, pairs[2].0],
             [pairs[0].1, pairs[1].1, pairs[2].1],

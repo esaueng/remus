@@ -52,6 +52,7 @@
 //! standard as the events themselves; the ingestion helpers in
 //! `operations::journal_ops` derive it from the operand and result solids.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashMap;
 
 use crate::TopologyError;
@@ -645,7 +646,7 @@ impl Journal {
             }
             events.push((subject, event));
         }
-        events.sort_by_key(|(subject, _)| *subject);
+        events.compact_sort_by_key(|(subject, _)| *subject);
         if let Some(window) = events.windows(2).find(|window| window[0].0 == window[1].0) {
             let ordinal = window[0].0.value();
             self.rollback_scope(self.entries.len(), &created);
@@ -996,7 +997,7 @@ impl Journal {
                         };
                         rebuilt.push((subject, event));
                     }
-                    rebuilt.sort_by_key(|(subject, _)| *subject);
+                    rebuilt.compact_sort_by_key(|(subject, _)| *subject);
                     if let Some(window) =
                         rebuilt.windows(2).find(|window| window[0].0 == window[1].0)
                     {

@@ -103,7 +103,12 @@
 //!   watertightness, cross-route agreement, translation invariance, and
 //!   volume-direction — never a closed form.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 #![allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 // Campaign diagnostics print case/tallies to stdout by design (seed replay);
 // the workspace denies `print_stdout`, so allow it file-wide here.

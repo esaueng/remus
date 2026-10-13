@@ -4,6 +4,7 @@
 //! has insufficient continuity (based on internal knot multiplicity) and
 //! for splitting the curve at those parameters.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::knot_ops::curve_split;
 
@@ -81,7 +82,7 @@ pub fn split_curve_at_params(
     }
 
     let mut sorted_params: Vec<f64> = params.to_vec();
-    sorted_params.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted_params.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     sorted_params.dedup_by(|a, b| (*a - *b).abs() < KNOT_EPS);
 
     // Drop split params outside the open domain — they would be no-ops

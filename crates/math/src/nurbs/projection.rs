@@ -8,6 +8,7 @@
 //! followed by Newton–Raphson refinement.
 
 use crate::MathError;
+use crate::compact_sort::CompactSort;
 use crate::fma::FusedMulAdd;
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::surface::{DerivativeScratch, NurbsSurface};
@@ -159,6 +160,8 @@ fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, Ma
     }
 
     // Sort by distance and return the best candidates.
+    // hot: n up to 308, ~33k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Take the top few unique candidates (spatially separated).
@@ -208,7 +211,7 @@ pub fn curve_coarse_seeds_public(curve: &NurbsCurve, point: Point3) -> Vec<f64> 
             samples.push((d_sq, u));
         }
     }
-    samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    samples.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     samples.into_iter().map(|(_, u)| u).collect()
 }
 
