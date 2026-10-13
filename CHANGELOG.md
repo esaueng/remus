@@ -119,6 +119,12 @@ historical predecessor-line records, retained for provenance. The
   respects arc trims.
   Native and packaged direct/batch regressions check independent material
   grids, volume, opposing coedges, watertight meshes and unchanged operands.
+* **algo,operations,wasm:** synthesized coplanar-overlap caps use their
+  qualified line/conic boundary area for winding. The full-height
+  cylinder-minus-box cut in finding F5 no longer carries eight same-sense
+  shared edges around its major-arc caps; the translated cylinder-pair
+  crescent in F12 also retains opposing shared boundaries. Signed trims and carriers stay
+  intact; unsupported or numerically unresolved loops keep the existing path.
 * **wasm:** checkpoint restore retires later opaque sketch, GCS entity,
   assembly, and component handles without reusing their numbers. Restore and
   discard never reuse checkpoint IDs; repeated restore preserves the allocation
