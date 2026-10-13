@@ -5304,10 +5304,10 @@ fn cap_partial_overlap_free_loops(
         if !build_ok {
             continue;
         }
-        // The walk order alone yields an arbitrary winding; orient the wire CCW
-        // around the cap's outward normal so the face winding matches its
-        // surface normal (otherwise a manifold-but-inside-out cap could corrupt
-        // a downstream boolean). Newell's method gives the loop's normal.
+        // The walk order alone yields an arbitrary winding. A major conic arc
+        // can enclose the opposite side from its endpoint chord, so use the
+        // actual trimmed curves when their analytic area is qualified. Other
+        // carriers retain the established endpoint-polygon policy.
         let (mut nx, mut ny, mut nz) = (0.0_f64, 0.0_f64, 0.0_f64);
         let nverts = verts3d.len();
         for i in 0..nverts {
@@ -5317,7 +5317,9 @@ fn cap_partial_overlap_free_loops(
             ny += (c.z() - np.z()) * (c.x() + np.x());
             nz += (c.x() - np.x()) * (c.y() + np.y());
         }
-        if Vec3::new(nx, ny, nz).dot(cap.out_normal) < 0.0 {
+        let signed_area = analytic_cap_loop_area(topo, &oriented, cap)?
+            .unwrap_or_else(|| Vec3::new(nx, ny, nz).dot(cap.out_normal));
+        if signed_area < 0.0 {
             oriented = oriented
                 .into_iter()
                 .rev()
@@ -5417,6 +5419,333 @@ fn cap_partial_overlap_free_loops(
         sources.push(None);
     }
     Ok(())
+}
+
+/// Outward arithmetic local to the analytic cap-area qualifier. Unknown
+/// arithmetic never becomes an empty interval or a decided orientation.
+mod cap_area_math {
+    use super::{Point3, Vec3};
+
+    #[derive(Clone, Copy)]
+    pub(super) struct I {
+        pub(super) lo: f64,
+        pub(super) hi: f64,
+    }
+
+    impl I {
+        pub(super) const fn point(value: f64) -> Self {
+            Self {
+                lo: value,
+                hi: value,
+            }
+        }
+        const fn unknown() -> Self {
+            Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            }
+        }
+        pub(super) fn finite(self) -> bool {
+            self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
+        }
+        pub(super) fn add(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            let result = Self {
+                lo: (self.lo + other.lo).next_down(),
+                hi: (self.hi + other.hi).next_up(),
+            };
+            if result.finite() {
+                result
+            } else {
+                Self::unknown()
+            }
+        }
+        pub(super) fn neg(self) -> Self {
+            Self {
+                lo: -self.hi,
+                hi: -self.lo,
+            }
+        }
+        pub(super) fn sub(self, other: Self) -> Self {
+            self.add(other.neg())
+        }
+        pub(super) fn mul(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            let products = [
+                self.lo * other.lo,
+                self.lo * other.hi,
+                self.hi * other.lo,
+                self.hi * other.hi,
+            ];
+            if products.iter().any(|value| !value.is_finite()) {
+                return Self::unknown();
+            }
+            Self {
+                lo: products
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min)
+                    .next_down(),
+                hi: products
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .next_up(),
+            }
+        }
+        fn div_positive(self, divisor: f64) -> Self {
+            if !self.finite() || !divisor.is_finite() || divisor <= 0.0 {
+                return Self::unknown();
+            }
+            Self {
+                lo: (self.lo / divisor).next_down(),
+                hi: (self.hi / divisor).next_up(),
+            }
+        }
+        pub(super) fn abs(self) -> Self {
+            if !self.finite() {
+                return Self::unknown();
+            }
+            if self.lo <= 0.0 && self.hi >= 0.0 {
+                Self {
+                    lo: 0.0,
+                    hi: self.lo.abs().max(self.hi.abs()),
+                }
+            } else {
+                Self {
+                    lo: self.lo.abs().min(self.hi.abs()),
+                    hi: self.lo.abs().max(self.hi.abs()),
+                }
+            }
+        }
+    }
+    pub(super) type V = [I; 3];
+    pub(super) fn vector(v: Vec3) -> V {
+        v.0.map(I::point)
+    }
+    pub(super) fn difference(a: Point3, b: Point3) -> V {
+        std::array::from_fn(|j| I::point(a.0[j]).sub(I::point(b.0[j])))
+    }
+    pub(super) fn add(a: V, b: V) -> V {
+        std::array::from_fn(|j| a[j].add(b[j]))
+    }
+    pub(super) fn sub(a: V, b: V) -> V {
+        std::array::from_fn(|j| a[j].sub(b[j]))
+    }
+    pub(super) fn scale(a: V, b: I) -> V {
+        a.map(|value| value.mul(b))
+    }
+    pub(super) fn dot(a: V, b: V) -> I {
+        a[0].mul(b[0]).add(a[1].mul(b[1])).add(a[2].mul(b[2]))
+    }
+    pub(super) fn cross(a: V, b: V) -> V {
+        [
+            a[1].mul(b[2]).sub(a[2].mul(b[1])),
+            a[2].mul(b[0]).sub(a[0].mul(b[2])),
+            a[0].mul(b[1]).sub(a[1].mul(b[0])),
+        ]
+    }
+    pub(super) fn norm1(v: V) -> I {
+        v[0].abs().add(v[1].abs()).add(v[2].abs())
+    }
+
+    /// Range reduction encloses the true 2π. On |x|<=4, degree39/38
+    /// sine/cosine series have omitted terms below2e-24;1e-20 encloses
+    /// both remainders. Every arithmetic operation is outward rounded.
+    pub(super) fn sin_cos(parameter: f64) -> Option<(I, I)> {
+        use std::f64::consts::{PI, TAU};
+        if !parameter.is_finite() || parameter.abs() > 64.0 * PI {
+            return None;
+        }
+        let turns = ((parameter + PI) / TAU).floor();
+        let x = I::point(parameter).sub(
+            I {
+                lo: TAU.next_down(),
+                hi: TAU.next_up(),
+            }
+            .mul(I::point(turns)),
+        );
+        if !x.finite() || x.abs().hi > 4.0 {
+            return None;
+        }
+        let square = x.mul(x);
+        let (mut sine_term, mut cosine_term) = (x, I::point(1.0));
+        let (mut sine, mut cosine) = (sine_term, cosine_term);
+        for k in 1..20 {
+            sine_term = sine_term
+                .mul(square)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k + 1)));
+            cosine_term = cosine_term
+                .mul(square)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k - 1)));
+            sine = sine.add(sine_term);
+            cosine = cosine.add(cosine_term);
+        }
+        let remainder = I {
+            lo: -1e-20,
+            hi: 1e-20,
+        };
+        let result = (sine.add(remainder), cosine.add(remainder));
+        (result.0.finite() && result.1.finite()).then_some(result)
+    }
+}
+
+/// Analytic signed area of a mixed line/conic cap loop. Stored signed
+/// domains and coedge directions retain the full major/minor arc. All sums
+/// and local native evaluations are outward bounded; unresolved orientation,
+/// unsupported carriers or authority decline into the existing cap policy.
+#[allow(clippy::too_many_lines)]
+fn analytic_cap_loop_area(
+    topo: &Topology,
+    edges: &[OrientedEdge],
+    cap: CapPlane,
+) -> Result<Option<f64>, AlgoError> {
+    use cap_area_math::{I, add, cross, difference, dot, norm1, scale, sin_cos, sub, vector};
+    let mut has_conic = false;
+    for edge in edges {
+        has_conic |= matches!(
+            topo.edge(edge.edge())?.curve(),
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
+        );
+    }
+    if !has_conic {
+        return Ok(None);
+    }
+    let Some(first) = edges.first() else {
+        return Ok(None);
+    };
+    let origin = topo.vertex(topo.edge(first.edge())?.start())?.point();
+    let normal = vector(cap.normal);
+    let outward = vector(cap.out_normal);
+    if !dot(normal, normal).sub(I::point(1.0)).abs().finite()
+        || dot(normal, normal).sub(I::point(1.0)).abs().hi > 1e-12
+        || !dot(outward, outward).sub(I::point(1.0)).abs().finite()
+        || dot(outward, outward).sub(I::point(1.0)).abs().hi > 1e-12
+        || !norm1(cross(normal, outward)).finite()
+        || norm1(cross(normal, outward)).hi > 1e-12
+    {
+        return Ok(None);
+    }
+    let mut area_twice = I::point(0.0);
+    let mut endpoint_error = I::point(0.0);
+    for (index, oriented) in edges.iter().enumerate() {
+        let edge = topo.edge(oriented.edge())?;
+        let next = edges[(index + 1) % edges.len()];
+        let next_edge = topo.edge(next.edge())?;
+        let outgoing = if oriented.is_forward() {
+            edge.end()
+        } else {
+            edge.start()
+        };
+        let incoming = if next.is_forward() {
+            next_edge.start()
+        } else {
+            next_edge.end()
+        };
+        // The legacy walk connects quantized cells. This analytic integral
+        // requires a truly closed source chain, not an omitted junction gap.
+        if outgoing != incoming {
+            return Ok(None);
+        }
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let Ok((mut from, mut to)) = edge.strict_domain() else {
+            return Ok(None);
+        };
+        let (a, b) = if oriented.is_forward() {
+            (difference(start, origin), difference(end, origin))
+        } else {
+            std::mem::swap(&mut from, &mut to);
+            (difference(end, origin), difference(start, origin))
+        };
+        if !norm1(a).finite()
+            || !norm1(b).finite()
+            || dot(a, normal).abs().hi > MERGE_TOL
+            || dot(b, normal).abs().hi > MERGE_TOL
+        {
+            return Ok(None);
+        }
+        let conic = match edge.curve() {
+            EdgeCurve::Line => None,
+            EdgeCurve::Circle(c) => {
+                Some((c.center(), c.u_axis(), c.v_axis(), c.radius(), c.radius()))
+            }
+            EdgeCurve::Ellipse(e) => Some((
+                e.center(),
+                e.u_axis(),
+                e.v_axis(),
+                e.semi_major(),
+                e.semi_minor(),
+            )),
+            EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(None);
+            }
+        };
+        let contribution = if let Some((center, u, v, r0, r1)) = conic {
+            if !r0.is_finite() || !r1.is_finite() || r0 <= 0.0 || r1 <= 0.0 {
+                return Ok(None);
+            }
+            let center = difference(center, origin);
+            let u = scale(vector(u), I::point(r0));
+            let v = scale(vector(v), I::point(r1));
+            let plane_extent = dot(center, normal)
+                .abs()
+                .add(dot(u, normal).abs())
+                .add(dot(v, normal).abs());
+            let basis_area = dot(cross(u, v), normal).abs();
+            if !plane_extent.finite()
+                || plane_extent.hi > MERGE_TOL
+                || !basis_area.finite()
+                || basis_area.lo <= 0.0
+            {
+                return Ok(None);
+            }
+            let (Some((s0, c0)), Some((s1, c1))) = (sin_cos(from), sin_cos(to)) else {
+                return Ok(None);
+            };
+            let native_a = add(center, add(scale(u, c0), scale(v, s0)));
+            let native_b = add(center, add(scale(u, c1), scale(v, s1)));
+            let mismatch_a = norm1(sub(native_a, a));
+            let mismatch_b = norm1(sub(native_b, b));
+            if !mismatch_a.finite()
+                || !mismatch_b.finite()
+                || mismatch_a.hi > MERGE_TOL
+                || mismatch_b.hi > MERGE_TOL
+            {
+                return Ok(None);
+            }
+            // Enclose the short connectors from stored vertices to the native
+            // carrier endpoints, so a gap cannot decide a nearly-zero sign.
+            endpoint_error = endpoint_error
+                .add(mismatch_a.mul(norm1(native_a)))
+                .add(mismatch_b.mul(norm1(native_b)));
+            let delta = add(scale(u, c1.sub(c0)), scale(v, s1.sub(s0)));
+            add(
+                cross(center, delta),
+                scale(cross(u, v), I::point(to).sub(I::point(from))),
+            )
+        } else {
+            cross(a, b)
+        };
+        area_twice = area_twice.add(dot(contribution, outward));
+    }
+    let error = endpoint_error.mul(norm1(outward));
+    if !error.finite() {
+        return Ok(None);
+    }
+    let enclosed = area_twice.add(I {
+        lo: -error.hi,
+        hi: error.hi,
+    });
+    if !enclosed.finite() || !(enclosed.lo > 0.0 || enclosed.hi < 0.0) {
+        return Ok(None);
+    }
+    let representative = 0.5 * f64::midpoint(enclosed.lo, enclosed.hi);
+    Ok((representative.is_finite() && representative.abs() > 0.0).then_some(representative))
 }
 
 fn planar_loop_area(points: &[Point3], normal: Vec3) -> f64 {
