@@ -124,6 +124,7 @@ pub mod analytic_intersection;
 pub mod bvh;
 pub mod cdt;
 pub mod chord;
+pub mod compact_sort;
 pub mod context;
 pub mod convex_hull;
 pub mod curvature;
