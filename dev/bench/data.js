@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791891346847,
+  "lastUpdate": 1791897601910,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -97039,6 +97039,246 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 54783,
             "range": "± 1067",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c929817d8426598bb326b2b469ba52c5f4ba3dce",
+          "message": "build(wasm): gate the kernel on the consumer's size policy and raise its ceiling (W0.2 + W2) (#1028)\n\n* build(wasm): gate the kernel on the consumer's gzip and Brotli policy\n\n`cargo xtask wasm-build` mirrored only the consumer's raw limits, so a\nkernel over OpenZCAD's 3.5 MiB gzip hard limit passed here and failed the\nnext pin update there. The kernel's whole size policy now lives in one\nplace, `scripts/wasm-size-policy.mjs`: it measures raw bytes, Node\n`zlib.gzipSync()` defaults and Brotli q11 exactly like OpenZCAD's\n`scripts/bundle-size-policy.mjs`, holds the unchanged limits (raw 9 MiB\nreview / 10 MiB hard, gzip 3.5 MiB hard, Brotli 2.5 MiB review) and\nevaluates them with the consumer's comparisons. xtask runs its boundary\ntests first, then fails the kernel on a hard limit and warns on a review\nlimit. The translator module keeps its raw 10 MiB window in xtask.\n\nThe kernel built from main (gzip 3,673,544 B) is 3,528 B over the gzip hard\nlimit, so the WASM build fails from this commit on until the kernel\nshrinks or the limits rise (workstream W2).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* build(wasm): raise the kernel size ceiling to 11/12 MiB raw, 4.5 MiB gzip\n\nCeiling step 1 of the browser-kernel size plan (workstream W2), approved\nby the owner: raw review 11 MiB (was 9), raw hard 12 MiB (was 10), gzip\nhard 4.5 MiB (was 3.5), Brotli review 3 MiB (was 2.5). The values change\nonly in `scripts/wasm-size-policy.mjs`, paired with the same raise of\n`KERNEL_WASM_POLICY` in the consumer's `scripts/bundle-size-policy.mjs`,\nwhose policy document carries the seven-point evidence record. The\ntranslator module keeps its raw 10 MiB limit.\n\nThe kernel built from this branch (raw 10,482,141 B, gzip 3,673,544 B,\nBrotli 2,594,190 B) now passes `cargo xtask wasm-build` with no review\nwarning. Boundary tests, the xtask end-to-end policy test, the wasm-bindings\nreference, the PERF-W06 row (exports regenerated) and the optimization\nroadmap quote the new numbers.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-13T08:13:20-05:00",
+          "tree_id": "af00818792e94db670cc9aecdb902b8402a19163",
+          "url": "https://github.com/esaueng/remus/commit/c929817d8426598bb326b2b469ba52c5f4ba3dce"
+        },
+        "date": 1791897599385,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 657625,
+            "range": "± 121440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 707001,
+            "range": "± 19100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10893,
+            "range": "± 165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4798426,
+            "range": "± 51924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 4758210,
+            "range": "± 31241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4666238,
+            "range": "± 14246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 14904,
+            "range": "± 127",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2343826,
+            "range": "± 29939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 17149922,
+            "range": "± 111622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 138,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 105,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 490,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 112,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 209,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 123,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 307,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 462,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2207,
+            "range": "± 108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 46,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 306608,
+            "range": "± 5622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1839775,
+            "range": "± 36274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 96267,
+            "range": "± 1081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 274762,
+            "range": "± 3862",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 214132,
+            "range": "± 5162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 39324,
+            "range": "± 356",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 514474,
+            "range": "± 25975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6236698,
+            "range": "± 619370",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 298548,
+            "range": "± 4490",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 639607,
+            "range": "± 38076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 52345,
+            "range": "± 447",
             "unit": "ns/iter"
           }
         ]
