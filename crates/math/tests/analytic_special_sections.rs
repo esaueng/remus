@@ -1,6 +1,11 @@
 //! Closed-form plane sections used by exact blend-end reconstruction.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::disallowed_methods
+)]
 
 use std::f64::consts::TAU;
 

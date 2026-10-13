@@ -4,6 +4,7 @@
 //! stored in `tests/golden/data/`. Run with `UPDATE_GOLDEN=1` to regenerate.
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::format_push_string,

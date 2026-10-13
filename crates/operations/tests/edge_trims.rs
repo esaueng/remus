@@ -5,7 +5,12 @@
 //! shortcuts, solid copies, transforms, and the arena format must carry those
 //! intervals without reconstructing them from endpoints.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::f64::consts::TAU;
 

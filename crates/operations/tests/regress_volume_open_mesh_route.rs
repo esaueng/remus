@@ -30,7 +30,12 @@
 //! (prism, bores, countersink frusta clipped to the 8 mm arms, boss) and the
 //! exact width-to-width difference.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;

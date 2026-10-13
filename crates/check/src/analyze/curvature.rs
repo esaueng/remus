@@ -18,6 +18,7 @@
 //! Principal curvatures are sorted `k1 >= k2` after the orientation is
 //! applied, so a reversed cylinder reports `k1 = 0, k2 = −1/r`.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::curvature::{
     cone_principal_curvatures, cylinder_principal_curvatures, sphere_principal_curvatures,
     torus_principal_curvatures,
@@ -197,7 +198,7 @@ pub fn min_radius_of_curvature(topo: &Topology, face_id: FaceId) -> Result<f64, 
 /// sorted `k1 >= k2` with their directions.
 fn oriented_report(sign: f64, a: (f64, Vec3), b: (f64, Vec3)) -> CurvatureReport {
     let mut pair = [(a.0 * sign, a.1), (b.0 * sign, b.1)];
-    pair.sort_by(|x, y| y.0.total_cmp(&x.0));
+    pair.compact_sort_by(|x, y| y.0.total_cmp(&x.0));
     CurvatureReport {
         k1: pair[0].0,
         k2: pair[1].0,

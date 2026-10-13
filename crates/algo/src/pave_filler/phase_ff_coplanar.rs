@@ -794,6 +794,8 @@ fn clip_section_to_polygon(
     }
     ts.push(0.0);
     ts.push(1.0);
+    // hot: 32,768+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
 

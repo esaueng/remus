@@ -22,7 +22,12 @@
 //!   them fail closed while the unambiguous ones bind;
 //! - the history path leaves the offset geometry bit-identical.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 

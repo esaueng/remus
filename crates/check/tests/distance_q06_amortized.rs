@@ -10,7 +10,7 @@
     clippy::panic,
     clippy::print_stdout
 )]
-#![allow(clippy::float_cmp)]
+#![allow(clippy::float_cmp, clippy::disallowed_methods)]
 
 use std::time::Instant;
 

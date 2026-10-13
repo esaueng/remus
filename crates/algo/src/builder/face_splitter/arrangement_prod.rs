@@ -42,6 +42,7 @@
 //! core refused it; that is an internal error on claimed input and must
 //! propagate, never degrade into an unsplit face or a fallback.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
@@ -1308,7 +1309,7 @@ impl<'a> Collector<'a> {
             return budget_decline(context);
         }
         // Deterministic greedy clustering within tolerance.
-        crossings.sort_by(|a, b| {
+        crossings.compact_sort_by(|a, b| {
             a.point
                 .x()
                 .total_cmp(&b.point.x())
@@ -1395,7 +1396,7 @@ impl<'a> Collector<'a> {
                 per_use.entry(*idx).or_default().push(*param);
             }
             for (idx, mut params) in per_use {
-                params.sort_by(f64::total_cmp);
+                params.compact_sort_by(f64::total_cmp);
                 let mut kept: Vec<f64> = Vec::new();
                 for param in params {
                     if kept.last().is_none_or(|prev: &f64| {
@@ -1429,6 +1430,8 @@ impl<'a> Collector<'a> {
         let mut shift = 0usize;
         for target in targets {
             let mut list = cuts.remove(&target).unwrap_or_default();
+            // hot: 2,048+ calls in one criterion --test + native perf pass.
+            #[allow(clippy::disallowed_methods)]
             list.sort_by(|a, b| a.0.total_cmp(&b.0));
             list.dedup_by(|a, b| (a.0 - b.0).abs() <= 1e-12);
             if !self.split_use_at(target + shift, &list)? {

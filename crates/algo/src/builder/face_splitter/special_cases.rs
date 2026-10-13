@@ -1,5 +1,6 @@
 //! Special topology handlers for face splitting edge cases.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point2, Point3, Vec2};
 use remus_topology::edge::EdgeCurve;
@@ -570,7 +571,7 @@ fn build_seam_arcs(
         .into_iter()
         .map(|p| (seam_circle.project(p), p))
         .collect();
-    by_angle.sort_by(|a, b| a.0.total_cmp(&b.0));
+    by_angle.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let mut arcs: Vec<OrientedPCurveEdge> = Vec::new();
     let m = by_angle.len();
@@ -1076,7 +1077,7 @@ fn collar_sample_bounded_by_walls(
     if half_widths.is_empty() {
         return None;
     }
-    half_widths.sort_by(f64::total_cmp);
+    half_widths.compact_sort_by(f64::total_cmp);
     let a = half_widths[half_widths.len() / 2];
     let r = sphere.radius();
     if !(a.is_finite() && r.is_finite() && a > 0.0 && r > 0.0 && a < r) {
@@ -1419,7 +1420,7 @@ pub(super) fn split_converted_wall_into_bands(
                     let p = s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
                     us.push(wall.project_point(p).0.rem_euclid(std::f64::consts::TAU));
                 }
-                us.sort_by(f64::total_cmp);
+                us.compact_sort_by(f64::total_cmp);
                 let mut max_gap = 0.0_f64;
                 for w in us.windows(2) {
                     max_gap = max_gap.max(w[1] - w[0]);
@@ -1450,7 +1451,7 @@ pub(super) fn split_converted_wall_into_bands(
                         chart_v(s.curve_3d.evaluate_with_endpoints(t, s.start, s.end))
                     })
                     .collect();
-                vs.sort_by(f64::total_cmp);
+                vs.compact_sort_by(f64::total_cmp);
                 vs[vs.len() / 2]
             };
             if v <= v_min + close_tol || v >= v_max - close_tol {
@@ -1532,7 +1533,7 @@ pub(super) fn split_converted_wall_into_bands(
             ring_decline = Some("every ring at a boundary rim (flush-cap)".to_string());
             return None;
         }
-        rings.sort_by(|a, b| a.v.total_cmp(&b.v));
+        rings.compact_sort_by(|a, b| a.v.total_cmp(&b.v));
         if rings.windows(2).any(|w| w[1].v - w[0].v < close_tol) {
             ring_decline = Some("coincident ring levels".to_string());
             return None;
@@ -1794,7 +1795,7 @@ pub(super) fn split_converted_wall_into_bands(
         ordered.push((r.v, vec![r.edge.clone()]));
     }
     ordered.push((v_max, top_loop));
-    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    ordered.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     for w in ordered.windows(2) {
         let (va, lower_pieces) = &w[0];
         let (vb, upper_pieces) = &w[1];
@@ -2009,7 +2010,7 @@ pub(super) fn split_periodic_face_into_bands(
         // coplanar-cap interaction.
         return None;
     }
-    mids.sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
+    mids.compact_sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
     if mids.windows(2).any(|w| w[1].v - w[0].v < close_tol) {
         return None;
     }
@@ -2189,7 +2190,7 @@ pub(super) fn split_closed_torus_into_bands(
     if mids.is_empty() {
         return None;
     }
-    mids.sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
+    mids.compact_sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
     if mids.windows(2).any(|w| w[1].v - w[0].v < close_tol) {
         return None;
     }
@@ -2379,7 +2380,7 @@ pub(super) fn split_periodic_face_into_sectors(
     if rulings.is_empty() {
         return None;
     }
-    rulings.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    rulings.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if rulings.windows(2).any(|w| w[1].0 - w[0].0 < 1e-6) {
         return None;
     }
@@ -3878,7 +3879,7 @@ fn union_internal_loop_with_hole(
                     }
                 }
             }
-            ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             ts.dedup_by(|a, b| (*a - *b).abs() * la < tol * 10.0);
             ts
         };
@@ -4404,7 +4405,7 @@ fn point_in_hole_loops_uv(hole_segs: &[(f64, f64, f64, f64)], u: f64, v: f64) ->
 fn covered_u_interval(u_samples: &[f64]) -> (f64, f64) {
     use std::f64::consts::TAU;
     let mut us: Vec<f64> = u_samples.iter().map(|u| u.rem_euclid(TAU)).collect();
-    us.sort_by(f64::total_cmp);
+    us.compact_sort_by(f64::total_cmp);
     us.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     if us.len() < 2 {
         return (us.first().copied().unwrap_or(0.0), TAU);
@@ -4928,7 +4929,7 @@ pub(super) fn try_split_disk_by_chords(
             let t = ((p - a).dot(d) / (len * len)).clamp(0.0, 1.0);
             breaks.push(t);
         }
-        breaks.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        breaks.compact_sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
         breaks.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
         for w in breaks.windows(2) {
             let (t0, t1) = (w[0], w[1]);
@@ -4963,7 +4964,7 @@ pub(super) fn try_split_disk_by_chords(
             ((dist - r).abs() <= tol * 100.0).then(|| (*k, dv.y().atan2(dv.x()).rem_euclid(TAU)))
         })
         .collect();
-    nodes.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    nodes.compact_sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     nodes.dedup_by(|a, b| (a.1 - b.1).abs() < 1e-9 || a.0 == b.0);
     if nodes.len() < 2 {
         return Ok(None);

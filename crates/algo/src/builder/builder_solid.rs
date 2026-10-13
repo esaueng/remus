@@ -10,6 +10,7 @@
 //! 3. **`perform_areas`** — Growth vs Hole classification
 //! 4. **Assemble** — build final Solid from shells
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::VecDeque;
 
 use remus_math::det_hash::{DetHashMap, DetHashSet, DetState};
@@ -2434,7 +2435,7 @@ fn assemble_regions(
         .enumerate()
         .map(|(i, s)| (i, signed_volume_of_shell(topo, s)))
         .collect();
-    growth_order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    growth_order.compact_sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let mut region_faces = Vec::with_capacity(growth_shells.len());
     for (position, &(index, _)) in growth_order.iter().enumerate() {
@@ -2502,7 +2503,7 @@ fn assemble_regions(
             .filter(|(_, bounds)| bounds_enclose(*bounds, hole_bounds))
             .map(|(index, bounds)| (index, bounds_volume(bounds)))
             .collect();
-        candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        candidates.compact_sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         let Some(&(region, smallest_volume)) = candidates.first() else {
             return Err(AlgoError::AssemblyFailed(
                 "closed hole shell is not contained by any growth region".into(),
@@ -2897,6 +2898,8 @@ fn weld_coincident_vertices(
         }
     }
     // Deterministic clustering order.
+    // hot: n up to 2,200, ~1M n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     verts.sort_by_key(|(vid, _)| vid.index());
 
     // Coarse spatial hash at snap resolution maps a cell to canonical
@@ -2963,7 +2966,7 @@ fn weld_coincident_vertices(
                 rows.push((vid.index(), cid.index(), v.point(), c.point()));
             }
         }
-        rows.sort_by_key(|(vid, cid, _, _)| (*vid, *cid));
+        rows.compact_sort_by_key(|(vid, cid, _, _)| (*vid, *cid));
         for (vid, cid, vp, cp) in rows {
             log::debug!(
                 "WELD Id({vid}) -> Id({cid}) ({:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4})",
@@ -3177,6 +3180,8 @@ fn split_edges_at_collinear_vertices(
     }
 
     // Deterministic order for sub-edge allocation.
+    // hot: n up to 4,600, ~1.4M n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     line_edges.sort_by_key(|(eid, ..)| eid.index());
 
     // Index the candidate vertices and bucket them spatially. The cut test
@@ -3218,7 +3223,7 @@ fn split_edges_at_collinear_vertices(
         // `cuts` is gathered by iterating grid buckets (a HashMap), so the `vid`
         // tiebreak makes this a total order — without it, cuts at equal `t` keep
         // nondeterministic hash order and sub-edge IDs drift.
-        cuts.sort_by(|a, b| {
+        cuts.compact_sort_by(|a, b| {
             a.0.total_cmp(&b.0)
                 .then_with(|| a.1.index().cmp(&b.1.index()))
         });
@@ -3458,7 +3463,7 @@ fn split_arc_edges_at_collinear_vertices(
     }
 
     // Deterministic order for sub-edge allocation.
-    arc_edges.sort_by_key(|edge| edge.edge_id.index());
+    arc_edges.compact_sort_by_key(|edge| edge.edge_id.index());
 
     // Spatially index the candidate vertices: a vertex can only split an arc if
     // it lies within `snap` of it, so probing the grid cells the arc's AABB
@@ -3581,7 +3586,7 @@ fn split_arc_edges_at_collinear_vertices(
             if cuts.is_empty() {
                 continue;
             }
-            cuts.sort_by(|a, b| {
+            cuts.compact_sort_by(|a, b| {
                 a.0.total_cmp(&b.0)
                     .then_with(|| a.2.index().cmp(&b.2.index()))
             });
@@ -3729,7 +3734,7 @@ fn split_arc_edges_at_collinear_vertices(
         }
         // Total order: angle then vertex index (the `vert_at` HashMap iteration
         // is nondeterministic without the tiebreak).
-        cuts.sort_by(|a, b| {
+        cuts.compact_sort_by(|a, b| {
             a.0.total_cmp(&b.0)
                 .then_with(|| a.1.index().cmp(&b.1.index()))
         });
@@ -4341,6 +4346,8 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     for edge_ids in groups.values() {
         // Deduplicate edge IDs (same edge may appear multiple times from different faces)
         let mut unique: Vec<EdgeId> = edge_ids.clone();
+        // hot: 65,536+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         unique.sort_by_key(|e| e.index());
         unique.dedup();
 
@@ -4729,7 +4736,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
         log::debug!("MERGENURBS [{}]", closed_nurbs.join(" | "));
         for (qpair, edge_ids) in &groups {
             let mut unique: Vec<EdgeId> = edge_ids.clone();
-            unique.sort_by_key(|e| e.index());
+            unique.compact_sort_by_key(|e| e.index());
             unique.dedup();
             if unique.len() < 2 {
                 continue;
@@ -4811,6 +4818,8 @@ fn remove_doubled_faces(
                 key.extend(inner.edges().iter().map(OrientedEdge::edge));
             }
         }
+        // hot: 19,079+ calls, n up to 368 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         key.sort_by_key(|e| e.index());
         groups.entry(key).or_default().push(fi);
     }

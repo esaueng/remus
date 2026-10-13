@@ -22,6 +22,7 @@
 //! recognized diagnostic families) must name a probe family to observe it:
 //! an unlisted prefix reads as a false zero.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::BTreeMap;
 
 /// Quantized 3D position pair for CommonBlock edge matching.
@@ -234,6 +235,8 @@ pub fn fill_images_faces(
         let mut pool = BTreeMap::new();
         let mut sorted_entries: Vec<(usize, &(Point3, DetHashSet<usize>))> =
             vid_faces.iter().map(|(&k, v)| (k, v)).collect();
+        // hot: n up to 1,152, ~265k n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         sorted_entries.sort_by_key(|(k, _)| *k);
         for (_, (pt, faces)) in sorted_entries {
             if faces.len() >= 2 {
@@ -298,6 +301,8 @@ pub fn fill_images_faces(
     // Plane faces first: their arrangements register section split points
     // (keyed by pave block) that curved faces sharing the same section curves
     // consume, so both sides of a shared curve split at identical 3D points.
+    // hot: n up to 864, ~132k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     sorted_faces.sort_by_key(|(fid, _)| {
         let curved = topo
             .face(*fid)
@@ -1643,7 +1648,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
         }
 
         // Strictly ordered in v at every u, or there is no band between them.
-        loops.sort_by(|a, b| {
+        loops.compact_sort_by(|a, b| {
             mean_v(&a.1)
                 .partial_cmp(&mean_v(&b.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -1914,7 +1919,7 @@ fn presplit_closed_winding_loops(
                     .then_some(hit.parameter)
             })
             .collect();
-        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         ts.dedup_by(|a, b| (*a - *b).abs() < margin);
         if ts.len() < 2 {
             out.push(s.clone());
@@ -3133,7 +3138,7 @@ fn line_section_boundary_extensions(
     if cover.is_empty() {
         return Vec::new();
     }
-    cover.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cover.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut exts = Vec::new();
     let mut cur = 0.0_f64;
     for &(lo, hi) in &cover {
@@ -3726,6 +3731,8 @@ fn clip_line_to_face_extent(
         return None;
     }
 
+    // hot: 16,384+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     // Opt-in probe: only emits with BK_CLIP set (see module docs).
     if std::env::var("BK_CLIP").is_ok() {
@@ -3831,6 +3838,8 @@ fn clip_line_to_face_extent(
             .map(|t| t.clamp(0.0, 1.0))
             .chain([0.0, 1.0])
             .collect();
+        // hot: 21,846+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         borders.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         borders.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         borders
@@ -4040,6 +4049,8 @@ fn face_u_span(topo: &Topology, face: &remus_topology::face::Face) -> Option<f64
     if us.len() < 2 {
         return None;
     }
+    // hot: ~16k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mut max_gap = TAU - (us[us.len() - 1] - us[0]);
     for w in us.windows(2) {
@@ -4911,7 +4922,7 @@ fn presplit_sections_at_registry(
             out.push(s.clone());
             continue;
         }
-        cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        cuts.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         cuts.dedup_by(|a, b| (a.1 - b.1).length() < guard);
         let mut prev = s.start;
         for (_, p) in &cuts {

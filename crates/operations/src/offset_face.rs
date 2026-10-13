@@ -8,6 +8,7 @@
 //! interpolation — that approximation is disclosed in the result type (see
 //! [`FaceOffsetOutcome`]), never a bare handle or a log line.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::nurbs::surface_fitting::interpolate_surface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
@@ -336,9 +337,9 @@ fn offset_nurbs_face(
         v_params.push(1.0);
     }
 
-    u_params.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    u_params.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     u_params.dedup_by(|a, b| (*a - *b).abs() < 1e-15);
-    v_params.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v_params.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v_params.dedup_by(|a, b| (*a - *b).abs() < 1e-15);
 
     let nu = u_params.len();

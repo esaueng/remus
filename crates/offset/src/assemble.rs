@@ -1,5 +1,6 @@
 //! Final shell and solid assembly from offset faces and wire loops.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashMap;
 
 use remus_math::vec::Vec3;
@@ -58,7 +59,7 @@ pub fn assemble_solid_with_face_map(
     let mut face_map = HashMap::new();
     for source_faces in &data.shell_faces {
         let mut source_faces = source_faces.clone();
-        source_faces.sort_by_key(|face_id| face_id.index());
+        source_faces.compact_sort_by_key(|face_id| face_id.index());
         let mut new_faces = Vec::new();
 
         for face_id in &source_faces {
@@ -110,7 +111,7 @@ pub fn assemble_solid_with_face_map(
         // clone prevents shell orientation from mutating faces owned by the
         // caller's original solid while safely reusing its shared edges.
         let mut source_faces = data.shell_faces[0].clone();
-        source_faces.sort_by_key(|face_id| face_id.index());
+        source_faces.compact_sort_by_key(|face_id| face_id.index());
         for face_id in &source_faces {
             let Some(offset_face) = data.offset_faces.get(face_id) else {
                 continue;

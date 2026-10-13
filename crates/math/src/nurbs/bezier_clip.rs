@@ -14,6 +14,7 @@
 #![allow(clippy::similar_names, clippy::suspicious_operation_groupings)]
 
 use crate::MathError;
+use crate::compact_sort::CompactSort;
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::decompose::curve_to_bezier_segments;
 use crate::vec::{Point3, Vec3};
@@ -1088,7 +1089,7 @@ fn merge_duplicate_hits(
         return;
     }
 
-    hits.sort_by(|a, b| a.u1.total_cmp(&b.u1).then(a.u2.total_cmp(&b.u2)));
+    hits.compact_sort_by(|a, b| a.u1.total_cmp(&b.u1).then(a.u2.total_cmp(&b.u2)));
 
     let mut merged: Vec<(CurveCurveHit, f64)> = Vec::with_capacity(hits.len());
     for hit in hits.iter() {
@@ -1113,7 +1114,7 @@ fn merge_overlaps(overlaps: &mut Vec<CurveCurveOverlap>, curve1: &NurbsCurve, to
     if overlaps.len() <= 1 {
         return;
     }
-    overlaps.sort_by(|a, b| a.u1_start.total_cmp(&b.u1_start));
+    overlaps.compact_sort_by(|a, b| a.u1_start.total_cmp(&b.u1_start));
 
     let mut merged = Vec::with_capacity(overlaps.len());
     merged.push(overlaps[0]);

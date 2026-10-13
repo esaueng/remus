@@ -7,7 +7,12 @@
 //! the production merge on one topology clone and the reference on another;
 //! both must agree on merged count, every edge endpoint, survivor positions,
 //! and preserved face attributes.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::collections::HashMap;
 

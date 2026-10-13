@@ -32,7 +32,12 @@
 //! is the mesh, not a volume: `solid_volume` returned the exact
 //! `πr²h/3 = 9.42477796076938` for the broken mesh too.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use remus_math::det_hash::DetHashSet;
 use remus_operations::measure::{solid_bounding_box, solid_volume};
