@@ -1074,7 +1074,7 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ee0d2cb
 | <a id="perf-w03"></a>PERF-W03 | P2 / 5 / S | Measure JSON parse/dispatch/serialize cost for tiny batch operations; consider typed numeric batches only when overhead dominates. | Benchmark 1/10/1000 operations with identical native work; preserve validation order, typed errors, references and per-item rollback semantics. | L/high | W01, M04 | [O4.7](#o-o4-7) | Proposed |
 | <a id="perf-w04"></a>PERF-W04 | P2 / 3 / S | Reduce checkpoint memory through shared immutable topology and copy-on-write at a finer granularity; Rc checkpoint sharing already exists. | Measure creation, first post-checkpoint edit, restore, discard and retained sketches/assemblies; keep non-reuse of external handles and exact session restoration. | L/high | T02, M05 | [B29](#b29) | Proposed |
 | <a id="perf-w05"></a>PERF-W05 | P2 / 4 / H | Keep long kernel work in a worker and coalesce/cancel obsolete interactive requests at the consumer boundary. | Measure main-thread responsiveness, transfer time and cancellation latency; do not hide kernel CPU time or change which operation commits. | L/high | P02, W01 | [P-Class 2.8](#p-2-8) | Proposed |
-| <a id="perf-w06"></a>PERF-W06 | P2 / 0 / S | Treat cold loading, code size and module transfer as separate budgets; translator splitting and SIMD build flags already exist. | Measure raw/compressed bytes, compile/instantiate time, first call and steady state on real browsers; preserve the current 9 MiB review/10 MiB hard package policy. | M/medium | W01 | [B30](#b30) | Proposed |
+| <a id="perf-w06"></a>PERF-W06 | P2 / 0 / S | Treat cold loading, code size and module transfer as separate budgets; translator splitting and SIMD build flags already exist. | Measure raw/compressed bytes, compile/instantiate time, first call and steady state on real browsers; preserve the current 9 MiB review/10 MiB hard package policy. | M/medium | W01 | [B30](#b30) | Proposed. 2026-10-13: the module-tier rule for new capabilities is in force (see [decisions](#decisions-and-exclusions)); the separate load and code-size budgets remain open. |
 | <a id="perf-w07"></a>PERF-W07 | P3 / 6 / H | Prototype WASM threads only after native task isolation and consumer deployment requirements are settled. | Benchmark startup, pool memory and 1/N-thread exact results; provide non-threaded fallback and obtain separate approval for deployment/header changes. | XL/high | P01, B11, D04, W01 | [P-Class 8.7](#p-8-7) | Proposed |
 | <a id="perf-w08"></a>PERF-W08 | P3 / 7 / H | Evaluate explicit borrowed/zero-copy views only behind a documented lifetime/ownership design; copying typed arrays are currently the safe baseline. | Prove validity across memory growth, reentrancy and free; compare saved copies against JS/worker transfer costs and never expose stale views. | L/high | W02, M05 | [O4.7](#o-o4-7) | Proposed |
 
@@ -1140,6 +1140,7 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ee0d2cb
 | Fork lineage | Upstream v3+ behavior requires independent implementation or an explicit Apache-2.0 grant. |
 | 2D drawing formats (DXF, DWG, SVG, PDF) and drawing sheets | Consumer scope (OpenZCAD `io-dxf` and its drawings rows); the kernel exposes `section` (cross-section face handles whose boundary wires carry the section geometry) and `projectEdges` (projected visible/hidden polylines), and 7.5 owns silhouettes. Reopen only with a second consumer. |
 | Datum geometry, keep-originals, expression units, reference images, workspace conventions | Consumer scope, recorded by the 2026-09-26 consumer overlay so they are not re-asked of the kernel. |
+| WASM module tier for new capabilities | Owner rule (2026-10-13, [PERF-W06](#perf-w06)): every new capability declares its tier, `core`, `lazy:<module>` or `native`, in its row or design doc before implementation. `core` (the eager `remus-wasm` kernel) is the exception and needs a reason: the capability edits the live session (handles, journal/evolution, persistent naming, checkpoints, transactions). A `lazy:<module>` capability ships in its own package reached through exact arena documents, like `remus-wasm-io`; planned modules are `remus-wasm-sketch` (GCS solver only; sketch state stays in core) and `remus-wasm-repair` (import repair, read-only analysis). Consumers preload lazy modules at idle so first use is not slower, and no size change may make a workload slower. A kernel growth above 64 KiB raw carries a `WASM-Size:` line in the PR description naming the capability and its tier. Plan: [#1026](https://github.com/esaueng/remus/pull/1026). |
 
 ## Consolidation map
 
@@ -1183,9 +1184,13 @@ No requirement is considered complete merely because its document was consolidat
    specification and the roadmap skill's chase filters/terminal cases.
 2. Confirm prerequisites and write the bounded acceptance criteria into the PR.
    Use an isolated branch/worktree. A Pending row may already have an open PR.
+   A new capability records its WASM module tier first
+   (`Tier: core | lazy:<module> | native`; see [decisions](#decisions-and-exclusions)).
 3. Verify with independent oracles and the repository checks appropriate to the
-   change. Geometry changes retain native/direct/batch WASM, transactional refusal,
-   scale, census and regression requirements from the existing specifications.
+   change. Geometry changes retain native coverage, the WASM coverage their tier
+   requires (direct and batch for `core`, the module package's own bindings for
+   `lazy:<module>`, none for `native`), transactional refusal, scale, census and
+   regression requirements from the existing specifications.
    A documentation edit does not establish new geometry or benchmark evidence.
 4. Update state and remaining scope **here**, with the exact PR/artifact evidence.
    If blocked, record the blocker in the selected row and stop; do not switch
