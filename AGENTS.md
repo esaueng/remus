@@ -533,8 +533,13 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | PLY read/write | `ply/reader.rs`, `ply/writer.rs` |
 | glTF read/write | `gltf/reader.rs`, `gltf/writer.rs` |
 | Exact arena (sub-topology) serialization | `arena_io.rs` |
+| Hand-written arena document JSON codec (`serde_json`-exact reads and writes) | `arena_io/codec.rs` |
+| Differential oracle: the derived `serde_json` arena codec kept verbatim (tests) | `arena_io/codec_oracle_tests.rs` |
+| Minimal non-generic JSON reader/writer shared by the arena and reference codecs | `json.rs` |
+| Differential tests of the JSON reader/writer against `serde_json`, shared mutation fuzzer (tests) | `json/oracle_tests.rs`, `json/mutation.rs` |
 | Resource limits for untrusted imports | `limits.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
+| Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
