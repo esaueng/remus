@@ -19,6 +19,7 @@ import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
+import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -84,6 +85,7 @@ try {
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
   runSecurityResourceRegressions({ ...packageExports, ...ioExports });
+  runOpseqF3Packaged(packageExports);
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);

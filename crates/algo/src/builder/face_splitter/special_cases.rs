@@ -6355,3 +6355,627 @@ mod tests {
         );
     }
 }
+
+mod cylinder_seam {
+    //! Relocate a full cylinder's artificial seam away from a bounded section chain.
+    //!
+    //! First slice: two full circular rims, one repeated ruling, no holes, and a
+    //! mixed ellipse/NURBS section chain. Only an antipodal meridian proved clear
+    //! of every whole carried section may replace the original chart cut.
+
+    use std::f64::consts::{PI, TAU};
+
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
+
+    use super::{AlgoError, OrientedPCurveEdge, SectionEdge};
+
+    #[derive(Clone, Copy)]
+    struct I {
+        lo: f64,
+        hi: f64,
+    }
+
+    impl I {
+        const fn unknown() -> Self {
+            Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            }
+        }
+        const fn point(x: f64) -> Self {
+            Self { lo: x, hi: x }
+        }
+        fn add(self, b: Self) -> Self {
+            if !self.finite() || !b.finite() {
+                return Self::unknown();
+            }
+            let result = Self {
+                lo: (self.lo + b.lo).next_down(),
+                hi: (self.hi + b.hi).next_up(),
+            };
+            if result.finite() {
+                result
+            } else {
+                Self::unknown()
+            }
+        }
+        fn neg(self) -> Self {
+            if !self.finite() {
+                return Self::unknown();
+            }
+            Self {
+                lo: -self.hi,
+                hi: -self.lo,
+            }
+        }
+        fn sub(self, b: Self) -> Self {
+            self.add(b.neg())
+        }
+        fn mul(self, b: Self) -> Self {
+            if !self.finite() || !b.finite() {
+                return Self::unknown();
+            }
+            let p = [
+                self.lo * b.lo,
+                self.lo * b.hi,
+                self.hi * b.lo,
+                self.hi * b.hi,
+            ];
+            let result = Self {
+                lo: p.into_iter().fold(f64::INFINITY, f64::min).next_down(),
+                hi: p.into_iter().fold(f64::NEG_INFINITY, f64::max).next_up(),
+            };
+            if result.finite() {
+                result
+            } else {
+                Self::unknown()
+            }
+        }
+        fn scale(self, x: f64) -> Self {
+            self.mul(Self::point(x))
+        }
+        fn div_positive(self, x: f64) -> Self {
+            self.mul(Self {
+                lo: (1.0 / x).next_down(),
+                hi: (1.0 / x).next_up(),
+            })
+        }
+        fn finite(self) -> bool {
+            self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
+        }
+    }
+
+    fn projection(point: Point3, origin: Point3, direction: Vec3) -> I {
+        (0..3).fold(I::point(0.0), |sum, j| {
+            sum.add(
+                I::point(point.0[j])
+                    .sub(I::point(origin.0[j]))
+                    .scale(direction.0[j]),
+            )
+        })
+    }
+
+    fn dot(a: Vec3, b: Vec3) -> I {
+        (0..3).fold(I::point(0.0), |sum, j| {
+            sum.add(I::point(a.0[j]).mul(I::point(b.0[j])))
+        })
+    }
+
+    /// Interval Taylor bounds avoid relying on an unqualified libm endpoint or
+    /// deciding whether a rounded atan2 critical parameter lies inside a trim.
+    /// Range reduction encloses 2π; at |x|<=4 the omitted terms after degree39
+    /// are below 2e-24, conservatively enclosed by the added 1e-20 remainder.
+    fn sin_cos(range: I) -> Option<(I, I)> {
+        if !range.finite()
+            || range.lo > range.hi
+            || range.hi - range.lo > TAU
+            || range.lo.abs().max(range.hi.abs()) > 64.0 * PI
+        {
+            return None;
+        }
+        let turns = ((f64::midpoint(range.lo, range.hi) + PI) / TAU).floor();
+        let x = range.sub(
+            I {
+                lo: TAU.next_down(),
+                hi: TAU.next_up(),
+            }
+            .scale(turns),
+        );
+        if x.lo.abs().max(x.hi.abs()) > 4.0 {
+            return None;
+        }
+        let x2 = x.mul(x);
+        let (mut st, mut ct) = (x, I::point(1.0));
+        let (mut sine, mut cosine) = (st, ct);
+        for k in 1..20 {
+            st = st
+                .mul(x2)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k + 1)));
+            ct = ct
+                .mul(x2)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k - 1)));
+            sine = sine.add(st);
+            cosine = cosine.add(ct);
+        }
+        let remainder = I {
+            lo: -1e-20,
+            hi: 1e-20,
+        };
+        Some((sine.add(remainder), cosine.add(remainder)))
+    }
+
+    fn ellipse_clear(section: &SectionEdge, origin: Point3, direction: Vec3, ceiling: f64) -> bool {
+        let EdgeCurve::Ellipse(ellipse) = &section.curve_3d else {
+            return false;
+        };
+        let Some((a, b)) = section.trim else {
+            return false;
+        };
+        if !a.is_finite() || !b.is_finite() || a >= b || b - a > TAU {
+            return false;
+        }
+        let center = projection(ellipse.center(), origin, direction);
+        let cosine = dot(ellipse.u_axis(), direction).scale(ellipse.semi_major());
+        let sine = dot(ellipse.v_axis(), direction).scale(ellipse.semi_minor());
+        if !center.finite() || !cosine.finite() || !sine.finite() {
+            return false;
+        }
+        let mut stack = vec![(a, b, 0)];
+        let mut work = 0;
+        while let Some((lo, hi, depth)) = stack.pop() {
+            work += 1;
+            if work > 4096 || depth > 12 {
+                return false;
+            }
+            if let Some((s, c)) = sin_cos(I { lo, hi }) {
+                let bound = center.add(cosine.mul(c)).add(sine.mul(s));
+                if bound.finite() && bound.hi < ceiling {
+                    continue;
+                }
+            }
+            if depth == 12 {
+                return false;
+            }
+            let mid = f64::midpoint(lo, hi);
+            if mid <= lo || mid >= hi {
+                return false;
+            }
+            stack.push((lo, mid, depth + 1));
+            stack.push((mid, hi, depth + 1));
+        }
+        true
+    }
+
+    fn all_sections_clear(
+        sections: &[SectionEdge],
+        origin: Point3,
+        direction: Vec3,
+        seam: [Point3; 2],
+        tol: f64,
+    ) -> bool {
+        let along = direction
+            .0
+            .iter()
+            .fold(I::point(0.0), |sum, x| sum.add(I::point(x.abs())));
+        let margin = along.scale(tol).scale(16.0).hi;
+        let ceiling = (projection(seam[0], origin, direction)
+            .lo
+            .min(projection(seam[1], origin, direction).lo)
+            - margin)
+            .next_down();
+        if !ceiling.is_finite() {
+            return false;
+        }
+        sections.iter().all(|section| match &section.curve_3d {
+            EdgeCurve::Ellipse(_) => ellipse_clear(section, origin, direction, ceiling),
+            EdgeCurve::NurbsCurve(curve) => {
+                !curve.control_points().is_empty()
+                    && curve.weights().iter().all(|w| w.is_finite() && *w > 0.0)
+                    && curve.control_points().iter().all(|&p| {
+                        let bound = projection(p, origin, direction);
+                        bound.finite() && bound.hi < ceiling
+                    })
+            }
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::Hyperbola(_) => false,
+        })
+    }
+
+    fn qualify(
+        edges: &[OrientedPCurveEdge],
+        cyl: &CylindricalSurface,
+        tol: f64,
+    ) -> Option<([usize; 2], [usize; 2])> {
+        if edges.len() != 4
+            || !tol.is_finite()
+            || tol <= 0.0
+            || !cyl.radius().is_finite()
+            || cyl.radius() <= 0.0
+        {
+            return None;
+        }
+        let mut rims = Vec::new();
+        let mut seams = Vec::new();
+        for (index, edge) in edges.iter().enumerate() {
+            match &edge.curve_3d {
+                EdgeCurve::Circle(circle) => {
+                    let (a, b) = edge.trim?;
+                    let delta = circle.center() - cyl.origin();
+                    let axis = cyl.axis();
+                    if !a.is_finite()
+                        || !b.is_finite()
+                        || (b - a - TAU).abs() > 32.0 * f64::EPSILON * TAU
+                        || (edge.start_3d - edge.end_3d).length() > tol
+                        || (circle.evaluate(a) - edge.start_3d).length() > tol
+                        || (circle.radius() - cyl.radius()).abs() > tol
+                        || (delta - axis * delta.dot(axis)).length() > tol
+                        || circle.normal().dot(axis) < 1.0 - 1e-12
+                        || (edge.end_uv.x() - edge.start_uv.x() - TAU).abs() > 1e-8
+                    {
+                        return None;
+                    }
+                    rims.push(index);
+                }
+                EdgeCurve::Line => seams.push(index),
+                EdgeCurve::Ellipse(_)
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::Hyperbola(_) => return None,
+            }
+        }
+        let [r0, r1] = rims.as_slice() else {
+            return None;
+        };
+        let [s0, s1] = seams.as_slice() else {
+            return None;
+        };
+        let (a, b) = (&edges[*s0], &edges[*s1]);
+        if a.forward == b.forward
+            || a.source_topo_edge.is_none()
+            || a.source_topo_edge != b.source_topo_edge
+            || (a.start_3d - b.end_3d).length() > tol
+            || (a.end_3d - b.start_3d).length() > tol
+            || (a.start_3d - a.end_3d).length() <= tol
+        {
+            return None;
+        }
+        for p in [a.start_3d, a.end_3d] {
+            if [*r0, *r1]
+                .iter()
+                .all(|&r| (edges[r].start_3d - p).length() > tol)
+            {
+                return None;
+            }
+        }
+        Some(([*r0, *r1], [*s0, *s1]))
+    }
+
+    pub(in crate::builder::face_splitter) fn relocate_clear_seam(
+        edges: &[OrientedPCurveEdge],
+        sections: &[SectionEdge],
+        surface: &FaceSurface,
+        tol: f64,
+    ) -> Result<Option<Vec<OrientedPCurveEdge>>, AlgoError> {
+        let FaceSurface::Cylinder(cyl) = surface else {
+            return Ok(None);
+        };
+        if !sections
+            .iter()
+            .any(|s| matches!(s.curve_3d, EdgeCurve::Ellipse(_)))
+            || !sections
+                .iter()
+                .any(|s| matches!(s.curve_3d, EdgeCurve::NurbsCurve(_)))
+        {
+            return Ok(None);
+        }
+        let Some((rims, seams)) = qualify(edges, cyl, tol) else {
+            return Ok(None);
+        };
+        let old = [edges[rims[0]].start_3d, edges[rims[1]].start_3d];
+        let EdgeCurve::Circle(first) = &edges[rims[0]].curve_3d else {
+            return Ok(None);
+        };
+        let direction = old[0] - first.center();
+        if all_sections_clear(sections, cyl.origin(), direction, old, tol) {
+            return Ok(None);
+        }
+        let mut result = edges.to_vec();
+        let mut new = old;
+        for (k, &index) in rims.iter().enumerate() {
+            let edge = &mut result[index];
+            let EdgeCurve::Circle(circle) = &edge.curve_3d else {
+                return Ok(None);
+            };
+            let Some((a, b)) = edge.trim else {
+                return Ok(None);
+            };
+            edge.trim = Some((a + PI, b + PI));
+            new[k] = circle.evaluate(a + PI);
+            edge.start_3d = new[k];
+            edge.end_3d = new[k];
+            let (u, v) = cyl.project_point(new[k]);
+            let u = u.rem_euclid(TAU);
+            edge.start_uv = Point2::new(u, v);
+            edge.end_uv = Point2::new(u + TAU, v);
+            edge.pcurve = Curve2D::Line(Line2D::new(edge.start_uv, Vec2::new(1.0, 0.0))?);
+        }
+        if !all_sections_clear(sections, cyl.origin(), new[0] - first.center(), new, tol) {
+            return Ok(None);
+        }
+        for &index in &seams {
+            let edge = &mut result[index];
+            let map = |p: Point3| {
+                if (p - old[0]).length() <= (p - old[1]).length() {
+                    new[0]
+                } else {
+                    new[1]
+                }
+            };
+            edge.start_3d = map(edge.start_3d);
+            edge.end_3d = map(edge.end_3d);
+            let (u, a) = cyl.project_point(edge.start_3d);
+            let (_, b) = cyl.project_point(edge.end_3d);
+            let u = u.rem_euclid(TAU);
+            edge.start_uv = Point2::new(u, a);
+            edge.end_uv = Point2::new(u, b);
+            edge.pcurve = Curve2D::Line(Line2D::new(edge.start_uv, Vec2::new(0.0, b - a))?);
+            edge.trim = None;
+            edge.source_topo_edge = None;
+            edge.source_edge_idx = None;
+            edge.pave_block_id = None;
+        }
+        Ok(Some(result))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #![allow(clippy::unwrap_used, clippy::expect_used)]
+        use super::*;
+        use remus_math::curves::{Circle3D, Ellipse3D};
+        use remus_math::nurbs::curve::NurbsCurve;
+
+        #[test]
+        fn cylinder_seam_invalid_intervals_propagate_unknown() {
+            for bad in [
+                I {
+                    lo: f64::NAN,
+                    hi: 1.0,
+                },
+                I {
+                    lo: 1.0,
+                    hi: f64::NAN,
+                },
+                I { lo: 2.0, hi: 1.0 },
+                I {
+                    lo: 0.0,
+                    hi: f64::INFINITY,
+                },
+            ] {
+                assert!(!bad.finite());
+                for result in [bad.add(I::point(1.0)), bad.mul(I::point(1.0)), bad.neg()] {
+                    assert!(!result.finite());
+                    assert!(result.lo.is_infinite() && result.lo.is_sign_negative());
+                    assert!(result.hi.is_infinite() && result.hi.is_sign_positive());
+                }
+            }
+            for result in [
+                I::point(f64::MAX).add(I::point(f64::MAX)),
+                I::point(f64::MAX).scale(2.0),
+            ] {
+                assert!(!result.finite());
+                assert!(result.lo.is_sign_negative() && result.hi.is_sign_positive());
+            }
+            let valid = I { lo: -2.0, hi: 3.0 }.mul(I::point(2.0));
+            assert!(valid.finite() && valid.lo <= -4.0 && valid.hi >= 6.0);
+        }
+
+        fn edge(
+            curve: EdgeCurve,
+            trim: Option<(f64, f64)>,
+            start: Point3,
+            end: Point3,
+            forward: bool,
+            source: usize,
+        ) -> OrientedPCurveEdge {
+            OrientedPCurveEdge {
+                curve_3d: curve,
+                trim,
+                pcurve: Curve2D::Line(
+                    Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+                ),
+                start_uv: Point2::new(3.0 * PI / 2.0, start.z()),
+                end_uv: Point2::new(7.0 * PI / 2.0, end.z()),
+                start_3d: start,
+                end_3d: end,
+                forward,
+                source_edge_idx: Some(source),
+                pave_block_id: None,
+                source_topo_edge: Some(source),
+            }
+        }
+
+        fn section(curve: EdgeCurve, range: (f64, f64)) -> SectionEdge {
+            let unused = Point3::new(0.0, 0.0, 0.0);
+            let pcurve =
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+            SectionEdge {
+                start: curve.evaluate_with_endpoints(range.0, unused, unused),
+                end: curve.evaluate_with_endpoints(range.1, unused, unused),
+                curve_3d: curve,
+                trim: Some(range),
+                pcurve_a: pcurve.clone(),
+                pcurve_b: pcurve,
+                start_uv_a: None,
+                end_uv_a: None,
+                start_uv_b: None,
+                end_uv_b: None,
+                target_face: None,
+                pave_block_id: None,
+            }
+        }
+
+        fn fixture(scale: f64) -> (FaceSurface, Vec<OrientedPCurveEdge>, Vec<SectionEdge>) {
+            let cyl = CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                2.0 * scale,
+            )
+            .unwrap();
+            let circle = |z| {
+                Circle3D::new_with_ref(
+                    Point3::new(0.0, 0.0, z),
+                    cyl.axis(),
+                    cyl.radius(),
+                    cyl.x_axis(),
+                )
+                .unwrap()
+            };
+            let (bottom, top) = (circle(0.0), circle(3.5 * scale));
+            let (a, b) = (bottom.evaluate(-PI / 2.0), top.evaluate(-PI / 2.0));
+            let mut edges = vec![
+                edge(
+                    EdgeCurve::Circle(bottom),
+                    Some((-PI / 2.0, 3.0 * PI / 2.0)),
+                    a,
+                    a,
+                    true,
+                    0,
+                ),
+                edge(EdgeCurve::Line, None, a, b, true, 2),
+                edge(
+                    EdgeCurve::Circle(top),
+                    Some((-PI / 2.0, 3.0 * PI / 2.0)),
+                    b,
+                    b,
+                    false,
+                    1,
+                ),
+                edge(EdgeCurve::Line, None, b, a, false, 2),
+            ];
+            for i in [1, 3] {
+                edges[i].end_uv = Point2::new(edges[i].start_uv.x(), edges[i].end_3d.z());
+            }
+            let ellipse = Ellipse3D::with_axes(
+                Point3::new(0.0, 0.0, scale),
+                Vec3::new(0.0, -1.0 / 5.0_f64.sqrt(), 2.0 / 5.0_f64.sqrt()),
+                5.0_f64.sqrt() * scale,
+                2.0 * scale,
+                Vec3::new(0.0, 2.0 / 5.0_f64.sqrt(), 1.0 / 5.0_f64.sqrt()),
+                Vec3::new(-1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let spline = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(0.0, -2.0 * scale, 0.5 * scale),
+                    Point3::new(2.0 * scale, -2.0 * scale, 0.5 * scale),
+                    Point3::new(2.0 * scale, 0.0, 0.5 * scale),
+                ],
+                vec![1.0, 0.5_f64.sqrt(), 1.0],
+            )
+            .unwrap();
+            (
+                FaceSurface::Cylinder(cyl),
+                edges,
+                vec![
+                    section(EdgeCurve::Ellipse(ellipse), (PI, TAU)),
+                    section(EdgeCurve::NurbsCurve(spline), (0.0, 1.0)),
+                ],
+            )
+        }
+
+        #[test]
+        #[allow(clippy::panic)]
+        fn cylinder_seam_relocation_preserves_carriers_trims_orientation_and_rim_lineage() {
+            for scale in [1e-3, 1.0, 1e3] {
+                let (surface, edges, sections) = fixture(scale);
+                let moved = relocate_clear_seam(&edges, &sections, &surface, 1e-7 * scale)
+                    .unwrap()
+                    .unwrap();
+                for i in [0, 2] {
+                    let (EdgeCurve::Circle(before), EdgeCurve::Circle(after)) =
+                        (&edges[i].curve_3d, &moved[i].curve_3d)
+                    else {
+                        panic!("rim carrier changed");
+                    };
+                    assert_eq!(before.center(), after.center());
+                    assert_eq!(before.radius().to_bits(), after.radius().to_bits());
+                    assert_eq!(before.u_axis(), after.u_axis());
+                    assert_eq!(before.v_axis(), after.v_axis());
+                    assert_eq!(moved[i].source_topo_edge, edges[i].source_topo_edge);
+                    assert_eq!(moved[i].forward, edges[i].forward);
+                    assert_eq!(moved[i].trim, Some((PI / 2.0, 5.0 * PI / 2.0)));
+                    assert!((moved[i].start_3d.x() + 2.0 * scale).abs() < 1e-12 * scale);
+                    assert!((moved[i].end_uv.x() - moved[i].start_uv.x() - TAU).abs() < 1e-12);
+                }
+                for i in [1, 3] {
+                    assert!(matches!(moved[i].curve_3d, EdgeCurve::Line));
+                    assert_eq!(moved[i].forward, edges[i].forward);
+                    assert!(moved[i].source_topo_edge.is_none());
+                    assert!(moved[i].pave_block_id.is_none());
+                    assert!((moved[i].start_3d.x() + 2.0 * scale).abs() < 1e-12 * scale);
+                    assert!((moved[i].end_3d.x() + 2.0 * scale).abs() < 1e-12 * scale);
+                }
+            }
+        }
+
+        #[test]
+        fn cylinder_seam_projection_proves_the_trim_not_the_unbounded_ellipse() {
+            let (_, _, mut sections) = fixture(1.0);
+            let origin = Point3::new(0.0, 0.0, 0.0);
+            let direction = Vec3::new(-2.0, 0.0, 0.0);
+            assert!(ellipse_clear(&sections[0], origin, direction, 4.0 - 1e-6));
+            // The same ellipse's opposite half reaches the candidate seam.
+            // Its critical point is inside this changed authoritative trim.
+            sections[0].trim = Some((0.0, PI));
+            assert!(!ellipse_clear(&sections[0], origin, direction, 4.0 - 1e-6));
+            sections[0].trim = None;
+            assert!(!ellipse_clear(&sections[0], origin, direction, 4.0 - 1e-6));
+        }
+
+        #[test]
+        fn cylinder_seam_ambiguous_projection_and_partial_rim_decline() {
+            let (surface, mut edges, mut sections) = fixture(1.0);
+            sections[0].trim = Some((0.0, TAU));
+            assert!(
+                relocate_clear_seam(&edges, &sections, &surface, 1e-7)
+                    .unwrap()
+                    .is_none()
+            );
+            let (_, _, original) = fixture(1.0);
+            sections = original;
+            edges[0].trim = Some((0.0, PI));
+            assert!(
+                relocate_clear_seam(&edges, &sections, &surface, 1e-7)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn cylinder_seam_relocation_requires_mixed_sections_and_repeated_source_seam() {
+            let (surface, mut edges, sections) = fixture(1.0);
+            assert!(
+                relocate_clear_seam(&edges, &sections[..1], &surface, 1e-7)
+                    .unwrap()
+                    .is_none()
+            );
+            edges[3].source_topo_edge = Some(99);
+            assert!(
+                relocate_clear_seam(&edges, &sections, &surface, 1e-7)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+pub(super) use cylinder_seam::relocate_clear_seam;
