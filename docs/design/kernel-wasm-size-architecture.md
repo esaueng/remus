@@ -1,6 +1,6 @@
 # Browser kernel size architecture
 
-Status: **plan**, nothing in it is implemented yet. Baseline:
+Status: **in progress** (owner decisions recorded at the end). Baseline:
 `259683c5` (committed packages v2026.1.55, built from `ed2754cd`).
 Roadmap rows: [PERF-W06](../kernel-maturity/roadmap.md#perf-w06) (separate
 load and code-size budgets) and [PERF-P03](../kernel-maturity/roadmap.md#perf-p03)
@@ -146,8 +146,10 @@ first, then the re-pin.
    (`wasm-opt -Oz --enable-simd`). Every CI job that builds the shipped
    module (wasm-size, package verification) goes through the same path.
    Acceptance: package ≤ 8.7 MB raw / 3.25 MB gzip; `scripts/performance`
-   workloads within noise or with each regression recorded; WASM contract
-   tests and `scripts/test-wasm-smoke.mjs` green.
+   workloads all within noise; WASM contract
+   tests and `scripts/test-wasm-smoke.mjs` green. Under owner decision 1 a
+   regression is not recorded and accepted: hot crates keep `opt-level = 3`
+   until every workload is within noise.
 2. **Gate parity.** `cargo xtask wasm-build` measures gzip and Brotli by
    calling Node's `zlib` with the consumer's exact settings (Node is already
    required by the version scripts), fails above the gzip hard limit and
@@ -264,8 +266,26 @@ gates green and the same seven-point evidence.
 - Compression ratios differ between Rust's and Node's deflate; gate parity
   must call Node's zlib, not a Rust reimplementation.
 
-## Decisions for the owner
+## Owner decisions (2026-10-13)
 
-1. The W2 ceiling (proposed 12 MiB raw / 4.5 MiB gzip).
-2. The W6 load-time targets.
-3. Sketch state ownership for W4.1.
+1. **No speed regression.** No workstream may make any workload in the
+   `scripts/performance` suites (main, `sketch`, `transactions`) or the
+   criterion benches measurably slower. A size change that costs speed ships
+   only with the cost removed (for example a per-crate `opt-level = 3`
+   override on the affected hot crate). Every code PR attaches before/after
+   numbers; "within noise" means the medians' difference is inside the
+   run-to-run spread of repeated baseline runs.
+2. **W2 ceiling:** 12 MiB raw hard / 11 MiB raw review / 4.5 MiB gzip hard /
+   3 MiB Brotli review, as proposed.
+3. **W6 targets:** measure the current kernel first, then set the gates from
+   that baseline; the proposed 2 s / 5 s / 0.5 s are the starting point and
+   no gate may be looser than today's measurement.
+4. **Sketch state stays in core; only the solver moves.** GCS sketch state
+   remains in kernel checkpoints, so undo and restore stay atomic with the
+   body history. The lazy `remus-wasm-sketch` module receives the system,
+   solves and returns parameters. Under decision 1 the round trip must not
+   slow the `scripts/performance/sketch` workloads, the consumer preloads the
+   module at idle so first use is not slower, and the split ships only if it
+   removes at least 250 KiB from the core after the duplicated shared code is
+   counted.
+5. **W7** stays deferred until H4/H5 capabilities land.
