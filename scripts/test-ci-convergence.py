@@ -297,6 +297,13 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", comment)
         self.assertIn("node scripts/wasm-size-gate.mjs --github-pr-body", comment)
         self.assertIn("if: steps.gate.outputs.status == '1'", comment)
+        # A policy failure records its report before the final failing step,
+        # allowing the action to replace a stale successful comment.
+        self.assertLess(comment.index("- name: Post or update comment"),
+                        comment.index("- name: Enforce the size policy"))
+        post = comment.split("      - name: Post or update comment\n", 1)[1].split("      - ", 1)[0]
+        self.assertIn("if: steps.gate.outcome == 'success'", post)
+        self.assertIn("body-path: ${{ runner.temp }}/wasm-size-report.md", post)
         self.assertIn("PR_BODY: ${{ github.event.pull_request.body }}", comment)
         self.assertEqual(comment.count("github.event.pull_request.body"), 1)
 

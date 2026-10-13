@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -130,6 +130,36 @@ test('a WASM-Size line must name a capability besides the tier and the size', ()
   }
 });
 
+test('tiers and parenthesized reasons cannot substitute for a capability', () => {
+  for (const line of [
+    'WASM-Size: Tier: core, Tier: native',
+    'WASM-Size: Tier: core; Tier: lazy:io (arena documents)',
+    'WASM-Size: Tier: core (writes the journal (and history))',
+    'WASM-Size: Tier: core (writes the journal',
+    'WASM-Size: +120 KiB raw (gzip), Tier: core',
+    'WASM-Size: (curve projection), Tier: core',
+  ]) {
+    assert.equal(isValidDeclaration(line), false, line);
+    assert.deepEqual(codes(gate(grown(120 * KIB), line)), ['growth-declaration-incomplete'], line);
+  }
+  const nested = 'WASM-Size: curve projection (P-Class 7.4), Tier: core (writes the journal (and history))';
+  assert.equal(gate(grown(120 * KIB), nested).pass, true);
+  const multiple = 'WASM-Size: curve projection, Tier: core; mesh export, Tier: lazy:io';
+  assert.equal(gate(grown(120 * KIB), multiple).pass, true);
+});
+
+test('every declared tier must be valid and complete', () => {
+  for (const tier of ['corejunk', 'native2', 'lazy:', 'lazy:-', 'lazy:_', 'lazy:io/x', 'lazy:io:extra']) {
+    for (const suffix of ['', ', Tier: core']) {
+      const line = `WASM-Size: curve projection, Tier: ${tier}${suffix}`;
+      assert.equal(isValidDeclaration(line), false, line);
+      assert.deepEqual(codes(gate(grown(120 * KIB), line)), ['growth-declaration-incomplete'], line);
+    }
+  }
+  assert.equal(isValidDeclaration('curve projection, Tier: core'), false);
+  assert.equal(isValidDeclaration('WASM-Size: curve projection, Tier: core (writes the journal'), false);
+});
+
 test('a shrinking or unchanged kernel passes without a declaration', () => {
   for (const by of [-200 * KIB, -1, 0, 1]) {
     const result = gate(grown(by));
@@ -248,6 +278,111 @@ test('command line: a kernel-only artifact (failed build, translator never built
   const markdown = readFileSync(f.markdown, 'utf8');
   assert.match(markdown, /kernel-raw-hard/);
   assert.doesNotMatch(markdown, /Translator/);
+});
+
+// Run the checked-in workflow commands, rather than duplicating their shell
+// logic. Cargo metadata is the only stub; size measurement uses the real policy.
+function workflowCommand(file, name) {
+  const workflow = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
+  const step = workflow.split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
+  assert.ok(step, `Missing workflow step: ${name}`);
+  const command = step.split('        run: |\n')[1] ?? step.match(/^        run: (.+)$/m)?.[1];
+  assert.ok(command, `Missing workflow command: ${name}`);
+  return command.replace(/^          /gm, '');
+}
+
+test('workflow: only fresh build artifacts reach the report, including hard-limit failures', async (t) => {
+  const policy = JSON.parse(spawnSync(process.execPath, [POLICY_SCRIPT, '--policy'], { encoding: 'utf8' }).stdout);
+  const mark = workflowCommand('fleet-ci.yml', 'Mark the WASM build start');
+  const prepare = workflowCommand('fleet-ci.yml', 'Prepare WASM size artifacts');
+  const measure = workflowCommand('fleet-wasm-size.yml', 'Measure the kernel against the size policy');
+  const enforce = workflowCommand('fleet-wasm-size.yml', 'Enforce the size policy');
+  for (const scenario of ['not-started', 'no-new-module', 'raw-hard', 'gzip-hard', 'both-built']) {
+    await t.test(scenario, (t) => {
+      const f = fixture(t, 4096, 4096);
+      const buildDir = join(f.root, 'build');
+      const runnerTemp = join(f.root, 'runner');
+      const binDir = join(f.root, 'bin');
+      for (const dir of [buildDir, runnerTemp, binDir, join(f.baseDir, 'scripts')]) mkdirSync(dir, { recursive: true });
+      for (const script of [SCRIPT, POLICY_SCRIPT]) writeFileSync(join(f.baseDir, 'scripts', script.split('/').at(-1)), readFileSync(script));
+      const metadata = { packages: ['wasm', 'wasm-io'].map((crate, i) => ({
+        name: `remus-${crate}`,
+        manifest_path: join(buildDir, `crates/${crate}/Cargo.toml`),
+        targets: [{ name: ['remus_wasm', 'remus_wasm_io'][i], crate_types: ['cdylib'] }],
+      })) };
+      const cargo = join(binDir, 'cargo');
+      writeFileSync(cargo, `#!/bin/sh\ncat <<'METADATA'\n${JSON.stringify(metadata)}\nMETADATA\n`);
+      chmodSync(cargo, 0o755);
+      const env = {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH}`,
+        RUNNER_TEMP: runnerTemp,
+        GITHUB_OUTPUT: join(runnerTemp, 'output'),
+        GITHUB_STEP_SUMMARY: join(runnerTemp, 'summary'),
+        GITHUB_API_URL: '', GH_TOKEN: '', PR_BODY: '', GITHUB_ACTIONS: '',
+      };
+      const shell = (command, cwd = buildDir) => spawnSync('bash', ['-e', '-c', command], { cwd, env, encoding: 'utf8' });
+      // Committed packages are older than the marker; fresh output is newer.
+      // Explicit times keep the test independent of filesystem clock resolution.
+      const old = new Date('2000-01-01T00:00:00Z');
+      const started = new Date(old.getTime() + 1000);
+      const fresh = new Date(old.getTime() + 2000);
+      const kernel = join(buildDir, MODULES.kernel.base);
+      const translator = join(buildDir, MODULES.io.base);
+      for (const file of [kernel, translator]) {
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, moduleBytes(4096));
+        utimesSync(file, old, old);
+      }
+      if (scenario !== 'not-started') {
+        assert.equal(shell(mark).status, 0);
+        utimesSync(join(runnerTemp, 'wasm-build-start'), started, started);
+      }
+      if (!['not-started', 'no-new-module'].includes(scenario)) {
+        let contents = moduleBytes(scenario === 'raw-hard' ? policy.rawHardBytes + 1 : 4096);
+        if (scenario === 'gzip-hard') {
+          contents = moduleBytes(policy.gzipHardBytes + 256 * KIB);
+          // Deterministic incompressible payload: above gzip, below raw hard limit.
+          let state = 0x12345678;
+          for (let i = 8; i < contents.length; i++) {
+            state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
+            contents[i] = state & 255;
+          }
+        }
+        writeFileSync(kernel, contents);
+        utimesSync(kernel, fresh, fresh);
+        if (scenario === 'both-built') utimesSync(translator, fresh, fresh);
+        const validation = spawnSync(process.execPath, [POLICY_SCRIPT, '--json', kernel], { encoding: 'utf8' });
+        assert.equal(validation.status, scenario === 'both-built' ? 0 : 1, validation.stderr);
+      }
+      const prepared = shell(prepare);
+      assert.equal(prepared.status, 0, prepared.stderr);
+      const artifacts = join(runnerTemp, 'wasm-size');
+      if (['not-started', 'no-new-module'].includes(scenario)) {
+        assert.equal(existsSync(join(artifacts, MODULES.kernel.pr)), false);
+        assert.equal(existsSync(join(artifacts, MODULES.io.pr)), false);
+        assert.equal(existsSync(env.GITHUB_OUTPUT), false, 'no ready flag for committed packages');
+        return;
+      }
+      assert.equal(readFileSync(env.GITHUB_OUTPUT, 'utf8'), 'ready=true\n');
+      assert.equal(Buffer.compare(readFileSync(join(artifacts, MODULES.kernel.pr)), readFileSync(kernel)), 0);
+      assert.equal(existsSync(join(artifacts, MODULES.io.pr)), scenario === 'both-built');
+      const measured = shell(measure, f.baseDir);
+      assert.equal(measured.status, 0, measured.stderr); // report first, enforce afterward
+      const failed = scenario !== 'both-built';
+      assert.match(readFileSync(env.GITHUB_OUTPUT, 'utf8'), new RegExp(`status=${failed ? 1 : 0}\\n`));
+      const markdown = readFileSync(join(runnerTemp, 'wasm-size-report.md'), 'utf8');
+      assert.equal(readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), markdown);
+      if (failed) {
+        assert.match(markdown, new RegExp(`kernel-${scenario}`));
+        assert.doesNotMatch(markdown, /Translator/);
+        assert.equal(shell(enforce, f.baseDir).status, 1);
+      } else {
+        assert.match(markdown, /Kernel size unchanged/);
+        assert.match(markdown, /Translator/);
+      }
+    });
+  }
 });
 
 test('command line: missing input is an error, never a verdict', (t) => {
