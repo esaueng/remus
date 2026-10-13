@@ -47,7 +47,8 @@ const ADDEND_MAX: f64 = f64::from_bits((1023 + 900) << 52);
 /// software `fma` without changing a single result bit. On `wasm32` this is
 /// one call to an out-of-line emulation, like the `mul_add` call it replaces,
 /// so the module does not grow (inlining the emulation at every call site
-/// added ~0.4 MB to the optimized kernel, past its 10 MiB budget).
+/// added ~0.4 MB to the optimized kernel, past the 10 MiB raw budget it had
+/// then).
 #[inline]
 #[must_use]
 pub fn fma(a: f64, b: f64, c: f64) -> f64 {

@@ -1768,7 +1768,7 @@
     "phase": 0,
     "evidence": "S",
     "work": "Treat cold loading, code size and module transfer as separate budgets; translator splitting and SIMD build flags already exist.",
-    "acceptance": "Measure raw/compressed bytes, compile/instantiate time, first call and steady state on real browsers; preserve the current 9 MiB review/10 MiB hard package policy.",
+    "acceptance": "Measure raw/compressed bytes, compile/instantiate time, first call and steady state on real browsers; preserve the current kernel package policy (raw 11 MiB review/12 MiB hard, gzip 4.5 MiB hard, Brotli 3 MiB review in `scripts/wasm-size-policy.mjs`).",
     "effort_risk": "M/medium",
     "dependencies": ["W01"],
     "source_references": [
