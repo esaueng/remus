@@ -10,24 +10,37 @@ const WASM_BINDGEN_VERSION: &str = "0.2.126";
 /// Attribution and license text included in every distributable npm package.
 const PACKAGE_METADATA_FILES: [&str; 2] = ["LICENSE-APACHE", "NOTICE"];
 
-/// Valid .wasm file size range (bytes). The upper bounds mirror the consumer
-/// policy `KERNEL_WASM_POLICY` in esaueng/openzcad
-/// `scripts/bundle-size-policy.mjs` (rationale in its
-/// `docs/kernel-wasm-size-policy.md`): `rawReviewBytes` (9 MiB) warns and
-/// requires a kernel-size review, `rawHardBytes` (10 MiB) fails. Change them
-/// together with that policy, never independently.
+/// Smallest plausible `.wasm` (bytes): anything smaller is a truncated or
+/// failed build.
 const MIN_WASM_SIZE: u64 = 500_000;
-const REVIEW_WASM_SIZE: u64 = 9 * 1024 * 1024;
-const MAX_WASM_SIZE: u64 = 10 * 1024 * 1024;
-const _: () = assert!(MIN_WASM_SIZE < REVIEW_WASM_SIZE && REVIEW_WASM_SIZE < MAX_WASM_SIZE);
+/// Raw hard limit of a lazily loaded module, which is outside the consumer's
+/// kernel policy.
+const MAX_LAZY_WASM_SIZE: u64 = 10 * 1024 * 1024;
+const _: () = assert!(MIN_WASM_SIZE < MAX_LAZY_WASM_SIZE);
+
+/// The browser kernel's size policy (raw review and hard limits, gzip hard
+/// limit, Brotli review limit) and its measurement live only in this script.
+/// It mirrors the consumer policy `KERNEL_WASM_POLICY` in esaueng/openzcad
+/// `scripts/bundle-size-policy.mjs`; change the limits there and in the
+/// script together, never here.
+const SIZE_POLICY_SCRIPT: &str = "scripts/wasm-size-policy.mjs";
+const SIZE_POLICY_TESTS: &str = "scripts/test-wasm-size-policy.mjs";
+
+/// Which limits apply to one distributable `.wasm`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizeLimits {
+    /// The eagerly loaded kernel: [`SIZE_POLICY_SCRIPT`] evaluates its raw,
+    /// gzip and Brotli sizes against the consumer's kernel policy.
+    KernelPolicy,
+    /// A lazily loaded module: a raw hard limit only.
+    Raw { max: u64 },
+}
 
 /// Size window for one distributable `.wasm`.
 #[derive(Clone, Copy, Debug)]
 pub struct SizeBudget {
     min: u64,
-    /// Inside the window but worth a review; `None` for lazily loaded modules.
-    review: Option<u64>,
-    max: u64,
+    limits: SizeLimits,
 }
 
 /// One npm package produced by `cargo xtask wasm-build`.
@@ -73,8 +86,7 @@ pub const KERNEL: PackageSpec = PackageSpec {
     min_methods: 170,
     size: SizeBudget {
         min: MIN_WASM_SIZE,
-        review: Some(REVIEW_WASM_SIZE),
-        max: MAX_WASM_SIZE,
+        limits: SizeLimits::KernelPolicy,
     },
     cargo_args: &["--no-default-features"],
 };
@@ -95,8 +107,9 @@ pub const TRANSLATORS: PackageSpec = PackageSpec {
     min_methods: 18,
     size: SizeBudget {
         min: MIN_WASM_SIZE,
-        review: None,
-        max: MAX_WASM_SIZE,
+        limits: SizeLimits::Raw {
+            max: MAX_LAZY_WASM_SIZE,
+        },
     },
     cargo_args: &[],
 };
@@ -405,10 +418,16 @@ fn validate_at(pkg: &Path, spec: &PackageSpec) -> Result<()> {
         let size = fs::metadata(&wasm_path)?.len();
         if let Some(error) = wasm_size_error(size, &spec.size) {
             errors.push(error);
-        } else if let Some(warning) = wasm_size_warning(size, &spec.size) {
-            println!("  WARN {warning}");
         } else {
             println!("  ok .wasm size: {:.1} KB", size as f64 / 1024.0);
+        }
+        if spec.size.limits == SizeLimits::KernelPolicy {
+            let findings = size_policy_findings(&run_size_policy(&wasm_path)?)?;
+            println!("  {}", findings.summary);
+            for warning in &findings.warnings {
+                println!("  WARN {warning}");
+            }
+            errors.extend(findings.failures);
         }
     }
 
@@ -491,31 +510,105 @@ fn count_dts_methods(dts: &str) -> usize {
         .count()
 }
 
+/// The raw window checked in Rust: a truncation floor for every module and the
+/// hard limit of a lazily loaded one. The kernel's limits come from
+/// [`SIZE_POLICY_SCRIPT`].
 fn wasm_size_error(size: u64, budget: &SizeBudget) -> Option<String> {
     if size < budget.min {
-        Some(format!(
+        return Some(format!(
             ".wasm too small: {size} bytes (min {})",
             budget.min
-        ))
-    } else if size > budget.max {
-        Some(format!(
-            ".wasm too large: {size} bytes (max {})",
-            budget.max
-        ))
-    } else {
-        None
+        ));
+    }
+    match budget.limits {
+        SizeLimits::Raw { max } if size > max => {
+            Some(format!(".wasm too large: {size} bytes (max {max})"))
+        }
+        _ => None,
     }
 }
 
-/// Sizes inside the hard budget but above the consumer's review threshold.
-fn wasm_size_warning(size: u64, budget: &SizeBudget) -> Option<String> {
-    let review = budget.review?;
-    (review < size && size <= budget.max).then(|| {
-        format!(
-            ".wasm size {size} bytes exceeds the review threshold ({review}); \
-             hard limit {}. A kernel-size review is required before shipping",
-            budget.max
-        )
+/// Run the boundary tests of the shared size policy before trusting it.
+pub fn test_size_policy() -> Result<()> {
+    run_cmd(
+        Command::new("node")
+            .arg("--test")
+            .arg(project_root()?.join(SIZE_POLICY_TESTS)),
+    )
+    .context("testing the WASM size policy")
+}
+
+/// Measure one module with [`SIZE_POLICY_SCRIPT`] and return its JSON report.
+/// Exit status 1 (a hard limit exceeded) still carries a report; the caller
+/// turns its failures into validation errors.
+fn run_size_policy(wasm: &Path) -> Result<serde_json::Value> {
+    let mut cmd = Command::new("node");
+    cmd.arg(project_root()?.join(SIZE_POLICY_SCRIPT))
+        .arg("--json")
+        .arg(wasm);
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to run: {cmd:?}"))?;
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        bail!(
+            "size policy failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("parsing the size policy report")
+}
+
+/// One size policy report, ready to print.
+#[derive(Debug)]
+struct SizePolicyFindings {
+    summary: String,
+    warnings: Vec<String>,
+    failures: Vec<String>,
+}
+
+fn size_policy_findings(report: &serde_json::Value) -> Result<SizePolicyFindings> {
+    let metric = |key: &str| {
+        report["metrics"][key]
+            .as_u64()
+            .with_context(|| format!("size policy report has no metrics.{key}"))
+    };
+    let describe = |list: &str| -> Result<Vec<String>> {
+        report[list]
+            .as_array()
+            .with_context(|| format!("size policy report has no {list} array"))?
+            .iter()
+            .map(|finding| {
+                let text = |key: &str| {
+                    finding[key]
+                        .as_str()
+                        .with_context(|| format!("size policy finding has no {key}"))
+                };
+                let bytes = |key: &str| {
+                    finding[key]
+                        .as_u64()
+                        .with_context(|| format!("size policy finding has no {key}"))
+                };
+                Ok(format!(
+                    "{}: {} {} (budget {}). {}",
+                    text("code")?,
+                    text("metric")?,
+                    bytes("bytes")?,
+                    bytes("budgetBytes")?,
+                    text("reason")?
+                ))
+            })
+            .collect()
+    };
+    Ok(SizePolicyFindings {
+        summary: format!(
+            "kernel size: raw {} B, gzip {} B, Brotli {} B",
+            metric("rawBytes")?,
+            metric("gzipBytes")?,
+            metric("brotliBytes")?
+        ),
+        warnings: describe("warnings")?,
+        failures: describe("failures")?,
     })
 }
 
@@ -731,40 +824,123 @@ mod tests {
 
     #[test]
     fn wasm_size_budget_accepts_its_exact_boundaries() {
-        assert!(wasm_size_error(MIN_WASM_SIZE, &KERNEL.size).is_none());
-        assert!(wasm_size_error(MAX_WASM_SIZE, &KERNEL.size).is_none());
+        for spec in [KERNEL, TRANSLATORS] {
+            assert!(wasm_size_error(MIN_WASM_SIZE, &spec.size).is_none());
+        }
+        assert!(wasm_size_error(MAX_LAZY_WASM_SIZE, &TRANSLATORS.size).is_none());
     }
 
     #[test]
     fn wasm_size_budget_rejects_binaries_outside_its_bounds() {
+        for spec in [KERNEL, TRANSLATORS] {
+            assert!(
+                wasm_size_error(MIN_WASM_SIZE - 1, &spec.size)
+                    .is_some_and(|error| error.contains("too small"))
+            );
+        }
         assert!(
-            wasm_size_error(MIN_WASM_SIZE - 1, &KERNEL.size)
-                .is_some_and(|error| error.contains("too small"))
-        );
-        assert!(
-            wasm_size_error(MAX_WASM_SIZE + 1, &KERNEL.size)
+            wasm_size_error(MAX_LAZY_WASM_SIZE + 1, &TRANSLATORS.size)
                 .is_some_and(|error| error.contains("too large"))
         );
     }
 
     #[test]
-    fn wasm_size_review_warning_covers_only_the_band_below_the_hard_limit() {
-        assert!(wasm_size_warning(REVIEW_WASM_SIZE, &KERNEL.size).is_none());
-        assert!(
-            wasm_size_warning(REVIEW_WASM_SIZE + 1, &KERNEL.size)
-                .is_some_and(|warning| warning.contains("review threshold"))
+    fn kernel_limits_belong_to_the_shared_size_policy() {
+        // The raw window never second-guesses the kernel policy, so raising a
+        // limit in the script is the whole change.
+        assert_eq!(KERNEL.size.limits, SizeLimits::KernelPolicy);
+        assert_eq!(KERNEL_WITH_IO.size.limits, SizeLimits::KernelPolicy);
+        assert!(wasm_size_error(u64::MAX, &KERNEL.size).is_none());
+        // Loaded lazily, so it is outside the consumer's kernel-size policy.
+        assert_eq!(
+            TRANSLATORS.size.limits,
+            SizeLimits::Raw {
+                max: MAX_LAZY_WASM_SIZE
+            }
         );
-        assert!(wasm_size_warning(MAX_WASM_SIZE, &KERNEL.size).is_some());
-        // Above the hard limit the error path owns the message.
-        assert!(wasm_size_warning(MAX_WASM_SIZE + 1, &KERNEL.size).is_none());
-        assert!(wasm_size_error(MAX_WASM_SIZE + 1, &KERNEL.size).is_some());
+    }
+
+    fn policy_report(
+        warnings: serde_json::Value,
+        failures: serde_json::Value,
+    ) -> serde_json::Value {
+        json!({
+            "metrics": { "rawBytes": 8_000_000, "gzipBytes": 3_000_000, "brotliBytes": 2_000_000 },
+            "warnings": warnings,
+            "failures": failures,
+        })
     }
 
     #[test]
-    fn translator_module_has_no_review_band() {
-        // Loaded lazily, so it is outside the consumer's kernel-size policy.
-        assert!(wasm_size_warning(REVIEW_WASM_SIZE + 1, &TRANSLATORS.size).is_none());
-        assert!(wasm_size_error(MAX_WASM_SIZE + 1, &TRANSLATORS.size).is_some());
+    fn size_policy_findings_become_warnings_and_errors() {
+        let finding = |code: &str, bytes: u64, budget: u64| {
+            json!({
+                "code": code, "metric": "gzip bytes", "bytes": bytes,
+                "budgetBytes": budget, "reason": "over"
+            })
+        };
+        let clean = size_policy_findings(&policy_report(json!([]), json!([]))).unwrap();
+        assert_eq!(
+            clean.summary,
+            "kernel size: raw 8000000 B, gzip 3000000 B, Brotli 2000000 B"
+        );
+        assert!(clean.warnings.is_empty() && clean.failures.is_empty());
+
+        let report = policy_report(
+            json!([finding("kernel-brotli-review", 3, 2)]),
+            json!([finding("kernel-gzip-hard", 5, 4)]),
+        );
+        let findings = size_policy_findings(&report).unwrap();
+        assert_eq!(
+            findings.warnings,
+            ["kernel-brotli-review: gzip bytes 3 (budget 2). over"]
+        );
+        assert_eq!(
+            findings.failures,
+            ["kernel-gzip-hard: gzip bytes 5 (budget 4). over"]
+        );
+    }
+
+    #[test]
+    fn malformed_size_policy_report_is_an_error_not_a_pass() {
+        assert!(size_policy_findings(&json!({})).is_err());
+        let mut report = policy_report(json!([]), json!([]));
+        report["failures"] = json!([{ "code": "kernel-gzip-hard" }]);
+        assert!(size_policy_findings(&report).is_err());
+        report["failures"] = json!(null);
+        assert!(size_policy_findings(&report).is_err());
+    }
+
+    #[test]
+    fn size_policy_script_measures_a_module_end_to_end() {
+        // Requires Node, which `cargo xtask wasm-build` needs anyway.
+        let dir = tempfile::tempdir().unwrap();
+        let wasm = dir.path().join("kernel.wasm");
+        let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+        bytes.resize(4096, 0);
+        fs::write(&wasm, &bytes).unwrap();
+        let findings = size_policy_findings(&run_size_policy(&wasm).unwrap()).unwrap();
+        assert!(
+            findings
+                .summary
+                .starts_with("kernel size: raw 4096 B, gzip ")
+        );
+        assert!(findings.warnings.is_empty() && findings.failures.is_empty());
+
+        // Over the raw hard limit (12 MiB): exit status 1 still yields the
+        // report.
+        let over = 12 * 1024 * 1024 + 1;
+        bytes.resize(over, 0);
+        fs::write(&wasm, &bytes).unwrap();
+        let findings = size_policy_findings(&run_size_policy(&wasm).unwrap()).unwrap();
+        assert_eq!(findings.failures.len(), 1);
+        assert!(
+            findings.failures[0]
+                .starts_with(&format!("kernel-raw-hard: raw bytes {over} (budget 12582912)"))
+        );
+
+        fs::write(&wasm, b"not wasm").unwrap();
+        assert!(run_size_policy(&wasm).is_err());
     }
 
     #[test]
