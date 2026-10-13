@@ -7,9 +7,9 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed coaxial orientation findings F1/F2 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F12 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
-//! - open orientation findings (F5 and later) must show validation errors through
+//! - open orientation findings F10/F11/F16 must show validation errors through
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
@@ -124,9 +124,15 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-box-cyl-cut-orientation.json",
             signature: Signature::Probes {
-                volume_near: (36.98, 0.5),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // Cylinder minus the first-quadrant rectangle [0,1.5] x [0,1].
+                // The overlap area is sqrt(5)/4 + 9 asin(2/3)/8.
+                volume_near: (
+                    6.5 * (2.25 * std::f64::consts::PI
+                        - (5.0_f64.sqrt() / 4.0 + 1.125 * (2.0_f64 / 3.0).asin())),
+                    1e-4,
+                ),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -182,11 +188,16 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-translated-cyl-cut-orientation.json",
             signature: Signature::Probes {
-                // Sliver remainder of the r6/h2 cylinder after the moved
-                // r8/h5 tool passes through.
-                volume_near: (2.011_78, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // Height-2 crescent: r6 stock minus r8 tool at distance sqrt5.
+                // Independent circle-sector overlap, not a kernel reading.
+                volume_near: (
+                    2.0 * (36.0 * (23.0 / (12.0 * 5.0_f64.sqrt())).acos()
+                        - 64.0 * (33.0 / (16.0 * 5.0_f64.sqrt())).acos()
+                        + 191.0_f64.sqrt() / 2.0),
+                    1e-4,
+                ),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
