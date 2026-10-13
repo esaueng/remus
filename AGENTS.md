@@ -108,6 +108,33 @@ The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the `
 - `wasm/src/**` → all `remus_*`
 - `wasm-io/src/**` → `remus_math::*`, `remus_topology::*`, `remus_operations::*`, `remus_io::*`
 
+### WASM module tiers
+
+Every new roadmap capability declares its browser module tier in its roadmap
+row or design doc **before implementation**:
+`Tier: core | lazy:<module> | native`.
+
+| Tier | Ships in | Use for |
+|------|----------|---------|
+| `core` | `remus-wasm`, loaded eagerly | Anything that edits the live session: handles, journal/evolution, persistent naming, checkpoints, transactions |
+| `lazy:<module>` | its own package `remus-wasm-<module>`, reached through exact arena documents (like `remus-wasm-io`) | Document-in/document-out or session-independent work: translators (`lazy:io`), later the GCS solver, import repair, read-only analysis, drawings, PMI |
+| `native` | not shipped to the browser | Server batch work, `remus-render`, corpus and qualification tooling |
+
+- `core` is the exception and needs a reason: name the session state the
+  capability edits. A lazy module never needs kernel handles, the journal or
+  checkpoints; anything that does stays in core. GCS sketch *state* stays in
+  core; only the solver is a lazy candidate.
+- Only `remus-wasm-io` exists today. The planned `remus-wasm-sketch` and
+  `remus-wasm-repair` modules come from the browser kernel size plan
+  ([#1026](https://github.com/esaueng/remus/pull/1026)); read it before
+  targeting one.
+- No speed regression from size work. Consumers preload lazy modules at idle,
+  so first use is no slower than a core call.
+- Size review: read the CI "WASM Binary Size" comment on every wasm-touching
+  PR. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR
+  description naming the capability and its tier, for example
+  `WASM-Size: +120 KiB raw, curve projection (P-Class 7.4), Tier: core (writes the journal)`.
+
 ## Module Map
 
 Quick reference — find the right file for any task:
@@ -592,6 +619,7 @@ feature; STEP/IGES/mesh formats ship as the separate `remus-wasm-io` package
 between the two as exact arena documents: `kernel.serializeSolids(ids)` →
 `io.exportStep(bytes)`, and `io.importStep(file)` → `kernel.deserializeSolids(bytes)`.
 `cargo xtask wasm-build` builds, validates, and version-locks both packages.
+New capabilities pick a module first: see [WASM module tiers](#wasm-module-tiers).
 
 ### L5: facade (`crates/remus/src/`)
 | Task | File(s) |
@@ -803,7 +831,8 @@ Pattern: see `extrude.rs` (basic), `boolean/` (complex)
 1. **Create file** `operations/src/op_name.rs`
 2. **Define function**: `pub fn op_name(topo: &mut Topology, ...) -> Result<SolidId, OperationsError>`
 3. **Add module** to `operations/src/lib.rs` with `pub mod op_name;`
-4. **Add WASM binding** in the appropriate `bindings/` module
+4. **Add WASM binding** in the appropriate `bindings/` module, or in the
+   lazy module its [tier](#wasm-module-tiers) names (native-only ops skip this)
 5. **Add to batch dispatch** in `bindings/batch.rs` if applicable
 6. **Add test** — create a known shape, apply operation, verify with `measure`
 
@@ -831,6 +860,8 @@ impl BrepKernel {
 ```
 
 Key points:
+- `BrepKernel` is the `core` tier: confirm the capability's
+  [tier](#wasm-module-tiers) is `core` before adding it here
 - Use `js_name` for camelCase JS naming
 - Validate inputs with helpers from `error.rs`
 - Return entity IDs as `u32` (auto-converted to JS number)
