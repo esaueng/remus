@@ -1,6 +1,7 @@
 //! Curve-surface intersection.
 
 use crate::MathError;
+use crate::compact_sort::CompactSort;
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::decompose::{curve_to_bezier_segments, surface_to_bezier_patches};
 use crate::nurbs::surface::NurbsSurface;
@@ -109,7 +110,7 @@ pub fn intersect_curve_surface(
     }
 
     // Sort by curve parameter for deterministic output.
-    hits.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+    hits.compact_sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
     Ok(hits)
 }
 

@@ -5,6 +5,7 @@
 //! for analytic surfaces and 3D polygon containment for surfaces with
 //! pole singularities (spheres).
 
+use remus_math::compact_sort::CompactSort;
 use std::sync::OnceLock;
 
 use smallvec::SmallVec;
@@ -407,7 +408,7 @@ fn nearest_oriented_crossing(
         }
     }
 
-    crossings.sort_by(|x, y| x.0.total_cmp(&y.0));
+    crossings.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
     let mut i = 0;
     while i < crossings.len() {
         let start = crossings[i].0;

@@ -3,6 +3,7 @@
 //! These functions check structural invariants of topological entities
 //! such as wire closure and shell manifoldness.
 
+use remus_math::compact_sort::CompactSort;
 use std::collections::HashMap;
 
 use remus_math::tolerance::Tolerance;
@@ -1655,7 +1656,7 @@ pub fn check_vertex_ball(
             deviation,
         });
     }
-    reports.sort_by_key(|report| (report.edge.index(), report.at_start));
+    reports.compact_sort_by_key(|report| (report.edge.index(), report.at_start));
     Ok(reports)
 }
 

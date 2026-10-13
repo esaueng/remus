@@ -11,6 +11,7 @@
 //! tests run alongside these two self-checks.
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::cast_precision_loss,
     clippy::expect_used,
     clippy::panic,

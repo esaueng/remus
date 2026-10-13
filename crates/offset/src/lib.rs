@@ -54,6 +54,10 @@
 //! and after — is checked, and a solid that fails it is refused rather than
 //! offset into a well-formed answer with the wrong volume.
 
+// Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
+// sort copies that `clippy.toml` disallows in production code do not matter there.
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 pub(crate) mod analyse;
 pub(crate) mod arc_joint;
 pub(crate) mod assemble;

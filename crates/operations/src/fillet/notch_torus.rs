@@ -27,6 +27,7 @@
 //! anything else returns `None`
 //! and the caller keeps its typed refusal.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
 use remus_math::det_hash::DetHashMap;
 use remus_math::surfaces::ToroidalSurface;
@@ -442,7 +443,7 @@ pub fn split_tangency_span(
             hits.push((rel, q));
         }
     }
-    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    hits.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut out: Vec<Point3> = Vec::new();
     for (_, q) in hits {
         if out.iter().all(|p: &Point3| (*p - q).length() > tol.linear) {

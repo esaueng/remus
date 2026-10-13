@@ -45,14 +45,21 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::topology::Topology;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
-use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
 
 use crate::IoError;
-use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
+#[cfg(test)]
+use crate::limits::ensure_input_size;
+use crate::limits::{ImportLimits, ensure_limit};
+
+mod codec;
+#[cfg(test)]
+mod codec_oracle_tests;
 
 /// Serialized form of an [`EdgeCurve`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 enum SerEdgeCurve {
     Line,
     NurbsCurve(NurbsCurve),
@@ -76,7 +83,8 @@ impl SerEdgeCurve {
 }
 
 /// Serialized form of a [`FaceSurface`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 enum SerFaceSurface {
     Plane { normal: Vec3, d: f64 },
     Nurbs(NurbsSurface),
@@ -104,7 +112,8 @@ impl SerFaceSurface {
 /// Serializes byte-identically to [`SerEdgeCurve`] but borrows the immutable
 /// geometry payloads instead of cloning them. Deserialization keeps the owned
 /// representation.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Serialize))]
 enum SerEdgeCurveView<'a> {
     Line,
     NurbsCurve(&'a NurbsCurve),
@@ -132,7 +141,8 @@ impl<'a> SerEdgeCurveView<'a> {
 /// Serializes byte-identically to [`SerFaceSurface`] but borrows large
 /// payloads (notably NURBS control nets) instead of cloning them.
 /// Deserialization keeps the owned representation.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Serialize))]
 enum SerFaceSurfaceView<'a> {
     Plane { normal: Vec3, d: f64 },
     Nurbs(&'a NurbsSurface),
@@ -162,7 +172,8 @@ impl<'a> SerFaceSurfaceView<'a> {
 ///
 /// Serializes byte-identically to [`SerUsePCurve`] but borrows the 2D curve
 /// instead of cloning it.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerUsePCurveView<'a> {
     curve: &'a Curve2D,
     t_start: f64,
@@ -173,18 +184,20 @@ struct SerUsePCurveView<'a> {
 ///
 /// Structural indices are built during traversal (small); only the curve
 /// payload is borrowed.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerEdgeView<'a> {
     start: usize,
     end: usize,
     curve: SerEdgeCurveView<'a>,
     tolerance: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     trim: Option<(f64, f64)>,
 }
 
 /// Borrowed serialization view of [`SerFace`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerFaceView<'a> {
     outer_wire: usize,
     inner_wires: Vec<usize>,
@@ -193,17 +206,19 @@ struct SerFaceView<'a> {
 }
 
 /// Borrowed serialization view of [`SerCoedgeAuthority`].
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerCoedgeAuthorityView<'a> {
     edge: usize,
     forward: bool,
     periodic_winding: [i32; 2],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     pcurve: Option<SerUsePCurveView<'a>>,
 }
 
 /// Borrowed serialization view of [`SerBoundaryAuthority`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerBoundaryAuthorityView<'a> {
     loops: Vec<SerLoopAuthority>,
     coedges: Vec<SerCoedgeAuthorityView<'a>>,
@@ -215,7 +230,8 @@ struct SerBoundaryAuthorityView<'a> {
 ///
 /// Field order and serde attributes mirror [`SerializedDocumentV3`] so the
 /// emitted bytes are identical where deterministic.
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerializedDocumentV3View<'a> {
     version: u32,
     vertices: Vec<SerVertex>,
@@ -227,14 +243,15 @@ struct SerializedDocumentV3View<'a> {
     solid_roots: Vec<usize>,
     compounds: Vec<SerCompound>,
     boundary_authority: SerBoundaryAuthorityView<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     journal: Option<SerJournal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     attributes: Option<SerAttributes>,
 }
 
 /// Borrowed version 4 document view (mirrors [`SerializedDocumentV4`]).
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerializedDocumentV4View<'a> {
     version: u32,
     vertices: Vec<SerVertex>,
@@ -247,14 +264,15 @@ struct SerializedDocumentV4View<'a> {
     sheet_roots: Vec<usize>,
     compounds: Vec<SerCompound>,
     boundary_authority: SerBoundaryAuthorityView<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     journal: Option<SerJournal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     attributes: Option<SerAttributes>,
 }
 
 /// Borrowed version 5 document view (mirrors [`SerializedDocumentV5`]).
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Serialize))]
 struct SerializedDocumentV5View<'a> {
     version: u32,
     vertices: Vec<SerVertex>,
@@ -268,19 +286,62 @@ struct SerializedDocumentV5View<'a> {
     wire_roots: Vec<usize>,
     compounds: Vec<SerCompound>,
     boundary_authority: SerBoundaryAuthorityView<'a>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     journal: Option<SerJournal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     attributes: Option<SerAttributes>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Borrows the fields of a document view, in field order, for
+/// [`codec::encode_document`].
+macro_rules! document_parts {
+    ($view:expr, $sheet_roots:expr, $wire_roots:expr) => {
+        codec::DocumentParts {
+            version: $view.version,
+            vertices: &$view.vertices,
+            edges: &$view.edges,
+            wires: &$view.wires,
+            faces: &$view.faces,
+            shells: &$view.shells,
+            solids: &$view.solids,
+            solid_roots: &$view.solid_roots,
+            sheet_roots: $sheet_roots,
+            wire_roots: $wire_roots,
+            compounds: &$view.compounds,
+            boundary_authority: &$view.boundary_authority,
+            journal: $view.journal.as_ref(),
+            attributes: $view.attributes.as_ref(),
+        }
+    };
+}
+
+impl<'a> SerializedDocumentV3View<'a> {
+    fn parts(&self) -> codec::DocumentParts<'_, 'a> {
+        document_parts!(self, None, None)
+    }
+}
+
+impl<'a> SerializedDocumentV4View<'a> {
+    fn parts(&self) -> codec::DocumentParts<'_, 'a> {
+        document_parts!(self, Some(&self.sheet_roots), None)
+    }
+}
+
+impl<'a> SerializedDocumentV5View<'a> {
+    fn parts(&self) -> codec::DocumentParts<'_, 'a> {
+        document_parts!(self, Some(&self.sheet_roots), Some(&self.wire_roots))
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerVertex {
     point: Point3,
     tolerance: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerEdge {
     start: usize,
     end: usize,
@@ -288,18 +349,20 @@ struct SerEdge {
     tolerance: Option<f64>,
     /// Explicit trim interval on the curve (RFC 0002, Stage 3). Absent in
     /// documents written before trims were recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     trim: Option<(f64, f64)>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerOrientedEdge {
     edge: usize,
     forward: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
+#[cfg_attr(test, serde(rename_all = "snake_case"))]
 enum SerBodyClass {
     Solid,
     Sheet,
@@ -329,15 +392,17 @@ impl From<SerBodyClass> for BodyClass {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerWire {
     edges: Vec<SerOrientedEdge>,
     closed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     body_class: Option<SerBodyClass>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerFace {
     outer_wire: usize,
     inner_wires: Vec<usize>,
@@ -345,26 +410,30 @@ struct SerFace {
     reversed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerShell {
     faces: Vec<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     body_class: Option<SerBodyClass>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerSolid {
     outer_shell: usize,
     inner_shells: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerCompound {
     solids: Vec<usize>,
 }
 
 /// A pcurve attached to a captured (edge, face) pair, keyed by local indices.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerPCurve {
     edge: usize,
     face: usize,
@@ -374,40 +443,45 @@ struct SerPCurve {
     /// Traversal orientation of this use (per-use pcurves, RFC 0002).
     /// Absent in documents written before orientation was recorded; the
     /// reader then resolves the use from the face's wires.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     forward: Option<bool>,
 }
 
 /// Pcurve geometry embedded in its authoritative coedge use (arena v3).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerUsePCurve {
     curve: Curve2D,
     t_start: f64,
     t_end: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerCoedgeAuthority {
     edge: usize,
     forward: bool,
     periodic_winding: [i32; 2],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     pcurve: Option<SerUsePCurve>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerLoopAuthority {
     coedges: Vec<usize>,
     closed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerFaceLoopAuthority {
     outer_loop: usize,
     inner_loops: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerBoundaryAuthority {
     loops: Vec<SerLoopAuthority>,
     coedges: Vec<SerCoedgeAuthority>,
@@ -416,6 +490,10 @@ struct SerBoundaryAuthority {
 }
 
 /// Frozen version 1 single-solid schema, retained for read compatibility.
+///
+/// The production reader is [`codec`]; this derived mirror is the test
+/// oracle it is checked against, as are the other `SerializedDocument*` types.
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct SerializedSolidV1 {
     /// Format version, so a future change can be detected on load.
@@ -437,15 +515,17 @@ struct SerializedSolidV1 {
 /// the entity is not part of the document — retired, or outside the
 /// selected roots; the kind is kept so anchor output ordering stays
 /// replay-stable).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerJournalIndexEntry {
     ordinal: u64,
     kind: String,
     local: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event")]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
+#[cfg_attr(test, serde(tag = "event"))]
 enum SerJournalEvent {
     Preserved { from: u64 },
     Modified { from: u64 },
@@ -455,8 +535,9 @@ enum SerJournalEvent {
     Unresolved { candidates: Vec<u64> },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "payload")]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
+#[cfg_attr(test, serde(tag = "payload"))]
 enum SerJournalPayload {
     Evolution {
         construction: bool,
@@ -469,18 +550,20 @@ enum SerJournalPayload {
     GlobalBarrier,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerJournalEntry {
     op: u64,
     kind: String,
-    #[serde(flatten)]
+    #[cfg_attr(test, serde(flatten))]
     payload: SerJournalPayload,
 }
 
 /// The evolution journal (RFC 0003, Stage 5). Additive: absent in
 /// journal-less documents and in documents written before this field
 /// existed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerJournal {
     next_op: u64,
     next_ordinal: u64,
@@ -488,22 +571,24 @@ struct SerJournal {
     entries: Vec<SerJournalEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerEntityAttributes {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     name: Option<String>,
     /// sRGB channels, each in `[0, 1]`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Option::is_none"))]
     color: Option<(f64, f64, f64)>,
 }
 
 /// Attributes of exported entities, by dense local index. Additive:
 /// absent when nothing in the document is attributed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Serialize, Deserialize))]
 struct SerAttributes {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Vec::is_empty"))]
     solids: Vec<(usize, SerEntityAttributes)>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, serde(default, skip_serializing_if = "Vec::is_empty"))]
     faces: Vec<(usize, SerEntityAttributes)>,
 }
 
@@ -517,6 +602,7 @@ const WIRE_ROOT_FORMAT_VERSION: u32 = 5;
 const LEGACY_MULTI_ROOT_VERSION: u32 = 2;
 const LEGACY_SINGLE_SOLID_VERSION: u32 = 1;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedDocumentV2 {
     version: u32,
@@ -540,6 +626,7 @@ struct SerializedDocumentV2 {
 
 /// Version 3 moves face-boundary and pcurve authority into serialized
 /// Loop/Coedge records while retaining wire tables as the compatibility view.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedDocumentV3 {
     version: u32,
@@ -559,6 +646,7 @@ struct SerializedDocumentV3 {
 }
 
 /// Version 4 adds standalone sheet roots that reference the dense shell table.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedDocumentV4 {
     version: u32,
@@ -579,6 +667,7 @@ struct SerializedDocumentV4 {
 }
 
 /// Version 5 adds standalone wire roots that reference the dense wire table.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedDocumentV5 {
     version: u32,
@@ -599,11 +688,13 @@ struct SerializedDocumentV5 {
     attributes: Option<SerAttributes>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct VersionHeader {
     version: u32,
 }
 
+#[cfg_attr(test, derive(Debug))]
 struct ParsedDocument {
     vertices: Vec<SerVertex>,
     edges: Vec<SerEdge>,
@@ -1020,6 +1111,21 @@ fn serialize_document_impl(
     compound_ids: &[CompoundId],
     limits: Option<ImportLimits>,
 ) -> Result<Vec<u8>, IoError> {
+    let document = document_v3_view(topo, solid_ids, compound_ids, limits)?;
+    codec::encode_document(
+        &document.parts(),
+        limits.map(|limits| limits.max_input_bytes),
+    )
+}
+
+/// Gathers the version 3 view of solid and compound roots, refusing as soon
+/// as `limits` caps the entity count.
+fn document_v3_view<'a>(
+    topo: &'a Topology,
+    solid_ids: &[SolidId],
+    compound_ids: &[CompoundId],
+    limits: Option<ImportLimits>,
+) -> Result<SerializedDocumentV3View<'a>, IoError> {
     let mut builder = Builder::new(topo);
     builder.limits = limits;
     if let Some(limits) = limits {
@@ -1086,12 +1192,8 @@ fn serialize_document_impl(
             total_entities,
             limits.max_model_entities,
         )?;
-        serialize_json_with_limit(&dump, limits.max_input_bytes)
-    } else {
-        serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
-            reason: format!("arena serialization failed: {e}"),
-        })
     }
+    Ok(dump)
 }
 
 struct LimitedJsonWriter {
@@ -1225,6 +1327,21 @@ fn serialize_body_document_impl(
     compound_ids: &[CompoundId],
     limits: Option<ImportLimits>,
 ) -> Result<Vec<u8>, IoError> {
+    let document = document_v4_view(topo, solid_ids, sheet_ids, compound_ids, limits)?;
+    codec::encode_document(
+        &document.parts(),
+        limits.map(|limits| limits.max_input_bytes),
+    )
+}
+
+/// Gathers the version 4 view of solid, sheet and compound roots.
+fn document_v4_view<'a>(
+    topo: &'a Topology,
+    solid_ids: &[SolidId],
+    sheet_ids: &[ShellId],
+    compound_ids: &[CompoundId],
+    limits: Option<ImportLimits>,
+) -> Result<SerializedDocumentV4View<'a>, IoError> {
     let mut builder = Builder::new(topo);
     builder.limits = limits;
     if let Some(limits) = limits {
@@ -1291,14 +1408,7 @@ fn serialize_body_document_impl(
         journal,
         attributes,
     };
-
-    if let Some(limits) = limits {
-        serialize_json_with_limit(&dump, limits.max_input_bytes)
-    } else {
-        serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
-            reason: format!("arena serialization failed: {e}"),
-        })
-    }
+    Ok(dump)
 }
 
 /// Serializes solid, sheet, wire, and compound roots into a version 5 arena
@@ -1319,6 +1429,18 @@ pub fn serialize_body_document_with_wires(
     wire_ids: &[WireId],
     compound_ids: &[CompoundId],
 ) -> Result<Vec<u8>, IoError> {
+    let document = document_v5_view(topo, solid_ids, sheet_ids, wire_ids, compound_ids)?;
+    codec::encode_document(&document.parts(), None)
+}
+
+/// Gathers the version 5 view of solid, sheet, wire and compound roots.
+fn document_v5_view<'a>(
+    topo: &'a Topology,
+    solid_ids: &[SolidId],
+    sheet_ids: &[ShellId],
+    wire_ids: &[WireId],
+    compound_ids: &[CompoundId],
+) -> Result<SerializedDocumentV5View<'a>, IoError> {
     let mut builder = Builder::new(topo);
     let mut solid_roots = Vec::with_capacity(solid_ids.len());
     for &solid in solid_ids {
@@ -1385,10 +1507,7 @@ pub fn serialize_body_document_with_wires(
         journal,
         attributes,
     };
-
-    serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
-        reason: format!("arena serialization failed: {e}"),
-    })
+    Ok(dump)
 }
 
 /// Reconstructs one solid from a version 1, 2, 3, 4, or 5 single-root document.
@@ -1680,243 +1799,10 @@ pub fn deserialize_document_with_limits(
     replay_document(document, topo, limits)
 }
 
-// A journal has nested sequences whose restoration allocates, copies and sorts.
-// Count their encoded slots without materializing any vectors. Geometry is
-// skipped; its established table budgets remain independent of history size.
-struct JournalBudget {
-    used: usize,
-    limit: usize,
-    exceeded: bool,
-}
-
-struct JournalItems<'a>(&'a mut JournalBudget);
-
-impl<'de> DeserializeSeed<'de> for JournalItems<'_> {
-    type Value = ();
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for JournalItems<'_> {
-    type Value = ();
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("journal JSON")
-    }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<(), A::Error> {
-        while sequence.next_element_seed(JournalItems(self.0))?.is_some() {
-            let next = self.0.used.checked_add(1);
-            self.0.used = next.unwrap_or(usize::MAX);
-            if next.is_none() || self.0.used > self.0.limit {
-                self.0.exceeded = true;
-                return Err(serde::de::Error::custom("journal item limit exceeded"));
-            }
-        }
-        Ok(())
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        while map.next_key::<IgnoredAny>()?.is_some() {
-            map.next_value_seed(JournalItems(self.0))?;
-        }
-        Ok(())
-    }
-}
-
-struct JournalPreflight<'a>(&'a mut JournalBudget);
-impl<'de> Visitor<'de> for JournalPreflight<'_> {
-    type Value = ();
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("arena document object")
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
-            if key == "journal" {
-                map.next_value_seed(JournalItems(self.0))?;
-            } else {
-                map.next_value::<IgnoredAny>()?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn check_encoded_journal(bytes: &[u8], limit: usize) -> Result<(), IoError> {
-    let mut budget = JournalBudget {
-        used: 0,
-        limit,
-        exceeded: false,
-    };
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let result =
-        serde::Deserializer::deserialize_map(&mut deserializer, JournalPreflight(&mut budget));
-    match result {
-        Err(_) if budget.exceeded => Err(IoError::LimitExceeded {
-            resource: "arena journal items",
-            limit,
-            actual: budget.used,
-        }),
-        Err(error) => Err(IoError::ParseError {
-            reason: format!("arena journal preflight failed: {error}"),
-        }),
-        Ok(()) => Ok(()),
-    }
-}
-
+/// Parses an arena document with the hand-written [`codec`], which matches
+/// the former `serde_json` reader exactly (see its module docs).
 fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, IoError> {
-    ensure_input_size(bytes.len(), limits)?;
-    let header: VersionHeader = serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-        reason: format!("arena deserialization failed: {e}"),
-    })?;
-    if header.version != LEGACY_SINGLE_SOLID_VERSION {
-        check_encoded_journal(bytes, limits.max_model_entities)?;
-    }
-    let document = match header.version {
-        LEGACY_SINGLE_SOLID_VERSION => {
-            let dump: SerializedSolidV1 =
-                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-                    reason: format!("arena v1 deserialization failed: {e}"),
-                })?;
-            if dump.version != LEGACY_SINGLE_SOLID_VERSION {
-                return Err(IoError::ParseError {
-                    reason: format!("arena v1 document reported version {}", dump.version),
-                });
-            }
-            ParsedDocument {
-                vertices: dump.vertices,
-                edges: dump.edges,
-                wires: dump.wires,
-                faces: dump.faces,
-                shells: dump.shells,
-                solids: vec![SerSolid {
-                    outer_shell: dump.outer_shell,
-                    inner_shells: dump.inner_shells,
-                }],
-                solid_roots: vec![0],
-                sheet_roots: Vec::new(),
-                wire_roots: Vec::new(),
-                compounds: Vec::new(),
-                pcurves: dump.pcurves,
-                boundary_authority: None,
-                journal: None,
-                attributes: None,
-            }
-        }
-        LEGACY_MULTI_ROOT_VERSION => {
-            let dump: SerializedDocumentV2 =
-                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-                    reason: format!("arena v2 deserialization failed: {e}"),
-                })?;
-            ParsedDocument {
-                vertices: dump.vertices,
-                edges: dump.edges,
-                wires: dump.wires,
-                faces: dump.faces,
-                shells: dump.shells,
-                solids: dump.solids,
-                solid_roots: dump.solid_roots,
-                sheet_roots: Vec::new(),
-                wire_roots: Vec::new(),
-                compounds: dump.compounds,
-                pcurves: dump.pcurves,
-                boundary_authority: None,
-                journal: dump.journal,
-                attributes: dump.attributes,
-            }
-        }
-        FORMAT_VERSION => {
-            let dump: SerializedDocumentV3 =
-                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-                    reason: format!("arena v3 deserialization failed: {e}"),
-                })?;
-            ParsedDocument {
-                vertices: dump.vertices,
-                edges: dump.edges,
-                wires: dump.wires,
-                faces: dump.faces,
-                shells: dump.shells,
-                solids: dump.solids,
-                solid_roots: dump.solid_roots,
-                sheet_roots: Vec::new(),
-                wire_roots: Vec::new(),
-                compounds: dump.compounds,
-                pcurves: Vec::new(),
-                boundary_authority: Some(dump.boundary_authority),
-                journal: dump.journal,
-                attributes: dump.attributes,
-            }
-        }
-        SHEET_ROOT_FORMAT_VERSION => {
-            let dump: SerializedDocumentV4 =
-                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-                    reason: format!("arena v4 deserialization failed: {e}"),
-                })?;
-            ParsedDocument {
-                vertices: dump.vertices,
-                edges: dump.edges,
-                wires: dump.wires,
-                faces: dump.faces,
-                shells: dump.shells,
-                solids: dump.solids,
-                solid_roots: dump.solid_roots,
-                sheet_roots: dump.sheet_roots,
-                wire_roots: Vec::new(),
-                compounds: dump.compounds,
-                pcurves: Vec::new(),
-                boundary_authority: Some(dump.boundary_authority),
-                journal: dump.journal,
-                attributes: dump.attributes,
-            }
-        }
-        WIRE_ROOT_FORMAT_VERSION => {
-            let dump: SerializedDocumentV5 =
-                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-                    reason: format!("arena v5 deserialization failed: {e}"),
-                })?;
-            ParsedDocument {
-                vertices: dump.vertices,
-                edges: dump.edges,
-                wires: dump.wires,
-                faces: dump.faces,
-                shells: dump.shells,
-                solids: dump.solids,
-                solid_roots: dump.solid_roots,
-                sheet_roots: dump.sheet_roots,
-                wire_roots: dump.wire_roots,
-                compounds: dump.compounds,
-                pcurves: Vec::new(),
-                boundary_authority: Some(dump.boundary_authority),
-                journal: dump.journal,
-                attributes: dump.attributes,
-            }
-        }
-        version => {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "unsupported arena dump version {version} (supported: {LEGACY_SINGLE_SOLID_VERSION}, {LEGACY_MULTI_ROOT_VERSION}, {FORMAT_VERSION}, {SHEET_ROOT_FORMAT_VERSION}, {WIRE_ROOT_FORMAT_VERSION})"
-                ),
-            });
-        }
-    };
-    check_document_limits(&document, limits)?;
-    Ok(document)
+    codec::parse_document(bytes, limits)
 }
 
 fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Result<(), IoError> {

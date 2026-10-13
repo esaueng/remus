@@ -2,6 +2,7 @@
 //!
 //! Creates multiple copies of a solid arranged in a pattern.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::mat::Mat4;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
@@ -478,7 +479,7 @@ fn refuse_material_overlap(
         .map(|&solid| crate::measure::conservative_solid_bounding_box(topo, solid))
         .collect::<Result<Vec<_>, _>>()?;
     let mut sweep_order = (0..solids.len()).collect::<Vec<_>>();
-    sweep_order.sort_by(|&left, &right| {
+    sweep_order.compact_sort_by(|&left, &right| {
         boxes[left]
             .min
             .x()

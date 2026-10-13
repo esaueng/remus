@@ -361,6 +361,8 @@ impl Cdt {
                 found.push((s0 / (s0 - s1), edge));
             }
         }
+        // hot: CDT constraint recovery inner loop (sort-heavy by construction on large triangulations).
+        #[allow(clippy::disallowed_methods)]
         found.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
         found.dedup_by(|x, y| x.1 == y.1);
         if let Some(&(_, edge)) = found.iter().find(|(_, e)| self.constraints.contains(e)) {

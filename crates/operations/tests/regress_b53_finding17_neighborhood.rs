@@ -36,7 +36,12 @@
 //! the cut's fine watertight mesh against an independent slice integral
 //! (exact disc ∩ rectangle area per z).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::f64::consts::{FRAC_PI_2, PI};
 

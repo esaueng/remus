@@ -26,6 +26,7 @@
 //!   totals (13027.2829 at r=1, 12755.9621 at r=2).
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,

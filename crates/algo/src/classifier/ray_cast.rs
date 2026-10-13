@@ -1719,6 +1719,8 @@ pub fn u_in_gap(u: f64, gap: (f64, f64)) -> bool {
 pub fn largest_u_gap(u_samples: &[f64]) -> Option<(f64, f64)> {
     use std::f64::consts::TAU;
     let mut us: Vec<f64> = u_samples.iter().map(|&u| u.rem_euclid(TAU)).collect();
+    // hot: n up to 260, ~600k n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     us.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     if us.len() < 2 {

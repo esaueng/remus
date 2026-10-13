@@ -303,6 +303,8 @@ pub(super) fn intersections(
             result.push((x, y));
         }
     }
+    // hot: 8,192+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     result.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     result.dedup_by(|a, b| same(a.0, b.0) && same(a.1, b.1));
     Ok(result)
