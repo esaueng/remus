@@ -134,6 +134,11 @@ that does not exist yet; without it, stop.
   after whole-carrier bounds prove the new meridian clear; preserve the rim
   carriers and their source ownership. Pin both sides with independent material
   probes and raw mesh closure (`regress_opseq_rotated_cylinder_cut.rs`).
+- **A major-arc cap can wind opposite its endpoint polygon (F5/F12).** At the
+  synthesized-cap writer, use the signed native conic span with bounded curve
+  area and exact endpoint-chain authority. A vertex-only Newell test can
+  reverse a valid curved cap. Pin opposing coedges independently: both volume
+  routes can agree while the cap remains topologically misoriented.
 
 ## Open items with a repro
 
