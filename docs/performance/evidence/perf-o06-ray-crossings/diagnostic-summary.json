@@ -1,0 +1,3258 @@
+{
+  "sourceCommit": "d78230e122fb075ff0936608029943bce42e3fbf",
+  "diagnosticOnly": true,
+  "timingClaimsExcluded": true,
+  "tools": {
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+    "node": "v24.14.0",
+    "wasmBindgen": "wasm-bindgen 0.2.126",
+    "wasmOpt": "wasm-opt version 117 (version_117)"
+  },
+  "packages": {
+    "wasm": {
+      ".gitignore": {
+        "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+        "bytes": 1
+      },
+      "LICENSE-APACHE": {
+        "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+        "bytes": 10669
+      },
+      "NOTICE": {
+        "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+        "bytes": 608
+      },
+      "package.json": {
+        "sha256": "9248441e809d2fafee8b85393a2665004da99ce31c2c781cdd7972bc42c5272a",
+        "bytes": 902
+      },
+      "remus_wasm.d.ts": {
+        "sha256": "2e47db82c28ac8cf6151cd6c8b1be2ac6b3a37a294b29fd27ac67b88f1f2d62e",
+        "bytes": 179430
+      },
+      "remus_wasm.js": {
+        "sha256": "cfda49baec77439c7544a7dca80a5534f07fd735bf65c75302a5fc2f2a30d6c5",
+        "bytes": 401
+      },
+      "remus_wasm_bg.js": {
+        "sha256": "2a1d3f7733d3d345c12330a48399a16381843312afa0bb3a912cfbc4a8f7e791",
+        "bytes": 333220
+      },
+      "remus_wasm_bg.wasm": {
+        "sha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+        "bytes": 9747720
+      },
+      "remus_wasm_bg.wasm.d.ts": {
+        "sha256": "c21d41cea48671134270a6b891fdf99bc6d45f7d9eead1934f063ae4c9389577",
+        "bytes": 45832
+      },
+      "remus_wasm_node.cjs": {
+        "sha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b",
+        "bytes": 335309
+      },
+      "manifestVersion": "2026.1.61"
+    },
+    "wasm-io": {
+      ".gitignore": {
+        "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+        "bytes": 1
+      },
+      "LICENSE-APACHE": {
+        "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+        "bytes": 10669
+      },
+      "NOTICE": {
+        "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+        "bytes": 608
+      },
+      "package.json": {
+        "sha256": "ecf703d2b037ca8b76f3f22d9b1242d05390b30bc8c791378a7982a8a5653431",
+        "bytes": 949
+      },
+      "remus_wasm_io.d.ts": {
+        "sha256": "a0f5ee52cd031772941537d1184af7175a8de7f87dfb9e42b81c6433d5d4585c",
+        "bytes": 5317
+      },
+      "remus_wasm_io.js": {
+        "sha256": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d",
+        "bytes": 268
+      },
+      "remus_wasm_io_bg.js": {
+        "sha256": "47a72ae6a17a316dbf80be3b211179094a538034260c338b496dc67d5b340439",
+        "bytes": 23496
+      },
+      "remus_wasm_io_bg.wasm": {
+        "sha256": "a30fd51f9532a99de3a72090e21c923e8925096fddd5bf28040fcecd3da658e3",
+        "bytes": 2778617
+      },
+      "remus_wasm_io_bg.wasm.d.ts": {
+        "sha256": "bd01bf4aa45bf771e527675e8d095bf5e580ca37aad44d670715e73fd98acdb3",
+        "bytes": 3532
+      },
+      "remus_wasm_io_node.cjs": {
+        "sha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37",
+        "bytes": 23809
+      },
+      "manifestVersion": "2026.1.61"
+    }
+  },
+  "mappingQualification": {
+    "exactShippingBytes": true,
+    "shippingSha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+    "namedSha256": "b6df880437c4b1f8638558dc1de49ec91bd8a4e39c1c0a8ed4dff88e368799be",
+    "shippingBytes": 9747720,
+    "functionNames": 6890,
+    "sections": [
+      {
+        "kind": 1,
+        "customName": null,
+        "bytes": 3854
+      },
+      {
+        "kind": 2,
+        "customName": null,
+        "bytes": 2811
+      },
+      {
+        "kind": 3,
+        "customName": null,
+        "bytes": 7144
+      },
+      {
+        "kind": 4,
+        "customName": null,
+        "bytes": 11
+      },
+      {
+        "kind": 5,
+        "customName": null,
+        "bytes": 3
+      },
+      {
+        "kind": 6,
+        "customName": null,
+        "bytes": 25
+      },
+      {
+        "kind": 7,
+        "customName": null,
+        "bytes": 11924
+      },
+      {
+        "kind": 9,
+        "customName": null,
+        "bytes": 2359
+      },
+      {
+        "kind": 12,
+        "customName": null,
+        "bytes": 2
+      },
+      {
+        "kind": 10,
+        "customName": null,
+        "bytes": 9380943
+      },
+      {
+        "kind": 11,
+        "customName": null,
+        "bytes": 338360
+      },
+      {
+        "kind": 0,
+        "customName": "name",
+        "bytes": 575776
+      },
+      {
+        "kind": 0,
+        "customName": "producers",
+        "bytes": 124
+      },
+      {
+        "kind": 0,
+        "customName": "target_features",
+        "bytes": 116
+      }
+    ]
+  },
+  "diagnostic": {
+    "baseCommit": "d78230e122fb075ff0936608029943bce42e3fbf",
+    "diagnosticOnly": true,
+    "timingClaimsExcluded": true,
+    "overlaySha256": "7995fc82fe3956fea9941081200d84650c73d81baa746078579bffcb2e85a442",
+    "files": {
+      "crates/math/src/nurbs/intersection/line.rs": "b84de59db5e32674d222af96a7672c98dcc5251d46bca9e7e8f9e5042a07032b",
+      "crates/math/src/nurbs/intersection/mod.rs": "6325b3f129e6b2a47c36df9ce5da268936c38cad88dd637f6bd24be1e3b9388b",
+      "crates/math/src/analytic_intersection.rs": "2468c5c8f221f8d439fa3df99f7818e51ebe1bcac5f4281c22510db62477e0b0",
+      "crates/check/src/classify/mod.rs": "95189211b63bb9898c8ea40f4eee46a0353532b5c4cd91cb74aacb5829e19476",
+      "crates/check/src/classify/boundary.rs": "4d2ad4e9aaaae4fc700d83af1842f3dd74dec3e365eccb0acc6d0dd5b6e146b6",
+      "crates/wasm/src/bindings/performance.rs": "9d26f6c063ccd3798311a38d632dda29b094ad644a893eb38229fe17b40fcc1a",
+      "crates/check/src/classify/ray_diagnostic.rs": "152ccc19bba130a81ec9b333223fafabfca7126a6a30941e82619f02446718d7"
+    },
+    "wasmSha256": "1e2a51d2cb43fa274212bfd94132b1c859bfb1a46871d91b5326a5ba7231dcd8"
+  },
+  "fixtureSha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+  "counts": {
+    "recognize-2.counts.json": {
+      "counts": {
+        "faceCrossings": {
+          "nurbs": {
+            "accepted_crossings": 350,
+            "calls": 1464,
+            "errors": 0,
+            "exact_repeated_carrier_ray_calls": 0,
+            "per_face": {
+              "232": [
+                8,
+                3,
+                3
+              ],
+              "233": [
+                19,
+                11,
+                10
+              ],
+              "235": [
+                8,
+                4,
+                2
+              ],
+              "236": [
+                9,
+                5,
+                5
+              ],
+              "246": [
+                10,
+                4,
+                4
+              ],
+              "247": [
+                9,
+                3,
+                3
+              ],
+              "249": [
+                24,
+                5,
+                5
+              ],
+              "250": [
+                15,
+                11,
+                11
+              ],
+              "252": [
+                20,
+                8,
+                8
+              ],
+              "254": [
+                20,
+                10,
+                10
+              ],
+              "256": [
+                84,
+                13,
+                13
+              ],
+              "258": [
+                40,
+                7,
+                7
+              ],
+              "260": [
+                20,
+                8,
+                6
+              ],
+              "261": [
+                142,
+                28,
+                26
+              ],
+              "262": [
+                31,
+                14,
+                14
+              ],
+              "263": [
+                15,
+                5,
+                5
+              ],
+              "264": [
+                33,
+                18,
+                18
+              ],
+              "266": [
+                14,
+                6,
+                6
+              ],
+              "267": [
+                13,
+                5,
+                5
+              ],
+              "268": [
+                20,
+                6,
+                6
+              ],
+              "271": [
+                41,
+                4,
+                4
+              ],
+              "272": [
+                5,
+                4,
+                4
+              ],
+              "273": [
+                11,
+                4,
+                4
+              ],
+              "274": [
+                36,
+                4,
+                4
+              ],
+              "277": [
+                30,
+                8,
+                8
+              ],
+              "278": [
+                28,
+                17,
+                16
+              ],
+              "279": [
+                18,
+                7,
+                7
+              ],
+              "280": [
+                21,
+                9,
+                9
+              ],
+              "282": [
+                103,
+                4,
+                4
+              ],
+              "283": [
+                14,
+                6,
+                6
+              ],
+              "284": [
+                16,
+                6,
+                6
+              ],
+              "285": [
+                36,
+                9,
+                9
+              ],
+              "287": [
+                100,
+                12,
+                12
+              ],
+              "290": [
+                36,
+                9,
+                9
+              ],
+              "292": [
+                73,
+                9,
+                9
+              ],
+              "302": [
+                24,
+                8,
+                8
+              ],
+              "306": [
+                56,
+                22,
+                22
+              ],
+              "310": [
+                30,
+                5,
+                5
+              ],
+              "312": [
+                31,
+                10,
+                10
+              ],
+              "314": [
+                44,
+                7,
+                7
+              ],
+              "315": [
+                20,
+                11,
+                11
+              ],
+              "317": [
+                137,
+                9,
+                9
+              ]
+            },
+            "positive_roots": 358,
+            "trim_rejected_roots": 8,
+            "zero_positive_calls": 1120
+          },
+          "torus": {
+            "accepted_crossings": 4,
+            "calls": 5672,
+            "errors": 0,
+            "exact_repeated_carrier_ray_calls": 0,
+            "per_face": {
+              "177": [
+                4,
+                8,
+                0
+              ],
+              "179": [
+                6,
+                0,
+                0
+              ],
+              "180": [
+                10,
+                0,
+                0
+              ],
+              "200": [
+                624,
+                872,
+                0
+              ],
+              "205": [
+                1061,
+                634,
+                0
+              ],
+              "207": [
+                1159,
+                784,
+                0
+              ],
+              "211": [
+                969,
+                674,
+                0
+              ],
+              "222": [
+                161,
+                34,
+                0
+              ],
+              "223": [
+                160,
+                40,
+                0
+              ],
+              "224": [
+                89,
+                60,
+                4
+              ],
+              "225": [
+                29,
+                20,
+                0
+              ],
+              "234": [
+                1321,
+                495,
+                0
+              ],
+              "248": [
+                79,
+                90,
+                0
+              ]
+            },
+            "positive_roots": 3711,
+            "trim_rejected_roots": 3707,
+            "zero_positive_calls": 3660
+          }
+        },
+        "nurbsNewton": {
+          "candidates": 27577,
+          "converged": 13228,
+          "cycle_jumps": 9291,
+          "final_accepted": 213,
+          "final_checks": 14349,
+          "final_point_repeats": 13160,
+          "iterations": 255242,
+          "line_calls": 1464,
+          "newton_starts": 27577,
+          "partial_evaluations": 242014,
+          "partial_hits_16": 31446,
+          "partial_hits_32": 57787,
+          "partial_hits_64": 81826,
+          "partial_repeats": 114881,
+          "point_evaluations": 269591,
+          "point_hits_16": 41720,
+          "point_hits_32": 69636,
+          "point_hits_64": 94865,
+          "point_repeats": 129367,
+          "returned_hits": 523
+        },
+        "torusQuartic": [
+          5672,
+          163032,
+          652128,
+          652128,
+          514182,
+          114887,
+          652128,
+          652128,
+          4034,
+          1069,
+          569,
+          5034,
+          15102,
+          0
+        ]
+      },
+      "diagnosticOnly": true,
+      "notes": [
+        "Observation-only counters; no diagnostic durations are shipping timings"
+      ],
+      "phases": [
+        {
+          "duration_ms": 2.799104000000625,
+          "name": "relations.preparation",
+          "start_ms": 4653.306763
+        },
+        {
+          "duration_ms": 432.3694539999997,
+          "name": "recognition.graph",
+          "start_ms": 4598.161242
+        },
+        {
+          "duration_ms": 0.21195100000022649,
+          "name": "recognition.candidates",
+          "start_ms": 5030.533131
+        },
+        {
+          "duration_ms": 432.6032459999997,
+          "name": "recognition.total",
+          "start_ms": 4598.156113
+        }
+      ],
+      "timingClaimsExcluded": true,
+      "iteration": 2,
+      "distance": 5.04
+    },
+    "recognize-3.counts.json": {
+      "counts": {
+        "faceCrossings": {
+          "nurbs": {
+            "accepted_crossings": 350,
+            "calls": 1464,
+            "errors": 0,
+            "exact_repeated_carrier_ray_calls": 0,
+            "per_face": {
+              "232": [
+                8,
+                3,
+                3
+              ],
+              "233": [
+                19,
+                11,
+                10
+              ],
+              "235": [
+                8,
+                4,
+                2
+              ],
+              "236": [
+                9,
+                5,
+                5
+              ],
+              "246": [
+                10,
+                4,
+                4
+              ],
+              "247": [
+                9,
+                3,
+                3
+              ],
+              "249": [
+                24,
+                5,
+                5
+              ],
+              "250": [
+                15,
+                11,
+                11
+              ],
+              "252": [
+                20,
+                8,
+                8
+              ],
+              "254": [
+                20,
+                10,
+                10
+              ],
+              "256": [
+                84,
+                13,
+                13
+              ],
+              "258": [
+                40,
+                7,
+                7
+              ],
+              "260": [
+                20,
+                8,
+                6
+              ],
+              "261": [
+                142,
+                28,
+                26
+              ],
+              "262": [
+                31,
+                14,
+                14
+              ],
+              "263": [
+                15,
+                5,
+                5
+              ],
+              "264": [
+                33,
+                18,
+                18
+              ],
+              "266": [
+                14,
+                6,
+                6
+              ],
+              "267": [
+                13,
+                5,
+                5
+              ],
+              "268": [
+                20,
+                6,
+                6
+              ],
+              "271": [
+                41,
+                4,
+                4
+              ],
+              "272": [
+                5,
+                4,
+                4
+              ],
+              "273": [
+                11,
+                4,
+                4
+              ],
+              "274": [
+                36,
+                4,
+                4
+              ],
+              "277": [
+                30,
+                8,
+                8
+              ],
+              "278": [
+                28,
+                17,
+                16
+              ],
+              "279": [
+                18,
+                7,
+                7
+              ],
+              "280": [
+                21,
+                9,
+                9
+              ],
+              "282": [
+                103,
+                4,
+                4
+              ],
+              "283": [
+                14,
+                6,
+                6
+              ],
+              "284": [
+                16,
+                6,
+                6
+              ],
+              "285": [
+                36,
+                9,
+                9
+              ],
+              "287": [
+                100,
+                12,
+                12
+              ],
+              "290": [
+                36,
+                9,
+                9
+              ],
+              "292": [
+                73,
+                9,
+                9
+              ],
+              "302": [
+                24,
+                8,
+                8
+              ],
+              "306": [
+                56,
+                22,
+                22
+              ],
+              "310": [
+                30,
+                5,
+                5
+              ],
+              "312": [
+                31,
+                10,
+                10
+              ],
+              "314": [
+                44,
+                7,
+                7
+              ],
+              "315": [
+                20,
+                11,
+                11
+              ],
+              "317": [
+                137,
+                9,
+                9
+              ]
+            },
+            "positive_roots": 358,
+            "trim_rejected_roots": 8,
+            "zero_positive_calls": 1120
+          },
+          "torus": {
+            "accepted_crossings": 4,
+            "calls": 5672,
+            "errors": 0,
+            "exact_repeated_carrier_ray_calls": 0,
+            "per_face": {
+              "177": [
+                4,
+                8,
+                0
+              ],
+              "179": [
+                6,
+                0,
+                0
+              ],
+              "180": [
+                10,
+                0,
+                0
+              ],
+              "200": [
+                624,
+                872,
+                0
+              ],
+              "205": [
+                1061,
+                634,
+                0
+              ],
+              "207": [
+                1159,
+                784,
+                0
+              ],
+              "211": [
+                969,
+                674,
+                0
+              ],
+              "222": [
+                161,
+                34,
+                0
+              ],
+              "223": [
+                160,
+                40,
+                0
+              ],
+              "224": [
+                89,
+                60,
+                4
+              ],
+              "225": [
+                29,
+                20,
+                0
+              ],
+              "234": [
+                1321,
+                495,
+                0
+              ],
+              "248": [
+                79,
+                90,
+                0
+              ]
+            },
+            "positive_roots": 3711,
+            "trim_rejected_roots": 3707,
+            "zero_positive_calls": 3660
+          }
+        },
+        "nurbsNewton": {
+          "candidates": 27577,
+          "converged": 13228,
+          "cycle_jumps": 9280,
+          "final_accepted": 213,
+          "final_checks": 14349,
+          "final_point_repeats": 13157,
+          "iterations": 255380,
+          "line_calls": 1464,
+          "newton_starts": 27577,
+          "partial_evaluations": 242152,
+          "partial_hits_16": 31493,
+          "partial_hits_32": 57850,
+          "partial_hits_64": 81936,
+          "partial_repeats": 115020,
+          "point_evaluations": 269729,
+          "point_hits_16": 41756,
+          "point_hits_32": 69686,
+          "point_hits_64": 94972,
+          "point_repeats": 129504,
+          "returned_hits": 523
+        },
+        "torusQuartic": [
+          5672,
+          162903,
+          651612,
+          651612,
+          513578,
+          114952,
+          651612,
+          651612,
+          4034,
+          1068,
+          570,
+          5034,
+          15102,
+          0
+        ]
+      },
+      "diagnosticOnly": true,
+      "notes": [
+        "Observation-only counters; no diagnostic durations are shipping timings"
+      ],
+      "phases": [
+        {
+          "duration_ms": 2.7587780000003477,
+          "name": "relations.preparation",
+          "start_ms": 5565.00549
+        },
+        {
+          "duration_ms": 428.9471020000001,
+          "name": "recognition.graph",
+          "start_ms": 5510.472267
+        },
+        {
+          "duration_ms": 0.2158079999999245,
+          "name": "recognition.candidates",
+          "start_ms": 5939.421513
+        },
+        {
+          "duration_ms": 429.1920449999998,
+          "name": "recognition.total",
+          "start_ms": 5510.461016
+        }
+      ],
+      "timingClaimsExcluded": true,
+      "iteration": 3,
+      "distance": 5.06
+    }
+  },
+  "qualification": {
+    "cpu-output-equivalence.json": {
+      "schemaVersion": 1,
+      "allEquivalent": true,
+      "snapshotPairs": 5,
+      "sourcePairs": 1,
+      "warmupPairs": 2,
+      "retainedPairs": 2,
+      "byteExactArtifactPairs": 25,
+      "workflow": "geometry-first",
+      "candidateKernel": {
+        "name": "remus-wasm",
+        "version": "2026.1.61",
+        "wasmBytes": 9747720,
+        "wasmSha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+        "wrapperSha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+      },
+      "pairs": [
+        {
+          "snapshot": "source",
+          "warmup": null,
+          "volumeBits": "3b02a3d23688e840",
+          "featuresJsonSha256": "1603288bda55aaf676220264771ae97fa8b508a6344136949aae13f274ee5b6e",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "c395ff3810537c5b6b4870a66f8a6a2fb099e87355862d75c0005207633503ef"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "be9d64d922dfed263f9afd3a96092f853980582b8997b75a259c99a565b27a2d"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "b389e76531cee94c5ee7e4dfe3298304c490dcb0ee2295f751f7baf675660901"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 637353,
+              "sha256": "0c227aa06362cabcffdd565a07d872bfae8dc3ee247bf3cf0fa3fc8e51b8e8f6"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-0",
+          "warmup": true,
+          "volumeBits": "1febe38edf79ec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "2677d580aacfff555025b8421722ed7ae0566a2b13ff97888c9a52ad4446ccfa"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "6679c47353f52210f7d116450389bda15d1f5e7c6218671be6bd1df2273ac2b9"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "8f259340bfbfe5c798cca7027181671c39a082f8cea6f5dd0b413dd8b75413d8"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 742160,
+              "sha256": "9dd0927f9157cd319ec43186d5578e0dcc8e98b267efc2315924fff876b55aae"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-1",
+          "warmup": true,
+          "volumeBits": "88f29382e97dec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "2cf2a06615d1f3a7e63d8bbc66679ae8fe7cf1bc2e3ae6dd293230af588ddcf2"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "13f147147e65bdff2855fac6c0d2708ebe7de44899f13c5d90a27dbfcb97d189"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "e1491ab9562bff2f5eae80668e8c874d6f4662bb699166168480c801c9ad80a1"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 750782,
+              "sha256": "b4ec4019153a9c8239aa405fae37b5efd68ce4888c14e1bf58385ce43108a4dd"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-2",
+          "warmup": false,
+          "volumeBits": "4dfb4376f381ec40",
+          "featuresJsonSha256": "6b5c17eb4e5f38411eb82946674344cfae398a85b7a205701b8fa9641daff5af",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "467c7ebf497a4e2925d74f380801891347babae98c45e7d2311e063613814fb8"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "455a74b659a3e4752b8b2c400b74b7fd13ca43bc133806eede85309387e94cc9"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "0304c091ab32cc3a38d35dc230f03cb271ea184b8e1b0784675100592ebc7fec"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 743873,
+              "sha256": "0193db1375e322034250c721955fa31999fe98b7e79576108f18b6431fb8be2b"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-3",
+          "warmup": false,
+          "volumeBits": "8755d069fd85ec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "9a0f208300526beee1f746c9f55317c71c5d74437487c3f944cf251130edb894"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "2f31e8481f1cb16ead3b678ff60f13bde7cbad8805a9c142b99ce264ec3b042a"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "5c8c5111ca131f4f990d38419caa817c627eb4478dbc691e0a44d0979860e7a7"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 746989,
+              "sha256": "7dbb8797dadde46312f589e5fd6b49a2aa666ab225d39e23c0dae7eef7d6b31a"
+            }
+          }
+        }
+      ],
+      "baselineKernel": {
+        "name": "remus-wasm",
+        "version": "2026.1.61",
+        "wasmBytes": 9747720,
+        "wasmSha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+        "wrapperSha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+      }
+    },
+    "counts-v1-complete-equivalence.json": {
+      "schemaVersion": 1,
+      "allEquivalent": true,
+      "snapshotPairs": 5,
+      "sourcePairs": 1,
+      "warmupPairs": 2,
+      "retainedPairs": 2,
+      "byteExactArtifactPairs": 25,
+      "workflow": "geometry-first",
+      "candidateKernel": {
+        "name": "remus-wasm",
+        "version": "2026.1.61",
+        "wasmBytes": 11549875,
+        "wasmSha256": "a36726e3b41a91dc9469f77a049feba3c2c2e7152a4945ad4b20e79fb66ddb10",
+        "wrapperSha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+      },
+      "pairs": [
+        {
+          "snapshot": "source",
+          "warmup": null,
+          "volumeBits": "3b02a3d23688e840",
+          "featuresJsonSha256": "1603288bda55aaf676220264771ae97fa8b508a6344136949aae13f274ee5b6e",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "c395ff3810537c5b6b4870a66f8a6a2fb099e87355862d75c0005207633503ef"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "be9d64d922dfed263f9afd3a96092f853980582b8997b75a259c99a565b27a2d"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "b389e76531cee94c5ee7e4dfe3298304c490dcb0ee2295f751f7baf675660901"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 637353,
+              "sha256": "0c227aa06362cabcffdd565a07d872bfae8dc3ee247bf3cf0fa3fc8e51b8e8f6"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-0",
+          "warmup": true,
+          "volumeBits": "1febe38edf79ec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "2677d580aacfff555025b8421722ed7ae0566a2b13ff97888c9a52ad4446ccfa"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "6679c47353f52210f7d116450389bda15d1f5e7c6218671be6bd1df2273ac2b9"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "8f259340bfbfe5c798cca7027181671c39a082f8cea6f5dd0b413dd8b75413d8"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 742160,
+              "sha256": "9dd0927f9157cd319ec43186d5578e0dcc8e98b267efc2315924fff876b55aae"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-1",
+          "warmup": true,
+          "volumeBits": "88f29382e97dec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "2cf2a06615d1f3a7e63d8bbc66679ae8fe7cf1bc2e3ae6dd293230af588ddcf2"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "13f147147e65bdff2855fac6c0d2708ebe7de44899f13c5d90a27dbfcb97d189"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "e1491ab9562bff2f5eae80668e8c874d6f4662bb699166168480c801c9ad80a1"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 750782,
+              "sha256": "b4ec4019153a9c8239aa405fae37b5efd68ce4888c14e1bf58385ce43108a4dd"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-2",
+          "warmup": false,
+          "volumeBits": "4dfb4376f381ec40",
+          "featuresJsonSha256": "6b5c17eb4e5f38411eb82946674344cfae398a85b7a205701b8fa9641daff5af",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "467c7ebf497a4e2925d74f380801891347babae98c45e7d2311e063613814fb8"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "455a74b659a3e4752b8b2c400b74b7fd13ca43bc133806eede85309387e94cc9"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "0304c091ab32cc3a38d35dc230f03cb271ea184b8e1b0784675100592ebc7fec"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 743873,
+              "sha256": "0193db1375e322034250c721955fa31999fe98b7e79576108f18b6431fb8be2b"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-3",
+          "warmup": false,
+          "volumeBits": "8755d069fd85ec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "9a0f208300526beee1f746c9f55317c71c5d74437487c3f944cf251130edb894"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "2f31e8481f1cb16ead3b678ff60f13bde7cbad8805a9c142b99ce264ec3b042a"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "5c8c5111ca131f4f990d38419caa817c627eb4478dbc691e0a44d0979860e7a7"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 746989,
+              "sha256": "7dbb8797dadde46312f589e5fd6b49a2aa666ab225d39e23c0dae7eef7d6b31a"
+            }
+          }
+        }
+      ],
+      "baselineKernel": {
+        "name": "remus-wasm",
+        "version": "2026.1.61",
+        "wasmBytes": 9747720,
+        "wasmSha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+        "wrapperSha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+      },
+      "replay": {
+        "replayPairs": 5,
+        "perFaceAreaPairs": 800
+      }
+    },
+    "counts-v2-complete-equivalence.json": {
+      "schemaVersion": 1,
+      "allEquivalent": true,
+      "snapshotPairs": 5,
+      "sourcePairs": 1,
+      "warmupPairs": 2,
+      "retainedPairs": 2,
+      "byteExactArtifactPairs": 25,
+      "workflow": "geometry-first",
+      "candidateKernel": {
+        "name": "remus-wasm",
+        "version": "2026.1.61",
+        "wasmBytes": 11552993,
+        "wasmSha256": "1e2a51d2cb43fa274212bfd94132b1c859bfb1a46871d91b5326a5ba7231dcd8",
+        "wrapperSha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+      },
+      "pairs": [
+        {
+          "snapshot": "source",
+          "warmup": null,
+          "volumeBits": "3b02a3d23688e840",
+          "featuresJsonSha256": "1603288bda55aaf676220264771ae97fa8b508a6344136949aae13f274ee5b6e",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "c395ff3810537c5b6b4870a66f8a6a2fb099e87355862d75c0005207633503ef"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "be9d64d922dfed263f9afd3a96092f853980582b8997b75a259c99a565b27a2d"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "b389e76531cee94c5ee7e4dfe3298304c490dcb0ee2295f751f7baf675660901"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 637353,
+              "sha256": "0c227aa06362cabcffdd565a07d872bfae8dc3ee247bf3cf0fa3fc8e51b8e8f6"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-0",
+          "warmup": true,
+          "volumeBits": "1febe38edf79ec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "2677d580aacfff555025b8421722ed7ae0566a2b13ff97888c9a52ad4446ccfa"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "6679c47353f52210f7d116450389bda15d1f5e7c6218671be6bd1df2273ac2b9"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "8f259340bfbfe5c798cca7027181671c39a082f8cea6f5dd0b413dd8b75413d8"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 742160,
+              "sha256": "9dd0927f9157cd319ec43186d5578e0dcc8e98b267efc2315924fff876b55aae"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-1",
+          "warmup": true,
+          "volumeBits": "88f29382e97dec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "2cf2a06615d1f3a7e63d8bbc66679ae8fe7cf1bc2e3ae6dd293230af588ddcf2"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "13f147147e65bdff2855fac6c0d2708ebe7de44899f13c5d90a27dbfcb97d189"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "e1491ab9562bff2f5eae80668e8c874d6f4662bb699166168480c801c9ad80a1"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 750782,
+              "sha256": "b4ec4019153a9c8239aa405fae37b5efd68ce4888c14e1bf58385ce43108a4dd"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-2",
+          "warmup": false,
+          "volumeBits": "4dfb4376f381ec40",
+          "featuresJsonSha256": "6b5c17eb4e5f38411eb82946674344cfae398a85b7a205701b8fa9641daff5af",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "467c7ebf497a4e2925d74f380801891347babae98c45e7d2311e063613814fb8"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "455a74b659a3e4752b8b2c400b74b7fd13ca43bc133806eede85309387e94cc9"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "0304c091ab32cc3a38d35dc230f03cb271ea184b8e1b0784675100592ebc7fec"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 743873,
+              "sha256": "0193db1375e322034250c721955fa31999fe98b7e79576108f18b6431fb8be2b"
+            }
+          }
+        },
+        {
+          "snapshot": "iteration-3",
+          "warmup": false,
+          "volumeBits": "8755d069fd85ec40",
+          "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+          "artifacts": {
+            "positions": {
+              "bytes": 349692,
+              "sha256": "9a0f208300526beee1f746c9f55317c71c5d74437487c3f944cf251130edb894"
+            },
+            "normals": {
+              "bytes": 349692,
+              "sha256": "2f31e8481f1cb16ead3b678ff60f13bde7cbad8805a9c142b99ce264ec3b042a"
+            },
+            "indices": {
+              "bytes": 699432,
+              "sha256": "5c8c5111ca131f4f990d38419caa817c627eb4478dbc691e0a44d0979860e7a7"
+            },
+            "faceOffsets": {
+              "bytes": 644,
+              "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+            },
+            "arena": {
+              "bytes": 746989,
+              "sha256": "7dbb8797dadde46312f589e5fd6b49a2aa666ab225d39e23c0dae7eef7d6b31a"
+            }
+          }
+        }
+      ],
+      "baselineKernel": {
+        "name": "remus-wasm",
+        "version": "2026.1.61",
+        "wasmBytes": 9747720,
+        "wasmSha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+        "wrapperSha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+      },
+      "replay": {
+        "replayPairs": 5,
+        "perFaceAreaPairs": 800
+      }
+    }
+  },
+  "torusCounterFields": [
+    "line_torus_calls",
+    "quartic_sweeps",
+    "quartic_evals",
+    "step_hypot_calls",
+    "step_abs_ge_threshold",
+    "step_abs_le_half_threshold",
+    "denom_hypot_calls",
+    "denom_abs_ge_threshold",
+    "convergence_exits",
+    "cycle_exits",
+    "budget_exits",
+    "real_roots_returned",
+    "polish_implicit_evals",
+    "lower_degree_fallbacks"
+  ],
+  "shippingCpuAttribution": {
+    "diagnosticOnly": true,
+    "timingClaimsExcluded": true,
+    "shares": "count-based samples; inclusive categories overlap and must not be added",
+    "mappingQualification": {
+      "exactShippingBytes": true,
+      "shippingSha256": "9e290c4e81c9c83d7f9b15e8af024c8f136e3aa71b2de266b6d60c24f4eadcce",
+      "namedSha256": "b6df880437c4b1f8638558dc1de49ec91bd8a4e39c1c0a8ed4dff88e368799be",
+      "shippingBytes": 9747720,
+      "functionNames": 6890,
+      "sections": [
+        {
+          "kind": 1,
+          "customName": null,
+          "bytes": 3854
+        },
+        {
+          "kind": 2,
+          "customName": null,
+          "bytes": 2811
+        },
+        {
+          "kind": 3,
+          "customName": null,
+          "bytes": 7144
+        },
+        {
+          "kind": 4,
+          "customName": null,
+          "bytes": 11
+        },
+        {
+          "kind": 5,
+          "customName": null,
+          "bytes": 3
+        },
+        {
+          "kind": 6,
+          "customName": null,
+          "bytes": 25
+        },
+        {
+          "kind": 7,
+          "customName": null,
+          "bytes": 11924
+        },
+        {
+          "kind": 9,
+          "customName": null,
+          "bytes": 2359
+        },
+        {
+          "kind": 12,
+          "customName": null,
+          "bytes": 2
+        },
+        {
+          "kind": 10,
+          "customName": null,
+          "bytes": 9380943
+        },
+        {
+          "kind": 11,
+          "customName": null,
+          "bytes": 338360
+        },
+        {
+          "kind": 0,
+          "customName": "name",
+          "bytes": 575776
+        },
+        {
+          "kind": 0,
+          "customName": "producers",
+          "bytes": 124
+        },
+        {
+          "kind": 0,
+          "customName": "target_features",
+          "bytes": 116
+        }
+      ]
+    },
+    "profiles": [
+      {
+        "file": "recognize-2.cpuprofile",
+        "sha256": "ea9f989d7ff94958ba4038ba6e50f2817706a2bebda2c7a7ffc4d3bb4e57d77c",
+        "samples": 2425,
+        "branches": {
+          "area": 353,
+          "emulatedFma": 1351,
+          "preparation": 17,
+          "edgeRelations": 2036,
+          "rayCrossings": 1902,
+          "lineNurbs": 1107,
+          "surfaceProjection": 125,
+          "normals": 59,
+          "rayTorus": 606
+        },
+        "unmappedFunctionCount": 0,
+        "unmappedAncestrySamples": 0,
+        "unmappedLeafSamples": 0,
+        "unmappedFunctions": [],
+        "leaf": [
+          {
+            "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+            "samples": 1344
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "samples": 160
+          },
+          {
+            "name": "remus_math::analytic_intersection::intersect_line_torus::h2a710e91add724a9",
+            "samples": 143
+          },
+          {
+            "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "samples": 117
+          },
+          {
+            "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "samples": 116
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h848b97e5edaf3847",
+            "samples": 78
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "samples": 74
+          },
+          {
+            "name": "hypot",
+            "samples": 63
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::h67c26459806fe8d0",
+            "samples": 47
+          },
+          {
+            "name": "remus_check::classify::boundary::point_in_uv_boundary::heab158091e56a7d4",
+            "samples": 22
+          },
+          {
+            "name": "remus_math::predicates::winding_number::h7cf5a51dfdf8bd58",
+            "samples": 22
+          },
+          {
+            "name": "fma",
+            "samples": 20
+          },
+          {
+            "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+            "samples": 20
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+            "samples": 14
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+            "samples": 14
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::classify::boundary::count_face_ray_crossings_cached::h1e30c530ea99ca81",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::encloses_with::he414ecaebd02211f",
+            "samples": 10
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::malloc",
+            "samples": 9
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::v_spans_into::h2b5d989eb388478c",
+            "samples": 9
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+            "samples": 8
+          },
+          {
+            "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "samples": 7
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+            "samples": 6
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::dot::h8da97db0cfa7418b",
+            "samples": 6
+          },
+          {
+            "name": "remus_math::bvh::Bvh::query_ray::ha160dddc93cde0f6",
+            "samples": 6
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+            "samples": 5
+          },
+          {
+            "name": "remus_check::properties::face_cache::Request::compute::h3e844c8c804fa8d0",
+            "samples": 5
+          },
+          {
+            "name": "remus_operations::feature_recognition::face_vertex_span::h8a218c909b48e856",
+            "samples": 5
+          },
+          {
+            "name": "remus_check::properties::face_cache::memoized::h8e6f27f126414356",
+            "samples": 4
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf6e163a0c34ca311",
+            "samples": 4
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "samples": 4
+          },
+          {
+            "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "samples": 4
+          },
+          {
+            "name": "remus_check::classify::face_surface_distance_cached::h75ad6193c0406af0",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::classify_point::hbdebb279c9a7f912",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::properties::face_integrator::loop_index::IntervalIndex::candidates::h7ac5ef12fa8b7b93",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+            "samples": 3
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::free",
+            "samples": 2
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::insert_large_chunk",
+            "samples": 2
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_dealloc",
+            "samples": 2
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::asin::asin",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::classify::boundary::count_sphere_cap_crossings_with_trim::h0bab346a118b6cfb",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::classify::boundary::qualified_sphere_trim_contains::h3c2e35a185480d65",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::cross::h05eac25844abb5d5",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::LineSurfaceSeedGrid::for_surface::h5d1d01b2a8955ca9",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+            "samples": 2
+          },
+          {
+            "name": "remus_operations::measure::area::face_area::h595aed2976f6c0bb",
+            "samples": 2
+          },
+          {
+            "name": "remus_operations::measure::helpers::sample_edge_curve::h3c3287b79bf919d9",
+            "samples": 2
+          },
+          {
+            "name": "<[T] as remus_math::compact_sort::CompactSort<T>>::compact_sort_by::{{closure}}::hbc12e76cb087ee47",
+            "samples": 1
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_realloc",
+            "samples": 1
+          },
+          {
+            "name": "atan2",
+            "samples": 1
+          },
+          {
+            "name": "brepkernel_recognizeFeatures multivalue shim",
+            "samples": 1
+          },
+          {
+            "name": "memcmp",
+            "samples": 1
+          },
+          {
+            "name": "post",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::build_uv_boundary::h671d1125d7b594a0",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::count_sphere_circle_patch_crossings::h2da3b23a420b770a",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::prepare::h336b6c8ac1c4e742",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::ray_surface::solve_quadratic::he667c3af901e588c",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::util::point_in_polygon_3d::hc905f944412d1dc4",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::util::wire_polygon_curve_sampled::h6fa99cedd2c295ac",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::compact_sort::Order::sort::h93ee2a45c0ed9fec",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface::h9365bb9d3c01c80d",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::ConicalSurface::evaluate::hd2fd1f11494f117b",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::SphericalSurface::project_point::h12a9c4b6e43c8d8b",
+            "samples": 1
+          },
+          {
+            "name": "remus_topology::topology::Topology::face::haf55a52fed4a99b8",
+            "samples": 1
+          },
+          {
+            "name": "std::io::impls::<impl std::io::Write for &mut W>::write_all::hd4c096ab7ae72201",
+            "samples": 1
+          }
+        ],
+        "inclusive": [
+          {
+            "name": "(root)",
+            "samples": 2425
+          },
+          {
+            "name": "",
+            "samples": 2415
+          },
+          {
+            "name": "cli",
+            "samples": 2415
+          },
+          {
+            "name": "executeUserEntryPoint",
+            "samples": 2415
+          },
+          {
+            "name": "main",
+            "samples": 2415
+          },
+          {
+            "name": "recognize",
+            "samples": 2415
+          },
+          {
+            "name": "wrapModuleLoad",
+            "samples": 2415
+          },
+          {
+            "name": "brepkernel_recognizeFeatures multivalue shim",
+            "samples": 2414
+          },
+          {
+            "name": "js-to-wasm::",
+            "samples": 2414
+          },
+          {
+            "name": "recognizeFeatures",
+            "samples": 2414
+          },
+          {
+            "name": "timed",
+            "samples": 2414
+          },
+          {
+            "name": "remus_operations::query::EdgeRelationContext::concavity_and_angle::h79c03cefea2a850f",
+            "samples": 2036
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::classify_point::hbdebb279c9a7f912",
+            "samples": 1973
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::count_ray_crossings::ha17c48365238a875",
+            "samples": 1902
+          },
+          {
+            "name": "remus_check::classify::boundary::count_face_ray_crossings_cached::h1e30c530ea99ca81",
+            "samples": 1895
+          },
+          {
+            "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+            "samples": 1351
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h848b97e5edaf3847",
+            "samples": 1107
+          },
+          {
+            "name": "remus_math::analytic_intersection::intersect_line_torus::h2a710e91add724a9",
+            "samples": 606
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "samples": 398
+          },
+          {
+            "name": "remus_operations::measure::area::face_area::h595aed2976f6c0bb",
+            "samples": 353
+          },
+          {
+            "name": "remus_check::properties::face_cache::memoized::h8e6f27f126414356",
+            "samples": 322
+          },
+          {
+            "name": "remus_check::properties::face_cache::Request::compute::h3e844c8c804fa8d0",
+            "samples": 318
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+            "samples": 277
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "samples": 269
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::h67c26459806fe8d0",
+            "samples": 247
+          },
+          {
+            "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "samples": 230
+          },
+          {
+            "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "samples": 195
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "samples": 66
+          },
+          {
+            "name": "remus_check::classify::face_surface_distance_cached::h75ad6193c0406af0",
+            "samples": 64
+          },
+          {
+            "name": "hypot",
+            "samples": 63
+          },
+          {
+            "name": "remus_operations::query::sampled_normals::he52a8dcbdfb82b6c",
+            "samples": 59
+          },
+          {
+            "name": "remus_operations::query::effective_face_normal::hcdfe7da27c53ca5d",
+            "samples": 57
+          },
+          {
+            "name": "remus_check::classify::boundary::count_nurbs_hits_with_trim::h649a6d3c4922843d",
+            "samples": 56
+          },
+          {
+            "name": "remus_topology::face::FaceSurface::project_point::h324941430f3e092c",
+            "samples": 56
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface::h9365bb9d3c01c80d",
+            "samples": 54
+          },
+          {
+            "name": "remus_check::classify::boundary::NurbsUvTrim::build::hdae55fbc64717366",
+            "samples": 52
+          },
+          {
+            "name": "remus_check::classify::boundary::build_uv_boundary::hb809c64677a620ca",
+            "samples": 52
+          },
+          {
+            "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "samples": 42
+          },
+          {
+            "name": "remus_check::classify::boundary::point_in_uv_boundary::heab158091e56a7d4",
+            "samples": 40
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf6e163a0c34ca311",
+            "samples": 39
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::LineSurfaceSeedGrid::for_surface::h5d1d01b2a8955ca9",
+            "samples": 27
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+            "samples": 24
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::v_spans_into::h2b5d989eb388478c",
+            "samples": 23
+          },
+          {
+            "name": "remus_math::predicates::winding_number::h7cf5a51dfdf8bd58",
+            "samples": 22
+          },
+          {
+            "name": "fma",
+            "samples": 20
+          },
+          {
+            "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+            "samples": 20
+          },
+          {
+            "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "samples": 19
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "samples": 18
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::prepare::h336b6c8ac1c4e742",
+            "samples": 17
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf480a18b45f6143b",
+            "samples": 17
+          },
+          {
+            "name": "remus_operations::measure::helpers::collect_wire_positions::hd80f00beba41643a",
+            "samples": 16
+          },
+          {
+            "name": "remus_operations::measure::helpers::sample_edge_curve::h3c3287b79bf919d9",
+            "samples": 16
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+            "samples": 15
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+            "samples": 14
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+            "samples": 13
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::malloc",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::classify::boundary::qualified_sphere_trim_contains::h3c2e35a185480d65",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::encloses_with::he414ecaebd02211f",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::accepts::hef58bd0595c601ac",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::util::wire_polygon_curve_sampled::h6fa99cedd2c295ac",
+            "samples": 10
+          },
+          {
+            "name": "remus_operations::tessellate::planar::tessellate_planar::{{closure}}::h591292d6a9997f03",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::util::point_in_polygon_3d::hc905f944412d1dc4",
+            "samples": 9
+          },
+          {
+            "name": "remus_operations::measure::area::face_area::{{closure}}::h3d54a8accb616938",
+            "samples": 9
+          },
+          {
+            "name": "remus_operations::tessellate::face::tessellate_with_uvs_floor::h42bc34eba2cfc284",
+            "samples": 9
+          },
+          {
+            "name": "atan2",
+            "samples": 8
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+            "samples": 8
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+            "samples": 7
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "samples": 7
+          },
+          {
+            "name": "remus_operations::tessellate::nurbs::build_quadtree::h6782ca70d70d766b",
+            "samples": 7
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::dot::h8da97db0cfa7418b",
+            "samples": 6
+          },
+          {
+            "name": "remus_check::properties::face_integrator::face_uv_bounds_with_outline::h6acd3958f8056243",
+            "samples": 6
+          },
+          {
+            "name": "remus_check::util::face_aabb::h0d394cb1a9aadb76",
+            "samples": 6
+          },
+          {
+            "name": "remus_math::bvh::Bvh::query_ray::ha160dddc93cde0f6",
+            "samples": 6
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+            "samples": 5
+          },
+          {
+            "name": "remus_check::classify::boundary::FaceTrimData::build::h03b7bec7676a2d7a",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::bvh::Bvh::build::hef0a4f9c0da19593",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::bvh::build_recursive::h271be9c49f34365a",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::nurbs::projection::SurfaceSeedGrid::for_surface::h9de36fc08346ba8d",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::surfaces::SphericalSurface::project_point::h12a9c4b6e43c8d8b",
+            "samples": 5
+          },
+          {
+            "name": "remus_operations::feature_recognition::face_vertex_span::h8a218c909b48e856",
+            "samples": 5
+          },
+          {
+            "name": "std::sync::once_lock::OnceLock<T>::initialize::hd6bfb5f21bb31335",
+            "samples": 5
+          },
+          {
+            "name": "alloc::raw_vec::RawVecInner<A>::finish_grow::ha6de6a3b348d890b",
+            "samples": 4
+          },
+          {
+            "name": "remus_topology::edge::EdgeCurve::evaluate_with_endpoints::h7253f3605796e70d",
+            "samples": 4
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::free",
+            "samples": 3
+          },
+          {
+            "name": "core::slice::sort::stable::drift::sort::h1dc14e1ae2bfa617",
+            "samples": 3
+          },
+          {
+            "name": "core::slice::sort::stable::driftsort_main::h786aecb92b28a721",
+            "samples": 3
+          },
+          {
+            "name": "core::slice::sort::stable::quicksort::quicksort::h5f3e427abc178da3",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::classify::boundary::AnalyticUvTrim::build::h7f8af99e23a49b27",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::classify::boundary::build_uv_boundary::ha36d7d24240b9957",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::properties::face_integrator::loop_index::IntervalIndex::candidates::h7ac5ef12fa8b7b93",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+            "samples": 3
+          },
+          {
+            "name": "remus_operations::query::edge_curve_span::h5fcd194355f0764a",
+            "samples": 3
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::insert_large_chunk",
+            "samples": 2
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_alloc",
+            "samples": 2
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_dealloc",
+            "samples": 2
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_realloc",
+            "samples": 2
+          },
+          {
+            "name": "byn$mgfn-shared$alloc::raw_vec::RawVec<T,A>::grow_one::h0b78904cdf2e5d7c",
+            "samples": 2
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::asin::asin",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::classify::boundary::count_sphere_cap_crossings_with_trim::h0bab346a118b6cfb",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::cross::h05eac25844abb5d5",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::compact_sort::Order::sort::h93ee2a45c0ed9fec",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::surfaces::ConicalSurface::evaluate::hd2fd1f11494f117b",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::surfaces::ConicalSurface::project_point::h78553c4ce6b3c2a0",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::surfaces::SphericalSurface::evaluate::h82384a25a684d993",
+            "samples": 2
+          },
+          {
+            "name": "remus_operations::tessellate::nurbs::tessellate_nurbs::{{closure}}::hfedfbe86d0eac88b",
+            "samples": 2
+          },
+          {
+            "name": "<T as alloc::string::ToString>::to_string::hf7f3d45a9104d43c",
+            "samples": 1
+          },
+          {
+            "name": "<[T] as remus_math::compact_sort::CompactSort<T>>::compact_sort_by::{{closure}}::hbc12e76cb087ee47",
+            "samples": 1
+          },
+          {
+            "name": "<serde_json::value::Value as core::fmt::Display>::fmt::h48fc4b9258a7b10b",
+            "samples": 1
+          },
+          {
+            "name": "alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle::hb07d54d54dfd1880",
+            "samples": 1
+          },
+          {
+            "name": "core::ptr::drop_in_place<remus_check::properties::face_integrator::FaceUv>::h469c075a559be2ed",
+            "samples": 1
+          },
+          {
+            "name": "memcmp",
+            "samples": 1
+          },
+          {
+            "name": "post",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::AnalyticUvTrim::build::h4ef0cb0b77235c2c",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::build_uv_boundary::h671d1125d7b594a0",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::count_sphere_circle_patch_crossings::h2da3b23a420b770a",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::ray_surface::solve_quadratic::he667c3af901e588c",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::face_boundary_v_extent::h9d085206bbf2c551",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_face_impl::{{closure}}::hc1c6bb7dbf15d77b",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::util::face_hole_polygons_curve_sampled::he459b2846ba68116",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::normal_from_partials::h75a9acf4b1b3ccbd",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+            "samples": 1
+          },
+          {
+            "name": "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+            "samples": 1
+          },
+          {
+            "name": "remus_topology::topology::Topology::face::haf55a52fed4a99b8",
+            "samples": 1
+          },
+          {
+            "name": "serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize::h6f319161237342bb",
+            "samples": 1
+          },
+          {
+            "name": "std::io::impls::<impl std::io::Write for &mut W>::write_all::hd4c096ab7ae72201",
+            "samples": 1
+          }
+        ]
+      },
+      {
+        "file": "recognize-3.cpuprofile",
+        "sha256": "fe564ebc005ce25e166f87d73290589a34e961f176d4e40bb67b66c8bd764367",
+        "samples": 2476,
+        "branches": {
+          "area": 366,
+          "emulatedFma": 1355,
+          "preparation": 16,
+          "edgeRelations": 2077,
+          "rayCrossings": 1928,
+          "lineNurbs": 1133,
+          "surfaceProjection": 124,
+          "normals": 63,
+          "rayTorus": 600
+        },
+        "unmappedFunctionCount": 0,
+        "unmappedAncestrySamples": 0,
+        "unmappedLeafSamples": 0,
+        "unmappedFunctions": [],
+        "leaf": [
+          {
+            "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+            "samples": 1349
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "samples": 167
+          },
+          {
+            "name": "remus_math::analytic_intersection::intersect_line_torus::h2a710e91add724a9",
+            "samples": 139
+          },
+          {
+            "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "samples": 121
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "samples": 102
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h848b97e5edaf3847",
+            "samples": 85
+          },
+          {
+            "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "samples": 83
+          },
+          {
+            "name": "hypot",
+            "samples": 70
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::h67c26459806fe8d0",
+            "samples": 53
+          },
+          {
+            "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+            "samples": 20
+          },
+          {
+            "name": "remus_math::predicates::winding_number::h7cf5a51dfdf8bd58",
+            "samples": 19
+          },
+          {
+            "name": "fma",
+            "samples": 18
+          },
+          {
+            "name": "remus_check::classify::boundary::point_in_uv_boundary::heab158091e56a7d4",
+            "samples": 18
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+            "samples": 16
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+            "samples": 15
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+            "samples": 15
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::malloc",
+            "samples": 10
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::classify::boundary::count_face_ray_crossings_cached::h1e30c530ea99ca81",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::v_spans_into::h2b5d989eb388478c",
+            "samples": 9
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::encloses_with::he414ecaebd02211f",
+            "samples": 8
+          },
+          {
+            "name": "remus_math::bvh::Bvh::query_ray::ha160dddc93cde0f6",
+            "samples": 8
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+            "samples": 7
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::classify_point::hbdebb279c9a7f912",
+            "samples": 7
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::LineSurfaceSeedGrid::for_surface::h5d1d01b2a8955ca9",
+            "samples": 7
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf6e163a0c34ca311",
+            "samples": 6
+          },
+          {
+            "name": "remus_check::classify::face_surface_distance_cached::h75ad6193c0406af0",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "samples": 5
+          },
+          {
+            "name": "remus_check::classify::boundary::qualified_sphere_trim_contains::h3c2e35a185480d65",
+            "samples": 4
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::dot::h8da97db0cfa7418b",
+            "samples": 4
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf480a18b45f6143b",
+            "samples": 4
+          },
+          {
+            "name": "remus_check::util::face_aabb::h0d394cb1a9aadb76",
+            "samples": 4
+          },
+          {
+            "name": "remus_operations::measure::helpers::sample_edge_curve::h3c3287b79bf919d9",
+            "samples": 4
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::free",
+            "samples": 3
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::insert_large_chunk",
+            "samples": 3
+          },
+          {
+            "name": "brepkernel_recognizeFeatures multivalue shim",
+            "samples": 3
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::cross::h05eac25844abb5d5",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+            "samples": 3
+          },
+          {
+            "name": "remus_topology::topology::Topology::vertex::ha4afbf1a0b48c756",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::properties::face_cache::Request::compute::h3e844c8c804fa8d0",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::properties::face_integrator::loop_index::IntervalIndex::build::h15f47de744d916f6",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::properties::face_integrator::loop_index::IntervalIndex::candidates::h7ac5ef12fa8b7b93",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::util::point_in_polygon_3d::hc905f944412d1dc4",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+            "samples": 2
+          },
+          {
+            "name": "remus_operations::feature_recognition::face_vertex_span::h8a218c909b48e856",
+            "samples": 2
+          },
+          {
+            "name": "remus_operations::measure::area::face_area::h595aed2976f6c0bb",
+            "samples": 2
+          },
+          {
+            "name": "<alloc[6233274513061a0e]::string::String as core[2c5ad5f686fcca5c]::fmt::Write>::write_str",
+            "samples": 1
+          },
+          {
+            "name": "alloc::raw_vec::RawVec<T,A>::grow_one::hdb7c020096e379de",
+            "samples": 1
+          },
+          {
+            "name": "atan2",
+            "samples": 1
+          },
+          {
+            "name": "byn$mgfn-shared$alloc::collections::btree::map::entry::Entry<K,V,A>::or_default::hbba5a64cfd7fa68c",
+            "samples": 1
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::asin::asin",
+            "samples": 1
+          },
+          {
+            "name": "core::slice::sort::stable::drift::sort::h765491ee8d8d1b94",
+            "samples": 1
+          },
+          {
+            "name": "fmod",
+            "samples": 1
+          },
+          {
+            "name": "memcmp",
+            "samples": 1
+          },
+          {
+            "name": "post",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::NurbsUvTrim::build::hdae55fbc64717366",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::ray_surface::solve_quadratic::he667c3af901e588c",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_cache::memoized::h8e6f27f126414356",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::new::hb7dc2e6897815f2f",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::build_face_uv::h29fc95f182499a36",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::face_uv_bounds_with_outline::h6acd3958f8056243",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::util::polygon_normal::h80dbf1eb982c7ee4",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::bvh::build_recursive::h271be9c49f34365a",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::curves::Circle3D::evaluate::h79cf22d757f918a7",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface::h9365bb9d3c01c80d",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+            "samples": 1
+          },
+          {
+            "name": "remus_operations::measure::helpers::collect_wire_positions::hd80f00beba41643a",
+            "samples": 1
+          },
+          {
+            "name": "remus_operations::query::samples_normal_angle::h73ae0beaf244770a",
+            "samples": 1
+          },
+          {
+            "name": "remus_operations::tessellate::planar::tessellate_planar::{{closure}}::h591292d6a9997f03",
+            "samples": 1
+          },
+          {
+            "name": "remus_topology::topology::Topology::edge::h0e5eb27548d8a43f",
+            "samples": 1
+          }
+        ],
+        "inclusive": [
+          {
+            "name": "(root)",
+            "samples": 2476
+          },
+          {
+            "name": "",
+            "samples": 2468
+          },
+          {
+            "name": "cli",
+            "samples": 2468
+          },
+          {
+            "name": "executeUserEntryPoint",
+            "samples": 2468
+          },
+          {
+            "name": "main",
+            "samples": 2468
+          },
+          {
+            "name": "recognize",
+            "samples": 2468
+          },
+          {
+            "name": "wrapModuleLoad",
+            "samples": 2468
+          },
+          {
+            "name": "brepkernel_recognizeFeatures multivalue shim",
+            "samples": 2467
+          },
+          {
+            "name": "js-to-wasm::",
+            "samples": 2467
+          },
+          {
+            "name": "recognizeFeatures",
+            "samples": 2467
+          },
+          {
+            "name": "timed",
+            "samples": 2467
+          },
+          {
+            "name": "remus_operations::query::EdgeRelationContext::concavity_and_angle::h79c03cefea2a850f",
+            "samples": 2077
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::classify_point::hbdebb279c9a7f912",
+            "samples": 2009
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::count_ray_crossings::ha17c48365238a875",
+            "samples": 1928
+          },
+          {
+            "name": "remus_check::classify::boundary::count_face_ray_crossings_cached::h1e30c530ea99ca81",
+            "samples": 1918
+          },
+          {
+            "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+            "samples": 1355
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h848b97e5edaf3847",
+            "samples": 1133
+          },
+          {
+            "name": "remus_math::analytic_intersection::intersect_line_torus::h2a710e91add724a9",
+            "samples": 600
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::evaluate::h0fd09d75746301a8",
+            "samples": 367
+          },
+          {
+            "name": "remus_operations::measure::area::face_area::h595aed2976f6c0bb",
+            "samples": 366
+          },
+          {
+            "name": "remus_check::properties::face_cache::memoized::h8e6f27f126414356",
+            "samples": 335
+          },
+          {
+            "name": "remus_check::properties::face_cache::Request::compute::h3e844c8c804fa8d0",
+            "samples": 333
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::partials_from::h03684aaa2528c784",
+            "samples": 311
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::hc13fa94efb497475",
+            "samples": 296
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::h67c26459806fe8d0",
+            "samples": 265
+          },
+          {
+            "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+            "samples": 194
+          },
+          {
+            "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+            "samples": 187
+          },
+          {
+            "name": "hypot",
+            "samples": 70
+          },
+          {
+            "name": "remus_check::classify::face_surface_distance_cached::h75ad6193c0406af0",
+            "samples": 70
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::hdd6d4136c41fa9ce",
+            "samples": 63
+          },
+          {
+            "name": "remus_operations::query::effective_face_normal::hcdfe7da27c53ca5d",
+            "samples": 63
+          },
+          {
+            "name": "remus_operations::query::sampled_normals::he52a8dcbdfb82b6c",
+            "samples": 63
+          },
+          {
+            "name": "remus_topology::face::FaceSurface::project_point::h324941430f3e092c",
+            "samples": 59
+          },
+          {
+            "name": "remus_math::nurbs::projection::project_point_to_surface::h9365bb9d3c01c80d",
+            "samples": 58
+          },
+          {
+            "name": "remus_check::classify::boundary::count_nurbs_hits_with_trim::h649a6d3c4922843d",
+            "samples": 55
+          },
+          {
+            "name": "remus_check::classify::boundary::NurbsUvTrim::build::hdae55fbc64717366",
+            "samples": 53
+          },
+          {
+            "name": "remus_check::classify::boundary::build_uv_boundary::hb809c64677a620ca",
+            "samples": 52
+          },
+          {
+            "name": "remus_math::nurbs::projection::refine_from::h19bd1e27ee77ff52",
+            "samples": 42
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf6e163a0c34ca311",
+            "samples": 40
+          },
+          {
+            "name": "remus_check::classify::boundary::point_in_uv_boundary::heab158091e56a7d4",
+            "samples": 34
+          },
+          {
+            "name": "remus_math::nurbs::intersection::line::LineSurfaceSeedGrid::for_surface::h5d1d01b2a8955ca9",
+            "samples": 32
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::h135a01fff4a1344c",
+            "samples": 23
+          },
+          {
+            "name": "remus_math::nurbs::basis::find_span::h95d9a170cf584eac",
+            "samples": 20
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+            "samples": 19
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::v_spans_into::h2b5d989eb388478c",
+            "samples": 19
+          },
+          {
+            "name": "remus_math::predicates::winding_number::h7cf5a51dfdf8bd58",
+            "samples": 19
+          },
+          {
+            "name": "fma",
+            "samples": 18
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_parametric::hf480a18b45f6143b",
+            "samples": 18
+          },
+          {
+            "name": "remus_check::classify::prepared::PreparedSolid::prepare::h336b6c8ac1c4e742",
+            "samples": 16
+          },
+          {
+            "name": "remus_operations::measure::helpers::collect_wire_positions::hd80f00beba41643a",
+            "samples": 16
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_v::hf86b24fb9689f291",
+            "samples": 15
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::project_point::hcdb4847b47cd432e",
+            "samples": 15
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+            "samples": 14
+          },
+          {
+            "name": "remus_operations::measure::helpers::sample_edge_curve::h3c3287b79bf919d9",
+            "samples": 14
+          },
+          {
+            "name": "remus_check::util::point_in_polygon_3d::hc905f944412d1dc4",
+            "samples": 13
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::malloc",
+            "samples": 11
+          },
+          {
+            "name": "atan2",
+            "samples": 11
+          },
+          {
+            "name": "remus_check::classify::boundary::qualified_sphere_trim_contains::h3c2e35a185480d65",
+            "samples": 11
+          },
+          {
+            "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+            "samples": 11
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+            "samples": 10
+          },
+          {
+            "name": "remus_math::bvh::Bvh::query_ray::ha160dddc93cde0f6",
+            "samples": 10
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::encloses_with::he414ecaebd02211f",
+            "samples": 8
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::accepts::hef58bd0595c601ac",
+            "samples": 8
+          },
+          {
+            "name": "remus_check::util::wire_polygon_curve_sampled::h6fa99cedd2c295ac",
+            "samples": 8
+          },
+          {
+            "name": "remus_operations::measure::area::face_area::{{closure}}::h3d54a8accb616938",
+            "samples": 8
+          },
+          {
+            "name": "remus_operations::tessellate::face::tessellate_with_uvs_floor::h42bc34eba2cfc284",
+            "samples": 8
+          },
+          {
+            "name": "remus_operations::tessellate::planar::tessellate_planar::{{closure}}::h591292d6a9997f03",
+            "samples": 8
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+            "samples": 7
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::normal::hba775a3be0e2053b",
+            "samples": 7
+          },
+          {
+            "name": "remus_operations::tessellate::nurbs::build_quadtree::h6782ca70d70d766b",
+            "samples": 7
+          },
+          {
+            "name": "remus_check::classify::boundary::FaceTrimData::build::h03b7bec7676a2d7a",
+            "samples": 6
+          },
+          {
+            "name": "remus_check::util::face_aabb::h0d394cb1a9aadb76",
+            "samples": 6
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::free",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::surfaces::CylindricalSurface::evaluate::he2612bb1e4f890e6",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::surfaces::SphericalSurface::project_point::h12a9c4b6e43c8d8b",
+            "samples": 5
+          },
+          {
+            "name": "remus_math::surfaces::ToroidalSurface::evaluate::ha7ab177d62a45fa6",
+            "samples": 5
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_realloc",
+            "samples": 4
+          },
+          {
+            "name": "alloc::raw_vec::RawVecInner<A>::finish_grow::ha6de6a3b348d890b",
+            "samples": 4
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::dot::h8da97db0cfa7418b",
+            "samples": 4
+          },
+          {
+            "name": "remus_math::bvh::Bvh::build::hef0a4f9c0da19593",
+            "samples": 4
+          },
+          {
+            "name": "remus_math::bvh::build_recursive::h271be9c49f34365a",
+            "samples": 4
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_point_and_partials_out::h744d98eb74525e99",
+            "samples": 4
+          },
+          {
+            "name": "remus_operations::feature_recognition::face_vertex_span::h8a218c909b48e856",
+            "samples": 4
+          },
+          {
+            "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::insert_large_chunk",
+            "samples": 3
+          },
+          {
+            "name": "__rustc[8068f81614cfe5c]::__rust_dealloc",
+            "samples": 3
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::classify::boundary::spherical_trim_math::cross::h05eac25844abb5d5",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::properties::face_integrator::face_uv_bounds_with_outline::h6acd3958f8056243",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::util::face_hole_polygons_curve_sampled::he459b2846ba68116",
+            "samples": 3
+          },
+          {
+            "name": "remus_check::util::polygon_normal::h80dbf1eb982c7ee4",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::nurbs::projection::SurfaceSeedGrid::for_surface::h9de36fc08346ba8d",
+            "samples": 3
+          },
+          {
+            "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h18e4a94a5a607003",
+            "samples": 3
+          },
+          {
+            "name": "remus_topology::face::FaceSurface::normal::he25964a32f3ff032",
+            "samples": 3
+          },
+          {
+            "name": "remus_topology::topology::Topology::vertex::ha4afbf1a0b48c756",
+            "samples": 3
+          },
+          {
+            "name": "std::sync::once_lock::OnceLock<T>::initialize::hd6bfb5f21bb31335",
+            "samples": 3
+          },
+          {
+            "name": "byn$mgfn-shared$alloc::raw_vec::RawVec<T,A>::grow_one::h0b78904cdf2e5d7c",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::properties::face_integrator::LoopIndex::patch::hb7edc8d0753e8353",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::new::h47cb78a6d5c95fdc",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::properties::face_integrator::loop_index::IntervalIndex::build::h15f47de744d916f6",
+            "samples": 2
+          },
+          {
+            "name": "remus_check::properties::face_integrator::loop_index::IntervalIndex::candidates::h7ac5ef12fa8b7b93",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::curves::Circle3D::evaluate::h79cf22d757f918a7",
+            "samples": 2
+          },
+          {
+            "name": "remus_math::nurbs::surface::DerivativeScratch::ensure_basis_for::h4de52d19c4106a45",
+            "samples": 2
+          },
+          {
+            "name": "<T as alloc::string::ToString>::to_string::hf7f3d45a9104d43c",
+            "samples": 1
+          },
+          {
+            "name": "<alloc[6233274513061a0e]::string::String as core[2c5ad5f686fcca5c]::fmt::Write>::write_str",
+            "samples": 1
+          },
+          {
+            "name": "<serde_json::value::Value as core::fmt::Display>::fmt::h48fc4b9258a7b10b",
+            "samples": 1
+          },
+          {
+            "name": "alloc::raw_vec::RawVec<T,A>::grow_one::hdb7c020096e379de",
+            "samples": 1
+          },
+          {
+            "name": "alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle::hb07d54d54dfd1880",
+            "samples": 1
+          },
+          {
+            "name": "alloc::vec::Vec<T,A>::extend_with::h8e784f9adf341194",
+            "samples": 1
+          },
+          {
+            "name": "byn$mgfn-shared$alloc::collections::btree::map::entry::Entry<K,V,A>::or_default::hbba5a64cfd7fa68c",
+            "samples": 1
+          },
+          {
+            "name": "compiler_builtins[3552e40272914b90]::math::libm_math::asin::asin",
+            "samples": 1
+          },
+          {
+            "name": "core::slice::sort::stable::drift::sort::h765491ee8d8d1b94",
+            "samples": 1
+          },
+          {
+            "name": "core::slice::sort::stable::driftsort_main::h98977fb843ecd7ce",
+            "samples": 1
+          },
+          {
+            "name": "fmod",
+            "samples": 1
+          },
+          {
+            "name": "memcmp",
+            "samples": 1
+          },
+          {
+            "name": "post",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::AnalyticUvTrim::build::h7f8af99e23a49b27",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::build_uv_boundary::ha36d7d24240b9957",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::count_3d_polygon_crossings_with_trim::h963f68903c7da000",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::count_sphere_cap_crossings_with_trim::h0bab346a118b6cfb",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::boundary::count_sphere_circle_patch_crossings::h2da3b23a420b770a",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::classify::ray_surface::solve_quadratic::he667c3af901e588c",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::new::hb7dc2e6897815f2f",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvLoop::segment_u_index::hb0b294895b6384b3",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::UvTrim::u_breaks::h501245b98d9a961b",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::build_face_uv::h29fc95f182499a36",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::build_face_uv_with_holes::h00f00dc75772478c",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_face_fixed_flux_impl::h892049a7b3c55060",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_face_impl::hd149372132db0a1f",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::integrate_planar_face::h07daba9b37a57979",
+            "samples": 1
+          },
+          {
+            "name": "remus_check::properties::face_integrator::planar_wire_monomial_moments::ha4ec41f2542f2c2b",
+            "samples": 1
+          },
+          {
+            "name": "remus_math::surfaces::ConicalSurface::evaluate::hd2fd1f11494f117b",
+            "samples": 1
+          },
+          {
+            "name": "remus_operations::query::edge_curve_span::h5fcd194355f0764a",
+            "samples": 1
+          },
+          {
+            "name": "remus_operations::query::samples_normal_angle::h73ae0beaf244770a",
+            "samples": 1
+          },
+          {
+            "name": "remus_operations::tessellate::nurbs::tessellate_nurbs::{{closure}}::hfedfbe86d0eac88b",
+            "samples": 1
+          },
+          {
+            "name": "remus_topology::topology::Topology::edge::h0e5eb27548d8a43f",
+            "samples": 1
+          },
+          {
+            "name": "serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize::h6f319161237342bb",
+            "samples": 1
+          },
+          {
+            "name": "std::io::impls::<impl std::io::Write for &mut W>::write_all::hd4c096ab7ae72201",
+            "samples": 1
+          }
+        ]
+      }
+    ]
+  },
+  "rawCpuProfiles": {
+    "recognize-2.cpuprofile": {
+      "sha256": "ea9f989d7ff94958ba4038ba6e50f2817706a2bebda2c7a7ffc4d3bb4e57d77c",
+      "bytes": 80060
+    },
+    "recognize-3.cpuprofile": {
+      "sha256": "fe564ebc005ce25e166f87d73290589a34e961f176d4e40bb67b66c8bd764367",
+      "bytes": 81056
+    }
+  }
+}

@@ -1025,6 +1025,18 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ca91b95
 
 ### Blends, offsets and other modeling operations
 
+#### PERF-O06-TR: torus ray norm comparisons
+
+Local candidate: [d782 attribution and bounded comparison proof](../performance/perf-o06-torus-ray-crossings.md)
+records about 1.3M norm calls per retained recognition edit and no repeated
+carrier/ray inputs. Conservative component bounds keep the original hypot for
+uncertain/nonfinite comparisons; every iterate, FMA, root and trim operation
+retains its existing arithmetic. IEEE/Cartesian oracles and verbatim old-solver
+root-bit comparisons are included. Quiet before/after timing and immutable-head
+workspace/package qualification are pending. The existing curved torus boundary
+classifier ready-repro remains open.
+
+
 Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268), [source 2](https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108), [source 3](https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24), [source 4](https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113), [source 5](https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40), [source 6](https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141).
 
 | ID | Priority / phase / evidence | Work | Measurement and acceptance | Effort / risk | Dependencies | Owner | State |
