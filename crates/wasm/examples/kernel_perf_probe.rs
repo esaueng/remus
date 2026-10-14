@@ -395,12 +395,22 @@ fn plate(stage: &str, iters: usize) {
     if stage == "boolean" {
         // Tools sit in solid web between pockets and holes, so each boolean
         // is a local edit of an otherwise untouched filleted body.
-        let mut clones: Vec<Topology> = (0..iters).map(|_| filleted_topo.clone()).collect();
-        for (i, topo) in clones.iter_mut().enumerate() {
+        // Each clone gets its own positioned tools first, so the timed and
+        // sampled loop holds only the booleans.
+        let mut jobs: Vec<(Topology, SolidId, SolidId)> = (0..iters)
+            .map(|i| {
+                let mut topo = filleted_topo.clone();
+                let tool =
+                    primitives::make_cylinder(&mut topo, 3.5 + i as f64 * 0.01, 40.0).unwrap();
+                translate(&mut topo, tool, 40.0, 59.0, -10.0);
+                let boss = primitives::make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+                translate(&mut topo, boss, 140.0, 59.0, 12.0);
+                (topo, tool, boss)
+            })
+            .collect();
+        for (topo, tool, boss) in &mut jobs {
             let t = Instant::now();
-            let tool = primitives::make_cylinder(topo, 3.5 + i as f64 * 0.01, 40.0).unwrap();
-            translate(topo, tool, 40.0, 59.0, -10.0);
-            let cut = boolean(topo, BooleanOp::Cut, body_f, tool);
+            let cut = boolean(topo, BooleanOp::Cut, body_f, *tool);
             let elapsed = ms(t);
             let Ok(cut) = cut.inspect_err(|e| {
                 stages.record("cut_filleted_refused", elapsed);
@@ -410,9 +420,7 @@ fn plate(stage: &str, iters: usize) {
             };
             stages.record("cut_filleted", elapsed);
             let t = Instant::now();
-            let boss = primitives::make_cylinder(topo, 5.0, 10.0).unwrap();
-            translate(topo, boss, 140.0, 59.0, 12.0);
-            let fused = boolean(topo, BooleanOp::Fuse, cut, boss);
+            let fused = boolean(topo, BooleanOp::Fuse, cut, *boss);
             let elapsed = ms(t);
             match fused {
                 Ok(_) => stages.record("fuse_filleted", elapsed),
