@@ -109,6 +109,15 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
+  retains the seven spherical octants with closed meshes and correct material
+  queries. Sphere primitives use exact circular equator arcs. The no-seam
+  splitter accepts qualified complete equator partitions, spherical mesh
+  charts check whole native arcs, and qualified great-circle trims use
+  analytic containment for ray and boundary queries. Native and packaged
+  direct/batch regressions compare volume and area with independent formulas.
+  The related literal F8 sphere/box union shares the repair and is qualified
+  in both operand orders.
 * **algo,check,operations,wasm:** rotated finite-cylinder cuts retain the
   stock crescent in differential finding F3. Qualified circular caps clip
   complete ellipse intervals at boundary events. Oblique cap-plane lines use

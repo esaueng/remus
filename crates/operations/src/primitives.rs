@@ -498,15 +498,12 @@ pub fn make_cone(
 
 /// Create a sphere solid centered at the origin.
 ///
-/// Built as a single spherical face with a degenerate boundary wire,
-/// boundary wire, yielding exact `SphericalSurface` geometry with proper
-/// topology for boolean operations.
+/// Built as two spherical hemispheres sharing an exact circular equator.
 ///
 /// The `segments` parameter controls the number of vertices on the
-/// equatorial boundary polygon (minimum 4). Higher values improve
-/// boolean accuracy for curved intersections. Tessellation density
-/// is separately controlled by the `deflection` parameter at
-/// tessellation time.
+/// equatorial boundary (minimum 4). Consecutive vertices partition the
+/// equator into exact circular arcs; `segments` does not approximate their
+/// geometry. Tessellation density is separately controlled by `deflection`.
 ///
 /// # Errors
 ///
@@ -536,7 +533,7 @@ pub fn make_sphere(
     let surface_s = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), radius)
         .map_err(crate::OperationsError::Math)?;
 
-    // Equatorial polygon: `segments` vertices evenly spaced on the circle
+    // Equatorial partition: `segments` vertices evenly spaced on the circle
     // at z = 0, forming the shared boundary between north and south hemispheres.
     let eq_verts: Vec<_> = (0..segments)
         .map(|i| {
@@ -546,11 +543,25 @@ pub fn make_sphere(
         })
         .collect();
 
-    // Line edges connecting consecutive equatorial vertices (closed polygon).
+    // Both hemispheres have the same exact equator. A straight chord only
+    // meets the spherical carrier at its endpoints, and leaves a sagitta gap
+    // that downstream intersections and shared-boundary meshing cannot close.
+    // Use one reference frame and explicit native trims, including the final
+    // arc through 2pi, while preserving the vertex/edge counts and traversal.
+    let equator = remus_math::curves::Circle3D::new_with_ref(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        radius,
+        Vec3::new(1.0, 0.0, 0.0),
+    )?;
     let eq_edges: Vec<_> = (0..segments)
         .map(|i| {
             let j = (i + 1) % segments;
-            topo.add_edge(Edge::new(eq_verts[i], eq_verts[j], EdgeCurve::Line))
+            let start = TAU * i as f64 / segments as f64;
+            let end = TAU * (i + 1) as f64 / segments as f64;
+            let mut edge = Edge::new(eq_verts[i], eq_verts[j], EdgeCurve::Circle(equator.clone()));
+            edge.set_trim(Some((start, end)));
+            topo.add_edge(edge)
         })
         .collect();
 
@@ -892,3 +903,7 @@ fn minkowski_point_sum_count(a: usize, b: usize) -> Result<usize, crate::Operati
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "primitives/sphere_equator_tests.rs"]
+mod sphere_equator_tests;

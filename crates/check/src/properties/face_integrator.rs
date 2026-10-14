@@ -21,6 +21,7 @@ use crate::CheckError;
 
 mod adaptive;
 mod loop_index;
+mod sphere_latitude;
 
 use loop_index::{IntervalIndex, winding_number_over};
 use remus_math::fma::FusedMulAdd;
@@ -383,9 +384,31 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
     rule: IntegrationRule<'_>,
 ) -> Result<FaceContribution, CheckError> {
     let face = topo.face(face_id)?;
+    let mut partition_samples = None;
     if !matches!(face.surface(), FaceSurface::Plane { .. }) {
         // Extent and UV bounds sample curves before trim construction.
-        check_trim_point_budget(topo, face)?;
+        if let Err(error) = check_trim_point_budget(topo, face) {
+            // Retain historical quadrature arithmetic for every face already
+            // inside the sample budget. Exact native domains only recover
+            // representation fragmentation that the old budget rejects.
+            if let FaceSurface::Sphere(sphere) = face.surface() {
+                if let Some(v_range) = sphere_latitude::domain(topo, face, sphere)? {
+                    return integrate_parametric::<_, AREA_ONLY>(
+                        sphere,
+                        (0.0, std::f64::consts::TAU),
+                        v_range,
+                        rule,
+                        if face.is_reversed() { -1.0 } else { 1.0 },
+                        &UvTrim::new(None, &[], &[], true),
+                        PatchScale::ANGULAR,
+                    );
+                }
+                partition_samples = sphere_latitude::partition_samples(topo, face, sphere)?;
+            }
+            if partition_samples.is_none() {
+                return Err(error);
+            }
+        }
     }
     let reversed = face.is_reversed();
     let sign = if reversed { -1.0 } else { 1.0 };
@@ -519,9 +542,18 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 (0.0, std::f64::consts::TAU),
                 (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
             );
-            let ((u_range, v_range), outline) =
-                face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
-            let mut uv = build_face_uv(
+            let ((u_range, v_range), outline) = face_uv_bounds_with_outline(
+                topo,
+                face_id,
+                &|p| s.project_point(p),
+                true,
+                false,
+                full,
+                partition_samples
+                    .as_ref()
+                    .map(|samples| samples.outer.as_slice()),
+            )?;
+            let mut uv = build_face_uv_with_holes(
                 topo,
                 face_id,
                 |p| s.project_point(p),
@@ -529,14 +561,21 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 true,
                 false,
                 false,
+                partition_samples
+                    .as_ref()
+                    .map(|samples| samples.holes.as_slice()),
             )?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
-            for hole in crate::util::face_hole_polygons_curve_sampled(
-                topo,
-                face_id,
-                TRIM_SAMPLES,
-                TRIM_SAMPLES,
-            )? {
+            let hole_polygons = match partition_samples.as_ref() {
+                Some(samples) => samples.holes.clone(),
+                None => crate::util::face_hole_polygons_curve_sampled(
+                    topo,
+                    face_id,
+                    TRIM_SAMPLES,
+                    TRIM_SAMPLES,
+                )?,
+            };
+            for hole in hole_polygons {
                 let mut band = UvLoop::new(
                     hole.iter()
                         .map(|&p| {
@@ -1380,6 +1419,32 @@ fn build_face_uv<F>(
 where
     F: Fn(Point3) -> (f64, f64),
 {
+    build_face_uv_with_holes(
+        topo,
+        face_id,
+        project,
+        outline,
+        u_periodic,
+        v_periodic,
+        v_unbounded,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_face_uv_with_holes<F>(
+    topo: &Topology,
+    face_id: FaceId,
+    project: F,
+    outline: Option<Vec<(f64, f64)>>,
+    u_periodic: bool,
+    v_periodic: bool,
+    v_unbounded: bool,
+    prepared_holes: Option<&[Vec<Point3>]>,
+) -> Result<FaceUv, CheckError>
+where
+    F: Fn(Point3) -> (f64, f64),
+{
     let to_loop = |pts: &[Point3]| {
         UvLoop::new(
             pts.iter()
@@ -1421,9 +1486,16 @@ where
 
     let mut pockets = Vec::new();
     let mut bands = Vec::new();
-    for hole in
-        crate::util::face_hole_polygons_curve_sampled(topo, face_id, TRIM_SAMPLES, TRIM_SAMPLES)?
-    {
+    let hole_polygons = match prepared_holes {
+        Some(holes) => holes.to_vec(),
+        None => crate::util::face_hole_polygons_curve_sampled(
+            topo,
+            face_id,
+            TRIM_SAMPLES,
+            TRIM_SAMPLES,
+        )?,
+    };
+    for hole in hole_polygons {
         let loop_ = to_loop(&hole);
         let wraps = u_periodic && loop_.u_winding().abs() >= std::f64::consts::TAU - WRAP_EPS;
         if wraps {
@@ -1798,6 +1870,27 @@ fn face_uv_bounds(
     periodic_v: bool,
     full_domain: UvBounds,
 ) -> Result<BoundsAndOutline, CheckError> {
+    face_uv_bounds_with_outline(
+        topo,
+        face_id,
+        project,
+        periodic_u,
+        periodic_v,
+        full_domain,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn face_uv_bounds_with_outline(
+    topo: &Topology,
+    face_id: FaceId,
+    project: &dyn Fn(Point3) -> (f64, f64),
+    periodic_u: bool,
+    periodic_v: bool,
+    full_domain: UvBounds,
+    prepared_outline: Option<&[Point3]>,
+) -> Result<BoundsAndOutline, CheckError> {
     let face = topo.face(face_id)?;
     let outer_has_edge = |curved: fn(&EdgeCurve) -> bool| -> Result<bool, CheckError> {
         Ok(topo
@@ -1825,12 +1918,15 @@ fn face_uv_bounds(
             && outer_has_edge(|c| !matches!(c, EdgeCurve::Line))?)
     {
         // A quadric section can bulge far beyond its edge endpoints.
-        let points = crate::util::wire_polygon_curve_sampled(
-            topo,
-            face.outer_wire(),
-            TRIM_SAMPLES,
-            TRIM_SAMPLES,
-        )?;
+        let points = match prepared_outline {
+            Some(points) => points.to_vec(),
+            None => crate::util::wire_polygon_curve_sampled(
+                topo,
+                face.outer_wire(),
+                TRIM_SAMPLES,
+                TRIM_SAMPLES,
+            )?,
+        };
         let projected: Vec<(f64, f64)> = points.into_iter().map(project).collect();
         (projected.clone(), Some(projected))
     } else {

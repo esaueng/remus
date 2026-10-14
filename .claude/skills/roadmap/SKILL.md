@@ -103,12 +103,10 @@ that does not exist yet; without it, stop.
   plus exact closed-form volume) STANDS. Needs a face-split-at-pinch primitive on a
   periodic wall, or a periodic-aware crossing-holes mesher. There is no
   `exact_cylinder_cylinder` symbol; do not go looking for one.
-- **Plane-by-sphere splitting across the chord-discretized equator.** The general
-  capability behind box-sphere; a section circle's crossings miss a polygon-approximated
-  equator by the sagitta. Box-sphere was closed (#1006) with a case-specific seam-plane
-  fit (`rg -n 'seam_plane' crates/`). The general fix is a UV-space arrangement
-  splitter, a dedicated multi-day component not yet built. The boundary-plane
-  crossing technique is proven and reusable.
+- **Sphere equators must remain exact circles (F6).** Primitive equator arcs now
+  have explicit native trims, and the no-seam splitter accepts qualified complete
+  equator partitions. General spherical arrangements remain open; the earlier
+  box-sphere seam-plane fit (#1006) remains a separate bounded path.
 - **Gridfinity scoop fuse (3x3 scoop+label+lip).** Root: a lip-foot cone must be split
   with a coordinated staircase cone-split plus bracket-cap re-trim sharing the new edge;
   every one-sided attempt regresses. Many sequential autonomous passes exhausted.
@@ -139,6 +137,10 @@ that does not exist yet; without it, stop.
   area and exact endpoint-chain authority. A vertex-only Newell test can
   reverse a valid curved cap. Pin opposing coedges independently: both volume
   routes can agree while the cap remains topologically misoriented.
+- **A spherical trim needs its retained region, not the first meridian's chart
+  (F6).** Qualify whole native arcs before hemisphere meshing; use oriented
+  great-circle containment for qualified concave trims and boundary queries.
+  Agreeing volume routes do not prove material or raw mesh closure.
 
 ## Open items with a repro
 

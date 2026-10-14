@@ -314,6 +314,14 @@ fn is_on_boundary(
 ) -> Result<bool, CheckError> {
     for &fid in faces {
         if face_surface_distance(topo, fid, point, tolerance)? < tolerance {
+            if let Some(inside) =
+                boundary::qualified_sphere_trim_contains(topo, fid, None, point, tolerance)?
+            {
+                if inside {
+                    return Ok(true);
+                }
+                continue;
+            }
             let outer = boundary::FaceTrimData::build_outer(topo, fid)?;
             if boundary::outer_contains_point(&outer, point) {
                 let holes = boundary::FaceTrimData::build_holes(topo, fid)?;
