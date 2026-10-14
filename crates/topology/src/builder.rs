@@ -482,6 +482,22 @@ fn sample_wire_for_planarity(
 
         let start_pt = topo.vertex(oe.oriented_start(edge))?.point();
         let end_pt = topo.vertex(oe.oriented_end(edge))?.point();
+        // The parameter span the edge actually traces, start vertex to end
+        // vertex. Projecting the endpoints alone cannot tell an arc from its
+        // complement. Raw construction input may not carry a trim yet; it is
+        // read through the named reconstruction adapter, which follows the
+        // convention every untrimmed conic edge does (counter-clockwise from
+        // start to end).
+        let traced_domain = || {
+            if let Ok(domain) = edge.strict_domain() {
+                return Ok(domain);
+            }
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            Ok::<_, crate::TopologyError>(
+                edge.curve().reconstruct_domain_from_endpoints(start, end),
+            )
+        };
 
         match edge.curve() {
             EdgeCurve::Line => {
@@ -495,13 +511,12 @@ fn sample_wire_for_planarity(
                     conic_plane = Some(plane_from(c.center(), c.normal()));
                 }
                 let before = points.len();
-                sample_conic(
-                    start_pt,
-                    end_pt,
+                sample_traced_span(
+                    traced_domain()?,
                     edge.is_closed(),
+                    oe.is_forward(),
                     &mut points,
                     |t| c.evaluate(t),
-                    |p| c.project(p),
                 );
                 ordered.extend_from_slice(&points[before..]);
             }
@@ -510,13 +525,12 @@ fn sample_wire_for_planarity(
                     conic_plane = Some(plane_from(e.center(), e.normal()));
                 }
                 let before = points.len();
-                sample_conic(
-                    start_pt,
-                    end_pt,
+                sample_traced_span(
+                    traced_domain()?,
                     edge.is_closed(),
+                    oe.is_forward(),
                     &mut points,
                     |t| e.evaluate(t),
-                    |p| e.project(p),
                 );
                 ordered.extend_from_slice(&points[before..]);
             }
@@ -549,9 +563,18 @@ fn sample_wire_for_planarity(
                 ordered.extend_from_slice(&points[before..]);
             }
             EdgeCurve::NurbsCurve(nc) => {
+                // The poles witness planarity; the winding needs points on the
+                // curve itself, since a chord cannot say which way it bulges.
                 points.extend_from_slice(nc.control_points());
-                ordered.push(start_pt);
-                ordered.push(start_pt + (end_pt - start_pt) * 0.5);
+                let mut traced = Vec::with_capacity(4);
+                sample_traced_span(
+                    traced_domain()?,
+                    edge.is_closed(),
+                    oe.is_forward(),
+                    &mut traced,
+                    |t| nc.evaluate(t),
+                );
+                ordered.extend_from_slice(&traced);
             }
         }
     }
@@ -584,34 +607,29 @@ fn sample_open_conic(
     }
 }
 
-/// Sample an oriented conic sub-arc at four points along the short way
-/// between its endpoints, so samples lie on the real curve segment rather
-/// than the antipodal arc.
-fn sample_conic(
-    start_pt: Point3,
-    end_pt: Point3,
+/// Sample an edge's traced parameter span `(t0, t1)` at four points in wire
+/// traversal order: start to end when the edge is used forward, end to start
+/// when it is reversed.
+///
+/// The span decides which arc is meant: an open arc past π and its
+/// complement share their endpoints, so a short-way walk between projected
+/// endpoints traces the wrong one and winds the loop backwards. A closed edge
+/// takes four distinct points around its whole span instead of repeating its
+/// start.
+fn sample_traced_span(
+    (t0, t1): (f64, f64),
     closed: bool,
+    forward: bool,
     out: &mut Vec<Point3>,
     evaluate: impl Fn(f64) -> Point3,
-    project: impl Fn(Point3) -> f64,
 ) {
-    let tau = std::f64::consts::TAU;
-    if closed {
-        for i in 0..4 {
-            out.push(evaluate(tau * f64::from(i) / 4.0));
-        }
-        return;
+    let steps = if closed { 4.0 } else { 3.0 };
+    let before = out.len();
+    for i in 0..4 {
+        out.push(evaluate(t0 + (t1 - t0) * f64::from(i) / steps));
     }
-    let t_a = project(start_pt);
-    let t_b = project(end_pt);
-    let mut delta = t_b - t_a;
-    if delta > PI {
-        delta -= tau;
-    } else if delta < -PI {
-        delta += tau;
-    }
-    for i in 0..=3 {
-        out.push(evaluate(t_a + delta * f64::from(i) / 3.0));
+    if !forward {
+        out[before..].reverse();
     }
 }
 
@@ -2329,11 +2347,20 @@ mod tests {
         assert_eq!(topo.edges().len(), 0);
     }
 
-    /// Builds `arc` (a circular sub-arc from `a` to `b`) closed by its chord.
-    fn arc_and_chord_wire(topo: &mut Topology, circle: &Circle3D, a: Point3, b: Point3) -> WireId {
+    /// Builds `arc` (a circular sub-arc from `a` to `b`, spanning `trim` when
+    /// given) closed by its chord.
+    fn arc_and_chord_wire(
+        topo: &mut Topology,
+        circle: &Circle3D,
+        a: Point3,
+        b: Point3,
+        trim: Option<(f64, f64)>,
+    ) -> WireId {
         let va = topo.add_vertex(Vertex::new(a, TOL));
         let vb = topo.add_vertex(Vertex::new(b, TOL));
-        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle.clone())));
+        let mut arc = Edge::new(va, vb, EdgeCurve::Circle(circle.clone()));
+        arc.set_trim(trim);
+        let arc = topo.add_edge(arc);
         let chord = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
         let wire = Wire::new(
             vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
@@ -2343,11 +2370,15 @@ mod tests {
         topo.add_wire(wire)
     }
 
-    /// A circular sub-arc is sampled along the arc it actually spans — the
-    /// short way between its endpoints, in its own traversal direction — so
-    /// the face normal follows the boundary's winding.
+    /// A circular sub-arc is sampled along the parameter span it traces, in
+    /// its own traversal direction, so the face normal follows the boundary's
+    /// winding. A trimmed arc traces its trim, either way round; an untrimmed
+    /// one traces the counter-clockwise span from start to end, as
+    /// `EdgeCurve::reconstruct_domain_from_endpoints` (and so every other
+    /// consumer of the edge) reads it.
     #[test]
     fn conic_sub_arc_is_sampled_along_the_traversed_arc() {
+        type Case = (Point3, Point3, Option<(f64, f64)>, f64);
         let circle = Circle3D::new_with_ref(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
@@ -2358,28 +2389,48 @@ mod tests {
         let pos = Point3::new(1.0, 0.0, 0.0);
         let neg = Point3::new(-1.0, 0.0, 0.0);
 
-        let cases: [(Point3, Point3, f64); 5] = [
+        let tau = std::f64::consts::TAU;
+        let pi = std::f64::consts::PI;
+        let cases: [Case; 7] = [
             // clockwise minor arc
-            (circle.evaluate(1.0), circle.evaluate(0.0), -1.0),
-            // raw parameter difference above +pi: the real arc runs clockwise
-            (circle.evaluate(-2.0), circle.evaluate(2.0), -1.0),
-            // raw parameter difference below -pi: the real arc runs CCW
-            (circle.evaluate(2.0), circle.evaluate(-2.0), 1.0),
+            (
+                circle.evaluate(1.0),
+                circle.evaluate(0.0),
+                Some((1.0, 0.0)),
+                -1.0,
+            ),
+            // clockwise through the +/-pi seam
+            (
+                circle.evaluate(-2.0),
+                circle.evaluate(2.0),
+                Some((-2.0, 2.0 - tau)),
+                -1.0,
+            ),
+            // counter-clockwise through the seam
+            (
+                circle.evaluate(2.0),
+                circle.evaluate(-2.0),
+                Some((2.0, tau - 2.0)),
+                1.0,
+            ),
             // exact half turns, both directions
-            (pos, neg, 1.0),
-            (neg, pos, -1.0),
+            (pos, neg, Some((0.0, pi)), 1.0),
+            (neg, pos, Some((pi, 0.0)), -1.0),
+            // untrimmed: the counter-clockwise span, the major arc here
+            (circle.evaluate(1.0), circle.evaluate(0.0), None, 1.0),
+            (neg, pos, None, 1.0),
         ];
 
-        for (a, b, expected_z) in cases {
+        for (a, b, trim, expected_z) in cases {
             let mut topo = Topology::new();
-            let wid = arc_and_chord_wire(&mut topo, &circle, a, b);
+            let wid = arc_and_chord_wire(&mut topo, &circle, a, b, trim);
             let fid = make_face_from_wire(&mut topo, wid).unwrap();
             let FaceSurface::Plane { normal, .. } = topo.face(fid).unwrap().surface() else {
                 panic!("an arc and its chord are coplanar");
             };
             assert!(
                 (normal.z() - expected_z).abs() < 1e-9,
-                "arc {a:?} -> {b:?}: normal z {} must be {expected_z}",
+                "arc {a:?} -> {b:?} over {trim:?}: normal z {} must be {expected_z}",
                 normal.z()
             );
         }
@@ -2640,9 +2691,18 @@ mod tests {
         )
         .unwrap();
 
+        // The arc is the quarter turn on the far side of the centre from the
+        // parabola; its trim says so; untrimmed, it would read as the
+        // counter-clockwise three-quarter turn about its -Z normal.
+        let t0 = circle.project(p0);
+        let quarter = (circle.project(p1) - t0 + std::f64::consts::PI)
+            .rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
         let v0 = topo.add_vertex(Vertex::new(p0, TOL));
         let v1 = topo.add_vertex(Vertex::new(p1, TOL));
-        let arc = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(circle)));
+        let mut arc = Edge::new(v0, v1, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((t0, t0 + quarter)));
+        let arc = topo.add_edge(arc);
         let par = topo.add_edge(Edge::new(v1, v0, EdgeCurve::Parabola(parabola)));
         let wire = Wire::new(
             vec![OrientedEdge::new(arc, true), OrientedEdge::new(par, true)],
@@ -2778,13 +2838,20 @@ mod tests {
         topo.add_wire(wire)
     }
 
-    /// An arc whose endpoint parameters straddle the +/-pi seam is sampled
-    /// across the seam, not the long way round the circle: only the short
-    /// arc hugs the companion plane closely enough to stay planar.
+    /// An arc whose span crosses the +/-pi seam is sampled across the seam,
+    /// not the long way round the circle: only the short arc hugs the
+    /// companion plane closely enough to stay planar. Untrimmed, the
+    /// clockwise pair reads as the counter-clockwise long way, which leaves
+    /// the plane.
     #[test]
     fn conic_sub_arc_across_the_seam_samples_the_short_way() {
         let slope = 1.4286e-7;
-        for span in [0.6, -0.6] {
+        for (span, trimmed, planar) in [
+            (0.6, true, true),
+            (-0.6, true, true),
+            (0.6, false, true),
+            (-0.6, false, false),
+        ] {
             let tilted = tilted_circle(slope);
             let t_a = if span > 0.0 { 3.04 } else { -3.04 };
             let a = tilted.evaluate(t_a);
@@ -2793,13 +2860,17 @@ mod tests {
             let mut topo = Topology::new();
             let va = topo.add_vertex(Vertex::new(a, TOL));
             let vb = topo.add_vertex(Vertex::new(b, TOL));
-            let edge = Edge::new(va, vb, EdgeCurve::Circle(tilted));
+            let mut edge = Edge::new(va, vb, EdgeCurve::Circle(tilted));
+            if trimmed {
+                edge.set_trim(Some((t_a, t_a + span)));
+            }
             let wid = seam_fixture_wire(&mut topo, edge);
 
             let fid = make_face_from_wire(&mut topo, wid).unwrap();
-            assert!(
+            assert_eq!(
                 matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
-                "span {span}: the short seam-crossing arc stays within tolerance"
+                planar,
+                "span {span}, trimmed {trimmed}"
             );
         }
     }

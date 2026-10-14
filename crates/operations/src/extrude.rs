@@ -591,10 +591,17 @@ fn extrude_wire_vertices_with(
 ///
 /// Returns `(surface, is_reversed)` — `is_reversed` is `true` when the
 /// surface's native normal points inward and the face needs flipping.
+///
+/// `arc_mid` is the point at the middle of the edge's traced parameter span.
+/// A circular wall is oriented there: the arc's tangent at its parameter
+/// midpoint is parallel to the chord `p0 → p1` in traversal order for every
+/// arc length, whereas at `p0` the chord turns against the tangent once the
+/// arc passes π.
 fn side_face_surface(
     curve: &EdgeCurve,
     p0: Point3,
     p1: Point3,
+    arc_mid: Point3,
     trim: Option<(f64, f64)>,
     offset: Vec3,
     outer_is_cw: bool,
@@ -629,11 +636,12 @@ fn side_face_surface(
             } else {
                 edge_dir.cross(offset)
             };
-            // Cylinder natural normal at p0: radial direction from axis.
+            // Cylinder natural normal at the arc midpoint: radial direction
+            // from the axis.
             let to_pt = Vec3::new(
-                p0.x() - circle.center().x(),
-                p0.y() - circle.center().y(),
-                p0.z() - circle.center().z(),
+                arc_mid.x() - circle.center().x(),
+                arc_mid.y() - circle.center().y(),
+                arc_mid.z() - circle.center().z(),
             );
             let along_axis = cyl.axis() * cyl.axis().dot(to_pt);
             let radial = to_pt - along_axis;
@@ -667,7 +675,7 @@ fn side_face_surface(
                 } else {
                     edge_dir.cross(offset)
                 };
-                let to_pt = p0 - center;
+                let to_pt = arc_mid - center;
                 let along_axis = cyl.axis() * cyl.axis().dot(to_pt);
                 let radial = to_pt - along_axis;
                 let reversed = radial.dot(expected) < 0.0;
@@ -718,6 +726,26 @@ fn side_face_surface(
             Ok((FaceSurface::Nurbs(surface), reversed))
         }
     }
+}
+
+/// The point at the middle of the parameter span an edge traces from its
+/// start vertex to its end vertex. It is the same whichever way a wire uses
+/// the edge. A profile edge without parameter authority (raw construction,
+/// such as a primitive's rim) is read through the named reconstruction
+/// adapter, the counter-clockwise span an untrimmed conic edge follows.
+fn traced_span_midpoint(
+    topo: &Topology,
+    edge_id: EdgeId,
+) -> Result<Point3, crate::OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let (t0, t1) = edge
+        .strict_domain()
+        .unwrap_or_else(|_| edge.curve().reconstruct_domain_from_endpoints(start, end));
+    Ok(edge
+        .curve()
+        .evaluate_with_endpoints(0.5 * (t0 + t1), start, end))
 }
 
 /// Check if the ruled NURBS surface's native normal disagrees with the
@@ -1244,8 +1272,9 @@ fn extrude_impl(
             let e = topo.edge(input_edge_ids[i])?;
             (e.curve().clone(), e.trim())
         };
+        let arc_mid = traced_span_midpoint(topo, input_edge_ids[i])?;
         let (surface, reversed) =
-            side_face_surface(&edge_curve, p0, p1, trim, offset, outer_is_cw)?;
+            side_face_surface(&edge_curve, p0, p1, arc_mid, trim, offset, outer_is_cw)?;
 
         // A reversed face flips every edge's effective traversal, so the wire
         // must be built with reversed winding too, or the face traverses its
@@ -1308,8 +1337,9 @@ fn extrude_impl(
             };
             // Inner wires have flipped winding relative to outer
             let inner_is_cw = !is_cw;
+            let arc_mid = traced_span_midpoint(topo, iwd.edge_ids[i])?;
             let (surface, reversed) =
-                side_face_surface(&edge_curve, p0, p1, trim, offset, inner_is_cw)?;
+                side_face_surface(&edge_curve, p0, p1, arc_mid, trim, offset, inner_is_cw)?;
 
             // A full closed circle passed through unsplit becomes one exact
             // cylinder wall, but its start==end vertex makes `edge_dir` zero, so
