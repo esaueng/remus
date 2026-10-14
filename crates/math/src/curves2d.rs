@@ -264,7 +264,9 @@ impl NurbsCurve2D {
     ///
     /// # Errors
     /// Returns an error if knot vector or weights are inconsistent with
-    /// the number of control points and degree.
+    /// the number of control points and degree, if the degree is zero or not
+    /// below the control-point count, if the knots are non-finite, decreasing
+    /// or span no domain, or if a weight is zero or negative.
     pub fn new(
         degree: usize,
         knots: Vec<f64>,
@@ -287,6 +289,23 @@ impl NurbsCurve2D {
         }
         if n == 0 {
             return Err(MathError::EmptyInput);
+        }
+        // The structural checks of the 3D curve: evaluation indexes
+        // `span - degree`, so a degree of at least the pole count underflows,
+        // and an unordered or collapsed knot vector or a zero or negative
+        // weight evaluates to garbage or a division by zero. Non-finite poles
+        // and weights are not refused here: pcurve validation reports them
+        // against their use, and arena documents bypass this constructor.
+        if degree == 0 || degree >= n {
+            return Err(MathError::InvalidDegree {
+                degree,
+                control_points: n,
+            });
+        }
+        crate::nurbs::validate_knot_values(&knots)?;
+        crate::nurbs::validate_knot_domain(&knots, degree, n)?;
+        if let Some((index, &value)) = weights.iter().enumerate().find(|(_, w)| **w <= 0.0) {
+            return Err(MathError::InvalidWeightValue { index, value });
         }
         Ok(Self {
             degree,
