@@ -1220,3 +1220,31 @@ fn rewriting_own_allocations_matches_full_snapshot_oracle() {
         assert_eq!(outcomes[0], outcomes[1], "stop {stop}");
     }
 }
+
+/// A snapshot cloned before the scope opened is not a prefix of the scope's
+/// log even when the log lengths coincide: restoring it inside the scope
+/// must still let the rollback revive what was allocated in between.
+#[test]
+fn restoring_a_snapshot_older_than_the_scope_rolls_back_exactly() {
+    for preserving_slots in [false, true] {
+        let mut t = Topology::new();
+        let checkpoint = t.clone();
+        let between = seed(&mut t);
+        let before = state(&t);
+        let result = run_transacted(&mut t, |t| {
+            if preserving_slots {
+                t.restore_preserving_handle_slots(&checkpoint);
+            } else {
+                t.restore_for_rollback(&checkpoint);
+            }
+            assert!(t.vertex(between).is_err());
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        assert!(result.is_err());
+        assert!(
+            t.vertex(between).is_ok(),
+            "preserving slots: {preserving_slots}"
+        );
+        assert_eq!(state(&t), before, "preserving slots: {preserving_slots}");
+    }
+}
