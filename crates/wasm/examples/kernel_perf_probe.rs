@@ -289,9 +289,10 @@ fn fillet(
 }
 
 fn plate(stage: &str, iters: usize) {
-    let mut stages = Stages::new();
+    // One-off construction timings, kept apart from the requested loop.
+    let mut setup = Stages::new();
     let mut base = Topology::new();
-    let body = build_plate(&mut base, &mut stages);
+    let body = build_plate(&mut base, &mut setup);
     let mut filleted_topo = base.clone();
     let mut body_f = body;
     // Outer vertical corners.
@@ -306,7 +307,7 @@ fn plate(stage: &str, iters: usize) {
         &corners,
         6.0,
         "fillet_corners",
-        &mut stages,
+        &mut setup,
     );
     // Pocket vertical walls (short vertical lines of length 8).
     let pocket_vert = select_edges(&filleted_topo, body_f, |t, e, faces| {
@@ -321,7 +322,7 @@ fn plate(stage: &str, iters: usize) {
         &pocket_vert,
         2.0,
         "fillet_pocket_walls",
-        &mut stages,
+        &mut setup,
     );
     if solid_faces(&filleted_topo, body_f).unwrap().len() < 100 {
         // Whole-selection refusal: round each pocket on its own.
@@ -337,7 +338,7 @@ fn plate(stage: &str, iters: usize) {
                 &live,
                 2.0,
                 "fillet_one_pocket",
-                &mut stages,
+                &mut setup,
             );
         }
     }
@@ -354,7 +355,7 @@ fn plate(stage: &str, iters: usize) {
         &rims,
         0.8,
         "fillet_hole_rims",
-        &mut stages,
+        &mut setup,
     );
     let face_count = solid_faces(&filleted_topo, body_f).unwrap().len();
     println!(
@@ -363,6 +364,8 @@ fn plate(stage: &str, iters: usize) {
         corners.len(),
         pocket_vert.len()
     );
+    setup.report("plate setup (single run)");
+    let mut stages = Stages::new();
     if stage == "fillet" {
         for _ in 0..iters {
             let mut topo = base.clone();
@@ -461,6 +464,35 @@ fn main() {
     let scenario = args.get(1).map_or("hammer", String::as_str);
     let stage = args.get(2).map_or("all", String::as_str);
     let iters = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(6);
+    let supported: &[&str] = match scenario {
+        "hammer" => &[
+            "all",
+            "move",
+            "validate",
+            "bbox",
+            "display",
+            "volume",
+            "recognize",
+            "massprops",
+        ],
+        "plate" => &[
+            "all",
+            "move",
+            "validate",
+            "bbox",
+            "display",
+            "volume",
+            "recognize",
+            "massprops",
+            "fillet",
+            "boolean",
+        ],
+        _ => &[],
+    };
+    if !supported.is_empty() && !supported.contains(&stage) {
+        eprintln!("unknown stage {stage} for {scenario}; expected one of {supported:?}");
+        std::process::exit(2);
+    }
     match scenario {
         "hammer" => hammer(stage, iters),
         "plate" => plate(stage, iters),
