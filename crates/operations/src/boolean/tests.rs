@@ -11009,3 +11009,42 @@ fn scaling_raycast_votes_measure_few_segments() {
         );
     }
 }
+
+/// The lone-circle shortcut in `hole_winding_sign` must agree in sign with
+/// the sampled `wire_winding_sign` it replaces, for both circle axes, both
+/// face normals, both traversal directions and ascending, descending and
+/// lifted parameter spans.
+#[test]
+fn hole_winding_shortcut_matches_sampled_sign() {
+    use remus_math::curves::Circle3D;
+    use std::f64::consts::TAU;
+
+    let mut topo = Topology::new();
+    let center = Point3::new(1.0, -2.0, 3.0);
+    let mut checked = 0;
+    for axis_z in [1.0, -1.0] {
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, axis_z), 0.75).unwrap();
+        for span in [(0.0, TAU), (TAU, 0.0), (1.25, 1.25 + TAU), (1.25 + TAU, 1.25)] {
+            let v = topo.add_vertex(Vertex::new(circle.evaluate(span.0), 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(span));
+            let eid = topo.add_edge(edge);
+            for forward in [true, false] {
+                let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, forward)], true).unwrap());
+                for normal_z in [1.0, -1.0] {
+                    let normal = Vec3::new(0.0, 0.0, normal_z);
+                    let sampled = wire_winding_sign(&topo, wire, normal).unwrap();
+                    let shortcut = hole_winding_sign(&topo, wire, normal).unwrap();
+                    assert!(sampled.abs() > 1e-3, "sampled winding {sampled} is not decisive");
+                    assert!(
+                        (shortcut > 0.0) == (sampled > 0.0) && shortcut.abs() > 0.0,
+                        "axis {axis_z}, span {span:?}, forward {forward}, normal {normal_z}: \
+                         shortcut {shortcut} vs sampled {sampled}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 32);
+}
