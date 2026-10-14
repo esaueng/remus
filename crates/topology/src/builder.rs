@@ -324,7 +324,7 @@ mod winding {
                     (mid - start).length() * (end - start).length() * (4. / 3.),
                 )
             }
-            _ => return Err(refusal()),
+            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => return Err(refusal()),
         };
         let mut polygon = Vec3::new(0., 0., 0.);
         let mut magnitude = scale;
