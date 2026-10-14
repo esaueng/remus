@@ -286,6 +286,7 @@ impl Clone for Topology {
                 generation: self.undo.generation,
                 log_len: self.undo.records.len(),
                 ticks: self.mutation_ticks,
+                seq: self.undo.next_seq,
             }
         };
         Self {
