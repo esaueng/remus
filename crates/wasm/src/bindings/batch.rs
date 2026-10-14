@@ -117,6 +117,18 @@ fn transform_detailed_batch_args(
     Ok((solid, elems, exact_only))
 }
 
+/// Optional `u32` argument: absent or `null` reads as `None`; a present
+/// value is parsed as strictly as [`get_u32`].
+fn get_optional_u32(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<u32>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(_) => get_u32(args, name).map(Some),
+    }
+}
+
 /// Optional number argument: absent or `null` reads as `None`. Range checks
 /// stay with the operation so direct and batch calls refuse identically.
 fn get_optional_f64(
@@ -1020,7 +1032,7 @@ impl BrepKernel {
             }
             "makeSphere" => {
                 let r = get_f64(args, "radius")?;
-                let segments = get_u32(args, "segments").unwrap_or(16);
+                let segments = get_optional_u32(args, "segments")?.unwrap_or(16);
                 let segments =
                     validate_work_count(segments, "segments").map_err(StructuredWasmError::from)?;
                 let solid = remus_operations::primitives::make_sphere(self.topo_mut(), r, segments)
@@ -1038,7 +1050,7 @@ impl BrepKernel {
             "makeTorus" => {
                 let major = get_f64(args, "majorRadius")?;
                 let minor = get_f64(args, "minorRadius")?;
-                let segments = get_u32(args, "segments").unwrap_or(16);
+                let segments = get_optional_u32(args, "segments")?.unwrap_or(16);
                 let segments =
                     validate_work_count(segments, "segments").map_err(StructuredWasmError::from)?;
                 let solid = remus_operations::primitives::make_torus(
@@ -1679,10 +1691,10 @@ impl BrepKernel {
             }
             "extrude" => {
                 let f = get_u32(args, "face")?;
-                let dx = get_f64(args, "dx").unwrap_or(0.0);
-                let dy = get_f64(args, "dy").unwrap_or(0.0);
-                let dz = get_f64(args, "dz").unwrap_or(1.0);
-                let dist = get_f64(args, "distance").unwrap_or(1.0);
+                let dx = get_optional_f64(args, "dx")?.unwrap_or(0.0);
+                let dy = get_optional_f64(args, "dy")?.unwrap_or(0.0);
+                let dz = get_optional_f64(args, "dz")?.unwrap_or(1.0);
+                let dist = get_optional_f64(args, "distance")?.unwrap_or(1.0);
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let dir = Vec3::new(dx, dy, dz);
                 let solid = extrude(self.topo_mut(), face_id, dir, dist)
@@ -1692,12 +1704,12 @@ impl BrepKernel {
             "revolve" => {
                 let f = get_u32(args, "face")?;
                 let angle_degrees = get_f64(args, "angle")?;
-                let ox = get_f64(args, "originX").unwrap_or(0.0);
-                let oy = get_f64(args, "originY").unwrap_or(0.0);
-                let oz = get_f64(args, "originZ").unwrap_or(0.0);
-                let ax = get_f64(args, "axisX").unwrap_or(0.0);
-                let ay = get_f64(args, "axisY").unwrap_or(0.0);
-                let az = get_f64(args, "axisZ").unwrap_or(1.0);
+                let ox = get_optional_f64(args, "originX")?.unwrap_or(0.0);
+                let oy = get_optional_f64(args, "originY")?.unwrap_or(0.0);
+                let oz = get_optional_f64(args, "originZ")?.unwrap_or(0.0);
+                let ax = get_optional_f64(args, "axisX")?.unwrap_or(0.0);
+                let ay = get_optional_f64(args, "axisY")?.unwrap_or(0.0);
+                let az = get_optional_f64(args, "axisZ")?.unwrap_or(1.0);
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 // Convert degrees to radians to match the direct WASM binding.
                 let solid = revolve(
@@ -1850,10 +1862,10 @@ impl BrepKernel {
             }
             "multiSectionSweep" => {
                 let faces: Vec<u32> = get_u32_array_optional(args, "faces")?;
-                let params: Vec<f64> = args["params"]
-                    .as_array()
-                    .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
-                    .unwrap_or_default();
+                let params: Vec<f64> = match args.get("params") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(_) => get_f64_array(args, "params")?,
+                };
                 if faces.len() != params.len() {
                     return Err("multiSectionSweep: faces and params length mismatch".into());
                 }
@@ -1861,7 +1873,7 @@ impl BrepKernel {
                 let spine = self
                     .extract_nurbs_curve(spine_edge)
                     .map_err(StructuredWasmError::from)?;
-                let ruled = args["ruled"].as_bool().unwrap_or(true);
+                let ruled = get_optional_bool(args, "ruled")?.unwrap_or(true);
                 let sections: Vec<(remus_topology::face::FaceId, f64)> = faces
                     .iter()
                     .zip(params.iter())
@@ -1925,7 +1937,7 @@ impl BrepKernel {
                     get_f64(args, "xAxisY")?,
                     get_f64(args, "xAxisZ")?,
                 );
-                let hidden_lines = args["hiddenLines"].as_bool().unwrap_or(true);
+                let hidden_lines = get_optional_bool(args, "hiddenLines")?.unwrap_or(true);
                 let deflection = get_deflection(args)?;
                 let result = remus_operations::projection::project_edges(
                     &self.topo,
@@ -2293,12 +2305,12 @@ impl BrepKernel {
             }
             "mirror" => {
                 let s = get_u32(args, "solid")?;
-                let px = get_f64(args, "px").unwrap_or(0.0);
-                let py = get_f64(args, "py").unwrap_or(0.0);
-                let pz = get_f64(args, "pz").unwrap_or(0.0);
-                let nx = get_f64(args, "nx").unwrap_or(1.0);
-                let ny = get_f64(args, "ny").unwrap_or(0.0);
-                let nz = get_f64(args, "nz").unwrap_or(0.0);
+                let px = get_optional_f64(args, "px")?.unwrap_or(0.0);
+                let py = get_optional_f64(args, "py")?.unwrap_or(0.0);
+                let pz = get_optional_f64(args, "pz")?.unwrap_or(0.0);
+                let nx = get_optional_f64(args, "nx")?.unwrap_or(1.0);
+                let ny = get_optional_f64(args, "ny")?.unwrap_or(0.0);
+                let nz = get_optional_f64(args, "nz")?.unwrap_or(0.0);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = remus_operations::mirror::mirror(
                     self.topo_mut(),
@@ -2328,7 +2340,7 @@ impl BrepKernel {
             }
             "convertToElementary" => {
                 let s = get_u32(args, "solid")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(crate::helpers::TOL);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(crate::helpers::TOL);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let count =
                     remus_operations::heal::convert_to_elementary(self.topo_mut(), solid_id, tol)
@@ -2340,7 +2352,7 @@ impl BrepKernel {
             }
             "healSolid" => {
                 let s = get_u32(args, "solid")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 remus_operations::heal::heal_solid(self.topo_mut(), solid_id, tol)
                     .map_err(StructuredWasmError::from)?;
@@ -2355,7 +2367,7 @@ impl BrepKernel {
             }
             "repairSolid" => {
                 let s = get_u32(args, "solid")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let report = remus_operations::heal::repair_solid(self.topo_mut(), solid_id, tol)
                     .map_err(StructuredWasmError::from)?;
@@ -2378,7 +2390,7 @@ impl BrepKernel {
                 let x = get_f64(args, "x")?;
                 let y = get_f64(args, "y")?;
                 let z = get_f64(args, "z")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let pt = Point3::new(x, y, z);
                 let options = remus_check::classify::ClassifyOptions {
@@ -2447,9 +2459,9 @@ impl BrepKernel {
             }
             "circularPattern" => {
                 let s = get_u32(args, "solid")?;
-                let ax = get_f64(args, "ax").unwrap_or(0.0);
-                let ay = get_f64(args, "ay").unwrap_or(0.0);
-                let az = get_f64(args, "az").unwrap_or(1.0);
+                let ax = get_optional_f64(args, "ax")?.unwrap_or(0.0);
+                let ay = get_optional_f64(args, "ay")?.unwrap_or(0.0);
+                let az = get_optional_f64(args, "az")?.unwrap_or(1.0);
                 let count = get_u32(args, "count")?;
                 let count =
                     validate_work_count(count, "count").map_err(StructuredWasmError::from)?;
@@ -2466,12 +2478,12 @@ impl BrepKernel {
             }
             "gridPattern" => {
                 let s = get_u32(args, "solid")?;
-                let dxx = get_f64(args, "dirXx").unwrap_or(1.0);
-                let dxy = get_f64(args, "dirXy").unwrap_or(0.0);
-                let dxz = get_f64(args, "dirXz").unwrap_or(0.0);
-                let dyx = get_f64(args, "dirYx").unwrap_or(0.0);
-                let dyy = get_f64(args, "dirYy").unwrap_or(1.0);
-                let dyz = get_f64(args, "dirYz").unwrap_or(0.0);
+                let dxx = get_optional_f64(args, "dirXx")?.unwrap_or(1.0);
+                let dxy = get_optional_f64(args, "dirXy")?.unwrap_or(0.0);
+                let dxz = get_optional_f64(args, "dirXz")?.unwrap_or(0.0);
+                let dyx = get_optional_f64(args, "dirYx")?.unwrap_or(0.0);
+                let dyy = get_optional_f64(args, "dirYy")?.unwrap_or(1.0);
+                let dyz = get_optional_f64(args, "dirYz")?.unwrap_or(0.0);
                 let sx = get_f64(args, "spacingX")?;
                 let sy = get_f64(args, "spacingY")?;
                 let cx = get_u32(args, "countX")?;
@@ -2804,7 +2816,7 @@ impl BrepKernel {
             "offsetFace" => {
                 let f = get_u32(args, "face")?;
                 let dist = get_f64(args, "distance")?;
-                let samples = get_u32(args, "samples").unwrap_or(16);
+                let samples = get_optional_u32(args, "samples")?.unwrap_or(16);
                 validate_work_product(samples, samples, "sample grid")
                     .map_err(StructuredWasmError::from)?;
                 let samples =
@@ -2885,12 +2897,12 @@ impl BrepKernel {
             }
             "section" => {
                 let s = get_u32(args, "solid")?;
-                let px = get_f64(args, "px").unwrap_or(0.0);
-                let py = get_f64(args, "py").unwrap_or(0.0);
-                let pz = get_f64(args, "pz").unwrap_or(0.0);
-                let nx = get_f64(args, "nx").unwrap_or(0.0);
-                let ny = get_f64(args, "ny").unwrap_or(0.0);
-                let nz = get_f64(args, "nz").unwrap_or(1.0);
+                let px = get_optional_f64(args, "px")?.unwrap_or(0.0);
+                let py = get_optional_f64(args, "py")?.unwrap_or(0.0);
+                let pz = get_optional_f64(args, "pz")?.unwrap_or(0.0);
+                let nx = get_optional_f64(args, "nx")?.unwrap_or(0.0);
+                let ny = get_optional_f64(args, "ny")?.unwrap_or(0.0);
+                let nz = get_optional_f64(args, "nz")?.unwrap_or(1.0);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = remus_operations::section::section(
                     self.topo_mut(),
@@ -2904,12 +2916,12 @@ impl BrepKernel {
             }
             "split" => {
                 let s = get_u32(args, "solid")?;
-                let px = get_f64(args, "px").unwrap_or(0.0);
-                let py = get_f64(args, "py").unwrap_or(0.0);
-                let pz = get_f64(args, "pz").unwrap_or(0.0);
-                let nx = get_f64(args, "nx").unwrap_or(0.0);
-                let ny = get_f64(args, "ny").unwrap_or(0.0);
-                let nz = get_f64(args, "nz").unwrap_or(1.0);
+                let px = get_optional_f64(args, "px")?.unwrap_or(0.0);
+                let py = get_optional_f64(args, "py")?.unwrap_or(0.0);
+                let pz = get_optional_f64(args, "pz")?.unwrap_or(0.0);
+                let nx = get_optional_f64(args, "nx")?.unwrap_or(0.0);
+                let ny = get_optional_f64(args, "ny")?.unwrap_or(0.0);
+                let nz = get_optional_f64(args, "nz")?.unwrap_or(1.0);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = remus_operations::split::split(
                     self.topo_mut(),
@@ -3021,7 +3033,7 @@ impl BrepKernel {
             }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-6);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-6);
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -3052,9 +3064,9 @@ impl BrepKernel {
             }
             "linearPattern" => {
                 let s = get_u32(args, "solid")?;
-                let dx = get_f64(args, "dx").unwrap_or(1.0);
-                let dy = get_f64(args, "dy").unwrap_or(0.0);
-                let dz = get_f64(args, "dz").unwrap_or(0.0);
+                let dx = get_optional_f64(args, "dx")?.unwrap_or(1.0);
+                let dy = get_optional_f64(args, "dy")?.unwrap_or(0.0);
+                let dz = get_optional_f64(args, "dz")?.unwrap_or(0.0);
                 let spacing = get_f64(args, "spacing")?;
                 let count = get_u32(args, "count")?;
                 let count =
@@ -3081,12 +3093,12 @@ impl BrepKernel {
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
-                let dx = get_f64(args, "dirX").unwrap_or(0.0);
-                let dy = get_f64(args, "dirY").unwrap_or(0.0);
-                let dz = get_f64(args, "dirZ").unwrap_or(1.0);
-                let npx = get_f64(args, "neutralX").unwrap_or(0.0);
-                let npy = get_f64(args, "neutralY").unwrap_or(0.0);
-                let npz = get_f64(args, "neutralZ").unwrap_or(0.0);
+                let dx = get_optional_f64(args, "dirX")?.unwrap_or(0.0);
+                let dy = get_optional_f64(args, "dirY")?.unwrap_or(0.0);
+                let dz = get_optional_f64(args, "dirZ")?.unwrap_or(1.0);
+                let npx = get_optional_f64(args, "neutralX")?.unwrap_or(0.0);
+                let npy = get_optional_f64(args, "neutralY")?.unwrap_or(0.0);
+                let npz = get_optional_f64(args, "neutralZ")?.unwrap_or(0.0);
                 let dir = Vec3::new(dx, dy, dz);
                 let neutral = Point3::new(npx, npy, npz);
                 let result = remus_operations::draft::draft(
