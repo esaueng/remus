@@ -1670,7 +1670,8 @@ pub(super) struct DocumentParts<'v, 'a> {
 }
 
 /// Encodes a document exactly as `serde_json` encoded the derived views,
-/// refusing once the output would exceed `limit` bytes.
+/// refusing once the output would exceed `limit` bytes, and refusing any
+/// non-finite value instead of writing it as `null`.
 pub(super) fn encode_document(
     document: &DocumentParts<'_, '_>,
     limit: Option<usize>,
@@ -1727,6 +1728,14 @@ pub(super) fn encode_document(
         write_attributes(&mut w, attributes);
     }
     w.byte(b'}');
+    if w.non_finite() {
+        // JSON has no non-finite numbers: `serde_json` writes them as `null`,
+        // which the arena reader refuses.
+        return Err(IoError::InvalidTopology {
+            reason: "arena document holds a non-finite value, which JSON cannot represent"
+                .to_owned(),
+        });
+    }
     if w.exceeded() {
         let limit = limit.unwrap_or(usize::MAX);
         return Err(IoError::LimitExceeded {

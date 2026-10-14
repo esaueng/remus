@@ -1186,6 +1186,39 @@ struct UnitScale {
     angle: f64,
 }
 
+impl UnitScale {
+    /// A length from the file, in millimetres.
+    ///
+    /// Every real is checked finite as it is parsed, but the conversion can
+    /// still overflow one: `1E306` metres is `1E309` millimetres. The product
+    /// is checked again so no length leaves the reader infinite.
+    fn length_mm(
+        self,
+        value: f64,
+        entity_type: &str,
+        entity_ref: u64,
+        label: &str,
+    ) -> Result<f64, IoError> {
+        let scaled = value * self.length;
+        if scaled.is_finite() {
+            Ok(scaled)
+        } else {
+            Err(IoError::ParseError {
+                reason: format!(
+                    "{entity_type} #{entity_ref} has a {label} of {value} file units, which is \
+                     non-finite in millimetres"
+                ),
+            })
+        }
+    }
+
+    /// [`Self::length_mm`] for each coordinate of a `CARTESIAN_POINT`.
+    fn point_mm(self, [x, y, z]: [f64; 3], entity_ref: u64) -> Result<Point3, IoError> {
+        let coordinate = |value| self.length_mm(value, "CARTESIAN_POINT", entity_ref, "coordinate");
+        Ok(Point3::new(coordinate(x)?, coordinate(y)?, coordinate(z)?))
+    }
+}
+
 /// Maximum depth of `CONVERSION_BASED_UNIT` → `MEASURE_WITH_UNIT` → unit
 /// indirection followed before the file is rejected as cyclic.
 const MAX_UNIT_INDIRECTION: u32 = 8;
@@ -1986,10 +2019,10 @@ fn parse_validation_representation(
                         format!("centroid CARTESIAN_POINT #{item_ref} must have three coordinates"),
                     ));
                 };
-                if centroid
-                    .replace([x * units.length, y * units.length, z * units.length])
-                    .is_some()
-                {
+                let scaled = units.point_mm([*x, *y, *z], item_ref).map_err(|error| {
+                    invalid_validation("step_validation_invalid_centroid", error.to_string())
+                })?;
+                if centroid.replace(scaled.0).is_some() {
                     return Err(invalid_validation(
                         "step_validation_duplicate_value",
                         format!("validation REPRESENTATION #{representation} repeats centroid"),
@@ -2974,12 +3007,18 @@ impl<'a> StepBuilder<'a> {
                 reason: format!("{kind} #{surface_ref}: {e}"),
             };
             let axis = axis.normalize().map_err(invalid)?;
-            let major =
-                required_real_attribute(kind, surface_ref, &torus_slots, 2, "major_radius")?
-                    * self.units.length;
-            let minor =
-                required_real_attribute(kind, surface_ref, &torus_slots, 3, "minor_radius")?
-                    * self.units.length;
+            let major = self.units.length_mm(
+                required_real_attribute(kind, surface_ref, &torus_slots, 2, "major_radius")?,
+                kind,
+                surface_ref,
+                "major_radius",
+            )?;
+            let minor = self.units.length_mm(
+                required_real_attribute(kind, surface_ref, &torus_slots, 3, "minor_radius")?,
+                kind,
+                surface_ref,
+                "minor_radius",
+            )?;
             let outer = matches!(torus_slots.get(4), Some(AttrSlot::Enum(".T." | ".TRUE.")));
             // Start the rational carrier on the explicit periodic seam. This
             // keeps the face's full-turn trim inside one [0, 1] U domain.
@@ -4293,7 +4332,9 @@ impl<'a> StepBuilder<'a> {
                     2,
                     "radius",
                 )?;
-                let radius = radius * self.units.length;
+                let radius =
+                    self.units
+                        .length_mm(radius, "CYLINDRICAL_SURFACE", surface_ref, "radius")?;
                 let (origin, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let cyl = remus_math::surfaces::CylindricalSurface::with_ref_dir(
                     origin, axis, radius, ref_dir,
@@ -4324,13 +4365,18 @@ impl<'a> StepBuilder<'a> {
                 // the angle its author actually meant.
                 let (base_radius, semi_angle_slot) = if slots.get(3).is_some() {
                     (
-                        required_real_attribute(
+                        self.units.length_mm(
+                            required_real_attribute(
+                                "CONICAL_SURFACE",
+                                surface_ref,
+                                &slots,
+                                2,
+                                "radius",
+                            )?,
                             "CONICAL_SURFACE",
                             surface_ref,
-                            &slots,
-                            2,
                             "radius",
-                        )? * self.units.length,
+                        )?,
                         3,
                     )
                 } else {
@@ -4367,7 +4413,9 @@ impl<'a> StepBuilder<'a> {
                 )?;
                 let radius =
                     required_real_attribute("SPHERICAL_SURFACE", surface_ref, &slots, 2, "radius")?;
-                let radius = radius * self.units.length;
+                let radius =
+                    self.units
+                        .length_mm(radius, "SPHERICAL_SURFACE", surface_ref, "radius")?;
                 let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 // Preserve the historical compatibility behavior for an
                 // explicitly degenerate placement. It has no usable UV frame;
@@ -4389,10 +4437,18 @@ impl<'a> StepBuilder<'a> {
                 let kind = "DEGENERATE_TOROIDAL_SURFACE";
                 let axis_ref =
                     required_reference_attribute(kind, surface_ref, &slots, 1, "position")?;
-                let major = required_real_attribute(kind, surface_ref, &slots, 2, "major_radius")?
-                    * self.units.length;
-                let minor = required_real_attribute(kind, surface_ref, &slots, 3, "minor_radius")?
-                    * self.units.length;
+                let major = self.units.length_mm(
+                    required_real_attribute(kind, surface_ref, &slots, 2, "major_radius")?,
+                    kind,
+                    surface_ref,
+                    "major_radius",
+                )?;
+                let minor = self.units.length_mm(
+                    required_real_attribute(kind, surface_ref, &slots, 3, "minor_radius")?,
+                    kind,
+                    surface_ref,
+                    "minor_radius",
+                )?;
                 let outer = match slots.get(4) {
                     Some(AttrSlot::Enum(".T." | ".TRUE.")) => true,
                     Some(AttrSlot::Enum(".F." | ".FALSE.")) => false,
@@ -4441,8 +4497,18 @@ impl<'a> StepBuilder<'a> {
                     3,
                     "minor_radius",
                 )?;
-                let major_r = major_r * self.units.length;
-                let minor_r = minor_r * self.units.length;
+                let major_r = self.units.length_mm(
+                    major_r,
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    "major_radius",
+                )?;
+                let minor_r = self.units.length_mm(
+                    minor_r,
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    "minor_radius",
+                )?;
                 let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let torus = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     center, major_r, minor_r, axis, ref_dir,
@@ -4572,8 +4638,12 @@ impl<'a> StepBuilder<'a> {
         let slots = split_attr_slots(&attrs);
         let dir_ref = required_reference_attribute("VECTOR", vector_ref, &slots, 1, "orientation")?;
         let direction = self.build_direction(dir_ref)?;
-        let magnitude = required_real_attribute("VECTOR", vector_ref, &slots, 2, "magnitude")?
-            * self.units.length;
+        let magnitude = self.units.length_mm(
+            required_real_attribute("VECTOR", vector_ref, &slots, 2, "magnitude")?,
+            "VECTOR",
+            vector_ref,
+            "magnitude",
+        )?;
         Ok((direction, magnitude))
     }
 
@@ -6620,8 +6690,12 @@ impl<'a> StepBuilder<'a> {
                 let slots = split_attr_slots(&attrs);
                 let axis_ref =
                     required_reference_attribute("CIRCLE", curve_ref, &slots, 1, "position")?;
-                let radius = required_real_attribute("CIRCLE", curve_ref, &slots, 2, "radius")?
-                    * self.units.length;
+                let radius = self.units.length_mm(
+                    required_real_attribute("CIRCLE", curve_ref, &slots, 2, "radius")?,
+                    "CIRCLE",
+                    curve_ref,
+                    "radius",
+                )?;
                 // Parameter-authoritative TRIMMED_CURVEs depend on the
                 // placement's ref_direction, not merely on the circle's point
                 // set. Retain that frame so a stored parameter still names the
@@ -6658,8 +6732,10 @@ impl<'a> StepBuilder<'a> {
                 let ellipse = remus_math::curves::Ellipse3D::new_with_ref(
                     center,
                     normal,
-                    semi_major * self.units.length,
-                    semi_minor * self.units.length,
+                    self.units
+                        .length_mm(semi_major, "ELLIPSE", curve_ref, "semi_axis_1")?,
+                    self.units
+                        .length_mm(semi_minor, "ELLIPSE", curve_ref, "semi_axis_2")?,
                     u_axis,
                 )
                 .map_err(|e| IoError::ParseError {
@@ -6687,8 +6763,14 @@ impl<'a> StepBuilder<'a> {
                     center,
                     normal,
                     u_axis,
-                    semi_axis * self.units.length,
-                    imaginary_semi_axis * self.units.length,
+                    self.units
+                        .length_mm(semi_axis, "HYPERBOLA", curve_ref, "semi_axis")?,
+                    self.units.length_mm(
+                        imaginary_semi_axis,
+                        "HYPERBOLA",
+                        curve_ref,
+                        "semi_imag_axis",
+                    )?,
                 )
                 .map_err(|e| IoError::ParseError {
                     reason: format!("HYPERBOLA #{curve_ref}: {e}"),
@@ -6707,9 +6789,12 @@ impl<'a> StepBuilder<'a> {
                 let slots = split_attr_slots(&attrs);
                 let axis_ref =
                     required_reference_attribute("PARABOLA", curve_ref, &slots, 1, "position")?;
-                let focal =
-                    required_real_attribute("PARABOLA", curve_ref, &slots, 2, "focal_dist")?
-                        * self.units.length;
+                let focal = self.units.length_mm(
+                    required_real_attribute("PARABOLA", curve_ref, &slots, 2, "focal_dist")?,
+                    "PARABOLA",
+                    curve_ref,
+                    "focal_dist",
+                )?;
                 let (vertex, normal, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 // ISO's `first_proj_axis(z, ref_direction)` — ref_direction
                 // with its component along the normal removed — has to be
@@ -7126,9 +7211,8 @@ impl<'a> StepBuilder<'a> {
 
     fn build_cartesian_point(&self, cp_ref: u64) -> Result<Point3, IoError> {
         let attrs = &self.get_entity(cp_ref)?.attrs;
-        if let Some([x, y, z]) = real_triple_attribute(attrs) {
-            let s = self.units.length;
-            return Ok(Point3::new(x * s, y * s, z * s));
+        if let Some(coordinates) = real_triple_attribute(attrs) {
+            return self.units.point_mm(coordinates, cp_ref);
         }
         let slots = split_attr_slots(attrs);
         let coords =
@@ -7141,8 +7225,8 @@ impl<'a> StepBuilder<'a> {
                 ),
             });
         }
-        let s = self.units.length;
-        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
+        self.units
+            .point_mm([coords[0], coords[1], coords[2]], cp_ref)
     }
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
@@ -18506,8 +18590,9 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
                 ),
             });
         }
-        let s = builder.units.length;
-        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
+        builder
+            .units
+            .point_mm([coords[0], coords[1], coords[2]], cp_ref)
     }
 
     fn general_direction(builder: &StepBuilder<'_>, dir_ref: u64) -> Result<Vec3, IoError> {
