@@ -68,20 +68,18 @@ pub fn import_mesh(
     }
     let closed = validate_triangle_edge_incidence(&vertex_ids, &triangles)?;
 
-    // The orientation of the body comes from geometry: a closed, coherently
-    // wound mesh encloses positive signed volume exactly when it faces
-    // outward. An open mesh has no inside; it keeps its winding, except that
-    // a mesh without stored normals keeps the older origin-relative heuristic.
-    let flip_all = if closed {
-        signed_six_volume(
-            &mesh.positions,
-            &triangles,
-            local_reference(&mesh.positions),
-        ) < 0.0
-    } else if has_normals {
-        false
-    } else {
-        signed_six_volume(&mesh.positions, &triangles, Point3::new(0.0, 0.0, 0.0)) < 0.0
+    // The orientation of the body comes from geometry. A closed, coherently
+    // wound component encloses positive signed volume exactly when it faces
+    // outward, so a closed mesh whose every component is inward is flipped.
+    // Mixed signs may be a correctly wound cavity or a partly inverted
+    // multi-body file, which one flip cannot tell apart; those, and open
+    // meshes, keep the previous rule: no global flip with stored normals, the
+    // origin-relative signed volume without.
+    let inward = closed.then(|| closed_components_inward(&mesh.positions, &vertex_ids, &triangles));
+    let flip_all = match inward.flatten() {
+        Some(inward) => inward,
+        None if has_normals => false,
+        None => signed_six_volume(&mesh.positions, &triangles, Point3::new(0.0, 0.0, 0.0)) < 0.0,
     };
 
     let mut face_ids = Vec::new();
@@ -132,20 +130,60 @@ fn signed_six_volume(positions: &[Point3], triangles: &[[usize; 3]], reference: 
         .sum()
 }
 
-/// Bounding-box centre of `positions`. Tetrahedra summed about a point of the
-/// body keep their rounding error at the body's scale; about the world origin
-/// it grows with the cube of the body's offset (see B56).
-fn local_reference(positions: &[Point3]) -> Point3 {
-    let mut lo = [f64::INFINITY; 3];
-    let mut hi = [f64::NEG_INFINITY; 3];
-    for p in positions {
-        for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
-            lo[axis] = lo[axis].min(value);
-            hi[axis] = hi[axis].max(value);
+/// `Some(true)` when every connected component of a closed, coherently wound
+/// mesh encloses negative signed volume, `Some(false)` when every one encloses
+/// positive volume, and `None` when the signs are mixed or one is zero.
+///
+/// Each component's tetrahedra are summed about one of its own vertices:
+/// about a far point, such as the world origin or the centre of a box that
+/// includes unused or distant vertices, the rounding error grows with the
+/// cube of the distance and can swamp the component's volume (see B56).
+fn closed_components_inward(
+    positions: &[Point3],
+    vertex_ids: &[VertexId],
+    triangles: &[[usize; 3]],
+) -> Option<bool> {
+    // Union-find over welded vertices, indexed densely in first-use order.
+    let mut dense: HashMap<usize, usize> = HashMap::new();
+    let mut parent: Vec<usize> = Vec::new();
+    let mut slot = |position: usize| {
+        let next = dense.len();
+        let index = *dense.entry(vertex_ids[position].index()).or_insert(next);
+        if index == parent.len() {
+            parent.push(index);
+        }
+        index
+    };
+    let tri_slots: Vec<[usize; 3]> = triangles.iter().map(|tri| tri.map(&mut slot)).collect();
+    for &[a, b, c] in &tri_slots {
+        for other in [b, c] {
+            let (ra, ro) = (find_root(&mut parent, a), find_root(&mut parent, other));
+            parent[ro] = ra;
         }
     }
-    let mid = |axis: usize| 0.5 * lo[axis] + 0.5 * hi[axis];
-    Point3::new(mid(0), mid(1), mid(2))
+
+    // Per component: its reference vertex and six times its signed volume.
+    let mut components: HashMap<usize, (Point3, f64)> = HashMap::new();
+    for (tri, slots) in triangles.iter().zip(&tri_slots) {
+        let (reference, volume) = components
+            .entry(find_root(&mut parent, slots[0]))
+            .or_insert((positions[tri[0]], 0.0));
+        *volume += signed_six_volume(positions, std::slice::from_ref(tri), *reference);
+    }
+    let mut volumes = components.values().map(|&(_, volume)| volume);
+    let first = volumes.next()?;
+    let inward = first < 0.0;
+    (first != 0.0 && volumes.all(|volume| volume != 0.0 && (volume < 0.0) == inward))
+        .then_some(inward)
+}
+
+/// Union-find root of `node`, halving the path on the way.
+fn find_root(parent: &mut [usize], mut node: usize) -> usize {
+    while parent[node] != node {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    node
 }
 
 /// Reject triangle edges incident to more than two non-degenerate faces, and
