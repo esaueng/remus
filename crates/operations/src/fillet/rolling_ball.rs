@@ -1468,13 +1468,22 @@ pub fn fillet_rolling_ball_with_origins(
             })
             .collect();
 
-        // Phase 2b: Validate that the fillet radius fits within adjacent face geometry.
-        // For each target edge on each adjacent face, the shortest non-target edge
-        // from the shared vertices bounds how far the contact point can extend.
+        // Phase 2b: Validate that the fillet band fits within adjacent face geometry.
+        // On each planar support face the band's contact line runs one setback
+        // from the target edge — `radius · tan(β/2)` between planes, so the radius
+        // itself only on a right angle (`rolling_ball_setback`). At each end of
+        // the edge that line must land on the face's adjacent non-target edge, so
+        // the adjacent edge has to reach farther from the target edge's line than
+        // the setback: its perpendicular extent, not its length, bounds the band.
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             let p_start = topo.vertex(edge.start())?.point();
             let p_end = topo.vertex(edge.end())?.point();
+            let edge_dir = p_end - p_start;
+            let edge_len_sq = edge_dir.dot(edge_dir);
+            // A curved target edge has no single line for the setback to be
+            // measured from; it keeps the legacy radius-against-length bound.
+            let straight = matches!(edge.curve(), EdgeCurve::Line);
 
             let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
                 continue;
@@ -1484,10 +1493,27 @@ pub fn fillet_rolling_ball_with_origins(
                     Some(p) => p,
                     None => continue,
                 };
-                // For each vertex of the target edge, find the shortest adjacent
-                // non-target edge on this face. The radius must not exceed that length.
+                let setback = match face_list.iter().copied().find(|&f| f != fid) {
+                    Some(other) if straight => {
+                        crate::blend_ops::rolling_ball_setback(topo, edge_id, fid, other, radius)?
+                    }
+                    _ => radius,
+                };
+                // Contacts sit at the exact setback only on a qualified two-plane
+                // stripe; an unqualified one takes the cross-product fallback below,
+                // which lays them one radius out.
+                let both_planar = face_list
+                    .iter()
+                    .all(|f| face_polygons.contains_key(&f.index()));
+                let setback = if both_planar && !planar_edge_sides.contains_key(&edge_id.index()) {
+                    setback.max(radius)
+                } else {
+                    setback
+                };
                 for &edge_pt in &[p_start, p_end] {
-                    let mut min_adj = f64::MAX;
+                    // (the reach the band needs, what the face offers) at the
+                    // tightest adjacent edge sharing this vertex.
+                    let mut tightest: Option<(f64, f64)> = None;
                     for (i, pos) in poly.positions.iter().enumerate() {
                         let next_i = (i + 1) % poly.positions.len();
                         let next_pos = poly.positions[next_i];
@@ -1496,22 +1522,45 @@ pub fn fillet_rolling_ball_with_origins(
                             continue;
                         }
                         // Only check edges sharing the vertex
-                        if (*pos - edge_pt).length() < tol.linear
-                            || (next_pos - edge_pt).length() < tol.linear
-                        {
-                            let edge_len = (next_pos - *pos).length();
-                            if edge_len < min_adj {
-                                min_adj = edge_len;
-                            }
+                        let far = if (*pos - edge_pt).length() < tol.linear {
+                            next_pos
+                        } else if (next_pos - edge_pt).length() < tol.linear {
+                            *pos
+                        } else {
+                            continue;
+                        };
+                        let offset = far - edge_pt;
+                        let extent = if edge_len_sq > 0.0 {
+                            (offset - edge_dir * (offset.dot(edge_dir) / edge_len_sq)).length()
+                        } else {
+                            offset.length()
+                        };
+                        // A collinear continuation runs alongside the contact
+                        // line rather than across it; it keeps the legacy bound
+                        // too.
+                        let bound = if straight && extent > tol.linear {
+                            (setback, extent)
+                        } else {
+                            (radius, offset.length())
+                        };
+                        if tightest.is_none_or(|(need, have)| bound.1 - bound.0 < have - need) {
+                            tightest = Some(bound);
                         }
                     }
-                    if radius >= min_adj && min_adj < f64::MAX {
+                    if let Some((need, have)) = tightest
+                        && need >= have
+                    {
                         return Err(crate::OperationsError::Blend(
                             remus_blend::BlendError::CliffEncountered {
                                 edge: edge_id,
                                 face: fid,
                                 requested_radius: radius,
-                                available_radius: min_adj,
+                                // The setback scales with the radius.
+                                available_radius: if need > 0.0 {
+                                    radius * have / need
+                                } else {
+                                    0.0
+                                },
                             },
                         ));
                     }
