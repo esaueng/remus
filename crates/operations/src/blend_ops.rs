@@ -708,6 +708,89 @@ fn has_cavity_shells(topo: &Topology, solid: SolidId) -> Result<bool, Operations
     Ok(!topo.solid(solid)?.inner_shells().is_empty())
 }
 
+/// Refuse a walking blend that could reach a cavity.
+///
+/// The walking builders rebuild the outer shell and carry cavity shells
+/// through unchanged, which is right only while the band stays clear of
+/// them. A cavity whose conservative box misses every blended edge's box,
+/// grown by that edge's [`blend_reach`], is untouched.
+fn refuse_cavity_in_blend_reach(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    size: f64,
+    operation: &'static str,
+) -> Result<(), OperationsError> {
+    let cavities = topo.solid(solid)?.inner_shells().to_vec();
+    if cavities.is_empty() {
+        return Ok(());
+    }
+    let refusal = || OperationsError::Unsupported {
+        operation,
+        reason: "a cavity shell lies within the blend's reach; the walking builder \
+                 would carry it through unchanged"
+            .into(),
+    };
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut edge_boxes = Vec::with_capacity(edges.len());
+    for &edge in edges {
+        let bound = remus_check::distance::face_bounds::edge_span_bound(topo, edge)?;
+        let reach = blend_reach(topo, &adjacency, edge, size)?;
+        match reach {
+            Some(reach) if bound.is_prunable() => edge_boxes.push(bound.aabb().expanded(reach)),
+            _ => return Err(refusal()),
+        }
+    }
+    for shell in cavities {
+        let faces = topo.shell(shell)?.faces().to_vec();
+        let cavity = crate::measure::conservative_face_set_bounding_box(topo, &faces)?;
+        if edge_boxes
+            .iter()
+            .any(|edge_box| edge_box.intersects(cavity))
+        {
+            return Err(refusal());
+        }
+    }
+    Ok(())
+}
+
+/// How far from `edge` a blend of `size` can change material, or `None` when
+/// that cannot be bounded.
+///
+/// The band meets each face `size * tan(theta / 2)` from the edge, where
+/// `theta` is the angle between the faces' outward normals (one setback for a
+/// right-angle edge, growing without bound as the wedge closes). Twice the
+/// larger of that setback and `size` also covers a rolling-ball corner where
+/// three right-angle edges meet, which lies within `size * sqrt(3)` of its
+/// vertex.
+fn blend_reach(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edge: EdgeId,
+    size: f64,
+) -> Result<Option<f64>, OperationsError> {
+    // Past this the setback exceeds a dozen blend sizes (a wedge under ~10°):
+    // treat it as unbounded rather than trust a box that large.
+    const MAX_SETBACK: f64 = 12.0;
+    let faces = adjacency.faces_for_edge(edge);
+    if faces.len() != 2 || faces[0] == faces[1] {
+        return Ok(None);
+    }
+    let samples = crate::query::sampled_normals(topo, edge, faces[0], faces[1])?;
+    if samples.is_empty() {
+        return Ok(None);
+    }
+    let theta = samples
+        .iter()
+        .map(|(_, a, b)| a.cross(*b).length().atan2(a.dot(*b)))
+        .fold(0.0_f64, f64::max);
+    let setback = (0.5 * theta).tan();
+    if !setback.is_finite() || setback > MAX_SETBACK {
+        return Ok(None);
+    }
+    Ok(Some(2.0 * size * setback.max(1.0)))
+}
+
 fn planar_chamfer_result(
     topo: &mut Topology,
     solid: SolidId,
@@ -1097,7 +1180,9 @@ fn fillet_group(
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
     // The planar rebuild reassembles the outer shell alone and refuses a
-    // solid with cavities; the walking builder carries them through.
+    // solid with cavities; the walking builder carries them through when the
+    // band stays clear of them.
+    refuse_cavity_in_blend_reach(topo, solid, edges, radius, "fillet")?;
     if !has_cavity_shells(topo, solid)? && is_planar_line_blend(topo, solid, edges)? {
         // The rolling-ball rebuild handles the validated planar classes
         // (simple prisms), closes multi-edge corner patches, and carries the
@@ -1573,6 +1658,7 @@ pub fn chamfer_v2(
     if is_planar_line_blend(topo, solid, edges)? {
         return transactional(topo, |t| planar_chamfer_result(t, solid, edges, d1, d2));
     }
+    refuse_cavity_in_blend_reach(topo, solid, edges, d1.max(d2), "chamfer")?;
     transactional(topo, |t| {
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_asymmetric(edges, d1, d2);
@@ -1627,6 +1713,7 @@ pub fn chamfer_distance_angle(
             planar_chamfer_result(t, solid, edges, distance, d2)
         });
     }
+    refuse_cavity_in_blend_reach(topo, solid, edges, distance.max(d2), "chamfer")?;
     transactional(topo, |t| {
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_distance_angle(edges, distance, angle);
@@ -1866,6 +1953,59 @@ mod tests {
     use remus_topology::vertex::Vertex;
 
     use super::*;
+
+    /// The reach is twice the band's setback `r * tan(theta / 2)`, never
+    /// below `2r`: `2r` on a right-angle box edge, and `2r * tan(67.5°)` on
+    /// the 45° edge of a wedge, where the band runs 2.41 r up each face.
+    #[test]
+    fn blend_reach_follows_the_setback() {
+        let r = 1.5;
+        let reach_at = |topo: &Topology, solid: SolidId, at: Point3| {
+            let adjacency = topo.build_adjacency(solid).unwrap();
+            let edge = remus_topology::explorer::solid_edges(topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&e| {
+                    let edge = topo.edge(e).unwrap();
+                    let a = topo.vertex(edge.start()).unwrap().point();
+                    let b = topo.vertex(edge.end()).unwrap().point();
+                    ((a + (b - a) * 0.5) - at).length() < 1e-9
+                })
+                .unwrap();
+            blend_reach(topo, &adjacency, edge, r).unwrap().unwrap()
+        };
+
+        let mut topo = Topology::new();
+        let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let reach = reach_at(&topo, cube, Point3::new(5.0, 0.0, 10.0));
+        assert!((reach - 2.0 * r).abs() < 1e-9, "box edge: {reach}");
+
+        // Triangle (0,0)-(10,0)-(10,10) extruded along z: 45° at the origin.
+        let wire = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(10.0, 10.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = remus_topology::builder::make_face_from_wire(&mut topo, wire).unwrap();
+        let wedge = crate::extrude::extrude(
+            &mut topo,
+            face,
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+        )
+        .unwrap();
+        let reach = reach_at(&topo, wedge, Point3::new(0.0, 0.0, 2.0));
+        let expected = 2.0 * r * (3.0 * std::f64::consts::PI / 8.0).tan();
+        assert!(
+            (reach - expected).abs() < 1e-9,
+            "45° edge: {reach} vs {expected}"
+        );
+    }
 
     #[test]
     fn feature_remap_refuses_a_different_circle_with_the_same_endpoint() {

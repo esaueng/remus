@@ -533,9 +533,9 @@ fn edge_curve_span(topo: &Topology, edge: EdgeId) -> Result<f64, OperationsError
 }
 
 /// One interior edge sample with both faces' effective outward normals.
-type NormalSample = (Point3, Vec3, Vec3);
+pub(crate) type NormalSample = (Point3, Vec3, Vec3);
 
-fn sampled_normals(
+pub(crate) fn sampled_normals(
     topo: &Topology,
     edge: EdgeId,
     face_a: FaceId,
