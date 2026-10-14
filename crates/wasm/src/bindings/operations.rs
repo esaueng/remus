@@ -1815,12 +1815,18 @@ impl BrepKernel {
 
     /// Thicken a face into a solid by offsetting it by the given distance.
     ///
-    /// Creates a solid from a face by extruding it along its normal by
-    /// `thickness`. Positive values offset outward, negative inward.
+    /// Grows the face along its own outward normal (the surface normal,
+    /// negated on a reversed face) by `thickness`: positive values grow
+    /// outward, negative inward. A planar face extrudes; a cylinder, cone,
+    /// sphere or torus face becomes the shell between it and its exact
+    /// offset.
     ///
     /// # Errors
     ///
-    /// Returns an error if the face handle is invalid or thickness is zero.
+    /// Returns an error if the face handle is invalid, thickness is zero or
+    /// not finite, or the face has no exact offset (a curved NURBS face, a
+    /// boundary edge other than a ruling or a circle whose offset is a
+    /// circle, or an offset that collapses the surface).
     #[wasm_bindgen(js_name = "thicken")]
     pub fn thicken_face(&mut self, face: u32, thickness: f64) -> Result<u32, JsError> {
         validate_finite(thickness, "thickness")?;
