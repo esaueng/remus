@@ -115,3 +115,27 @@ fn ordinary_exact_booleans_still_pass_the_gate() {
         }
     }
 }
+
+#[test]
+fn centred_internal_cavity_cut_passes_the_gate() {
+    // A 10³ box minus a centred 2³ box: the result keeps the outer shell and
+    // gains a cavity. The outer shell's box centre sits inside the tool, which
+    // the tool-interior probe must not read as a retained tool piece.
+    let expected = 1000.0 - 8.0;
+    for (name, entry) in ENTRIES {
+        let mut topo = Topology::new();
+        let blank = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let tool = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        transform_solid(&mut topo, tool, &Mat4::translation(4.0, 4.0, 4.0)).unwrap();
+        let solid = entry(&mut topo, BooleanOp::Cut, blank, tool)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let report = validate::validate_solid(&topo, solid).unwrap();
+        assert!(report.is_valid(), "{name}: {:#?}", report.issues);
+        assert_eq!(topo.solid(solid).unwrap().inner_shells().len(), 1, "{name}");
+        let volume = solid_volume(&topo, solid, 1e-4).unwrap();
+        assert!(
+            (volume - expected).abs() < 1e-6,
+            "{name}: volume {volume}, expected {expected}"
+        );
+    }
+}

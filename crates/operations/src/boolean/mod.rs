@@ -191,7 +191,12 @@ fn exact_result_is_acceptable(
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     let components = crate::boolean::assembly::face_components(topo, result);
+    // As in `boolean`'s gate, the tool-interior probe applies to a result the
+    // GFA split into several pieces. A single outer component's box centre
+    // can legitimately sit inside the tool: a tool wholly inside the blank
+    // leaves the outer shell intact around a cavity.
     let cut_safe = op != BooleanOp::Cut
+        || components.len() < 2
         || remus_algo::classifier::try_build_analytic_classifier(topo, b)
             .as_ref()
             .is_none_or(|cls_b| all_component_centers_outside(topo, &components, cls_b, tol));
