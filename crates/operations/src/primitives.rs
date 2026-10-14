@@ -382,9 +382,12 @@ pub fn make_cone(
         let e_circle = topo.add_edge(circle_edge);
         let e_seam = topo.add_edge(Edge::new(v_base, v_apex, EdgeCurve::Line));
 
+        // The cap and the lateral face must traverse the shared rim in
+        // opposite senses, so the lateral use is the cap's reverse.
+        let cap_forward = axis_sign > 0.0;
         let lateral_wire = Wire::new(
             vec![
-                OrientedEdge::new(e_circle, true),
+                OrientedEdge::new(e_circle, !cap_forward),
                 OrientedEdge::new(e_seam, true),
                 OrientedEdge::new(e_seam, false),
             ],
@@ -401,7 +404,6 @@ pub fn make_cone(
         // Base cap: reuse the same circle edge for watertight topology.
         // axis_sign < 0 means bottom is bigger (cap at z=0, outward normal -z, reversed edge).
         // axis_sign > 0 means top is bigger (cap at z=height, outward normal +z, forward edge).
-        let cap_forward = axis_sign > 0.0;
         let cap_wire = Wire::new(vec![OrientedEdge::new(e_circle, cap_forward)], true)
             .map_err(crate::OperationsError::Topology)?;
         let cap_wid = topo.add_wire(cap_wire);

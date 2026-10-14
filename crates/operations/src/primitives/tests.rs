@@ -369,6 +369,31 @@ fn cone_apex_singular() {
     assert!(has_apex, "cone should have apex vertex at (0,0,3)");
 }
 
+/// Regression: an apex-down cone (`r1 = 0`) used its base circle forward in
+/// both the lateral wire and the top cap, so the shared rim was traversed the
+/// same way by both faces. Both pointed orientations must validate cleanly
+/// and enclose πr²h/3.
+#[test]
+fn pointed_cone_both_orientations_valid() {
+    for (bottom, top) in [(2.0, 0.0), (0.0, 2.0)] {
+        let mut topo = Topology::new();
+        let height = 3.0;
+        let solid = make_cone(&mut topo, bottom, top, height).unwrap();
+        let report = crate::validate::validate_solid(&topo, solid).unwrap();
+        assert!(
+            report.issues.is_empty(),
+            "pointed cone r1={bottom} r2={top} must validate clean: {:?}",
+            report.issues
+        );
+        let r = f64::max(bottom, top);
+        assert_volume_near(&topo, solid, PI * r * r * height / 3.0, 1e-6);
+        assert_euler_genus0(&topo, solid);
+        let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+        assert_eq!(crate::tessellate::boundary_edge_count(&mesh), 0);
+        assert_eq!(crate::tessellate::non_manifold_edge_count(&mesh), 0);
+    }
+}
+
 #[test]
 fn make_box_very_thin() {
     // Thin plate: dx=1e-4, dy=1, dz=1
