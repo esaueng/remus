@@ -1840,7 +1840,6 @@ export class BrepKernel {
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
-     * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
      *
      * Returns a new solid handle.
      *

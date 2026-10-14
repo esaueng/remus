@@ -19,7 +19,9 @@ import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
+import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
+import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -85,11 +87,13 @@ try {
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
   runSecurityResourceRegressions({ ...packageExports, ...ioExports });
+  runOpseqF3Packaged(packageExports);
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);
   runWasmParserReferencesPackaged(packageExports);
+  runOpseqF5Packaged(packageExports);
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });

@@ -17,12 +17,445 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::Wire;
 
 use super::{
-    EdgeCurve, EdgeId, Face, FaceId, FaceSurface, OrientedEdge, Point3, SelectedFace, Topology,
-    Vec3, WireId, closed_pair_traversal_flipped, conics_share_support,
-    measure_revolved_wire_uv_area, orient_revolved_face_wires, revolved_wire_uv_area,
+    CapPlane, EdgeCurve, EdgeId, Face, FaceId, FaceSurface, OrientedEdge, Point3, SelectedFace,
+    Topology, Vec3, WireId, analytic_cap_loop_area, cap_partial_overlap_free_loops,
+    closed_pair_traversal_flipped, conics_share_support, measure_revolved_wire_uv_area,
+    orient_revolved_face_wires, revolved_wire_uv_area,
 };
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+
+// A sector's area is angle/TAU times the complete disc/ellipse area. This
+// oracle does not sum the line integrals used by the cap writer.
+fn cap_sector(
+    scale: f64,
+    placed: bool,
+    ellipse: bool,
+    span: f64,
+    reversed_carrier: bool,
+) -> (Topology, Vec<OrientedEdge>, CapPlane, f64) {
+    use remus_math::mat::Mat4;
+    let placement = if placed {
+        Mat4::translation(11.0 * scale, -7.0 * scale, 5.0 * scale)
+            * Mat4::rotation_x(0.37)
+            * Mat4::rotation_z(0.23)
+    } else {
+        Mat4::identity()
+    };
+    let direction = |v: Vec3| {
+        Vec3::new(
+            placement.0[0][0] * v.x() + placement.0[0][1] * v.y() + placement.0[0][2] * v.z(),
+            placement.0[1][0] * v.x() + placement.0[1][1] * v.y() + placement.0[1][2] * v.z(),
+            placement.0[2][0] * v.x() + placement.0[2][1] * v.y() + placement.0[2][2] * v.z(),
+        )
+    };
+    let center = placement.mul_point(Point3::new(0.0, 0.0, 0.0));
+    let normal = direction(Z);
+    let carrier_sign = if reversed_carrier { -1.0 } else { 1.0 };
+    let u = direction(Vec3::new(1.0, 0.0, 0.0));
+    let v = direction(Vec3::new(0.0, carrier_sign, 0.0));
+    let (a, b) = if ellipse { (3.0, 1.5) } else { (2.0, 2.0) };
+    let curve = if ellipse {
+        EdgeCurve::Ellipse(
+            Ellipse3D::with_axes(center, normal * carrier_sign, a * scale, b * scale, u, v)
+                .unwrap(),
+        )
+    } else {
+        EdgeCurve::Circle(
+            Circle3D::new_with_ref(center, normal * carrier_sign, a * scale, u).unwrap(),
+        )
+    };
+    let mut topo = Topology::new();
+    let start = topo.add_vertex(Vertex::new(
+        curve.evaluate_with_endpoints(0.0, center, center),
+        1e-7,
+    ));
+    let full_turn = (span.abs() - TAU).abs() < 1e-12;
+    let end = if full_turn {
+        start
+    } else {
+        topo.add_vertex(Vertex::new(
+            curve.evaluate_with_endpoints(span, center, center),
+            1e-7,
+        ))
+    };
+    let mut edge = Edge::new(start, end, curve);
+    edge.set_trim(Some((0.0, span)));
+    let arc = topo.add_edge(edge);
+    let mut edges = vec![OrientedEdge::new(arc, true)];
+    if !full_turn {
+        let middle = topo.add_vertex(Vertex::new(center, 1e-7));
+        let first = topo.add_edge(Edge::new(end, middle, EdgeCurve::Line));
+        let last = topo.add_edge(Edge::new(middle, start, EdgeCurve::Line));
+        edges.extend([
+            OrientedEdge::new(first, true),
+            OrientedEdge::new(last, true),
+        ]);
+    }
+    let cap = CapPlane {
+        normal,
+        d: normal.dot(center - Point3::new(0.0, 0.0, 0.0)),
+        out_normal: normal,
+    };
+    (
+        topo,
+        edges,
+        cap,
+        0.5 * a * b * scale * scale * span * carrier_sign,
+    )
+}
+
+#[test]
+fn analytic_cap_area_recovers_the_major_sector_hidden_by_endpoint_chords() {
+    let (topo, edges, cap, expected) = cap_sector(1.0, false, false, TAU * 0.75, false);
+    let vertices: Vec<_> = edges
+        .iter()
+        .map(|usage| {
+            topo.vertex(topo.edge(usage.edge()).unwrap().start())
+                .unwrap()
+                .point()
+        })
+        .collect();
+    assert!(super::newell_normal(&vertices).dot(Z) < 0.0);
+    let area = analytic_cap_loop_area(&topo, &edges, cap).unwrap().unwrap();
+    assert!((area - expected).abs() < 1e-12);
+    assert!(area > 0.0);
+}
+
+#[test]
+fn analytic_cap_area_matches_sector_fractions_under_native_and_coedge_reversal() {
+    for scale in [1e-3, 1.0, 1e3] {
+        for placed in [false, true] {
+            for ellipse in [false, true] {
+                for reversed_carrier in [false, true] {
+                    for span in [TAU * 0.25, TAU * 0.75, TAU, -TAU * 0.25, -TAU] {
+                        let (topo, edges, cap, expected) =
+                            cap_sector(scale, placed, ellipse, span, reversed_carrier);
+                        for reverse in [false, true] {
+                            let mut traversed = edges.clone();
+                            if reverse {
+                                traversed.reverse();
+                                traversed = traversed
+                                    .into_iter()
+                                    .map(|edge| OrientedEdge::new(edge.edge(), !edge.is_forward()))
+                                    .collect();
+                            }
+                            let actual = analytic_cap_loop_area(&topo, &traversed, cap)
+                                .unwrap()
+                                .unwrap();
+                            let expected = if reverse { -expected } else { expected };
+                            assert!(
+                                (actual - expected).abs() < expected.abs() * 1e-12,
+                                "scale={scale} placed={placed} ellipse={ellipse} span={span} carrier_reverse={reversed_carrier} reverse={reverse}: {actual} vs {expected}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn analytic_cap_area_declines_missing_authority_and_unsupported_or_unresolved_geometry() {
+    let (mut topo, edges, cap, _) = cap_sector(1.0, false, false, TAU * 0.75, false);
+    let arc = edges[0].edge();
+    topo.edge_mut(arc).unwrap().set_trim(None);
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+    topo.edge_mut(arc)
+        .unwrap()
+        .set_trim(Some((0.0, TAU * 0.75)));
+    let start = topo.edge(arc).unwrap().start();
+    let point = topo.vertex(start).unwrap().point();
+    topo.vertex_mut(start)
+        .unwrap()
+        .set_point(point + Vec3::new(0.001, 0.0, 0.0));
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+
+    let (mut topo, edges, cap, _) = cap_sector(1.0, false, false, TAU * 0.75, false);
+    let arc = topo.edge(edges[0].edge()).unwrap();
+    let (start, end) = (arc.start(), arc.end());
+    let nurbs = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            topo.vertex(start).unwrap().point(),
+            topo.vertex(end).unwrap().point(),
+        ],
+        vec![1.0, 1.0],
+    )
+    .unwrap();
+    topo.edge_mut(edges[0].edge())
+        .unwrap()
+        .set_curve(EdgeCurve::NurbsCurve(nurbs));
+    topo.edge_mut(edges[0].edge())
+        .unwrap()
+        .set_trim(Some((0.0, 1.0)));
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+
+    let (topo, edges, cap, _) = cap_sector(1.0, false, false, TAU, false);
+    let cancelling = vec![edges[0], OrientedEdge::new(edges[0].edge(), false)];
+    assert!(
+        analytic_cap_loop_area(&topo, &cancelling, cap)
+            .unwrap()
+            .is_none()
+    );
+    let mut nonplanar = cap;
+    nonplanar.normal = Vec3::new(1.0, 0.0, 0.0);
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, nonplanar)
+            .unwrap()
+            .is_none()
+    );
+    let mut nonfinite = cap;
+    nonfinite.out_normal = Vec3::new(f64::NAN, 0.0, 1.0);
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, nonfinite)
+            .unwrap()
+            .is_none()
+    );
+    let (mut topo, edges, cap, _) = cap_sector(1.0, false, false, TAU * 0.75, false);
+    let middle = topo.edge(edges[1].edge()).unwrap().end();
+    let point = topo.vertex(middle).unwrap().point();
+    topo.vertex_mut(middle)
+        .unwrap()
+        .set_point(point + Vec3::new(0.0, 0.0, 0.001));
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn analytic_cap_area_declines_a_quantized_but_disconnected_line_junction() {
+    let (mut topo, edges, cap, _) = cap_sector(1.0, false, false, TAU * 0.75, false);
+    let middle = topo.edge(edges[1].edge()).unwrap().end();
+    let point = topo.vertex(middle).unwrap().point();
+    let duplicate = topo.add_vertex(Vertex::new(point + Vec3::new(1e-9, 0.0, 0.0), 1e-7));
+    topo.edge_mut(edges[1].edge()).unwrap().set_end(duplicate);
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn analytic_cap_area_declines_native_detail_lost_in_a_distant_frame() {
+    // The exact loop has area about -5e6. Evaluating both native points in
+    // this local frame first rounds their small arc delta to zero and can
+    // falsely report +theta/2. Unresolved endpoint authority must decline.
+    let mut topo = Topology::new();
+    let circle =
+        Circle3D::new_with_ref(Point3::new(0.0, 0.0, 0.0), Z, 1.0, Vec3::new(1.0, 0.0, 0.0))
+            .unwrap();
+    let far = topo.add_vertex(Vertex::new(Point3::new(1e12, 1e12, 0.0), 1e-7));
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(1e-5), 1e-7));
+    let first = topo.add_edge(Edge::new(far, a, EdgeCurve::Line));
+    let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
+    arc.set_trim(Some((0.0, 1e-5)));
+    let arc = topo.add_edge(arc);
+    let last = topo.add_edge(Edge::new(b, far, EdgeCurve::Line));
+    let edges = [
+        OrientedEdge::new(first, true),
+        OrientedEdge::new(arc, true),
+        OrientedEdge::new(last, true),
+    ];
+    let cap = CapPlane {
+        normal: Z,
+        d: 0.0,
+        out_normal: Z,
+    };
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+
+    // A tiny body translated so far that all stored endpoints collapse is
+    // likewise unsupported; global native evaluation cannot grant authority.
+    let (mut topo, edges, _, _) = cap_sector(1e-3, false, false, TAU * 0.75, false);
+    let shift = Vec3::new(1e16, 1e16, 1e16);
+    let vertices: Vec<_> = edges
+        .iter()
+        .flat_map(|usage| {
+            let edge = topo.edge(usage.edge()).unwrap();
+            [edge.start(), edge.end()]
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|id| (id, topo.vertex(id).unwrap().point()))
+        .collect();
+    for (id, point) in vertices {
+        topo.vertex_mut(id).unwrap().set_point(point + shift);
+    }
+    let arc = edges[0].edge();
+    topo.edge_mut(arc).unwrap().set_curve(EdgeCurve::Circle(
+        Circle3D::new_with_ref(
+            Point3::new(1e16, 1e16, 1e16),
+            Z,
+            2e-3,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap(),
+    ));
+    let cap = CapPlane {
+        normal: Z,
+        d: 1e16,
+        out_normal: Z,
+    };
+    assert!(
+        analytic_cap_loop_area(&topo, &edges, cap)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cap_area_interval_invalid_values_never_decide_a_sign() {
+    use super::cap_area_math::I;
+    for invalid in [
+        I { lo: 2.0, hi: 1.0 },
+        I::point(f64::NAN),
+        I::point(f64::INFINITY),
+    ] {
+        assert!(!invalid.abs().finite());
+        assert!(!invalid.mul(I::point(0.0)).finite());
+        assert!(!invalid.add(I::point(1.0)).finite());
+    }
+    for parameter in [0.0, TAU * 0.25, TAU * 0.5, TAU, -TAU] {
+        let (sine, cosine) = super::cap_area_math::sin_cos(parameter).unwrap();
+        assert!(sine.lo <= parameter.sin() && sine.hi >= parameter.sin());
+        assert!(cosine.lo <= parameter.cos() && cosine.hi >= parameter.cos());
+    }
+    assert!(super::cap_area_math::sin_cos(1e10).is_none());
+}
+
+#[test]
+fn generated_major_sector_caps_oppose_every_incident_wall_coedge() {
+    for reverse_faces in [false, true] {
+        let mut topo = Topology::new();
+        let circle = |height| {
+            Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, height),
+                Z,
+                2.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let bottom = circle(0.0);
+        let top = circle(1.0);
+        let a = topo.add_vertex(Vertex::new(bottom.evaluate(0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(bottom.evaluate(TAU * 0.75), 1e-7));
+        let o = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let aa = topo.add_vertex(Vertex::new(top.evaluate(0.0), 1e-7));
+        let bb = topo.add_vertex(Vertex::new(top.evaluate(TAU * 0.75), 1e-7));
+        let oo = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 1.0), 1e-7));
+        let bottom_arc = closed_edge(&mut topo, a, EdgeCurve::Circle(bottom), (0.0, TAU * 0.75));
+        topo.edge_mut(bottom_arc).unwrap().set_end(b);
+        let top_arc = closed_edge(&mut topo, aa, EdgeCurve::Circle(top), (0.0, TAU * 0.75));
+        topo.edge_mut(top_arc).unwrap().set_end(bb);
+        let bo = topo.add_edge(Edge::new(b, o, EdgeCurve::Line));
+        let oa = topo.add_edge(Edge::new(o, a, EdgeCurve::Line));
+        let bboo = topo.add_edge(Edge::new(bb, oo, EdgeCurve::Line));
+        let ooaa = topo.add_edge(Edge::new(oo, aa, EdgeCurve::Line));
+        let aaaa = topo.add_edge(Edge::new(a, aa, EdgeCurve::Line));
+        let bbbb = topo.add_edge(Edge::new(b, bb, EdgeCurve::Line));
+        let oooo = topo.add_edge(Edge::new(o, oo, EdgeCurve::Line));
+        let mut face = |edges: Vec<(EdgeId, bool)>, surface| {
+            let wire = topo.add_wire(
+                Wire::new(
+                    edges
+                        .into_iter()
+                        .map(|(edge, forward)| OrientedEdge::new(edge, forward))
+                        .collect(),
+                    true,
+                )
+                .unwrap(),
+            );
+            topo.add_face(Face::new(wire, vec![], surface))
+        };
+        let mut faces = vec![
+            face(
+                vec![
+                    (bottom_arc, true),
+                    (bbbb, true),
+                    (top_arc, false),
+                    (aaaa, false),
+                ],
+                FaceSurface::Cylinder(
+                    CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Z, 2.0).unwrap(),
+                ),
+            ),
+            face(
+                vec![(bo, true), (oooo, true), (bboo, false), (bbbb, false)],
+                FaceSurface::Plane {
+                    normal: Vec3::new(1.0, 0.0, 0.0),
+                    d: 0.0,
+                },
+            ),
+            face(
+                vec![(oa, true), (aaaa, true), (ooaa, false), (oooo, false)],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, -1.0, 0.0),
+                    d: 0.0,
+                },
+            ),
+        ];
+        if reverse_faces {
+            faces.reverse();
+        }
+        let mut sources = faces.iter().copied().map(Some).collect();
+        cap_partial_overlap_free_loops(
+            &mut topo,
+            &mut faces,
+            &mut sources,
+            &[
+                CapPlane {
+                    normal: Z,
+                    d: 0.0,
+                    out_normal: -Z,
+                },
+                CapPlane {
+                    normal: Z,
+                    d: 1.0,
+                    out_normal: Z,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(faces.len(), 5);
+        let mut uses = std::collections::BTreeMap::<usize, Vec<bool>>::new();
+        for id in faces {
+            let face = topo.face(id).unwrap();
+            for oriented in topo.wire(face.outer_wire()).unwrap().edges() {
+                uses.entry(oriented.edge().index())
+                    .or_default()
+                    .push(oriented.is_forward() != face.is_reversed());
+            }
+        }
+        assert!(
+            uses.values()
+                .all(|uses| uses.len() == 2 && uses[0] != uses[1]),
+            "{uses:?}"
+        );
+    }
+}
 
 // ── conics_share_support ────────────────────────────────────────────────
 

@@ -1,0 +1,47 @@
+{
+  "source": "8a40740dc764f57aa3796012f24d49dce7693135",
+  "capturedUtc": "2026-10-13T23:18:48.738798+00:00",
+  "gitStatusPorcelain": "",
+  "gitDiffHeadNameOnly": "",
+  "preWindowCleanStatusObservedUtc": "2026-10-13T23:16:18Z",
+  "duringWindowSourceOrStagingMutations": false,
+  "inputs": {
+    "scripts/perf/filleted-face-edit/run_wasm_edit_comparison.py": {
+      "sha256": "8e2fee1c751945d49c9970339bedf2dc5636bbf1ae4e0f5cc694ce8027493023",
+      "matchesImmutableHead": true
+    },
+    "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": {
+      "sha256": "22103aafc45cbf1d23cf992b2861370e7223da32d0dc5960e1fc4439ab543b79",
+      "matchesImmutableHead": true
+    },
+    "crates/io/tests/data/shapr3d_hammer_holder.step": {
+      "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+      "matchesImmutableHead": true
+    },
+    "crates/operations/benches/perf_d01_quantity.rs": {
+      "sha256": "404efc3739a3f8071b6d1b36209f0d8d7875e6047329e217055829a8efcb4572",
+      "matchesImmutableHead": true
+    },
+    "crates/operations/src/tessellate/nonplanar.rs": {
+      "sha256": "f42cf86be9d560319ef47b19777e645a8150efc1c5a59d6c5a24505e4eff65e2",
+      "matchesImmutableHead": true
+    },
+    "Cargo.toml": {
+      "sha256": "7e4fa25abc651e8c8ece923072ff9ab91f46d15226e82f33009ff39f2792c7a5",
+      "matchesImmutableHead": true
+    },
+    "Cargo.lock": {
+      "sha256": "720ebdbad2b1a6d522d8b94359b02ee41c58f908cbddcf81aaf276dedcdf0291",
+      "matchesImmutableHead": true
+    },
+    "crates/operations/Cargo.toml": {
+      "sha256": "ac93a98966dbd51cf033d9837f95630f5e2d724aca44d7eb93662705239a5dc1",
+      "matchesImmutableHead": true
+    },
+    ".cargo/config.toml": {
+      "sha256": "fa81c590ff19f6ed86010391d3dbb99b88a803740ecf1ec6c3db159da61c2ee8",
+      "matchesImmutableHead": true
+    }
+  },
+  "coordinatorInitialGuardScope": "unstaged diff only; independent empty git status observations before timing and full HEAD/status check after timing"
+}

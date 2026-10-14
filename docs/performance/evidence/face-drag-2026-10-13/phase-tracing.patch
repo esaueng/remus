@@ -1,0 +1,14 @@
+--- a/wasm_edit_bench.cjs
++++ b/wasm_edit_bench.cjs
+@@ -216,0 +217,2 @@
++    tracing: true,
++    latencySummaryExcluded: true,
+@@ -236,0 +239 @@
++  sourceKernel.setPerformanceTracing(true);
+@@ -254,0 +258 @@
++    source.phaseTrace = JSON.parse(sourceKernel.drainPerformanceTrace());
+@@ -298,0 +303 @@
++        record.phaseTrace = JSON.parse(kernel.drainPerformanceTrace());
+@@ -311 +316 @@
+-  } finally { sourceKernel.free(); }
++  } finally { sourceKernel.setPerformanceTracing(false); sourceKernel.free(); }

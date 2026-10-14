@@ -1,5 +1,10 @@
 # Face-drag qualification — 2026-10-11
 
+Follow-up, 2026-10-13: the [current committed-package refresh](face-drag-refresh-2026-10-13.md)
+measures paired 2026.1.57, separates scheduled kernel readiness from browser
+presentation, and attributes the remaining quantity/recognition stages. The
+historical before/after qualification below retains its original provenance.
+
 Final local qualification passed for source
 `c2cd99d0e718cc6e793eb50979ec4709fb8fedd5` and paired WASM packages
 `2026.1.52`. Across 36 old/new snapshot pairs, reachable arenas, volume

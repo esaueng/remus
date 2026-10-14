@@ -73,5 +73,9 @@ name = "classify_cache_perf"
 harness = false
 name = "perf_d03_boundary"
 
+[[bench]]
+harness = false
+name = "perf_d01_quantity"
+
 [lints]
 workspace = true

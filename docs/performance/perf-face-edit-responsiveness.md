@@ -1,5 +1,10 @@
 # Filleted face-edit responsiveness
 
+Current measurements: [2026-10-13 committed-package refresh](face-drag-refresh-2026-10-13.md)
+pins pair 2026.1.57 and selects the fine curved-face quantity stage, followed by
+recognition graph area/relation profiling. Earlier numbers below remain tied
+to their recorded revisions and workloads.
+
 The implemented slice reduces repeated analysis and avoids fine measurement
 meshes evicting the display working set. It does not change push/pull geometry,
 strict validation policy, public measurement accuracy or meshing tolerance.
