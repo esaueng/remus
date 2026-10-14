@@ -610,13 +610,54 @@ fn sample_edge(
         .collect())
 }
 
+/// In-face distance from a straight edge to the contact line of a fillet of
+/// `radius` rolling between its two neighbours `faces`.
+///
+/// Between two planes the ball touches each face `radius / tan(α/2)` from the
+/// edge, `α` the dihedral angle on the ball's side. With `θ` the angle between
+/// the outward normals that is `radius · tan(θ/2)` for a convex and a concave
+/// edge alike: larger than `radius` for any edge sharper than 90°, smaller for
+/// an obtuse one. It grows without bound as the faces fold onto each other
+/// (`θ → π`), where no finite contact exists and this returns
+/// `f64::INFINITY`; it shrinks to zero as they flatten out (`θ → 0`).
+///
+/// When a neighbour is not a plane the setback depends on its curvature as
+/// well; this then keeps `radius`, the bound this guard has always used.
+fn fillet_contact_setback(
+    topo: &Topology,
+    faces: &[FaceId],
+    radius: f64,
+) -> Result<f64, OperationsError> {
+    let &[first, second] = faces else {
+        return Ok(radius);
+    };
+    let normal = |face: FaceId| -> Result<Option<remus_math::vec::Vec3>, OperationsError> {
+        Ok(topo
+            .face(face)?
+            .effective_plane_normal()
+            .and_then(|normal| normal.normalize().ok()))
+    };
+    let (Some(n1), Some(n2)) = (normal(first)?, normal(second)?) else {
+        return Ok(radius);
+    };
+    // atan2 keeps θ accurate at both ends, where acos(dot) loses it.
+    let theta = n1.cross(n2).length().atan2(n1.dot(n2));
+    let setback = radius * (0.5 * theta).tan();
+    Ok(if setback.is_finite() {
+        setback
+    } else {
+        f64::INFINITY
+    })
+}
+
 /// Refuse a blend whose setback would run into a hole in one of its own
 /// neighbouring faces.
 ///
-/// The blend's contact curve on a planar neighbour lies `size` away from the
-/// blended edge, so the neighbour's boundary is rebuilt that far in. If an
-/// inner loop of that face — a drilled hole, a pocket — sits closer than
-/// `size`, the rebuilt boundary crosses its own hole. Expressing that would
+/// The blend's contact curve on a planar neighbour lies at the setback from
+/// the blended edge (see [`fillet_contact_setback`]: `radius` only at a right
+/// angle), so the neighbour's boundary is rebuilt that far in. If an inner
+/// loop of that face — a drilled hole, a pocket — sits closer than the
+/// setback, the rebuilt boundary crosses its own hole. Expressing that would
 /// require the blend and the hole to merge into one surface, which none of
 /// these engines can do.
 ///
@@ -624,7 +665,8 @@ fn sample_edge(
 /// loop still passes the closed-shell and Euler checks, so the result looks
 /// valid and meshes into a self-intersecting body. The cause is genuinely the
 /// radius — the same edge blends fine below the clearance — so this reports
-/// `CliffEncountered` with the clearance as the achievable maximum.
+/// `CliffEncountered` with the largest radius whose setback stays inside the
+/// clearance as the achievable maximum (zero when the setback is unbounded).
 ///
 /// Only straight blended edges are considered: a closed rim edge IS an inner
 /// loop, and the analytic rim assemblers have their own clearance guard.
@@ -632,7 +674,7 @@ fn reject_blend_into_hole(
     topo: &Topology,
     solid: SolidId,
     edges: &[EdgeId],
-    size: f64,
+    radius: f64,
 ) -> Result<(), OperationsError> {
     let adjacency = topo.build_adjacency(solid)?;
     for &edge_id in edges {
@@ -642,8 +684,10 @@ fn reject_blend_into_hole(
         }
         let a = topo.vertex(e.start())?.point();
         let b = topo.vertex(e.end())?.point();
+        let neighbours = adjacency.faces_for_edge(edge_id);
+        let setback = fillet_contact_setback(topo, neighbours, radius)?;
 
-        for &face_id in adjacency.faces_for_edge(edge_id) {
+        for &face_id in neighbours {
             let face = topo.face(face_id)?;
             if !matches!(face.surface(), FaceSurface::Plane { .. }) {
                 continue;
@@ -661,12 +705,19 @@ fn reject_blend_into_hole(
                         clearance = clearance.min(point_segment_distance(p, a, b));
                     }
                 }
-                if clearance <= size {
+                if clearance <= setback {
+                    // The setback is linear in the radius.
+                    let per_unit = setback / radius;
+                    let available_radius = if per_unit > 0.0 && per_unit.is_finite() {
+                        clearance / per_unit
+                    } else {
+                        0.0
+                    };
                     return Err(OperationsError::Blend(BlendError::CliffEncountered {
                         edge: edge_id,
                         face: face_id,
-                        requested_radius: size,
-                        available_radius: clearance,
+                        requested_radius: radius,
+                        available_radius,
                     }));
                 }
             }
@@ -1480,6 +1531,10 @@ pub fn fillet_cascade(
         Err(error) => error,
     };
     if let Ok(result) = transactional(topo, |t| {
+        // The rolling-ball rebuild carries holed caps through as topology but
+        // does not itself check that the setback clears their holes; without
+        // this the fallback quietly succeeds where `fillet_v2` refused.
+        reject_blend_into_hole(t, solid, edges, radius)?;
         let result = planar_fillet_result(t, solid, edges, radius)?;
         reject_open_shell(t, result.solid)?;
         Ok(result)
@@ -1855,7 +1910,7 @@ mod tests {
         assert!(error.contains("must move at least"), "{error}");
     }
 
-    use remus_math::vec::Point3;
+    use remus_math::vec::{Point3, Vec3};
     use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::vertex::Vertex;
 
@@ -2103,6 +2158,49 @@ mod tests {
         let edges = crate::query::filter_filletable_edges(&topo, cyl, &edges).unwrap();
         let result = fillet_cascade(&mut topo, cyl, &edges, 0.5).unwrap();
         assert_eq!(result.engine, BlendEngine::Walking);
+    }
+
+    #[test]
+    fn fillet_contact_setback_follows_the_dihedral() {
+        // A planar face whose outward normal makes `theta` with +z.
+        let face_at = |topo: &mut Topology, theta: f64| {
+            let n = Vec3::new(theta.sin(), 0.0, theta.cos());
+            let u = Vec3::new(0.0, 1.0, 0.0);
+            let v = n.cross(u);
+            let o = Point3::new(0.0, 0.0, 0.0);
+            let wire =
+                remus_topology::builder::make_polygon_wire(topo, &[o, o + u, o + v], 1e-7).unwrap();
+            let face = remus_topology::builder::make_planar_face_from_wire(topo, wire).unwrap();
+            let got = topo.face(face).unwrap().effective_plane_normal().unwrap();
+            assert!((got - n).length() < 1e-12, "{got:?} vs {n:?}");
+            face
+        };
+        let r = 2.0;
+        let setback = |theta: f64| {
+            let mut topo = Topology::new();
+            let a = face_at(&mut topo, 0.0);
+            let b = face_at(&mut topo, theta);
+            fillet_contact_setback(&topo, &[a, b], r).unwrap()
+        };
+        let pi = std::f64::consts::PI;
+        // Interior 90°: the radius itself.
+        assert!((setback(pi / 2.0) - r).abs() < 1e-12);
+        // Interior 60° (normals 120° apart): r / tan 30° = r·√3.
+        assert!((setback(2.0 * pi / 3.0) - r * 3.0_f64.sqrt()).abs() < 1e-12);
+        // Interior 120°: r / tan 60°, inside the radius.
+        assert!((setback(pi / 3.0) - r / 3.0_f64.sqrt()).abs() < 1e-12);
+        // Folded flat onto itself: no finite contact.
+        assert!(setback(pi) > 1e12 * r);
+        assert!(setback(pi - 1e-9) > 1e8 * r);
+        // Flattened out: the contact runs into the edge.
+        assert!(setback(0.0).abs() < 1e-12);
+        assert!(setback(1e-9) < 1e-8);
+
+        // A curved neighbour keeps the radius.
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, cyl).unwrap();
+        assert!((fillet_contact_setback(&topo, &faces[..2], r).unwrap() - r).abs() < 1e-12);
     }
 
     #[test]
