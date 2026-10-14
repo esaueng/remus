@@ -596,7 +596,9 @@ pub fn merge_coincident_vertices(
 /// Remove degenerate edges (shorter than tolerance) from a solid.
 ///
 /// An edge whose start and end vertices are within `tolerance` of each
-/// other is considered degenerate. Such edges are collapsed: their
+/// other is considered degenerate, including a line whose two ends are the
+/// same vertex (left by merging a sub-tolerance edge's endpoints); closed
+/// curved edges are full turns and are kept. Degenerate edges are collapsed: their
 /// references in wires are removed, and the wire is rebuilt without them.
 ///
 /// Returns the number of degenerate edges removed.
@@ -635,7 +637,11 @@ pub fn remove_degenerate_edges(
             let end_pos = topo.vertex(edge.end())?.point();
             let len_sq = (end_pos - start_pos).length_squared();
 
-            if len_sq < tol_sq && edge.start() != edge.end() {
+            // A closed edge (start == end) is a full turn of a circle or a
+            // closed NURBS and is kept, but a closed *line* has zero length:
+            // it is what merging the ends of a sub-tolerance line leaves.
+            let collapsed = edge.start() != edge.end() || matches!(edge.curve(), EdgeCurve::Line);
+            if len_sq < tol_sq && collapsed {
                 any_removed = true;
                 removed_count += 1;
             } else {
