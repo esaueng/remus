@@ -1,5 +1,5 @@
-//! The sorted edge censuses behind the whole-solid mesh route return what the
-//! hash-map censuses they replaced returned.
+//! The sorted and vertex-bucketed edge censuses behind the whole-solid mesh
+//! route return what the hash-map censuses they replaced returned.
 //!
 //! Both references are verbatim from before the change. They are compared on
 //! random index soups (repeated, reversed and degenerate edges, small vertex
@@ -58,6 +58,11 @@ fn assert_census_matches(mesh: &tessellate::TriangleMesh, what: &str) {
         directed_edges_cancel(triangles(mesh)),
         reference_edges_cancel(triangles(mesh)),
         "{what}: edge cancellation"
+    );
+    assert_eq!(
+        mesh_directed_edges_cancel(mesh),
+        reference_edges_cancel(triangles(mesh)),
+        "{what}: bucketed edge cancellation"
     );
 }
 
