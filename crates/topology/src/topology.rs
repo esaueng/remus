@@ -638,6 +638,10 @@ impl Topology {
     /// `deleteSolid` call) and must never be silently undone. For a failed
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
+    ///
+    /// Inside a live transaction scope, a restore that keeps a retirement
+    /// records the full pre-restore state, so an enclosing rollback still
+    /// returns the scope's exact entry state.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
         // Persistent preparation invalidates on every restore, even when the
         // restored state is bit-identical: the journal tick rolls back with
@@ -645,7 +649,11 @@ impl Topology {
         // Lineage stays with the destination; only the generation moves
         // forward.
         self.bump_cache_generation();
-        self.undo_truncate_for_foreign_restore(snapshot);
+        // A kept retirement (and the faces it orphans, re-promoted below)
+        // means the restore does not land on `snapshot`, so live scopes
+        // cannot treat it as a rewind to the clone point (TOPO-3).
+        let exact = !self.retires_live_entity_of(snapshot);
+        self.undo_truncate_for_foreign_restore(snapshot, exact);
         let mut snapshot_face_authority: HashMap<
             FaceId,
             HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
@@ -765,8 +773,23 @@ impl Topology {
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
         self.bump_cache_generation();
-        self.undo_truncate_for_foreign_restore(snapshot);
+        self.undo_truncate_for_foreign_restore(snapshot, true);
         self.restore_rollback_fields(snapshot);
+    }
+
+    /// Whether an entity live in `snapshot` is retired here — a retirement
+    /// [`Self::restore_preserving_handle_slots`] keeps.
+    fn retires_live_entity_of(&self, snapshot: &Self) -> bool {
+        self.vertices.retires_live_slot_of(&snapshot.vertices)
+            || self.edges.retires_live_slot_of(&snapshot.edges)
+            || self.wires.retires_live_slot_of(&snapshot.wires)
+            || self.faces.retires_live_slot_of(&snapshot.faces)
+            || self.shells.retires_live_slot_of(&snapshot.shells)
+            || self.solids.retires_live_slot_of(&snapshot.solids)
+            || self.compounds.retires_live_slot_of(&snapshot.compounds)
+            || self.compsolids.retires_live_slot_of(&snapshot.compsolids)
+            || self.loops.retires_live_slot_of(&snapshot.loops)
+            || self.coedges.retires_live_slot_of(&snapshot.coedges)
     }
 
     pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {

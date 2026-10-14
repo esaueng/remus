@@ -828,13 +828,14 @@ impl Topology {
         }
     }
 
-    /// Prepares for a full restore. Unchanged same-lineage snapshots can
-    /// truncate to their source prefix. A changed clone or foreign snapshot
-    /// needs one full inverse while scopes are live; otherwise its state
-    /// cannot be reconstructed from the destination's mutation log.
-    /// An armed append-only guard always trips: its slot marks no longer
-    /// describe the swapped state.
-    pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self) {
+    /// Prepares for a full restore. `exact` is whether the restore lands on
+    /// `snapshot`'s state; only then can an unchanged same-lineage snapshot
+    /// truncate to its source prefix. A changed clone, a foreign snapshot or
+    /// an inexact restore needs one full inverse while scopes are live;
+    /// otherwise its state cannot be reconstructed from the destination's
+    /// mutation log. An armed append-only guard always trips: its slot marks
+    /// no longer describe the swapped state.
+    pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self, exact: bool) {
         // Foreign restores swap state underneath live scopes. The caller
         // (`restore_*`) already bumped, but invalidate here as well so a
         // direct caller can never miss it; extra bumps are harmless.
@@ -842,7 +843,8 @@ impl Topology {
         self.trip_append_if_armed();
         self.purge_dead_scopes();
         let base = snapshot.undo.base;
-        if base.lineage_id == self.undo.lineage_id
+        if exact
+            && base.lineage_id == self.undo.lineage_id
             && base.generation == self.undo.generation
             && base.log_len <= self.undo.records.len()
             && base.ticks == snapshot.mutation_ticks
@@ -862,8 +864,10 @@ impl Topology {
             self.undo.records.clear();
             self.undo.scopes.clear();
             self.undo.generation = self.undo.generation.wrapping_add(1);
-            // The swapped state has no source prefix in this log. A later
-            // clone must not claim an inherited prefix of the old topology.
+            // The swapped state has no source prefix in this log (an inexact
+            // restore rolls the tick back to a state it does not restore). A
+            // later clone must not claim an inherited prefix of the old
+            // topology.
             let lineage_id = UndoLog::default().lineage_id;
             self.undo.lineage_id = lineage_id;
             self.undo.base = UndoBase {
