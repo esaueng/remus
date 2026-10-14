@@ -22,6 +22,9 @@ use remus_topology::vertex::Vertex;
 
 use super::helpers::{add_pave_to_edge, find_nearby_pave_vertex as find_nearby_vertex};
 
+#[path = "phase_ef/line_sphere.rs"]
+mod line_sphere;
+
 /// Number of samples along each edge for sign-change detection.
 const N_SAMPLES: usize = 64;
 
@@ -724,7 +727,7 @@ fn check_edge_face_pairs(
                     }
                     if above > hug && -below > hug {
                         match (&nurbs.plane, &nurbs.wall) {
-                            (Some((normal, d)), None) => find_edge_plane_crossings(
+                            (Some((normal, d)), None) => find_edge_plane_crossings_legacy(
                                 &curve, start_pos, end_pos, t0, t1, *normal, *d, tol,
                             ),
                             (None, Some(wall)) => find_edge_cylinder_crossings(
@@ -740,6 +743,14 @@ fn check_edge_face_pairs(
                     } else {
                         Vec::new()
                     }
+                }
+                (FaceSurface::Sphere(sphere), _) if matches!(curve, EdgeCurve::Line) => {
+                    line_sphere::crossings(start_pos, end_pos, t0, t1, sphere, tol.linear)
+                        .unwrap_or_else(|| {
+                            find_edge_surface_crossings(
+                                &curve, start_pos, end_pos, t0, t1, surface, tol, grid,
+                            )
+                        })
                 }
                 (FaceSurface::Nurbs(_), None)
                 | (
@@ -1053,9 +1064,484 @@ fn find_edge_cylinder_crossings(
     }
 }
 
-/// Find edge-plane crossings using algebraic ray-plane intersection.
+/// Algebraic events for an actual analytic Plane×Circle pair. All root
+/// coordinates are outward enclosed; a parameter is only a locator for a
+/// native point whose whole root image fits within the reserved tolerance.
+mod circle_plane_events {
+    use super::{Point3, Vec3};
+    use remus_math::compact_sort::CompactSort;
+    use remus_math::curves::Circle3D;
+    use std::f64::consts::{PI, TAU};
+
+    #[derive(Clone, Copy)]
+    struct I {
+        lo: f64,
+        hi: f64,
+    }
+    impl I {
+        const fn point(value: f64) -> Self {
+            Self {
+                lo: value,
+                hi: value,
+            }
+        }
+        const fn unknown() -> Self {
+            Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            }
+        }
+        fn finite(self) -> bool {
+            self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
+        }
+        fn point_value(self) -> Option<f64> {
+            (self.lo.to_bits() == self.hi.to_bits()).then_some(self.lo)
+        }
+        fn is_zero(self) -> bool {
+            self.point_value()
+                .is_some_and(|value| value.to_bits().trailing_zeros() >= 63)
+        }
+        fn add(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            if let (Some(a), Some(b)) = (self.point_value(), other.point_value()) {
+                let sum = a + b;
+                if !sum.is_finite() {
+                    return Self::unknown();
+                }
+                // Error-free TwoSum, including gradual underflow for binary64
+                // addition. A known exact zero remains a singleton interval.
+                let b_virtual = sum - a;
+                let error = (a - (sum - b_virtual)) + (b - b_virtual);
+                return if error > 0.0 {
+                    Self {
+                        lo: sum,
+                        hi: sum.next_up(),
+                    }
+                } else if error < 0.0 {
+                    Self {
+                        lo: sum.next_down(),
+                        hi: sum,
+                    }
+                } else {
+                    Self::point(sum)
+                };
+            }
+            let result = Self {
+                lo: (self.lo + other.lo).next_down(),
+                hi: (self.hi + other.hi).next_up(),
+            };
+            if result.finite() {
+                result
+            } else {
+                Self::unknown()
+            }
+        }
+        fn neg(self) -> Self {
+            Self {
+                lo: -self.hi,
+                hi: -self.lo,
+            }
+        }
+        fn sub(self, other: Self) -> Self {
+            self.add(other.neg())
+        }
+        fn mul(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            if self.is_zero() || other.is_zero() {
+                return Self::point(0.0);
+            }
+            if let (Some(a), Some(b)) = (self.point_value(), other.point_value()) {
+                let product = a * b;
+                // FMA's exact residual is representable above this conservative
+                // threshold. Below it, residual==0 must NOT certify a product:
+                // the product and its error can both underflow.
+                let safe_floor = f64::MIN_POSITIVE / (f64::EPSILON * f64::EPSILON);
+                if product.is_finite() && product.abs() >= safe_floor {
+                    let error = a.mul_add(b, -product);
+                    if error.is_finite() {
+                        return Self::point(product).add(Self::point(error));
+                    }
+                }
+            }
+            let products = [
+                self.lo * other.lo,
+                self.lo * other.hi,
+                self.hi * other.lo,
+                self.hi * other.hi,
+            ];
+            if products.iter().any(|v| !v.is_finite()) {
+                return Self::unknown();
+            }
+            Self {
+                lo: products
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min)
+                    .next_down(),
+                hi: products
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .next_up(),
+            }
+        }
+        fn square(self) -> Self {
+            if !self.finite() {
+                return Self::unknown();
+            }
+            if self.point_value().is_some() {
+                return self.mul(self);
+            }
+            let upper = self.lo.abs().max(self.hi.abs());
+            let lower = if self.lo <= 0.0 && self.hi >= 0.0 {
+                0.0
+            } else {
+                self.lo.abs().min(self.hi.abs())
+            };
+            Self {
+                lo: (lower * lower).next_down().max(0.0),
+                hi: (upper * upper).next_up(),
+            }
+        }
+        fn div_positive(self, denominator: Self) -> Self {
+            if !denominator.finite() || denominator.lo <= 0.0 {
+                return Self::unknown();
+            }
+            self.mul(Self {
+                lo: (1.0 / denominator.hi).next_down(),
+                hi: (1.0 / denominator.lo).next_up(),
+            })
+        }
+        fn abs_max(self) -> f64 {
+            self.lo.abs().max(self.hi.abs())
+        }
+        fn midpoint(self) -> f64 {
+            f64::midpoint(self.lo, self.hi)
+        }
+        fn hull(self, other: Self) -> Self {
+            Self {
+                lo: self.lo.min(other.lo),
+                hi: self.hi.max(other.hi),
+            }
+        }
+    }
+    fn dot(a: Vec3, b: Vec3) -> I {
+        (0..3)
+            .map(|j| I::point(a.0[j]).mul(I::point(b.0[j])))
+            .fold(I::point(0.0), I::add)
+    }
+    fn root_image(circle: &Circle3D, cosine: I, sine: I) -> [I; 3] {
+        std::array::from_fn(|j| {
+            I::point(circle.center().0[j]).add(
+                I::point(circle.radius()).mul(
+                    I::point(circle.u_axis().0[j])
+                        .mul(cosine)
+                        .add(I::point(circle.v_axis().0[j]).mul(sine)),
+                ),
+            )
+        })
+    }
+    fn qualifies_point(
+        circle: &Circle3D,
+        root: [I; 2],
+        parameter: f64,
+        normal: Vec3,
+        d: f64,
+        budget: f64,
+    ) -> Option<Point3> {
+        let point = circle.evaluate(parameter);
+        let image = root_image(circle, root[0], root[1]);
+        let radius = image
+            .into_iter()
+            .zip(point.0)
+            .map(|(bound, coordinate)| {
+                let difference = bound.sub(I::point(coordinate));
+                if difference.finite() {
+                    I::point(difference.abs_max())
+                } else {
+                    I::unknown()
+                }
+            })
+            .fold(I::point(0.0), I::add);
+        let residual = dot(normal, Vec3::new(point.x(), point.y(), point.z())).sub(I::point(d));
+        (radius.finite()
+            && radius.hi <= budget
+            && residual.finite()
+            && residual.abs_max() <= budget)
+            .then_some(point)
+    }
+
+    /// Outward quadrant reduction and degree39/38 Taylor bounds on |x|≤1.
+    /// The omitted terms are below2e-48;1e-30 covers both remainders.
+    fn sin_cos(parameter: f64) -> Option<(I, I)> {
+        use std::f64::consts::FRAC_PI_2;
+        if !parameter.is_finite() || parameter.abs() > 64.0 * PI {
+            return None;
+        }
+        let turns = (parameter / FRAC_PI_2).round();
+        let x = I::point(parameter).sub(
+            I {
+                lo: FRAC_PI_2.next_down(),
+                hi: FRAC_PI_2.next_up(),
+            }
+            .mul(I::point(turns)),
+        );
+        if !x.finite() || x.abs_max() > 1.0 {
+            return None;
+        }
+        let square = x.square();
+        let (mut s_term, mut c_term) = (x, I::point(1.0));
+        let (mut sine, mut cosine) = (s_term, c_term);
+        for k in 1..20 {
+            s_term = s_term
+                .mul(square)
+                .neg()
+                .div_positive(I::point(f64::from((2 * k) * (2 * k + 1))));
+            c_term = c_term
+                .mul(square)
+                .neg()
+                .div_positive(I::point(f64::from((2 * k) * (2 * k - 1))));
+            sine = sine.add(s_term);
+            cosine = cosine.add(c_term);
+        }
+        let remainder = I {
+            lo: -1e-30,
+            hi: 1e-30,
+        };
+        let sine = sine.add(remainder);
+        let cosine = cosine.add(remainder);
+        let quadrant = turns.rem_euclid(4.0);
+        Some(if quadrant < 0.5 {
+            (sine, cosine)
+        } else if quadrant < 1.5 {
+            (cosine, sine.neg())
+        } else if quadrant < 2.5 {
+            (sine.neg(), cosine.neg())
+        } else {
+            (cosine.neg(), sine)
+        })
+    }
+
+    /// Native sector containment uses only outward endpoint trigonometry.
+    /// atan2/libm never decides that a possible carrier root is outside a trim.
+    fn in_native_span(root: [I; 2], lo: f64, hi: f64) -> Option<bool> {
+        let (sin_lo, cos_lo) = sin_cos(lo)?;
+        let (sin_hi, cos_hi) = sin_cos(hi)?;
+        let left = root[1].mul(cos_lo).sub(root[0].mul(sin_lo));
+        let right = sin_hi.mul(root[0]).sub(cos_hi.mul(root[1]));
+        let minor = if left.hi < 0.0 || right.hi < 0.0 {
+            Some(false)
+        } else if left.lo > 0.0 && right.lo > 0.0 {
+            Some(true)
+        } else {
+            None
+        };
+        let major = if left.lo > 0.0 || right.lo > 0.0 {
+            Some(true)
+        } else if left.hi < 0.0 && right.hi < 0.0 {
+            Some(false)
+        } else {
+            None
+        };
+        let span = I::point(hi).sub(I::point(lo));
+        if span.hi < PI.next_down() {
+            minor
+        } else if span.lo > PI.next_up() {
+            major
+        } else if minor == major {
+            minor
+        } else {
+            None
+        }
+    }
+
+    /// `None` means no certified algebraic reading; the historical scan then
+    /// retains its existing authority. `Some(empty)` proves strict separation.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn crossings(
+        circle: &Circle3D,
+        t0: f64,
+        t1: f64,
+        normal: Vec3,
+        d: f64,
+        tolerance: f64,
+    ) -> Option<Vec<(f64, Point3)>> {
+        if !tolerance.is_finite()
+            || tolerance <= 0.0
+            || !d.is_finite()
+            || !t0.is_finite()
+            || !t1.is_finite()
+            || t0.abs().max(t1.abs()) > 64.0 * PI
+            || (t1 - t0).abs() <= 0.0
+            || (t1 - t0).abs() > TAU.next_up()
+            || !circle.radius().is_finite()
+            || circle.radius() <= 0.0
+            || circle
+                .center()
+                .0
+                .iter()
+                .chain(normal.0.iter())
+                .chain(circle.u_axis().0.iter())
+                .chain(circle.v_axis().0.iter())
+                .any(|v| !v.is_finite())
+        {
+            return None;
+        }
+        let n2 = dot(normal, normal);
+        if n2.lo < 1.0 - 1e-12 || n2.hi > 1.0 + 1e-12 {
+            return None;
+        }
+        let radius = I::point(circle.radius());
+        let a = dot(normal, circle.u_axis()).mul(radius);
+        let b = dot(normal, circle.v_axis()).mul(radius);
+        let center = circle.center();
+        let c = dot(normal, Vec3::new(center.x(), center.y(), center.z())).sub(I::point(d));
+        let amplitude2 = a.square().add(b.square());
+        let exact_tangent = (a.is_zero()
+            && matches!((b.point_value(), c.point_value()), (Some(b), Some(c)) if b.abs().to_bits() == c.abs().to_bits()))
+            || (b.is_zero()
+                && matches!((a.point_value(), c.point_value()), (Some(a), Some(c)) if a.abs().to_bits() == c.abs().to_bits()));
+        // Preserve exact coefficient dependency for axial tangencies instead
+        // of subtracting independent outward squares of the same value.
+        let discriminant = if exact_tangent {
+            I::point(0.0)
+        } else {
+            amplitude2.sub(c.square())
+        };
+        if !discriminant.finite() {
+            return None;
+        }
+        if discriminant.hi < 0.0 {
+            return Some(Vec::new());
+        }
+        if amplitude2.lo <= 0.0 {
+            return None;
+        } // parallel/coplanar: FF owns coincidence
+        let root = I {
+            lo: discriminant.lo.max(0.0).sqrt().next_down().max(0.0),
+            hi: discriminant.hi.sqrt().next_up(),
+        };
+        let x = c.neg().mul(a);
+        let y = c.neg().mul(b);
+        let plus = [
+            x.sub(b.mul(root)).div_positive(amplitude2),
+            y.add(a.mul(root)).div_positive(amplitude2),
+        ];
+        let minus = [
+            x.add(b.mul(root)).div_positive(amplitude2),
+            y.sub(a.mul(root)).div_positive(amplitude2),
+        ];
+        if plus.iter().chain(minus.iter()).any(|value| !value.finite()) {
+            return None;
+        }
+        let roots = if discriminant.lo <= 0.0 {
+            // An arithmetic-ambiguous tangent is one contact only when the
+            // ENTIRE possible two-root cluster fits the same physical budget.
+            vec![[plus[0].hull(minus[0]), plus[1].hull(minus[1])]]
+        } else {
+            vec![plus, minus]
+        };
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let full_turn = (hi - lo).to_bits() == TAU.to_bits();
+        if !full_turn && I::point(hi).sub(I::point(lo)).hi >= TAU.next_down() {
+            return None;
+        }
+        let budget = tolerance / 8.0;
+        let mut events: Vec<(f64, Point3)> = Vec::new();
+        for root in roots {
+            let membership = if full_turn {
+                Some(true)
+            } else {
+                in_native_span(root, lo, hi)
+            };
+            if membership == Some(false) {
+                continue;
+            }
+            let event = if membership.is_none() {
+                // An unresolved endpoint event is represented only by an
+                // authoritative native endpoint with the same physical proof.
+                [lo, hi].into_iter().find_map(|native| {
+                    qualifies_point(circle, root, native, normal, d, budget)
+                        .map(|point| (native, point))
+                })
+            } else {
+                let base = root[1].midpoint().atan2(root[0].midpoint());
+                if !base.is_finite() {
+                    return None;
+                }
+                // Locator failure is UNKNOWN, never a proof of no event.
+                // Every retained root must emit a certified native point.
+                (-34..=34).find_map(|turn| {
+                    let parameter = f64::from(turn).mul_add(TAU, base);
+                    if parameter < lo || parameter > hi {
+                        return None;
+                    }
+                    let native = if full_turn && parameter.to_bits() == hi.to_bits() {
+                        lo
+                    } else {
+                        parameter
+                    };
+                    qualifies_point(circle, root, native, normal, d, budget)
+                        .map(|point| (native, point))
+                })
+            }?;
+            if !events
+                .iter()
+                .any(|(existing, _)| existing.to_bits() == event.0.to_bits())
+            {
+                events.push(event);
+            }
+        }
+        events.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
+        Some(events)
+    }
+
+    #[cfg(test)]
+    mod arithmetic_tests {
+        use super::I;
+        #[test]
+        fn underflow_never_becomes_a_certified_exact_zero_product() {
+            let tiny = I::point(1e-200).mul(I::point(1e-200));
+            assert!(tiny.finite() && tiny.lo < 0.0 && tiny.hi > 0.0);
+            assert!(tiny.point_value().is_none());
+            assert!(I::point(0.0).mul(I::point(1e-200)).is_zero());
+            assert!(
+                I::point(1000.0)
+                    .mul(I::point(1000.0))
+                    .point_value()
+                    .is_some()
+            );
+            assert!(!I::point(f64::NAN).mul(I::point(0.0)).finite());
+        }
+    }
+}
+
+/// Crossings for an actual analytic plane. NURBS plane aliases deliberately
+/// retain the historical solver below; the new certificate owns Circle only.
 #[allow(clippy::too_many_arguments)]
 fn find_edge_plane_crossings(
+    curve: &EdgeCurve,
+    start_pos: Point3,
+    end_pos: Point3,
+    t0: f64,
+    t1: f64,
+    normal: Vec3,
+    d: f64,
+    tol: Tolerance,
+) -> Vec<(f64, Point3)> {
+    if let EdgeCurve::Circle(circle) = curve
+        && let Some(events) = circle_plane_events::crossings(circle, t0, t1, normal, d, tol.linear)
+    {
+        return events;
+    }
+    find_edge_plane_crossings_legacy(curve, start_pos, end_pos, t0, t1, normal, d, tol)
+}
+
+/// Find edge-plane crossings using algebraic ray-plane intersection.
+#[allow(clippy::too_many_arguments)]
+fn find_edge_plane_crossings_legacy(
     curve: &EdgeCurve,
     start_pos: Point3,
     end_pos: Point3,
@@ -1854,5 +2340,258 @@ mod tests {
             edge_extra_pave_within(&topo, &arena, edge, origin, 10.0, 5.0, |_| true),
             Some(v[0])
         );
+    }
+
+    #[test]
+    fn circle_plane_tangent_uses_the_true_endpoint_not_the_tolerance_well() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            0.001,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let (from, to) = (3.0 * PI / 8.0, FRAC_PI_2);
+        let start = circle.evaluate(from);
+        let end = circle.evaluate(to);
+        let roots = find_edge_plane_crossings(
+            &EdgeCurve::Circle(circle),
+            start,
+            end,
+            from,
+            to,
+            Vec3::new(0.0, 1.0, 0.0),
+            0.001,
+            Tolerance::default(),
+        );
+        assert_eq!(roots.len(), 1, "one tangent event, got {roots:?}");
+        assert!(
+            (roots[0].0 - to).abs() < 1e-10,
+            "phantom tolerance-well pave: {roots:?}"
+        );
+        assert!(
+            (roots[0].1 - end).length() < 1e-7 / 8.0,
+            "contact must retain endpoint authority"
+        );
+    }
+
+    fn circle_plane_pose(v: Vec3) -> Vec3 {
+        let axis = Vec3::new(1.0, 2.0, 3.0).normalize().unwrap();
+        let (s, c) = 0.37_f64.sin_cos();
+        v * c + axis.cross(v) * s + axis * (axis.dot(v) * (1.0 - c))
+    }
+
+    #[test]
+    fn circle_plane_axis_tangency_is_one_event_at_small_unit_and_large_scales() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        for r in [0.001, 1.0, 1000.0] {
+            for center in [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0 * r, -7.0 * r, 3.0 * r),
+            ] {
+                let circle = Circle3D::new_with_ref(
+                    center,
+                    Vec3::new(0.0, 0.0, 1.0),
+                    r,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap();
+                let events = circle_plane_events::crossings(
+                    &circle,
+                    0.0,
+                    TAU,
+                    Vec3::new(0.0, 1.0, 0.0),
+                    center.y() + r,
+                    1e-7,
+                )
+                .unwrap();
+                assert_eq!(events.len(), 1, "r={r} center={center:?}: {events:?}");
+                assert!((events[0].0 - FRAC_PI_2).abs() < 1e-10);
+                let expected = center + Vec3::new(0.0, r, 0.0);
+                assert!((events[0].1 - expected).length() < 1e-7 / 8.0);
+            }
+        }
+    }
+
+    #[test]
+    fn circle_plane_secants_and_misses_match_rigid_closed_form_oracles() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::TAU;
+        for r in [0.001, 1.0, 1000.0] {
+            for placed in [false, true] {
+                let pose = |v| if placed { circle_plane_pose(v) } else { v };
+                let center = Point3::new(10.0 * r, -7.0 * r, 3.0 * r);
+                let normal = pose(Vec3::new(0.0, 1.0, 0.0));
+                let circle = Circle3D::new_with_ref(
+                    center,
+                    pose(Vec3::new(0.0, 0.0, 1.0)),
+                    r,
+                    pose(Vec3::new(1.0, 0.0, 0.0)),
+                )
+                .unwrap();
+                let offset = normal.dot(Vec3::new(center.x(), center.y(), center.z()));
+                let events = circle_plane_events::crossings(
+                    &circle,
+                    0.0,
+                    TAU,
+                    normal,
+                    offset + 0.5 * r,
+                    1e-7,
+                )
+                .unwrap();
+                assert_eq!(events.len(), 2, "r={r} placed={placed}");
+                for x in [-3.0_f64.sqrt() / 2.0, 3.0_f64.sqrt() / 2.0] {
+                    let expected = center + pose(Vec3::new(x * r, 0.5 * r, 0.0));
+                    assert!(
+                        events
+                            .iter()
+                            .any(|(_, point)| (*point - expected).length() < 1e-7 / 8.0),
+                        "r={r} placed={placed}: {events:?}"
+                    );
+                }
+                assert!(
+                    circle_plane_events::crossings(
+                        &circle,
+                        0.0,
+                        TAU,
+                        normal,
+                        offset + 2.0 * r,
+                        1e-7
+                    )
+                    .unwrap()
+                    .is_empty()
+                );
+                // A genuine miss inside the old geometric distance band is
+                // still separated algebraically, not promoted to a contact.
+                assert!(
+                    circle_plane_events::crossings(
+                        &circle,
+                        0.0,
+                        TAU,
+                        normal,
+                        offset + (1.0 + 1e-5) * r,
+                        1e-7
+                    )
+                    .unwrap()
+                    .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn circle_plane_native_trim_periods_descending_ranges_and_seams_are_authoritative() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::{PI, TAU};
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        for (from, to, expected) in [
+            (0.0, 0.2, 0),
+            (0.0, 0.7, 1),
+            (PI, 0.0, 2),
+            (TAU, TAU + PI, 2),
+        ] {
+            let events =
+                circle_plane_events::crossings(&circle, from, to, normal, 0.5, 1e-7).unwrap();
+            assert_eq!(events.len(), expected, "[{from},{to}]: {events:?}");
+            assert!(
+                events
+                    .iter()
+                    .all(|(t, _)| *t >= from.min(to) && *t <= from.max(to))
+            );
+        }
+        assert!(
+            circle_plane_events::crossings(&circle, 0.0, 1.4, normal, 1.0, 1e-7)
+                .unwrap()
+                .is_empty()
+        );
+        let events =
+            circle_plane_events::crossings(&circle, 0.0, TAU, Vec3::new(1.0, 0.0, 0.0), 1.0, 1e-7)
+                .unwrap();
+        assert_eq!(events.len(), 1, "full-circle seam is one contact");
+        assert!(events[0].0.abs() < 1e-12);
+    }
+
+    #[test]
+    fn circle_plane_posed_small_tangent_is_certified_and_uncertainty_declines() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let radius = 0.001;
+        let center = Point3::new(0.01, -0.007, 0.003);
+        let normal = circle_plane_pose(Vec3::new(0.0, 1.0, 0.0));
+        let circle = Circle3D::new_with_ref(
+            center,
+            circle_plane_pose(Vec3::new(0.0, 0.0, 1.0)),
+            radius,
+            circle_plane_pose(Vec3::new(1.0, 0.0, 0.0)),
+        )
+        .unwrap();
+        let d = normal.dot(Vec3::new(center.x(), center.y(), center.z())) + radius;
+        let events = circle_plane_events::crossings(
+            &circle,
+            3.0 * std::f64::consts::PI / 8.0,
+            FRAC_PI_2,
+            normal,
+            d,
+            1e-7,
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!((events[0].1 - circle.evaluate(FRAC_PI_2)).length() < 1e-7 / 8.0);
+        assert!(circle_plane_events::crossings(&circle, 0.0, TAU, normal, d, 1e-30).is_none());
+        assert!(circle_plane_events::crossings(&circle, f64::NAN, TAU, normal, d, 1e-7).is_none());
+        assert!(
+            circle_plane_events::crossings(&circle, 0.0, TAU, Vec3::new(0.0, 0.0, 0.0), d, 1e-7)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn circle_plane_trim_exclusion_uses_certified_native_sectors() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::PI;
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let angle = PI / 6.0;
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        // Both offsets are much less than the operation tolerance. Their
+        // opposite exact native membership still determines0 versus1 event.
+        assert!(
+            circle_plane_events::crossings(&circle, angle + 1e-9, 0.7, normal, 0.5, 1e-7)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            circle_plane_events::crossings(&circle, angle - 1e-9, 0.7, normal, 0.5, 1e-7)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            circle_plane_events::crossings(&circle, 0.0, angle, normal, 0.5, 1e-7)
+                .unwrap()
+                .len(),
+            1
+        );
+        // A major arc retains the opposite secant and excludes the first.
+        let events =
+            circle_plane_events::crossings(&circle, 0.7, 2.0 * PI - 0.7, normal, 0.5, 1e-7)
+                .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!((events[0].0 - 5.0 * PI / 6.0).abs() < 1e-10);
     }
 }

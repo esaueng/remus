@@ -1525,3 +1525,286 @@ fn conversion_footprints_are_deterministic() {
     .unwrap();
     assert_eq!(report.control_points_total, 33 * 17);
 }
+
+/// The rational native coordinate is nonlinear in angle. Check the inverse
+/// affine image against the independent implicit conic and directed arc span.
+fn assert_rational_arc_image(
+    source: &EdgeCurve,
+    native: (f64, f64),
+    image: &EdgeCurve,
+    trim: (f64, f64),
+    matrix: Mat4,
+) {
+    let (center, u, v, ru, rv) = match source {
+        EdgeCurve::Circle(c) => (c.center(), c.u_axis(), c.v_axis(), c.radius(), c.radius()),
+        EdgeCurve::Ellipse(e) => (
+            e.center(),
+            e.u_axis(),
+            e.v_axis(),
+            e.semi_major(),
+            e.semi_minor(),
+        ),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => panic!("source conic"),
+    };
+    let EdgeCurve::NurbsCurve(image) = image else {
+        panic!("rational image")
+    };
+    assert_eq!(trim, image.domain());
+    let inverse = matrix.inverse().unwrap();
+    let (a, b) = native;
+    for (t, expected) in [(trim.0, a), (trim.1, b)] {
+        let source_point = center + u * (ru * expected.cos()) + v * (rv * expected.sin());
+        let residual = (image.evaluate(t) - matrix.mul_point(source_point)).length();
+        assert!(
+            residual < 1e-9 * ru.max(rv).max(1.0),
+            "native endpoint {residual}"
+        );
+    }
+    let mut previous = 0.0;
+    for j in 1..16 {
+        let parameter = trim.0 + (trim.1 - trim.0) * f64::from(j) / 16.0;
+        let offset = inverse.mul_point(image.evaluate(parameter)) - center;
+        let x = offset.dot(u) / ru;
+        let y = offset.dot(v) / rv;
+        assert!((x * x + y * y - 1.0).abs() < 1e-10);
+        assert!(offset.dot(u.cross(v)).abs() < 1e-10 * ru.max(rv).max(1.0));
+        let progress = ((y.atan2(x) - a) * (b - a).signum()).rem_euclid(TAU);
+        assert!(progress > previous && progress < (b - a).abs() + 1e-10);
+        previous = progress;
+    }
+}
+
+#[test]
+fn skewed_sphere_boundaries_preserve_exact_native_traversal() {
+    for scale in [0.001, 1.0, 1000.0] {
+        for descending in [false, true] {
+            for reversing in [false, true] {
+                let mut topo = Topology::new();
+                let solid = primitives::make_sphere(&mut topo, scale, 16).unwrap();
+                // Valid unrelated scene bodies contribute global coedges but
+                // must neither authorize nor disqualify this boundary map.
+                let unrelated_box = primitives::make_box(&mut topo, scale, scale, scale).unwrap();
+                let unrelated_sphere = primitives::make_sphere(&mut topo, 2.0 * scale, 7).unwrap();
+                let unrelated_before =
+                    remus_io::arena_io::serialize_solids(&topo, &[unrelated_box, unrelated_sphere])
+                        .unwrap();
+                if descending {
+                    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+                    for id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+                        let edge = topo.edge_mut(id).unwrap();
+                        let (a, b) = edge.strict_domain().unwrap();
+                        let (start, end) = (edge.start(), edge.end());
+                        edge.set_start(end);
+                        edge.set_end(start);
+                        edge.set_trim(Some((b, a)));
+                    }
+                    for face in faces {
+                        let source = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+                        let edges = source
+                            .edges()
+                            .iter()
+                            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                            .collect();
+                        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+                        topo.set_face_boundary_wires(face, wire, vec![]).unwrap();
+                    }
+                }
+                let sources: Vec<_> = remus_topology::explorer::solid_edges(&topo, solid)
+                    .unwrap()
+                    .into_iter()
+                    .map(|id| {
+                        let edge = topo.edge(id).unwrap();
+                        (id, edge.curve().clone(), edge.strict_domain().unwrap())
+                    })
+                    .collect();
+                let matrix = oblique_anisotropic()
+                    * if reversing {
+                        Mat4::scale(-1.0, 1.0, 1.0)
+                    } else {
+                        Mat4::identity()
+                    };
+                let before = format!("{topo:?}");
+                let plans = transform::preflight_solid_transform(&topo, solid, &matrix).unwrap();
+                assert!(
+                    plans
+                        .iter()
+                        .all(|plan| plan.method == SurfaceMethod::ExactRational)
+                );
+                assert_eq!(format!("{topo:?}"), before, "preflight is pure");
+                let report = transform::transform_solid_detailed(
+                    &mut topo,
+                    solid,
+                    &matrix,
+                    TransformPolicy::ExactOnly,
+                )
+                .unwrap();
+                assert!(report.is_exact() && report.fitted_faces.is_empty());
+                assert_eq!(report.edge_changes.len(), sources.len());
+                let mut curve_points = 0;
+                for (id, curve, native) in sources {
+                    let edge = topo.edge(id).unwrap();
+                    assert_rational_arc_image(
+                        &curve,
+                        native,
+                        edge.curve(),
+                        edge.strict_domain().unwrap(),
+                        matrix,
+                    );
+                    let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+                        unreachable!()
+                    };
+                    curve_points += curve.control_points().len();
+                }
+                assert!(
+                    report
+                        .edge_changes
+                        .iter()
+                        .all(|change| change.from == "circle" && change.to == "nurbs_curve")
+                );
+                assert_eq!(
+                    report.control_points_total,
+                    curve_points
+                        + report
+                            .face_changes
+                            .iter()
+                            .map(|face| face.control_points)
+                            .sum::<usize>()
+                );
+                assert_valid(&topo, solid);
+                assert_eq!(
+                    remus_io::arena_io::serialize_solids(&topo, &[unrelated_box, unrelated_sphere])
+                        .unwrap(),
+                    unrelated_before
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn existing_nurbs_body_ellipses_remap_exactly_on_a_second_affine_map() {
+    let mut topo = Topology::new();
+    let solid = primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
+    transform::transform_solid(&mut topo, solid, &anisotropic()).unwrap();
+    let sources: Vec<_> = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .map(|id| {
+            let edge = topo.edge(id).unwrap();
+            assert!(matches!(edge.curve(), EdgeCurve::Ellipse(_)));
+            (id, edge.curve().clone(), edge.strict_domain().unwrap())
+        })
+        .collect();
+    let matrix = oblique_anisotropic();
+    let report =
+        transform::transform_solid_detailed(&mut topo, solid, &matrix, TransformPolicy::ExactOnly)
+            .unwrap();
+    assert!(report.is_exact() && report.face_changes.is_empty());
+    assert_eq!(report.edge_changes.len(), sources.len());
+    assert!(
+        report
+            .edge_changes
+            .iter()
+            .all(|change| change.from == "ellipse" && change.to == "nurbs_curve")
+    );
+    for (id, source, native) in sources {
+        let edge = topo.edge(id).unwrap();
+        assert_rational_arc_image(
+            &source,
+            native,
+            edge.curve(),
+            edge.strict_domain().unwrap(),
+            matrix,
+        );
+    }
+    assert_valid(&topo, solid);
+}
+
+#[test]
+fn nonlinear_boundary_remap_refuses_uv_foreign_and_multiturn_authority_atomically() {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_topology::coedge::PeriodicWinding;
+    use remus_topology::pcurve::PCurve;
+    for mutation in 0..6 {
+        let mut topo = Topology::new();
+        let solid = primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
+        if mutation == 3 {
+            transform::transform_solid(&mut topo, solid, &anisotropic()).unwrap();
+        }
+        let face = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let wire_id = topo.face(face).unwrap().outer_wire();
+        let use_ = topo.wire(wire_id).unwrap().edges()[0];
+        match mutation {
+            0 | 3 => {
+                let (a, b) = topo.edge(use_.edge()).unwrap().strict_domain().unwrap();
+                topo.set_pcurve_oriented(
+                    use_.edge(),
+                    face,
+                    use_.is_forward(),
+                    PCurve::new(
+                        Curve2D::Line(
+                            Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+                        ),
+                        a,
+                        b,
+                    ),
+                )
+                .unwrap();
+            }
+            1 => {
+                let id = topo.coedges_of_edge(use_.edge())[0];
+                topo.set_coedge_periodic_winding(id, PeriodicWinding::new(1, 0))
+                    .unwrap();
+            }
+            2 => {
+                topo.add_face(Face::new(
+                    wire_id,
+                    vec![],
+                    FaceSurface::Plane {
+                        normal: Vec3::new(0.0, 0.0, 1.0),
+                        d: 0.0,
+                    },
+                ));
+            }
+            4 | 5 => {
+                let edge = topo.edge_mut(use_.edge()).unwrap();
+                let (a, b) = edge.strict_domain().unwrap();
+                // The endpoints stay unchanged: the extra complete turns
+                // change multiplicity, rather than endpoint geometry.
+                let extra_turns = if mutation == 4 { TAU } else { -2.0 * TAU };
+                edge.set_trim(Some((a, b + extra_turns)));
+            }
+            _ => unreachable!(),
+        }
+        let before = format!("{topo:?}");
+        let matrix = oblique_anisotropic();
+        assert!(matches!(
+            transform::preflight_solid_transform(&topo, solid, &matrix),
+            Err(remus_operations::OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(format!("{topo:?}"), before);
+        assert!(matches!(
+            transform::transform_solid_detailed(
+                &mut topo,
+                solid,
+                &matrix,
+                TransformPolicy::ExactOnly
+            ),
+            Err(remus_operations::OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(format!("{topo:?}"), before);
+        assert!(matches!(
+            remus_operations::copy::copy_and_transform_solid_detailed(
+                &mut topo,
+                solid,
+                &matrix,
+                TransformPolicy::ExactOnly
+            ),
+            Err(remus_operations::OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(format!("{topo:?}"), before);
+    }
+}

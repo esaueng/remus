@@ -271,6 +271,18 @@ impl<'a> PreparedSolid<'a> {
                 Some(&prepared.cache),
             )? < tolerance
             {
+                if let Some(inside) = super::boundary::qualified_sphere_trim_contains(
+                    self.topo,
+                    prepared.fid,
+                    Some(&prepared.cache),
+                    point,
+                    tolerance,
+                )? {
+                    if inside {
+                        return Ok(true);
+                    }
+                    continue;
+                }
                 let owned_trim;
                 let trim = if let Some(cached) = &prepared.trim {
                     cached
