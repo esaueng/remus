@@ -4274,6 +4274,16 @@ impl<'a> StepBuilder<'a> {
                 let axis_ref =
                     required_reference_attribute("PLANE", surface_ref, &slots, 1, "position")?;
                 let (origin, normal, _ref_dir) = self.build_axis2_placement(axis_ref)?;
+                // ISO 10303-42 direction ratios need not be unit, but `d` is a
+                // signed distance only along a unit normal, and the arena
+                // refuses any other. Rescaling names the same plane; a normal
+                // already unit to roundoff keeps its bits, and a zero one is
+                // kept as written (see `build_axis2_placement`).
+                let normal = if (normal.length() - 1.0).abs() > 4.0 * f64::EPSILON {
+                    normal.normalize().unwrap_or(normal)
+                } else {
+                    normal
+                };
                 let d = normal.dot(Vec3::new(origin.x(), origin.y(), origin.z()));
                 Ok(FaceSurface::Plane { normal, d })
             }
