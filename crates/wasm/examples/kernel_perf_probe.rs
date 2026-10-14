@@ -12,9 +12,11 @@
 //! recognition). `plate` builds a pocketed, drilled plate, fillets it in
 //! stages and then runs the same pipeline on the filleted body. `stage`
 //! (default `all`) restricts the loop to one stage: move, validate, bbox,
-//! display, volume, recognize, massprops, fillet, boolean. For an analysis
-//! stage every edit is made first, then the stage runs over the prepared
-//! bodies contiguously, so a sampling profiler can isolate it.
+//! display, volume, recognize, massprops, fillet, boolean. `all` is exactly
+//! the per-edit pipeline above; `massprops`, `fillet` and `boolean` run only
+//! when named, because the browser face-drag loop never calls them. For an
+//! analysis stage every edit is made first, then the stage runs over the
+//! prepared bodies contiguously, so a sampling profiler can isolate it.
 
 #![allow(
     clippy::print_stdout,
@@ -141,6 +143,7 @@ fn analyse(topo: &Topology, solid: SolidId, stage: &str, stages: &mut Stages) {
         stages.record("recognize", ms(t));
         stages.count("features", f.len());
     }
+    // Not part of `all`: the face-drag pipeline does not request it.
     if stage == "massprops" {
         let t = Instant::now();
         let _ = measure::mass_properties(topo, solid).expect("mass props");
