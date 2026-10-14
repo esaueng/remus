@@ -5840,6 +5840,12 @@ fn all_component_centers_outside(
 /// stored winding is not trusted); ray parity against the component's own
 /// tessellation, at a chord error of 0.1 % of the diagonal, certifies each one
 /// — every step clears that chord error at least threefold.
+/// With cavity shells and exclusively planar component carriers, failed coarse
+/// probes are followed by at most 32 halvings toward the boundary. Planar
+/// carriers have no surface chord error; the complete result classifier must
+/// still certify strict material membership. Offsets stop at four times the
+/// operation's linear/relative tolerance or coordinate roundoff floor, so
+/// unresolved/sub-tolerance walls remain refusals. Curved admission is unchanged.
 fn component_material_probe(
     topo: &Topology,
     faces: &[FaceId],
@@ -5849,6 +5855,7 @@ fn component_material_probe(
     tol: remus_math::tolerance::Tolerance,
 ) -> Option<Point3> {
     const MAX_SEED_TRIANGLES: usize = 16;
+    const MAX_PLANAR_REFINEMENTS: usize = 32;
     let diag = (max - min).length();
     if !diag.is_finite() || diag <= 0.0 {
         return None;
@@ -5903,10 +5910,61 @@ fn component_material_probe(
         }
     }
     let enclosed = material_enclosed(&candidates)?;
-    candidates
-        .into_iter()
+    if let Some(probe) = candidates
+        .iter()
         .zip(enclosed)
-        .find_map(|(p, inside)| inside.then_some(p))
+        .find_map(|(&p, inside)| inside.then_some(p))
+    {
+        return Some(probe);
+    }
+    // Sub-chord offsets cannot be certified from curved triangle centroids.
+    // The additional narrow search applies only when every component carrier
+    // is exactly planar AND the complete result classifier subtracts cavities.
+    material_classifier?;
+    for &fid in faces {
+        match topo.face(fid).ok()?.surface() {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return None,
+        }
+    }
+    let coordinate_scale = [min.x(), min.y(), min.z(), max.x(), max.y(), max.z()]
+        .into_iter()
+        .map(f64::abs)
+        .fold(diag, f64::max);
+    let floor = 4.0
+        * tol
+            .linear
+            .max(tol.relative * diag)
+            .max(64.0 * f64::EPSILON * coordinate_scale);
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    let mut offset = 3e-3 * diag;
+    for _ in 0..MAX_PLANAR_REFINEMENTS {
+        if offset <= floor {
+            break;
+        }
+        offset = (offset * 0.5).max(floor);
+        candidates.clear();
+        for &(_, centroid, unit) in seeds.iter().take(MAX_SEED_TRIANGLES) {
+            for sense in [1.0, -1.0] {
+                candidates.push(centroid + unit * (sense * offset));
+            }
+        }
+        let enclosed = material_enclosed(&candidates)?;
+        if let Some(probe) = candidates
+            .iter()
+            .zip(enclosed)
+            .find_map(|(&p, inside)| inside.then_some(p))
+        {
+            return Some(probe);
+        }
+    }
+    None
 }
 
 /// Does the closed surface made of `faces` enclose `p`?

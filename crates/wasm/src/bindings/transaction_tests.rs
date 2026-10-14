@@ -77,16 +77,18 @@ mod exact_boolean_gate_tests {
         serde_json::from_str(&response).unwrap()
     }
 
-    fn cavity_fixture(kernel: &mut BrepKernel) -> (u32, u32) {
+    fn cavity_fixture(kernel: &mut BrepKernel, tool_side: f64, second_piece: bool) -> (u32, u32) {
+        let wall = (10.0 - tool_side) * 0.5;
+        let x = wall + if second_piece { 20.0 } else { 0.0 };
         let results = batch(
             kernel,
             false,
             serde_json::json!([
                 {"op":"makeBox","args":{"width":10.0,"height":10.0,"depth":10.0}},
                 {"op":"makeBox","args":{"width":10.0,"height":10.0,"depth":10.0}},
-                {"op":"makeBox","args":{"width":2.0,"height":2.0,"depth":2.0}},
+                {"op":"makeBox","args":{"width":tool_side,"height":tool_side,"depth":tool_side}},
                 {"op":"transform","args":{"solid":1,"matrix":[1,0,0,20,0,1,0,0,0,0,1,0,0,0,0,1]}},
-                {"op":"transform","args":{"solid":2,"matrix":[1,0,0,4,0,1,0,4,0,0,1,4,0,0,0,1]}},
+                {"op":"transform","args":{"solid":2,"matrix":[1,0,0,x,0,1,0,wall,0,0,1,wall,0,0,0,1]}},
                 {"op":"fuse","args":{"solidA":0,"solidB":1}},
             ]),
         );
@@ -106,10 +108,21 @@ mod exact_boolean_gate_tests {
 
     #[test]
     fn exact_boolean_multi_piece_cavity_survives_both_batch_envelopes() {
+        check_cavity_batch(2.0, false);
+    }
+
+    #[test]
+    fn exact_boolean_thin_multi_piece_cavity_survives_both_batch_envelopes() {
+        for second_piece in [false, true] {
+            check_cavity_batch(9.98, second_piece);
+        }
+    }
+
+    fn check_cavity_batch(tool_side: f64, second_piece: bool) {
         for operation in ["cutWithEntityEvolution", "cutJournaled"] {
             for v2 in [false, true] {
                 let mut kernel = BrepKernel::new();
-                let (blank, tool) = cavity_fixture(&mut kernel);
+                let (blank, tool) = cavity_fixture(&mut kernel, tool_side, second_piece);
                 let response = batch(
                     &mut kernel,
                     v2,
@@ -123,13 +136,35 @@ mod exact_boolean_gate_tests {
                 );
                 let payload = &response[0]["ok"];
                 let solid = u32::try_from(payload["solid"].as_u64().unwrap()).unwrap();
-                assert!((kernel.volume(solid, 1e-4).unwrap() - 1992.0).abs() < 1e-6);
+                let expected = 2000.0 - tool_side.powi(3);
+                assert!((kernel.volume(solid, 1e-4).unwrap() - expected).abs() < 1e-6);
                 let id = kernel.resolve_solid(solid).unwrap();
                 assert_eq!(kernel.topo().solid(id).unwrap().inner_shells().len(), 1);
                 assert!(
                     remus_operations::validate::validate_solid(kernel.topo(), id)
                         .unwrap()
                         .is_valid()
+                );
+                let piece_x = if second_piece { 20.0 } else { 0.0 };
+                let wall = (10.0 - tool_side) * 0.5;
+                assert_eq!(
+                    remus_operations::classify::classify_points(
+                        kernel.topo(),
+                        id,
+                        &[
+                            remus_math::vec::Point3::new(piece_x + 5.0, 5.0, 5.0),
+                            remus_math::vec::Point3::new(piece_x + wall * 0.5, 5.0, 5.0),
+                            remus_math::vec::Point3::new(25.0 - piece_x, 5.0, 5.0),
+                        ],
+                        0.01,
+                        1e-7,
+                    )
+                    .unwrap(),
+                    [
+                        remus_operations::classify::PointClassification::Outside,
+                        remus_operations::classify::PointClassification::Inside,
+                        remus_operations::classify::PointClassification::Inside,
+                    ]
                 );
                 if operation == "cutJournaled" {
                     let summary: serde_json::Value =

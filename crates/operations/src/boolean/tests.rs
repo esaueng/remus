@@ -11114,4 +11114,62 @@ mod exact_result_gate_tests {
             ));
         }
     }
+
+    fn thin_hollow_piece(topo: &mut Topology) -> SolidId {
+        let outer = box_at(topo, 4.0, 0.0);
+        let cavity = box_at(topo, 3.98, 0.01);
+        crate::transform::transform_solid(topo, cavity, &Mat4::translation(0.0, 0.01, 0.01))
+            .unwrap();
+        boolean(topo, BooleanOp::Cut, outer, cavity).unwrap()
+    }
+
+    #[test]
+    fn planar_material_search_refuses_walls_below_its_tolerance_floor() {
+        let mut topo = Topology::new();
+        let hollow = thin_hollow_piece(&mut topo);
+        let faces = assembly::face_components(&topo, hollow).remove(0);
+        let prepared = remus_check::classify::PreparedSolid::prepare(&topo, hollow).unwrap();
+        let centre = Point3::new(2.0, 2.0, 2.0);
+        let bounds = (Point3::new(0.0, 0.0, 0.0), Point3::new(4.0, 4.0, 4.0));
+        assert!(
+            component_material_probe(
+                &topo,
+                &faces,
+                centre,
+                bounds,
+                Some(&prepared),
+                Tolerance::new()
+            )
+            .is_some()
+        );
+        // At this operation tolerance, the entire 0.01 wall lies within the
+        // boundary band. Neither extra search nor a boundary classification
+        // can stand in for a strict material witness.
+        let tolerance = Tolerance {
+            linear: 0.02,
+            ..Tolerance::new()
+        };
+        assert!(
+            component_material_probe(&topo, &faces, centre, bounds, Some(&prepared), tolerance)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exact_gate_refuses_thin_material_retained_inside_the_tool() {
+        let mut topo = Topology::new();
+        let blank = box_at(&mut topo, 10.0, 0.0);
+        let tool = box_at(&mut topo, 4.0, 0.0);
+        let material = thin_hollow_piece(&mut topo);
+        let untouched = box_at(&mut topo, 2.0, 6.0);
+        let wrong_cut = joined_outer_shells(&mut topo, &[material, untouched]);
+        assert!(is_closed_manifold(&topo, wrong_cut).unwrap());
+        assert!(validate_boolean_result(&topo, wrong_cut).is_ok());
+        // The adaptive witness must find the thin wall, then the final tool
+        // classifier must reject it: the whole hollow piece is removed by B.
+        assert!(matches!(
+            require_exact_boolean_result(&topo, BooleanOp::Cut, blank, tool, wrong_cut),
+            Err(crate::OperationsError::ExactOnlyUnattainable)
+        ));
+    }
 }
