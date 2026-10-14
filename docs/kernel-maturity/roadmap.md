@@ -1034,19 +1034,22 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ca91b95
 | <a id="perf-o03"></a>PERF-O03 | P2 / 5 / S | Reuse adjacent-support intersections, projected trim curves and vertex planning in offsets/re-limitation; current inter3d is already adjacency-based. | Measure local edit cost on a large body; preserve pcurve authority, winding, tolerance composition and construction mappings. | L/high | Q01, M07 | [B30](#b30) | Proposed |
 | <a id="perf-o04"></a>PERF-O04 | P2 / 5 / S | Reuse sweep frames, arc-length maps, profile sampling and compatible loft factorization; avoid reconstructing shared profile geometry. | Benchmark long paths and many sections, including twists/kinks/holes; preserve parameterization, continuity and exact analytic lowering. | M/high | M07, N06 | [B30](#b30) | Proposed |
 | <a id="perf-o05"></a>PERF-O05 | P2 / 5 / H | Use assembly instances and delayed topology materialization for repeated transforms/pattern display where the API can express shared geometry. | Measure 10k instances versus copied solids; retain identity/attributes and explicitly materialize when booleans or exact export require independent topology. | XL/high | T04, Q08 | [O5.4](#o-o5-4) | Proposed |
-| <a id="perf-o06"></a>PERF-O06 | P1 / 2 / M | Profile recognition graph face-area and edge-relation work, then reuse or accelerate qualified unchanged work; rank opposing planar-face candidate bucketing only from workload evidence. | Preserve complete feature records, area values, edge verdicts, holes, blend exclusions and ambiguous matches; measure area/projection/ray work separately and retain exact-output goldens and current-package workflow qualification. | M/high | Q02, M07 | [B16](#b16) | Partial — one prepared classifier, shared normal samples and exact scalar NURBS-area memoization already ship. [Fresh source-32 graph profile](../performance/perf-o06-recognition-graph.md), local paired 2026.1.59: recognition ~347 ms (12 untraced edits/schedule); two byte-qualified shipping CPU profiles attribute ~79% to quadrant ray crossings (line–NURBS ~47%, torus ~26%), area ~14%, setup <1%. Separate counters qualify 1,538 rays/14,549 candidate-face calls and 40/42 NURBS-area memo hits per edit. Maintained CPU/count observers, portable raw evidence and exact geometry/quantity/feature comparisons ship; no runtime optimization. Next: refinement/root/trim-work attribution before bounded exact reuse or rejection. Persistent reuse and other-workload bucketing remain open. |
+| <a id="perf-o06"></a>PERF-O06 | P1 / 2 / M | Profile recognition graph face-area and edge-relation work, then reuse or accelerate qualified unchanged work; rank opposing planar-face candidate bucketing only from workload evidence. | Preserve complete feature records, area values, edge verdicts, holes, blend exclusions and ambiguous matches; measure area/projection/ray work separately and retain exact-output goldens and current-package workflow qualification. | M/high | Q02, M07 | [B16](#b16) | Partial — one prepared classifier, shared normal samples and exact scalar NURBS-area memoization already ship. [Fresh source-32 graph profile](../performance/perf-o06-recognition-graph.md), local paired 2026.1.59: recognition ~347 ms (12 untraced edits/schedule); two byte-qualified shipping CPU profiles attribute ~79% to quadrant ray crossings (line–NURBS ~47%, torus ~26%), area ~14%, setup <1%. Separate counters qualify 1,538 rays/14,549 candidate-face calls and 40/42 NURBS-area memo hits per edit. Maintained CPU/count observers, portable raw evidence and exact geometry/quantity/feature comparisons ship; that profile contains no runtime optimization. Follow-on ray-crossing implementation and qualification tranches are recorded below. Persistent reuse and other-workload bucketing remain open. |
 | <a id="perf-o07"></a>PERF-O07 | P2 / 5 / S | Plan local direct edits and resize-blend operations against an affected neighborhood, minimizing copied surfaces and repeated trial rebuilds. | Count touched versus total entities; preserve transactional refusal, contact dependencies and total lineage across zero-radius removal and topology changes. | L/high | T01, Q02, M07 | [P-Class 6.2](#p-6-2) | Proposed |
 
 #### PERF-O06-NR: bounded NURBS ray evaluation reuse
 
-Partial — [64-entry exact-parameter reuse](../performance/perf-o06-nurbs-ray-reuse.md),
-seed-point carry and unchanged ray-norm reuse are implemented under PERF-O06/B16.
-Fresh diagnostic baseline supports 35.2% position/33.8% partial hit potential;
-seven focused tests pass default/SIMD and native binding material/edge controls
-pass. Complete root bits, derivative arithmetic, tolerances, cycle phases,
-edge verdicts and features must stay unchanged. Quiet local Criterion and
-shipping WASM timing, full-workspace and fresh/installed package qualification
-remain pending; no elapsed-time gain is claimed yet.
+Locally qualified — [64-entry exact-parameter reuse](../performance/perf-o06-nurbs-ray-reuse.md),
+seed-point carry and unchanged ray-norm reuse preserve complete root bits and
+shipping geometry, quantities, feature records and edge verdicts. Quiet fresh
+WASM recognition falls about 11.0% on the maintained holder edit; kernel plus
+bulk-transfer time falls about 5.4–5.5%. All four native carrier controls improve
+7.6–11.6%. Both schedules retain 12 edits per revision. Qualification: 8,078
+workspace tests, docs, 13 complexity guards, no-I/O contracts, 52-row census,
+fresh and installed paired WASM, 36 exact snapshot pairs/180 arena-display
+artifacts and 5,760 per-face area-bit pairs. This closes the bounded reuse
+tranche locally; hosted CI, committed-package refresh, broader workloads and
+browser presentation remain separate.
 
 </details>
 
