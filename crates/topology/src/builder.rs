@@ -17,6 +17,392 @@ use crate::face::{Face, FaceId, FaceSurface};
 use crate::vertex::Vertex;
 use crate::wire::{OrientedEdge, Wire, WireId};
 
+mod winding {
+    //! Qualified winding of planar NURBS boundaries.
+    //!
+    //! A chord polygon is useful only when its signed area exceeds a bound on
+    //! every skipped curve-versus-chord area. Positive rational Bézier weights
+    //! bound that area through the Bernstein numerator of r × r′ / w². Knot
+    //! spans are kept separately; refinement therefore cannot miss a small span.
+
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::nurbs::knot_ops::curve_knot_insert;
+    use remus_math::vec::{Point3, Vec3};
+
+    use crate::TopologyError;
+
+    pub(super) const MAX_PIECES: usize = 4096;
+    const MAX_DEGREE: usize = 32;
+
+    pub(super) fn refusal() -> TopologyError {
+        TopologyError::NonManifold {
+            reason: "planar NURBS boundary winding could not be qualified within its work budget"
+                .into(),
+        }
+    }
+
+    #[derive(Clone)]
+    struct Piece {
+        points: Vec<Point3>,
+        weights: Vec<f64>,
+    }
+
+    impl Piece {
+        fn area_error(&self, normal: Vec3) -> Result<f64, TopologyError> {
+            let degree = self.points.len() - 1;
+            if degree == 1 {
+                // A positive-weight rational line traces exactly its chord.
+                return Ok(0.0);
+            }
+            let anchor = self.points[0];
+            let homogeneous: Vec<Vec3> = self
+                .points
+                .iter()
+                .zip(&self.weights)
+                .map(|(&point, &weight)| (point - anchor) * weight)
+                .collect();
+            let min_weight = self.weights.iter().copied().fold(f64::INFINITY, f64::min);
+            let mut coefficients = vec![0.0; 2 * degree];
+            let mut magnitude = 0.0;
+            #[allow(clippy::cast_precision_loss)]
+            for (i, &position) in homogeneous.iter().enumerate() {
+                for j in 0..degree {
+                    let derivative = (homogeneous[j + 1] - homogeneous[j]) * degree as f64;
+                    let product = binomial(degree, i) * binomial(degree - 1, j)
+                        / binomial(2 * degree - 1, i + j);
+                    coefficients[i + j] += position.cross(derivative).dot(normal) * product;
+                    magnitude += position.length() * derivative.length() * product;
+                }
+            }
+            let numerator = coefficients
+                .iter()
+                .copied()
+                .map(f64::abs)
+                .fold(0.0, f64::max);
+            // Arithmetic slack is included even when the mathematical numerator
+            // cancels. The anchor removes translation from both the bound and its
+            // roundoff scale. This bounds twice the signed curve/chord area.
+            let bound = (numerator + magnitude * 128.0 * f64::EPSILON) / (min_weight * min_weight);
+            if bound.is_finite() {
+                Ok(bound)
+            } else {
+                Err(refusal())
+            }
+        }
+
+        fn split(&self) -> Result<(Self, Self), TopologyError> {
+            let anchor = self.points[0];
+            let mut points: Vec<Vec3> = self
+                .points
+                .iter()
+                .zip(&self.weights)
+                .map(|(&point, &weight)| (point - anchor) * weight)
+                .collect();
+            let mut weights = self.weights.clone();
+            let mut left_points = vec![self.points[0]];
+            let mut left_weights = vec![weights[0]];
+            let mut right_points = vec![self.points[self.points.len() - 1]];
+            let mut right_weights = vec![weights[weights.len() - 1]];
+            for remaining in (1..points.len()).rev() {
+                for i in 0..remaining {
+                    points[i] = points[i] * 0.5 + points[i + 1] * 0.5;
+                    weights[i] = weights[i] * 0.5 + weights[i + 1] * 0.5;
+                }
+                if weights[0] <= 0.0 || weights[remaining - 1] <= 0.0 {
+                    return Err(refusal());
+                }
+                left_points.push(anchor + points[0] * weights[0].recip());
+                left_weights.push(weights[0]);
+                right_points.push(anchor + points[remaining - 1] * weights[remaining - 1].recip());
+                right_weights.push(weights[remaining - 1]);
+            }
+            right_points.reverse();
+            right_weights.reverse();
+            Ok((
+                Self {
+                    points: left_points,
+                    weights: left_weights,
+                },
+                Self {
+                    points: right_points,
+                    weights: right_weights,
+                },
+            ))
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn binomial(n: usize, k: usize) -> f64 {
+        (0..k.min(n - k)).fold(1.0, |value, i| value * (n - i) as f64 / (i + 1) as f64)
+    }
+
+    /// One NURBS edge's replacement range in the initially sampled polygon.
+    #[derive(Clone)]
+    pub(super) struct NurbsRun {
+        start: usize,
+        end: usize,
+        forward: bool,
+        pieces: Vec<Piece>,
+    }
+
+    impl NurbsRun {
+        pub(super) fn new(
+            curve: &NurbsCurve,
+            range: (f64, f64),
+            forward: bool,
+            start: usize,
+            remaining_pieces: &mut usize,
+        ) -> Result<Self, TopologyError> {
+            let degree = curve.degree();
+            let lo = range.0.min(range.1);
+            let hi = range.0.max(range.1);
+            let (domain_lo, domain_hi) = curve.domain();
+            if degree > MAX_DEGREE
+                || curve.control_points().len() > MAX_PIECES
+                || lo < domain_lo
+                || hi > domain_hi
+                || lo >= hi
+            {
+                return Err(refusal());
+            }
+            // Inserting the trim bounds and every knot to degree multiplicity
+            // exposes each exact Bernstein span, including non-clamped domains.
+            let mut bounds = vec![lo];
+            for &knot in curve.knots() {
+                if knot > lo && knot < hi && bounds.last() != Some(&knot) {
+                    bounds.push(knot);
+                }
+            }
+            bounds.push(hi);
+            let parameter_slack = 64.0 * f64::EPSILON * lo.abs().max(hi.abs()).max(1.0);
+            if bounds
+                .windows(2)
+                .any(|span| span[1] - span[0] <= parameter_slack)
+            {
+                return Err(refusal());
+            }
+            if bounds.len() - 1 > *remaining_pieces {
+                return Err(refusal());
+            }
+            let insertions: usize = bounds
+                .iter()
+                .map(|bound| {
+                    let multiplicity = curve
+                        .knots()
+                        .iter()
+                        .filter(|knot| {
+                            (*knot).partial_cmp(bound) == Some(std::cmp::Ordering::Equal)
+                        })
+                        .count();
+                    degree.saturating_sub(multiplicity)
+                })
+                .sum();
+            if curve.control_points().len().saturating_add(insertions) > MAX_PIECES {
+                return Err(refusal());
+            }
+            let mut refined = curve.clone();
+            for &bound in &bounds {
+                let multiplicity = refined
+                    .knots()
+                    .iter()
+                    .filter(|&&knot| knot.partial_cmp(&bound) == Some(std::cmp::Ordering::Equal))
+                    .count();
+                if multiplicity > degree
+                    && bound.partial_cmp(&domain_lo) != Some(std::cmp::Ordering::Equal)
+                    && bound.partial_cmp(&domain_hi) != Some(std::cmp::Ordering::Equal)
+                {
+                    return Err(refusal());
+                }
+                refined = curve_knot_insert(&refined, bound, degree.saturating_sub(multiplicity))
+                    .map_err(|_| refusal())?;
+                // Knot insertion uses a fuzzy multiplicity adapter. A nearby
+                // knot must not stand in for this exact Bernstein boundary.
+                let exact = refined
+                    .knots()
+                    .iter()
+                    .filter(|&&knot| knot.partial_cmp(&bound) == Some(std::cmp::Ordering::Equal))
+                    .count();
+                if exact < degree {
+                    return Err(refusal());
+                }
+            }
+            let mut pieces = Vec::new();
+            for span in degree..refined.control_points().len() {
+                let a = refined.knots()[span];
+                let b = refined.knots()[span + 1];
+                if a < lo || b > hi || a >= b {
+                    continue;
+                }
+                let points = refined.control_points()[span - degree..=span].to_vec();
+                let raw_weights = &refined.weights()[span - degree..=span];
+                let maximum = raw_weights.iter().copied().fold(0.0, f64::max);
+                let weights: Vec<f64> = raw_weights.iter().map(|weight| weight / maximum).collect();
+                if weights
+                    .iter()
+                    .any(|weight| *weight <= 0.0 || !weight.is_finite())
+                {
+                    return Err(refusal());
+                }
+                pieces.push(Piece { points, weights });
+            }
+            if pieces.is_empty() || pieces.len() > MAX_PIECES {
+                return Err(refusal());
+            }
+            // Verify the extraction at both ends; endpoint knots outside the
+            // natural domain must never turn an unclamped curve into its poles.
+            let first = pieces[0].points[0];
+            let last_piece = &pieces[pieces.len() - 1];
+            let last = last_piece.points[last_piece.points.len() - 1];
+            let scale = (curve.evaluate(hi) - curve.evaluate(lo)).length().max(1.0);
+            if (first - curve.evaluate(lo)).length() > scale * 1e-12
+                || (last - curve.evaluate(hi)).length() > scale * 1e-12
+            {
+                return Err(refusal());
+            }
+            *remaining_pieces -= pieces.len();
+            let end = start + pieces.len() + 1;
+            Ok(Self {
+                start,
+                end,
+                forward: forward == (range.0 < range.1),
+                pieces,
+            })
+        }
+
+        pub(super) fn points(&self) -> Vec<Point3> {
+            let mut points: Vec<Point3> = self.pieces.iter().map(|piece| piece.points[0]).collect();
+            let last = &self.pieces[self.pieces.len() - 1];
+            points.push(last.points[last.points.len() - 1]);
+            if !self.forward {
+                points.reverse();
+            }
+            points
+        }
+    }
+
+    /// Exact conic curve-versus-sampled-polygon area correction. All vectors
+    /// represent twice signed area; translation is removed before arithmetic.
+    pub(super) fn analytic_correction(
+        curve: &crate::edge::EdgeCurve,
+        range: (f64, f64),
+        forward: bool,
+        samples: &[Point3],
+    ) -> Result<(Vec3, f64), TopologyError> {
+        use crate::edge::EdgeCurve;
+        let (a, b) = if forward { range } else { (range.1, range.0) };
+        let delta = b - a;
+        let origin = Point3::new(0., 0., 0.);
+        let start = curve.evaluate_with_endpoints(a, origin, origin);
+        let end = curve.evaluate_with_endpoints(b, origin, origin);
+        let (closed_area, scale) = match curve {
+            EdgeCurve::Circle(c) => {
+                let scale = c.radius() * c.radius();
+                (
+                    c.u_axis().cross(c.v_axis()) * (scale * (delta - delta.sin())),
+                    scale * (delta.abs() + delta.sin().abs()),
+                )
+            }
+            EdgeCurve::Ellipse(e) => {
+                let scale = e.semi_major() * e.semi_minor();
+                (
+                    e.u_axis().cross(e.v_axis()) * (scale * (delta - delta.sin())),
+                    scale * (delta.abs() + delta.sin().abs()),
+                )
+            }
+            EdgeCurve::Hyperbola(h) => {
+                let scale = h.semi_major() * h.semi_minor();
+                (
+                    h.u_axis().cross(h.v_axis()) * (scale * (delta - delta.sinh())),
+                    scale * (delta.abs() + delta.sinh().abs()),
+                )
+            }
+            EdgeCurve::Parabola(p) => {
+                let mid = p.evaluate(f64::midpoint(a, b));
+                let area = (mid - start).cross(end - start) * (4. / 3.);
+                (
+                    area,
+                    (mid - start).length() * (end - start).length() * (4. / 3.),
+                )
+            }
+            _ => return Err(refusal()),
+        };
+        let mut polygon = Vec3::new(0., 0., 0.);
+        let mut magnitude = scale;
+        for (a, b) in samples
+            .iter()
+            .zip(samples.iter().skip(1).chain(std::iter::once(&end)))
+        {
+            let a = *a - start;
+            let b = *b - start;
+            polygon += a.cross(b);
+            magnitude += a.length() * b.length();
+        }
+        let correction = closed_area - polygon;
+        let error = magnitude * 128.0 * f64::EPSILON;
+        if correction.0.iter().all(|value| value.is_finite()) && error.is_finite() {
+            Ok((correction, error))
+        } else {
+            Err(refusal())
+        }
+    }
+
+    pub(super) fn is_reversed(
+        ordered: &[Point3],
+        runs: &[NurbsRun],
+        normal: Vec3,
+        analytic_correction: Vec3,
+        analytic_error: f64,
+    ) -> Result<bool, TopologyError> {
+        if runs.iter().map(|run| run.pieces.len()).sum::<usize>() > MAX_PIECES {
+            return Err(refusal());
+        }
+        let mut runs = runs.to_vec();
+        loop {
+            let mut points = Vec::new();
+            let mut cursor = 0;
+            let mut error = analytic_error;
+            for run in &runs {
+                points.extend_from_slice(&ordered[cursor..run.start]);
+                points.extend(run.points());
+                cursor = run.end;
+                for piece in &run.pieces {
+                    error += piece.area_error(normal)?;
+                }
+            }
+            points.extend_from_slice(&ordered[cursor..]);
+            let anchor = points[0];
+            let mut area = analytic_correction.dot(normal);
+            let mut magnitude = 0.0;
+            for (a, b) in points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .take(points.len())
+            {
+                let a = *a - anchor;
+                let b = *b - anchor;
+                area += a.cross(b).dot(normal);
+                magnitude += a.length() * b.length();
+            }
+            let slack = magnitude * 128.0 * f64::EPSILON;
+            if area.is_finite() && error.is_finite() && area.abs() > error + slack {
+                return Ok(area < 0.0);
+            }
+            let count: usize = runs.iter().map(|run| run.pieces.len()).sum();
+            if count == 0 || count > MAX_PIECES / 2 {
+                return Err(refusal());
+            }
+            for run in &mut runs {
+                let mut refined = Vec::with_capacity(run.pieces.len() * 2);
+                for piece in &run.pieces {
+                    let (left, right) = piece.split()?;
+                    refined.extend([left, right]);
+                }
+                run.pieces = refined;
+            }
+        }
+    }
+}
+
 /// Create a straight-line edge between two points.
 ///
 /// Allocates vertices with the given `tolerance` and the connecting edge.
@@ -378,7 +764,8 @@ pub fn make_regular_polygon_wire(
 /// # Errors
 ///
 /// Returns an error if the wire has no edges or fewer than 3 usable sample
-/// points (the wire is degenerate or collinear).
+/// points (the wire is degenerate or collinear), or a planar curved
+/// boundary's winding cannot be qualified within its bounded work budget.
 pub fn make_face_from_wire(
     topo: &mut Topology,
     wire_id: WireId,
@@ -392,7 +779,7 @@ pub fn make_face_from_wire(
     }
 
     let sampled = sample_wire_for_planarity(topo, edges)?;
-    let surface = match verified_plane(&sampled) {
+    let surface = match verified_plane(&sampled)? {
         Some((normal, d)) => FaceSurface::Plane { normal, d },
         None => FaceSurface::Nurbs(bilinear_surface(&sampled.points)?),
     };
@@ -410,7 +797,8 @@ pub fn make_face_from_wire(
 /// # Errors
 ///
 /// Returns an error if the wire has no edges, has fewer than 3 usable sample
-/// points, or its samples do not lie within tolerance of any single plane.
+/// points, its samples do not lie within tolerance of any single plane, or
+/// its curved boundary's winding cannot be qualified within its work budget.
 pub fn make_planar_face_from_wire(
     topo: &mut Topology,
     wire_id: WireId,
@@ -429,7 +817,10 @@ pub fn make_planar_face_from_wire(
 /// # Errors
 ///
 /// Returns an error if the wire has no edges, has fewer than 3 usable sample
-/// points, or its samples do not lie within tolerance of any single plane.
+/// points, its samples do not lie within tolerance of any single plane, or
+/// its curved boundary's winding cannot be qualified. NURBS qualification
+/// admits degree at most 32 and at most 4,096 Bézier pieces across the wire;
+/// unresolved signed-area bounds refuse rather than choosing a normal.
 pub fn wire_plane(topo: &Topology, wire_id: WireId) -> Result<(Vec3, f64), crate::TopologyError> {
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges();
@@ -440,7 +831,7 @@ pub fn wire_plane(topo: &Topology, wire_id: WireId) -> Result<(Vec3, f64), crate
     }
 
     let sampled = sample_wire_for_planarity(topo, edges)?;
-    verified_plane(&sampled).ok_or(crate::TopologyError::NotPlanar)
+    verified_plane(&sampled)?.ok_or(crate::TopologyError::NotPlanar)
 }
 
 /// Sample points and tolerance gathered from a wire for planarity testing.
@@ -451,6 +842,12 @@ struct WireSamples {
     /// `points`, these are strictly ordered along the loop so Newell's method
     /// yields the correct winding sign.
     ordered: Vec<Point3>,
+    /// Rational Bézier spans whose chord-area errors must be bounded before
+    /// the ordered polygon can decide the boundary's winding.
+    nurbs_winding: Vec<winding::NurbsRun>,
+    analytic_area_correction: Vec3,
+    analytic_area_error: f64,
+    winding_failed: bool,
     /// Squared effective tolerance: `max(base linear, max edge tolerance)²`.
     tol_sq: f64,
     /// Plane derived directly from the first conic edge, if any. A conic is
@@ -470,6 +867,11 @@ fn sample_wire_for_planarity(
     let mut ordered = Vec::with_capacity(edges.len() * 4);
     let mut tol = Tolerance::new().linear;
     let mut conic_plane = None;
+    let mut nurbs_winding = Vec::new();
+    let mut analytic_area_correction = Vec3::new(0., 0., 0.);
+    let mut analytic_area_error = 0.0;
+    let mut remaining_winding_pieces = winding::MAX_PIECES;
+    let mut winding_failed = false;
 
     for oe in edges {
         let edge = topo.edge(oe.edge())?;
@@ -499,6 +901,7 @@ fn sample_wire_for_planarity(
             )
         };
 
+        let ordered_before = ordered.len();
         match edge.curve() {
             EdgeCurve::Line => {
                 points.push(start_pt);
@@ -566,15 +969,33 @@ fn sample_wire_for_planarity(
                 // The poles witness planarity; the winding needs points on the
                 // curve itself, since a chord cannot say which way it bulges.
                 points.extend_from_slice(nc.control_points());
-                let mut traced = Vec::with_capacity(4);
-                sample_traced_span(
+                match winding::NurbsRun::new(
+                    nc,
                     traced_domain()?,
-                    edge.is_closed(),
                     oe.is_forward(),
-                    &mut traced,
-                    |t| nc.evaluate(t),
-                );
-                ordered.extend_from_slice(&traced);
+                    ordered.len(),
+                    &mut remaining_winding_pieces,
+                ) {
+                    Ok(run) => {
+                        ordered.extend(run.points());
+                        nurbs_winding.push(run);
+                    }
+                    Err(_) => winding_failed = true,
+                }
+            }
+        }
+        if !matches!(edge.curve(), EdgeCurve::Line | EdgeCurve::NurbsCurve(_)) {
+            match winding::analytic_correction(
+                edge.curve(),
+                traced_domain()?,
+                oe.is_forward(),
+                &ordered[ordered_before..],
+            ) {
+                Ok((correction, error)) => {
+                    analytic_area_correction += correction;
+                    analytic_area_error += error;
+                }
+                Err(_) => winding_failed = true,
             }
         }
     }
@@ -582,6 +1003,10 @@ fn sample_wire_for_planarity(
     Ok(WireSamples {
         points,
         ordered,
+        nurbs_winding,
+        analytic_area_correction,
+        analytic_area_error,
+        winding_failed,
         tol_sq: tol * tol,
         conic_plane,
     })
@@ -590,7 +1015,7 @@ fn sample_wire_for_planarity(
 /// Sample an *open* (unbounded, non-periodic) conic — hyperbola or
 /// parabola — at four points between its endpoints.
 ///
-/// Unlike [`sample_conic`] there is no wrap-around to disambiguate: both
+/// Unlike a periodic conic there is no wrap-around to disambiguate: both
 /// parameterizations are injective over ℝ, so the sub-arc is exactly the
 /// straight parameter interval `[t_a, t_b]`.
 fn sample_open_conic(
@@ -641,16 +1066,19 @@ fn plane_from(point: Point3, normal: Vec3) -> (Vec3, f64) {
 /// Obtain a candidate plane (conic-derived or scatter-fit) and verify that
 /// every sample lies within tolerance of it. Returns `None` when no plane
 /// can be formed or verification fails.
-fn verified_plane(samples: &WireSamples) -> Option<(Vec3, f64)> {
-    let (mut normal, mut d) = samples
+fn verified_plane(samples: &WireSamples) -> Result<Option<(Vec3, f64)>, crate::TopologyError> {
+    let Some((mut normal, mut d)) = samples
         .conic_plane
-        .or_else(|| fit_plane(&samples.points, samples.tol_sq))?;
+        .or_else(|| fit_plane(&samples.points, samples.tol_sq))
+    else {
+        return Ok(None);
+    };
 
     let origin = Point3::new(0.0, 0.0, 0.0);
     for p in &samples.points {
         let dist = normal.dot(*p - origin) - d;
         if dist * dist > samples.tol_sq {
-            return None;
+            return Ok(None);
         }
     }
 
@@ -659,13 +1087,25 @@ fn verified_plane(samples: &WireSamples) -> Option<(Vec3, f64)> {
     // is independent of traversal order; downstream consumers (e.g. extrude)
     // require the normal to follow the boundary's CCW winding so cap and wall
     // orientations come out correct.
-    if let Some(winding_normal) = newell_normal(&samples.ordered)
-        && normal.dot(winding_normal) < 0.0
-    {
+    if samples.winding_failed {
+        return Err(winding::refusal());
+    }
+    let reverse = if samples.nurbs_winding.is_empty() && samples.analytic_area_error == 0.0 {
+        newell_normal(&samples.ordered).is_some_and(|winding| normal.dot(winding) < 0.0)
+    } else {
+        winding::is_reversed(
+            &samples.ordered,
+            &samples.nurbs_winding,
+            normal,
+            samples.analytic_area_correction,
+            samples.analytic_area_error,
+        )?
+    };
+    if reverse {
         normal = -normal;
         d = -d;
     }
-    Some((normal, d))
+    Ok(Some((normal, d)))
 }
 
 /// Newell's-method normal for an ordered loop of boundary points. The result

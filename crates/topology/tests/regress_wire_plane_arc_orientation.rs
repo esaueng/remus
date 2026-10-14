@@ -332,3 +332,327 @@ fn reversed_nurbs_270_arc_plus_chord_normal_is_minus_z() {
     let n = plane_normal(&topo, wire);
     assert!(n.z() < -0.5, "CW wire must give -z, got {n:?}");
 }
+
+/// This simple CCW polygon has a positive exact shoelace area, although
+/// samples at parameter thirds shortcut its large lobe clockwise. Every knot
+/// span must contribute, irrespective of its parameter width or scale.
+#[test]
+fn knot_localized_nurbs_winding_uses_the_whole_trimmed_curve() {
+    for scale in [0.001, 1.0, 1000.0] {
+        for elevated in [false, true] {
+            for reversed in [false, true] {
+                let point = |x: f64, y: f64| Point3::new(x * scale, y * scale, 0.0);
+                let a = point(0.1, 0.0);
+                let b = point(0.1, -0.1);
+                let c = point(0.2, -0.02);
+                let mut topo = Topology::new();
+                let va = topo.add_vertex(Vertex::new(a, 1e-7));
+                let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+                let vc = topo.add_vertex(Vertex::new(c, 1e-7));
+                // The unused end spans also test authoritative trimming of a
+                // shared NURBS, rather than sampling the whole natural domain.
+                let points = vec![
+                    point(200., 200.),
+                    a,
+                    point(100., 100.),
+                    point(-100., 100.),
+                    point(-100., -100.),
+                    point(100., -100.),
+                    b,
+                    point(200., -200.),
+                ];
+                let knots = vec![
+                    0.,
+                    0.,
+                    0.1,
+                    0.1 + 0.8 / 3.,
+                    0.42,
+                    0.58,
+                    0.1 + 1.6 / 3.,
+                    0.9,
+                    1.,
+                    1.,
+                ];
+                let curve = NurbsCurve::new(1, knots, points, vec![1.; 8]).unwrap();
+                let curve = if elevated {
+                    remus_math::nurbs::decompose::curve_degree_elevate(&curve, 2).unwrap()
+                } else {
+                    curve
+                };
+                let mut edge = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+                edge.set_trim(Some((0.1, 0.9)));
+                let edge = topo.add_edge(edge);
+                let bc = topo.add_edge(Edge::new(vb, vc, EdgeCurve::Line));
+                let ca = topo.add_edge(Edge::new(vc, va, EdgeCurve::Line));
+                let mut edges = vec![
+                    OrientedEdge::new(edge, true),
+                    OrientedEdge::new(bc, true),
+                    OrientedEdge::new(ca, true),
+                ];
+                if reversed {
+                    edges.reverse();
+                    edges = edges
+                        .into_iter()
+                        .map(|edge| OrientedEdge::new(edge.edge(), false))
+                        .collect();
+                }
+                let normal = plane_normal(&topo, Wire::new(edges, true).unwrap());
+                let expected = if reversed { -1.0 } else { 1.0 };
+                assert!(
+                    (normal.z() - expected).abs() < 1e-12,
+                    "scale {scale}, elevated {elevated}, reversed {reversed}: {normal:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unclamped_nurbs_winding_uses_evaluated_domain_ends() {
+    let curve = NurbsCurve::new(
+        2,
+        vec![0., 1., 2., 3., 4., 5.],
+        vec![
+            Point3::new(0., 0., 0.),
+            Point3::new(1., 1., 0.),
+            Point3::new(2., 0., 0.),
+        ],
+        vec![1.; 3],
+    )
+    .unwrap();
+    let mut topo = Topology::new();
+    let a = topo.add_vertex(Vertex::new(curve.evaluate(2.), 1e-7));
+    let b = topo.add_vertex(Vertex::new(curve.evaluate(3.), 1e-7));
+    let mut edge = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((2., 3.)));
+    let edge = topo.add_edge(edge);
+    let chord = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+    let n = plane_normal(
+        &topo,
+        Wire::new(
+            vec![
+                OrientedEdge::new(edge, true),
+                OrientedEdge::new(chord, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    assert!(
+        n.z() < -0.5,
+        "arch followed left to right winds clockwise: {n:?}"
+    );
+}
+
+#[test]
+fn ambiguous_nurbs_winding_refuses_without_adding_a_face() {
+    let mut topo = Topology::new();
+    let curve = nurbs_unit_circle_ccw();
+    let v = topo.add_vertex(Vertex::new(curve.evaluate(0.), 1e-7));
+    let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0., 1.)));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(edge, true),
+                OrientedEdge::new(edge, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let faces_before = topo.faces().len();
+    let error = make_planar_face_from_wire(&mut topo, wire).unwrap_err();
+    assert!(matches!(
+        error,
+        remus_topology::TopologyError::NonManifold { .. }
+    ));
+    assert_eq!(topo.faces().len(), faces_before);
+}
+
+/// The circle's four-point polygon has less area than this inscribed
+/// polyline, although the actual circular arc encloses a thin positive-area
+/// region. Mixed boundaries require the analytic arc's area correction too.
+#[test]
+fn mixed_circle_and_nurbs_winding_includes_the_exact_arc_area() {
+    for reversed in [false, true] {
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0., 0., 0.),
+            Vec3::new(0., 0., 1.),
+            1.,
+            Vec3::new(1., 0., 0.),
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let a = circle.evaluate(0.);
+        let b = circle.evaluate(PI / 2.);
+        let va = topo.add_vertex(Vertex::new(a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+        let mut arc = Edge::new(va, vb, EdgeCurve::Circle(circle.clone()));
+        arc.set_trim(Some((0., PI / 2.)));
+        let arc = topo.add_edge(arc);
+        let mut points = vec![b];
+        for i in (1..6).rev() {
+            let angle = f64::from(i) * PI / 12.;
+            points.push(Point3::new(0.99 * angle.cos(), 0.99 * angle.sin(), 0.));
+        }
+        points.push(a);
+        let nc = NurbsCurve::new(
+            1,
+            vec![0., 0., 1. / 6., 2. / 6., 3. / 6., 4. / 6., 5. / 6., 1., 1.],
+            points,
+            vec![1.; 7],
+        )
+        .unwrap();
+        let mut close = Edge::new(vb, va, EdgeCurve::NurbsCurve(nc));
+        close.set_trim(Some((0., 1.)));
+        let close = topo.add_edge(close);
+        let edges = if reversed {
+            vec![
+                OrientedEdge::new(close, false),
+                OrientedEdge::new(arc, false),
+            ]
+        } else {
+            vec![OrientedEdge::new(arc, true), OrientedEdge::new(close, true)]
+        };
+        let n = plane_normal(&topo, Wire::new(edges, true).unwrap());
+        assert!(
+            (n.z() - if reversed { -1. } else { 1. }).abs() < 1e-12,
+            "{n:?}"
+        );
+    }
+}
+
+#[test]
+fn nonplanar_nurbs_face_keeps_its_fallback_when_winding_is_unqualified() {
+    use remus_topology::builder::make_face_from_wire;
+    let points: Vec<Point3> = (0..34)
+        .map(|i| {
+            let x = f64::from(i);
+            Point3::new(x, x * x, if i == 17 { 1. } else { 0. })
+        })
+        .collect();
+    let mut knots = vec![0.; 34];
+    knots.extend(vec![1.; 34]);
+    let curve = NurbsCurve::new(33, knots, points, vec![1.; 34]).unwrap();
+    let mut topo = Topology::new();
+    let a = topo.add_vertex(Vertex::new(curve.evaluate(0.), 1e-7));
+    let b = topo.add_vertex(Vertex::new(curve.evaluate(1.), 1e-7));
+    let mut edge = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0., 1.)));
+    let edge = topo.add_edge(edge);
+    let chord = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(edge, true),
+                OrientedEdge::new(chord, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = make_face_from_wire(&mut topo, wire).unwrap();
+    assert!(matches!(
+        topo.face(face).unwrap().surface(),
+        FaceSurface::Nurbs(_)
+    ));
+}
+
+#[test]
+fn rational_winding_qualification_is_translation_and_scale_invariant() {
+    let template = nurbs_unit_circle_ccw();
+    for scale in [0.001, 1., 1000.] {
+        for origin in [Point3::new(0., 0., 0.), Point3::new(17., -23., 5.)] {
+            for reversed in [false, true] {
+                let points = template
+                    .control_points()
+                    .iter()
+                    .map(|point| origin + (*point - Point3::new(0., 0., 0.)) * scale)
+                    .collect();
+                let curve = NurbsCurve::new(
+                    template.degree(),
+                    template.knots().to_vec(),
+                    points,
+                    template.weights().to_vec(),
+                )
+                .unwrap();
+                let mut topo = Topology::new();
+                let v = topo.add_vertex(Vertex::new(curve.evaluate(0.), 1e-7));
+                let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(curve));
+                edge.set_trim(Some((0., 1.)));
+                let edge = topo.add_edge(edge);
+                let n = plane_normal(
+                    &topo,
+                    Wire::new(vec![OrientedEdge::new(edge, !reversed)], true).unwrap(),
+                );
+                assert!(
+                    (n.z() - if reversed { -1. } else { 1. }).abs() < 1e-12,
+                    "scale {scale}, origin {origin:?}: {n:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn descending_authoritative_nurbs_trim_combines_with_wire_reversal() {
+    for reversed in [false, true] {
+        let curve = nurbs_unit_circle_ccw();
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(Vertex::new(curve.evaluate(0.), 1e-7));
+        let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(curve));
+        edge.set_trim(Some((1., 0.)));
+        let edge = topo.add_edge(edge);
+        let n = plane_normal(
+            &topo,
+            Wire::new(vec![OrientedEdge::new(edge, !reversed)], true).unwrap(),
+        );
+        assert!(
+            (n.z() - if reversed { 1. } else { -1. }).abs() < 1e-12,
+            "{n:?}"
+        );
+    }
+}
+
+#[test]
+fn unresolved_distinct_knot_spans_refuse_before_planar_face_allocation() {
+    let curve = NurbsCurve::new(
+        2,
+        vec![0., 0., 0., 0.5, 0.5 + 1e-15, 1., 1., 1.],
+        vec![
+            Point3::new(0., 0., 0.),
+            Point3::new(0., 1., 0.),
+            Point3::new(1., 1., 0.),
+            Point3::new(1., -1., 0.),
+            Point3::new(2., 0., 0.),
+        ],
+        vec![1.; 5],
+    )
+    .unwrap();
+    let mut topo = Topology::new();
+    let a = topo.add_vertex(Vertex::new(curve.evaluate(0.), 1e-7));
+    let b = topo.add_vertex(Vertex::new(curve.evaluate(1.), 1e-7));
+    let mut edge = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0., 1.)));
+    let edge = topo.add_edge(edge);
+    let chord = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(edge, true),
+                OrientedEdge::new(chord, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    assert!(
+        make_planar_face_from_wire(&mut topo, wire)
+            .unwrap_err()
+            .to_string()
+            .contains("winding")
+    );
+    assert_eq!(topo.faces().len(), 0);
+}
