@@ -26,6 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -46,6 +47,29 @@ use crate::HealError;
 /// Returns [`HealError`] if entity lookups fail. Best-effort: a single
 /// failure mid-pass does not abort already-applied collapses.
 pub fn collapse_collinear_wire_vertices(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    tol: Tolerance,
+) -> Result<usize, HealError> {
+    // Adjacent collapsible vertices (P - V1 - V2 - Q) share an edge, so one
+    // pass collapses only one of them; repeat until the chain is a single
+    // edge. Every productive pass removes at least one vertex from every wire
+    // that used it, so the vertex count bounds the passes.
+    let pass_limit = remus_topology::explorer::solid_vertices(topo, solid_id)?.len() + 1;
+    let mut collapsed = 0;
+    for _ in 0..pass_limit {
+        let pass = collapse_pass(topo, solid_id, tol)?;
+        if pass == 0 {
+            break;
+        }
+        collapsed += pass;
+    }
+    Ok(collapsed)
+}
+
+/// One collapse pass over non-overlapping candidate vertices.
+#[allow(clippy::too_many_lines)]
+fn collapse_pass(
     topo: &mut Topology,
     solid_id: SolidId,
     tol: Tolerance,
@@ -103,11 +127,19 @@ pub fn collapse_collinear_wire_vertices(
     let lin_tol_sq = lin_tol * lin_tol;
 
     let mut plans: Vec<CollapsePlan> = Vec::new();
-    // Track which existing edges we've already reused so a chain of
-    // collinear vertices on the same line doesn't all try to claim
-    // overlapping P→Q edges that the prior plan already consumed.
-    // (Rare in practice — guard via per-iteration topology reads.)
-    for (&vertex, incident) in &vertex_edges {
+    // Edges an accepted plan removes or reuses. Two candidates on one line
+    // (P - V1 - V2 - Q) share the V1-V2 edge: accepting both let each wire
+    // keep whichever merge it met first, so the two faces along the line
+    // ended up on different edges (P-V2 + V2-Q against Q-V1 + V1-P) and
+    // every one of them was used once. Accept the first, in vertex order,
+    // and leave the rest of the chain to the next pass.
+    let mut claimed: HashSet<EdgeId> = HashSet::new();
+    let mut candidates: Vec<(VertexId, &Vec<EdgeId>)> = vertex_edges
+        .iter()
+        .map(|(&v, incident)| (v, incident))
+        .collect();
+    candidates.compact_sort_by_key(|&(v, _)| v.index());
+    for (vertex, incident) in candidates {
         if incident.len() != 2 {
             continue;
         }
@@ -231,6 +263,12 @@ pub fn collapse_collinear_wire_vertices(
         // either creating an orphan edge (no benefit) or unifying a
         // face with itself.
         let existing = find_line_edge(topo, &edges_in_solid, p_vid, q_vid);
+        if claimed.contains(&eid1)
+            || claimed.contains(&eid2)
+            || existing.is_some_and(|eid| claimed.contains(&eid))
+        {
+            continue;
+        }
         let new_edge = match (existing, faces_e1.len()) {
             (Some(eid), _) => {
                 // Check the existing edge is on a face NOT in faces_e1.
@@ -247,6 +285,7 @@ pub fn collapse_collinear_wire_vertices(
         if new_edge == eid1 || new_edge == eid2 {
             continue; // Defensive — should not match the V-touching edges
         }
+        claimed.extend([eid1, eid2, new_edge]);
         plans.push(CollapsePlan {
             vertex,
             old_edges: [eid1, eid2],
@@ -482,6 +521,83 @@ mod tests {
     fn wrap_in_solid(topo: &mut Topology, faces: Vec<FaceId>) -> SolidId {
         let shell = topo.add_shell(Shell::new(faces).unwrap());
         topo.add_solid(Solid::new(shell, Vec::new()))
+    }
+
+    /// Edges referenced by exactly one wire use across the solid.
+    fn once_used_edges(topo: &Topology, solid: SolidId) -> usize {
+        let mut uses: HashMap<EdgeId, usize> = HashMap::new();
+        for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+            let wire = topo.wire(topo.face(fid).unwrap().outer_wire()).unwrap();
+            for oe in wire.edges() {
+                *uses.entry(oe.edge()).or_default() += 1;
+            }
+        }
+        uses.values().filter(|&&n| n == 1).count()
+    }
+
+    /// Two coplanar rectangles share the line P - V1 - V2 - Q, split twice.
+    /// V1 and V2 are both collapsible and share the V1-V2 edge; collapsing
+    /// both in one pass put the faces on different P-Q chains.
+    #[test]
+    fn adjacent_collinear_vertices_collapse_onto_one_shared_edge() {
+        let mut topo = Topology::new();
+        let p = vertex(&mut topo, Point3::new(1.0, 0.0, 0.0));
+        let v1 = vertex(&mut topo, Point3::new(1.0, 1.0, 0.0));
+        let v2 = vertex(&mut topo, Point3::new(1.0, 2.0, 0.0));
+        let q = vertex(&mut topo, Point3::new(1.0, 3.0, 0.0));
+        let left_bottom = vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
+        let left_top = vertex(&mut topo, Point3::new(0.0, 3.0, 0.0));
+        let right_bottom = vertex(&mut topo, Point3::new(2.0, 0.0, 0.0));
+        let right_top = vertex(&mut topo, Point3::new(2.0, 3.0, 0.0));
+        let line = |topo: &mut Topology, a, b| topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let shared = [
+            line(&mut topo, p, v1),
+            line(&mut topo, v1, v2),
+            line(&mut topo, v2, q),
+        ];
+        let plane = || FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let face = |topo: &mut Topology, edges: Vec<OrientedEdge>| {
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            topo.add_face(Face::new(wire, Vec::new(), plane()))
+        };
+        // Left: (0,0) -> P -> V1 -> V2 -> Q -> (0,3); right runs the line back.
+        let left_edges = vec![
+            OrientedEdge::new(line(&mut topo, left_bottom, p), true),
+            OrientedEdge::new(shared[0], true),
+            OrientedEdge::new(shared[1], true),
+            OrientedEdge::new(shared[2], true),
+            OrientedEdge::new(line(&mut topo, q, left_top), true),
+            OrientedEdge::new(line(&mut topo, left_top, left_bottom), true),
+        ];
+        let left = face(&mut topo, left_edges);
+        let right_edges = vec![
+            OrientedEdge::new(line(&mut topo, p, right_bottom), true),
+            OrientedEdge::new(line(&mut topo, right_bottom, right_top), true),
+            OrientedEdge::new(line(&mut topo, right_top, q), true),
+            OrientedEdge::new(shared[2], false),
+            OrientedEdge::new(shared[1], false),
+            OrientedEdge::new(shared[0], false),
+        ];
+        let right = face(&mut topo, right_edges);
+        let solid = wrap_in_solid(&mut topo, vec![left, right]);
+        assert_eq!(once_used_edges(&topo, solid), 6);
+
+        let collapsed =
+            collapse_collinear_wire_vertices(&mut topo, solid, Tolerance::new()).unwrap();
+
+        assert_eq!(collapsed, 2);
+        assert_eq!(
+            once_used_edges(&topo, solid),
+            6,
+            "the faces must share one P-Q edge"
+        );
+        for fid in [left, right] {
+            let wire = topo.wire(topo.face(fid).unwrap().outer_wire()).unwrap();
+            assert_eq!(wire.edges().len(), 4);
+        }
     }
 
     #[test]
