@@ -17,6 +17,7 @@
 
 #![allow(
     clippy::print_stdout,
+    clippy::print_stderr,
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::too_many_lines,
@@ -419,6 +420,9 @@ fn main() {
     match scenario {
         "hammer" => hammer(stage, iters),
         "plate" => plate(stage, iters),
-        other => panic!("unknown scenario {other}"),
+        other => {
+            eprintln!("unknown scenario {other}; expected hammer or plate");
+            std::process::exit(2);
+        }
     }
 }
