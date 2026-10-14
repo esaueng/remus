@@ -595,9 +595,11 @@ pub fn merge_coincident_vertices(
 
 /// Remove degenerate edges (shorter than tolerance) from a solid.
 ///
-/// An edge whose start and end vertices are within `tolerance` of each
-/// other is considered degenerate. Such edges are collapsed: their
-/// references in wires are removed, and the wire is rebuilt without them.
+/// An edge shorter than `tolerance` measured along its curve is considered
+/// degenerate. Such edges are collapsed: their references in wires are
+/// removed, and the wire is rebuilt without them. A full circle is closed
+/// (`start == end`) but long; a short edge whose ends gap closing or vertex
+/// merging already fused is closed and empty; only the curve tells them apart.
 ///
 /// Returns the number of degenerate edges removed.
 ///
@@ -630,12 +632,7 @@ pub fn remove_degenerate_edges(
         let mut any_removed = false;
 
         for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let start_pos = topo.vertex(edge.start())?.point();
-            let end_pos = topo.vertex(edge.end())?.point();
-            let len_sq = (end_pos - start_pos).length_squared();
-
-            if len_sq < tol_sq && edge.start() != edge.end() {
+            if edge_is_degenerate(topo, oe.edge(), tol_sq)? {
                 any_removed = true;
                 removed_count += 1;
             } else {
@@ -666,6 +663,49 @@ pub fn remove_degenerate_edges(
     }
 
     Ok(removed_count)
+}
+
+/// Whether `edge_id` is shorter than `sqrt(tol_sq)` along its curve.
+///
+/// The chord is a lower bound on the length, so a long chord decides at once.
+/// A short-chord Line is as long as its chord, which includes the zero-length
+/// self-loop left when its two ends were fused. A short-chord curve, closed or
+/// nearly so, is sampled along its parameter authority; without one it keeps
+/// the endpoint verdict it always had (distinct ends are degenerate, a closed
+/// curve is not).
+fn edge_is_degenerate(
+    topo: &Topology,
+    edge_id: EdgeId,
+    tol_sq: f64,
+) -> Result<bool, crate::OperationsError> {
+    const LENGTH_SAMPLES: usize = 16;
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    if (end - start).length_squared() >= tol_sq {
+        return Ok(false);
+    }
+    if matches!(edge.curve(), EdgeCurve::Line) {
+        return Ok(true);
+    }
+    let Ok((t0, t1)) = edge.strict_domain() else {
+        return Ok(edge.start() != edge.end());
+    };
+    let tol = tol_sq.sqrt();
+    let mut length = 0.0;
+    let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
+    for i in 1..=LENGTH_SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let t = t0 + (t1 - t0) * (i as f64 / LENGTH_SAMPLES as f64);
+        let point = edge.curve().evaluate_with_endpoints(t, start, end);
+        length += (point - previous).length();
+        // A NaN sample is unmeasurable, not empty.
+        if length >= tol || length.is_nan() {
+            return Ok(false);
+        }
+        previous = point;
+    }
+    Ok(true)
 }
 
 /// Remove out-and-back spurs from face wires.
