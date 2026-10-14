@@ -5186,8 +5186,15 @@ impl<'a> StepBuilder<'a> {
         let surface = self.topo.face(face_id)?.surface();
         let principal_start = Self::surface_uv(surface, start_point)?;
         let principal_end = Self::surface_uv(surface, end_point)?;
-        let (expected_start, expected_end) =
-            lift_pcurve_endpoint_branches(surface, &curve, principal_start, principal_end);
+        let principal_mid = open_edge_midpoint(edge, start_point, end_point)
+            .and_then(|mid| Self::surface_uv(surface, mid).ok());
+        let (expected_start, expected_end) = lift_pcurve_endpoint_branches(
+            surface,
+            &curve,
+            principal_start,
+            principal_end,
+            principal_mid,
+        );
         let range = match declared_range {
             Some(range) => match select_full_turn_cylinder_pcurve_range(
                 surface,
@@ -8483,11 +8490,40 @@ fn project_ellipse2d(ellipse: &Ellipse2D, point: Point2) -> f64 {
         .rem_euclid(std::f64::consts::TAU)
 }
 
+/// The 3D midpoint of an open edge's own parameter domain, the anchor that
+/// ties both pcurve endpoint lifts to the branch the edge actually sweeps.
+/// `None` for closed edges (a full turn has no interior anchor within half
+/// a period of both ends) and for edges without a strict domain.
+fn open_edge_midpoint(edge: &Edge, start: Point3, end: Point3) -> Option<Point3> {
+    if edge.start() == edge.end() {
+        return None;
+    }
+    if matches!(edge.curve(), EdgeCurve::Line) {
+        return Some(start + (end - start) * 0.5);
+    }
+    let (t0, t1) = edge.strict_domain().ok()?;
+    let mid = edge
+        .curve()
+        .evaluate_with_endpoints(0.5 * (t0 + t1), start, end);
+    mid.0.iter().all(|value| value.is_finite()).then_some(mid)
+}
+
+/// Lifts the principal UV of a use's endpoints onto one periodic branch.
+///
+/// With `mid` (the principal UV of an open edge's 3D midpoint) the midpoint
+/// is lifted next to the curve's reference point and both endpoints next to
+/// the lifted midpoint: an arc spanning less than a full period keeps each
+/// end within half a period of its midpoint, so the two lifts agree with the
+/// edge's sweep. Lifting each endpoint independently next to the reference
+/// ties at exactly half a period away (a quarter-cylinder band whose LINE
+/// pcurve origin sits a half turn from one end) and could pick the far
+/// branch, tracing three quarters of the cylinder instead of one.
 fn lift_pcurve_endpoint_branches(
     surface: &FaceSurface,
     curve: &Curve2D,
     mut start: Point2,
     mut end: Point2,
+    mid: Option<Point2>,
 ) -> (Point2, Point2) {
     let reference = match curve {
         Curve2D::Line(line) => line.origin(),
@@ -8501,6 +8537,13 @@ fn lift_pcurve_endpoint_branches(
     };
     let lift = |value: f64, target: f64| {
         value + ((target - value) / std::f64::consts::TAU).round() * std::f64::consts::TAU
+    };
+    let reference = match (surface, mid) {
+        (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_), _) | (_, None) => reference,
+        (FaceSurface::Torus(_), Some(mid)) => {
+            Point2::new(lift(mid.x(), reference.x()), lift(mid.y(), reference.y()))
+        }
+        (_, Some(mid)) => Point2::new(lift(mid.x(), reference.x()), mid.y()),
     };
     match surface {
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
@@ -11135,6 +11178,45 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    /// A quarter-band LINE pcurve whose origin sits half a turn from the
+    /// use's end: lifting each end independently ties at that half turn and
+    /// lands the end three quarters of a turn away. Anchoring both ends on
+    /// the edge's midpoint keeps the quarter turn.
+    #[test]
+    #[allow(clippy::approx_constant)] // The file's 12-digit rounding of −π/2.
+    fn periodic_endpoint_lifts_follow_the_edge_midpoint_through_a_half_turn_tie() {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+        let surface = FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0,
+            )
+            .unwrap(),
+        );
+        // OCCT writes the origin to 12 digits; the tie is that close to exact.
+        let curve = Curve2D::Line(
+            Line2D::new(Point2::new(-1.570_796_326_795, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+        );
+        let (start, end) = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
+
+        let (_, independent) = lift_pcurve_endpoint_branches(&surface, &curve, start, end, None);
+        assert!(
+            (independent.x() + 3.0 * FRAC_PI_2).abs() < 1e-12,
+            "{independent:?}"
+        );
+
+        let (lifted_start, lifted_end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &curve,
+            start,
+            end,
+            Some(Point2::new(FRAC_PI_4, 0.0)),
+        );
+        assert_eq!(lifted_start.x().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(lifted_end.x().to_bits(), FRAC_PI_2.to_bits());
+    }
 
     #[test]
     fn step_repeated_face_names_obey_cumulative_byte_budget() {
