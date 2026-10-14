@@ -2261,6 +2261,67 @@ fn add_ellipse_validates_inputs() {
     assert!(sys.add_ellipse(c, 1.0, 1.0, 1e6).is_ok());
 }
 
+/// A fixed center and a fixed point, with the ellipse's `a` free to move
+/// through `PointOnEllipse` (WASM-2 repro family).
+fn point_on_ellipse_system(a0: f64, px: f64, py: f64) -> (GcsSystem, EllipseId) {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, a0, 1.0, 0.0).unwrap();
+    let p = sys
+        .add_point(PointData {
+            x: px,
+            y: py,
+            fixed: true,
+        })
+        .unwrap();
+    sys.add_constraint(Constraint::PointOnEllipse(p, e))
+        .unwrap();
+    (sys, e)
+}
+
+#[test]
+fn converged_ellipse_publishes_positive_semiaxes() {
+    // From a = 0.5 the DogLeg step crosses zero and, before the fix,
+    // converged on a = -0.2168: the right point set with an invalid semiaxis.
+    for detailed in [false, true] {
+        let (mut sys, e) = point_on_ellipse_system(0.5, -0.2, 0.1);
+        let converged = if detailed {
+            sys.solve_detailed(100, TOL).unwrap().converged
+        } else {
+            sys.solve(100, TOL).unwrap().converged
+        };
+        let data = sys.ellipse(e).unwrap();
+        assert!(converged, "detailed={detailed}");
+        assert!(data.a > 0.0 && data.b > 0.0, "a={} b={}", data.a, data.b);
+        // The flipped ellipse still passes through the point.
+        assert!(sys.current_max_residual() < TOL);
+    }
+}
+
+#[test]
+fn collapsed_ellipse_never_reports_converged() {
+    // From a = 1 toward a point at u = 0.4 the iterate lands on a = 0, the
+    // degenerate fail-quiet residual reads 0, and the solve used to report
+    // convergence on a collapsed ellipse.
+    let (mut sys, _) = point_on_ellipse_system(1.0, 0.4, 0.0);
+    let plain = sys.solve(100, TOL).unwrap();
+    assert!(!plain.converged);
+
+    let (mut sys, e) = point_on_ellipse_system(1.0, 0.4, 0.0);
+    let diag = sys.solve_detailed(100, TOL).unwrap();
+    assert!(!diag.converged);
+    assert!(diag.rolled_back);
+    assert_eq!(diag.classification, SolveClassification::Unsatisfied);
+    // The rollback restores the caller's valid starting ellipse.
+    assert_eq!(sys.ellipse(e).unwrap().a.to_bits(), 1.0_f64.to_bits());
+}
+
 #[test]
 fn add_ellipse_rejects_stale_center() {
     let mut sys = GcsSystem::new();
