@@ -259,18 +259,18 @@ fn resolve_deferred_constraint(
                 }
                 .into());
             }
-            #[allow(clippy::cast_possible_truncation)]
             let lp1 = line_arr[0]
                 .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
                 .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "tangentLineArc line[0] must be an integer".into(),
-                })? as usize;
-            #[allow(clippy::cast_possible_truncation)]
+                    reason: "tangentLineArc line[0] must be a valid point index".into(),
+                })?;
             let lp2 = line_arr[1]
                 .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
                 .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "tangentLineArc line[1] must be an integer".into(),
-                })? as usize;
+                    reason: "tangentLineArc line[1] must be a valid point index".into(),
+                })?;
             let lid = get_or_create_line(lp1, lp2, line_cache, sys)?;
             let arc = get_arc("arc")?;
             let pt = get_point("point")?;
