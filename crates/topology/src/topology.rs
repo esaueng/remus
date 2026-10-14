@@ -1738,8 +1738,6 @@ impl Topology {
     /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
-        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        self.bump_cache_generation();
         let mut retiring = self.collect_solid_entities(solid)?;
         if let Some((compound_id, _)) = self
             .compounds
@@ -1804,6 +1802,12 @@ impl Topology {
         retiring.faces.retain(|id| !retained.faces.contains(id));
         retiring.shells.retain(|id| !retained.shells.contains(id));
 
+        // Count the mutation only once validation has passed: a refusal
+        // changes nothing, and a tick would open a spurious journal gap.
+        // Everything below retires or records; a guard trip part-way still
+        // leaves the tick counted.
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         for face_id in &retiring.faces {
             let loop_ids = self
                 .faces
@@ -3103,6 +3107,50 @@ mod tests {
             &[compsolid_solid]
         );
         assert!(compsolid_topo.solid(compsolid_solid).is_ok());
+    }
+
+    /// TOPO-6: a refused `delete_solid` changes nothing, so it must not
+    /// count as a mutation — otherwise the next journaled operation opens
+    /// behind a spurious global barrier that severs every reference.
+    #[test]
+    fn refused_delete_solid_leaves_no_journal_gap() {
+        let mut topo = Topology::new();
+        let (solid, face, _) = make_triangle_solid(&mut topo, 0.0);
+        topo.add_compound(Compound::new(vec![solid]));
+        let (stale, _, _) = make_triangle_solid(&mut topo, 10.0);
+        topo.delete_solid(stale).unwrap();
+        let pending = topo.journal_begin("seed");
+        topo.journal_record_barrier(pending, Vec::new());
+        assert_eq!(topo.journal().len(), 1);
+        let ticks = topo.mutation_ticks();
+
+        assert!(matches!(
+            topo.delete_solid(solid),
+            Err(DeleteSolidError::Referenced { .. })
+        ));
+        assert!(topo.delete_solid(stale).is_err());
+        assert_eq!(topo.mutation_ticks(), ticks, "refusals mutate nothing");
+
+        let pending = topo.journal_begin("next");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(face.index()),
+            crate::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+        topo.journal_record_evolution(pending, draft).unwrap();
+        assert_eq!(
+            topo.journal().len(),
+            2,
+            "no unjournaled-mutations barrier precedes the next entry"
+        );
+        assert!(
+            topo.journal()
+                .entries()
+                .iter()
+                .all(|entry| entry.kind() != crate::journal::UNJOURNALED_MUTATIONS)
+        );
     }
 
     #[test]
