@@ -4,7 +4,7 @@ use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
 pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
 use remus_math::compact_sort::CompactSort;
-use remus_math::det_hash::DetHashSet;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
@@ -712,8 +712,10 @@ fn has_cavity_shells(topo: &Topology, solid: SolidId) -> Result<bool, Operations
 ///
 /// The walking builders rebuild the outer shell and carry cavity shells
 /// through unchanged, which is right only while the band stays clear of
-/// them. A cavity whose conservative box misses every blended edge's box,
-/// grown by that edge's [`blend_reach`], is untouched.
+/// them. Only one straight ridge between planar supports, ending at
+/// perpendicular planar caps, has a certified reach here. Check its complete
+/// G1-expanded spine and conservative cavity-face bounds; samples of curved
+/// supports cannot establish clearance.
 fn refuse_cavity_in_blend_reach(
     topo: &Topology,
     solid: SolidId,
@@ -727,13 +729,25 @@ fn refuse_cavity_in_blend_reach(
     }
     let refusal = || OperationsError::Unsupported {
         operation,
-        reason: "a cavity shell lies within the blend's reach; the walking builder \
-                 would carry it through unchanged"
+        reason: "cavity clearance is not certified for this blend; the walking builder \
+                 would carry the cavity shell through unchanged"
             .into(),
     };
     let adjacency = topo.build_adjacency(solid)?;
-    let mut edge_boxes = Vec::with_capacity(edges.len());
-    for &edge in edges {
+    let chains = remus_blend::g1_chain::g1_chains(
+        topo,
+        solid,
+        edges,
+        remus_math::tolerance::Tolerance::new(),
+    )?;
+    let [expanded] = chains.as_slice() else {
+        return Err(refusal());
+    };
+    if !cavity_spine_is_straight(topo, solid, &adjacency, expanded)? {
+        return Err(refusal());
+    }
+    let mut edge_boxes = Vec::with_capacity(expanded.len());
+    for &edge in expanded {
         let bound = remus_check::distance::face_bounds::edge_span_bound(topo, edge)?;
         let reach = blend_reach(topo, &adjacency, edge, size)?;
         match reach {
@@ -742,27 +756,124 @@ fn refuse_cavity_in_blend_reach(
         }
     }
     for shell in cavities {
-        let faces = topo.shell(shell)?.faces().to_vec();
-        let cavity = crate::measure::conservative_face_set_bounding_box(topo, &faces)?;
-        if edge_boxes
-            .iter()
-            .any(|edge_box| edge_box.intersects(cavity))
-        {
-            return Err(refusal());
+        for &face in topo.shell(shell)?.faces() {
+            let cavity = remus_check::distance::face_bounds::face_bound(topo, face)?;
+            if !cavity.prunable
+                || edge_boxes
+                    .iter()
+                    .any(|edge_box| edge_box.intersects(cavity.aabb))
+            {
+                return Err(refusal());
+            }
         }
     }
     Ok(())
 }
 
+/// Certify a single open straight ridge, with one fixed planar support pair
+/// and perpendicular planar end caps. Arbitrary vertex blends and slanted
+/// end caps need their own reach proof before they can preserve a cavity.
+fn cavity_spine_is_straight(
+    topo: &Topology,
+    solid: SolidId,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edges: &[EdgeId],
+) -> Result<bool, OperationsError> {
+    let Some(&first) = edges.first() else {
+        return Ok(false);
+    };
+    let first = topo.edge(first)?;
+    let Ok(direction) =
+        (topo.vertex(first.end())?.point() - topo.vertex(first.start())?.point()).normalize()
+    else {
+        return Ok(false);
+    };
+    let mut supports = adjacency.faces_for_edge(edges[0]).to_vec();
+    supports.sort_unstable();
+    if supports.len() != 2 || supports[0] == supports[1] {
+        return Ok(false);
+    }
+    let outer = topo.shell(topo.solid(solid)?.outer_shell())?;
+    if supports.iter().any(|face| !outer.faces().contains(face)) {
+        return Ok(false);
+    }
+    let mut uses = DetHashMap::default();
+    for &edge in edges {
+        let mut faces = adjacency.faces_for_edge(edge).to_vec();
+        faces.sort_unstable();
+        if faces != supports {
+            return Ok(false);
+        }
+        let edge = topo.edge(edge)?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(false);
+        }
+        let Ok(tangent) =
+            (topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point()).normalize()
+        else {
+            return Ok(false);
+        };
+        if direction.cross(tangent).length() > 1e-12 {
+            return Ok(false);
+        }
+        for vertex in [edge.start(), edge.end()] {
+            *uses.entry(vertex).or_insert(0_usize) += 1;
+        }
+    }
+    if uses.values().any(|&count| count > 2) {
+        return Ok(false);
+    }
+    let ends: Vec<_> = uses
+        .iter()
+        .filter_map(|(&vertex, &count)| (count == 1).then_some(vertex))
+        .collect();
+    if ends.len() != 2 {
+        return Ok(false);
+    }
+    for end in ends {
+        let mut found_cap = false;
+        for &face_id in outer.faces() {
+            if supports.contains(&face_id) {
+                continue;
+            }
+            let face = topo.face(face_id)?;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire_id)?.edges() {
+                    let edge = topo.edge(oriented.edge())?;
+                    if edge.start() != end && edge.end() != end {
+                        continue;
+                    }
+                    let Some(normal) = face
+                        .effective_plane_normal()
+                        .and_then(|n| n.normalize().ok())
+                    else {
+                        return Ok(false);
+                    };
+                    if normal.cross(direction).length() > 1e-12 {
+                        return Ok(false);
+                    }
+                    found_cap = true;
+                }
+            }
+        }
+        if !found_cap {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// How far from `edge` a blend of `size` can change material, or `None` when
 /// that cannot be bounded.
 ///
-/// The band meets each face `size * tan(theta / 2)` from the edge, where
+/// For a straight spine between planar supports, the band meets each face
+/// `size * tan(theta / 2)` from the edge, where
 /// `theta` is the angle between the faces' outward normals (one setback for a
 /// right-angle edge, growing without bound as the wedge closes). Twice the
-/// larger of that setback and `size` also covers a rolling-ball corner where
-/// three right-angle edges meet, which lies within `size * sqrt(3)` of its
-/// vertex.
+/// larger of that setback and `size` conservatively covers the rounded band.
+/// [`cavity_spine_is_straight`] excludes vertex blends and slanted end caps.
 fn blend_reach(
     topo: &Topology,
     adjacency: &remus_topology::adjacency::AdjacencyIndex,
@@ -772,23 +883,29 @@ fn blend_reach(
     // Past this the setback exceeds a dozen blend sizes (a wedge under ~10°):
     // treat it as unbounded rather than trust a box that large.
     const MAX_SETBACK: f64 = 12.0;
+    if !size.is_finite() || size <= 0.0 || !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
+        return Ok(None);
+    }
     let faces = adjacency.faces_for_edge(edge);
     if faces.len() != 2 || faces[0] == faces[1] {
         return Ok(None);
     }
-    let samples = crate::query::sampled_normals(topo, edge, faces[0], faces[1])?;
-    if samples.is_empty() {
+    let normal = |face: FaceId| -> Result<Option<remus_math::vec::Vec3>, OperationsError> {
+        Ok(topo
+            .face(face)?
+            .effective_plane_normal()
+            .and_then(|normal| normal.normalize().ok()))
+    };
+    let (Some(a), Some(b)) = (normal(faces[0])?, normal(faces[1])?) else {
         return Ok(None);
-    }
-    let theta = samples
-        .iter()
-        .map(|(_, a, b)| a.cross(*b).length().atan2(a.dot(*b)))
-        .fold(0.0_f64, f64::max);
+    };
+    let theta = a.cross(b).length().atan2(a.dot(b));
     let setback = (0.5 * theta).tan();
     if !setback.is_finite() || setback > MAX_SETBACK {
         return Ok(None);
     }
-    Ok(Some(2.0 * size * setback.max(1.0)))
+    let reach = 2.0 * size * setback.max(1.0);
+    Ok(reach.is_finite().then_some(reach))
 }
 
 fn planar_chamfer_result(
