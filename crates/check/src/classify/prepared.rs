@@ -124,6 +124,9 @@ pub struct PreparedSolid<'a> {
     bvh: Bvh,
     /// Per-face preparation, index-aligned with [`PreparedSolid::faces`].
     prepared_faces: Vec<PreparedFace>,
+    /// Boundary edges for the grazing-ray test, the same skeleton the
+    /// one-shot path builds per query.
+    skeleton: super::graze::BoundarySkeleton,
 }
 
 impl<'a> PreparedSolid<'a> {
@@ -171,6 +174,7 @@ impl<'a> PreparedSolid<'a> {
         }
         let bvh = Bvh::build(&face_aabbs);
         crate::perf::bump_classify_bvh_build();
+        let skeleton = super::graze::BoundarySkeleton::build(topo, &faces)?;
 
         Ok(Self {
             topo,
@@ -179,6 +183,7 @@ impl<'a> PreparedSolid<'a> {
             face_aabbs,
             bvh,
             prepared_faces,
+            skeleton,
         })
     }
 
@@ -340,6 +345,10 @@ impl ClassifySource for PreparedSolid<'_> {
 
     fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError> {
         self.count_ray_crossings(point, direction)
+    }
+
+    fn ray_grazes_boundary(&self, point: Point3, direction: Vec3) -> Result<bool, CheckError> {
+        self.skeleton.grazed_by(self.topo, point, direction)
     }
 }
 
