@@ -101,7 +101,7 @@ pub fn intersect_nurbs_nurbs_with_context(
         march_step
     };
 
-    // Phase 1: Find seed points using Bezier subdivision (robust, can't miss branches).
+    // Phase 1: Find seed points using bounded Bezier subdivision.
     // Falls back to grid sampling if decomposition fails.
     let seeds = {
         let sub_seeds = find_ssi_seeds_subdivision_with_context(
@@ -135,7 +135,10 @@ pub fn intersect_nurbs_nurbs_with_context(
     // Uses a work-queue to discover branch points during marching and
     // spawn additional traces from those branches. Segment-distance
     // dedup avoids redundant marching on already-traced curves.
-    let dedup_dist = march_step * 0.5;
+    // The marcher step is in parameter units, while `near_existing_segment`
+    // measures 3D distances. Match the physical seed-dedup band below instead
+    // of letting a knot-domain step suppress distinct nearby components.
+    let dedup_dist = tolerance * 100.0;
     let mut traced_segments: Vec<Vec<IntersectionPoint>> = Vec::new();
     let mut work_queue: VecDeque<IntersectionPoint> = seeds.into();
 
@@ -317,8 +320,9 @@ fn refit_from_samples(ic: &IntersectionCurve) -> IntersectionCurve {
 
 /// Find SSI seed points using recursive Bezier patch subdivision + BVH overlap.
 ///
-/// This approach **cannot miss intersection branches** because it converges
-/// on all regions where the two surfaces are close. Steps:
+/// Conservative patch-overlap bounds focus the bounded seed search. A
+/// depth/refinement limit can leave unresolved regions, so an empty seed
+/// list is not a disjointness certificate. Steps:
 /// 1. Decompose both surfaces into Bezier patches
 /// 2. Build a BVH over B's patch AABBs
 /// 3. For each A-patch, find overlapping B-patches
