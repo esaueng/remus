@@ -109,6 +109,11 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **io:** STEP B-spline attributes are split string-aware, so a name such as
+  `'Curve (1)'` no longer shifts the control points and knots; a knot
+  multiplicity that is not an integer, or a multiplicity list that does not
+  pair one-to-one with its knot values, is refused instead of truncated
+  (B101, review IO-10).
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam

@@ -5484,6 +5484,12 @@ impl<'a> StepBuilder<'a> {
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("2D B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
             })?;
+        check_knot_pairing(
+            "2D B_SPLINE_CURVE",
+            curve_ref,
+            &multiplicities,
+            &knot_values,
+        )?;
         self.reserve_geometry(
             cp_refs.len(),
             std::mem::size_of::<Point2>(),
@@ -6976,6 +6982,7 @@ impl<'a> StepBuilder<'a> {
             reason: format!("B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
         })?;
         let (degree, cp_refs, mults, knot_vals) = parsed;
+        check_knot_pairing("B_SPLINE_CURVE", curve_ref, &mults, &knot_vals)?;
         self.reserve_geometry(
             cp_refs.len(),
             std::mem::size_of::<Point3>(),
@@ -7041,6 +7048,8 @@ impl<'a> StepBuilder<'a> {
             reason: format!("B_SPLINE_SURFACE #{surface_ref} could not parse attributes"),
         })?;
         let (degree_u, degree_v, cp_grid_refs, u_mults, v_mults, u_knots, v_knots) = parsed;
+        check_knot_pairing("B_SPLINE_SURFACE", surface_ref, &u_mults, &u_knots)?;
+        check_knot_pairing("B_SPLINE_SURFACE", surface_ref, &v_mults, &v_knots)?;
         let columns = cp_grid_refs.first().map_or(0, Vec::len);
         if columns == 0 || cp_grid_refs.iter().any(|row| row.len() != columns) {
             return Err(IoError::ParseError {
@@ -10738,16 +10747,100 @@ fn find_exact_composite_component<'a>(attrs: &'a str, name: &str) -> Option<&'a 
     None
 }
 
-/// Parse integers from a parenthesized list like `(4, 4)`.
-fn parse_ints_in_parens(s: &str) -> Vec<u32> {
-    let mut result = Vec::new();
-    for part in s.split(',') {
-        let trimmed = part.trim().trim_matches('(').trim_matches(')').trim();
-        if let Ok(v) = trimmed.parse::<u32>() {
-            result.push(v);
+/// Parse a knot-multiplicity aggregate like `(4, 4)`.
+///
+/// Every member must be an integer: dropping a malformed member silently
+/// shifted every later multiplicity onto the wrong knot.
+fn parse_multiplicities(group: &str) -> Option<Vec<u32>> {
+    let inner = group.trim().strip_prefix('(')?.strip_suffix(')')?;
+    inner
+        .split(',')
+        .map(|member| member.trim().parse::<u32>().ok())
+        .collect()
+}
+
+/// Split B-spline attributes into top-level bare tokens (name, degrees,
+/// enums) and top-level parenthesized groups (control points,
+/// multiplicities, knots), in order.
+///
+/// String literals are opaque: a `(`, `)` or `,` inside a name such as
+/// `'Curve (1)'` used to open a phantom group and shift every aggregate
+/// after it. `''` inside a string is an escaped quote.
+fn bspline_attr_layout(attrs: &str) -> (Vec<String>, Vec<String>) {
+    let mut tokens = Vec::new();
+    let mut groups = Vec::new();
+    let mut depth = 0_usize;
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut chars = attrs.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            current.push(ch);
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    current.extend(chars.next());
+                } else {
+                    in_string = false;
+                }
+            }
+            continue;
+        }
+        match ch {
+            '\'' => {
+                in_string = true;
+                current.push(ch);
+            }
+            '(' => {
+                if depth == 0 && !current.trim().is_empty() {
+                    tokens.push(current.trim().to_string());
+                    current.clear();
+                }
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                current.push(ch);
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    groups.push(std::mem::take(&mut current));
+                }
+            }
+            ',' if depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    tokens.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
         }
     }
-    result
+    if !current.trim().is_empty() {
+        tokens.push(current.trim().to_string());
+    }
+    (tokens, groups)
+}
+
+/// Refuse a knot list whose multiplicity aggregate does not pair one-to-one
+/// with its knot values. Expansion zips the two, so a mismatch silently
+/// dropped the unmatched tail instead of refusing the curve.
+fn check_knot_pairing(
+    entity: &str,
+    entity_ref: u64,
+    multiplicities: &[u32],
+    knots: &[f64],
+) -> Result<(), IoError> {
+    if multiplicities.len() == knots.len() {
+        return Ok(());
+    }
+    Err(IoError::ParseError {
+        reason: format!(
+            "{entity} #{entity_ref} declares {} knot multiplicities for {} knot values",
+            multiplicities.len(),
+            knots.len()
+        ),
+    })
 }
 
 /// Return the one weight aggregate declared by a rational B-spline component.
@@ -10886,48 +10979,7 @@ fn parse_bspline_surface_attrs(
     Vec<f64>,
     Vec<f64>,
 )> {
-    // Strategy: parse the attribute string by finding the nested parenthesized
-    // structures. The format has a specific sequence of tokens.
-
-    // 1. Parse degrees: skip the name string, find the first two bare integers.
-    let mut tokens = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    let mut groups: Vec<String> = Vec::new();
-
-    for ch in attrs.chars() {
-        match ch {
-            '(' => {
-                if depth == 0 && !current.trim().is_empty() {
-                    tokens.push(current.trim().to_string());
-                    current.clear();
-                }
-                depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                current.push(ch);
-                depth -= 1;
-                if depth == 0 {
-                    groups.push(current.clone());
-                    current.clear();
-                }
-            }
-            ',' if depth == 0 => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    tokens.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        tokens.push(current.trim().to_string());
-    }
+    let (tokens, groups) = bspline_attr_layout(attrs);
 
     // tokens: bare values between top-level commas (name, degrees, enums)
     // groups: parenthesized structures at depth 0 (cp grid, mult lists, knot lists)
@@ -10962,8 +11014,8 @@ fn parse_bspline_surface_attrs(
     // Parse control point grid: nested ((#1, #2), (#3, #4))
     let cp_grid = parse_nested_refs(&groups[0]);
 
-    let u_mults = parse_ints_in_parens(&groups[1]);
-    let v_mults = parse_ints_in_parens(&groups[2]);
+    let u_mults = parse_multiplicities(&groups[1])?;
+    let v_mults = parse_multiplicities(&groups[2])?;
 
     let u_knots = parse_floats(&groups[3]).ok()?;
     let v_knots = parse_floats(&groups[4]).ok()?;
@@ -11061,45 +11113,7 @@ fn expand_knots(mults: &[u32], vals: &[f64]) -> Option<Vec<f64>> {
 /// Returns: `(degree, cp_refs, mults, knots)`
 #[allow(clippy::type_complexity)]
 fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, Vec<f64>)> {
-    let mut tokens = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    let mut groups: Vec<String> = Vec::new();
-
-    for ch in attrs.chars() {
-        match ch {
-            '(' => {
-                if depth == 0 && !current.trim().is_empty() {
-                    tokens.push(current.trim().to_string());
-                    current.clear();
-                }
-                depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                current.push(ch);
-                depth -= 1;
-                if depth == 0 {
-                    groups.push(current.clone());
-                    current.clear();
-                }
-            }
-            ',' if depth == 0 => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    tokens.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        tokens.push(current.trim().to_string());
-    }
-
+    let (tokens, groups) = bspline_attr_layout(attrs);
     let mut degree = None;
     for tok in &tokens {
         if tok.starts_with('\'') || tok.starts_with('.') {
@@ -11118,7 +11132,7 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
     }
 
     let cp_refs = parse_refs(&groups[0]);
-    let mults = parse_ints_in_parens(&groups[1]);
+    let mults = parse_multiplicities(&groups[1])?;
     let knots = parse_floats(&groups[2]).ok()?;
 
     Some((degree, cp_refs, mults, knots))
@@ -14114,6 +14128,87 @@ mod tests {
         assert_eq!(cp_refs.len(), 4);
         assert_eq!(mults, vec![4, 4]);
         assert_eq!(knots, vec![0.0, 1.0]);
+    }
+
+    /// IO-10 (kernel review 2026-10-14): the B-spline attribute scanner was
+    /// not string-aware, so the `(` inside `'Curve (1)'` opened a phantom
+    /// aggregate, shifted control points onto `(1)` and refused a valid
+    /// curve. Quotes inside names are escaped as `''`.
+    #[test]
+    fn bspline_names_with_parentheses_commas_and_quotes_parse() {
+        let points = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                      #2=CARTESIAN_POINT('',(1.,1.,0.));\n\
+                      #3=CARTESIAN_POINT('',(2.,1.,0.));\n\
+                      #4=CARTESIAN_POINT('',(3.,0.,0.));\n";
+        for name in ["Curve (1)", "a, (b", "it''s (x)", ")("] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('{name}',3,(#1,#2,#3,#4),\
+                 .UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);"
+            );
+            let curve = curve_geometry(&body, 5)
+                .unwrap_or_else(|error| panic!("name {name:?} refused: {error}"));
+            let EdgeCurve::NurbsCurve(curve) = curve else {
+                panic!("name {name:?} did not read as NURBS");
+            };
+            assert_eq!(curve.degree(), 3);
+            assert_eq!(curve.control_points().len(), 4);
+        }
+
+        let attrs = "'Patch (A), v2', 1, 1, ((#10, #11), (#12, #13)), .UNSPECIFIED., \
+                     .F., .F., .F., (2, 2), (2, 2), (0.0, 1.0), (0.0, 1.0), .UNSPECIFIED.";
+        let (deg_u, deg_v, grid, u_mults, v_mults, u_knots, v_knots) =
+            parse_bspline_surface_attrs(attrs).unwrap();
+        assert_eq!((deg_u, deg_v), (1, 1));
+        assert_eq!(grid, vec![vec![10, 11], vec![12, 13]]);
+        assert_eq!((u_mults, v_mults), (vec![2, 2], vec![2, 2]));
+        assert_eq!((u_knots, v_knots), (vec![0.0, 1.0], vec![0.0, 1.0]));
+    }
+
+    /// IO-10: expansion zips multiplicities with knot values, so a list of a
+    /// different length silently lost its tail. A malformed multiplicity
+    /// was dropped the same way, shifting the rest onto the wrong knots.
+    #[test]
+    fn bspline_knot_lists_must_pair_one_to_one() {
+        let points = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                      #2=CARTESIAN_POINT('',(1.,1.,0.));\n\
+                      #3=CARTESIAN_POINT('',(2.,0.,0.));\n";
+        // Either mismatch expands to a knot vector the file never declared;
+        // the refusal must name the mismatch, not a downstream symptom.
+        for (mults, knots, count) in [
+            ("(2,1,2)", "(0.,1.)", "3 knot multiplicities for 2"),
+            ("(2,2)", "(0.,0.5,1.)", "2 knot multiplicities for 3"),
+        ] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.,{mults},{knots},.UNSPECIFIED.);"
+            );
+            let error = curve_geometry(&body, 5).unwrap_err().to_string();
+            assert!(error.contains(count), "{mults} {knots}: {error}");
+        }
+        for mults in ["(2,1.5,2)", "(2,x,2)", "(2,-1,2)", "()"] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.,{mults},(0.,0.5,1.),.UNSPECIFIED.);"
+            );
+            assert!(curve_geometry(&body, 5).is_err(), "{mults} must be refused");
+        }
+
+        let surface = |u_knots: &str| {
+            format!(
+                "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                 #2=CARTESIAN_POINT('',(1.,0.,0.));\n\
+                 #3=CARTESIAN_POINT('',(0.,1.,0.));\n\
+                 #4=CARTESIAN_POINT('',(1.,1.,0.));\n\
+                 #5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#4)),\
+                 .UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),{u_knots},(0.,1.),\
+                 .UNSPECIFIED.);"
+            )
+        };
+        assert!(surface_geometry(&surface("(0.,1.)"), 5).is_ok());
+        let error = surface_geometry(&surface("(0.,1.,2.)"), 5)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 knot multiplicities for 3"), "{error}");
     }
 
     #[test]
