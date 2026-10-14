@@ -182,6 +182,7 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
 
     let mut format = None;
     let mut elements: Vec<Element> = Vec::new();
+    let mut skipped_instances = 0_usize;
     for line in lines {
         let mut tokens = line.split_whitespace();
         match tokens.next() {
@@ -205,12 +206,21 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
                 let count: usize = count
                     .parse()
                     .map_err(|_| header_error(format!("invalid count in: {line}")))?;
-                let resource = match name {
-                    "vertex" => "PLY vertices",
-                    "face" => "PLY faces",
-                    _ => "PLY element instances",
-                };
-                ensure_limit(resource, count, limits.max_model_entities)?;
+                match name {
+                    "vertex" => ensure_limit("PLY vertices", count, limits.max_model_entities)?,
+                    "face" => ensure_limit("PLY faces", count, limits.max_model_entities)?,
+                    // Every skipped element is read instance by instance, so
+                    // they share one budget: many small declarations must not
+                    // add up past the limit.
+                    _ => {
+                        skipped_instances = skipped_instances.saturating_add(count);
+                        ensure_limit(
+                            "PLY element instances",
+                            skipped_instances,
+                            limits.max_model_entities,
+                        )?;
+                    }
+                }
                 if elements.iter().any(|element| element.name == name) {
                     return Err(header_error(format!("PLY element {name} declared twice")));
                 }

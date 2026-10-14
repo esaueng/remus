@@ -177,6 +177,18 @@ fn every_declared_count_is_bounded_by_import_limits() {
             actual: 4
         })
     ));
+    // Skipped elements share one budget: two elements of two instances each
+    // pass one by one but not together.
+    let split = "ply\nformat ascii 1.0\nelement edge 2\nproperty int vertex1\n\
+element material 2\nproperty int id\nend_header\n1\n2\n3\n4\n";
+    assert!(matches!(
+        read_ply_with_limits(split.as_bytes(), limits),
+        Err(IoError::LimitExceeded {
+            resource: "PLY element instances",
+            limit: 3,
+            actual: 4
+        })
+    ));
 }
 
 #[test]
