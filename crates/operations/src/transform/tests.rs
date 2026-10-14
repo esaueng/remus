@@ -1678,3 +1678,86 @@ fn several_refusing_edges_report_the_lowest_index_deterministically() {
         }
     }
 }
+
+/// A reflection re-traverses every loop. Each use's pcurve and periodic lift
+/// move to the flipped use with the parameter range swapped, and a seam's
+/// two branches trade uses without crossing over.
+#[test]
+fn reflection_carries_use_authority_to_the_flipped_use() {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::coedge::PeriodicWinding;
+    use remus_topology::edge::EdgeId;
+    use remus_topology::pcurve::PCurve;
+
+    fn coedge_of(
+        topo: &Topology,
+        face: FaceId,
+        edge: EdgeId,
+        forward: bool,
+    ) -> remus_topology::coedge::CoedgeId {
+        let mut found = None;
+        for &loop_id in topo.loops_of_face(face).unwrap() {
+            for &coedge_id in topo.face_loop(loop_id).unwrap().coedges() {
+                let coedge = topo.coedge(coedge_id).unwrap();
+                if coedge.edge() == edge && coedge.is_forward() == forward {
+                    assert!(found.is_none(), "use is ambiguous");
+                    found = Some(coedge_id);
+                }
+            }
+        }
+        found.expect("use is present")
+    }
+
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let lateral = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+    assert!(matches!(
+        topo.face(lateral).unwrap().surface(),
+        FaceSurface::Cylinder(_)
+    ));
+    let uses = topo
+        .wire(topo.face(lateral).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+        .to_vec();
+    // Bottom rim, seam up, top rim, seam down: the seam is used both ways.
+    assert_eq!(uses.len(), 4);
+    for (i, used) in uses.iter().enumerate() {
+        let tag = i as f64;
+        let line = Line2D::new(Point2::new(tag, 0.0), Vec2::new(0.0, 1.0)).unwrap();
+        let pcurve = PCurve::new(Curve2D::Line(line), 10.0 * tag, 10.0 * tag + 1.0);
+        topo.set_pcurve_oriented(used.edge(), lateral, used.is_forward(), pcurve)
+            .unwrap();
+        let coedge = coedge_of(&topo, lateral, used.edge(), used.is_forward());
+        topo.set_coedge_periodic_winding(coedge, PeriodicWinding::new(i as i32, -1))
+            .unwrap();
+    }
+
+    transform_solid(&mut topo, solid, &Mat4::scale(-1.0, 1.0, 1.0)).unwrap();
+
+    let after = topo
+        .wire(topo.face(lateral).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+        .to_vec();
+    assert_eq!(after.len(), uses.len());
+    for (now, was) in after.iter().zip(uses.iter().rev()) {
+        assert_eq!(now.edge(), was.edge());
+        assert_eq!(now.is_forward(), !was.is_forward());
+    }
+    for (i, used) in uses.iter().enumerate() {
+        let tag = i as f64;
+        let pcurve = topo
+            .pcurve_oriented(used.edge(), lateral, !used.is_forward())
+            .expect("pcurve moved to the flipped use");
+        assert_eq!(pcurve.evaluate(0.0).x().to_bits(), tag.to_bits());
+        assert_eq!(pcurve.t_start().to_bits(), (10.0 * tag + 1.0).to_bits());
+        assert_eq!(pcurve.t_end().to_bits(), (10.0 * tag).to_bits());
+        let coedge = coedge_of(&topo, lateral, used.edge(), !used.is_forward());
+        assert_eq!(
+            topo.coedge(coedge).unwrap().periodic_winding(),
+            PeriodicWinding::new(i as i32, -1)
+        );
+    }
+}
