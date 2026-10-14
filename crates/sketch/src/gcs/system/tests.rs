@@ -3003,3 +3003,72 @@ fn point_fixed_edit_rebuilds_layout_in_both_directions() {
     assert!(system.solve(100, 1e-9).unwrap().converged);
     assert!((system.point(point).unwrap().x - 10.).abs() < 1e-9);
 }
+
+/// Kernel review WASM-2: ellipse at the origin with `b = 1`, `phi = 0`, and
+/// a fixed point at `(1, 0)` on it, so `(1/a)² = 1`. The implicit form is
+/// even in `a`; from these starting semiaxes the DogLeg iterate lands on
+/// `a = 1`, on the mirror solution `a = −1`, or on the collapsed `a = 0`
+/// where the residual reads zero by the degenerate-axis contract.
+fn semiaxis_sign_system(a0: f64) -> (GcsSystem, EllipseId, PointId) {
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, a0, 1.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, 1.0))
+        .unwrap();
+    sys.add_constraint(Constraint::EllipseAngle(e, 0.0))
+        .unwrap();
+    let p = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    sys.add_constraint(Constraint::PointOnEllipse(p, e))
+        .unwrap();
+    (sys, e, p)
+}
+
+#[test]
+fn negative_semiaxis_solution_is_published_as_its_magnitude() {
+    // a0 = 5 converged to a = −1 before the fix; a0 = 2 and 10 reach +1
+    // directly and must be unaffected.
+    for a0 in [2.0, 5.0, 10.0] {
+        let (mut sys, e, _) = semiaxis_sign_system(a0);
+        let r = sys.solve(200, TOL).unwrap();
+        let data = *sys.ellipse(e).unwrap();
+        assert!(r.converged, "a0={a0}: max_r={}", r.max_residual);
+        assert!((data.a - 1.0).abs() < 1e-9, "a0={a0}: a={}", data.a);
+        assert!((data.b - 1.0).abs() < 1e-12, "a0={a0}: b={}", data.b);
+        assert!(r.max_residual < TOL);
+
+        let (mut sys, e, _) = semiaxis_sign_system(a0);
+        let d = sys.solve_detailed(200, TOL).unwrap();
+        assert!(d.converged && !d.rolled_back, "a0={a0}: {d:?}");
+        assert!((sys.ellipse(e).unwrap().a - 1.0).abs() < 1e-9);
+        assert!(d.published_max_residual < TOL);
+    }
+}
+
+#[test]
+fn collapsed_semiaxis_is_refused_and_rolled_back() {
+    // a0 = 3 reported `converged` with a = 0 before the fix.
+    let (mut sys, e, p) = semiaxis_sign_system(3.0);
+    let err = sys.solve(200, TOL).unwrap_err();
+    assert!(matches!(err, SketchError::DegenerateEllipse), "{err}");
+    let data = sys.ellipse(e).unwrap();
+    assert_eq!((data.a, data.b, data.angle), (3.0, 1.0, 0.0));
+    let pt = sys.point(p).unwrap();
+    assert_eq!((pt.x, pt.y), (1.0, 0.0));
+
+    let (mut sys, e, _) = semiaxis_sign_system(3.0);
+    let err = sys.solve_detailed(200, TOL).unwrap_err();
+    assert!(matches!(err, SketchError::DegenerateEllipse), "{err}");
+    assert_eq!(sys.ellipse(e).unwrap().a.to_bits(), 3.0_f64.to_bits());
+}

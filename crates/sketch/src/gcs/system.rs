@@ -9,8 +9,8 @@ use super::components::{
     refresh_subset_radii, refresh_subset_snapshot, subset_snapshot,
 };
 use super::constraint::{
-    Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, eval_jacobian,
-    eval_residuals, residual_count,
+    Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, ellipse_axes_usable,
+    eval_jacobian, eval_residuals, residual_count,
 };
 use super::diagnostics::{ConstraintResidual, SolveDiagnostics, classify as classify_solve};
 use super::dof::{self, DofAnalysis};
@@ -665,6 +665,74 @@ impl GcsSystem {
     /// which is the only write to the system — mirroring the dense path's
     /// single write-back.
     fn solve_with_decomposition(
+        &mut self,
+        decomp: &Decomposition,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        // Only sketches with ellipses pay for the extra parameter snapshot.
+        let before = (!self.ellipses.is_empty()).then(|| self.extract_params());
+        let (mut result, eval, stats) =
+            self.solve_with_decomposition_raw(decomp, max_iterations, tolerance, capture_final)?;
+        if let Some(before) = before {
+            self.publish_positive_ellipse_axes(&before, &mut result, tolerance)?;
+        }
+        Ok((result, eval, stats))
+    }
+
+    /// Enforce the [`EllipseData`] contract (finite, strictly positive
+    /// semiaxes) on the state a solve publishes.
+    ///
+    /// Semiaxes are free solver parameters and the implicit-form residuals
+    /// read them only through `a²`/`b²`, so the solver can converge on
+    /// `a = −1` as readily as on `a = 1`. That is the same point set, so a
+    /// negative semiaxis is published as its magnitude. The swap never raises
+    /// any residual: the implicit forms are even in each semiaxis, and for
+    /// `EllipseAxisA/B` (positive target) and `EqualEllipseRadii`,
+    /// `||a| − t| ≤ |a − t|` and `||a₁| − |a₂|| ≤ |a₁ − a₂|`. When a sign
+    /// changes, `max_residual` and `converged` are re-read at the published
+    /// state.
+    ///
+    /// A semiaxis that ends below the usable magnitude
+    /// ([`ellipse_axes_usable`]) is a collapsed ellipse whose implicit-form
+    /// residuals read zero by contract, so convergence there means nothing:
+    /// the pre-solve parameters are restored and the solve is refused.
+    fn publish_positive_ellipse_axes(
+        &mut self,
+        before: &[f64],
+        result: &mut SolveResult,
+        tolerance: f64,
+    ) -> Result<(), SketchError> {
+        let mut flipped = false;
+        let mut collapsed = false;
+        for (_, ellipse) in self.ellipses.iter_mut() {
+            let (a, b) = (ellipse.a, ellipse.b);
+            if a.is_finite() && b.is_finite() && !ellipse_axes_usable(a, b) {
+                collapsed = true;
+                continue;
+            }
+            for axis in [&mut ellipse.a, &mut ellipse.b] {
+                if *axis < 0.0 {
+                    *axis = -*axis;
+                    flipped = true;
+                }
+            }
+        }
+        if collapsed {
+            self.write_params(before);
+            return Err(SketchError::DegenerateEllipse);
+        }
+        if flipped {
+            result.max_residual = self.current_max_residual();
+            result.converged = result.max_residual < tolerance;
+        }
+        Ok(())
+    }
+
+    /// [`Self::solve_with_decomposition`] without the ellipse publication
+    /// check.
+    fn solve_with_decomposition_raw(
         &mut self,
         decomp: &Decomposition,
         max_iterations: usize,

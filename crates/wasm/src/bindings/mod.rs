@@ -56,6 +56,8 @@ mod qualify_section_split_tests;
 #[cfg(test)]
 mod sequential_fillet_tests;
 #[cfg(test)]
+mod sketch_validation_tests;
+#[cfg(test)]
 mod store_local_switch_tests;
 
 #[cfg(test)]
