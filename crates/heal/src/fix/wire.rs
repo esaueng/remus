@@ -70,68 +70,73 @@ fn fix_wire_impl(
     config: &FixConfig,
 ) -> Result<FixResult, HealError> {
     let mut result = FixResult::ok();
+    // Each fixer works on the wire the fixers before it left behind. A fixer
+    // that rebuilds the wire records `current -> rebuilt`, and `ReShape`
+    // resolves the chain from `wire_id`, so a later rebuild composes with an
+    // earlier one instead of overwriting it from the stale original.
+    let current = |ctx: &HealContext| ctx.reshape.current_wire(wire_id);
 
     if config.fix_reorder != FixMode::Off {
-        let r = fix_reorder(topo, wire_id, ctx, config)?;
+        let r = fix_reorder(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_connectivity != FixMode::Off {
-        let r = fix_connected(topo, wire_id, ctx, config)?;
+        let r = fix_connected(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_closure != FixMode::Off {
-        let r = fix_closed(topo, wire_id, ctx, config)?;
+        let r = fix_closed(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_small_edges != FixMode::Off {
-        let r = fix_small(topo, wire_id, ctx, config)?;
+        let r = fix_small(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_degenerate_edges != FixMode::Off {
-        let r = fix_degenerate(topo, wire_id, ctx, config)?;
+        let r = fix_degenerate(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_gaps_3d != FixMode::Off {
-        let r = fix_gaps_3d(topo, wire_id, ctx, config)?;
+        let r = fix_gaps_3d(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_tail != FixMode::Off {
-        let r = fix_tail(topo, wire_id, ctx, config)?;
+        let r = fix_tail(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_self_intersection != FixMode::Off {
-        let r = fix_self_intersection(topo, wire_id, ctx, config)?;
+        let r = fix_self_intersection(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_lacking != FixMode::Off
         && let Some(fid) = face_id
     {
-        let r = fix_lacking(topo, wire_id, fid, ctx, config)?;
+        let r = fix_lacking(topo, current(ctx), fid, ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_notched != FixMode::Off {
-        let r = fix_notched(topo, wire_id, ctx, config)?;
+        let r = fix_notched(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_intersecting_edges != FixMode::Off {
-        let r = fix_intersecting_edges(topo, wire_id, ctx, config)?;
+        let r = fix_intersecting_edges(topo, current(ctx), ctx, config)?;
         result.merge(&r);
     }
 
     if config.fix_missing_seam != FixMode::Off
         && let Some(fid) = face_id
     {
-        let r = fix_missing_seam(topo, wire_id, fid, ctx, config)?;
+        let r = fix_missing_seam(topo, current(ctx), fid, ctx, config)?;
         result.merge(&r);
     }
 
@@ -1199,7 +1204,7 @@ mod tests {
     use crate::context::HealContext;
     use crate::fix::config::FixConfig;
     use remus_math::vec::Point3;
-    use remus_topology::edge::Edge;
+    use remus_topology::edge::{Edge, EdgeId};
     use remus_topology::vertex::Vertex;
 
     /// Build an open wire of two collinear edges with a gap of `gap`
@@ -1246,6 +1251,150 @@ mod tests {
             "v_from should resolve to v_to after gap close"
         );
         assert!(result.actions_taken >= 1);
+    }
+
+    /// The triangle `A(0,0,0) → B(2,0,0) → C(0,2,0)` stored out of order as
+    /// `[e0, e2, e1]`, plus a closed zero-length edge at `A`, on a one-face
+    /// solid. Returns the solid, the face, and `[e0, e1, e2]`.
+    fn unordered_triangle_with_degenerate_edge(
+        topo: &mut Topology,
+    ) -> (remus_topology::solid::SolidId, FaceId, [EdgeId; 3]) {
+        use remus_math::vec::Vec3;
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let c = topo.add_vertex(Vertex::new(Point3::new(0.0, 2.0, 0.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(b, c, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(c, a, EdgeCurve::Line));
+        let degenerate = topo.add_edge(Edge::new(a, a, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                [e0, e2, e1, degenerate]
+                    .iter()
+                    .map(|&e| OrientedEdge::new(e, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        (solid, face, [e0, e1, e2])
+    }
+
+    #[test]
+    fn degenerate_removal_composes_with_the_reorder() {
+        let mut topo = Topology::new();
+        let (solid, face, [e0, e1, e2]) = unordered_triangle_with_degenerate_edge(&mut topo);
+        let mut ctx = HealContext::new();
+
+        let wire = topo.face(face).unwrap().outer_wire();
+        let result =
+            fix_wire_on_face(&mut topo, wire, face, &mut ctx, &FixConfig::default()).unwrap();
+        assert!(
+            result
+                .actions
+                .iter()
+                .any(|action| matches!(action.kind, crate::fix::RepairActionKind::WireReordered))
+        );
+        ctx.reshape.apply(&mut topo, solid).unwrap();
+
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        let mut edges: Vec<_> = wire.edges().iter().map(OrientedEdge::edge).collect();
+        let first = edges.iter().position(|&e| e == e0).unwrap();
+        edges.rotate_left(first);
+        assert_eq!(
+            edges,
+            vec![e0, e1, e2],
+            "the degenerate edge is dropped from the reordered wire, not the original"
+        );
+        for (i, oe) in wire.edges().iter().enumerate() {
+            let next = wire.edges()[(i + 1) % wire.edges().len()];
+            assert_eq!(
+                oe.oriented_end(topo.edge(oe.edge()).unwrap()),
+                next.oriented_start(topo.edge(next.edge()).unwrap()),
+                "junction {i} must chain"
+            );
+        }
+    }
+
+    #[test]
+    fn tail_removal_composes_with_the_reorder() {
+        // The open chain A → B → C → D stored as `[e0, e2, e1, tail]`, the
+        // tail a 1e-9 stub at D.
+        use remus_math::vec::Vec3;
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+
+        let mut topo = Topology::new();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let [a, b, c, d, stub] = [
+            p(0.0, 0.0),
+            p(2.0, 0.0),
+            p(2.0, 2.0),
+            p(0.0, 2.0),
+            p(0.0, 2.0 + 1e-9),
+        ]
+        .map(|q| topo.add_vertex(Vertex::new(q, 1e-7)));
+        let e0 = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(b, c, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(c, d, EdgeCurve::Line));
+        let tail = topo.add_edge(Edge::new(d, stub, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                [e0, e2, e1, tail]
+                    .iter()
+                    .map(|&e| OrientedEdge::new(e, true))
+                    .collect(),
+                false,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let config = FixConfig {
+            fix_small_edges: FixMode::Off,
+            ..FixConfig::default()
+        };
+        let mut ctx = HealContext::new();
+
+        let result = fix_wire_on_face(&mut topo, wire, face, &mut ctx, &config).unwrap();
+        assert!(
+            result
+                .actions
+                .iter()
+                .any(|action| matches!(action.kind, crate::fix::RepairActionKind::WireTailRemoved))
+        );
+        ctx.reshape.apply(&mut topo, solid).unwrap();
+
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        let edges: Vec<_> = wire.edges().iter().map(OrientedEdge::edge).collect();
+        assert_eq!(
+            edges,
+            vec![e0, e1, e2],
+            "the tail is cut from the reordered wire, not the original"
+        );
     }
 
     #[test]
