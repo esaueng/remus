@@ -9,6 +9,10 @@ const through = [[-2, -1, -2], [2, 3, 2]];
 const volume = box => box[1].reduce((v, coordinate, i) => v * (coordinate - box[0][i]), 1);
 const overlap = (...boxes) => [0, 1, 2].reduce((v, i) => v * Math.max(0,
   Math.min(...boxes.map(box => box[1][i])) - Math.max(...boxes.map(box => box[0][i]))), 1);
+const polygonArea = points => Math.abs(points.reduce((sum, [x, z], i) => {
+  const [nextX, nextZ] = points[(i + 1) % points.length];
+  return sum + x * nextZ - nextX * z;
+}, 0)) / 2;
 const translation = (x, y, z) => Float64Array.of(
   1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1,
 );
@@ -24,6 +28,11 @@ const fixtures = [
   { name: 'outer reaching control', tool: [[-2, -1, -2], [6, 3, 2]], inside: [-3, 1.5, 0], outside: [3, 1.5, 0] },
   { name: 'in footprint control', tool: [[-2, -1, -0.25], [2, 3, 0.25]], inside: [0, 1.5, 0.4], outside: [0, 1.5, 0] },
   { name: 'nested footprint control', shape: 'pocket', tool: [[-4.5, -1, -1], [4.5, 3, 1]], inside: [-4.75, 0.75, 0], outside: [3, 0.25, 0] },
+  { name: 'shared-edge hole contact', rib: [[-1, 1, -1], [1, 2, 1]],
+    tool: [[-2, -1, -1], [2, 3, 2]], inside: [4, 0.5, 4], outside: [0, 0.5, 0], alsoOutside: [0, 1.5, 0] },
+  { name: 'single-vertex hole contact', rib: [[-1, 1, -1], [1, 2, 1]],
+    enclosingPolygon: [[-3, -3], [3, -3], [3, 0], [1, 1], [0, 3], [-3, 3]],
+    inside: [4, 0.5, 4], outside: [0, 0.5, 0], alsoOutside: [0, 1.5, 0] },
 ];
 
 export function runB79PlanarHolePartitionsPackaged({ BrepKernel }) {
@@ -59,22 +68,29 @@ export function runB79PlanarHolePartitionsPackaged({ BrepKernel }) {
             operandVolume = volume(plate) - overlap(plate, pocket);
             common = overlap(plate, fixture.tool) - overlap(plate, pocket, fixture.tool);
           } else {
-            const rib = fixture.shape === 'cross' ? boolean('fuse', box(bar), box(cross)) : box(bar);
+            const ribBounds = fixture.rib ?? bar;
+            const rib = fixture.shape === 'cross' ? boolean('fuse', box(ribBounds), box(cross)) : box(ribBounds);
             operand = boolean('fuse', box(plate), rib);
-            operandVolume = volume(plate) + volume(bar);
-            common = overlap(plate, fixture.tool) + overlap(bar, fixture.tool);
+            operandVolume = volume(plate) + volume(ribBounds);
+            // The single-vertex polygon lies inside the plate footprint and
+            // encloses the entire rib: its area is 30, so Cut leaves 100-30=70.
+            common = fixture.enclosingPolygon ? polygonArea(fixture.enclosingPolygon) + volume(ribBounds)
+              : overlap(plate, fixture.tool) + overlap(ribBounds, fixture.tool);
             if (fixture.shape === 'cross') {
               operandVolume += volume(cross) - overlap(bar, cross);
               common += overlap(cross, fixture.tool) - overlap(bar, cross, fixture.tool);
             }
           }
-          const tool = box(fixture.tool);
+          const tool = fixture.enclosingPolygon ? kernel.extrude(kernel.makePolygon(Float64Array.from(
+            fixture.enclosingPolygon.flatMap(([x, z]) => point([x, -1, z])),
+          )), 0, 1, 0, 4 * scale) : box(fixture.tool);
+          const toolVolume = fixture.enclosingPolygon ? polygonArea(fixture.enclosingPolygon) * 4 : volume(fixture.tool);
           const ids = Uint32Array.of(operand, tool);
           const before = kernel.serializeSolids(ids);
           const operation = fixture.operation ?? 'cut';
           const result = fixture.reverse ? boolean(operation, tool, operand) : boolean(operation, operand, tool);
-          const expectedUnit = operation === 'fuse' ? operandVolume + volume(fixture.tool) - common
-            : operation === 'intersect' ? common : (fixture.reverse ? volume(fixture.tool) : operandVolume) - common;
+          const expectedUnit = operation === 'fuse' ? operandVolume + toolVolume - common
+            : operation === 'intersect' ? common : (fixture.reverse ? toolVolume : operandVolume) - common;
           const expected = expectedUnit * scale ** 3;
           const measured = JSON.parse(kernel.massProperties(result)).volume;
           assert.ok(Math.abs(measured - expected) <= expected * 1e-9, `${label}: ${measured} vs ${expected}`);

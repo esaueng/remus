@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "name": "planar-hole-shared-edge-section-contact",
+  "description": "Issue #1051: a section loop encloses the square rib footprint, an existing hole in the plate top, while sharing its complete z=-1 edge. Cutting must remove the entire rib and only the 4 x 1 x 3 plate prism: 100 + 4 - 4 - 12 = 88. Native and packaged B79 regressions also require an exact watertight manifold boundary.",
+  "revision": "0186a848",
+  "operations": [
+    {"op": "makeBox", "args": {"width": 10, "height": 1, "depth": 10}},
+    {"op": "transform", "args": {"solid": 0, "matrix": [1,0,0,-5, 0,1,0,0, 0,0,1,-5, 0,0,0,1]}},
+    {"op": "makeBox", "args": {"width": 2, "height": 1, "depth": 2}},
+    {"op": "transform", "args": {"solid": 1, "matrix": [1,0,0,-1, 0,1,0,1, 0,0,1,-1, 0,0,0,1]}},
+    {"op": "booleanWithQuality", "args": {"operation": "fuse", "solidA": 0, "solidB": 1, "exactOnly": true}},
+    {"op": "makeBox", "args": {"width": 4, "height": 4, "depth": 3}},
+    {"op": "transform", "args": {"solid": 3, "matrix": [1,0,0,-2, 0,1,0,-1, 0,0,1,-1, 0,0,0,1]}},
+    {"op": "booleanWithQuality", "args": {"operation": "cut", "solidA": 2, "solidB": 3, "exactOnly": true}},
+    {"op": "volume", "args": {"solid": 4, "deflection": 0.01}},
+    {"op": "validateSolid", "args": {"solid": 4}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"ok": 0},
+    {"ok": 1},
+    {"ok": 1},
+    {"ok": {"quality": "exact", "solid": 2}},
+    {"ok": 3},
+    {"ok": 3},
+    {"ok": {"quality": "exact", "solid": 4}},
+    {"okNear": 88, "tol": 1e-9},
+    {"ok": 0}
+  ]
+}

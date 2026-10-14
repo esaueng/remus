@@ -109,6 +109,10 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** planar section loops that only share a span or endpoint with an
+  existing hole retain the internal-loop path. Proper crossings still use the
+  hole-weaving path. Exact boolean regressions cover both contacts with valid,
+  watertight output and closed-form volumes (#1051).
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam
