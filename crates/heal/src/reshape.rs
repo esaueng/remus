@@ -336,6 +336,12 @@ impl ReShape {
         self.wires.insert(id, WireAction::Remove);
     }
 
+    /// The wire that currently stands for `id`: the end of its replacement
+    /// chain, or `id` itself when it has none (or was removed).
+    pub(crate) fn current_wire(&self, id: WireId) -> WireId {
+        self.resolve_wire(id).unwrap_or(id)
+    }
+
     /// Resolve a wire through the replacement chain.
     fn resolve_wire(&self, mut id: WireId) -> Option<WireId> {
         let mut seen = HashSet::new();
