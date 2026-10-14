@@ -9,8 +9,8 @@
 //! Resolution outcomes are **data, not errors**: `resolveRef` and
 //! `resolveOperationOutput` return a JSON object whose `status` field is
 //! one of `bound`, `boundMany`, `ambiguous`, `dangling`,
-//! `unresolvedAcrossOperation`, `unknownOperation`, or `noMatch` — a
-//! severed reference is an answer the caller handles, not an exception.
+//! `unresolvedAcrossOperation`, `unknownOperation`, `noMatch`, or `stale` —
+//! a severed reference is an answer the caller handles, not an exception.
 
 #![allow(clippy::missing_errors_doc)]
 
@@ -106,6 +106,10 @@ pub(crate) fn resolution_json(resolution: &Resolution) -> serde_json::Value {
         }),
         Resolution::NoMatch { reason } => serde_json::json!({
             "status": "noMatch",
+            "reason": reason,
+        }),
+        Resolution::Stale { reason } => serde_json::json!({
+            "status": "stale",
             "reason": reason,
         }),
     }

@@ -396,6 +396,7 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
             | remus_topology::TopologyError::RefUnresolvedAcrossOperation { .. }
             | remus_topology::TopologyError::RefUnknownOperation { .. }
             | remus_topology::TopologyError::RefNoMatch { .. }
+            | remus_topology::TopologyError::RefStale { .. }
             | remus_topology::TopologyError::JournalSnapshotInvalid { .. } => ("journal", None),
             remus_topology::TopologyError::LoopNotFound(id) => ("loop", Some(id.index())),
             remus_topology::TopologyError::CoedgeNotFound(id) => ("coedge", Some(id.index())),
