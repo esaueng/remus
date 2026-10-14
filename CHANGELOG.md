@@ -109,6 +109,11 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **io:** mesh import welds far-from-origin parts in linear time: weld cells
+  are keyed from the bounding-box minimum instead of saturating `as i64` past
+  2^63 (B99, review IO-2). OBJ faces are triangulated as they are read, so a
+  long `f` line is refused at the first triangle over `max_model_entities`
+  instead of after its whole corner list is collected (B100, review IO-9).
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam
