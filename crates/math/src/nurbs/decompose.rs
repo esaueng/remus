@@ -270,12 +270,19 @@ pub fn curve_degree_elevate(curve: &NurbsCurve, t: usize) -> Result<NurbsCurve, 
     }
 
     let p = curve.degree();
-    let new_p = p + t;
+    let new_p = p.checked_add(t).ok_or_else(|| MathError::InvalidDegree {
+        degree: usize::MAX,
+        control_points: curve.control_points().len(),
+    })?;
+    // Checked before decomposition: the coefficients need C(new_p, i), which
+    // overflows `u64` past degree ~62 (and `usize` on wasm32 near 31).
+    let bezalfs = compute_bezalfs(p, t).ok_or_else(|| MathError::InvalidDegree {
+        degree: new_p,
+        control_points: curve.control_points().len(),
+    })?;
 
     let segments = curve_to_bezier_segments(curve)?;
     let n_segs = segments.len();
-
-    let bezalfs = compute_bezalfs(p, t);
 
     let mut all_cps: Vec<[f64; 4]> = Vec::new();
     let mut all_knots: Vec<f64> = Vec::new();
@@ -351,26 +358,28 @@ pub fn curve_degree_elevate(curve: &NurbsCurve, t: usize) -> Result<NurbsCurve, 
     NurbsCurve::new(new_p, all_knots, new_cps, new_ws)
 }
 
-/// Compute the Bezier degree elevation coefficients.
+/// Compute the Bezier degree elevation coefficients, or `None` when a
+/// binomial overflows.
 ///
 /// `bezalfs[i][j] = C(p,j) * C(t, i-j) / C(p+t, i)`
 #[allow(clippy::cast_precision_loss)]
-fn compute_bezalfs(p: usize, t: usize) -> Vec<Vec<f64>> {
+fn compute_bezalfs(p: usize, t: usize) -> Option<Vec<Vec<f64>>> {
     let new_p = p + t;
     let mut bezalfs = vec![vec![0.0; p + 1]; new_p + 1];
 
     for (i, row) in bezalfs.iter_mut().enumerate().take(new_p + 1) {
         let j_min = i.saturating_sub(t);
         let j_max = i.min(p);
+        let c_new = checked_binomial(new_p, i)? as f64;
         for (j, val) in row.iter_mut().enumerate().take(j_max + 1).skip(j_min) {
-            *val = binomial(p, j) as f64 * binomial(t, i - j) as f64 / binomial(new_p, i) as f64;
+            *val = checked_binomial(p, j)? as f64 * checked_binomial(t, i - j)? as f64 / c_new;
         }
     }
 
-    bezalfs
+    Some(bezalfs)
 }
 
-use super::basis::binomial;
+use super::basis::checked_binomial;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
