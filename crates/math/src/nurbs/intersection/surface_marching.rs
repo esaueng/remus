@@ -1105,6 +1105,10 @@ fn march_direction(
     let mut total_evals = 0_usize;
     let max_evals = max_steps * 3;
     let mut turning_points_count = 0_usize;
+    // Proximity to the start is a closure only after the trace has left its
+    // start neighborhood. Dense steps on a small straight section otherwise
+    // look like a tiny closed loop while they are still departing the seed.
+    let mut left_start_neighborhood = false;
 
     for _ in 0..max_steps {
         context.check_cancelled()?;
@@ -1250,7 +1254,7 @@ fn march_direction(
             // to the first traced segment (not just the seed). Using 3D
             // distance instead of 4D parameter distance avoids issues when
             // surfaces have very different parameterization scales.
-            if points.len() >= 5 {
+            {
                 let d_3d = (refined.point - seed.point).length();
                 // Also check against the second point to detect crossing
                 // the start segment, not just proximity to the seed.
@@ -1263,7 +1267,10 @@ fn march_direction(
                     false
                 };
 
-                if near_seed || near_first_seg {
+                if !near_seed && !near_first_seg {
+                    left_start_neighborhood = true;
+                }
+                if points.len() >= 5 && left_start_neighborhood && (near_seed || near_first_seg) {
                     // Close the loop by adding the seed point.
                     points.push(*seed);
                     break;
