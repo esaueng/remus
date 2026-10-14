@@ -27,7 +27,7 @@ use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::classify::{PointClassification, classify_point};
 use remus_operations::measure::{mass_properties, solid_volume};
-use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
 use remus_operations::thicken::thicken;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
@@ -333,6 +333,44 @@ fn b89_frustum_wall_thickens_by_pappus() {
                 (across(0.75), Outside),
                 (across(-0.75), Outside),
                 (m.mul_point(Point3::new(0.0, 0.0, 0.5 * h)), Outside),
+            ],
+        );
+    }
+}
+
+/// A whole torus (one face, closed line seams, no boundary) thickens to a
+/// hollow tube: the offset torus and the original bound it as outer shell
+/// and cavity.
+#[test]
+fn b89_whole_torus_thickens_to_a_hollow_tube() {
+    let (major, minor) = (3.0, 1.0);
+    for t in [0.5, -0.5] {
+        let mut topo = Topology::new();
+        let ring = make_torus(&mut topo, major, minor, 16).unwrap();
+        let m = placement();
+        remus_operations::transform::transform_solid(&mut topo, ring, &m).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, ring).unwrap();
+        assert_eq!(faces.len(), 1, "make_torus is one face");
+        let solid = thicken(&mut topo, faces[0], t).unwrap();
+        let (inner, outer) = if t > 0.0 {
+            (minor, minor + t)
+        } else {
+            (minor + t, minor)
+        };
+        let mid = 0.5 * (inner + outer);
+        check(
+            &topo,
+            solid,
+            2.0 * PI * PI * major * (outer * outer - inner * inner),
+            &[
+                (m.mul_point(Point3::new(major + mid, 0.0, 0.0)), Inside),
+                (m.mul_point(Point3::new(0.0, -major, mid)), Inside),
+                (m.mul_point(Point3::new(major, 0.0, 0.0)), Outside),
+                (
+                    m.mul_point(Point3::new(major + outer + 0.25, 0.0, 0.0)),
+                    Outside,
+                ),
+                (m.mul_point(Point3::new(0.0, 0.0, 0.0)), Outside),
             ],
         );
     }
