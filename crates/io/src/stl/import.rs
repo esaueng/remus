@@ -210,29 +210,39 @@ fn validate_mesh(mesh: &TriangleMesh, tolerance: f64) -> Result<(), IoError> {
 }
 
 /// Build vertex IDs, merging coincident positions.
+fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -> Vec<VertexId> {
+    weld_positions(positions, tolerance, |pos| {
+        topo.add_vertex(Vertex::new(pos, tolerance))
+    })
+    .0
+}
+
+/// Weld `positions` within `tolerance`, calling `add_vertex` for each new
+/// vertex. Returns the vertex of every position and the number of candidate
+/// distance checks made, which the regression tests bound.
 ///
-/// Candidates are found through a uniform spatial hash whose cell edge is the
-/// weld tolerance, so a scan is bounded by the 27 cells that can hold a point
-/// within tolerance rather than by every vertex seen so far. A mesh scan
-/// arrives with almost every position distinct, which is the linear search's
-/// worst case: it made import quadratic in vertex count.
+/// Candidates are found through a uniform spatial hash, so a scan is bounded
+/// by the 27 cells around a point rather than by every vertex seen so far. A
+/// mesh scan arrives with almost every position distinct, which is the
+/// linear search's worst case: it made import quadratic in vertex count.
 ///
 /// Cell membership alone never decides a merge — two points in one cell can
 /// still be up to a diagonal apart, and two points a hair either side of a
 /// cell boundary are neighbours. Every candidate is distance-checked, and the
 /// 27-cell probe is what stops a boundary-straddling pair from being missed.
-fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -> Vec<VertexId> {
+fn weld_positions(
+    positions: &[Point3],
+    tolerance: f64,
+    mut add_vertex: impl FnMut(Point3) -> VertexId,
+) -> (Vec<VertexId>, usize) {
     let tol_sq = tolerance * tolerance;
+    let grid = WeldGrid::new(positions, tolerance);
     let mut buckets: HashMap<(i64, i64, i64), Vec<(Point3, VertexId)>> = HashMap::new();
     let mut map = Vec::with_capacity(positions.len());
-
-    // `as i64` saturates rather than wrapping, so an extreme
-    // coordinate-to-tolerance ratio degrades to larger buckets, never to a
-    // wrong cell.
-    let cell = |v: f64| -> i64 { (v / tolerance).floor() as i64 };
+    let mut checks = 0_usize;
 
     for &pos in positions {
-        let (cx, cy, cz) = (cell(pos.x()), cell(pos.y()), cell(pos.z()));
+        let (cx, cy, cz) = grid.cell(pos);
 
         // Among every candidate within tolerance, take the earliest-created
         // vertex. Insertion order decided the winner in the linear scan this
@@ -242,14 +252,10 @@ fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let key = (
-                        cx.saturating_add(dx),
-                        cy.saturating_add(dy),
-                        cz.saturating_add(dz),
-                    );
-                    let Some(bucket) = buckets.get(&key) else {
+                    let Some(bucket) = buckets.get(&(cx + dx, cy + dy, cz + dz)) else {
                         continue;
                     };
+                    checks += bucket.len();
                     for &(p, vid) in bucket {
                         let ex = p.x() - pos.x();
                         let ey = p.y() - pos.y();
@@ -267,13 +273,76 @@ fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -
         if let Some(vid) = best {
             map.push(vid);
         } else {
-            let vid = topo.add_vertex(Vertex::new(pos, tolerance));
+            let vid = add_vertex(pos);
             buckets.entry((cx, cy, cz)).or_default().push((pos, vid));
             map.push(vid);
         }
     }
 
-    map
+    (map, checks)
+}
+
+/// Cell keys of the weld hash, measured from the bounding-box minimum.
+///
+/// Keying absolute coordinates by `coordinate / tolerance` saturated `as i64`
+/// once that ratio passed 2^63 (x = 1e12 at the 1e-7 default), putting every
+/// vertex in one bucket and making the weld quadratic. Measuring from the box
+/// minimum keeps far-from-origin parts as cheap as parts at the origin, and
+/// the cell edge is widened so no index exceeds 2^40 whatever the extent.
+struct WeldGrid {
+    /// Half the box minimum: halves keep `p - min` finite even when the box
+    /// spans most of the `f64` range.
+    half_origin: [f64; 3],
+    /// Half the cell edge, so `(p/2 - min/2) / (cell/2)` is `(p - min)/cell`.
+    half_cell: f64,
+}
+
+impl WeldGrid {
+    /// Upper bound on a cell index along any axis.
+    const MAX_INDEX: f64 = (1_u64 << 40) as f64;
+
+    fn new(positions: &[Point3], tolerance: f64) -> Self {
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for position in positions {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(position.0[axis]);
+                max[axis] = max[axis].max(position.0[axis]);
+            }
+        }
+        let mut half_extent = 0.0_f64;
+        let mut magnitude = 0.0_f64;
+        for axis in 0..3 {
+            if min[axis] <= max[axis] {
+                half_extent = half_extent.max(max[axis] * 0.5 - min[axis] * 0.5);
+                magnitude = magnitude.max(min[axis].abs()).max(max[axis].abs());
+            } else {
+                min[axis] = 0.0;
+            }
+        }
+        // The cell edge is at least twice the tolerance, so a pair within
+        // tolerance is under half a cell apart, and at least 2^-49 of the
+        // largest coordinate, which keeps the rounding of `p - min` for the
+        // pair under a quarter of a cell. Their keys therefore differ by at
+        // most one. No widening changes which points weld: every candidate
+        // is still distance-checked.
+        let half_cell = tolerance
+            .max(half_extent / Self::MAX_INDEX)
+            .max(magnitude * 2.0_f64.powi(-50));
+        Self {
+            half_origin: min.map(|value| value * 0.5),
+            half_cell,
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn cell(&self, position: Point3) -> (i64, i64, i64) {
+        // In range by construction: 0 <= (p - min) / cell <= 2^40.
+        let index = |axis: usize| {
+            ((position.0[axis] * 0.5 - self.half_origin[axis]) / self.half_cell).floor() as i64
+        };
+        (index(0), index(1), index(2))
+    }
 }
 
 /// Return the shared edge between `a` and `b`, creating it on first use.
@@ -567,6 +636,80 @@ mod tests {
 
         // Should have 4 unique vertices, not 6.
         assert_eq!(topo.vertices().len(), 4);
+    }
+
+    /// A strip of `count` distinct positions spaced one unit apart along x
+    /// from `x0`, each listed twice the way STL repeats shared corners.
+    fn doubled_strip(x0: f64, count: usize) -> Vec<Point3> {
+        (0..count)
+            .flat_map(|i| {
+                let p = Point3::new(x0 + i as f64, 0.25 * (i % 2) as f64, 0.0);
+                [p, p]
+            })
+            .collect()
+    }
+
+    fn weld(positions: &[Point3], tolerance: f64) -> (Vec<VertexId>, usize) {
+        let mut topo = Topology::new();
+        weld_positions(positions, tolerance, |p| {
+            topo.add_vertex(Vertex::new(p, tolerance))
+        })
+    }
+
+    /// IO-2 (kernel review 2026-10-14): at x = 1e12 the old absolute key
+    /// `(x / 1e-7).floor() as i64` saturated to `i64::MAX` for every vertex,
+    /// so all of them shared one bucket and each insertion distance-checked
+    /// every earlier vertex: 4,000,000 checks for this strip instead of a
+    /// handful per vertex. Far-from-origin parts must weld as cheaply as
+    /// parts at the origin.
+    #[test]
+    fn far_from_origin_weld_stays_linear() {
+        let count = 2000;
+        for x0 in [0.0, 1e12, -3e13] {
+            let positions = doubled_strip(x0, count);
+            let (map, checks) = weld(&positions, 1e-7);
+            let mut unique = map.clone();
+            unique.dedup();
+            assert_eq!(unique.len(), count, "x0 = {x0}: every pair must weld");
+            assert!(
+                checks <= 4 * positions.len(),
+                "x0 = {x0}: {checks} distance checks for {} positions",
+                positions.len()
+            );
+        }
+    }
+
+    #[test]
+    fn weld_over_the_full_f64_range_keys_finite_cells() {
+        let positions = [
+            Point3::new(-1e308, 0.0, 0.0),
+            Point3::new(1e308, 0.0, 0.0),
+            Point3::new(1e308, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(5e-8, 0.0, 0.0),
+        ];
+        let (map, _) = weld(&positions, 1e-7);
+        assert_eq!(map[1], map[2]);
+        assert_eq!(map[3], map[4]);
+        assert_ne!(map[0], map[1]);
+        assert_ne!(map[0], map[3]);
+    }
+
+    #[test]
+    fn pairs_just_inside_tolerance_weld_across_cell_boundaries() {
+        // Straddle cell boundaries at several offsets: a pair 0.99 tol apart
+        // must weld wherever the boundary falls.
+        let tolerance = 1e-3;
+        for step in 0..40 {
+            let x = 1.0 + f64::from(step) * 0.37 * tolerance;
+            let positions = [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(x, x, -x),
+                Point3::new(x + 0.99 * tolerance, x, -x),
+            ];
+            let (map, _) = weld(&positions, tolerance);
+            assert_eq!(map[1], map[2], "x = {x}");
+        }
     }
 
     #[test]
