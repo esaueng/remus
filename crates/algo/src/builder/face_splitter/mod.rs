@@ -6349,8 +6349,13 @@ fn split_face_2d_impl(
         {
             true
         } else {
-            deduped_line_loops =
-                plane_internal_line_loops(sections, frame, &boundary_edges, tol.linear);
+            deduped_line_loops = plane_internal_line_loops(
+                sections,
+                frame,
+                &boundary_edges,
+                &original_inner_wires,
+                tol.linear,
+            );
             deduped_line_loops.is_some()
         }
     } else {
@@ -8954,6 +8959,45 @@ fn plane_closed_loops_separate(
     true
 }
 
+/// Whether two closed planar line segments cross, touch, or overlap.
+/// Only predicate signs are needed: computing an intersection point would
+/// introduce a denominator cutoff that can miss small proper crossings.
+fn plane_segments_touch(a0: Point2, a1: Point2, b0: Point2, b1: Point2) -> bool {
+    use remus_math::predicates::{Orientation, orientation2d};
+
+    if a0.x().max(a1.x()) < b0.x().min(b1.x())
+        || b0.x().max(b1.x()) < a0.x().min(a1.x())
+        || a0.y().max(a1.y()) < b0.y().min(b1.y())
+        || b0.y().max(b1.y()) < a0.y().min(a1.y())
+    {
+        return false;
+    }
+    let side = [
+        orientation2d(a0, a1, b0),
+        orientation2d(a0, a1, b1),
+        orientation2d(b0, b1, a0),
+        orientation2d(b0, b1, a1),
+    ];
+    let opposite = |a, b| {
+        matches!(
+            (a, b),
+            (Orientation::Clockwise, Orientation::CounterClockwise)
+                | (Orientation::CounterClockwise, Orientation::Clockwise)
+        )
+    };
+    let on = |p: Point2, a: Point2, b: Point2| {
+        p.x() >= a.x().min(b.x())
+            && p.x() <= a.x().max(b.x())
+            && p.y() >= a.y().min(b.y())
+            && p.y() <= a.y().max(b.y())
+    };
+    (opposite(side[0], side[1]) && opposite(side[2], side[3]))
+        || (side[0] == Orientation::Collinear && on(b0, a0, a1))
+        || (side[1] == Orientation::Collinear && on(b1, a0, a1))
+        || (side[2] == Orientation::Collinear && on(a0, b0, b1))
+        || (side[3] == Orientation::Collinear && on(a1, b0, b1))
+}
+
 /// Detect section edges (lines, open arcs, and open NURBS conics) forming
 /// closed loops strictly inside a plane face's boundary (nested coplanar
 /// footprints, or a box wall's socket-profile silhouette), and dedup
@@ -8969,6 +9013,7 @@ fn plane_internal_line_loops(
     sections: &[SectionEdge],
     frame: &PlaneFrame,
     boundary_edges: &[OrientedPCurveEdge],
+    inner_wires: &[Vec<OrientedPCurveEdge>],
     tol_linear: f64,
 ) -> Option<Vec<SectionEdge>> {
     type QPt = (i64, i64, i64);
@@ -9161,6 +9206,35 @@ fn plane_internal_line_loops(
             degree.len()
         );
         return None;
+    }
+    // A loop crossing an existing hole cannot be carved as an independent
+    // inner wire: the two boundaries must be partitioned together by the
+    // generic wire builder. Qualify only the all-Line domain here. Project
+    // the authoritative 3D endpoints; stored hole pcurves can use another
+    // plane frame. Disjoint and nested outlines retain the shortcut.
+    if !inner_wires.is_empty()
+        && deduped
+            .iter()
+            .all(|section| matches!(section.curve_3d, EdgeCurve::Line))
+    {
+        let hole_segments: Vec<_> = inner_wires
+            .iter()
+            .filter(|wire| {
+                wire.iter()
+                    .all(|edge| matches!(edge.curve_3d, EdgeCurve::Line))
+            })
+            .flatten()
+            .map(|edge| (frame.project(edge.start_3d), frame.project(edge.end_3d)))
+            .collect();
+        if deduped.iter().any(|section| {
+            let start = frame.project(section.start);
+            let end = frame.project(section.end);
+            hole_segments
+                .iter()
+                .any(|&(a, b)| plane_segments_touch(start, end, a, b))
+        }) {
+            return None;
+        }
     }
     Some(deduped)
 }
@@ -9826,6 +9900,86 @@ mod tests {
             source_edge_idx: None,
             pave_block_id: None,
             source_topo_edge: None,
+        }
+    }
+
+    #[test]
+    fn b79_internal_line_loops_partition_crossing_and_touching_holes_only() {
+        let square = [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
+        let outer = [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)];
+        let cases = [
+            (
+                vec![(-4.0, -0.5), (4.0, -0.5), (4.0, 0.5), (-4.0, 0.5)],
+                true,
+            ),
+            (vec![(2.0, -1.0), (4.0, -1.0), (4.0, 1.0), (2.0, 1.0)], true),
+            (vec![(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0)], true),
+            (vec![(2.0, 0.0), (3.0, -1.0), (3.0, 1.0)], true),
+            (
+                vec![(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)],
+                false,
+            ),
+            (
+                vec![(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)],
+                false,
+            ),
+            (
+                vec![(3.0, -1.0), (4.0, -1.0), (4.0, 1.0), (3.0, 1.0)],
+                false,
+            ),
+        ];
+        for scale in [1e-3, 1.0, 1e3] {
+            for origin in [Point3::new(0.0, 0.0, 0.0), Point3::new(37.0, -91.0, 13.0)] {
+                let frame = PlaneFrame::from_normal_and_point(Vec3::new(0.0, 0.0, 1.0), origin);
+                let wire = |points: &[(f64, f64)]| {
+                    (0..points.len())
+                        .map(|i| {
+                            let a = Point2::new(points[i].0 * scale, points[i].1 * scale);
+                            let next = points[(i + 1) % points.len()];
+                            let b = Point2::new(next.0 * scale, next.1 * scale);
+                            let mut edge = uv_line_edge(a, b);
+                            edge.start_3d = frame.evaluate(a.x(), a.y());
+                            edge.end_3d = frame.evaluate(b.x(), b.y());
+                            edge
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let sections = wire(&square)
+                    .into_iter()
+                    .map(|e| line_section(e.start_3d, e.end_3d))
+                    .collect::<Vec<_>>();
+                for (hole, crossing) in &cases {
+                    let result = plane_internal_line_loops(
+                        &sections,
+                        &frame,
+                        &wire(&outer),
+                        &[wire(hole)],
+                        1e-7 * scale,
+                    );
+                    assert_eq!(
+                        result.is_none(),
+                        *crossing,
+                        "scale={scale} origin={origin:?} hole={hole:?}"
+                    );
+                }
+                // The boxes overlap, but these triangles are separated by x+y.
+                let triangle = [(-2.0, -2.0), (2.0, -2.0), (-2.0, 2.0)];
+                let hole = [(2.0, 2.0), (2.0, 0.5), (0.5, 2.0)];
+                let sections = wire(&triangle)
+                    .into_iter()
+                    .map(|e| line_section(e.start_3d, e.end_3d))
+                    .collect::<Vec<_>>();
+                assert!(
+                    plane_internal_line_loops(
+                        &sections,
+                        &frame,
+                        &wire(&outer),
+                        &[wire(&hole)],
+                        1e-7 * scale
+                    )
+                    .is_some()
+                );
+            }
         }
     }
 

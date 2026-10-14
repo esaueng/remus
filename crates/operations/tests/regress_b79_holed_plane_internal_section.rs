@@ -1,6 +1,6 @@
 //! B79 — a closed section loop that crosses a planar face's existing hole.
 //!
-//! Ready-repro for the all-planar family of the 2026-10-02 gauntlet census
+//! Regression for the all-planar family of the 2026-10-02 gauntlet census
 //! (`docs/kernel-maturity/gauntlet-approx-census-2026-10.md`, candidate 1:
 //! `mambo-basic-b35`, `mambo-basic-b36`, `mambo-basic-b37`). Every one of
 //! those MAMBO models is a plate whose top face carries the footprint of a
@@ -16,6 +16,8 @@
 //! The same failure reproduces from boxes alone. A 10×1×10 plate fused with
 //! an 8×1×1 bar rib (an exact fuse: the plate top keeps the bar's footprint as
 //! an inner wire) and cut by a 4×4×4 box through its middle:
+//!
+//! The original failure path:
 //!
 //! * `plane_internal_line_loops` (`algo/src/builder/face_splitter/mod.rs`)
 //!   accepts the tool's square footprint on the plate top as a closed loop
@@ -309,7 +311,6 @@ fn with_air(extra: &[[f64; 3]]) -> Vec<[f64; 3]> {
 }
 
 #[test]
-#[ignore = "open: B79 — a closed section loop crossing a planar face's existing hole is carved as an independent hole (plane_internal_line_loops ignores original inner wires); exact cut refuses"]
 fn b79_plate_bar_through_cut_is_exact() {
     for (scale, offset) in PLACEMENTS {
         let f = Frame { scale, offset };
@@ -332,7 +333,6 @@ fn b79_plate_bar_through_cut_is_exact() {
 }
 
 #[test]
-#[ignore = "open: B79 — a closed section loop crossing a planar face's existing hole is carved as an independent hole (plane_internal_line_loops ignores original inner wires); exact cut refuses"]
 fn b79_plate_cross_through_cut_is_exact() {
     // The census shape: the square crosses all four arms of the cross.
     for (scale, offset) in PLACEMENTS {
@@ -358,7 +358,6 @@ fn b79_plate_cross_through_cut_is_exact() {
 }
 
 #[test]
-#[ignore = "open: B79 — a closed section loop crossing a planar face's existing hole is carved as an independent hole (plane_internal_line_loops ignores original inner wires); exact cut refuses"]
 fn b79_plate_pocket_through_cut_is_exact() {
     // The hole on the plate top comes from a cut (a slot pocket), not a fuse.
     for (scale, offset) in PLACEMENTS {
@@ -388,7 +387,6 @@ fn b79_plate_pocket_through_cut_is_exact() {
 }
 
 #[test]
-#[ignore = "open: B79 — a closed section loop crossing a planar face's existing hole is carved as an independent hole (plane_internal_line_loops ignores original inner wires); blind and pocketing cuts refuse"]
 fn b79_plate_bar_blind_and_pocketing_cuts_are_exact() {
     let f = Frame {
         scale: 1.0,
@@ -432,7 +430,6 @@ fn b79_plate_bar_blind_and_pocketing_cuts_are_exact() {
 }
 
 #[test]
-#[ignore = "open: B79 — a closed section loop crossing a planar face's existing hole is carved as an independent hole (plane_internal_line_loops ignores original inner wires); every operation on the pair refuses"]
 fn b79_plate_bar_and_box_all_operations_are_exact() {
     let f = Frame {
         scale: 1.0,
@@ -533,6 +530,29 @@ fn b79_controls_outer_reaching_and_in_footprint_cuts_stay_exact() {
             &[KEPT[0], [0.0, 1.5, 0.4], [0.0, 0.5, 0.4], KEPT[2]],
             &[[0.0, 0.5, 0.0], [0.0, 1.5, 0.0], [3.0, 1.5, 3.0]],
             "in-footprint cut",
+        );
+    }
+}
+
+/// A larger footprint encloses the old slot without crossing its boundary.
+/// The shortcut must continue to represent nested, disjoint wire boundaries.
+#[test]
+fn b79_nested_pocket_footprint_stays_exact() {
+    for (scale, offset) in PLACEMENTS {
+        let f = Frame { scale, offset };
+        let mut topo = Topology::new();
+        let a = plate_with_pocket(&mut topo, &f);
+        let bounds = ([-4.5, -1.0, -1.0], [4.5, 3.0, 1.0]);
+        let tool = f.make(&mut topo, bounds);
+        let r = exact(&mut topo, BooleanOp::Cut, a, tool, "nested slot footprint");
+        assert_result(
+            &topo,
+            r,
+            &f,
+            vol(PLATE) - overlap(PLATE, bounds),
+            &[[0.0, 0.5, 3.0], [-4.75, 0.75, 0.0]],
+            &[[0.0, 0.25, 0.0], [3.0, 0.75, 0.0]],
+            "nested slot footprint",
         );
     }
 }
