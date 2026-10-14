@@ -11,9 +11,10 @@
 //! filleted face-drag pipeline (move, validate, bbox, display mesh, volume,
 //! recognition). `plate` builds a pocketed, drilled plate, fillets it in
 //! stages and then runs the same pipeline on the filleted body. `stage`
-//! (default `all`) restricts the loop to one stage so a sampling profiler
-//! sees only that work: move, validate, bbox, display, volume, recognize,
-//! massprops, fillet, boolean.
+//! (default `all`) restricts the loop to one stage: move, validate, bbox,
+//! display, volume, recognize, massprops, fillet, boolean. For an analysis
+//! stage every edit is made first, then the stage runs over the prepared
+//! bodies contiguously, so a sampling profiler can isolate it.
 
 #![allow(
     clippy::print_stdout,
@@ -49,6 +50,8 @@ const MEASURE_DEFLECTION: f64 = 0.08;
 struct Stages {
     names: Vec<&'static str>,
     samples: Vec<Vec<f64>>,
+    /// Per-series unit; counts are reported apart from timings.
+    units: Vec<&'static str>,
 }
 
 impl Stages {
@@ -56,26 +59,35 @@ impl Stages {
         Self {
             names: Vec::new(),
             samples: Vec::new(),
+            units: Vec::new(),
         }
     }
-    fn record(&mut self, name: &'static str, value: f64) {
+    fn push(&mut self, name: &'static str, unit: &'static str, value: f64) {
         if let Some(i) = self.names.iter().position(|n| *n == name) {
             self.samples[i].push(value);
         } else {
             self.names.push(name);
             self.samples.push(vec![value]);
+            self.units.push(unit);
         }
     }
+    fn record(&mut self, name: &'static str, ms: f64) {
+        self.push(name, "ms", ms);
+    }
+    fn count(&mut self, name: &'static str, value: usize) {
+        self.push(name, "count", value as f64);
+    }
     fn report(&self, label: &str) {
-        println!("== {label} (median / min / max ms, n samples) ==");
-        for (name, s) in self.names.iter().zip(&self.samples) {
+        println!("== {label} (median / min / max, n samples) ==");
+        for (i, (name, s)) in self.names.iter().zip(&self.samples).enumerate() {
             let mut v = s.clone();
             v.sort_by(f64::total_cmp);
             let med = v[v.len() / 2];
             println!(
-                "{name:>22}: {med:10.3} {:10.3} {:10.3}  n={}",
+                "{name:>22}: {med:12.3} {:12.3} {:12.3} {:>5}  n={}",
                 v[0],
                 v[v.len() - 1],
+                self.units[i],
                 v.len()
             );
         }
@@ -109,7 +121,7 @@ fn analyse(topo: &Topology, solid: SolidId, stage: &str, stages: &mut Stages) {
         )
         .expect("display mesh");
         stages.record("display", ms(t));
-        stages.record("display_tris", (mesh.indices.len() / 3) as f64);
+        stages.count("display_tris", mesh.indices.len() / 3);
     }
     if wants(stage, "volume") {
         let t = Instant::now();
@@ -122,7 +134,7 @@ fn analyse(topo: &Topology, solid: SolidId, stage: &str, stages: &mut Stages) {
         let f = feature_recognition::recognize_features(topo, solid, MEASURE_DEFLECTION)
             .expect("recognize");
         stages.record("recognize", ms(t));
-        stages.record("features", f.len() as f64);
+        stages.count("features", f.len());
     }
     if stage == "massprops" {
         let t = Instant::now();
@@ -157,13 +169,30 @@ fn hammer(stage: &str, iters: usize) {
         })
         .expect("+X arm face");
     let mut stages = Stages::new();
-    for i in 0..iters {
+    let edit = |i: usize, stages: &mut Stages| {
         let mut edited = source.clone();
         let distance = 5.0 + i as f64 * 0.02;
         let t = Instant::now();
         let result = push_pull::move_faces(&mut edited, solid, &[face], distance).expect("move");
         stages.record("move", ms(t));
-        analyse(&edited, result, stage, &mut stages);
+        (edited, result)
+    };
+    if stage == "all" || stage == "move" {
+        for i in 0..iters {
+            let (edited, result) = edit(i, &mut stages);
+            if stage == "all" {
+                analyse(&edited, result, stage, &mut stages);
+            }
+        }
+    } else {
+        // Every edit is made before the sampled loop, so a profiler sees the
+        // requested stage contiguously. Each edit is still a distinct body, so
+        // content-keyed caches behave as in a real drag.
+        let edits: Vec<_> = (0..iters).map(|i| edit(i, &mut stages)).collect();
+        println!("edits prepared; analysing stage {stage}");
+        for (edited, result) in &edits {
+            analyse(edited, *result, stage, &mut stages);
+        }
     }
     stages.report("hammer holder face drag");
 }
@@ -390,7 +419,7 @@ fn plate(stage: &str, iters: usize) {
                     .all(|&v| (filleted_topo.vertex(v).unwrap().point().z() - 16.0).abs() < 1e-7)
         })
         .expect("top face");
-    for i in 0..iters {
+    let edit = |i: usize, stages: &mut Stages| {
         let mut edited = filleted_topo.clone();
         let t = Instant::now();
         let result = push_pull::move_faces(&mut edited, body_f, &[top], 2.0 + i as f64 * 0.02);
@@ -405,7 +434,22 @@ fn plate(stage: &str, iters: usize) {
                 body_f
             }
         };
-        analyse(&edited, result, stage, &mut stages);
+        (edited, result)
+    };
+    if stage == "all" || stage == "move" {
+        for i in 0..iters {
+            let (edited, result) = edit(i, &mut stages);
+            if stage == "all" {
+                analyse(&edited, result, stage, &mut stages);
+            }
+        }
+    } else {
+        // Edits first, so a profiler sees the requested stage contiguously.
+        let edits: Vec<_> = (0..iters).map(|i| edit(i, &mut stages)).collect();
+        println!("edits prepared; analysing stage {stage}");
+        for (edited, result) in &edits {
+            analyse(edited, *result, stage, &mut stages);
+        }
     }
     stages.report("filleted plate face drag");
 }
