@@ -57,6 +57,8 @@ mod qualify_section_split_tests;
 mod sequential_fillet_tests;
 #[cfg(test)]
 mod store_local_switch_tests;
+#[cfg(test)]
+mod sweep_transaction_tests;
 
 #[cfg(test)]
 mod transaction_tests;
