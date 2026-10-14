@@ -749,6 +749,24 @@ fn point_from_basis(
     Point3::new(wx / ww, wy / ww, wz / ww)
 }
 
+/// The outcome of an LSPIA fit: the best iterate and how good it is.
+#[derive(Debug, Clone)]
+pub struct LspiaFit {
+    /// The iterate with the smallest maximum data-point deviation (the
+    /// first one, on a tie).
+    pub curve: NurbsCurve,
+    /// That iterate's largest distance from a data point to the curve at the
+    /// point's chord-length parameter.
+    pub max_error: f64,
+    /// Which iterate `curve` is: 0 is the initial control polygon, `i` the
+    /// polygon after `i` updates.
+    pub iteration: usize,
+    /// Whether `max_error` is below the requested tolerance. When `false`
+    /// the fit is the best of `max_iterations + 1` iterates, not a converged
+    /// one.
+    pub converged: bool,
+}
+
 /// Approximate a NURBS curve through data points using Progressive-Iterative Approximation.
 ///
 /// LSPIA iteratively adjusts control points to minimize the least-squares error,
@@ -771,13 +789,18 @@ fn point_from_basis(
 /// 4. Iterate: compute errors at data points, distribute corrections
 ///    to CPs weighted by basis function values
 ///
+/// Every iterate, including the initial polygon and the last update, is
+/// measured. The first one whose maximum deviation is below `tolerance` is
+/// returned as converged; otherwise the iterate with the smallest maximum
+/// deviation is returned with [`LspiaFit::converged`] `false`. The
+/// least-squares residual falls monotonically but the maximum deviation
+/// need not, so the last iterate is not always the best one.
+///
 /// # Errors
 ///
 /// Returns [`MathError::EmptyInput`] if fewer than 2 points.
-/// If the iteration has not converged after `max_iterations`, the best-effort
-/// curve (lowest observed error) is returned as `Ok`; no error is raised.
-/// In debug builds (`#[cfg(debug_assertions)]`) a `log::warn!` is emitted;
-/// release builds are silent.
+/// Non-convergence is not an error: it is reported by
+/// [`LspiaFit::converged`].
 #[allow(clippy::cast_precision_loss)]
 pub fn approximate_lspia(
     points: &[Point3],
@@ -785,7 +808,7 @@ pub fn approximate_lspia(
     num_control_points: usize,
     tolerance: f64,
     max_iterations: usize,
-) -> Result<NurbsCurve, MathError> {
+) -> Result<LspiaFit, MathError> {
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
@@ -837,8 +860,11 @@ pub fn approximate_lspia(
     // exactly `basis_data[i]`; feed that to its post-basis tail instead.
     NurbsCurve::new(p, knots.clone(), control_points.clone(), weights.clone())?;
     let mut deltas = vec![(0.0f64, 0.0f64, 0.0f64); m];
+    let mut best: Option<(Vec<Point3>, f64, usize)> = None;
 
-    for iter in 0..max_iterations {
+    // `max_iterations` updates produce `max_iterations + 1` iterates; the
+    // last pass only measures.
+    for iter in 0..=max_iterations {
         super::validate_control_point_values(control_points.iter().copied())?;
 
         let mut max_err = 0.0f64;
@@ -863,7 +889,18 @@ pub fn approximate_lspia(
         }
 
         if max_err < tolerance {
-            return NurbsCurve::new(p, knots, control_points, weights);
+            return Ok(LspiaFit {
+                curve: NurbsCurve::new(p, knots, control_points, weights)?,
+                max_error: max_err,
+                iteration: iter,
+                converged: true,
+            });
+        }
+        if best.as_ref().is_none_or(|(_, err, _)| max_err < *err) {
+            best = Some((control_points.clone(), max_err, iter));
+        }
+        if iter == max_iterations {
+            break;
         }
 
         // Update control points: P_j += mu * delta_j
@@ -874,25 +911,17 @@ pub fn approximate_lspia(
                 mu.mul_add(deltas[j].2, control_points[j].z()),
             );
         }
-
-        // Return best result if this is the last iteration.
-        if iter == max_iterations - 1 {
-            // LSPIA did not converge to the requested tolerance.  Warn in debug
-            // builds so callers can detect poorly fitted curves.
-            #[cfg(debug_assertions)]
-            if max_err > tolerance {
-                log::warn!(
-                    "approximate_lspia: did not converge after {max_iterations} iterations \
-                     (max_err={max_err:.2e}, tolerance={tolerance:.2e}, \
-                     num_cps={m}, degree={p})"
-                );
-            }
-            return NurbsCurve::new(p, knots, control_points, weights);
-        }
     }
 
-    // Unreachable if max_iterations > 0, but handle edge case.
-    NurbsCurve::new(p, knots, control_points, weights)
+    // The loop body runs at least once and records an iterate before any
+    // exit other than convergence.
+    let (best_points, max_error, iteration) = best.ok_or(MathError::EmptyInput)?;
+    Ok(LspiaFit {
+        curve: NurbsCurve::new(p, knots, best_points, weights)?,
+        max_error,
+        iteration,
+        converged: false,
+    })
 }
 
 /// Weighted LSPIA approximation with per-point weights.
@@ -904,7 +933,7 @@ pub fn approximate_lspia(
 ///
 /// Returns [`MathError::EmptyInput`] if fewer than 2 points.
 /// Returns [`MathError::InvalidWeights`] if `point_weights.len()` does not match
-/// `points.len()`.
+/// `points.len()`. Iterates are selected as in [`approximate_lspia`].
 #[allow(clippy::cast_precision_loss, clippy::too_many_arguments, dead_code)]
 pub(crate) fn approximate_lspia_weighted(
     points: &[Point3],
@@ -913,7 +942,7 @@ pub(crate) fn approximate_lspia_weighted(
     num_control_points: usize,
     tolerance: f64,
     max_iterations: usize,
-) -> Result<NurbsCurve, MathError> {
+) -> Result<LspiaFit, MathError> {
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
@@ -961,8 +990,9 @@ pub(crate) fn approximate_lspia_weighted(
     }
 
     let mu = compute_lspia_step_size_weighted(&basis_data, point_weights, p, m);
+    let mut best: Option<(Vec<Point3>, f64, usize)> = None;
 
-    for iter in 0..max_iterations {
+    for iter in 0..=max_iterations {
         let curve = NurbsCurve::new(p, knots.clone(), control_points.clone(), weights.clone())?;
 
         let mut max_err = 0.0f64;
@@ -989,7 +1019,18 @@ pub(crate) fn approximate_lspia_weighted(
         }
 
         if max_err < tolerance {
-            return NurbsCurve::new(p, knots, control_points, weights);
+            return Ok(LspiaFit {
+                curve,
+                max_error: max_err,
+                iteration: iter,
+                converged: true,
+            });
+        }
+        if best.as_ref().is_none_or(|(_, err, _)| max_err < *err) {
+            best = Some((control_points.clone(), max_err, iter));
+        }
+        if iter == max_iterations {
+            break;
         }
 
         // Update control points: P_j += mu * delta_j
@@ -1000,13 +1041,15 @@ pub(crate) fn approximate_lspia_weighted(
                 mu.mul_add(deltas[j].2, control_points[j].z()),
             );
         }
-
-        if iter == max_iterations - 1 {
-            return NurbsCurve::new(p, knots, control_points, weights);
-        }
     }
 
-    NurbsCurve::new(p, knots, control_points, weights)
+    let (best_points, max_error, iteration) = best.ok_or(MathError::EmptyInput)?;
+    Ok(LspiaFit {
+        curve: NurbsCurve::new(p, knots, best_points, weights)?,
+        max_error,
+        iteration,
+        converged: false,
+    })
 }
 
 #[cfg(test)]
@@ -1130,7 +1173,7 @@ mod tests {
                 Point3::new(t, 2.0f64.mul_add(t, 1.0), 0.0)
             })
             .collect();
-        let curve = approximate_lspia(&points, 3, 6, 1e-6, 100).unwrap();
+        let curve = approximate_lspia(&points, 3, 6, 1e-6, 100).unwrap().curve;
 
         // Check endpoints.
         let p0 = curve.evaluate(0.0);
@@ -1157,7 +1200,7 @@ mod tests {
                 Point3::new(t.cos(), t.sin(), 0.0)
             })
             .collect();
-        let curve = approximate_lspia(&points, 3, 15, 1e-4, 200).unwrap();
+        let curve = approximate_lspia(&points, 3, 15, 1e-4, 200).unwrap().curve;
 
         for i in 0..10 {
             let t = i as f64 / 9.0;
@@ -1176,7 +1219,7 @@ mod tests {
                 Point3::new(t, (t * 6.0).sin(), 0.0)
             })
             .collect();
-        let curve = approximate_lspia(&points, 3, 20, 1e-3, 100).unwrap();
+        let curve = approximate_lspia(&points, 3, 20, 1e-3, 100).unwrap().curve;
         let p = curve.evaluate(0.5);
         assert!(
             (p.x() - 0.5).abs() < 0.1,
@@ -1201,7 +1244,9 @@ mod tests {
             })
             .collect();
         let uniform_weights = vec![1.0; 20];
-        let curve = approximate_lspia_weighted(&points, &uniform_weights, 3, 8, 1e-5, 100).unwrap();
+        let curve = approximate_lspia_weighted(&points, &uniform_weights, 3, 8, 1e-5, 100)
+            .unwrap()
+            .curve;
 
         let p = curve.evaluate(0.5);
         assert!(

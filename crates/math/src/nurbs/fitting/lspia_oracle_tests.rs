@@ -3,9 +3,13 @@
 //! `approximate_lspia_reference` is the loop as it stood before it reused
 //! `basis_data`: a fresh, fully validated `NurbsCurve` and one
 //! `NurbsCurve::evaluate` per parameter on every iteration, kept verbatim.
-//! Every case compares the two bit for bit, `Err` payload included, and
-//! checks LSPIA's copy of the `evaluate` tail, `point_from_basis`, against
-//! `evaluate` itself at every fitting parameter.
+//! It returns its last iterate, so `reference_fit` runs it once per
+//! iteration count to recover every iterate, measures each with `evaluate`,
+//! and selects as `approximate_lspia` must (B92): the first iterate under
+//! the tolerance, else the first with the smallest maximum deviation.
+//! Every case compares that against the cached loop bit for bit, `Err`
+//! payload included, and checks LSPIA's copy of the `evaluate` tail,
+//! `point_from_basis`, against `evaluate` itself at every fitting parameter.
 
 #![allow(
     clippy::unwrap_used,
@@ -146,6 +150,49 @@ fn assert_tail_matches_evaluate(
     }
 }
 
+/// Largest data-point deviation of `curve`, measured with `evaluate` in
+/// the order and arithmetic the LSPIA loop uses.
+fn max_deviation(points: &[Point3], curve: &NurbsCurve) -> f64 {
+    let mut max_err = 0.0f64;
+    for (q, &u) in points.iter().zip(&chord_length_params(points)) {
+        let c = curve.evaluate(u);
+        let (err_x, err_y, err_z) = (q.x() - c.x(), q.y() - c.y(), q.z() - c.z());
+        max_err = max_err.max((err_x * err_x + err_y * err_y + err_z * err_z).sqrt());
+    }
+    max_err
+}
+
+/// The fit `approximate_lspia` must return, built from the verbatim loop's
+/// iterates: `approximate_lspia_reference(.., j)` is iterate `j` (or the
+/// first converged one before it).
+fn reference_fit(
+    points: &[Point3],
+    degree: usize,
+    num_cps: usize,
+    tolerance: f64,
+    max_iterations: usize,
+) -> Result<LspiaFit, MathError> {
+    let mut best: Option<LspiaFit> = None;
+    for iteration in 0..=max_iterations {
+        let curve = approximate_lspia_reference(points, degree, num_cps, tolerance, iteration)?;
+        let max_error = max_deviation(points, &curve);
+        let converged = max_error < tolerance;
+        let fit = LspiaFit {
+            curve,
+            max_error,
+            iteration,
+            converged,
+        };
+        if converged {
+            return Ok(fit);
+        }
+        if best.as_ref().is_none_or(|b| max_error < b.max_error) {
+            best = Some(fit);
+        }
+    }
+    Ok(best.expect("at least one iterate"))
+}
+
 /// Run both loops and require bit-identical results; return the new one.
 fn assert_same(
     points: &[Point3],
@@ -153,11 +200,15 @@ fn assert_same(
     num_cps: usize,
     tolerance: f64,
     max_iterations: usize,
-) -> Result<NurbsCurve, MathError> {
+) -> Result<LspiaFit, MathError> {
     let new = approximate_lspia(points, degree, num_cps, tolerance, max_iterations);
-    let old = approximate_lspia_reference(points, degree, num_cps, tolerance, max_iterations);
+    let old = reference_fit(points, degree, num_cps, tolerance, max_iterations);
     match (&new, &old) {
         (Ok(a), Ok(b)) => {
+            assert_eq!(a.iteration, b.iteration);
+            assert_eq!(a.converged, b.converged);
+            assert_eq!(a.max_error.to_bits(), b.max_error.to_bits());
+            let (a, b) = (&a.curve, &b.curve);
             assert_eq!(a.degree(), b.degree());
             assert_eq!(bits(a.knots()), bits(b.knots()));
             assert_eq!(
@@ -277,14 +328,16 @@ fn matches_reference_across_iteration_counts() {
     let initial = assert_same(&pts, 3, 40, 1e-6, 0).unwrap();
     // A loose tolerance converges at iteration 0 on the initial polygon.
     let converged = assert_same(&pts, 3, 40, 1e3, 100).unwrap();
+    assert!(converged.converged && converged.iteration == 0);
     assert_eq!(
-        point_bits(converged.control_points()),
-        point_bits(initial.control_points())
+        point_bits(converged.curve.control_points()),
+        point_bits(initial.curve.control_points())
     );
     let one = assert_same(&pts, 3, 40, 1e-6, 1).unwrap();
+    assert_eq!(one.iteration, 1);
     assert_ne!(
-        point_bits(one.control_points()),
-        point_bits(initial.control_points())
+        point_bits(one.curve.control_points()),
+        point_bits(initial.curve.control_points())
     );
     // A zero tolerance never converges, so every iteration runs.
     assert_same(&pts, 3, 40, 0.0, 100).unwrap();
@@ -346,11 +399,79 @@ fn matches_reference_on_nan_parameters() {
     if cfg!(debug_assertions) {
         assert!(new.is_err() && old.is_err());
     } else {
-        let (new, old) = (new.unwrap().unwrap(), old.unwrap().unwrap());
+        let (new, old) = (new.unwrap().unwrap().curve, old.unwrap().unwrap());
         assert_eq!(
             point_bits(new.control_points()),
             point_bits(old.control_points())
         );
         assert_eq!(bits(new.knots()), bits(old.knots()));
     }
+}
+
+/// Thirty collinear points with one spike at (15, 5, 0).
+fn spike() -> Vec<Point3> {
+    (0..30)
+        .map(|i| Point3::new(i as f64, if i == 15 { 5.0 } else { 0.0 }, 0.0))
+        .collect()
+}
+
+#[test]
+fn returns_the_best_iterate_not_the_last() {
+    // Kernel review MATH-9. With eight control points the maximum deviation
+    // falls from 4.508 (the initial polygon) to 3.560 after one update, then
+    // climbs and is still 3.613 after sixty; the old loop returned the
+    // sixtieth.
+    let pts = spike();
+    let last = max_deviation(
+        &pts,
+        &approximate_lspia_reference(&pts, 3, 8, 0.0, 60).unwrap(),
+    );
+    let first = max_deviation(
+        &pts,
+        &approximate_lspia_reference(&pts, 3, 8, 0.0, 1).unwrap(),
+    );
+    assert!(
+        (first - 3.5603).abs() < 1e-4 && (last - 3.6126).abs() < 1e-4,
+        "premise: {first} after one update, {last} after sixty"
+    );
+    let fit = assert_same(&pts, 3, 8, 0.0, 60).unwrap();
+    assert_eq!(fit.iteration, 1);
+    assert!(!fit.converged);
+    assert_eq!(fit.max_error.to_bits(), first.to_bits());
+
+    // With five control points no update beats the initial polygon (2.585
+    // against 3.519 after sixty), so the polygon itself comes back.
+    let fit = assert_same(&pts, 3, 5, 0.0, 60).unwrap();
+    assert_eq!(fit.iteration, 0);
+    assert!(!fit.converged);
+    assert!((fit.max_error - 2.5848).abs() < 1e-4, "{}", fit.max_error);
+}
+
+#[test]
+fn reports_convergence_only_below_the_tolerance() {
+    let pts = spike();
+    // 3.560 after one update is below 3.6: converged there.
+    let fit = assert_same(&pts, 3, 8, 3.6, 60).unwrap();
+    assert!(fit.converged && fit.iteration == 1);
+    // No iterate reaches 3.5: the best one comes back, flagged.
+    let fit = assert_same(&pts, 3, 8, 3.5, 60).unwrap();
+    assert!(!fit.converged && fit.max_error >= 3.5);
+
+    // The last update is measured too. On a helix the deviation falls
+    // monotonically over the first updates; a tolerance between the fourth
+    // and fifth iterates converges exactly at iteration five when five
+    // updates are allowed, which the old loop returned unmeasured.
+    let pts = helix(120);
+    let errs: Vec<f64> = (0..=5)
+        .map(|k| {
+            max_deviation(
+                &pts,
+                &approximate_lspia_reference(&pts, 3, 40, 0.0, k).unwrap(),
+            )
+        })
+        .collect();
+    assert!(errs.windows(2).all(|w| w[1] < w[0]), "premise: {errs:?}");
+    let tolerance = f64::midpoint(errs[4], errs[5]);
+    let fit = assert_same(&pts, 3, 40, tolerance, 5).unwrap();
+    assert!(fit.converged && fit.iteration == 5);
 }
