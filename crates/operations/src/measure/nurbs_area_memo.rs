@@ -1,52 +1,63 @@
-//! Exact scalar memo of standalone NURBS-face area readings.
+//! Exact scalar memo of NURBS-face area readings.
 //!
-//! [`super::face_area`] tessellates a NURBS face and sums triangle areas. That
-//! numerical path differs from trimmed quadrature and from whole-solid display
-//! meshing, so neither can supply an interchangeable area. This memo stores
-//! only values measured by that existing path, preserving their bits.
+//! [`super::face_area`] tessellates a NURBS face's trimmed region and sums
+//! triangle areas. That numerical path differs from trimmed quadrature and
+//! from whole-solid display meshing, so neither can supply an
+//! interchangeable area. This memo stores only values measured by that
+//! existing path, preserving their bits.
 //!
 //! # Content and request policy
 //!
-//! Standalone NURBS tessellation reads the complete support surface rather
-//! than outer-wire trim geometry. The key records both degrees, all knots,
-//! control points and weights (including row lengths), reversal, deflection,
-//! default angular tolerance and the disabled curvature-floor policy. Reals
-//! compare by bits, so even signed zeros remain distinct. A hash only filters
-//! candidates; the complete key must match. Handles and topology identity are
-//! irrelevant: clones and unchanged faces carried into another result may
-//! reuse a reading, while changed content misses without invalidation hooks.
-//!
-//! Faces with inner wires bypass the memo before lookup, preserving their
-//! existing standalone-tessellation refusal. A future standalone trim policy
-//! must extend the key to every newly-read topology field. There is no reuse
-//! under translations or approximate comparisons, and errors are never stored.
+//! The measurement tessellates the face alone through the shared-edge
+//! pipeline, which reads the support surface, the reversal flag and the
+//! complete boundary: every wire (outer first, then inner in face order),
+//! its closed flag and oriented edges, each edge's curve, trim and vertex
+//! positions, and the pcurve of each edge use on this face. The key records
+//! all of it, plus the deflection, the default angular tolerance and the
+//! disabled curvature-floor policy. Edge and vertex handles are replaced by
+//! their first-occurrence ordinal within the face, so the key keeps which
+//! uses share an entity (a seam walked twice, a closed edge's single vertex)
+//! without depending on handle values. Reals compare by bits, so even signed
+//! zeros remain distinct. A hash only filters candidates; the complete key
+//! must match. Handles and topology identity are irrelevant: clones and
+//! unchanged faces carried into another result may reuse a reading, while
+//! changed content, including a re-trimmed face on an unchanged carrier,
+//! misses without invalidation hooks. A change to what the face mesher reads
+//! must extend the key. There is no reuse under translations or approximate
+//! comparisons, and errors are never stored.
 //!
 //! # Bounds and lifetime
 //!
 //! The memo is disabled by default. Applications opt in per thread, as they do
 //! for face-integral and volume memos. Entries are evicted in deterministic FIFO
 //! order under both a count and an estimated retained-byte limit. Keys exceeding
-//! the entire byte limit are rejected before allocation; key allocation failure
-//! also falls back to the original calculation. Estimated bytes include key
-//! words and each entry record, not allocator or container slack and not RSS.
-//! No cache borrow is held across the calculation, and an unavailable cache
-//! borrow simply takes the original path.
+//! the entire byte limit are rejected before the key is allocated; key
+//! allocation failure also falls back to the original calculation. Estimated
+//! bytes include key words and each entry record, not allocator or container
+//! slack and not RSS. No cache borrow is held across the calculation, and an
+//! unavailable cache borrow simply takes the original path.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::hash::Hasher;
 
-use remus_math::det_hash::DetHasher;
+use remus_math::curves2d::Curve2D;
+use remus_math::det_hash::{DetHashMap, DetHasher};
 use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceId;
+use remus_topology::pcurve::PCurve;
 
-/// Default retained standalone NURBS-area readings per thread once enabled.
+/// Default retained NURBS-area readings per thread once enabled.
 pub const DEFAULT_NURBS_AREA_MEMO_CAPACITY: usize = 512;
 
 /// Default estimated retained key and entry bytes per thread once enabled.
 pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 /// Bump when the key's content or request encoding changes.
-const KEY_VERSION: u64 = 0x5245_4d55_534e_4131;
+const KEY_VERSION: u64 = 0x5245_4d55_534e_4132;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -201,28 +212,242 @@ pub fn thread_nurbs_area_memo_stats() -> Option<NurbsAreaMemoStats> {
     })
 }
 
-fn key_words(surface: &NurbsSurface) -> Option<usize> {
-    // Eleven header words, plus the complete knot/control-point/weight
-    // payload and each row length. Count before allocating or visiting values.
-    let words = 11_usize
-        .checked_add(surface.knots_u().len())?
-        .checked_add(surface.knots_v().len())?;
-    let words = surface.control_points().iter().try_fold(words, |n, row| {
-        n.checked_add(1)?.checked_add(row.len().checked_mul(3)?)
-    })?;
-    surface
-        .weights()
-        .iter()
-        .try_fold(words, |n, row| n.checked_add(1)?.checked_add(row.len()))
+/// Counts key words, or writes them once a buffer is attached.
+struct KeyWriter {
+    words: usize,
+    key: Option<Vec<u64>>,
 }
 
+impl KeyWriter {
+    fn word(&mut self, word: u64) {
+        self.words = self.words.saturating_add(1);
+        if let Some(key) = self.key.as_mut() {
+            key.push(word);
+        }
+    }
+
+    fn count(&mut self, count: usize) {
+        self.word(count as u64);
+    }
+
+    fn real(&mut self, value: f64) {
+        self.word(value.to_bits());
+    }
+
+    fn reals(&mut self, values: &[f64]) {
+        self.count(values.len());
+        for &value in values {
+            self.real(value);
+        }
+    }
+
+    fn point(&mut self, p: Point3) {
+        self.real(p.x());
+        self.real(p.y());
+        self.real(p.z());
+    }
+
+    fn vec(&mut self, v: Vec3) {
+        self.real(v.x());
+        self.real(v.y());
+        self.real(v.z());
+    }
+
+    fn surface(&mut self, surface: &NurbsSurface) {
+        self.count(surface.knots_u().len());
+        for &x in surface.knots_u() {
+            self.real(x);
+        }
+        self.count(surface.knots_v().len());
+        for &x in surface.knots_v() {
+            self.real(x);
+        }
+        self.count(surface.control_points().len());
+        for row in surface.control_points() {
+            self.count(row.len());
+            for &p in row {
+                self.point(p);
+            }
+        }
+        self.count(surface.weights().len());
+        for row in surface.weights() {
+            self.reals(row);
+        }
+    }
+
+    fn curve(&mut self, curve: &EdgeCurve) {
+        match curve {
+            EdgeCurve::Line => self.word(1),
+            EdgeCurve::NurbsCurve(c) => {
+                self.word(2);
+                self.count(c.degree());
+                self.reals(c.knots());
+                self.count(c.control_points().len());
+                for &p in c.control_points() {
+                    self.point(p);
+                }
+                self.reals(c.weights());
+            }
+            EdgeCurve::Circle(c) => {
+                self.word(3);
+                self.point(c.center());
+                self.vec(c.normal());
+                self.real(c.radius());
+                self.vec(c.u_axis());
+                self.vec(c.v_axis());
+            }
+            EdgeCurve::Ellipse(c) => {
+                self.word(4);
+                self.point(c.center());
+                self.vec(c.normal());
+                self.real(c.semi_major());
+                self.real(c.semi_minor());
+                self.vec(c.u_axis());
+                self.vec(c.v_axis());
+            }
+            EdgeCurve::Hyperbola(c) => {
+                self.word(5);
+                self.point(c.center());
+                self.vec(c.normal());
+                self.real(c.semi_major());
+                self.real(c.semi_minor());
+                self.vec(c.u_axis());
+                self.vec(c.v_axis());
+            }
+            EdgeCurve::Parabola(c) => {
+                self.word(6);
+                self.point(c.vertex());
+                self.vec(c.axis_dir());
+                self.real(c.focal_length());
+                self.vec(c.u_axis());
+            }
+        }
+    }
+
+    fn pcurve(&mut self, pcurve: Option<&PCurve>) {
+        let Some(pcurve) = pcurve else {
+            self.word(0);
+            return;
+        };
+        match pcurve.curve() {
+            Curve2D::Line(c) => {
+                self.word(1);
+                self.reals(&[
+                    c.origin().x(),
+                    c.origin().y(),
+                    c.direction().x(),
+                    c.direction().y(),
+                ]);
+            }
+            Curve2D::Circle(c) => {
+                self.word(2);
+                self.reals(&[c.center().x(), c.center().y(), c.radius()]);
+            }
+            Curve2D::Ellipse(c) => {
+                self.word(3);
+                self.reals(&[
+                    c.center().x(),
+                    c.center().y(),
+                    c.semi_major(),
+                    c.semi_minor(),
+                    c.rotation(),
+                ]);
+            }
+            Curve2D::Nurbs(c) => {
+                self.word(4);
+                self.count(c.degree());
+                self.reals(c.knots());
+                self.count(c.control_points().len());
+                for p in c.control_points() {
+                    self.real(p.x());
+                    self.real(p.y());
+                }
+                self.reals(c.weights());
+            }
+        }
+        self.real(pcurve.t_start());
+        self.real(pcurve.t_end());
+    }
+
+    /// Every boundary field the face mesher reads; see the module docs.
+    fn boundary(&mut self, topo: &Topology, face_id: FaceId) -> Option<()> {
+        let face = topo.face(face_id).ok()?;
+        let mut edge_ordinals: DetHashMap<usize, u64> = DetHashMap::default();
+        let mut vertex_ordinals: DetHashMap<usize, u64> = DetHashMap::default();
+        self.count(1 + face.inner_wires().len());
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            let wire = topo.wire(wire_id).ok()?;
+            self.count(wire.edges().len());
+            self.word(u64::from(wire.is_closed()));
+            for oriented in wire.edges() {
+                let edge_id = oriented.edge();
+                self.word(u64::from(oriented.is_forward()));
+                self.pcurve(topo.pcurve_oriented(edge_id, face_id, oriented.is_forward()));
+                let next = edge_ordinals.len() as u64;
+                let ordinal = *edge_ordinals.entry(edge_id.index()).or_insert(next);
+                self.word(ordinal);
+                if ordinal != next {
+                    continue;
+                }
+                let edge = topo.edge(edge_id).ok()?;
+                for vertex_id in [edge.start(), edge.end()] {
+                    let next = vertex_ordinals.len() as u64;
+                    let ordinal = *vertex_ordinals.entry(vertex_id.index()).or_insert(next);
+                    self.word(ordinal);
+                    if ordinal == next {
+                        self.point(topo.vertex(vertex_id).ok()?.point());
+                    }
+                }
+                self.curve(edge.curve());
+                match edge.trim() {
+                    Some((t0, t1)) => {
+                        self.word(1);
+                        self.real(t0);
+                        self.real(t1);
+                    }
+                    None => self.word(0),
+                }
+            }
+        }
+        Some(())
+    }
+
+    fn key(
+        &mut self,
+        topo: &Topology,
+        face_id: FaceId,
+        surface: &NurbsSurface,
+        deflection: f64,
+    ) -> Option<()> {
+        let reversed = topo.face(face_id).ok()?.is_reversed();
+        self.word(KEY_VERSION);
+        self.count(surface.degree_u());
+        self.count(surface.degree_v());
+        self.word(u64::from(reversed));
+        self.real(deflection);
+        self.real(remus_math::chord::DEFAULT_ANGULAR_TOL);
+        self.word(0); // Curvature floor disabled in measurement tessellation.
+        self.surface(surface);
+        self.boundary(topo, face_id)
+    }
+}
+
+/// Count the complete key, then allocate and write it only when it fits.
+/// `None` sends the request down the original calculation without retention.
 fn content_key(
+    topo: &Topology,
+    face_id: FaceId,
     surface: &NurbsSurface,
     deflection: f64,
-    reversed: bool,
     byte_budget: usize,
 ) -> Option<Box<[u64]>> {
-    let words = key_words(surface)?;
+    let mut counter = KeyWriter {
+        words: 0,
+        key: None,
+    };
+    counter.key(topo, face_id, surface, deflection)?;
+    let words = counter.words;
     let bytes = words
         .checked_mul(std::mem::size_of::<u64>())?
         .checked_add(std::mem::size_of::<Entry>())?;
@@ -231,31 +456,12 @@ fn content_key(
     }
     let mut key = Vec::new();
     key.try_reserve_exact(words).ok()?;
-    key.extend([
-        KEY_VERSION,
-        surface.degree_u() as u64,
-        surface.degree_v() as u64,
-        u64::from(reversed),
-        deflection.to_bits(),
-        remus_math::chord::DEFAULT_ANGULAR_TOL.to_bits(),
-        0, // Curvature floor disabled in standalone tessellation.
-        surface.knots_u().len() as u64,
-    ]);
-    key.extend(surface.knots_u().iter().map(|x| x.to_bits()));
-    key.push(surface.knots_v().len() as u64);
-    key.extend(surface.knots_v().iter().map(|x| x.to_bits()));
-    key.push(surface.control_points().len() as u64);
-    for row in surface.control_points() {
-        key.push(row.len() as u64);
-        for p in row {
-            key.extend([p.x().to_bits(), p.y().to_bits(), p.z().to_bits()]);
-        }
-    }
-    key.push(surface.weights().len() as u64);
-    for row in surface.weights() {
-        key.push(row.len() as u64);
-        key.extend(row.iter().map(|x| x.to_bits()));
-    }
+    let mut writer = KeyWriter {
+        words: 0,
+        key: Some(key),
+    };
+    writer.key(topo, face_id, surface, deflection)?;
+    let key = writer.key?;
     debug_assert_eq!(key.len(), words);
     Some(key.into_boxed_slice())
 }
@@ -269,9 +475,10 @@ fn hash_key(key: &[u64]) -> u64 {
 }
 
 pub(super) fn memoized(
+    topo: &Topology,
+    face_id: FaceId,
     surface: &NurbsSurface,
     deflection: f64,
-    reversed: bool,
     compute: impl FnOnce() -> Result<f64, crate::OperationsError>,
 ) -> Result<f64, crate::OperationsError> {
     let budget = MEMO.with(|cell| {
@@ -284,7 +491,7 @@ pub(super) fn memoized(
     let Some(budget) = budget else {
         return compute();
     };
-    let Some(key) = content_key(surface, deflection, reversed, budget) else {
+    let Some(key) = content_key(topo, face_id, surface, deflection, budget) else {
         MEMO.with(|cell| {
             if let Ok(mut slot) = cell.try_borrow_mut()
                 && let Some(memo) = slot.as_mut()
@@ -315,7 +522,7 @@ pub(super) fn memoized(
     }
 
     // Never hold a cache borrow across the calculation and never retain an
-    // error. Every retained value is the established tessellation-area sum.
+    // error. Every retained value is the trimmed tessellation-area sum.
     let value = compute()?;
     let entry = Entry { hash, key, value };
     let bytes = entry.bytes();

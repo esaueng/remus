@@ -61,25 +61,30 @@ their existing rounding allowances remain unchanged. Full mass properties,
 default Gauss order, orientation thresholds and validation verdicts keep
 their contracts.
 
-### Exact scalar memo for standalone NURBS areas
+### Exact scalar memo for NURBS face areas
 
 `crates/operations/src/measure/nurbs_area_memo.rs` memoizes only areas produced
-by the existing standalone NURBS tessellation and triangle-area summation.
-That path reads the complete support surface, rather than its outer-wire
-trim. Reusing an unrelated solid display mesh or trimmed quadrature would
-change the value and is deliberately excluded.
+by the NURBS face-area path: the face's trimmed measurement tessellation (the
+shared-edge pipeline run over that face alone) and triangle-area summation.
+Until B89 (2026-10-14) that path tessellated the whole support surface and
+ignored the trim, so the key held the surface alone. Reusing an unrelated solid
+display mesh or trimmed quadrature would change the value and is deliberately
+excluded.
 
 The complete key records degrees, knot vectors, control-point and weight grids
-including row lengths, reversal, deflection and the standalone sampling policy.
-Reals compare by bits, including signed zero. Hash equality only selects
-candidates; complete keys must agree. Thus equal support content under different
-handles can reuse a value, while changed geometry or policy misses. Translated
-or approximately equal content is not reused.
+including row lengths, reversal, deflection and the sampling policy, plus the
+whole boundary the mesher reads: every wire (outer first), its closed flag and
+oriented edges, each edge's curve, trim and vertex positions, and the pcurve of
+each edge use on the face. Edge and vertex handles become first-occurrence
+ordinals. Reals compare by bits, including signed zero. Hash equality only
+selects candidates; complete keys must agree. Thus equal face content under
+different handles can reuse a value, while changed geometry, trim or policy
+misses. Translated or approximately equal content is not reused.
 
-Faces with inner wires bypass the memo before lookup and keep their established
-standalone-tessellation refusal. Errors are never stored. An oversized key,
-failed initial key reservation or unavailable cache borrow takes the original
-calculation. No borrow is held across that calculation.
+Faces with inner wires are measured like any other (the old standalone mesher
+refused them). Errors are never stored. An oversized key, failed key
+reservation or unavailable cache borrow takes the original calculation. No
+borrow is held across that calculation.
 
 The new NURBS-area library memo is opt-in per thread, with defaults of 512
 entries and 8 MiB estimated retained key/entry bytes. FIFO eviction enforces

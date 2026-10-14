@@ -1,5 +1,5 @@
 //! Qualification of exact scalar memo reuse, independently of its enablement
-//! in a consumer. The oracle reruns the pre-memo standalone tessellation and
+//! in a consumer. The oracle reruns the trimmed measurement tessellation and
 //! triangle accumulation, including its iteration order, for area-bit identity.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::cast_precision_loss)]
@@ -92,8 +92,8 @@ fn face() -> (Topology, FaceId) {
     (topo, face)
 }
 
-fn standalone_oracle(topo: &Topology, face: FaceId, deflection: f64) -> f64 {
-    let mesh = crate::tessellate::tessellate(topo, face, deflection).unwrap();
+fn measurement_oracle(topo: &Topology, face: FaceId, deflection: f64) -> f64 {
+    let mesh = crate::tessellate::tessellate_face_for_measurement(topo, face, deflection).unwrap();
     let mut area = 0.0;
     for triangle in mesh.indices.chunks_exact(3) {
         let p0 = mesh.positions[triangle[0] as usize];
@@ -105,7 +105,7 @@ fn standalone_oracle(topo: &Topology, face: FaceId, deflection: f64) -> f64 {
 }
 
 fn assert_area_bits(topo: &Topology, face: FaceId, deflection: f64) -> f64 {
-    let expected = standalone_oracle(topo, face, deflection);
+    let expected = measurement_oracle(topo, face, deflection);
     let measured = face_area(topo, face, deflection).unwrap();
     assert_eq!(measured.to_bits(), expected.to_bits());
     measured
@@ -196,54 +196,115 @@ fn geometry_and_request_changes_miss_and_match_fresh_area_bits() {
     assert_eq!(thread_nurbs_area_memo_stats().unwrap().hits, 2);
 }
 
-#[test]
-fn a_warm_support_cannot_bypass_the_holed_face_refusal() {
-    let _reset = fresh_memo();
-    let (mut topo, face) = face();
-    let before = assert_area_bits(&topo, face, DEFLECTION);
-    let stats = thread_nurbs_area_memo_stats().unwrap();
-    let hole = make_polygon_wire(
-        &mut topo,
+/// A flat 2 × 2 bilinear patch, so polygon trims lie on the carrier and
+/// their areas are exact.
+fn flat_patch() -> NurbsSurface {
+    NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 2.0, 0.0)],
+            vec![Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 2.0, 0.0)],
+        ],
+        vec![vec![1.0; 2]; 2],
+    )
+    .unwrap()
+}
+
+fn square(topo: &mut Topology, lo: f64, hi: f64) -> remus_topology::wire::WireId {
+    make_polygon_wire(
+        topo,
         &[
-            Point3::new(0.5, 0.5, 0.0),
-            Point3::new(0.75, 0.5, 0.0),
-            Point3::new(0.75, 0.75, 0.0),
-            Point3::new(0.5, 0.75, 0.0),
+            Point3::new(lo, lo, 0.0),
+            Point3::new(hi, lo, 0.0),
+            Point3::new(hi, hi, 0.0),
+            Point3::new(lo, hi, 0.0),
         ],
         1e-7,
     )
-    .unwrap();
-    let outer = topo.face(face).unwrap().outer_wire();
-    topo.set_face_boundary_wires(face, outer, vec![hole])
+    .unwrap()
+}
+
+/// OPS-4: the reading depends on the trim, so a warm entry for one trim of
+/// a carrier must never answer another trim of the same carrier. A
+/// surface-only key returned the untrimmed 4.0 for both faces below.
+#[test]
+fn a_warm_support_misses_after_its_trim_changes() {
+    let _reset = fresh_memo();
+    let mut topo = Topology::new();
+    let full = make_nurbs_face(&mut topo, flat_patch(), 1e-7).unwrap();
+    let full_area = assert_area_bits(&topo, full, DEFLECTION);
+    assert!((full_area - 4.0).abs() < 1e-12, "{full_area}");
+
+    let outer = square(&mut topo, 0.5, 1.5);
+    let trimmed = topo.add_face(remus_topology::face::Face::new(
+        outer,
+        Vec::new(),
+        FaceSurface::Nurbs(flat_patch()),
+    ));
+    let trimmed_area = assert_area_bits(&topo, trimmed, DEFLECTION);
+    assert!((trimmed_area - 1.0).abs() < 1e-12, "{trimmed_area}");
+    let stats = thread_nurbs_area_memo_stats().unwrap();
+    assert_eq!((stats.hits, stats.misses, stats.len), (0, 2, 2));
+
+    // A hole on the warm face: a new inner wire is new content.
+    let full_outer = topo.face(full).unwrap().outer_wire();
+    let hole = square(&mut topo, 0.25, 0.75);
+    topo.set_face_boundary_wires(full, full_outer, vec![hole])
         .unwrap();
-    let expected = crate::tessellate::tessellate(&topo, face, DEFLECTION)
-        .unwrap_err()
-        .to_string();
-    assert!(expected.contains("holed NURBS face"));
-    for _ in 0..2 {
-        let error = face_area(&topo, face, DEFLECTION).unwrap_err();
-        assert_eq!(error.to_string(), expected);
-    }
-    let after = thread_nurbs_area_memo_stats().unwrap();
-    assert_eq!(
-        (after.hits, after.misses, after.len),
-        (stats.hits, stats.misses, stats.len)
-    );
-    topo.set_face_boundary_wires(face, outer, Vec::new())
+    let holed_area = assert_area_bits(&topo, full, DEFLECTION);
+    assert!((holed_area - 3.75).abs() < 1e-12, "{holed_area}");
+    let stats = thread_nurbs_area_memo_stats().unwrap();
+    assert_eq!((stats.hits, stats.misses, stats.len), (0, 3, 3));
+
+    // Removing it restores the original content and its original bits.
+    topo.set_face_boundary_wires(full, full_outer, Vec::new())
         .unwrap();
     assert_eq!(
-        assert_area_bits(&topo, face, DEFLECTION).to_bits(),
-        before.to_bits()
+        assert_area_bits(&topo, full, DEFLECTION).to_bits(),
+        full_area.to_bits()
     );
-    assert_eq!(thread_nurbs_area_memo_stats().unwrap().hits, stats.hits + 1);
+    assert_eq!(thread_nurbs_area_memo_stats().unwrap().hits, 1);
+}
+
+/// Moving one boundary vertex of an unchanged carrier changes the key.
+#[test]
+fn boundary_vertex_change_misses() {
+    let _reset = fresh_memo();
+    let mut topo = Topology::new();
+    let outer = square(&mut topo, 0.5, 1.5);
+    let face = topo.add_face(remus_topology::face::Face::new(
+        outer,
+        Vec::new(),
+        FaceSurface::Nurbs(flat_patch()),
+    ));
+    let baseline = assert_area_bits(&topo, face, DEFLECTION);
+
+    let mut moved = topo.clone();
+    let edge = moved.wire(outer).unwrap().edges()[0].edge();
+    let vertex = moved.edge(edge).unwrap().start();
+    moved
+        .vertex_mut(vertex)
+        .unwrap()
+        .set_point(Point3::new(0.25, 0.5, 0.0));
+    let moved_area = assert_area_bits(&moved, face, DEFLECTION);
+    assert!(
+        (moved_area - baseline - 0.125).abs() < 1e-12,
+        "{moved_area}"
+    );
+    let stats = thread_nurbs_area_memo_stats().unwrap();
+    assert_eq!((stats.hits, stats.misses), (0, 2));
 }
 
 #[test]
 fn errors_are_not_retained_and_a_later_success_is_measured() {
     let _reset = fresh_memo();
     let surface = patch();
+    let (topo, face) = face();
     for _ in 0..2 {
-        let error = memoized(&surface, DEFLECTION, false, || {
+        let error = memoized(&topo, face, &surface, DEFLECTION, || {
             Err(crate::OperationsError::InvalidInput {
                 reason: "transient test error".to_owned(),
             })
@@ -253,7 +314,6 @@ fn errors_are_not_retained_and_a_later_success_is_measured() {
     }
     let failed = thread_nurbs_area_memo_stats().unwrap();
     assert_eq!((failed.hits, failed.misses, failed.len), (0, 2, 0));
-    let (topo, face) = face();
     assert_area_bits(&topo, face, DEFLECTION);
     let succeeded = thread_nurbs_area_memo_stats().unwrap();
     assert_eq!((succeeded.hits, succeeded.misses, succeeded.len), (0, 3, 1));
@@ -290,7 +350,7 @@ fn fifo_eviction_honors_entry_and_byte_bounds_and_oversize_bypasses() {
 
     disable_thread_nurbs_area_memo();
     enable_thread_nurbs_area_memo();
-    let bytes = content_key(&patch(), DEFLECTION, false, usize::MAX)
+    let bytes = content_key(&source, face, &patch(), DEFLECTION, usize::MAX)
         .unwrap()
         .len()
         * std::mem::size_of::<u64>()
@@ -320,15 +380,16 @@ fn fifo_eviction_honors_entry_and_byte_bounds_and_oversize_bypasses() {
 }
 
 #[test]
-fn hash_collision_still_compares_the_complete_surface_key() {
+fn hash_collision_still_compares_the_complete_key() {
     let _reset = fresh_memo();
     let (source, face) = face();
     let baseline = assert_area_bits(&source, face, DEFLECTION);
     let changed = with_change(&patch(), "point");
     let changed_key = content_key(
+        &source,
+        face,
         &changed,
         DEFLECTION,
-        false,
         DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET,
     )
     .unwrap();
