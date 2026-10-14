@@ -5,7 +5,8 @@
 //! the rebuilt outer shell with the cavity deleted: the result validated and
 //! its volume was off only by the cavity's 8 mm³. Those engines now refuse a
 //! solid with cavity shells; the v2 fillet routes it to the walking builder,
-//! which carries the cavity through.
+//! which carries the cavity through when the band stays clear of it and
+//! refuses otherwise.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 #![allow(deprecated)]
@@ -33,9 +34,19 @@ const CAVITY: f64 = 8.0;
 
 /// A 20³ box with a sealed 2³ cavity at `corner`.
 fn hollow_box(topo: &mut Topology, corner: f64) -> SolidId {
+    hollow_box_at(topo, [corner; 3])
+}
+
+/// A 20³ box with a sealed 2³ cavity whose minimum corner is `corner`.
+fn hollow_box_at(topo: &mut Topology, corner: [f64; 3]) -> SolidId {
     let blank = make_box(topo, 20.0, 20.0, 20.0).unwrap();
     let tool = make_box(topo, 2.0, 2.0, 2.0).unwrap();
-    transform_solid(topo, tool, &Mat4::translation(corner, corner, corner)).unwrap();
+    transform_solid(
+        topo,
+        tool,
+        &Mat4::translation(corner[0], corner[1], corner[2]),
+    )
+    .unwrap();
     let solid = boolean(topo, BooleanOp::Cut, blank, tool).unwrap();
     assert_eq!(
         topo.solid(solid).unwrap().inner_shells().len(),
@@ -148,6 +159,39 @@ fn fillet_v2_keeps_a_cavity() {
     let edge = top_front_edge(&topo, solid);
     let result = fillet_v2(&mut topo, solid, &[edge], R).unwrap();
     assert_keeps_cavity(&topo, "fillet_v2", result.solid, fillet_volume());
+}
+
+/// A cavity one unit under both faces of the filleted edge: an r = 4 band
+/// removes material down to 4 - 4/sqrt(2) = 1.17 from each face along the
+/// bisector, through the cavity's corner. The walking builder would carry the
+/// cavity shell through unchanged, so the result would overlap it.
+#[test]
+fn walking_fillet_refuses_a_cavity_within_reach() {
+    for (label, run) in [
+        (
+            "fillet_v2",
+            (|topo, solid, edge| fillet_v2(topo, solid, &[edge], 4.0).map(drop))
+                as fn(&mut Topology, SolidId, EdgeId) -> Result<(), OperationsError>,
+        ),
+        ("fillet_cascade", |topo, solid, edge| {
+            fillet_cascade(topo, solid, &[edge], 4.0).map(drop)
+        }),
+    ] {
+        let mut topo = Topology::new();
+        let solid = hollow_box_at(&mut topo, [9.0, 1.0, 17.0]);
+        let edge = top_front_edge(&topo, solid);
+        let before = (topo.num_faces(), topo.num_loops(), topo.num_coedges());
+        let error = run(&mut topo, solid, edge).expect_err(label);
+        assert!(
+            matches!(error, OperationsError::Unsupported { .. }),
+            "{label}: expected Unsupported, got {error}"
+        );
+        assert_eq!(
+            (topo.num_faces(), topo.num_loops(), topo.num_coedges()),
+            before,
+            "{label}: refusal left entities behind"
+        );
+    }
 }
 
 #[test]
