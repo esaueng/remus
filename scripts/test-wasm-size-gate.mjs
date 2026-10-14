@@ -160,6 +160,25 @@ test('every declared tier must be valid and complete', () => {
   assert.equal(isValidDeclaration('WASM-Size: curve projection, Tier: core (writes the journal'), false);
 });
 
+test('the carried-from marker of a package refresh keeps a declaration as valid as its source line', () => {
+  // scripts/publish-wasm-package-pr.py appends ` (carried from #N)` to each
+  // source PR's line. The marker is a parenthetical: it never names the
+  // capability and never repairs an incomplete line.
+  const carried = (line) => `${line} (carried from #1042)`;
+  assert.equal(isValidDeclaration(carried(LINE)), true);
+  assert.equal(gate(grown(200 * KIB), `Refresh.\n\n${carried(LINE)}\n`).pass, true);
+  for (const line of [
+    'WASM-Size: +120 KiB raw, Tier: core',
+    'WASM-Size: curve projection',
+    'WASM-Size: curve projection, Tier: core (writes the journal',
+    'WASM-Size: curve projection) Tier: core',
+    'WASM-Size: none',
+  ]) {
+    assert.equal(isValidDeclaration(line), false, line);
+    assert.equal(isValidDeclaration(carried(line)), false, carried(line));
+  }
+});
+
 test('a shrinking or unchanged kernel passes without a declaration', () => {
   for (const by of [-200 * KIB, -1, 0, 1]) {
     const result = gate(grown(by));
