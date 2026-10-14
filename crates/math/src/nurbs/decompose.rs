@@ -7,16 +7,129 @@ use crate::nurbs::knot_ops::{curve_knot_insert, surface_knot_insert_u, surface_k
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Point3;
 
+/// Knot comparison epsilon shared with the multiplicity scans below and
+/// with `curve_knot_insert`'s own multiplicity count.
+const KNOT_EPS: f64 = 1e-15;
+
+/// Whether the first and last `p + 1` knots each coincide.
+fn is_clamped(knots: &[f64], p: usize) -> bool {
+    let n = knots.len() - p - 1;
+    knots[..=p].iter().all(|&k| (k - knots[p]).abs() < KNOT_EPS)
+        && knots[n..].iter().all(|&k| (k - knots[n]).abs() < KNOT_EPS)
+}
+
+/// The control-point window `start..end` and knot vector of a curve clamped
+/// to `[a, b]`, given a knot vector in which both `a` and `b` already carry
+/// multiplicity at least `p`.
+///
+/// With multiplicity `p` at `a`, the curve passes through the control point
+/// `L - p` there (`L` the last index of `a`), and no earlier control point
+/// or knot below `a` influences `[a, b]`; symmetrically it passes through
+/// control point `F - 1` at `b` (`F` the first index of `b`). Replacing the
+/// outer knots with `p + 1` copies of each end therefore keeps every basis
+/// function on `[a, b]` unchanged.
+fn clamped_window(
+    knots: &[f64],
+    p: usize,
+    a: f64,
+    b: f64,
+) -> Result<(usize, usize, Vec<f64>), MathError> {
+    let last_a = knots.iter().rposition(|&k| (k - a).abs() < KNOT_EPS);
+    let first_b = knots.iter().position(|&k| (k - b).abs() < KNOT_EPS);
+    // A domain narrower than the knot epsilon reads both ends as one knot;
+    // refuse it rather than slice backwards.
+    let (Some(last_a), Some(first_b)) = (last_a, first_b) else {
+        return Err(MathError::InvalidKnotValue { index: p, value: a });
+    };
+    if last_a < p || first_b <= last_a {
+        return Err(MathError::InvalidKnotValue { index: p, value: a });
+    }
+    let mut clamped = vec![a; p + 1];
+    clamped.extend_from_slice(&knots[last_a + 1..first_b]);
+    clamped.extend(std::iter::repeat_n(b, p + 1));
+    Ok((last_a - p, first_b, clamped))
+}
+
+/// Clamp a curve to its own domain by inserting both domain ends to
+/// multiplicity `p` (Boehm insertion, Piegl & Tiller A5.1) and dropping what
+/// lies outside.
+///
+/// The geometry on the domain is unchanged; only the knots outside it and
+/// the control points they carried are discarded. A clamped curve is
+/// returned as is.
+fn clamp_curve(curve: &NurbsCurve) -> Result<NurbsCurve, MathError> {
+    let p = curve.degree();
+    if is_clamped(curve.knots(), p) {
+        return Ok(curve.clone());
+    }
+    let (a, b) = curve.domain();
+    let ends = curve_knot_insert(&curve_knot_insert(curve, a, p)?, b, p)?;
+    let (start, end, knots) = clamped_window(ends.knots(), p, a, b)?;
+    NurbsCurve::new(
+        p,
+        knots,
+        ends.control_points()[start..end].to_vec(),
+        ends.weights()[start..end].to_vec(),
+    )
+}
+
+/// [`clamp_curve`] for both parameter directions of a surface.
+fn clamp_surface(surface: &NurbsSurface) -> Result<NurbsSurface, MathError> {
+    let (pu, pv) = (surface.degree_u(), surface.degree_v());
+    let clamped_u = is_clamped(surface.knots_u(), pu);
+    let clamped_v = is_clamped(surface.knots_v(), pv);
+    if clamped_u && clamped_v {
+        return Ok(surface.clone());
+    }
+    let mut ends = surface.clone();
+    if !clamped_u {
+        let (a, b) = surface.domain_u();
+        ends = surface_knot_insert_u(&surface_knot_insert_u(&ends, a, pu)?, b, pu)?;
+    }
+    if !clamped_v {
+        let (a, b) = surface.domain_v();
+        ends = surface_knot_insert_v(&surface_knot_insert_v(&ends, a, pv)?, b, pv)?;
+    }
+    let (rows, knots_u) = if clamped_u {
+        (0..ends.control_points().len(), ends.knots_u().to_vec())
+    } else {
+        let (a, b) = surface.domain_u();
+        let (start, end, knots) = clamped_window(ends.knots_u(), pu, a, b)?;
+        (start..end, knots)
+    };
+    let (cols, knots_v) = if clamped_v {
+        (0..ends.control_points()[0].len(), ends.knots_v().to_vec())
+    } else {
+        let (a, b) = surface.domain_v();
+        let (start, end, knots) = clamped_window(ends.knots_v(), pv, a, b)?;
+        (start..end, knots)
+    };
+    let control_points = ends.control_points()[rows.clone()]
+        .iter()
+        .map(|row| row[cols.clone()].to_vec())
+        .collect();
+    let weights = ends.weights()[rows]
+        .iter()
+        .map(|row| row[cols.clone()].to_vec())
+        .collect();
+    NurbsSurface::new(pu, pv, knots_u, knots_v, control_points, weights)
+}
+
 /// Decompose a NURBS curve into Bezier segments.
 ///
 /// Each segment is a NURBS curve of the same degree with a clamped knot vector
 /// (all interior knots at full multiplicity). The segments are parametrically
 /// contiguous — segment *i* goes from knot *i* to knot *i+1*.
 ///
+/// An unclamped curve is clamped to its domain first: its control points are
+/// not Bezier points at the domain ends until both ends reach multiplicity
+/// `p`.
+///
 /// # Errors
 ///
 /// Returns an error if internal knot insertion fails.
 pub fn curve_to_bezier_segments(curve: &NurbsCurve) -> Result<Vec<NurbsCurve>, MathError> {
+    let curve = &clamp_curve(curve)?;
     let p = curve.degree();
     let knots = curve.knots();
 
@@ -137,7 +250,8 @@ impl BezierPatch {
 ///
 /// Inserts knots in both u and v directions until all interior knots reach
 /// full multiplicity (equal to degree), then extracts individual patches.
-/// Each patch has `(degree_u + 1) × (degree_v + 1)` control points.
+/// Each patch has `(degree_u + 1) × (degree_v + 1)` control points. A
+/// direction with unclamped end knots is clamped to its domain first.
 ///
 /// # Errors
 ///
@@ -148,7 +262,7 @@ pub fn surface_to_bezier_patches(surface: &NurbsSurface) -> Result<Vec<BezierPat
     let pv = surface.degree_v();
 
     // Step 1: Insert u-knots to full multiplicity.
-    let mut refined = surface.clone();
+    let mut refined = clamp_surface(surface)?;
     {
         let knots_u = refined.knots_u().to_vec();
         let mut i = pu + 1;
