@@ -174,34 +174,92 @@ pub fn trim_sheet_by_sheet(
     })
 }
 
+/// The semantic gate an exact GFA result must pass when there is no fallback
+/// to hand it to: one closed manifold, no free edges in an intersection, no
+/// retained tool interior in a cut, every operand represented, every vertex
+/// inside the operands' bounds, and a structurally valid solid.
+///
+/// Structural validation alone cannot see a closed Cut result that keeps
+/// the tool interior, and the raw GFA does not special-case identical or
+/// contained operands, which can come back as an open shell.
+fn exact_result_is_acceptable(
+    topo: &Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    result: SolidId,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    let components = crate::boolean::assembly::face_components(topo, result);
+    let cut_safe = op != BooleanOp::Cut
+        || remus_algo::classifier::try_build_analytic_classifier(topo, b)
+            .as_ref()
+            .is_none_or(|cls_b| all_component_centers_outside(topo, &components, cls_b, tol));
+    is_closed_manifold(topo, result).is_ok_and(|closed| closed)
+        && (op != BooleanOp::Intersect || has_free_edges(topo, result).is_ok_and(|free| !free))
+        && cut_safe
+        && operands_are_represented(topo, op, result, a, b, tol)
+        && result_within_operand_bounds(topo, op, result, a, b, tol)
+        && validate_boolean_result(topo, result).is_ok()
+}
+
+/// Refuse an exact-only GFA result that fails [`exact_result_is_acceptable`].
+pub(crate) fn require_exact_boolean_result(
+    topo: &Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    result: SolidId,
+) -> Result<(), crate::OperationsError> {
+    if exact_result_is_acceptable(
+        topo,
+        op,
+        a,
+        b,
+        result,
+        remus_math::tolerance::Tolerance::new(),
+    ) {
+        Ok(())
+    } else {
+        Err(crate::OperationsError::ExactOnlyUnattainable)
+    }
+}
+
 /// Runs an exact GFA boolean, returning construction-derived vertex,
 /// edge, and face history (Issue 12) alongside the result — the L3
 /// surface of [`remus_algo::gfa::boolean_with_entity_evolution`].
 ///
 /// Exact path only: there is no approximate fallback, because a mesh
 /// fallback has no construction records. Like the underlying entry
-/// point, identical operands are not special-cased. For journaled
-/// history use [`crate::journal_ops::boolean_journaled`], which records
-/// the same events into the evolution journal.
+/// point, identical operands are not special-cased; the result must pass
+/// the same semantic gate as the other exact-only paths, so a GFA result
+/// that comes back open or misclassified is refused rather than returned.
+/// For journaled history use [`crate::journal_ops::boolean_journaled`],
+/// which records the same events into the evolution journal.
 ///
 /// # Errors
 ///
-/// Returns [`crate::OperationsError`] if any GFA stage fails.
+/// Returns [`crate::OperationsError`] if any GFA stage fails, and
+/// [`crate::OperationsError::ExactOnlyUnattainable`] if its result fails the
+/// exact-result gate. Every refusal rolls the topology back.
 pub fn boolean_with_entity_evolution(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), crate::OperationsError> {
-    refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
-    let algo_op = match op {
-        BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
-        BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
-        BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
-    };
-    Ok(remus_algo::gfa::boolean_with_entity_evolution(
-        topo, algo_op, solid_a, solid_b,
-    )?)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
+        let algo_op = match op {
+            BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+            BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+            BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+        };
+        let (result, evolution) =
+            remus_algo::gfa::boolean_with_entity_evolution(topo, algo_op, solid_a, solid_b)?;
+        require_exact_boolean_result(topo, op, solid_a, solid_b, result)?;
+        Ok((result, evolution))
+    })
 }
 
 /// Run an exact boolean and preserve disconnected result regions as a
@@ -2334,27 +2392,10 @@ fn boolean_with_evolution_impl(
                 && crate::heal::remove_wire_spurs(topo, result).is_ok()
                 && normalize_hole_windings(topo, result).is_ok();
 
-            // Apply the same semantic safety checks as the standard GFA path.
-            // Structural validation alone cannot detect a closed Cut result
-            // that incorrectly retains the tool interior.
-            let components = crate::boolean::assembly::face_components(topo, result);
-            let cut_safe = op != BooleanOp::Cut
-                || remus_algo::classifier::try_build_analytic_classifier(topo, b)
-                    .as_ref()
-                    .is_none_or(|cls_b| {
-                        all_component_centers_outside(topo, &components, cls_b, tol)
-                    });
-            let semantic_ok = is_closed_manifold(topo, result).is_ok_and(|closed| closed)
-                && (op != BooleanOp::Intersect
-                    || has_free_edges(topo, result).is_ok_and(|free| !free))
-                && cut_safe
-                && operands_are_represented(topo, op, result, a, b, tol)
-                && result_within_operand_bounds(topo, op, result, a, b, tol);
-
             // Trust the faithful path only if its result is valid; otherwise
             // fall through to boolean()'s full pipeline (fast paths + mesh
             // fallback + validation), matching boolean()'s contract.
-            if healed_ok && semantic_ok && validate_boolean_result(topo, result).is_ok() {
+            if healed_ok && exact_result_is_acceptable(topo, op, a, b, result, tol) {
                 let mut evo = crate::evolution::EvolutionMap::exact();
                 let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {
