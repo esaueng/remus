@@ -599,6 +599,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
 | Read-only certified NURBS carrier reduction and cubic fitting | `bindings/nurbs_reuse.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
+| Optional `executeBatch` arguments: absent reads as the default, present but malformed is refused (contract tests) | `bindings/batch_optional_args_tests.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
