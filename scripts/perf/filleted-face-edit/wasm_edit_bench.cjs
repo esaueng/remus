@@ -201,8 +201,12 @@ function saveArtifacts(directory, prefix, qualified, mesh) {
   return { ...summary, artifacts: { ...files, arena: { file: arena, sha256: qualified.arenaSha256 } } };
 }
 
-function main() {
-  const args = options(process.argv.slice(2));
+function main(argv = process.argv.slice(2), recognitionObserver = null) {
+  const args = options(argv);
+  if (recognitionObserver) {
+    assert(args['timing-status'] === 'contended-smoke-excluded',
+      'Recognition diagnostics require excluded timing status');
+  }
   assert(os.endianness() === 'LE', 'This harness writes little-endian typed-array artifacts');
   fs.mkdirSync(args.out, { recursive: true });
   const meta = {
@@ -226,6 +230,7 @@ function main() {
         ['move', 'validate', 'bbox', 'volume', 'meshKernel', 'meshTransfer', 'recognize'],
       cacheLimits: 'production defaults; face display mesh cache 32 MiB; no benchmark override' },
   };
+  if (recognitionObserver) meta.recognitionDiagnostic = recognitionObserver.name;
   const { BrepKernel } = require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs'));
   const { RemusIo } = require(path.join(args['io-pkg'], 'remus_wasm_io_node.cjs'));
   const io = new RemusIo();
@@ -281,7 +286,10 @@ function main() {
         };
         const quantity = () => { volume = timed(() => kernel.volume(edit.solid, MEASURE_DEFLECTION)); };
         if (args.order === 'geometry-first') { display(); quantity(); } else { quantity(); display(); }
-        const features = timed(() => kernel.recognizeFeatures(edit.solid, MEASURE_DEFLECTION));
+        const recognize = () => timed(() => kernel.recognizeFeatures(edit.solid, MEASURE_DEFLECTION));
+        const features = recognitionObserver && i >= args.warmup ?
+          recognitionObserver.recognize({ kernel, args, iteration: i, distance, run: recognize }) :
+          recognize();
         const stagesMs = { move: movement.ms, validate: validation.ms, bbox: bbox.ms,
           meshKernel: grouped.ms, meshTransfer: mesh.ms, volume: volume.ms, recognize: features.ms };
         stagesMs.mesh = stagesMs.meshKernel + stagesMs.meshTransfer;
@@ -311,7 +319,10 @@ function main() {
   } finally { sourceKernel.free(); }
 }
 
-try { main(); } catch (error) {
-  process.stderr.write(`${error.stack || error}\n`);
-  process.exitCode = 1;
+module.exports = { main };
+if (require.main === module) {
+  try { main(); } catch (error) {
+    process.stderr.write(`${error.stack || error}\n`);
+    process.exitCode = 1;
+  }
 }

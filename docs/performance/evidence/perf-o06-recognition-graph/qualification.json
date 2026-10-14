@@ -1,0 +1,516 @@
+{
+  "shippingCpuControl": {
+    "diagnosticOnly": true,
+    "timingClaimsExcluded": true,
+    "compared": "fresh source32 shipping CPU profiles versus untraced control; identical public pipeline/cache/query order",
+    "snapshotPairs": 5,
+    "byteExactArtifactPairs": 25,
+    "qualified": true,
+    "records": [
+      {
+        "volumeBits": "3b02a3d23688e840",
+        "featuresJsonSha256": "1603288bda55aaf676220264771ae97fa8b508a6344136949aae13f274ee5b6e",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "c395ff3810537c5b6b4870a66f8a6a2fb099e87355862d75c0005207633503ef",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "be9d64d922dfed263f9afd3a96092f853980582b8997b75a259c99a565b27a2d",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "b389e76531cee94c5ee7e4dfe3298304c490dcb0ee2295f751f7baf675660901",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "0c227aa06362cabcffdd565a07d872bfae8dc3ee247bf3cf0fa3fc8e51b8e8f6",
+            "bytes": 637353,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "1febe38edf79ec40",
+        "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "2677d580aacfff555025b8421722ed7ae0566a2b13ff97888c9a52ad4446ccfa",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "6679c47353f52210f7d116450389bda15d1f5e7c6218671be6bd1df2273ac2b9",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "8f259340bfbfe5c798cca7027181671c39a082f8cea6f5dd0b413dd8b75413d8",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "9dd0927f9157cd319ec43186d5578e0dcc8e98b267efc2315924fff876b55aae",
+            "bytes": 742160,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "88f29382e97dec40",
+        "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "2cf2a06615d1f3a7e63d8bbc66679ae8fe7cf1bc2e3ae6dd293230af588ddcf2",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "13f147147e65bdff2855fac6c0d2708ebe7de44899f13c5d90a27dbfcb97d189",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "e1491ab9562bff2f5eae80668e8c874d6f4662bb699166168480c801c9ad80a1",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "b4ec4019153a9c8239aa405fae37b5efd68ce4888c14e1bf58385ce43108a4dd",
+            "bytes": 750782,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "4dfb4376f381ec40",
+        "featuresJsonSha256": "6b5c17eb4e5f38411eb82946674344cfae398a85b7a205701b8fa9641daff5af",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "467c7ebf497a4e2925d74f380801891347babae98c45e7d2311e063613814fb8",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "455a74b659a3e4752b8b2c400b74b7fd13ca43bc133806eede85309387e94cc9",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "0304c091ab32cc3a38d35dc230f03cb271ea184b8e1b0784675100592ebc7fec",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "0193db1375e322034250c721955fa31999fe98b7e79576108f18b6431fb8be2b",
+            "bytes": 743873,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "8755d069fd85ec40",
+        "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "9a0f208300526beee1f746c9f55317c71c5d74437487c3f944cf251130edb894",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "2f31e8481f1cb16ead3b678ff60f13bde7cbad8805a9c142b99ce264ec3b042a",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "5c8c5111ca131f4f990d38419caa817c627eb4478dbc691e0a44d0979860e7a7",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "7dbb8797dadde46312f589e5fd6b49a2aa666ab225d39e23c0dae7eef7d6b31a",
+            "bytes": 746989,
+            "byteExact": true
+          }
+        ]
+      }
+    ]
+  },
+  "counterOverlayControl": {
+    "diagnosticOnly": true,
+    "timingClaimsExcluded": true,
+    "compared": "temporary count overlay versus fresh source32 untraced shipping control; identical public pipeline/cache/query order",
+    "snapshotPairs": 5,
+    "byteExactArtifactPairs": 25,
+    "qualified": true,
+    "records": [
+      {
+        "volumeBits": "3b02a3d23688e840",
+        "featuresJsonSha256": "1603288bda55aaf676220264771ae97fa8b508a6344136949aae13f274ee5b6e",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "c395ff3810537c5b6b4870a66f8a6a2fb099e87355862d75c0005207633503ef",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "be9d64d922dfed263f9afd3a96092f853980582b8997b75a259c99a565b27a2d",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "b389e76531cee94c5ee7e4dfe3298304c490dcb0ee2295f751f7baf675660901",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "0c227aa06362cabcffdd565a07d872bfae8dc3ee247bf3cf0fa3fc8e51b8e8f6",
+            "bytes": 637353,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "1febe38edf79ec40",
+        "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "2677d580aacfff555025b8421722ed7ae0566a2b13ff97888c9a52ad4446ccfa",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "6679c47353f52210f7d116450389bda15d1f5e7c6218671be6bd1df2273ac2b9",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "8f259340bfbfe5c798cca7027181671c39a082f8cea6f5dd0b413dd8b75413d8",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "9dd0927f9157cd319ec43186d5578e0dcc8e98b267efc2315924fff876b55aae",
+            "bytes": 742160,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "88f29382e97dec40",
+        "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "2cf2a06615d1f3a7e63d8bbc66679ae8fe7cf1bc2e3ae6dd293230af588ddcf2",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "13f147147e65bdff2855fac6c0d2708ebe7de44899f13c5d90a27dbfcb97d189",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "e1491ab9562bff2f5eae80668e8c874d6f4662bb699166168480c801c9ad80a1",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "b4ec4019153a9c8239aa405fae37b5efd68ce4888c14e1bf58385ce43108a4dd",
+            "bytes": 750782,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "4dfb4376f381ec40",
+        "featuresJsonSha256": "6b5c17eb4e5f38411eb82946674344cfae398a85b7a205701b8fa9641daff5af",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "467c7ebf497a4e2925d74f380801891347babae98c45e7d2311e063613814fb8",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "455a74b659a3e4752b8b2c400b74b7fd13ca43bc133806eede85309387e94cc9",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "0304c091ab32cc3a38d35dc230f03cb271ea184b8e1b0784675100592ebc7fec",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "0193db1375e322034250c721955fa31999fe98b7e79576108f18b6431fb8be2b",
+            "bytes": 743873,
+            "byteExact": true
+          }
+        ]
+      },
+      {
+        "volumeBits": "8755d069fd85ec40",
+        "featuresJsonSha256": "8f5cbfd1f5b23826060f3d23b03b7fd3d7eb23979fe2a72783a6c1b2f1762155",
+        "byteExactArtifacts": [
+          {
+            "artifact": "positions",
+            "sha256": "9a0f208300526beee1f746c9f55317c71c5d74437487c3f944cf251130edb894",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "normals",
+            "sha256": "2f31e8481f1cb16ead3b678ff60f13bde7cbad8805a9c142b99ce264ec3b042a",
+            "bytes": 349692,
+            "byteExact": true
+          },
+          {
+            "artifact": "indices",
+            "sha256": "5c8c5111ca131f4f990d38419caa817c627eb4478dbc691e0a44d0979860e7a7",
+            "bytes": 699432,
+            "byteExact": true
+          },
+          {
+            "artifact": "faceOffsets",
+            "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3",
+            "bytes": 644,
+            "byteExact": true
+          },
+          {
+            "artifact": "arena",
+            "sha256": "7dbb8797dadde46312f589e5fd6b49a2aa666ab225d39e23c0dae7eef7d6b31a",
+            "bytes": 746989,
+            "byteExact": true
+          }
+        ]
+      }
+    ]
+  },
+  "maintainedHarness": {
+    "diagnosticOnly": true,
+    "timingClaimsExcluded": true,
+    "maintainedHarnessQualified": true,
+    "runs": [
+      {
+        "run": "maintained-cpu-smoke",
+        "snapshots": 5,
+        "byteExactArtifactPairs": 25,
+        "featuresAndVolumeBitsExact": true
+      },
+      {
+        "run": "maintained-default-smoke",
+        "snapshots": 5,
+        "byteExactArtifactPairs": 25,
+        "featuresAndVolumeBitsExact": true
+      },
+      {
+        "run": "maintained-count-smoke",
+        "snapshots": 5,
+        "byteExactArtifactPairs": 25,
+        "featuresAndVolumeBitsExact": true
+      }
+    ],
+    "totalSnapshotComparisons": 15,
+    "totalArtifactBytePairs": 75
+  },
+  "quietRepeatability": {
+    "geometry-first": {
+      "processes": 2,
+      "retained": 12,
+      "recognize": {
+        "medianMs": 347.6059524999996,
+        "minMs": 344.96189200000117,
+        "maxMs": 351.26155800000015
+      },
+      "pipelineWithTransfer": {
+        "medianMs": 693.8268359999997,
+        "minMs": 676.8445329999995,
+        "maxMs": 724.0958970000011
+      },
+      "repeatability": {
+        "snapshotPairs": 9,
+        "byteExactArtifactPairs": 45,
+        "featuresAndVolumeBitsExact": true
+      }
+    },
+    "volume-first": {
+      "processes": 2,
+      "retained": 12,
+      "recognize": {
+        "medianMs": 347.0596845,
+        "minMs": 345.7484290000002,
+        "maxMs": 351.8180600000005
+      },
+      "pipelineWithTransfer": {
+        "medianMs": 697.4894129999989,
+        "minMs": 676.7783600000002,
+        "maxMs": 724.8064120000017
+      },
+      "repeatability": {
+        "snapshotPairs": 9,
+        "byteExactArtifactPairs": 45,
+        "featuresAndVolumeBitsExact": true
+      }
+    },
+    "native": {
+      "recognize_features": {
+        "rawRoundedMsByProcess": [
+          [
+            191.3,
+            191.9,
+            191.3,
+            191.9,
+            193.5,
+            191.5,
+            191.5,
+            191.3
+          ],
+          [
+            198.1,
+            192.0,
+            190.4,
+            190.5,
+            190.3,
+            190.7,
+            190.7,
+            192.1
+          ]
+        ],
+        "retained": 12,
+        "medianMs": 191.3,
+        "minMs": 190.3,
+        "maxMs": 193.5,
+        "precisionMs": 0.1
+      },
+      "solid_edge_relations": {
+        "rawRoundedMsByProcess": [
+          [
+            113.2,
+            113.5,
+            113.6,
+            113.1,
+            113.6,
+            113.1,
+            115.2,
+            117.6
+          ],
+          [
+            113.1,
+            114.2,
+            112.7,
+            113.6,
+            113.0,
+            112.8,
+            113.0,
+            112.7
+          ]
+        ],
+        "retained": 12,
+        "medianMs": 113.1,
+        "minMs": 112.7,
+        "maxMs": 117.6,
+        "precisionMs": 0.1
+      }
+    },
+    "nativeFullDumpByteIdentity": true
+  },
+  "temporarySourceRestoration": {
+    "restored": true,
+    "sourceHead": "660740583bc1e22218d6463ec874fd05231b24cb",
+    "allSevenOriginalSourceHashesMatch": true,
+    "gitStatusPorcelain": ""
+  }
+}
