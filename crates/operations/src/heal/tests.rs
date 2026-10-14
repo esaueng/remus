@@ -192,6 +192,144 @@ fn close_wire_gaps_clean_box() {
     assert_eq!(count, 0, "clean box should have no wire gaps");
 }
 
+/// The unit cube with its corner `(1, 1, 1)` split in two: the vertical edge
+/// from `(1, 1, 0)` stops `gap` short of the corner, and a `gap`-long edge
+/// climbs the rest of the way, shared by the `x = 1` and `y = 1` faces.
+fn unit_cube_with_short_edge(topo: &mut Topology, gap: f64) -> SolidId {
+    use remus_topology::face::Face;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let p = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (0.0, 1.0, 1.0),
+        (1.0, 1.0, 1.0 - gap),
+    ];
+    let v: Vec<_> = p
+        .iter()
+        .map(|&(x, y, z)| topo.add_vertex(Vertex::new(Point3::new(x, y, z), 1e-7)))
+        .collect();
+    let mut line = |a: usize, b: usize| topo.add_edge(Edge::new(v[a], v[b], EdgeCurve::Line));
+    let [b0, b1, b2, b3] = [line(0, 1), line(1, 2), line(2, 3), line(3, 0)];
+    let [t0, t1, t2, t3] = [line(4, 5), line(5, 6), line(6, 7), line(7, 4)];
+    let [v0, v1, v2, v3] = [line(0, 4), line(1, 5), line(2, 8), line(3, 7)];
+    let short = line(8, 6);
+    let mut face = |uses: &[(EdgeId, bool)], normal: (f64, f64, f64), d: f64| {
+        let wire = Wire::new(
+            uses.iter().map(|&(e, f)| OrientedEdge::new(e, f)).collect(),
+            true,
+        )
+        .unwrap();
+        let wire = topo.add_wire(wire);
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(normal.0, normal.1, normal.2),
+                d,
+            },
+        ))
+    };
+    let faces = vec![
+        face(
+            &[(b0, false), (b3, false), (b2, false), (b1, false)],
+            (0.0, 0.0, -1.0),
+            0.0,
+        ),
+        face(
+            &[(t0, true), (t1, true), (t2, true), (t3, true)],
+            (0.0, 0.0, 1.0),
+            1.0,
+        ),
+        face(
+            &[(b0, true), (v1, true), (t0, false), (v0, false)],
+            (0.0, -1.0, 0.0),
+            0.0,
+        ),
+        face(
+            &[
+                (b2, true),
+                (v3, true),
+                (t2, false),
+                (short, false),
+                (v2, false),
+            ],
+            (0.0, 1.0, 0.0),
+            1.0,
+        ),
+        face(
+            &[(b3, true), (v0, true), (t3, false), (v3, false)],
+            (-1.0, 0.0, 0.0),
+            0.0,
+        ),
+        face(
+            &[
+                (b1, true),
+                (v2, true),
+                (short, true),
+                (t1, false),
+                (v1, false),
+            ],
+            (1.0, 0.0, 0.0),
+            1.0,
+        ),
+    ];
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+#[test]
+fn heal_removes_a_short_edge_its_vertex_merge_collapses() {
+    let mut topo = Topology::new();
+    let solid = unit_cube_with_short_edge(&mut topo, 1e-9);
+
+    let report = heal_solid(&mut topo, solid, 1e-7)
+        .unwrap_or_else(|e| panic!("a box with a 1e-9 edge must heal: {e}"));
+
+    assert_eq!(report.vertices_merged, 1);
+    assert_eq!(report.degenerate_edges_removed, 2, "one per face using it");
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    for face in faces {
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        assert_eq!(wire.edges().len(), 4, "face {face:?}");
+    }
+    let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((volume - 1.0).abs() < 1e-9, "volume {volume}");
+}
+
+#[test]
+fn degenerate_edge_test_measures_along_the_curve() {
+    // A full circle is closed and long; its collapsed line twin is closed and
+    // empty; a 1e-9 chord can still span almost the whole circle.
+    use remus_math::curves::Circle3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let near = topo.add_vertex(Vertex::new(circle.evaluate(-1e-9), 1e-7));
+    let mut full = Edge::new(seam, seam, EdgeCurve::Circle(circle.clone()));
+    full.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let mut almost = Edge::new(seam, near, EdgeCurve::Circle(circle));
+    almost.set_trim(Some((0.0, std::f64::consts::TAU - 1e-9)));
+    let full = topo.add_edge(full);
+    let almost = topo.add_edge(almost);
+    let collapsed = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Line));
+    let short = topo.add_edge(Edge::new(seam, near, EdgeCurve::Line));
+
+    let tol_sq = 1e-14;
+    assert!(!edge_is_degenerate(&topo, full, tol_sq).unwrap());
+    assert!(!edge_is_degenerate(&topo, almost, tol_sq).unwrap());
+    assert!(edge_is_degenerate(&topo, collapsed, tol_sq).unwrap());
+    assert!(edge_is_degenerate(&topo, short, tol_sq).unwrap());
+}
+
 // ── Small face removal tests ────────────────────────
 
 #[test]
