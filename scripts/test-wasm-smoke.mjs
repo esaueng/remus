@@ -22,6 +22,7 @@ import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
+import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
@@ -66,6 +67,7 @@ const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_
 
 runSecurityResourceRegressions({ BrepKernel, RemusIo });
 runTruckNurbsReusePackaged({ BrepKernel });
+runWasmRayNurbsPackaged({ BrepKernel });
 runWasmParserReferencesPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
 

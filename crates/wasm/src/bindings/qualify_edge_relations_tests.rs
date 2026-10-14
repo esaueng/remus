@@ -33,6 +33,96 @@
 use crate::kernel::BrepKernel;
 use crate::types::{EdgeConvexityRelation, FaceMaterialSense};
 
+mod ray_crossing_nurbs_tests {
+    //! Public query contracts over exact NURBS carriers, including frozen preparation.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use crate::kernel::BrepKernel;
+    use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
+    use remus_math::vec::Point3;
+    use serde_json::{Value, json};
+
+    fn batch(kernel: &mut BrepKernel, op: &str, args: Value) -> Value {
+        let rows: Value = serde_json::from_str(
+            &kernel.execute_batch(&json!([{ "op": op, "args": args }]).to_string()),
+        )
+        .unwrap();
+        assert!(rows[0].get("ok").is_some(), "{op}: {rows}");
+        rows[0]["ok"].clone()
+    }
+
+    #[test]
+    fn ray_crossing_nurbs_batch_box_relations_and_prepared_material() {
+        for scale in [0.01, 1.0, 100.0] {
+            for translated in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let solid = batch(
+                    &mut kernel,
+                    "makeBox",
+                    json!({"width": 6.0 * scale, "height": 4.0 * scale, "depth": 2.0 * scale}),
+                )
+                .as_u64()
+                .unwrap();
+                let offset = if translated {
+                    [37.0, -91.0, 13.0]
+                } else {
+                    [0.0; 3]
+                };
+                batch(
+                    &mut kernel,
+                    "transform",
+                    json!({"solid": solid, "matrix": [
+                        1.0, 0.0, 0.0, offset[0] * scale,
+                        0.0, 1.0, 0.0, offset[1] * scale,
+                        0.0, 0.0, 1.0, offset[2] * scale,
+                        0.0, 0.0, 0.0, 1.0,
+                    ]}),
+                );
+                let converted = batch(&mut kernel, "convertToBspline", json!({"solid": solid}));
+                assert!(converted["converted"].as_u64().unwrap() >= 6);
+                let rows = batch(&mut kernel, "solidEdgeRelations", json!({"solid": solid}));
+                let rows = rows.as_array().unwrap();
+                assert_eq!(rows.len(), 12);
+                for row in rows {
+                    assert_eq!(
+                        row["relation"], "convex",
+                        "scale={scale}, translated={translated}: {row}"
+                    );
+                    assert!(
+                        (row["dihedralAngle"].as_f64().unwrap() - std::f64::consts::FRAC_PI_2)
+                            .abs()
+                            < 1e-9
+                    );
+                }
+                let solid_id = kernel.resolve_solid(u32::try_from(solid).unwrap()).unwrap();
+                let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
+                assert!(faces.iter().all(|&face| matches!(
+                    kernel.topo().face(face).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Nurbs(_)
+                )));
+                let prepared = PreparedSolid::prepare(kernel.topo(), solid_id).unwrap();
+                for (point, expected) in [
+                    ([3.0, 2.0, 1.0], PointClassification::Inside),
+                    ([-0.1, 2.0, 1.0], PointClassification::Outside),
+                    ([6.1, 2.0, 1.0], PointClassification::Outside),
+                    ([3.0, 2.0, 0.0], PointClassification::OnBoundary),
+                ] {
+                    let point = Point3::new(
+                        (point[0] + offset[0]) * scale,
+                        (point[1] + offset[1]) * scale,
+                        (point[2] + offset[2]) * scale,
+                    );
+                    let options = ClassifyOptions {
+                        tolerance: 1e-7 * scale,
+                        ..ClassifyOptions::default()
+                    };
+                    assert_eq!(prepared.classify_point(point, &options).unwrap(), expected);
+                }
+            }
+        }
+    }
+}
+
 fn run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()

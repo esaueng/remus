@@ -1037,6 +1037,17 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ca91b95
 | <a id="perf-o06"></a>PERF-O06 | P1 / 2 / M | Profile recognition graph face-area and edge-relation work, then reuse or accelerate qualified unchanged work; rank opposing planar-face candidate bucketing only from workload evidence. | Preserve complete feature records, area values, edge verdicts, holes, blend exclusions and ambiguous matches; measure area/projection/ray work separately and retain exact-output goldens and current-package workflow qualification. | M/high | Q02, M07 | [B16](#b16) | Partial — one prepared classifier, shared normal samples and exact scalar NURBS-area memoization already ship. [Fresh source-32 graph profile](../performance/perf-o06-recognition-graph.md), local paired 2026.1.59: recognition ~347 ms (12 untraced edits/schedule); two byte-qualified shipping CPU profiles attribute ~79% to quadrant ray crossings (line–NURBS ~47%, torus ~26%), area ~14%, setup <1%. Separate counters qualify 1,538 rays/14,549 candidate-face calls and 40/42 NURBS-area memo hits per edit. Maintained CPU/count observers, portable raw evidence and exact geometry/quantity/feature comparisons ship; no runtime optimization. Next: refinement/root/trim-work attribution before bounded exact reuse or rejection. Persistent reuse and other-workload bucketing remain open. |
 | <a id="perf-o07"></a>PERF-O07 | P2 / 5 / S | Plan local direct edits and resize-blend operations against an affected neighborhood, minimizing copied surfaces and repeated trial rebuilds. | Count touched versus total entities; preserve transactional refusal, contact dependencies and total lineage across zero-radius removal and topology changes. | L/high | T01, Q02, M07 | [P-Class 6.2](#p-6-2) | Proposed |
 
+#### PERF-O06-NR: bounded NURBS ray evaluation reuse
+
+Partial — [64-entry exact-parameter reuse](../performance/perf-o06-nurbs-ray-reuse.md),
+seed-point carry and unchanged ray-norm reuse are implemented under PERF-O06/B16.
+Fresh diagnostic baseline supports 35.2% position/33.8% partial hit potential;
+seven focused tests pass default/SIMD and native binding material/edge controls
+pass. Complete root bits, derivative arithmetic, tolerances, cycle phases,
+edge verdicts and features must stay unchanged. Quiet local Criterion and
+shipping WASM timing, full-workspace and fresh/installed package qualification
+remain pending; no elapsed-time gain is claimed yet.
+
 </details>
 
 <details>
