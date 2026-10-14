@@ -66,32 +66,32 @@ pub fn read_obj_with_limits(
                 )?;
             }
             Some("f") => {
-                let face_indices = parse_face_indices(&mut parts, line)?;
-                if face_indices.len() < 3 {
+                // Fan-triangulate as the corners are split off (v0-v1-v2,
+                // v0-v2-v3, ...), budgeting each triangle before it is stored:
+                // a single N-gon yields N-2 triangles, and nothing of a hostile
+                // face line is parsed or held past the budget.
+                let mut face = parts.map(|token| parse_face_corner(token, line));
+                let mut triangles = 0_usize;
+                if let (Some(v0), Some(mut previous)) =
+                    (face.next().transpose()?, face.next().transpose()?)
+                {
+                    for corner in face {
+                        let corner = corner?;
+                        ensure_limit(
+                            "OBJ triangles",
+                            corners.len() / 3 + 1,
+                            limits.max_model_entities,
+                        )?;
+                        corners.extend([v0, previous, corner]);
+                        previous = corner;
+                        triangles += 1;
+                    }
+                }
+                if triangles == 0 {
                     return Err(crate::IoError::ParseError {
                         reason: format!("face with fewer than 3 vertices: {line}"),
                     });
                 }
-                // Budget the face BEFORE fan-triangulating it: a single N-gon
-                // yields N-2 triangles, so checking only after the push loop
-                // lets one hostile face allocate ~3N indices past the budget.
-                ensure_limit(
-                    "OBJ triangles",
-                    corners.len() / 3 + face_indices.len().saturating_sub(2),
-                    limits.max_model_entities,
-                )?;
-                // Fan triangulation: v0-v1-v2, v0-v2-v3, v0-v3-v4, ...
-                let v0 = face_indices[0];
-                for i in 1..face_indices.len() - 1 {
-                    corners.push(v0);
-                    corners.push(face_indices[i]);
-                    corners.push(face_indices[i + 1]);
-                }
-                ensure_limit(
-                    "OBJ triangles",
-                    corners.len() / 3,
-                    limits.max_model_entities,
-                )?;
             }
             _ => {
                 // Ignore unsupported lines (vt, g, mtllib, usemtl, s, etc.)
@@ -187,28 +187,23 @@ fn parse_face_index(token: &str, line: &str) -> Result<u32, crate::IoError> {
     Ok((idx - 1) as u32) // OBJ is 1-indexed
 }
 
-fn parse_face_indices(
-    parts: &mut std::str::SplitWhitespace<'_>,
-    line: &str,
-) -> Result<Vec<(u32, Option<u32>)>, crate::IoError> {
-    parts
-        .map(|token| {
-            let mut fields = token.split('/');
-            let position = parse_face_index(fields.next().unwrap_or(""), line)?;
-            let _texture = fields.next();
-            let normal = fields
-                .next()
-                .filter(|field| !field.is_empty())
-                .map(|field| parse_face_index(field, line))
-                .transpose()?;
-            if fields.next().is_some() {
-                return Err(crate::IoError::ParseError {
-                    reason: format!("invalid OBJ face corner: {token}"),
-                });
-            }
-            Ok((position, normal))
-        })
-        .collect()
+/// Parse one face corner token: `v`, `v/t`, `v/t/n` or `v//n`, as 0-based
+/// position and normal indices.
+fn parse_face_corner(token: &str, line: &str) -> Result<(u32, Option<u32>), crate::IoError> {
+    let mut fields = token.split('/');
+    let position = parse_face_index(fields.next().unwrap_or(""), line)?;
+    let _texture = fields.next();
+    let normal = fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .map(|field| parse_face_index(field, line))
+        .transpose()?;
+    if fields.next().is_some() {
+        return Err(crate::IoError::ParseError {
+            reason: format!("invalid OBJ face corner: {token}"),
+        });
+    }
+    Ok((position, normal))
 }
 
 fn parse_3_floats(
