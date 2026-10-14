@@ -376,8 +376,10 @@ struct QuantizedIds {
 /// distinct cells; `None` when the vertex count does not fit the id type.
 fn quantized_vertex_ids(mesh: &TriangleMesh) -> Option<QuantizedIds> {
     let s = 1.0 / COINCIDENT_DEDUPE_GRID;
-    let mut cells: DetHashMap<(i64, i64, i64), u32> =
-        DetHashMap::with_capacity_and_hasher(mesh.positions.len(), remus_math::det_hash::DetState);
+    let mut cells = super::PointMergeMap::with_capacity_and_hasher(
+        mesh.positions.len(),
+        remus_math::det_hash::DetLookupState,
+    );
     let mut of = Vec::with_capacity(mesh.positions.len());
     for p in &mesh.positions {
         #[allow(clippy::cast_possible_truncation)]

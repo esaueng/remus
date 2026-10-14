@@ -11,6 +11,7 @@ use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
 use remus_topology::{BodyClass, BodyId};
 
+use super::PointMergeMap;
 use super::TriangleMesh;
 #[cfg(not(target_arch = "wasm32"))]
 use super::boundary_plan::SampledEdge;
@@ -1884,7 +1885,7 @@ pub(super) fn tessellate_face_with_shared_edges(
     allow_latitude_cap: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let mut nurbs_frame_chart = false;
     let face_data = topo.face(face_id)?;
