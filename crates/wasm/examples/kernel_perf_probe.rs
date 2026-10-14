@@ -444,6 +444,8 @@ fn plate(stage: &str, iters: usize) {
         })
         .expect("top face");
     let mut clones: Vec<Topology> = (0..iters).map(|_| filleted_topo.clone()).collect();
+    // A refused move is timed as `move_refused` and its body is not
+    // analysed, so analysis series only ever describe edited bodies.
     let edit = |i: usize, edited: &mut Topology, stages: &mut Stages| {
         let t = Instant::now();
         let result = push_pull::move_faces(edited, body_f, &[top], 2.0 + i as f64 * 0.02);
@@ -451,31 +453,35 @@ fn plate(stage: &str, iters: usize) {
         match result {
             Ok(r) => {
                 stages.record("move", elapsed);
-                r
+                Some(r)
             }
             Err(e) => {
-                println!("move refused: {e}; analysing the unedited filleted body");
-                body_f
+                stages.record("move_refused", elapsed);
+                println!("move {i} refused after {elapsed:.1} ms: {e}");
+                None
             }
         }
     };
     if stage == "all" || stage == "move" {
         for (i, edited) in clones.iter_mut().enumerate() {
-            let result = edit(i, edited, &mut stages);
-            if stage == "all" {
+            if let Some(result) = edit(i, edited, &mut stages)
+                && stage == "all"
+            {
                 analyse(edited, result, stage, &mut stages);
             }
         }
     } else {
         // Edits first, so a profiler sees the requested stage contiguously.
-        let results: Vec<SolidId> = clones
+        let results: Vec<Option<SolidId>> = clones
             .iter_mut()
             .enumerate()
             .map(|(i, edited)| edit(i, edited, &mut stages))
             .collect();
         println!("edits prepared; analysing stage {stage}");
         for (edited, result) in clones.iter().zip(results) {
-            analyse(edited, result, stage, &mut stages);
+            if let Some(result) = result {
+                analyse(edited, result, stage, &mut stages);
+            }
         }
     }
     stages.report("filleted plate face drag");
@@ -487,7 +493,14 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let scenario = args.get(1).map_or("hammer", String::as_str);
     let stage = args.get(2).map_or("all", String::as_str);
-    let iters = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(6);
+    let iters = match args.get(3).map(|s| s.parse::<usize>()) {
+        None => 6,
+        Some(Ok(n)) if n > 0 => n,
+        Some(_) => {
+            eprintln!("iterations must be a positive integer, got {:?}", args[3]);
+            std::process::exit(2);
+        }
+    };
     let supported: &[&str] = match scenario {
         "hammer" => &[
             "all",
