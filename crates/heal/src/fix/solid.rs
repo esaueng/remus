@@ -91,7 +91,7 @@ fn fix_solid_inner(
     Ok(result)
 }
 
-/// Merge coincident vertices across a solid.
+/// Merge coincident vertices across a solid (outer and cavity shells).
 ///
 /// For each pair of vertices within `ctx.tolerance.linear` distance,
 /// the higher-index vertex is replaced by the lower-index one. Edge
@@ -106,10 +106,8 @@ fn merge_coincident_vertices(
 ) -> Result<FixResult, HealError> {
     let tol = ctx.tolerance.linear;
 
-    let solid_data = topo.solid(solid_id)?;
-    let shell_id = solid_data.outer_shell();
-    let shell = topo.shell(shell_id)?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    // Cavity shells carry vertices too; an outer-shell walk left their gaps open.
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid_id)?;
 
     let mut vertex_ids: Vec<VertexId> = Vec::new();
     let mut positions: Vec<Point3> = Vec::new();
@@ -218,4 +216,57 @@ fn merge_coincident_vertices(
         super::RepairActionKind::CoincidentVertexMerged,
         merged_count,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use remus_math::vec::Vec3;
+    use remus_topology::explorer::solid_vertices;
+    use remus_topology::solid::Solid;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_topology::vertex::Vertex;
+
+    use super::*;
+    use crate::fix::FixMode;
+
+    #[test]
+    fn coincident_vertex_merge_walks_cavity_shells() {
+        let mut topo = Topology::new();
+        let outer = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+        let cavity = make_unit_cube_manifold_at(&mut topo, 5.0, 5.0, 5.0);
+        let outer = topo.solid(outer).unwrap().outer_shell();
+        let cavity = topo.solid(cavity).unwrap().outer_shell();
+        let solid_id = topo.add_solid(Solid::new(outer, vec![cavity]));
+        // Re-anchor one cavity edge on a duplicate of its start vertex.
+        let face = topo.shell(cavity).unwrap().faces()[0];
+        let edge = topo
+            .wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[0]
+            .edge();
+        let start = topo.edge(edge).unwrap().start();
+        let point = topo.vertex(start).unwrap().point();
+        let duplicate = topo.add_vertex(Vertex::new(point + Vec3::new(1e-9, 0.0, 0.0), 1e-7));
+        topo.edge_mut(edge).unwrap().set_start(duplicate);
+        assert_eq!(solid_vertices(&topo, solid_id).unwrap().len(), 17);
+
+        let config = FixConfig {
+            fix_coincident_vertices: FixMode::On,
+            ..FixConfig::default()
+        };
+        let mut ctx = HealContext::new();
+        let result = fix_solid(&mut topo, solid_id, &mut ctx, &config).unwrap();
+
+        assert!(
+            result
+                .actions
+                .iter()
+                .any(|action| action.kind == crate::fix::RepairActionKind::CoincidentVertexMerged),
+            "{result:?}"
+        );
+        assert_eq!(solid_vertices(&topo, solid_id).unwrap().len(), 16);
+        assert!([start, duplicate].contains(&topo.edge(edge).unwrap().start()));
+    }
 }

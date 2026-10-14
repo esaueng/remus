@@ -14,7 +14,7 @@ use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
-use remus_topology::wire::{OrientedEdge, Wire};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 /// Combined result of [`repair_solid`]: validation before, healing, validation after.
 #[derive(Debug, Clone)]
@@ -504,17 +504,16 @@ pub fn merge_coincident_vertices(
         Tolerance::new().linear
     };
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    // Every shell and every loop: cavity shells and hole wires carry vertices
+    // too, and an outer-only walk left their gaps to fail verification.
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut vertex_ids: Vec<VertexId> = Vec::new();
     let mut positions: Vec<Point3> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
+    for (_, wid) in face_wires(topo, &face_ids)? {
+        let wire = topo.wire(wid)?;
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             for &vid in &[edge.start(), edge.end()] {
@@ -549,20 +548,9 @@ pub fn merge_coincident_vertices(
         return Ok(0);
     }
 
-    let mut edge_ids = Vec::new();
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            edge_ids.push(oe.edge());
-        }
-    }
-    edge_ids.compact_sort_by_key(|e| e.index());
-    edge_ids.dedup_by_key(|e| e.index());
-
-    let updates: Vec<_> = edge_ids
-        .iter()
-        .filter_map(|&eid| {
+    let updates: Vec<_> = solid_wire_edges(topo, solid)?
+        .into_iter()
+        .filter_map(|eid| {
             let edge = topo.edge(eid).ok()?;
             let new_start = merge_to
                 .get(&edge.start().index())
@@ -615,15 +603,11 @@ pub fn remove_degenerate_edges(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut removed_count = 0;
 
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire_id = face.outer_wire();
+    for (fid, wire_id) in face_wires(topo, &face_ids)? {
         let wire = topo.wire(wire_id)?;
 
         let mut new_edges = Vec::new();
@@ -857,6 +841,36 @@ pub fn fix_face_orientations(
     Ok(flips.len())
 }
 
+/// Every `(face, wire)` pair of `face_ids`: outer wire first, then holes.
+fn face_wires(
+    topo: &Topology,
+    face_ids: &[FaceId],
+) -> Result<Vec<(FaceId, WireId)>, crate::OperationsError> {
+    let mut pairs = Vec::new();
+    for &fid in face_ids {
+        let face = topo.face(fid)?;
+        pairs.push((fid, face.outer_wire()));
+        pairs.extend(face.inner_wires().iter().map(|&wid| (fid, wid)));
+    }
+    Ok(pairs)
+}
+
+/// Every edge used by any loop of any shell of `solid`, sorted by index and
+/// deduplicated.
+fn solid_wire_edges(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Vec<EdgeId>, crate::OperationsError> {
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut edge_ids = Vec::new();
+    for (_, wid) in face_wires(topo, &face_ids)? {
+        edge_ids.extend(topo.wire(wid)?.edges().iter().map(OrientedEdge::edge));
+    }
+    edge_ids.compact_sort_by_key(|e| e.index());
+    edge_ids.dedup_by_key(|e| e.index());
+    Ok(edge_ids)
+}
+
 /// Close gaps between consecutive edges in face wires.
 ///
 /// When two consecutive edges in a wire don't share an endpoint (the end
@@ -880,9 +894,7 @@ pub fn close_wire_gaps(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut gaps_closed = 0;
 
@@ -938,32 +950,25 @@ pub fn close_wire_gaps(
 
             // Apply merges using "snapshot then allocate" pattern.
             for (merge_from, merge_to) in &merge_pairs {
-                // Snapshot: collect all edges that need updating.
-                let solid_d = topo.solid(solid)?;
-                let sh = topo.shell(solid_d.outer_shell())?;
-                let fids: Vec<_> = sh.faces().to_vec();
-
+                // Snapshot: collect all edges that need updating, in every
+                // shell and loop (a hole or cavity edge can hold the vertex).
                 let mut updates = Vec::new();
-                for &fid2 in &fids {
-                    let f = topo.face(fid2)?;
-                    let w = topo.wire(f.outer_wire())?;
-                    for oe in w.edges() {
-                        let edge = topo.edge(oe.edge())?;
-                        let cur_start = edge.start();
-                        let cur_end = edge.end();
-                        let new_start = if cur_start == *merge_from {
-                            *merge_to
-                        } else {
-                            cur_start
-                        };
-                        let new_end = if cur_end == *merge_from {
-                            *merge_to
-                        } else {
-                            cur_end
-                        };
-                        if new_start != cur_start || new_end != cur_end {
-                            updates.push((oe.edge(), new_start, new_end));
-                        }
+                for eid in solid_wire_edges(topo, solid)? {
+                    let edge = topo.edge(eid)?;
+                    let cur_start = edge.start();
+                    let cur_end = edge.end();
+                    let new_start = if cur_start == *merge_from {
+                        *merge_to
+                    } else {
+                        cur_start
+                    };
+                    let new_end = if cur_end == *merge_from {
+                        *merge_to
+                    } else {
+                        cur_end
+                    };
+                    if new_start != cur_start || new_end != cur_end {
+                        updates.push((eid, new_start, new_end));
                     }
                 }
 

@@ -1619,3 +1619,105 @@ fn unify_still_reverts_a_merge_that_breaks_a_valid_input() {
         "the forged plans must exercise the revert rule"
     );
 }
+
+// ── Cavity shells and hole loops (HC-3) ─────────────
+
+/// A 3³ block with a 1³ cavity at (1, 1, 1)–(2, 2, 2).
+fn hollow_block(topo: &mut Topology) -> SolidId {
+    let outer = crate::primitives::make_box(topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let hollow =
+        crate::boolean::boolean(topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    hollow
+}
+
+/// Re-anchor the first edge of `shell`'s first face on a copy of its start
+/// vertex 1e-9 away: both faces using the edge get a sub-tolerance gap.
+fn open_wire_gap(topo: &mut Topology, shell: remus_topology::shell::ShellId) {
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let edge = topo
+        .wire(topo.face(face).unwrap().outer_wire())
+        .unwrap()
+        .edges()[0]
+        .edge();
+    let start = topo.edge(edge).unwrap().start();
+    let point = topo.vertex(start).unwrap().point();
+    let gap = topo.add_vertex(remus_topology::vertex::Vertex::new(
+        point + Vec3::new(1e-9, 0.0, 0.0),
+        1e-7,
+    ));
+    topo.edge_mut(edge).unwrap().set_start(gap);
+}
+
+fn assert_hollow_block_material(topo: &Topology, solid: SolidId) {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    let options = ClassifyOptions::default();
+    for (probe, expected) in [
+        (Point3::new(0.5, 0.5, 0.5), PointClassification::Inside),
+        (Point3::new(2.5, 1.5, 1.5), PointClassification::Inside),
+        (Point3::new(1.5, 1.5, 1.5), PointClassification::Outside),
+        (Point3::new(3.5, 1.5, 1.5), PointClassification::Outside),
+    ] {
+        assert_eq!(
+            classify_point(topo, solid, probe, &options).unwrap(),
+            expected,
+            "probe {probe:?}"
+        );
+    }
+}
+
+#[test]
+fn heal_solid_closes_a_gap_on_an_outer_face() {
+    let mut topo = Topology::new();
+    let solid = hollow_block(&mut topo);
+    let outer = topo.solid(solid).unwrap().outer_shell();
+    open_wire_gap(&mut topo, outer);
+
+    let report = heal_solid(&mut topo, solid, 1e-7).unwrap();
+
+    assert!(report.wire_gaps_closed > 0, "{report:?}");
+    assert_hollow_block_material(&topo, solid);
+}
+
+#[test]
+fn heal_solid_closes_the_same_gap_on_a_cavity_face() {
+    let mut topo = Topology::new();
+    let solid = hollow_block(&mut topo);
+    let cavity = topo.solid(solid).unwrap().inner_shells()[0];
+    open_wire_gap(&mut topo, cavity);
+
+    let report = heal_solid(&mut topo, solid, 1e-7)
+        .expect("a cavity-face gap must be repaired like an outer-face gap");
+
+    assert!(report.wire_gaps_closed > 0, "{report:?}");
+    assert_hollow_block_material(&topo, solid);
+}
+
+#[test]
+fn merge_coincident_vertices_walks_cavity_shells() {
+    let mut topo = Topology::new();
+    let solid = hollow_block(&mut topo);
+    let cavity = topo.solid(solid).unwrap().inner_shells()[0];
+    open_wire_gap(&mut topo, cavity);
+    let before = remus_topology::explorer::solid_vertices(&topo, solid)
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        merge_coincident_vertices(&mut topo, solid, 1e-7).unwrap(),
+        1
+    );
+    assert_eq!(
+        remus_topology::explorer::solid_vertices(&topo, solid)
+            .unwrap()
+            .len(),
+        before - 1
+    );
+}
