@@ -243,25 +243,19 @@ pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, StructuredWas
 }
 
 /// Extract an index representable by the target's `usize` from a JSON value.
-pub fn json_usize(val: &serde_json::Value, key: &str) -> Result<usize, JsError> {
+pub fn json_usize(val: &serde_json::Value, key: &str) -> Result<usize, WasmError> {
     val[key]
         .as_u64()
         .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(|| {
-            WasmError::InvalidInput {
-                reason: format!("missing or invalid '{key}' index"),
-            }
-            .into()
+        .ok_or_else(|| WasmError::InvalidInput {
+            reason: format!("missing or invalid '{key}' index"),
         })
 }
 
 /// Extract an `f64` from a JSON value.
-pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, JsError> {
-    val[key].as_f64().ok_or_else(|| {
-        WasmError::InvalidInput {
-            reason: format!("missing or invalid '{key}'"),
-        }
-        .into()
+pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, WasmError> {
+    val[key].as_f64().ok_or_else(|| WasmError::InvalidInput {
+        reason: format!("missing or invalid '{key}'"),
     })
 }
 
@@ -793,7 +787,7 @@ mod feature_serialization_tests {
 /// Parse a sketch constraint from a JSON value.
 pub fn parse_sketch_constraint(
     val: &serde_json::Value,
-) -> Result<remus_operations::sketch::Constraint, JsError> {
+) -> Result<remus_operations::sketch::Constraint, WasmError> {
     use remus_operations::sketch::Constraint;
     let ty = val["type"].as_str().unwrap_or("");
     match ty {
@@ -833,15 +827,19 @@ pub fn parse_sketch_constraint(
             let p2 = json_usize(val, "p2")?;
             // Backward compat: old API was (p1, p2, value) for single-line angle.
             // New API is (p1, p2, p3, p4, value) for angle between two lines.
-            // When p3/p4 are absent, default to p1/p2 (zero angle between same line).
-            let p3 = val
-                .get("p3")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(p1, |v| v as usize);
-            let p4 = val
-                .get("p4")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(p2, |v| v as usize);
+            // When p3 and p4 are both absent, they default to p1/p2 (zero angle
+            // between same line). A present index is parsed strictly, and a
+            // lone p3 or p4 is refused rather than completed from line one.
+            let present = |key: &str| !matches!(val.get(key), None | Some(serde_json::Value::Null));
+            let (p3, p4) = match (present("p3"), present("p4")) {
+                (false, false) => (p1, p2),
+                (true, true) => (json_usize(val, "p3")?, json_usize(val, "p4")?),
+                _ => {
+                    return Err(WasmError::InvalidInput {
+                        reason: "angle constraint needs both 'p3' and 'p4', or neither".into(),
+                    });
+                }
+            };
             let v = json_f64(val, "value")?;
             Ok(Constraint::Angle(p1, p2, p3, p4, v))
         }
@@ -861,8 +859,7 @@ pub fn parse_sketch_constraint(
         }
         _ => Err(WasmError::InvalidInput {
             reason: format!("unknown constraint type: {ty}"),
-        }
-        .into()),
+        }),
     }
 }
 

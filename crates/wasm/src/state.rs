@@ -105,10 +105,10 @@ pub struct SketchState {
     pub arcs: Vec<(usize, usize, usize)>,
     /// Circle definitions: `(center_idx, radius)`, where `center_idx` indexes into `points`.
     pub circles: Vec<(usize, f64)>,
-    /// Deferred arc-referencing constraints stored as raw JSON.
-    /// These are resolved into real `GcsConstraint` values at solve time
+    /// Deferred arc- and circle-referencing constraints, index-checked when
+    /// added and resolved into real `GcsConstraint` values at solve time
     /// when entity IDs are available.
-    pub deferred_constraints: Vec<serde_json::Value>,
+    pub(crate) deferred_constraints: Vec<crate::bindings::sketch::DeferredConstraint>,
 }
 
 /// Append-only opaque session handles. Restore retires slots instead of

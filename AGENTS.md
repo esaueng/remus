@@ -593,6 +593,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Accounted checkpoint storage, allocated WASM pages and phase timing bindings | `bindings/performance.rs` |
 | Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
+| Sketch input validation contracts: legacy `angle` second line, add-time deferred-constraint checks, positive GCS ellipse semiaxes (tests) | `bindings/sketch_validation_tests.rs` |
 | Directional curve projection (P-Class 7.4 direct + batch, `project-curve:<code>` refusals) | `bindings/project_curve.rs` |
 | Assembly management | `bindings/assembly.rs` |
 | 2D polygon operations | `bindings/polygon2d.rs` |

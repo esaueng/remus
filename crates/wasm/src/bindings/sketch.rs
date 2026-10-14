@@ -146,15 +146,10 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     }
 
     // Resolve deferred (arc-referencing) constraints now that we have real IDs
-    for val in &sk.deferred_constraints {
-        let gc = resolve_deferred_constraint(
-            val,
-            &point_ids,
-            &arc_ids,
-            &circle_ids,
-            &mut line_cache,
-            &mut sys,
-        )?;
+    for deferred in &sk.deferred_constraints {
+        let gc = deferred.resolve(&point_ids, &arc_ids, &circle_ids, &mut |a, b| {
+            get_or_create_line(&mut sys, a, b)
+        })?;
         let _ = sys
             .add_constraint(gc)
             .map_err(|e| WasmError::InvalidInput {
@@ -170,152 +165,220 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     })
 }
 
-/// Resolve a deferred constraint JSON value into a real `GcsConstraint`
-/// using the entity IDs created during `build_gcs_from_state`.
-fn resolve_deferred_constraint(
-    val: &serde_json::Value,
-    point_ids: &[remus_operations::sketch::PointId],
-    arc_ids: &[remus_operations::sketch::ArcId],
-    circle_ids: &[remus_operations::sketch::CircleId],
-    line_cache: &mut std::collections::HashMap<(usize, usize), remus_operations::sketch::LineId>,
-    sys: &mut remus_operations::sketch::GcsSystem,
-) -> Result<remus_operations::sketch::GcsConstraint, JsError> {
-    use remus_operations::sketch::GcsConstraint;
+/// Entity namespace of a deferred-constraint index.
+#[derive(Clone, Copy)]
+enum DeferredEntity {
+    Point,
+    Arc,
+    Circle,
+}
 
-    let ty = val["type"].as_str().unwrap_or("");
+/// A legacy arc- or circle-referencing constraint.
+///
+/// Parsed and index-checked when it is added, so `sketchAddConstraint`
+/// reports a constraint that can never be built instead of storing it and
+/// failing every later solve. Legacy sketch entities are append-only, so an
+/// index valid when the constraint is added stays valid. Indices are mapped
+/// to solver handles at solve time.
+#[derive(Debug, Clone)]
+#[allow(missing_docs)] // variants and fields mirror the constraint JSON keys
+pub enum DeferredConstraint {
+    PointOnArc {
+        point: usize,
+        arc: usize,
+    },
+    TangentLineArc {
+        line: (usize, usize),
+        arc: usize,
+        point: usize,
+    },
+    TangentArcArc {
+        arc1: usize,
+        arc2: usize,
+        point: usize,
+    },
+    EqualRadiusArcArc {
+        arc1: usize,
+        arc2: usize,
+    },
+    EqualRadiusArcCircle {
+        arc: usize,
+        circle: usize,
+    },
+    ArcLength {
+        arc: usize,
+        value: f64,
+    },
+    ConcentricArcArc {
+        arc1: usize,
+        arc2: usize,
+    },
+    ConcentricArcCircle {
+        arc: usize,
+        circle: usize,
+    },
+    PointOnCircle {
+        point: usize,
+        circle: usize,
+    },
+}
 
-    let get_point = |key: &str| -> Result<remus_operations::sketch::PointId, JsError> {
-        let idx = json_usize(val, key)?;
-        point_ids.get(idx).copied().ok_or_else(|| {
-            WasmError::InvalidInput {
-                reason: format!("point index {idx} out of range"),
-            }
-            .into()
-        })
-    };
-
-    let get_arc = |key: &str| -> Result<remus_operations::sketch::ArcId, JsError> {
-        let idx = json_usize(val, key)?;
-        arc_ids.get(idx).copied().ok_or_else(|| {
-            WasmError::InvalidInput {
-                reason: format!("arc index {idx} out of range"),
-            }
-            .into()
-        })
-    };
-
-    let get_circle = |key: &str| -> Result<remus_operations::sketch::CircleId, JsError> {
-        let idx = json_usize(val, key)?;
-        circle_ids.get(idx).copied().ok_or_else(|| {
-            WasmError::InvalidInput {
-                reason: format!("circle index {idx} out of range"),
-            }
-            .into()
-        })
-    };
-
-    let get_or_create_line = |p1: usize,
-                              p2: usize,
-                              cache: &mut std::collections::HashMap<
-        (usize, usize),
-        remus_operations::sketch::LineId,
-    >,
-                              s: &mut remus_operations::sketch::GcsSystem|
-     -> Result<remus_operations::sketch::LineId, JsError> {
-        if p1 >= point_ids.len() || p2 >= point_ids.len() {
-            return Err(WasmError::InvalidInput {
-                reason: "point index out of range in deferred constraint".to_string(),
-            }
-            .into());
-        }
-        let key = (p1, p2);
-        if let Some(&lid) = cache.get(&key) {
-            return Ok(lid);
-        }
-        let lid =
-            s.add_line(point_ids[p1], point_ids[p2])
-                .map_err(|e| WasmError::InvalidInput {
-                    reason: format!("failed to create line: {e}"),
-                })?;
-        cache.insert(key, lid);
-        Ok(lid)
-    };
-
-    match ty {
-        "pointOnArc" => {
-            let pt = get_point("point")?;
-            let arc = get_arc("arc")?;
-            Ok(GcsConstraint::PointOnArc(pt, arc))
-        }
-        "tangentLineArc" => {
-            let line_arr = val["line"]
-                .as_array()
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "tangentLineArc requires 'line' as [p1, p2]".into(),
-                })?;
-            if line_arr.len() != 2 {
-                return Err(WasmError::InvalidInput {
-                    reason: "tangentLineArc 'line' must have exactly 2 point indices".into(),
+impl DeferredConstraint {
+    /// Parse `val`; `Ok(None)` when its `type` is not a deferred constraint.
+    pub(crate) fn parse(val: &serde_json::Value) -> Result<Option<Self>, WasmError> {
+        let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let index = |key: &str| json_usize(val, key);
+        Ok(Some(match ty {
+            "pointOnArc" => Self::PointOnArc {
+                point: index("point")?,
+                arc: index("arc")?,
+            },
+            "tangentLineArc" => {
+                let line_arr = val["line"]
+                    .as_array()
+                    .ok_or_else(|| WasmError::InvalidInput {
+                        reason: "tangentLineArc requires 'line' as [p1, p2]".into(),
+                    })?;
+                if line_arr.len() != 2 {
+                    return Err(WasmError::InvalidInput {
+                        reason: "tangentLineArc 'line' must have exactly 2 point indices".into(),
+                    });
                 }
-                .into());
+                let line_point = |i: usize| {
+                    line_arr[i]
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                        .ok_or_else(|| WasmError::InvalidInput {
+                            reason: format!("tangentLineArc line[{i}] must be a valid point index"),
+                        })
+                };
+                Self::TangentLineArc {
+                    line: (line_point(0)?, line_point(1)?),
+                    arc: index("arc")?,
+                    point: index("point")?,
+                }
             }
-            let lp1 = line_arr[0]
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "tangentLineArc line[0] must be a valid point index".into(),
-                })?;
-            let lp2 = line_arr[1]
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "tangentLineArc line[1] must be a valid point index".into(),
-                })?;
-            let lid = get_or_create_line(lp1, lp2, line_cache, sys)?;
-            let arc = get_arc("arc")?;
-            let pt = get_point("point")?;
-            Ok(GcsConstraint::TangentLineArc(lid, arc, pt))
+            "tangentArcArc" => Self::TangentArcArc {
+                arc1: index("arc1")?,
+                arc2: index("arc2")?,
+                point: index("point")?,
+            },
+            "equalRadiusArcArc" => Self::EqualRadiusArcArc {
+                arc1: index("arc1")?,
+                arc2: index("arc2")?,
+            },
+            "equalRadiusArcCircle" => Self::EqualRadiusArcCircle {
+                arc: index("arc")?,
+                circle: index("circle")?,
+            },
+            "arcLength" => Self::ArcLength {
+                arc: index("arc")?,
+                value: json_f64(val, "value")?,
+            },
+            "concentricArcArc" => Self::ConcentricArcArc {
+                arc1: index("arc1")?,
+                arc2: index("arc2")?,
+            },
+            "concentricArcCircle" => Self::ConcentricArcCircle {
+                arc: index("arc")?,
+                circle: index("circle")?,
+            },
+            "pointOnCircle" => Self::PointOnCircle {
+                point: index("point")?,
+                circle: index("circle")?,
+            },
+            _ => return Ok(None),
+        }))
+    }
+
+    /// Every entity index the constraint references.
+    fn references(&self) -> Vec<(DeferredEntity, usize)> {
+        use DeferredEntity::{Arc, Circle, Point};
+        match *self {
+            Self::PointOnArc { point, arc } => vec![(Point, point), (Arc, arc)],
+            Self::TangentLineArc { line, arc, point } => {
+                vec![(Point, line.0), (Point, line.1), (Arc, arc), (Point, point)]
+            }
+            Self::TangentArcArc { arc1, arc2, point } => {
+                vec![(Arc, arc1), (Arc, arc2), (Point, point)]
+            }
+            Self::EqualRadiusArcArc { arc1, arc2 } | Self::ConcentricArcArc { arc1, arc2 } => {
+                vec![(Arc, arc1), (Arc, arc2)]
+            }
+            Self::EqualRadiusArcCircle { arc, circle }
+            | Self::ConcentricArcCircle { arc, circle } => vec![(Arc, arc), (Circle, circle)],
+            Self::ArcLength { arc, .. } => vec![(Arc, arc)],
+            Self::PointOnCircle { point, circle } => vec![(Point, point), (Circle, circle)],
         }
-        "tangentArcArc" => {
-            let arc1 = get_arc("arc1")?;
-            let arc2 = get_arc("arc2")?;
-            let pt = get_point("point")?;
-            Ok(GcsConstraint::TangentArcArc(arc1, arc2, pt))
+    }
+
+    /// Refuse a reference beyond the sketch's current entity counts.
+    pub(crate) fn check_references(
+        &self,
+        points: usize,
+        arcs: usize,
+        circles: usize,
+    ) -> Result<(), WasmError> {
+        for (entity, index) in self.references() {
+            let (count, entity) = match entity {
+                DeferredEntity::Point => (points, "sketch point"),
+                DeferredEntity::Arc => (arcs, "sketch arc"),
+                DeferredEntity::Circle => (circles, "sketch circle"),
+            };
+            if index >= count {
+                return Err(WasmError::InvalidHandle { entity, index });
+            }
         }
-        "equalRadiusArcArc" => {
-            let arc1 = get_arc("arc1")?;
-            let arc2 = get_arc("arc2")?;
-            Ok(GcsConstraint::EqualRadiusArcArc(arc1, arc2))
+        Ok(())
+    }
+
+    /// Map the indices to the solver handles created for this solve.
+    fn resolve(
+        &self,
+        point_ids: &[remus_operations::sketch::PointId],
+        arc_ids: &[remus_operations::sketch::ArcId],
+        circle_ids: &[remus_operations::sketch::CircleId],
+        line: &mut impl FnMut(usize, usize) -> Result<remus_operations::sketch::LineId, WasmError>,
+    ) -> Result<remus_operations::sketch::GcsConstraint, WasmError> {
+        use remus_operations::sketch::GcsConstraint;
+        fn lookup<T: Copy>(ids: &[T], entity: &'static str, index: usize) -> Result<T, WasmError> {
+            ids.get(index)
+                .copied()
+                .ok_or(WasmError::InvalidHandle { entity, index })
         }
-        "equalRadiusArcCircle" => {
-            let arc = get_arc("arc")?;
-            let circle = get_circle("circle")?;
-            Ok(GcsConstraint::EqualRadiusArcCircle(arc, circle))
-        }
-        "arcLength" => {
-            let arc = get_arc("arc")?;
-            let v = json_f64(val, "value")?;
-            Ok(GcsConstraint::ArcLength(arc, v))
-        }
-        "concentricArcArc" => {
-            let arc1 = get_arc("arc1")?;
-            let arc2 = get_arc("arc2")?;
-            Ok(GcsConstraint::ConcentricArcArc(arc1, arc2))
-        }
-        "concentricArcCircle" => {
-            let arc = get_arc("arc")?;
-            let circle = get_circle("circle")?;
-            Ok(GcsConstraint::ConcentricArcCircle(arc, circle))
-        }
-        "pointOnCircle" => {
-            let pt = get_point("point")?;
-            let circle = get_circle("circle")?;
-            Ok(GcsConstraint::PointOnCircle(pt, circle))
-        }
-        _ => Err(WasmError::InvalidInput {
-            reason: format!("unknown constraint type: {ty}"),
-        }
-        .into()),
+        let point = |i| lookup(point_ids, "sketch point", i);
+        let arc = |i| lookup(arc_ids, "sketch arc", i);
+        let circle = |i| lookup(circle_ids, "sketch circle", i);
+        Ok(match *self {
+            Self::PointOnArc { point: p, arc: a } => GcsConstraint::PointOnArc(point(p)?, arc(a)?),
+            Self::TangentLineArc {
+                line: (l1, l2),
+                arc: a,
+                point: p,
+            } => GcsConstraint::TangentLineArc(line(l1, l2)?, arc(a)?, point(p)?),
+            Self::TangentArcArc {
+                arc1,
+                arc2,
+                point: p,
+            } => GcsConstraint::TangentArcArc(arc(arc1)?, arc(arc2)?, point(p)?),
+            Self::EqualRadiusArcArc { arc1, arc2 } => {
+                GcsConstraint::EqualRadiusArcArc(arc(arc1)?, arc(arc2)?)
+            }
+            Self::EqualRadiusArcCircle { arc: a, circle: c } => {
+                GcsConstraint::EqualRadiusArcCircle(arc(a)?, circle(c)?)
+            }
+            Self::ArcLength { arc: a, value } => GcsConstraint::ArcLength(arc(a)?, value),
+            Self::ConcentricArcArc { arc1, arc2 } => {
+                GcsConstraint::ConcentricArcArc(arc(arc1)?, arc(arc2)?)
+            }
+            Self::ConcentricArcCircle { arc: a, circle: c } => {
+                GcsConstraint::ConcentricArcCircle(arc(a)?, circle(c)?)
+            }
+            Self::PointOnCircle {
+                point: p,
+                circle: c,
+            } => GcsConstraint::PointOnCircle(point(p)?, circle(c)?),
+        })
     }
 }
 
@@ -446,51 +509,7 @@ impl BrepKernel {
     /// `arcLength`, `concentricArcArc`.
     #[wasm_bindgen(js_name = "sketchAddConstraint")]
     pub fn sketch_add_constraint(&mut self, sketch: u32, json: &str) -> Result<(), JsError> {
-        let sk = self
-            .sketches
-            .get_mut(sketch as usize)
-            .ok_or(WasmError::InvalidHandle {
-                entity: "sketch",
-                index: sketch as usize,
-            })?;
-        let val: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| WasmError::InvalidInput {
-                reason: format!("invalid constraint JSON: {e}"),
-            })?;
-
-        // Try legacy constraint first; fall back to deferred (arc-aware) storage
-        match parse_sketch_constraint(&val) {
-            Ok(constraint) => {
-                constraint
-                    .validate_point_references(sk.points.len())
-                    .map_err(WasmError::from)?;
-                sk.constraints.push(constraint);
-            }
-            Err(e) => {
-                // Only defer known arc constraint types — don't silently swallow parse errors
-                let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let arc_types: &[&str] = &[
-                    "tangentLineArc",
-                    "tangentArcArc",
-                    "pointOnArc",
-                    "pointOnCircle",
-                    "equalRadiusArcArc",
-                    "equalRadiusArcCircle",
-                    "arcLength",
-                    "concentricArcArc",
-                    "concentricArcCircle",
-                ];
-                if arc_types.contains(&ty) {
-                    sk.deferred_constraints.push(val);
-                } else {
-                    return Err(WasmError::InvalidInput {
-                        reason: format!("failed to parse constraint: {e:?}"),
-                    }
-                    .into());
-                }
-            }
-        }
-        Ok(())
+        Ok(self.sketch_add_constraint_impl(sketch, json)?)
     }
 
     /// Solve the sketch constraints.
@@ -621,5 +640,39 @@ impl BrepKernel {
             "numEquations": dof.num_equations,
         })
         .to_string())
+    }
+}
+
+impl BrepKernel {
+    /// Body of `sketchAddConstraint`. Every constraint is parsed and its
+    /// indices checked before it is stored; a refusal leaves the sketch
+    /// unchanged.
+    pub(crate) fn sketch_add_constraint_impl(
+        &mut self,
+        sketch: u32,
+        json: &str,
+    ) -> Result<(), WasmError> {
+        let sk = self
+            .sketches
+            .get_mut(sketch as usize)
+            .ok_or(WasmError::InvalidHandle {
+                entity: "sketch",
+                index: sketch as usize,
+            })?;
+        let val: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| WasmError::InvalidInput {
+                reason: format!("invalid constraint JSON: {e}"),
+            })?;
+        if let Some(deferred) = DeferredConstraint::parse(&val)? {
+            deferred.check_references(sk.points.len(), sk.arcs.len(), sk.circles.len())?;
+            sk.deferred_constraints.push(deferred);
+        } else {
+            let constraint = parse_sketch_constraint(&val)?;
+            constraint
+                .validate_point_references(sk.points.len())
+                .map_err(WasmError::from)?;
+            sk.constraints.push(constraint);
+        }
+        Ok(())
     }
 }
