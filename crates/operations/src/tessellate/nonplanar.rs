@@ -2632,6 +2632,10 @@ mod boundary_clearance_tests;
 #[path = "nonplanar/sphere_chart_tests.rs"]
 mod sphere_chart_tests;
 
+#[cfg(test)]
+#[path = "nonplanar/row_containment_tests.rs"]
+mod row_containment_tests;
+
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
 /// Projects shared edge points into (u,v) parameter space, generates interior
@@ -3316,18 +3320,39 @@ pub(super) fn tessellate_nonplanar_cdt(
             topo.edge(oriented.edge())
                 .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
         });
+        // Containment of the whole grid, one row of constant v at a time
+        // (see `polygon_row_contains`): the same answers as testing every
+        // grid point against every boundary segment, without the
+        // grid-by-boundary product.
+        let grid_us: Vec<f64> = (1..n_u)
+            .map(|iu| u_min + du * (iu as f64 / n_u as f64))
+            .collect();
+        let rows = n_v.saturating_sub(1);
+        let mut grid_inside = vec![false; grid_us.len() * rows];
+        for iv in 1..n_v {
+            let v = v_min + dv * (iv as f64 / n_v as f64);
+            let mut inside = polygon_row_contains(boundary_uv_ref, &grid_us, v);
+            for hole in hole_uvs_ref {
+                for (cell, in_hole) in inside
+                    .iter_mut()
+                    .zip(polygon_row_contains(hole, &grid_us, v))
+                {
+                    *cell &= !in_hole;
+                }
+            }
+            for (iu, cell) in inside.into_iter().enumerate() {
+                grid_inside[iu * rows + (iv - 1)] = cell;
+            }
+        }
         let mut interior_pts: Vec<Point2> = (1..n_u)
             .flat_map(|iu| {
+                let grid_inside = &grid_inside;
                 (1..n_v).filter_map(move |iv| {
                     let u = u_min + du * (iu as f64 / n_u as f64);
                     let v = v_min + dv * (iv as f64 / n_v as f64);
                     let point = Point2::new(u, v);
-                    (point_in_polygon_2d(boundary_uv_ref, point)
-                        && hole_uvs_ref
-                            .iter()
-                            .all(|hole| !point_in_polygon_2d(hole, point))
-                        && !on_boundary(point))
-                    .then(|| to_cdt(u, v))
+                    (grid_inside[(iu - 1) * rows + (iv - 1)] && !on_boundary(point))
+                        .then(|| to_cdt(u, v))
                 })
             })
             .collect();
@@ -6033,6 +6058,49 @@ pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::P
         }
     }
     winding != 0
+}
+
+/// [`point_in_polygon_2d`] for every point `(x, y)` of one row, `xs`
+/// non-decreasing.
+///
+/// Each segment the row crosses adds its winding step to a prefix of the
+/// row: its crossing test `cross > 0` (upward) or `cross < 0` (downward)
+/// evaluates the same rounded expression as [`point_in_polygon_2d`], and that
+/// expression is monotone in `x` (IEEE subtraction and multiplication by a
+/// fixed operand are monotone), so the points that pass are a prefix found by
+/// bisection. The answers are exactly the per-point test's, at
+/// `O(segments * log(row))` per row instead of `O(segments * row)`.
+pub(super) fn polygon_row_contains(polygon: &[(f64, f64)], xs: &[f64], y: f64) -> Vec<bool> {
+    let n = polygon.len();
+    // `steps[k]` is the winding change between point k - 1 and point k.
+    let mut steps = vec![0_i32; xs.len() + 1];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (xi, yi) = polygon[i];
+        let (xj, yj) = polygon[j];
+        let cross = |x: f64| (xj - xi) * (y - yi) - (x - xi) * (yj - yi);
+        let (passes, step): (usize, i32) = if yi <= y {
+            if yj > y {
+                (xs.partition_point(|&x| cross(x) > 0.0), 1)
+            } else {
+                continue;
+            }
+        } else if yj <= y {
+            (xs.partition_point(|&x| cross(x) < 0.0), -1)
+        } else {
+            continue;
+        };
+        steps[0] += step;
+        steps[passes] -= step;
+    }
+    let mut winding = 0;
+    xs.iter()
+        .zip(&steps)
+        .map(|(_, &step)| {
+            winding += step;
+            winding != 0
+        })
+        .collect()
 }
 
 /// Containment and trim clearance of one dense-band candidate in a single
