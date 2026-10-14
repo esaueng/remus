@@ -2119,11 +2119,7 @@ fn replay_document_into(
         if let Some(tolerance) = e.tolerance {
             validate_arena_tolerance(tolerance, &format!("edge {index}"))?;
         }
-        if let SerEdgeCurve::NurbsCurve(curve) = &e.curve {
-            curve.validate().map_err(|err| IoError::ParseError {
-                reason: format!("invalid arena NURBS curve: {err}"),
-            })?;
-        }
+        validate_arena_edge_curve(&e.curve, &format!("edge {index}"))?;
         let curve = e.curve.into_curve();
         let trim = legacy_arena_edge_trim_adapter(
             index,
@@ -2180,7 +2176,7 @@ fn replay_document_into(
         .collect::<Result<Vec<_>, IoError>>()?;
 
     let mut face_ids = Vec::with_capacity(faces.len());
-    for f in faces {
+    for (index, f) in faces.into_iter().enumerate() {
         let outer = *wire_ids
             .get(f.outer_wire)
             .ok_or_else(|| index_err("wire", f.outer_wire))?;
@@ -2188,11 +2184,7 @@ fn replay_document_into(
         for iw in f.inner_wires {
             inner.push(*wire_ids.get(iw).ok_or_else(|| index_err("wire", iw))?);
         }
-        if let SerFaceSurface::Nurbs(surface) = &f.surface {
-            surface.validate().map_err(|err| IoError::ParseError {
-                reason: format!("invalid arena NURBS surface: {err}"),
-            })?;
-        }
+        validate_arena_face_surface(&f.surface, &format!("face {index}"))?;
         let mut face = Face::new(outer, inner, f.surface.into_surface());
         face.set_reversed(f.reversed);
         face_ids.push(topo.add_face(face));
@@ -2837,6 +2829,221 @@ fn validate_arena_point(point: Point3, subject: &str) -> Result<(), IoError> {
         });
     }
     Ok(())
+}
+
+/// Allowed `| |v| - 1 |` for a decoded unit direction and `|a · b|` for two
+/// decoded frame axes. The analytic constructors normalize through
+/// `Frame3`, and rigid transforms keep their output within a few ULP of
+/// unit length, so 1e-9 accepts every carrier the kernel writes while
+/// refusing a hand-edited or corrupted frame long before it can distort
+/// evaluation.
+const ARENA_FRAME_TOLERANCE: f64 = 1e-9;
+
+fn arena_geometry_error(code: &'static str, subject: &str, reason: &str) -> IoError {
+    IoError::InvalidGeometry {
+        code,
+        reason: format!("arena {subject}: {reason}"),
+    }
+}
+
+fn validate_arena_finite(value: f64, subject: &str, label: &str) -> Result<(), IoError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(arena_geometry_error(
+            "non-finite",
+            subject,
+            &format!("{label} is non-finite"),
+        ))
+    }
+}
+
+fn validate_arena_position(point: Point3, subject: &str, label: &str) -> Result<(), IoError> {
+    for coordinate in point.0 {
+        validate_arena_finite(coordinate, subject, label)?;
+    }
+    Ok(())
+}
+
+fn validate_arena_positive(value: f64, subject: &str, label: &str) -> Result<(), IoError> {
+    validate_arena_finite(value, subject, label)?;
+    if value > 0.0 {
+        Ok(())
+    } else {
+        Err(arena_geometry_error(
+            "non-positive-length",
+            subject,
+            &format!("{label} {value} is not positive"),
+        ))
+    }
+}
+
+fn validate_arena_unit(direction: Vec3, subject: &str, label: &str) -> Result<(), IoError> {
+    for component in direction.0 {
+        validate_arena_finite(component, subject, label)?;
+    }
+    let length = direction.length();
+    if (length - 1.0).abs() <= ARENA_FRAME_TOLERANCE {
+        Ok(())
+    } else {
+        Err(arena_geometry_error(
+            "non-unit-direction",
+            subject,
+            &format!("{label} has length {length}, expected 1"),
+        ))
+    }
+}
+
+/// Every axis must be a unit vector and every pair orthogonal. Handedness
+/// is not checked: a reflected carrier keeps a left-handed frame.
+fn validate_arena_frame(axes: &[(Vec3, &str)], subject: &str) -> Result<(), IoError> {
+    for &(axis, label) in axes {
+        validate_arena_unit(axis, subject, label)?;
+    }
+    for (index, &(first, first_label)) in axes.iter().enumerate() {
+        for &(second, second_label) in &axes[index + 1..] {
+            let dot = first.dot(second);
+            if dot.abs() > ARENA_FRAME_TOLERANCE {
+                return Err(arena_geometry_error(
+                    "non-orthogonal-frame",
+                    subject,
+                    &format!("{first_label} · {second_label} = {dot}, expected 0"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks the invariants the analytic curve constructors establish. The
+/// decoder fills private fields directly, so without this a document could
+/// install a carrier no constructor would build.
+fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), IoError> {
+    match curve {
+        SerEdgeCurve::Line => Ok(()),
+        SerEdgeCurve::NurbsCurve(curve) => curve.validate().map_err(|err| IoError::ParseError {
+            reason: format!("invalid arena NURBS curve: {err}"),
+        }),
+        SerEdgeCurve::Circle(circle) => {
+            validate_arena_position(circle.center(), subject, "circle center")?;
+            validate_arena_positive(circle.radius(), subject, "circle radius")?;
+            validate_arena_frame(
+                &[
+                    (circle.normal(), "circle normal"),
+                    (circle.u_axis(), "circle u axis"),
+                    (circle.v_axis(), "circle v axis"),
+                ],
+                subject,
+            )
+        }
+        SerEdgeCurve::Ellipse(ellipse) => {
+            validate_arena_position(ellipse.center(), subject, "ellipse center")?;
+            validate_arena_positive(ellipse.semi_major(), subject, "ellipse semi-major axis")?;
+            validate_arena_positive(ellipse.semi_minor(), subject, "ellipse semi-minor axis")?;
+            validate_arena_frame(
+                &[
+                    (ellipse.normal(), "ellipse normal"),
+                    (ellipse.u_axis(), "ellipse u axis"),
+                    (ellipse.v_axis(), "ellipse v axis"),
+                ],
+                subject,
+            )
+        }
+        SerEdgeCurve::Hyperbola(hyperbola) => {
+            validate_arena_position(hyperbola.center(), subject, "hyperbola center")?;
+            validate_arena_positive(hyperbola.semi_major(), subject, "hyperbola semi-major axis")?;
+            validate_arena_positive(hyperbola.semi_minor(), subject, "hyperbola semi-minor axis")?;
+            validate_arena_frame(
+                &[
+                    (hyperbola.normal(), "hyperbola normal"),
+                    (hyperbola.u_axis(), "hyperbola u axis"),
+                    (hyperbola.v_axis(), "hyperbola v axis"),
+                ],
+                subject,
+            )
+        }
+        SerEdgeCurve::Parabola(parabola) => {
+            validate_arena_position(parabola.vertex(), subject, "parabola vertex")?;
+            validate_arena_positive(parabola.focal_length(), subject, "parabola focal length")?;
+            validate_arena_frame(
+                &[
+                    (parabola.axis_dir(), "parabola axis"),
+                    (parabola.u_axis(), "parabola u axis"),
+                ],
+                subject,
+            )
+        }
+    }
+}
+
+/// Surface counterpart of [`validate_arena_edge_curve`].
+fn validate_arena_face_surface(surface: &SerFaceSurface, subject: &str) -> Result<(), IoError> {
+    match surface {
+        SerFaceSurface::Plane { normal, d } => {
+            validate_arena_unit(*normal, subject, "plane normal")?;
+            validate_arena_finite(*d, subject, "plane offset")
+        }
+        SerFaceSurface::Nurbs(surface) => surface.validate().map_err(|err| IoError::ParseError {
+            reason: format!("invalid arena NURBS surface: {err}"),
+        }),
+        SerFaceSurface::Cylinder(cylinder) => {
+            validate_arena_position(cylinder.origin(), subject, "cylinder origin")?;
+            validate_arena_positive(cylinder.radius(), subject, "cylinder radius")?;
+            validate_arena_frame(
+                &[
+                    (cylinder.axis(), "cylinder axis"),
+                    (cylinder.x_axis(), "cylinder x axis"),
+                    (cylinder.y_axis(), "cylinder y axis"),
+                ],
+                subject,
+            )
+        }
+        SerFaceSurface::Cone(cone) => {
+            validate_arena_position(cone.apex(), subject, "cone apex")?;
+            let half_angle = cone.half_angle();
+            validate_arena_finite(half_angle, subject, "cone half-angle")?;
+            if half_angle <= 0.0 || half_angle >= std::f64::consts::FRAC_PI_2 {
+                return Err(arena_geometry_error(
+                    "angle-out-of-range",
+                    subject,
+                    &format!("cone half-angle {half_angle} is outside (0, π/2)"),
+                ));
+            }
+            validate_arena_frame(
+                &[
+                    (cone.axis(), "cone axis"),
+                    (cone.x_axis(), "cone x axis"),
+                    (cone.y_axis(), "cone y axis"),
+                ],
+                subject,
+            )
+        }
+        SerFaceSurface::Sphere(sphere) => {
+            validate_arena_position(sphere.center(), subject, "sphere center")?;
+            validate_arena_positive(sphere.radius(), subject, "sphere radius")?;
+            validate_arena_frame(
+                &[
+                    (sphere.x_axis(), "sphere x axis"),
+                    (sphere.y_axis(), "sphere y axis"),
+                    (sphere.z_axis(), "sphere z axis"),
+                ],
+                subject,
+            )
+        }
+        SerFaceSurface::Torus(torus) => {
+            validate_arena_position(torus.center(), subject, "torus center")?;
+            validate_arena_positive(torus.major_radius(), subject, "torus major radius")?;
+            validate_arena_positive(torus.minor_radius(), subject, "torus minor radius")?;
+            validate_arena_frame(
+                &[
+                    (torus.x_axis(), "torus x axis"),
+                    (torus.y_axis(), "torus y axis"),
+                    (torus.z_axis(), "torus z axis"),
+                ],
+                subject,
+            )
+        }
+    }
 }
 
 fn arena_edge_error(edge_index: usize, reason: &str) -> IoError {

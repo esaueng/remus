@@ -86,6 +86,16 @@ pub enum IoError {
         reason: String,
     },
 
+    /// Decoded exact geometry violates a carrier invariant (a non-unit or
+    /// non-orthogonal frame, a non-positive radius, a non-finite value).
+    #[error("invalid geometry ({code}): {reason}")]
+    InvalidGeometry {
+        /// Stable diagnostic code for the refusal, e.g. `non-unit-direction`.
+        code: &'static str,
+        /// Human-readable context; not a stable wire contract.
+        reason: String,
+    },
+
     /// An unsupported STEP entity was encountered.
     #[error("unsupported STEP entity: {entity}")]
     UnsupportedEntity {

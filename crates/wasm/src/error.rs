@@ -821,7 +821,8 @@ impl From<remus_io::IoError> for StructuredWasmError {
                 actual,
             } => Self::resource_limit(message, resource, limit, actual),
             remus_io::IoError::ParseError { .. } => Self::invalid_argument(message, None),
-            remus_io::IoError::InvalidValidationProperties { code, .. } => {
+            remus_io::IoError::InvalidValidationProperties { code, .. }
+            | remus_io::IoError::InvalidGeometry { code, .. } => {
                 let mut structured = Self::invalid_argument(message, None);
                 structured
                     .details
