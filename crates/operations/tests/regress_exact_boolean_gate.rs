@@ -12,7 +12,9 @@
 use remus_math::mat::Mat4;
 use remus_math::vec::Point3;
 use remus_operations::OperationsError;
-use remus_operations::boolean::{BooleanOp, boolean, boolean_with_entity_evolution};
+use remus_operations::boolean::{
+    BooleanOp, boolean, boolean_with_entity_evolution, boolean_with_evolution,
+};
 use remus_operations::classify::{PointClassification, classify_points};
 use remus_operations::copy::copy_solid;
 use remus_operations::journal_ops::boolean_journaled_with_operation;
@@ -44,6 +46,15 @@ fn via_journal(
     b: SolidId,
 ) -> Result<SolidId, OperationsError> {
     boolean_journaled_with_operation(topo, op, a, b).map(|r| r.solid)
+}
+
+fn via_face_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, OperationsError> {
+    boolean_with_evolution(topo, op, a, b).map(|(solid, _)| solid)
 }
 
 const ENTRIES: [(&str, Entry); 2] = [
@@ -152,14 +163,120 @@ fn centred_internal_cavity_cut_passes_the_gate() {
 }
 
 fn two_piece_cavity_fixture() -> (Topology, SolidId, SolidId) {
+    two_piece_cavity_fixture_at(1.0, Point3::new(0.0, 0.0, 0.0), false, 2.0)
+}
+
+fn two_piece_cavity_fixture_at(
+    scale: f64,
+    origin: Point3,
+    second_piece: bool,
+    tool_side: f64,
+) -> (Topology, SolidId, SolidId) {
     let mut topo = Topology::new();
-    let a = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let b = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    transform_solid(&mut topo, b, &Mat4::translation(20.0, 0.0, 0.0)).unwrap();
+    let side = 10.0 * scale;
+    let a = make_box(&mut topo, side, side, side).unwrap();
+    let b = make_box(&mut topo, side, side, side).unwrap();
+    transform_solid(
+        &mut topo,
+        a,
+        &Mat4::translation(origin.x(), origin.y(), origin.z()),
+    )
+    .unwrap();
+    transform_solid(
+        &mut topo,
+        b,
+        &Mat4::translation(origin.x() + 20.0 * scale, origin.y(), origin.z()),
+    )
+    .unwrap();
     let blank = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
-    let tool = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
-    transform_solid(&mut topo, tool, &Mat4::translation(4.0, 4.0, 4.0)).unwrap();
+    let tool_size = tool_side * scale;
+    let tool = make_box(&mut topo, tool_size, tool_size, tool_size).unwrap();
+    let wall = (side - tool_size) * 0.5;
+    let piece_x = if second_piece { 20.0 * scale } else { 0.0 };
+    transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::translation(
+            origin.x() + piece_x + wall,
+            origin.y() + wall,
+            origin.z() + wall,
+        ),
+    )
+    .unwrap();
     (topo, blank, tool)
+}
+
+#[test]
+fn thin_multi_piece_cavity_has_valid_raw_exact_geometry() {
+    let (mut topo, blank, tool) =
+        two_piece_cavity_fixture_at(1.0, Point3::new(0.0, 0.0, 0.0), false, 9.98);
+    let solid =
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, blank, tool).unwrap();
+    assert!(validate::validate_solid(&topo, solid).unwrap().is_valid());
+    assert_eq!(topo.solid(solid).unwrap().inner_shells().len(), 1);
+    assert!((solid_volume(&topo, solid, 1e-4).unwrap() - 1_005.988_008).abs() < 1e-6);
+}
+
+#[test]
+fn thin_multi_piece_cavity_cut_preserves_material_at_scale_and_either_piece() {
+    let entries: [(&str, Entry); 4] = [
+        ("boolean", boolean),
+        ("boolean_with_evolution", via_face_evolution),
+        ENTRIES[0],
+        ENTRIES[1],
+    ];
+    for scale in [1.0, 1e-3, 1e3] {
+        let origin = Point3::new(-7.0 * scale, 11.0 * scale, -3.0 * scale);
+        for second_piece in [false, true] {
+            for (name, entry) in entries {
+                let (mut topo, blank, tool) =
+                    two_piece_cavity_fixture_at(scale, origin, second_piece, 9.98);
+                let solid = entry(&mut topo, BooleanOp::Cut, blank, tool).unwrap_or_else(|error| {
+                    panic!("{name} scale={scale} second={second_piece}: {error}")
+                });
+                assert!(validate::validate_solid(&topo, solid).unwrap().is_valid());
+                assert_eq!(topo.solid(solid).unwrap().inner_shells().len(), 1);
+                let expected = 1_005.988_008 * scale.powi(3);
+                assert!(
+                    (solid_volume(&topo, solid, 1e-4 * scale).unwrap() - expected).abs()
+                        < 1e-6 * scale.powi(3)
+                );
+                let piece_x = if second_piece { 20.0 } else { 0.0 };
+                let point =
+                    |x, y, z| origin + remus_math::vec::Vec3::new(x * scale, y * scale, z * scale);
+                assert_eq!(
+                    classify_points(
+                        &topo,
+                        solid,
+                        &[
+                            point(piece_x + 5.0, 5.0, 5.0),
+                            point(piece_x + 0.005, 5.0, 5.0),
+                            point(25.0 - piece_x, 5.0, 5.0),
+                            point(15.0, 5.0, 5.0),
+                        ],
+                        0.01 * scale,
+                        1e-7
+                    )
+                    .unwrap(),
+                    [
+                        PointClassification::Outside,
+                        PointClassification::Inside,
+                        PointClassification::Inside,
+                        PointClassification::Outside,
+                    ]
+                );
+                if name == "boolean_journaled" {
+                    assert!(matches!(
+                        topo.journal().entries().last().unwrap().payload(),
+                        EntryPayload::Evolution {
+                            origin: RecordedOrigin::Construction,
+                            ..
+                        }
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn assert_two_piece_cavity(topo: &Topology, solid: SolidId) {
