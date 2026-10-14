@@ -77,8 +77,12 @@ def merged_prs(repo, base, head):
         if REFRESH_SUBJECT.match(subject):
             continue
         match = PR_SUBJECT.search(subject)
-        if match and accept(int(match.group(1) or match.group(2))):
-            continue
+        if match:
+            number = int(match.group(1) or match.group(2))
+            # Only this commit's own PR settles it: a subject may name another
+            # PR merged in the same span (a rebased follow-up, for example).
+            if accept(number) and pulls[number].get('merge_commit_sha') == commit['sha']:
+                continue
         # Commits of a merge-commit landing, or a subject without its PR number.
         for pull in api(f'repos/{repo}/commits/{commit["sha"]}/pulls'):
             accept(pull['number'], pull)

@@ -175,6 +175,19 @@ class PackageRefreshTests(unittest.TestCase):
         # A carried declaration never excuses a hard limit.
         self.assertEqual(self.gate(body, 140 * KIB, hard_limit=True), ['raw-hard'])
 
+    def test_subject_naming_another_span_pr_still_looks_up_its_own_pr(self):
+        own = 'WASM-Size: +70 KiB raw, rebased follow-up, Tier: core'
+        # A rebase-landed commit whose subject names #11, which merged earlier in
+        # the same span: the commit's own PR (#18) must still be found and carried.
+        follow_up = pull(18, '2' * 40, own)
+        self.history([commit('1' * 40, 'feat(ops): curve projection (#11)'),
+                      commit('2' * 40, 'fix(ops): follow up (#11)')],
+                     [pull(11, '1' * 40, 'No size change.'), follow_up],
+                     {'2' * 40: [follow_up]})
+        body = self.description()
+        self.assertIn(f'{own} (carried from #18)', body.splitlines())
+        self.assertEqual(self.gate(body, 70 * KIB), [])
+
     def test_growth_within_the_threshold_needs_no_carried_line(self):
         self.history([commit('1' * 40, 'fix(ops): small change (#11)')],
                      [pull(11, '1' * 40, 'No size change worth declaring.')])
