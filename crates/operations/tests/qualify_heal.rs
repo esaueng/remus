@@ -771,10 +771,10 @@ fn run_fix_matrix(
 
 // ── The matrix ──
 
-/// Wire-order defects (swapped edge order): Auto commits exactly via reorder
-/// (disclosed `WireReordered`); On refuses typed (the gap pass vetoes with
-/// `ClosureGapTooLarge` after reorder restores the chain); Off refuses typed
-/// (validation vetoes).
+/// Wire-order defects (swapped edge order): Auto and On commit exactly via
+/// reorder (disclosed `WireReordered`); Off refuses typed (validation
+/// vetoes). On used to refuse with `ClosureGapTooLarge`: its closure pass
+/// re-read the original unordered wire instead of the reordered one (B100).
 #[test]
 fn b17_wire_order_matrix() {
     let mut failures = Vec::new();
@@ -792,7 +792,7 @@ fn b17_wire_order_matrix() {
             });
             match remus_operations::heal::fix_shape_verified(&mut topo, solid, &config, Some(TOL)) {
                 Ok(report) => {
-                    if policy != Policy::Auto {
+                    if policy == Policy::Off {
                         failures.push(format!(
                             "wire-order {cell}: unexpectedly committed ({:?})",
                             report.fixing.actions
@@ -825,10 +825,10 @@ fn b17_wire_order_matrix() {
                     );
                 }
                 Err(error) => {
-                    if policy == Policy::Auto {
-                        failures.push(format!("wire-order {cell}: unexpected {error:?}"));
-                    } else {
+                    if policy == Policy::Off {
                         assert_typed_refusal(&error, "wire-order", &cell, &mut failures);
+                    } else {
+                        failures.push(format!("wire-order {cell}: unexpected {error:?}"));
                     }
                 }
             }
