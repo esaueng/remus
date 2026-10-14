@@ -1847,7 +1847,7 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
     // `DURAND_KERNER_RECORD_FROM + k` sweeps.
     let mut recorded: Vec<(u64, DurandKernerState)> = Vec::new();
     for sweep in 0..DURAND_KERNER_SWEEPS {
-        let mut max_step = 0.0_f64;
+        let mut converged = true;
         for i in 0..4 {
             let mut denom = Complex::new(1.0, 0.0);
             let mut first_factor = true;
@@ -1862,14 +1862,19 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
                     first_factor = false;
                 }
             }
-            if denom.norm() < 1e-300 {
+            if denom.norm_below(1e-300) {
                 continue;
             }
             let step = eval(r[i]) / denom;
             r[i] = r[i] - step;
-            max_step = max_step.max(step.norm());
+            // The old maximum ignored NaN norms and was used only for the
+            // convergence comparison. Once one step reaches the threshold,
+            // later norms cannot restore convergence; still update every root.
+            if converged && step.norm_at_least(1e-14) {
+                converged = false;
+            }
         }
-        if max_step < 1e-14 {
+        if converged {
             break;
         }
         let updates = sweep + 1;
@@ -1984,6 +1989,44 @@ impl Complex {
     }
     fn norm(self) -> f64 {
         self.re.hypot(self.im)
+    }
+
+    /// Decide only norms well away from a positive normal threshold.
+    /// For finite components, m <= hypot <= sqrt(2)*m, where m is the
+    /// largest absolute component. The factor-two bands keep rounding away
+    /// from the decision; the whole middle band uses the original hypot.
+    /// No squares are formed, so tiny components cannot underflow the test.
+    fn norm_below_bound(self, threshold: f64) -> Option<bool> {
+        let half = threshold * 0.5;
+        let twice = threshold * 2.0;
+        if threshold <= 0.0
+            || !half.is_normal()
+            || !twice.is_finite()
+            || !self.re.is_finite()
+            || !self.im.is_finite()
+        {
+            return None;
+        }
+        let (a, b) = (self.re.abs(), self.im.abs());
+        if a <= half && b <= half {
+            Some(true)
+        } else if a >= twice || b >= twice {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    fn norm_below(self, threshold: f64) -> bool {
+        self.norm_below_bound(threshold)
+            .unwrap_or_else(|| self.norm() < threshold)
+    }
+
+    fn norm_at_least(self, threshold: f64) -> bool {
+        // Do not negate `norm_below`: hypot(NaN, finite) must make BOTH
+        // comparisons false, matching the old maximum's NaN suppression.
+        self.norm_below_bound(threshold)
+            .map_or_else(|| self.norm() >= threshold, |below| !below)
     }
 
     /// `Complex::new(1.0, 0.0) * self`, spelled out. The product's fused
@@ -4398,6 +4441,224 @@ mod plane_torus_oracle_tests;
 
 #[cfg(test)]
 mod quartic_cycle_tests;
+
+#[cfg(test)]
+mod torus_norm_tests {
+    //! Threshold decisions preserve the original hypot and NaN/max semantics.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::{Complex, intersect_line_torus};
+    use crate::mat::Mat4;
+    use crate::surfaces::ToroidalSurface;
+    use crate::vec::{Point3, Vec3};
+
+    fn compare(value: Complex, threshold: f64) {
+        let norm = value.norm();
+        assert_eq!(
+            value.norm_below(threshold),
+            norm < threshold,
+            "below {:?} {:?} at {threshold:e}",
+            value.re,
+            value.im
+        );
+        assert_eq!(
+            value.norm_at_least(threshold),
+            norm >= threshold,
+            "at least {:?} {:?} at {threshold:e}",
+            value.re,
+            value.im
+        );
+    }
+
+    #[test]
+    fn component_bounds_match_hypot_on_threshold_neighbors_and_ieee_patterns() {
+        for threshold in [1e-300_f64, 1e-14] {
+            let mut values = vec![
+                0.0,
+                -0.0,
+                f64::from_bits(1),
+                f64::MIN_POSITIVE,
+                f64::MAX,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NAN,
+            ];
+            for center in [threshold * 0.5, threshold, threshold * 2.0] {
+                let mut below = center;
+                let mut above = center;
+                for _ in 0..8 {
+                    values.extend([below, -below, above, -above]);
+                    below = below.next_down();
+                    above = above.next_up();
+                }
+            }
+            for &real in &values {
+                for &imaginary in &values {
+                    compare(Complex::new(real, imaginary), threshold);
+                }
+            }
+            let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+            for _ in 0..20_000 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let real = f64::from_bits(state);
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                compare(Complex::new(real, f64::from_bits(state)), threshold);
+            }
+        }
+    }
+
+    #[test]
+    fn boolean_convergence_keeps_max_nan_suppression_and_infinity() {
+        let threshold = 1e-14;
+        let small = Complex::new(1e-18, -1e-18);
+        let nan = Complex::new(f64::NAN, 1.0);
+        for steps in [
+            [small; 4],
+            [nan; 4],
+            [small, nan, small, nan],
+            [small, Complex::new(f64::INFINITY, f64::NAN), nan, small],
+            [
+                small,
+                Complex::new(0.7 * threshold, 0.7 * threshold),
+                nan,
+                small,
+            ],
+            [
+                small,
+                Complex::new(0.8 * threshold, 0.8 * threshold),
+                nan,
+                small,
+            ],
+            [small, Complex::new(threshold, 0.0), nan, small],
+        ] {
+            let old = steps
+                .iter()
+                .fold(0.0_f64, |maximum, step| maximum.max(step.norm()))
+                < threshold;
+            let new = !steps.iter().any(|step| step.norm_at_least(threshold));
+            assert_eq!(new, old);
+        }
+    }
+
+    #[test]
+    fn unsupported_thresholds_and_boundary_bands_keep_the_original_norm() {
+        for threshold in [
+            0.0,
+            -1.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NAN,
+        ] {
+            let value = Complex::new(0.7, -0.8);
+            assert!(value.norm_below_bound(threshold).is_none());
+            compare(value, threshold);
+        }
+        for threshold in [1e-300, 1e-14] {
+            assert_eq!(
+                Complex::new(threshold * 0.25, threshold * 0.25).norm_below_bound(threshold),
+                Some(true)
+            );
+            assert_eq!(
+                Complex::new(threshold * 4.0, 0.0).norm_below_bound(threshold),
+                Some(false)
+            );
+            for factor in [0.7, 1.0, 1.7] {
+                assert!(
+                    Complex::new(threshold * factor, 0.0)
+                        .norm_below_bound(threshold)
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    fn direction(matrix: Mat4, v: Vec3) -> Vec3 {
+        Vec3::new(
+            matrix.0[0][0] * v.x() + matrix.0[0][1] * v.y() + matrix.0[0][2] * v.z(),
+            matrix.0[1][0] * v.x() + matrix.0[1][1] * v.y() + matrix.0[1][2] * v.z(),
+            matrix.0[2][0] * v.x() + matrix.0[2][1] * v.y() + matrix.0[2][2] * v.z(),
+        )
+    }
+
+    #[test]
+    fn torus_root_sets_match_independent_cartesian_sections_across_pose_and_scale() {
+        for scale in [0.1, 1.0, 10.0] {
+            for placed in [false, true] {
+                let pose = if placed {
+                    Mat4::translation(37.0 * scale, -91.0 * scale, 13.0 * scale)
+                        * Mat4::rotation_x(0.37)
+                        * Mat4::rotation_z(0.23)
+                } else {
+                    Mat4::identity()
+                };
+                let torus = ToroidalSurface::with_axis_and_ref_dir(
+                    pose.mul_point(Point3::new(0.0, 0.0, 0.0)),
+                    10.0 * scale,
+                    3.0 * scale,
+                    direction(pose, Vec3::new(0.0, 0.0, 1.0)),
+                    direction(pose, Vec3::new(1.0, 0.0, 0.0)),
+                )
+                .unwrap();
+                for speed in [0.25, 1.0, 3.5] {
+                    for (origin, axis, roots) in [
+                        (
+                            Point3::new(-15.0, 0.0, 0.0),
+                            Vec3::new(1.0, 0.0, 0.0),
+                            vec![2.0, 8.0, 22.0, 28.0],
+                        ),
+                        (
+                            Point3::new(10.0, 0.0, 5.0),
+                            Vec3::new(0.0, 0.0, -1.0),
+                            vec![2.0, 8.0],
+                        ),
+                        (
+                            Point3::new(0.0, 0.0, 5.0),
+                            Vec3::new(0.0, 0.0, -1.0),
+                            vec![],
+                        ),
+                        (
+                            Point3::new(10.0, 0.0, 0.0),
+                            Vec3::new(0.0, 0.0, 1.0),
+                            vec![-3.0, 3.0],
+                        ),
+                    ] {
+                        let origin = pose.mul_point(Point3::new(
+                            origin.x() * scale,
+                            origin.y() * scale,
+                            origin.z() * scale,
+                        ));
+                        let axis = direction(pose, axis * (scale * speed));
+                        let actual = intersect_line_torus(&torus, origin, axis);
+                        assert_eq!(
+                            actual.len(),
+                            roots.len(),
+                            "scale={scale} placed={placed} speed={speed}: {actual:?}"
+                        );
+                        for (&t, expected) in actual.iter().zip(roots) {
+                            assert!(
+                                (t - expected / speed).abs() < 1e-6,
+                                "scale={scale} placed={placed}: {t}"
+                            );
+                            let point = origin + axis * t - torus.center();
+                            let z = point.dot(torus.z_axis());
+                            let radial = (point - torus.z_axis() * z).length();
+                            assert!(
+                                ((radial - 10.0 * scale).hypot(z) - 3.0 * scale).abs()
+                                    < 1e-6 * scale
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

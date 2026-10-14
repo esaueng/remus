@@ -149,3 +149,32 @@ directories. Retain the first two readings as warmup evidence and exclude them
 from each API's six retained readings. Its native default memos are disabled,
 printed precision is 0.1 ms, and it performs source queries rather than edited
 WASM workflows; do not derive a cross-backend speed ratio from those readings.
+
+## Exact optimization comparisons
+
+`compare_runs.cjs` requires every saved semantic field, valid edits, the same
+selected source face and query/cache policy. It verifies recorded SHA256 claims
+against the actual files and compares all arena and display-buffer bytes,
+complete feature records, Float64 volume bits and mesh qualification. Missing
+fields on both sides still fail. It does not use the older comparison runner's
+optional near-equality allowances.
+
+After timing, replay the matched saved arenas in separate untimed processes to
+check every face's area bits and carrier, whole-solid area/volume/bounding-box
+bits, complete feature records and edge relations. Each arena gets a new kernel;
+normal module-local memos persist within each replay process. These extra
+queries never warm a measured process. Replay also asserts that read queries
+preserve the complete serialized input arena.
+
+```sh
+node scripts/perf/recognition-graph/replay_quantities.cjs "$baseline_kernel" "$baseline_run" > "$baseline_replay"
+node scripts/perf/recognition-graph/replay_quantities.cjs "$candidate_kernel" "$candidate_run" > "$candidate_replay"
+node scripts/perf/recognition-graph/compare_runs.cjs "$baseline_run" "$candidate_run" \
+  "$baseline_replay" "$candidate_replay" > "$qualification_json"
+node scripts/perf/recognition-graph/compare_runs.test.cjs
+```
+
+The comparator accepts the two run directories alone when replay is not needed.
+Its source/warmup/retained and artifact-pair counts are qualification counts,
+not counts of timed samples. Keep untraced quiet timings, loaded CPU samples
+and temporary work-count overlays separately attributed to their own packages.
