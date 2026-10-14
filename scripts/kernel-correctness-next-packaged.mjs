@@ -1,5 +1,6 @@
 /** Independent packaged witnesses for checkpoint identity, lofts and distances. */
 import assert from 'node:assert/strict';
+import { runB79PlanarHolePartitionsPackaged } from './b79-planar-hole-partitions-packaged.mjs';
 
 const surfaces = ['direct', 'executeBatch', 'executeBatchV2'];
 const translation = (x, y, z) => Float64Array.of(
@@ -321,5 +322,6 @@ export function runNextKernelCorrectnessPackaged({ BrepKernel }) {
   identityWitnesses(BrepKernel);
   distanceWitnesses(BrepKernel);
   loftWitnesses(BrepKernel);
+  runB79PlanarHolePartitionsPackaged({ BrepKernel });
   console.log('ok - checkpoint identities, checked batch handles, analytic distances and valid lofts');
 }
