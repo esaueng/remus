@@ -1619,3 +1619,111 @@ fn unify_still_reverts_a_merge_that_breaks_a_valid_input() {
         "the forged plans must exercise the revert rule"
     );
 }
+
+// ── Sub-tolerance edges (HC-9) ──────────────────────
+
+/// A 2³ box whose first edge is split 1e-9 short of its end. The face using
+/// it forward runs through the 1e-9 edge; the other face does too, or with
+/// `skip_on_reverse` jumps it, leaving a 1e-9 wire gap for `close_wire_gaps`.
+fn box_with_tiny_edge(topo: &mut Topology, skip_on_reverse: bool) -> SolidId {
+    let solid = crate::primitives::make_box(topo, 2.0, 2.0, 2.0).unwrap();
+    let target = remus_topology::explorer::solid_edges(topo, solid).unwrap()[0];
+    let (p, q) = {
+        let edge = topo.edge(target).unwrap();
+        (edge.start(), edge.end())
+    };
+    let (p_pos, q_pos) = (
+        topo.vertex(p).unwrap().point(),
+        topo.vertex(q).unwrap().point(),
+    );
+    let a = topo.add_vertex(remus_topology::vertex::Vertex::new(
+        q_pos + (p_pos - q_pos).normalize().unwrap() * 1e-9,
+        1e-7,
+    ));
+    let long = topo.add_edge(Edge::new(p, a, EdgeCurve::Line));
+    let tiny = topo.add_edge(Edge::new(a, q, EdgeCurve::Line));
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        let wid = topo.face(fid).unwrap().outer_wire();
+        let wire = topo.wire(wid).unwrap();
+        if !wire.edges().iter().any(|oe| oe.edge() == target) {
+            continue;
+        }
+        let mut edges = Vec::new();
+        for oe in wire.edges() {
+            if oe.edge() != target {
+                edges.push(*oe);
+            } else if oe.is_forward() {
+                edges.extend([OrientedEdge::new(long, true), OrientedEdge::new(tiny, true)]);
+            } else if skip_on_reverse {
+                edges.push(OrientedEdge::new(long, false));
+            } else {
+                edges.extend([
+                    OrientedEdge::new(tiny, false),
+                    OrientedEdge::new(long, false),
+                ]);
+            }
+        }
+        let new_wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        topo.set_face_boundary_wires(fid, new_wire, Vec::new())
+            .unwrap();
+    }
+    solid
+}
+
+#[test]
+fn heal_solid_collapses_a_sub_tolerance_edge() {
+    let mut topo = Topology::new();
+    let solid = box_with_tiny_edge(&mut topo, false);
+
+    let report = heal_solid(&mut topo, solid, 1e-7).expect("a 1e-9 edge must heal");
+
+    assert_eq!(report.vertices_merged, 1, "{report:?}");
+    // Both faces that ran through the tiny edge drop their use of it.
+    assert_eq!(report.degenerate_edges_removed, 2, "{report:?}");
+    assert_healed_box(&topo, solid);
+}
+
+#[test]
+fn heal_solid_collapses_a_gap_closed_sub_tolerance_edge() {
+    let mut topo = Topology::new();
+    let solid = box_with_tiny_edge(&mut topo, true);
+
+    let report = heal_solid(&mut topo, solid, 1e-7).expect("a 1e-9 edge must heal");
+
+    // Closing the gap merges the tiny edge's ends into a line self-loop.
+    assert_eq!(report.wire_gaps_closed, 1, "{report:?}");
+    assert_eq!(report.degenerate_edges_removed, 1, "{report:?}");
+    assert_healed_box(&topo, solid);
+}
+
+fn assert_healed_box(topo: &Topology, solid: SolidId) {
+    for eid in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
+        let edge = topo.edge(eid).unwrap();
+        assert_ne!(edge.start(), edge.end(), "line self-loop {eid:?} survived");
+    }
+    assert_eq!(
+        remus_topology::explorer::solid_edges(topo, solid)
+            .unwrap()
+            .len(),
+        12
+    );
+    // The merged corner may move by the 1e-9 edge length.
+    let volume = crate::measure::solid_volume(topo, solid, 1e-4).unwrap();
+    assert!((volume - 8.0).abs() < 1e-7, "volume {volume}");
+    let options = remus_check::classify::ClassifyOptions::default();
+    for (probe, expected) in [
+        (
+            Point3::new(1.0, 1.0, 1.0),
+            remus_check::classify::PointClassification::Inside,
+        ),
+        (
+            Point3::new(1.0, 1.0, 2.5),
+            remus_check::classify::PointClassification::Outside,
+        ),
+    ] {
+        assert_eq!(
+            remus_check::classify::classify_point(topo, solid, probe, &options).unwrap(),
+            expected
+        );
+    }
+}
