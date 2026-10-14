@@ -37,6 +37,16 @@ fn chain_curve_points(points: &[IntersectionPoint], segments: &mut Vec<(Point3, 
     }
 }
 
+/// The points of each carrier section curve, in order.
+fn section_polylines(
+    curves: &[remus_math::nurbs::intersection::IntersectionCurve],
+) -> Vec<Vec<Point3>> {
+    curves
+        .iter()
+        .map(|curve| curve.points.iter().map(|p| p.point).collect())
+        .collect()
+}
+
 /// A cross-section result: one or more planar faces on the cutting plane.
 #[derive(Debug)]
 pub struct Section {
@@ -69,6 +79,10 @@ pub struct Section {
 /// two-rim band; cuts through its rims or parallel to its axis return
 /// `Unsupported` until authoritative cap clipping is available. Contained
 /// cylindrical sections retain the existing 64-segment polygon approximation.
+/// Sphere, cone and torus sections are the same 64-chord polylines of the
+/// complete carrier, clipped to the face's trims where they cross its
+/// boundary; a curved section that leaves its face away from every boundary
+/// crossing, or a cone face spanning its apex, returns `Unsupported`.
 pub fn section(
     topo: &mut Topology,
     solid: SolidId,
@@ -121,25 +135,20 @@ pub fn section(
                 cylinder::append_section(topo, face, cyl, plane_point, normal, tol, &mut segments)?;
             }
             FaceSurface::Cone(cone) => {
-                let curves =
-                    remus_math::analytic_intersection::intersect_plane_cone(cone, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                let loops = curved::cone_section(topo, fid, cone, normal, d)?;
+                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
             }
             FaceSurface::Sphere(sphere) => {
                 let curves =
                     remus_math::analytic_intersection::intersect_plane_sphere(sphere, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                let loops = section_polylines(&curves);
+                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
             }
             FaceSurface::Torus(torus) => {
                 let curves =
                     remus_math::analytic_intersection::intersect_plane_torus(torus, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                let loops = section_polylines(&curves);
+                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
             }
         }
     }
@@ -1244,5 +1253,266 @@ mod cylinder {
             previous = next;
         }
         Ok(())
+    }
+}
+
+mod curved {
+    //! Sections of sphere, cone and torus faces, clipped to the face's trims.
+    //!
+    //! The carrier's plane section is a set of polylines on the complete,
+    //! untrimmed surface. A face is only a patch of it, so each sample is
+    //! classified against the face's trims and the polylines are cut where
+    //! they cross its boundary. The crossings are taken on the boundary
+    //! polygons the planar neighbours section (`wire_polygon`), so a clipped
+    //! arc ends exactly where the neighbouring face's segment does.
+
+    use std::f64::consts::TAU;
+
+    use remus_math::surfaces::ConicalSurface;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::face::FaceId;
+
+    use crate::OperationsError;
+    use crate::dot_normal_point;
+
+    fn unsupported(reason: String) -> OperationsError {
+        OperationsError::Unsupported {
+            operation: "section",
+            reason,
+        }
+    }
+
+    /// Samples per full turn of a cone section, matching the sphere and
+    /// cylinder arms.
+    const CONE_SAMPLES: usize = 64;
+
+    /// The plane section of the cone nappe that holds `face`, as polylines on
+    /// the complete nappe: one closed loop (last point repeating the first)
+    /// for an ellipse or circle, open branches for a parabola or hyperbola,
+    /// cut off well beyond the face so clipping still sees them leave it.
+    pub(super) fn cone_section(
+        topo: &Topology,
+        face: FaceId,
+        cone: &ConicalSurface,
+        normal: Vec3,
+        d: f64,
+    ) -> Result<Vec<Vec<Point3>>, OperationsError> {
+        // Generator distances of the face's boundary; a face on both nappes,
+        // or touching the apex, has no single section branch.
+        let mut reach: f64 = 0.0;
+        let mut nappe: Option<bool> = None;
+        for point in boundary_samples(topo, face)? {
+            let (_, v) = cone.project_point(point);
+            let height = cone.axis().dot(point - cone.apex());
+            if height.abs() <= Tolerance::new().linear {
+                return Err(unsupported(
+                    "conical section of a face reaching its apex".into(),
+                ));
+            }
+            if nappe.is_some_and(|above| above != (height > 0.0)) {
+                return Err(unsupported("conical face spans both nappes".into()));
+            }
+            nappe = Some(height > 0.0);
+            reach = reach.max(v.abs());
+        }
+        let Some(above) = nappe else {
+            return Ok(Vec::new());
+        };
+        let limit = 4.0 * reach;
+        let apex_offset = d - dot_normal_point(normal, cone.apex());
+        // Generator parameter where the plane meets longitude `u`, when on
+        // the face's nappe and within the limit.
+        let at = |u: f64| -> Option<f64> {
+            let generator = cone.evaluate(u, 1.0) - cone.apex();
+            let v = apex_offset / normal.dot(generator);
+            let height = cone.axis().dot(generator) * v;
+            (v.is_finite() && height != 0.0 && (height > 0.0) == above && v.abs() <= limit)
+                .then_some(v)
+        };
+        let point = |u: f64, v: f64| cone.evaluate(u, v);
+
+        #[allow(clippy::cast_precision_loss)]
+        let longitude = |i: usize| TAU * i as f64 / CONE_SAMPLES as f64;
+        let valid: Vec<Option<f64>> = (0..CONE_SAMPLES).map(|i| at(longitude(i))).collect();
+        if valid.iter().all(Option::is_some) {
+            let mut ring: Vec<Point3> = valid
+                .iter()
+                .enumerate()
+                .map(|(i, v)| point(longitude(i), v.unwrap_or_default()))
+                .collect();
+            ring.push(ring[0]);
+            return Ok(vec![ring]);
+        }
+        let Some(gap) = valid.iter().position(Option::is_none) else {
+            return Ok(Vec::new());
+        };
+        // Walk once round from an invalid sample, cutting a branch at every
+        // invalid one; each branch end is extended to the limit (or the
+        // nappe's edge) by bisection on the longitude, so it leaves the face.
+        let branch_end = |inside: f64, outside: f64| -> Point3 {
+            let (mut good, mut bad) = (inside, outside);
+            for _ in 0..48 {
+                let mid = f64::midpoint(good, bad);
+                if at(mid).is_some() {
+                    good = mid;
+                } else {
+                    bad = mid;
+                }
+            }
+            point(good, at(good).unwrap_or_default())
+        };
+        let mut branches = Vec::new();
+        let mut current: Vec<Point3> = Vec::new();
+        for step in 1..=CONE_SAMPLES {
+            let i = (gap + step) % CONE_SAMPLES;
+            let previous = (gap + step - 1) % CONE_SAMPLES;
+            let (u, u_previous) = (longitude(i), longitude(previous));
+            // Unwrapped so bisection never runs the long way round.
+            let u_previous = if u_previous > u {
+                u_previous - TAU
+            } else {
+                u_previous
+            };
+            match (valid[previous], valid[i]) {
+                (None, Some(v)) => current = vec![branch_end(u, u_previous), point(u, v)],
+                (Some(_), Some(v)) => current.push(point(u, v)),
+                (Some(_), None) => {
+                    current.push(branch_end(u_previous, u));
+                    branches.push(std::mem::take(&mut current));
+                }
+                (None, None) => {}
+            }
+        }
+        Ok(branches)
+    }
+
+    /// Points along every boundary edge of `face`.
+    fn boundary_samples(topo: &Topology, face: FaceId) -> Result<Vec<Point3>, OperationsError> {
+        let face = topo.face(face)?;
+        let mut points = Vec::new();
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oriented in topo.wire(wire)?.edges() {
+                let edge = topo.edge(oriented.edge())?;
+                let start = topo.vertex(edge.start())?.point();
+                let end = topo.vertex(edge.end())?.point();
+                let (t0, t1) = edge.domain_with_endpoints(start, end);
+                for k in 0..=8 {
+                    let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+                    points.push(edge.curve().evaluate_with_endpoints(t, start, end));
+                }
+            }
+        }
+        Ok(points)
+    }
+
+    /// Where the cutting plane crosses the face's boundary polygons, by the
+    /// same arithmetic the planar arm applies to the same polygons. `None`
+    /// when a whole boundary wire lies in the plane: the section then runs
+    /// along the boundary there.
+    fn boundary_crossings(
+        topo: &Topology,
+        face: FaceId,
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+    ) -> Result<Option<Vec<Point3>>, OperationsError> {
+        let coplanar_tol = tol.linear * 100.0;
+        let face = topo.face(face)?;
+        let mut crossings = Vec::new();
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let polygon = crate::boolean::wire_polygon(topo, wire)?;
+            let dists: Vec<f64> = polygon
+                .iter()
+                .map(|v| dot_normal_point(normal, *v) - d)
+                .collect();
+            if !dists.is_empty() && dists.iter().all(|d| d.abs() < coplanar_tol) {
+                return Ok(None);
+            }
+            let n = polygon.len();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let (di, dj) = (dists[i], dists[j]);
+                if di.abs() < tol.linear {
+                    crossings.push(polygon[i]);
+                } else if (di > tol.linear && dj < -tol.linear)
+                    || (di < -tol.linear && dj > tol.linear)
+                {
+                    let t = di / (di - dj);
+                    let (pi, pj) = (polygon[i], polygon[j]);
+                    crossings.push(Point3::new(
+                        (pj.x() - pi.x()).mul_add(t, pi.x()),
+                        (pj.y() - pi.y()).mul_add(t, pi.y()),
+                        (pj.z() - pi.z()).mul_add(t, pi.z()),
+                    ));
+                }
+            }
+        }
+        Ok(Some(crossings))
+    }
+
+    /// Keep the parts of `polylines` (carrier section curves) that lie on
+    /// `face`, ending each at the boundary crossing it leaves the face by.
+    pub(super) fn append_clipped(
+        topo: &Topology,
+        face: FaceId,
+        polylines: &[Vec<Point3>],
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+        segments: &mut Vec<(Point3, Point3)>,
+    ) -> Result<(), OperationsError> {
+        if polylines.iter().all(|p| p.len() < 2) {
+            return Ok(());
+        }
+        let Some(crossings) = boundary_crossings(topo, face, normal, d, tol)? else {
+            // The section runs along a boundary wire: every polyline is the
+            // face's own edge, shared with its neighbour (and deduplicated).
+            for polyline in polylines {
+                segments.extend(polyline.windows(2).map(|w| (w[0], w[1])));
+            }
+            return Ok(());
+        };
+        let crossing_near = |a: Point3, b: Point3| -> Result<Point3, OperationsError> {
+            let span = (b - a).length();
+            crossings
+                .iter()
+                .map(|&x| (segment_distance(x, a, b), x))
+                .filter(|(distance, _)| *distance <= span.max(tol.linear * 1000.0))
+                .min_by(|l, r| l.0.total_cmp(&r.0))
+                .map(|(_, x)| x)
+                .ok_or_else(|| {
+                    unsupported(
+                        "a curved section leaves its face away from every boundary crossing".into(),
+                    )
+                })
+        };
+        for polyline in polylines {
+            let inside = polyline
+                .iter()
+                .map(|&p| remus_check::classify::surface_point_in_face(topo, face, p))
+                .collect::<Result<Vec<bool>, _>>()?;
+            for (w, side) in polyline.windows(2).zip(inside.windows(2)) {
+                match (side[0], side[1]) {
+                    (true, true) => segments.push((w[0], w[1])),
+                    (true, false) => segments.push((w[0], crossing_near(w[0], w[1])?)),
+                    (false, true) => segments.push((crossing_near(w[0], w[1])?, w[1])),
+                    (false, false) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
+        let ab = b - a;
+        let length_squared = ab.length_squared();
+        let t = if length_squared > 0.0 {
+            ((p - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p - (a + ab * t)).length()
     }
 }
