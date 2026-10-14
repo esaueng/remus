@@ -3680,6 +3680,27 @@ fn analytic_torus_signed_volume(
         }
     }
 
+    // A wire of closed seams alone, each run once each way (`make_torus`, a
+    // torus thickened whole), bounds the complete torus; its single vertex
+    // gives no window, and reading it as an empty one dropped the face.
+    let whole = wire.edges().iter().all(|oe| {
+        let uses: Vec<bool> = wire
+            .edges()
+            .iter()
+            .filter(|o| o.edge() == oe.edge())
+            .map(remus_topology::wire::OrientedEdge::is_forward)
+            .collect();
+        uses.len() == 2
+            && uses[0] != uses[1]
+            && topo
+                .edge(oe.edge())
+                .is_ok_and(remus_topology::edge::Edge::is_closed)
+    });
+    if whole {
+        u_vals = vec![0.0, std::f64::consts::TAU];
+        v_vals = vec![0.0, std::f64::consts::TAU];
+    }
+
     let v_min = v_vals.iter().copied().fold(f64::INFINITY, f64::min);
     let v_max = v_vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if (v_max - v_min).abs() < 1e-15 {
@@ -3700,7 +3721,9 @@ fn analytic_torus_signed_volume(
         let mut sorted = v_vals.clone();
         sorted.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         sorted.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-        if sorted.len() < 3 {
+        if whole {
+            (v_min, v_max)
+        } else if sorted.len() < 3 {
             if (v_max - v_min) > std::f64::consts::PI + 1e-9 {
                 return Err(crate::OperationsError::InvalidInput {
                     reason:
@@ -3714,7 +3737,11 @@ fn analytic_torus_signed_volume(
         }
     };
 
-    let u_range = compute_angular_range(&mut u_vals);
+    let u_range = if whole {
+        (0.0, std::f64::consts::TAU)
+    } else {
+        compute_angular_range(&mut u_vals)
+    };
 
     let big_r = tor.major_radius();
     let small_r = tor.minor_radius();

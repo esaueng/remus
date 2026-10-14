@@ -251,6 +251,11 @@ fn thicken_curved(
         let start = positions[&source.start].0;
         let end = positions[&source.end].0;
         let curve = match &source.curve {
+            // A closed line seam (a torus's fundamental polygon) is a point,
+            // copied as such; seams carry no wall.
+            EdgeCurve::Line if source.start == source.end && use_count[&edge] > 1 => {
+                OffsetCurve::Line
+            }
             EdgeCurve::Line => {
                 let (a, b) = (
                     offset_positions[&source.start],
@@ -519,6 +524,20 @@ fn thicken_curved(
         faces.push(topo.add_face(face));
     }
 
+    if walls.is_empty() {
+        // A face with no boundary but seams is closed (a whole torus): the
+        // two caps never meet, and the one further along the carrier normal
+        // encloses the other as its cavity.
+        let (bottom, top) = (faces[0], faces[1]);
+        let (outer, inner) = if delta > 0.0 {
+            (top, bottom)
+        } else {
+            (bottom, top)
+        };
+        let outer = topo.add_shell(Shell::new(vec![outer])?);
+        let inner = topo.add_shell(Shell::new(vec![inner])?);
+        return Ok(topo.add_solid(Solid::new(outer, vec![inner])));
+    }
     let shell = topo.add_shell(Shell::new(faces)?);
     Ok(topo.add_solid(Solid::new(shell, Vec::new())))
 }
