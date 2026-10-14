@@ -13,9 +13,98 @@ use super::edge_splitting::split_boundary_edges_at_3d_points;
 use crate::ds::Rank;
 use crate::error::AlgoError;
 
+/// Recognize the exact circular partition of a sphere hemisphere's equator.
+/// Every piece shares the same stored circle frame, follows one direction,
+/// and the explicit native spans join into exactly one complete turn. This
+/// is a seam-free rim even though its edges have analytic circle carriers.
+pub(super) fn is_sphere_equator_partition(
+    surface: &FaceSurface,
+    edges: &[OrientedPCurveEdge],
+    tolerance: f64,
+) -> bool {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+
+    let FaceSurface::Sphere(sphere) = surface else {
+        return false;
+    };
+    let Some(first) = edges.first() else {
+        return false;
+    };
+    let EdgeCurve::Circle(reference) = &first.curve_3d else {
+        return false;
+    };
+    let near = |a: Point3, b: Point3| {
+        let distance = (a - b).length();
+        distance.is_finite() && distance <= tolerance
+    };
+    if edges.len() < 4
+        || !tolerance.is_finite()
+        || tolerance <= 0.0
+        || !reference.radius().is_finite()
+        || !sphere.radius().is_finite()
+        || reference.radius() <= 0.0
+        || sphere.radius() <= 0.0
+        || !near(reference.center(), sphere.center())
+        || (reference.radius() - sphere.radius()).abs() > tolerance
+    {
+        return false;
+    }
+    let mut signed_turn = 0.0_f64;
+    let mut positive = false;
+    for (index, edge) in edges.iter().enumerate() {
+        let EdgeCurve::Circle(circle) = &edge.curve_3d else {
+            return false;
+        };
+        // Exact frame identity is a structural qualification, rather than a
+        // new geometric merge tolerance. Primitive copies/transforms retain
+        // the same frame for every piece of this one equator.
+        if circle.center() != reference.center()
+            || circle.normal() != reference.normal()
+            || circle.u_axis() != reference.u_axis()
+            || circle.v_axis() != reference.v_axis()
+            || circle.radius().to_bits() != reference.radius().to_bits()
+            || edge.trim.is_none()
+        {
+            return false;
+        }
+        let (start, end) = edge.traversal_domain();
+        let delta = end - start;
+        if ![start, end, delta].into_iter().all(f64::is_finite)
+            || start.abs() > 64.0 * TAU
+            || end.abs() > 64.0 * TAU
+            || delta.abs() <= 1e-12
+            || delta.abs() > FRAC_PI_2 + 1e-12
+            || !near(circle.evaluate(start), edge.start_3d)
+            || !near(circle.evaluate(end), edge.end_3d)
+        {
+            return false;
+        }
+        if index == 0 {
+            positive = delta > 0.0;
+        }
+        if (delta > 0.0) != positive {
+            return false;
+        }
+        let next = &edges[(index + 1) % edges.len()];
+        if !near(edge.end_3d, next.start_3d) {
+            return false;
+        }
+        let parameter_gap = (end - next.traversal_domain().0).rem_euclid(TAU);
+        if parameter_gap.min(TAU - parameter_gap) > 1e-12 {
+            return false;
+        }
+        signed_turn += delta;
+    }
+    (signed_turn.abs() - TAU).abs() <= 1e-12 * edges.len() as f64
+}
+
+#[cfg(test)]
+#[path = "special_cases/equator_partition_tests.rs"]
+mod equator_partition_tests;
+
 /// Split a face with no seam edges directly into cap + remainder sub-faces.
 ///
-/// Faces whose boundary consists entirely of Line edges (no seam edges)
+/// Faces whose boundary consists of lines or an exact spherical equator
 /// can't be split by the wire builder (it needs vertical seam connections).
 /// This function bypasses the wire builder and constructs sub-faces
 /// geometrically from the section edges:
@@ -125,22 +214,39 @@ pub(super) fn split_noseam_face_direct(
         );
     };
 
-    // Boundary edges covered by a cap arc: both segment endpoints lie on
-    // the arc's circle within its angular span. Those edges are replaced
-    // by the (exact) arc in the cap; the remainder must not reuse them.
-    let covered: Vec<bool> = boundary_edges
-        .iter()
-        .map(|be| cap_edges.iter().any(|arc| arc_covers_segment(arc, be, tol)))
-        .collect();
-    let coincident: Vec<bool> = cap_edges
-        .iter()
-        .map(|arc| {
-            boundary_edges
-                .iter()
-                .zip(&covered)
-                .any(|(be, &cov)| cov && arc_covers_segment(arc, be, tol))
-        })
-        .collect();
+    // The new exact-equator adapter must recognize circular rim coverage.
+    // Historical chord coverage keeps its established Line-only policy.
+    let exact_equator = is_sphere_equator_partition(surface, boundary_edges, tol);
+    let covers =
+        |arc: &OrientedPCurveEdge, boundary: &OrientedPCurveEdge| -> Result<bool, AlgoError> {
+            if exact_equator && matches!(boundary.curve_3d, EdgeCurve::Circle(_)) {
+                circular_rim_coverage::covers(arc, boundary, tol).ok_or_else(|| {
+                    AlgoError::FaceSplitFailed(
+                        "exact spherical equator overlap is unresolved".to_owned(),
+                    )
+                })
+            } else {
+                Ok(arc_covers_segment(arc, boundary, tol))
+            }
+        };
+    let mut covered = Vec::with_capacity(boundary_edges.len());
+    for boundary in boundary_edges {
+        let mut found = false;
+        for arc in &cap_edges {
+            found |= covers(arc, boundary)?;
+        }
+        covered.push(found);
+    }
+    let mut coincident = Vec::with_capacity(cap_edges.len());
+    for arc in &cap_edges {
+        let mut found = false;
+        for (boundary, &covered) in boundary_edges.iter().zip(&covered) {
+            if covered {
+                found |= covers(arc, boundary)?;
+            }
+        }
+        coincident.push(found);
+    }
 
     let reverse_of = |e: &OrientedPCurveEdge| OrientedPCurveEdge {
         curve_3d: e.curve_3d.clone(),
@@ -1170,6 +1276,534 @@ fn chain_closed_loop(
     }
     let gap = (chain.last()?.end_3d - chain.first()?.start_3d).length();
     if gap > close_tol { None } else { Some(chain) }
+}
+
+mod circular_rim_coverage {
+    use super::{OrientedPCurveEdge, Point3};
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::EdgeCurve;
+
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct I {
+        pub(super) lo: f64,
+        pub(super) hi: f64,
+    }
+
+    impl I {
+        pub(super) const fn point(value: f64) -> Self {
+            Self {
+                lo: value,
+                hi: value,
+            }
+        }
+        const fn unknown() -> Self {
+            Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            }
+        }
+        pub(super) fn finite(self) -> bool {
+            self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
+        }
+        pub(super) fn add(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            let result = Self {
+                lo: (self.lo + other.lo).next_down(),
+                hi: (self.hi + other.hi).next_up(),
+            };
+            if result.finite() {
+                result
+            } else {
+                Self::unknown()
+            }
+        }
+        pub(super) fn neg(self) -> Self {
+            Self {
+                lo: -self.hi,
+                hi: -self.lo,
+            }
+        }
+        pub(super) fn sub(self, other: Self) -> Self {
+            self.add(other.neg())
+        }
+        pub(super) fn mul(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            let products = [
+                self.lo * other.lo,
+                self.lo * other.hi,
+                self.hi * other.lo,
+                self.hi * other.hi,
+            ];
+            if products.iter().any(|value| !value.is_finite()) {
+                return Self::unknown();
+            }
+            Self {
+                lo: products
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min)
+                    .next_down(),
+                hi: products
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .next_up(),
+            }
+        }
+        pub(super) fn div_positive(self, divisor: f64) -> Self {
+            if !self.finite() || !divisor.is_finite() || divisor <= 0.0 {
+                return Self::unknown();
+            }
+            Self {
+                lo: (self.lo / divisor).next_down(),
+                hi: (self.hi / divisor).next_up(),
+            }
+        }
+        pub(super) fn abs(self) -> Self {
+            if !self.finite() {
+                return Self::unknown();
+            }
+            if self.lo <= 0.0 && self.hi >= 0.0 {
+                Self {
+                    lo: 0.0,
+                    hi: self.lo.abs().max(self.hi.abs()),
+                }
+            } else {
+                Self {
+                    lo: self.lo.abs().min(self.hi.abs()),
+                    hi: self.lo.abs().max(self.hi.abs()),
+                }
+            }
+        }
+    }
+    pub(super) type V = [I; 3];
+    pub(super) fn vector(v: Vec3) -> V {
+        v.0.map(I::point)
+    }
+    pub(super) fn difference(a: Point3, b: Point3) -> V {
+        std::array::from_fn(|j| I::point(a.0[j]).sub(I::point(b.0[j])))
+    }
+    pub(super) fn add(a: V, b: V) -> V {
+        std::array::from_fn(|j| a[j].add(b[j]))
+    }
+    pub(super) fn sub(a: V, b: V) -> V {
+        std::array::from_fn(|j| a[j].sub(b[j]))
+    }
+    pub(super) fn scale(a: V, b: I) -> V {
+        a.map(|value| value.mul(b))
+    }
+    pub(super) fn dot(a: V, b: V) -> I {
+        a[0].mul(b[0]).add(a[1].mul(b[1])).add(a[2].mul(b[2]))
+    }
+    pub(super) fn cross(a: V, b: V) -> V {
+        [
+            a[1].mul(b[2]).sub(a[2].mul(b[1])),
+            a[2].mul(b[0]).sub(a[0].mul(b[2])),
+            a[0].mul(b[1]).sub(a[1].mul(b[0])),
+        ]
+    }
+    pub(super) fn norm1(v: V) -> I {
+        v[0].abs().add(v[1].abs()).add(v[2].abs())
+    }
+
+    /// Reduce by an outward enclosure of π/2, then use degree39/38
+    /// Taylor series on |x|<=1. The omitted terms are below2e-48;
+    ///1e-30 encloses both remainders. Quadrant reduction avoids cancellation
+    /// nearπ, including at large model scales with fixed absolute tolerances.
+    pub(super) fn sin_cos(parameter: f64) -> Option<(I, I)> {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        if !parameter.is_finite() || parameter.abs() > 64.0 * PI {
+            return None;
+        }
+        let turns = (parameter / FRAC_PI_2).round();
+        let x = I::point(parameter).sub(
+            I {
+                lo: FRAC_PI_2.next_down(),
+                hi: FRAC_PI_2.next_up(),
+            }
+            .mul(I::point(turns)),
+        );
+        if !x.finite() || x.abs().hi > 1.0 {
+            return None;
+        }
+        let square = x.mul(x);
+        let (mut sine_term, mut cosine_term) = (x, I::point(1.0));
+        let (mut sine, mut cosine) = (sine_term, cosine_term);
+        for k in 1..20 {
+            sine_term = sine_term
+                .mul(square)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k + 1)));
+            cosine_term = cosine_term
+                .mul(square)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k - 1)));
+            sine = sine.add(sine_term);
+            cosine = cosine.add(cosine_term);
+        }
+        let remainder = I {
+            lo: -1e-30,
+            hi: 1e-30,
+        };
+        let sine = sine.add(remainder);
+        let cosine = cosine.add(remainder);
+        let quadrant = turns.rem_euclid(4.0);
+        let result = if quadrant < 0.5 {
+            (sine, cosine)
+        } else if quadrant < 1.5 {
+            (cosine, sine.neg())
+        } else if quadrant < 2.5 {
+            (sine.neg(), cosine.neg())
+        } else {
+            (cosine.neg(), sine)
+        };
+        (result.0.finite() && result.1.finite()).then_some(result)
+    }
+
+    fn native_point(circle: &remus_math::curves::Circle3D, parameter: f64) -> Option<V> {
+        let (sine, cosine) = sin_cos(parameter)?;
+        let radial = add(
+            scale(vector(circle.u_axis()), cosine),
+            scale(vector(circle.v_axis()), sine),
+        );
+        Some(add(
+            circle.center().0.map(I::point),
+            scale(radial, I::point(circle.radius())),
+        ))
+    }
+
+    fn endpoint_authority(edge: &OrientedPCurveEdge, budget: f64) -> Option<()> {
+        let EdgeCurve::Circle(circle) = &edge.curve_3d else {
+            return None;
+        };
+        edge.trim?;
+        let (from, to) = edge.traversal_domain();
+        if ![from, to].into_iter().all(f64::is_finite)
+            || (to - from).abs() <= 1e-12
+            || (to - from).abs() > std::f64::consts::TAU.next_up()
+        {
+            return None;
+        }
+        for (parameter, anchor) in [(from, edge.start_3d), (to, edge.end_3d)] {
+            if norm1(sub(
+                native_point(circle, parameter)?,
+                anchor.0.map(I::point),
+            ))
+            .hi > budget
+            {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    /// A positive-weight NURBS lies in its complete control hull throughout
+    /// its valid native domain. Strict separation of that hull and both
+    /// authoritative anchors from the rim plane proves that no native span
+    /// can cover a circular rim segment. Crossing or touching hulls decline.
+    fn nurbs_misses_rim_plane(
+        arc: &OrientedPCurveEdge,
+        segment: &OrientedPCurveEdge,
+        tolerance: f64,
+    ) -> Option<bool> {
+        let (EdgeCurve::NurbsCurve(curve), EdgeCurve::Circle(circle)) =
+            (&arc.curve_3d, &segment.curve_3d)
+        else {
+            return None;
+        };
+        if !tolerance.is_finite()
+            || tolerance <= 0.0
+            || !circle.radius().is_finite()
+            || circle.radius() <= 0.0
+        {
+            return None;
+        }
+        let u = vector(circle.u_axis());
+        let v = vector(circle.v_axis());
+        let gram = dot(u, u)
+            .sub(I::point(1.0))
+            .abs()
+            .add(dot(v, v).sub(I::point(1.0)).abs())
+            .add(dot(u, v).abs());
+        if !gram.finite()
+            || gram.hi > 1e-12
+            || gram.mul(I::point(circle.radius())).hi > tolerance / 32.0
+        {
+            return None;
+        }
+        endpoint_authority(segment, tolerance / 32.0)?;
+        let controls = curve.control_points();
+        let knots = curve.knots();
+        let degree = curve.degree();
+        if degree == 0
+            || degree >= controls.len()
+            || knots.len() != controls.len().checked_add(degree)?.checked_add(1)?
+            || curve.weights().len() != controls.len()
+            || curve
+                .weights()
+                .iter()
+                .any(|weight| !weight.is_finite() || *weight <= 0.0)
+            || knots.iter().any(|knot| !knot.is_finite())
+            || knots.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return None;
+        }
+        let domain = (knots[degree], knots[controls.len()]);
+        let (from, to) = arc.traversal_domain();
+        if !from.is_finite()
+            || !to.is_finite()
+            || from.min(to) >= from.max(to)
+            || domain.0 >= domain.1
+            || from.min(to) < domain.0
+            || from.max(to) > domain.1
+        {
+            return None;
+        }
+        let normal = cross(u, v);
+        // The whole native Circle is in this plane. The existing tolerance
+        // also covers the reserved native-to-anchor connector band of its rim.
+        let margin = I::point(tolerance).mul(norm1(normal));
+        if !margin.finite() {
+            return None;
+        }
+        let mut above = true;
+        let mut below = true;
+        for point in controls.iter().copied().chain([arc.start_3d, arc.end_3d]) {
+            let height = dot(difference(point, circle.center()), normal);
+            if !height.finite() {
+                return None;
+            }
+            above &= height.lo > margin.hi;
+            below &= height.hi < -margin.hi;
+        }
+        (above || below).then_some(false)
+    }
+
+    /// Bound a complete native Circle span against the actual rim plane.
+    /// Enclosing intervals use the global derivative bound |h'|<=r(|n·u|+
+    /// |n·v|), so their midpoint evaluations never stand in for whole arcs.
+    /// Any uncertain interval or endpoint/connector declines this proof.
+    fn circle_span_misses_rim_plane(
+        arc: &OrientedPCurveEdge,
+        segment: &OrientedPCurveEdge,
+        tolerance: f64,
+    ) -> Option<bool> {
+        let (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) = (&arc.curve_3d, &segment.curve_3d)
+        else {
+            return None;
+        };
+        let normal = cross(vector(b.u_axis()), vector(b.v_axis()));
+        let margin = I::point(tolerance).mul(norm1(normal));
+        let heights =
+            [arc.start_3d, arc.end_3d].map(|point| dot(difference(point, b.center()), normal));
+        if !margin.finite() || heights.iter().any(|height| !height.finite()) {
+            return None;
+        }
+        let above = heights.iter().all(|height| height.lo > margin.hi);
+        let below = heights.iter().all(|height| height.hi < -margin.hi);
+        if !above && !below {
+            return None;
+        }
+        endpoint_authority(arc, tolerance / 32.0)?;
+        endpoint_authority(segment, tolerance / 32.0)?;
+        let offset = dot(difference(a.center(), b.center()), normal);
+        let u = dot(vector(a.u_axis()), normal);
+        let v = dot(vector(a.v_axis()), normal);
+        let radius = I::point(a.radius());
+        let slope = radius.mul(u.abs().add(v.abs()));
+        if !offset.finite() || !slope.finite() {
+            return None;
+        }
+        let (from, to) = arc.traversal_domain();
+        let (lo, hi) = (from.min(to), from.max(to));
+        // The actual floating partition points need only be ordered and cover
+        // [lo,hi]. Reusing each shared cut leaves no contraction/roundoff gaps.
+        let cuts: [f64; 9] = std::array::from_fn(|index| {
+            if index == 8 {
+                hi
+            } else {
+                ((hi - lo) / 8.0).mul_add(index as f64, lo)
+            }
+        });
+        if cuts.iter().any(|cut| !cut.is_finite()) || cuts.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return None;
+        }
+        for endpoints in cuts.windows(2) {
+            let mid = f64::midpoint(endpoints[0], endpoints[1]);
+            let (sine, cosine) = sin_cos(mid)?;
+            let center = offset.add(radius.mul(u.mul(cosine).add(v.mul(sine))));
+            let distance = I {
+                lo: endpoints[0],
+                hi: endpoints[1],
+            }
+            .sub(I::point(mid))
+            .abs();
+            let variation = slope.mul(distance);
+            let height = center.add(I {
+                lo: -variation.hi,
+                hi: variation.hi,
+            });
+            if !height.finite()
+                || if above {
+                    height.lo <= margin.hi
+                } else {
+                    height.hi >= -margin.hi
+                }
+            {
+                return None;
+            }
+        }
+        Some(false)
+    }
+
+    /// Whole native-interval coverage after a qualified circle-frame mapping.
+    /// Unsupported/ambiguous overlap is explicit; arbitrary major arcs never
+    /// reduce to an endpoint-membership guess.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn covers(
+        arc: &OrientedPCurveEdge,
+        segment: &OrientedPCurveEdge,
+        tolerance: f64,
+    ) -> Option<bool> {
+        use std::f64::consts::TAU;
+        if matches!(arc.curve_3d, EdgeCurve::NurbsCurve(_)) {
+            return nurbs_misses_rim_plane(arc, segment, tolerance);
+        }
+        let (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) = (&arc.curve_3d, &segment.curve_3d)
+        else {
+            return None;
+        };
+        if !tolerance.is_finite()
+            || tolerance <= 0.0
+            || !a.radius().is_finite()
+            || !b.radius().is_finite()
+            || a.radius() <= 0.0
+            || b.radius() <= 0.0
+        {
+            return None;
+        }
+        let budget = tolerance / 32.0;
+        let au = vector(a.u_axis());
+        let av = vector(a.v_axis());
+        let bu = vector(b.u_axis());
+        let bv = vector(b.v_axis());
+        for (u, v, radius) in [(au, av, a.radius()), (bu, bv, b.radius())] {
+            let gram = dot(u, u)
+                .sub(I::point(1.0))
+                .abs()
+                .add(dot(v, v).sub(I::point(1.0)).abs())
+                .add(dot(u, v).abs());
+            if !gram.finite() || gram.hi > 1e-12 || gram.hi * radius > budget {
+                return None;
+            }
+        }
+        let alignment = dot(cross(au, av), cross(bu, bv));
+        if !alignment.finite() {
+            return None;
+        }
+        if alignment.abs().hi < 0.5 {
+            return Some(false);
+        }
+        if let Some(misses) = circle_span_misses_rim_plane(arc, segment, tolerance) {
+            return Some(misses);
+        }
+        let direction = if alignment.lo > 0.5 {
+            1.0
+        } else if alignment.hi < -0.5 {
+            -1.0
+        } else {
+            return None;
+        };
+        endpoint_authority(arc, budget)?;
+        endpoint_authority(segment, budget)?;
+        // atan2 supplies a frame-phase witness only. The complete mapped
+        // carrier, not that transcendental locator, establishes authority.
+        let x = a.u_axis().dot(b.u_axis());
+        let y = a.v_axis().dot(b.u_axis());
+        let phase = y.atan2(x);
+        let (sine, cosine) = sin_cos(phase)?;
+        let mapped_u = add(scale(au, cosine), scale(av, sine));
+        let mapped_v = scale(
+            add(scale(au, sine.neg()), scale(av, cosine)),
+            I::point(direction),
+        );
+        let center_error = norm1(difference(b.center(), a.center()));
+        let radius_error = I::point(b.radius()).sub(I::point(a.radius())).abs();
+        let frame_error = norm1(sub(bu, mapped_u))
+            .add(norm1(sub(bv, mapped_v)))
+            .mul(I::point(b.radius()));
+        let carrier_error = center_error
+            .add(radius_error.mul(norm1(mapped_u).add(norm1(mapped_v))))
+            .add(frame_error);
+        if !carrier_error.finite() || carrier_error.hi > budget {
+            return None;
+        }
+        let radius = a.radius().min(b.radius());
+        // Chord-to-angle uncertainty is bounded by2e for e<1/4. The
+        // remaining interval containment band is a reserved physical fraction
+        // of the unchanged operation tolerance, not a global angular epsilon.
+        let phase_error = carrier_error.div_positive(radius).mul(I::point(2.0)).hi;
+        if !phase_error.is_finite() || phase_error > 0.25 {
+            return None;
+        }
+        let phase = I {
+            lo: (phase - phase_error).next_down(),
+            hi: (phase + phase_error).next_up(),
+        };
+        let (a0, a1) = arc.traversal_domain();
+        let (b0, b1) = segment.traversal_domain();
+        let a_lo = a0.min(a1);
+        let a_hi = a0.max(a1);
+        if (a_hi - a_lo).to_bits() == TAU.to_bits() {
+            // A rounded span identity alone is insufficient. Enclose the
+            // true complete-turn discrepancy in physical units and require
+            // the authoritative native endpoints to close within that budget.
+            let true_turn = I {
+                lo: TAU.next_down(),
+                hi: TAU.next_up(),
+            };
+            let turn_error = I::point(a_hi)
+                .sub(I::point(a_lo))
+                .sub(true_turn)
+                .abs()
+                .mul(I::point(a.radius()));
+            let closure = norm1(difference(arc.start_3d, arc.end_3d));
+            return (turn_error.finite()
+                && turn_error.hi <= budget
+                && closure.finite()
+                && closure.hi <= budget)
+                .then_some(true);
+        }
+        let (b0, b1) = (direction * b0, direction * b1);
+        let b_lo = b0.min(b1);
+        let b_hi = b0.max(b1);
+        let allowance = I::point(tolerance)
+            .div_positive(a.radius().max(b.radius()))
+            .mul(I::point(0.25))
+            .lo;
+        let low_limit = I::point(a_lo).sub(I::point(allowance));
+        let high_limit = I::point(a_hi).add(I::point(allowance));
+        let mut unresolved = false;
+        for turn in -66..=66 {
+            let periodic = I {
+                lo: TAU.next_down(),
+                hi: TAU.next_up(),
+            }
+            .mul(I::point(f64::from(turn)));
+            let mapped_lo = phase.add(I::point(b_lo)).add(periodic);
+            let mapped_hi = phase.add(I::point(b_hi)).add(periodic);
+            if mapped_lo.lo >= low_limit.hi && mapped_hi.hi <= high_limit.lo {
+                return Some(true);
+            }
+            if !(mapped_lo.hi < low_limit.lo || mapped_hi.lo > high_limit.hi) {
+                unresolved = true;
+            }
+        }
+        if unresolved { None } else { Some(false) }
+    }
 }
 
 /// Whether a straight boundary segment lies along (is a chord of) the

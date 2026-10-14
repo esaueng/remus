@@ -3736,7 +3736,9 @@ fn full_sphere_primitive(topo: &Topology, faces: &[FaceId]) -> bool {
         let Ok(edge) = topo.edge(oe.edge()) else {
             return false;
         };
-        if !matches!(edge.curve(), EdgeCurve::Line) || edge.strict_domain().is_err() {
+        if !matches!(edge.curve(), EdgeCurve::Line | EdgeCurve::Circle(_))
+            || edge.strict_domain().is_err()
+        {
             return false;
         }
         let Ok(vertex) = topo.vertex(oe.oriented_start(edge)) else {
@@ -3757,6 +3759,24 @@ fn full_sphere_primitive(topo: &Topology, faces: &[FaceId]) -> bool {
         }
         angles.push(offset.dot(a.y_axis()).atan2(offset.dot(a.x_axis())));
     }
+    let all_lines = edges.iter().all(|oe| {
+        topo.edge(oe.edge())
+            .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+    });
+    if !all_lines {
+        let roundoff = 128.0
+            * f64::EPSILON
+            * a.radius()
+                .max(a.center().x().abs())
+                .max(a.center().y().abs())
+                .max(a.center().z().abs());
+        if !north_wire.is_closed()
+            || !south_wire.is_closed()
+            || !circular_sphere_equator_partition(topo, a, edges, roundoff)
+        {
+            return false;
+        }
+    }
     let mut winding = 0.0;
     let mut sign = 0.0_f64;
     for i in 0..angles.len() {
@@ -3769,6 +3789,118 @@ fn full_sphere_primitive(topo: &Topology, faces: &[FaceId]) -> bool {
         winding += step;
     }
     (winding.abs() - std::f64::consts::TAU).abs() <= 128.0 * f64::EPSILON * edges.len() as f64
+}
+
+/// Certify the new native Circle partition without broadening the legacy
+/// polygonal seam rule. Shared frames and directed native intervals, rather
+/// than just their endpoint polygon, prove coverage of the actual equator.
+#[allow(clippy::cast_precision_loss, clippy::float_cmp, clippy::too_many_lines)]
+pub(crate) fn circular_sphere_equator_partition(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+    roundoff: f64,
+) -> bool {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let Some(first) = edges.first().and_then(|oe| topo.edge(oe.edge()).ok()) else {
+        return false;
+    };
+    let EdgeCurve::Circle(reference) = first.curve() else {
+        return false;
+    };
+    let angular_roundoff = 128.0 * f64::EPSILON;
+    let (u, v, normal) = (reference.u_axis(), reference.v_axis(), reference.normal());
+    if !reference.radius().is_finite()
+        || !sphere.radius().is_finite()
+        || !roundoff.is_finite()
+        || reference.radius() <= 0.0
+        || sphere.radius() <= 0.0
+        || ![u, v, normal, sphere.z_axis()]
+            .iter()
+            .all(|axis| axis.0.iter().all(|value| value.is_finite()))
+        || !reference.center().0.iter().all(|value| value.is_finite())
+        || reference.center() != sphere.center()
+        || (reference.radius() - sphere.radius()).abs() > angular_roundoff * sphere.radius()
+        || (u.length_squared() - 1.0).abs() > angular_roundoff
+        || (v.length_squared() - 1.0).abs() > angular_roundoff
+        || (normal.length_squared() - 1.0).abs() > angular_roundoff
+        || u.dot(v).abs() > angular_roundoff
+        || (u.cross(v) - normal).length() > angular_roundoff
+        // Reuse the parent's physical equator allowance: the sphere and
+        // circle frame writers can accrue different transform roundoff.
+        || normal.cross(sphere.z_axis()).length() * sphere.radius() > roundoff
+    {
+        return false;
+    }
+    let near = |a: Point3, b: Point3| {
+        let offset = a - b;
+        let distance = offset.x().hypot(offset.y()).hypot(offset.z());
+        distance.is_finite() && distance <= roundoff
+    };
+    let mut turn = 0.0_f64;
+    let mut sign = 0.0_f64;
+    for (index, oriented) in edges.iter().enumerate() {
+        let (Ok(edge), Ok(next)) = (
+            topo.edge(oriented.edge()),
+            topo.edge(edges[(index + 1) % edges.len()].edge()),
+        ) else {
+            return false;
+        };
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return false;
+        };
+        if circle.center() != reference.center()
+            || circle.radius().to_bits() != reference.radius().to_bits()
+            || circle.normal() != normal
+            || circle.u_axis() != u
+            || circle.v_axis() != v
+            || oriented.oriented_end(edge) != edges[(index + 1) % edges.len()].oriented_start(next)
+        {
+            return false;
+        }
+        let (Ok((a, b)), Ok((next_a, next_b))) = (edge.strict_domain(), next.strict_domain())
+        else {
+            return false;
+        };
+        let (start, end) = if oriented.is_forward() {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let next_start = if edges[(index + 1) % edges.len()].is_forward() {
+            next_a
+        } else {
+            next_b
+        };
+        let delta = end - start;
+        if start.abs() > 64.0 * TAU
+            || end.abs() > 64.0 * TAU
+            || !delta.is_finite()
+            || delta.abs() <= f64::EPSILON
+            || delta.abs() > FRAC_PI_2 + angular_roundoff
+            || (sign != 0.0 && delta.signum() != sign)
+        {
+            return false;
+        }
+        let (Ok(start_vertex), Ok(end_vertex)) = (
+            topo.vertex(oriented.oriented_start(edge)),
+            topo.vertex(oriented.oriented_end(edge)),
+        ) else {
+            return false;
+        };
+        if !near(circle.evaluate(start), start_vertex.point())
+            || !near(circle.evaluate(end), end_vertex.point())
+        {
+            return false;
+        }
+        let gap = (end - next_start).rem_euclid(TAU);
+        if gap.min(TAU - gap) > angular_roundoff * TAU {
+            return false;
+        }
+        sign = delta.signum();
+        turn += delta;
+    }
+    (turn.abs() - TAU).abs() <= angular_roundoff * TAU * edges.len() as f64
 }
 
 /// Complete cylinder/frustum walls have two full-circle caps and one doubled

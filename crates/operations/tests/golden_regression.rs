@@ -11,6 +11,7 @@
     clippy::panic
 )]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,9 @@ use remus_topology::Topology;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::{solid_bounding_box, solid_center_of_mass, solid_volume};
 use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
-use remus_operations::tessellate::tessellate_solid;
+use remus_operations::tessellate::{
+    TriangleMesh, tessellate_solid, tessellate_solid_with_tolerance,
+};
 use remus_operations::transform::transform_solid;
 
 // ── Golden file helpers ─────────────────────────────────────────────
@@ -113,6 +116,84 @@ fn format_measurements(header: &str, m: &Measurements) -> String {
     )
 }
 
+// Raw incidence and independent implicit-carrier checks qualify sphere
+// snapshots before accepting a changed tessellation count. Coordinate scaling
+// also makes the same oracle apply to an exact affine ellipsoid.
+fn assert_closed_ellipsoid_mesh(mesh: &TriangleMesh, radii: [f64; 3]) {
+    assert_eq!(mesh.indices.len() % 3, 0);
+    assert_eq!(mesh.normals.len(), mesh.positions.len());
+    let normalized: Vec<_> = mesh
+        .positions
+        .iter()
+        .map(|point| {
+            [
+                point.x() / radii[0],
+                point.y() / radii[1],
+                point.z() / radii[2],
+            ]
+        })
+        .collect();
+    for point in &normalized {
+        assert!(point.iter().all(|coordinate| coordinate.is_finite()));
+        let residual = point
+            .iter()
+            .map(|coordinate| coordinate * coordinate)
+            .sum::<f64>()
+            - 1.0;
+        assert!(residual.abs() < 1e-10, "off implicit ellipsoid: {point:?}");
+    }
+    let mut uses: BTreeMap<(u32, u32), (usize, i32)> = BTreeMap::new();
+    let mut used = BTreeSet::new();
+    let mut signed_volume = 0.0;
+    for triangle in mesh.indices.chunks_exact(3) {
+        for i in 0..3 {
+            let (a, b) = (triangle[i], triangle[(i + 1) % 3]);
+            assert_ne!(a, b, "degenerate index pair");
+            assert!((a as usize) < mesh.positions.len());
+            used.insert(a);
+            let entry = uses.entry((a.min(b), a.max(b))).or_default();
+            entry.0 += 1;
+            entry.1 += if a < b { 1 } else { -1 };
+        }
+        let [a, b, c] = std::array::from_fn::<_, 3, _>(|i| normalized[triangle[i] as usize]);
+        let ab = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
+        let ac = std::array::from_fn::<_, 3, _>(|i| c[i] - a[i]);
+        let normal = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let outward = (0..3)
+            .map(|i| normal[i] * (a[i] + b[i] + c[i]))
+            .sum::<f64>();
+        assert!(outward > 0.0, "inward or degenerate normalized triangle");
+        signed_volume += (a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]))
+            / 6.0;
+    }
+    assert_eq!(
+        used.len(),
+        mesh.positions.len(),
+        "unreferenced mesh vertices"
+    );
+    for (edge, directions) in &uses {
+        assert_eq!(
+            *directions,
+            (2, 0),
+            "raw boundary/non-manifold/same-sense edge {edge:?}"
+        );
+    }
+    // For a closed triangular genus-zero mesh with every vertex used.
+    assert_eq!(mesh.indices.len() / 3, 2 * used.len() - 4);
+    let unit_ball_volume = 4.0 * std::f64::consts::PI / 3.0;
+    assert!(signed_volume > 0.0);
+    assert!(
+        (signed_volume - unit_ball_volume).abs() / unit_ball_volume < 0.02,
+        "independent signed mesh volume: {signed_volume}"
+    );
+}
+
 // ── Sorted vertex dump (for small meshes) ───────────────────────────
 
 fn format_sorted_vertices(topo: &Topology, solid: remus_topology::solid::SolidId) -> String {
@@ -167,6 +248,7 @@ fn golden_cylinder_r5_h20() {
 fn golden_sphere_r3() {
     let mut topo = Topology::new();
     let solid = make_sphere(&mut topo, 3.0, 16).unwrap();
+    assert_closed_ellipsoid_mesh(&tessellate_solid(&topo, solid, 0.1).unwrap(), [3.0; 3]);
 
     let m = measure_solid(&topo, solid);
     let output = format_measurements("sphere r=3", &m);
@@ -225,6 +307,8 @@ fn golden_tessellation_sphere() {
 
     let mesh = tessellate_solid(&topo, solid, 0.1).unwrap();
 
+    assert_closed_ellipsoid_mesh(&mesh, [2.0; 3]);
+
     // Compute min/max vertex distances from origin
     let distances: Vec<f64> = mesh
         .positions
@@ -247,6 +331,26 @@ fn golden_tessellation_sphere() {
     );
 
     assert_golden("tessellation_sphere.golden", &output);
+}
+
+#[test]
+fn ellipsoid_repro_scales_preserve_raw_mesh_and_closed_form_volume() {
+    for scale in [0.001, 1.0, 1000.0] {
+        let radii = [1.5 * scale, 2.0 * scale, 2.5 * scale];
+        let mut topo = Topology::new();
+        let solid = make_sphere(&mut topo, 1.0, 16).unwrap();
+        transform_solid(&mut topo, solid, &Mat4::scale(radii[0], radii[1], radii[2])).unwrap();
+        let mesh = tessellate_solid_with_tolerance(&topo, solid, 0.01 * scale, 0.1).unwrap();
+        assert_closed_ellipsoid_mesh(&mesh, radii);
+        let expected_volume = 4.0 * std::f64::consts::PI * radii[0] * radii[1] * radii[2] / 3.0;
+        let volume = solid_volume(&topo, solid, 0.01 * scale).unwrap();
+        assert!((volume - expected_volume).abs() / expected_volume < 1e-3);
+        let bounds = solid_bounding_box(&topo, solid).unwrap();
+        for (axis, radius) in radii.into_iter().enumerate() {
+            assert!((bounds.min.0[axis] / radius + 1.0).abs() < 1e-10);
+            assert!((bounds.max.0[axis] / radius - 1.0).abs() < 1e-10);
+        }
+    }
 }
 
 #[test]

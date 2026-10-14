@@ -25,16 +25,16 @@
     {"ok": 0},
     {"okNear": 3.141592653589793e-8, "tol": 3.2e-11},
     {"ok": [-0.0015, -0.002, -0.0025, 0.0015, 0.002, 0.0025]},
-    {"ok": {"boundaryEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "nonManifoldEdges": 0, "triangleCount": 11912}},
+    {"ok": {"boundaryEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "nonManifoldEdges": 0, "triangleCount": 12072}},
     {"ok": 1},
     {"ok": 0},
     {"okNear": 31.41592653589793, "tol": 0.032},
     {"ok": [-1.5, -2.0, -2.5, 1.5, 2.0, 2.5]},
-    {"ok": {"boundaryEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "nonManifoldEdges": 0, "triangleCount": 11912}},
+    {"ok": {"boundaryEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "nonManifoldEdges": 0, "triangleCount": 12072}},
     {"ok": 2},
     {"ok": 0},
     {"okNear": 31415926535.89793, "tol": 32000000.0},
     {"ok": [-1500.0, -2000.0, -2500.0, 1500.0, 2000.0, 2500.0]},
-    {"ok": {"boundaryEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "nonManifoldEdges": 0, "triangleCount": 11912}}
+    {"ok": {"boundaryEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "nonManifoldEdges": 0, "triangleCount": 12072}}
   ]
 }

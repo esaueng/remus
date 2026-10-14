@@ -565,6 +565,7 @@ pub struct FaceCache {
     projection_grid: OnceLock<SurfaceSeedGrid>,
     uv_trim: OnceLock<NurbsUvTrim>,
     analytic_uv_trim: OnceLock<AnalyticUvTrim>,
+    spherical_trim: OnceLock<Option<GreatCircleTrim>>,
 }
 
 /// UV images of a cylinder, cone or torus face's trim polygons, as
@@ -984,6 +985,724 @@ fn count_sphere_cap_crossings_with_trim(
     Ok(Some(crossings))
 }
 
+/// Outward arithmetic for the qualified great-circle trim predicate.
+/// Unknown/overflowed arithmetic never decides a containment sign.
+mod spherical_trim_math {
+    use super::{Point3, Vec3};
+
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct I {
+        pub(super) lo: f64,
+        pub(super) hi: f64,
+    }
+
+    impl I {
+        pub(super) const fn point(value: f64) -> Self {
+            Self {
+                lo: value,
+                hi: value,
+            }
+        }
+        const fn unknown() -> Self {
+            Self {
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            }
+        }
+        pub(super) fn finite(self) -> bool {
+            self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
+        }
+        pub(super) fn add(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            let result = Self {
+                lo: (self.lo + other.lo).next_down(),
+                hi: (self.hi + other.hi).next_up(),
+            };
+            if result.finite() {
+                result
+            } else {
+                Self::unknown()
+            }
+        }
+        pub(super) fn neg(self) -> Self {
+            Self {
+                lo: -self.hi,
+                hi: -self.lo,
+            }
+        }
+        pub(super) fn sub(self, other: Self) -> Self {
+            self.add(other.neg())
+        }
+        pub(super) fn mul(self, other: Self) -> Self {
+            if !self.finite() || !other.finite() {
+                return Self::unknown();
+            }
+            let products = [
+                self.lo * other.lo,
+                self.lo * other.hi,
+                self.hi * other.lo,
+                self.hi * other.hi,
+            ];
+            if products.iter().any(|value| !value.is_finite()) {
+                return Self::unknown();
+            }
+            Self {
+                lo: products
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min)
+                    .next_down(),
+                hi: products
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .next_up(),
+            }
+        }
+        pub(super) fn div_positive(self, divisor: f64) -> Self {
+            if !self.finite() || !divisor.is_finite() || divisor <= 0.0 {
+                return Self::unknown();
+            }
+            Self {
+                lo: (self.lo / divisor).next_down(),
+                hi: (self.hi / divisor).next_up(),
+            }
+        }
+        pub(super) fn abs(self) -> Self {
+            if !self.finite() {
+                return Self::unknown();
+            }
+            if self.lo <= 0.0 && self.hi >= 0.0 {
+                Self {
+                    lo: 0.0,
+                    hi: self.lo.abs().max(self.hi.abs()),
+                }
+            } else {
+                Self {
+                    lo: self.lo.abs().min(self.hi.abs()),
+                    hi: self.lo.abs().max(self.hi.abs()),
+                }
+            }
+        }
+    }
+    pub(super) type V = [I; 3];
+    pub(super) fn vector(v: Vec3) -> V {
+        v.0.map(I::point)
+    }
+    pub(super) fn difference(a: Point3, b: Point3) -> V {
+        std::array::from_fn(|j| I::point(a.0[j]).sub(I::point(b.0[j])))
+    }
+    pub(super) fn add(a: V, b: V) -> V {
+        std::array::from_fn(|j| a[j].add(b[j]))
+    }
+    pub(super) fn sub(a: V, b: V) -> V {
+        std::array::from_fn(|j| a[j].sub(b[j]))
+    }
+    pub(super) fn scale(a: V, b: I) -> V {
+        a.map(|value| value.mul(b))
+    }
+    pub(super) fn dot(a: V, b: V) -> I {
+        a[0].mul(b[0]).add(a[1].mul(b[1])).add(a[2].mul(b[2]))
+    }
+    pub(super) fn cross(a: V, b: V) -> V {
+        [
+            a[1].mul(b[2]).sub(a[2].mul(b[1])),
+            a[2].mul(b[0]).sub(a[0].mul(b[2])),
+            a[0].mul(b[1]).sub(a[1].mul(b[0])),
+        ]
+    }
+    pub(super) fn norm1(v: V) -> I {
+        v[0].abs().add(v[1].abs()).add(v[2].abs())
+    }
+
+    /// Reduce by an outward enclosure of π/2, then use degree39/38
+    /// Taylor series on |x|<=1. The omitted terms are below2e-48;
+    ///1e-30 encloses both remainders. Quadrant reduction avoids cancellation
+    /// nearπ, including at large model scales with fixed absolute tolerances.
+    pub(super) fn sin_cos(parameter: f64) -> Option<(I, I)> {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        if !parameter.is_finite() || parameter.abs() > 64.0 * PI {
+            return None;
+        }
+        let turns = (parameter / FRAC_PI_2).round();
+        let x = I::point(parameter).sub(
+            I {
+                lo: FRAC_PI_2.next_down(),
+                hi: FRAC_PI_2.next_up(),
+            }
+            .mul(I::point(turns)),
+        );
+        if !x.finite() || x.abs().hi > 1.0 {
+            return None;
+        }
+        let square = x.mul(x);
+        let (mut sine_term, mut cosine_term) = (x, I::point(1.0));
+        let (mut sine, mut cosine) = (sine_term, cosine_term);
+        for k in 1..20 {
+            sine_term = sine_term
+                .mul(square)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k + 1)));
+            cosine_term = cosine_term
+                .mul(square)
+                .neg()
+                .div_positive(f64::from((2 * k) * (2 * k - 1)));
+            sine = sine.add(sine_term);
+            cosine = cosine.add(cosine_term);
+        }
+        let remainder = I {
+            lo: -1e-30,
+            hi: 1e-30,
+        };
+        let sine = sine.add(remainder);
+        let cosine = cosine.add(remainder);
+        let quadrant = turns.rem_euclid(4.0);
+        let result = if quadrant < 0.5 {
+            (sine, cosine)
+        } else if quadrant < 1.5 {
+            (cosine, sine.neg())
+        } else if quadrant < 2.5 {
+            (sine.neg(), cosine.neg())
+        } else {
+            (cosine.neg(), sine)
+        };
+        (result.0.finite() && result.1.finite()).then_some(result)
+    }
+}
+
+/// One full central-circle chain, or three support chains, with a simple boundary in
+/// one closed hemisphere. Native major arcs are retained; intermediate
+/// endpoints only partition exact great-circle arcs into spans shorter than π.
+#[derive(Debug, Clone)]
+struct GreatCircleTrim {
+    vertices: Vec<spherical_trim_math::V>,
+    hemisphere: spherical_trim_math::V,
+    hemisphere_floor: f64,
+    angular_band: f64,
+    // Zero retains the exact-center path. Otherwise this bounds the whole
+    // carrier deformation and all native-to-shared-anchor connectors, in
+    // Sphere-radius units; it is reserved inside the existing physical band.
+    deformation_band: f64,
+    support_normals: Vec<spherical_trim_math::V>,
+}
+
+#[derive(Clone)]
+struct GreatCircleChain {
+    circle: remus_math::curves::Circle3D,
+    start: remus_topology::vertex::VertexId,
+    end: remus_topology::vertex::VertexId,
+    from: f64,
+    to: f64,
+}
+
+// These are identities of stored native carriers/parameters, not proximity
+// tests. Coalescing different frames or offset periods would lose trim authority.
+fn same_great_circle_frame(
+    a: &remus_math::curves::Circle3D,
+    b: &remus_math::curves::Circle3D,
+) -> bool {
+    a.center().0.map(f64::to_bits) == b.center().0.map(f64::to_bits)
+        && a.radius().to_bits() == b.radius().to_bits()
+        && a.u_axis().0.map(f64::to_bits) == b.u_axis().0.map(f64::to_bits)
+        && a.v_axis().0.map(f64::to_bits) == b.v_axis().0.map(f64::to_bits)
+}
+
+impl GreatCircleTrim {
+    #[allow(clippy::too_many_lines)]
+    fn build(
+        topo: &Topology,
+        face_id: FaceId,
+        sphere: &remus_math::surfaces::SphericalSurface,
+    ) -> Result<Option<Self>, CheckError> {
+        use spherical_trim_math::{
+            I, V, add, cross, difference, dot, norm1, scale, sin_cos, vector,
+        };
+        let face = topo.face(face_id)?;
+        if !face.inner_wires().is_empty() || !sphere.radius().is_finite() || sphere.radius() <= 0.0
+        {
+            return Ok(None);
+        }
+        let wire = topo.wire(face.outer_wire())?;
+        if !wire.is_closed() {
+            return Ok(None);
+        }
+        let mut chains: Vec<GreatCircleChain> = Vec::new();
+        let mut has_support_error = false;
+        let mut previous_end = None;
+        let mut first_start = None;
+        for oriented in wire.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                return Ok(None);
+            };
+            // Exact stored supports retain their established path. A slightly
+            // offset actual Circle needs a whole-carrier deformation proof
+            // below; proximity alone never authorizes its containment signs.
+            if circle.center().0.map(f64::to_bits) != sphere.center().0.map(f64::to_bits)
+                || circle.radius().to_bits() != sphere.radius().to_bits()
+            {
+                has_support_error = true;
+                let center_error = norm1(difference(circle.center(), sphere.center()));
+                let radius_error = I::point(circle.radius())
+                    .sub(I::point(sphere.radius()))
+                    .abs();
+                if !center_error.finite()
+                    || !radius_error.finite()
+                    || center_error.hi > HALF_SPACE_EPS * 0.25
+                    || radius_error.hi > HALF_SPACE_EPS * 0.25
+                {
+                    return Ok(None);
+                }
+            }
+            let start = oriented.oriented_start(edge);
+            let end = oriented.oriented_end(edge);
+            if previous_end.is_some_and(|previous| previous != start) {
+                return Ok(None);
+            }
+            first_start.get_or_insert(start);
+            previous_end = Some(end);
+            let (mut from, mut to) = edge
+                .strict_domain()
+                .map_err(crate::error::edge_domain_validation)?;
+            if !oriented.is_forward() {
+                std::mem::swap(&mut from, &mut to);
+            }
+            if let Some(last) = chains.last_mut()
+                && same_great_circle_frame(&last.circle, circle)
+                && last.to.to_bits() == from.to_bits()
+                && (last.to - last.from).is_sign_positive() == (to - from).is_sign_positive()
+            {
+                last.end = end;
+                last.to = to;
+            } else {
+                chains.push(GreatCircleChain {
+                    circle: circle.clone(),
+                    start,
+                    end,
+                    from,
+                    to,
+                });
+            }
+        }
+        if first_start != previous_end {
+            return Ok(None);
+        }
+        if chains.len() > 1 {
+            let first = &chains[0];
+            let last = &chains[chains.len() - 1];
+            if same_great_circle_frame(&first.circle, &last.circle)
+                && last.to.to_bits() == first.from.to_bits()
+                && (last.to - last.from).is_sign_positive()
+                    == (first.to - first.from).is_sign_positive()
+            {
+                let Some(last) = chains.pop() else {
+                    return Ok(None);
+                };
+                chains[0].start = last.start;
+                chains[0].from = last.from;
+            }
+        }
+        let full_circle = chains.len() == 1
+            && chains[0].start == chains[0].end
+            && (chains[0].to - chains[0].from).abs().to_bits() == std::f64::consts::TAU.to_bits();
+        if !full_circle && chains.len() != 3 {
+            return Ok(None);
+        }
+        // Each pair of distinct central support planes intersects at the
+        // common junction and its antipode. At least one member of every
+        // pair is a minor arc, so that antipode is outside that member.
+        let mut major_arcs = 0;
+        let radius = sphere.radius();
+        let angular_band = HALF_SPACE_EPS / radius;
+        if !angular_band.is_finite() || angular_band <= 0.0 {
+            return Ok(None);
+        }
+        let mut normals: Vec<V> = Vec::new();
+        let mut vertices = Vec::new();
+        let mut pending_end = None;
+        let mut carrier_error = I::point(0.0);
+        let mut connector_error = I::point(0.0);
+        for chain in &chains {
+            let span = chain.to - chain.from;
+            if !span.is_finite()
+                || span.abs() <= 1e-12
+                || (!full_circle && span.abs() >= std::f64::consts::TAU.next_down())
+            {
+                return Ok(None);
+            }
+            if span.abs() >= std::f64::consts::PI.next_down() {
+                major_arcs += 1;
+            }
+            let u = vector(chain.circle.u_axis());
+            let v = vector(chain.circle.v_axis());
+            let normal = cross(u, v);
+            let gram = dot(u, u)
+                .sub(I::point(1.0))
+                .abs()
+                .add(dot(v, v).sub(I::point(1.0)).abs())
+                .add(dot(u, v).abs());
+            if !gram.finite() || gram.hi > 1e-12 || gram.hi * radius > HALF_SPACE_EPS * 0.25 {
+                return Ok(None);
+            }
+            if has_support_error {
+                if !chain.circle.radius().is_finite() || chain.circle.radius() <= 0.0 {
+                    return Ok(None);
+                }
+                // For w=u*cos(t)+v*sin(t), |w·w-1|<=gram and hence
+                // ||w|-1|<=gram. This bounds the entire actual Circle against
+                // its centered, radially normalized great-circle carrier.
+                let error = norm1(difference(chain.circle.center(), sphere.center()))
+                    .add(
+                        I::point(chain.circle.radius())
+                            .sub(I::point(radius))
+                            .abs()
+                            .mul(norm1(u).add(norm1(v))),
+                    )
+                    .add(gram.mul(I::point(radius)));
+                if !error.finite() {
+                    return Ok(None);
+                }
+                carrier_error.hi = carrier_error.hi.max(error.hi);
+            }
+            for existing in &normals {
+                if dot(cross(normal, *existing), cross(normal, *existing)).lo <= 1e-20 {
+                    return Ok(None);
+                }
+            }
+            normals.push(scale(normal, I::point(span.signum())));
+            // Four pieces per revolution suffice algebraically: a great-circle
+            // subarc shorter than π has positive endpoint interpolation weights.
+            let pieces = if span.abs() <= std::f64::consts::FRAC_PI_2 {
+                1
+            } else if span.abs() <= std::f64::consts::PI {
+                2
+            } else {
+                4
+            };
+            for j in 0..=pieces {
+                let parameter = if j == pieces {
+                    chain.to
+                } else {
+                    (span / f64::from(pieces)).mul_add(f64::from(j), chain.from)
+                };
+                let Some((sine, cosine)) = sin_cos(parameter) else {
+                    return Ok(None);
+                };
+                let native = add(scale(u, cosine), scale(v, sine));
+                let point = if j == 0 || j == pieces {
+                    let id = if j == 0 { chain.start } else { chain.end };
+                    let anchor = difference(topo.vertex(id)?.point(), sphere.center())
+                        .map(|value| value.div_positive(radius));
+                    let endpoint_error = norm1(spherical_trim_math::sub(native, anchor));
+                    if !endpoint_error.finite() || endpoint_error.hi > angular_band * 0.25 {
+                        return Ok(None);
+                    }
+                    if has_support_error {
+                        // The exact shared VertexId closes the actual loop.
+                        // Both adjacent ideal endpoints connect to that same
+                        // anchor; include those homotopies as well as the
+                        // interior carrier deviation before using winding.
+                        connector_error.hi = connector_error.hi.max(
+                            endpoint_error
+                                .mul(I::point(radius))
+                                .add(gram.mul(I::point(radius)))
+                                .hi,
+                        );
+                    }
+                    std::array::from_fn(|k| I {
+                        lo: anchor[k].lo.min(native[k].lo),
+                        hi: anchor[k].hi.max(native[k].hi),
+                    })
+                } else {
+                    native
+                };
+                if j == 0 {
+                    let merged = pending_end.map_or(point, |previous: V| {
+                        std::array::from_fn(|k| I {
+                            lo: previous[k].lo.min(point[k].lo),
+                            hi: previous[k].hi.max(point[k].hi),
+                        })
+                    });
+                    vertices.push(merged);
+                } else if j < pieces {
+                    vertices.push(point);
+                } else {
+                    pending_end = Some(point);
+                }
+            }
+        }
+        if !full_circle && (major_arcs > 1 || chains.iter().any(|chain| chain.start == chain.end)) {
+            return Ok(None);
+        }
+        if let Some(end) = pending_end {
+            let first = &mut vertices[0];
+            for k in 0..3 {
+                first[k].lo = first[k].lo.min(end[k].lo);
+                first[k].hi = first[k].hi.max(end[k].hi);
+            }
+        }
+        let deformation_band = if has_support_error {
+            // A native arc or its endpoint connector stays in the corresponding
+            // ideal-point ball. Convexity covers the connector between the
+            // actual native endpoint and shared anchor with the larger bound.
+            let error = I {
+                lo: 0.0,
+                hi: carrier_error.hi.max(connector_error.hi),
+            };
+            if !error.finite() || error.div_positive(radius).hi > 0.25 {
+                return Ok(None);
+            }
+            // Radial projection of a tube of radius error<r/4 onto the Sphere
+            // moves directions by at most2*error/r. Include that distortion
+            // before reserving the unchanged physical half-space budget.
+            let projected_error = error.mul(I::point(2.0));
+            if !projected_error.finite() || projected_error.hi > HALF_SPACE_EPS * 0.25 {
+                return Ok(None);
+            }
+            projected_error.div_positive(radius).hi
+        } else {
+            0.0
+        };
+        // The chosen support is traversed with the face to its left. Every
+        // other exact subarc stays in this hemisphere because its positive
+        // endpoint coefficients sum to at most√2. The factor2 conservatively
+        // bounds both endpoint uncertainty and the native/anchor connectors.
+        for &hemisphere in &normals {
+            let floor = vertices
+                .iter()
+                .map(|vertex| dot(*vertex, hemisphere).lo)
+                .fold(0.0_f64, f64::min);
+            let floor = (2.0 * floor).next_down();
+            if floor >= -angular_band {
+                return Ok(Some(Self {
+                    vertices,
+                    hemisphere,
+                    hemisphere_floor: floor,
+                    angular_band,
+                    deformation_band,
+                    support_normals: normals,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    fn contains(
+        &self,
+        point: Point3,
+        sphere: &remus_math::surfaces::SphericalSurface,
+        tolerance: f64,
+    ) -> Option<bool> {
+        use spherical_trim_math::{I, V, add, cross, difference, dot, norm1, vector};
+        let q = difference(point, sphere.center()).map(|value| value.div_positive(sphere.radius()));
+        if q.iter().any(|value| !value.finite()) {
+            return None;
+        }
+        let angular_band = if self.deformation_band > 0.0 {
+            I::point(HALF_SPACE_EPS.min(tolerance))
+                .div_positive(sphere.radius())
+                .lo
+        } else {
+            self.angular_band.min(tolerance / sphere.radius())
+        };
+        if !angular_band.is_finite() || angular_band <= 0.0 {
+            return None;
+        }
+        // A closed trim includes its exact great-circle arcs. This local band
+        // is the existing spherical half-space band, not an edge weld tolerance.
+        let boundary_band = if self.deformation_band > 0.0 {
+            I::point(angular_band)
+                .sub(I::point(self.deformation_band))
+                .lo
+        } else {
+            angular_band
+        };
+        for (a, b) in self
+            .vertices
+            .iter()
+            .copied()
+            .zip(self.vertices.iter().copied().cycle().skip(1))
+        {
+            let normal = cross(a, b);
+            let distance = dot(q, normal).abs();
+            let normal_length = dot(normal, normal).lo.max(0.0).sqrt().next_down();
+            let band = (boundary_band * normal_length).next_down();
+            if boundary_band > 0.0
+                && normal_length > 0.0
+                && distance.finite()
+                && distance.hi <= band
+                && dot(q, add(a, b)).lo > 0.0
+                && dot(cross(a, q), normal).lo >= -band
+                && dot(cross(q, b), normal).lo >= -band
+            {
+                return Some(true);
+            }
+        }
+        if self.deformation_band > 0.0 {
+            // The actual offset loop and its centered ideal loop have the same
+            // winding only away from every deformation tube. A strict plane
+            // separation is conservative for the whole native arc and its
+            // endpoint connectors; unresolved queries never use ideal winding.
+            for normal in &self.support_normals {
+                let separation = dot(q, *normal).abs();
+                let uncertainty = I::point(self.deformation_band).mul(norm1(*normal));
+                if !separation.finite() || !uncertainty.finite() || separation.lo <= uncertainty.hi
+                {
+                    return None;
+                }
+            }
+        }
+        let height = dot(q, self.hemisphere);
+        let height_error = if self.deformation_band > 0.0 {
+            I::point(self.deformation_band)
+                .mul(norm1(self.hemisphere))
+                .hi
+        } else {
+            0.0
+        };
+        let outside_height = if self.deformation_band > 0.0 {
+            I::point(self.hemisphere_floor)
+                .sub(I::point(angular_band))
+                .sub(I::point(height_error))
+                .lo
+        } else {
+            self.hemisphere_floor - angular_band
+        };
+        if height.hi < outside_height {
+            return Some(false);
+        }
+        let inside_height = if self.deformation_band > 0.0 {
+            I::point(-self.hemisphere_floor)
+                .add(I::point(angular_band))
+                .add(I::point(height_error))
+                .hi
+        } else {
+            -self.hemisphere_floor + angular_band
+        };
+        if height.lo <= inside_height {
+            return None;
+        }
+        // The antipode is outside the qualified hemisphere. Orthographic
+        // projection into q's tangent plane therefore has winding+1 exactly
+        // in the selected patch and0 outside. Each <π native subarc and its
+        // projected endpoint connector have identical radial winding.
+        let references = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(2.0, -3.0, 1.0),
+            Vec3::new(-3.0, 1.0, 2.0),
+        ];
+        for reference in references {
+            let r = vector(reference);
+            let q2 = dot(q, q);
+            let rq = dot(r, q);
+            let y_axis = cross(q, r);
+            let projected: Vec<(I, I)> = self
+                .vertices
+                .iter()
+                .map(|a: &V| (q2.mul(dot(r, *a)).sub(rq.mul(dot(q, *a))), dot(y_axis, *a)))
+                .collect();
+            // No y=0 vertex or unresolved determinant is assigned an arbitrary
+            // side. Change the algebraic reference axis; all choices represent
+            // the same tangent plane and must give the same integer winding.
+            if projected.iter().any(|(_, y)| y.lo <= 0.0 && y.hi >= 0.0) {
+                continue;
+            }
+            let mut winding = 0;
+            let mut resolved = true;
+            for ((ax, ay), (bx, by)) in projected
+                .iter()
+                .copied()
+                .zip(projected.iter().copied().cycle().skip(1))
+            {
+                if (ay.lo > 0.0) == (by.lo > 0.0) {
+                    continue;
+                }
+                let determinant = ax.mul(by).sub(ay.mul(bx));
+                if !determinant.finite() || (determinant.lo <= 0.0 && determinant.hi >= 0.0) {
+                    resolved = false;
+                    break;
+                }
+                if ay.hi < 0.0 && by.lo > 0.0 && determinant.lo > 0.0 {
+                    winding += 1;
+                }
+                if ay.lo > 0.0 && by.hi < 0.0 && determinant.hi < 0.0 {
+                    winding -= 1;
+                }
+            }
+            if resolved {
+                return if winding == 0 {
+                    Some(false)
+                } else if winding == 1 {
+                    Some(true)
+                } else {
+                    None
+                };
+            }
+        }
+        None
+    }
+}
+
+/// Qualified analytic spherical trim containment for ray and boundary queries.
+/// `None` preserves the established path for unsupported or unresolved trims.
+/// The boundary band never exceeds the caller's requested physical tolerance.
+pub(super) fn qualified_sphere_trim_contains(
+    topo: &Topology,
+    face_id: FaceId,
+    cache: Option<&FaceCache>,
+    point: Point3,
+    tolerance: f64,
+) -> Result<Option<bool>, CheckError> {
+    let FaceSurface::Sphere(sphere) = topo.face(face_id)?.surface() else {
+        return Ok(None);
+    };
+    let owned;
+    let trim = if let Some(cache) = cache {
+        if cache.spherical_trim.get().is_none() {
+            let _ = cache
+                .spherical_trim
+                .set(GreatCircleTrim::build(topo, face_id, sphere)?);
+        }
+        cache.spherical_trim.get().and_then(Option::as_ref)
+    } else {
+        owned = GreatCircleTrim::build(topo, face_id, sphere)?;
+        owned.as_ref()
+    };
+    let Some(trim) = trim else {
+        return Ok(None);
+    };
+    let result = trim.contains(point, sphere, tolerance);
+    if trim.deformation_band > 0.0 && result.is_none() {
+        // A qualified but unresolved perturbed support must not escape to the
+        // sampled legacy trim and silently regain an unproved sign.
+        return Err(CheckError::ClassificationFailed(
+            "spherical trim support deformation is unresolved at query tolerance".into(),
+        ));
+    }
+    Ok(result)
+}
+
+fn count_great_circle_trim_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    cache: Option<&FaceCache>,
+    hits: &[Point3],
+) -> Result<Option<u32>, CheckError> {
+    let mut count = 0;
+    for &hit in hits {
+        let Some(inside) =
+            qualified_sphere_trim_contains(topo, face_id, cache, hit, HALF_SPACE_EPS)?
+        else {
+            return Ok(None);
+        };
+        count += u32::from(inside);
+    }
+    Ok(Some(count))
+}
+
 /// Count crossings for a sphere patch bounded entirely by exact circle arcs.
 ///
 /// Each supporting circle plane contributes one exact half-space constraint.
@@ -1248,6 +1967,13 @@ pub fn count_face_ray_crossings_cached(
                 trim,
                 &ray_hit_points(origin, direction, &roots),
                 &sph,
+            )? {
+                Ok(count)
+            } else if let Some(count) = count_great_circle_trim_crossings(
+                topo,
+                face_id,
+                cache,
+                &ray_hit_points(origin, direction, &roots),
             )? {
                 Ok(count)
             } else if let Some(count) = count_sphere_circle_patch_crossings(
@@ -1589,6 +2315,10 @@ pub fn surface_point_in_face(
             if let Some(count) = count_sphere_cap_crossings(topo, face_id, &hits, surface)? {
                 count
             } else if let Some(count) =
+                count_great_circle_trim_crossings(topo, face_id, None, &hits)?
+            {
+                count
+            } else if let Some(count) =
                 count_sphere_circle_patch_crossings(topo, face_id, &hits, surface)?
             {
                 count
@@ -1602,4 +2332,519 @@ pub fn surface_point_in_face(
         }
     };
     Ok(count > 0)
+}
+
+#[cfg(test)]
+mod spherical_triangle_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::SphericalSurface;
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+    fn rotate(v: Vec3, placed: bool) -> Vec3 {
+        if !placed {
+            return v;
+        }
+        let axis = Vec3::new(1.0, 2.0, 3.0).normalize().unwrap();
+        let (s, c) = 0.37_f64.sin_cos();
+        v * c + axis.cross(v) * s + axis * (axis.dot(v) * (1.0 - c))
+    }
+
+    fn concave_upper_patch(scale: f64, center: Point3, placed: bool) -> (Topology, FaceId) {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(
+            center + rotate(Vec3::new(scale, 0.0, 0.0), placed),
+            1e-7,
+        ));
+        let b = topo.add_vertex(Vertex::new(
+            center + rotate(Vec3::new(0.0, scale, 0.0), placed),
+            1e-7,
+        ));
+        let pole = topo.add_vertex(Vertex::new(
+            center + rotate(Vec3::new(0.0, 0.0, scale), placed),
+            1e-7,
+        ));
+        let specifications = [
+            (
+                b,
+                a,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                FRAC_PI_2,
+                TAU,
+            ),
+            (
+                a,
+                pole,
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.5 * PI,
+                TAU,
+            ),
+            (
+                pole,
+                b,
+                Vec3::new(-1.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, -1.0),
+                PI,
+                1.5 * PI,
+            ),
+        ];
+        let mut uses = Vec::new();
+        for (start, end, normal, reference, t0, t1) in specifications {
+            let curve = Circle3D::new_with_ref(
+                center,
+                rotate(normal, placed),
+                scale,
+                rotate(reference, placed),
+            )
+            .unwrap();
+            let mut edge = Edge::with_tolerance(start, end, EdgeCurve::Circle(curve), Some(1e-7));
+            edge.set_trim(Some((t0, t1)));
+            uses.push(OrientedEdge::new(topo.add_edge(edge), true));
+        }
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Sphere(SphericalSurface::new(center, scale).unwrap()),
+        ));
+        (topo, face)
+    }
+
+    #[test]
+    fn concave_three_support_sphere_trim_has_cartesian_oracle() {
+        for scale in [1.0, 1000.0] {
+            for center in [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(3.25 * scale, -2.75 * scale, 4.5 * scale),
+            ] {
+                let placed = center.x().abs() > 0.0;
+                let (topo, face) = concave_upper_patch(scale, center, placed);
+                for x in [-0.8_f64, -0.3, 0.3, 0.8] {
+                    for y in [-0.8_f64, -0.3, 0.3, 0.8] {
+                        for z in [-0.8_f64, -0.3, 0.3, 0.8] {
+                            let direction = Vec3::new(x, y, z).normalize().unwrap();
+                            let point = center + rotate(direction, placed) * scale;
+                            let expected = z > 0.0 && (x < 0.0 || y < 0.0);
+                            assert_eq!(
+                                surface_point_in_face(&topo, face, point).unwrap(),
+                                expected,
+                                "scale={scale} center={center:?} direction={direction:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cached_ray_trim_matches_independent_upper_patch_oracle() {
+        for scale in [1.0, 1000.0] {
+            let center = Point3::new(3.25 * scale, -2.75 * scale, 4.5 * scale);
+            let (topo, face) = concave_upper_patch(scale, center, true);
+            let cache = FaceCache::default();
+            let trim = FaceTrimData::build(&topo, face).unwrap();
+            for x in [-0.8, 0.3] {
+                for y in [-0.3, 0.8] {
+                    let q = rotate(Vec3::new(x, y, 0.6).normalize().unwrap(), true);
+                    let origin = center + q * (2.0 * scale);
+                    let expected = u32::from(x < 0.0 || y < 0.0);
+                    assert_eq!(
+                        count_face_ray_crossings(&topo, face, origin, -q).unwrap(),
+                        expected
+                    );
+                    assert_eq!(
+                        count_face_ray_crossings_cached(
+                            &topo,
+                            face,
+                            Some(&trim),
+                            Some(&cache),
+                            origin,
+                            -q
+                        )
+                        .unwrap(),
+                        expected
+                    );
+                }
+            }
+            assert!(cache.spherical_trim.get().is_some_and(Option::is_some));
+        }
+    }
+
+    #[test]
+    fn stored_large_pose_circle_offset_keeps_certified_trim() {
+        let center = Point3::new(10000.0, -7000.0, 3000.0);
+        let (mut topo, face) = concave_upper_patch(1000.0, center, true);
+        let edge_id = topo
+            .wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[2]
+            .edge();
+        let EdgeCurve::Circle(circle) = topo.edge(edge_id).unwrap().curve() else {
+            panic!("circle fixture");
+        };
+        let shifted = Circle3D::new_with_ref(
+            Point3::new(center.x().next_up(), center.y(), center.z()),
+            circle.normal(),
+            circle.radius(),
+            circle.u_axis(),
+        )
+        .unwrap();
+        let range = topo.edge(edge_id).unwrap().strict_domain().unwrap();
+        let edge = topo.edge_mut(edge_id).unwrap();
+        edge.set_curve(EdgeCurve::Circle(shifted));
+        edge.set_trim(Some(range));
+        let sphere = SphericalSurface::new(center, 1000.0).unwrap();
+        assert!(
+            GreatCircleTrim::build(&topo, face, &sphere)
+                .unwrap()
+                .is_some()
+        );
+        let cache = FaceCache::default();
+        for x in [-0.8, 0.3] {
+            for y in [-0.3, 0.8] {
+                for z in [-0.6, 0.6] {
+                    let q = rotate(Vec3::new(x, y, z).normalize().unwrap(), true);
+                    assert_eq!(
+                        qualified_sphere_trim_contains(
+                            &topo,
+                            face,
+                            Some(&cache),
+                            center + q * 1000.0,
+                            HALF_SPACE_EPS
+                        )
+                        .unwrap(),
+                        Some(z > 0.0 && (x < 0.0 || y < 0.0))
+                    );
+                }
+            }
+        }
+        assert!(cache.spherical_trim.get().is_some_and(Option::is_some));
+    }
+
+    #[test]
+    fn support_error_never_expands_finer_query_tolerance() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let (mut topo, face) = concave_upper_patch(1.0, center, false);
+        let edge_id = topo
+            .wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[2]
+            .edge();
+        let EdgeCurve::Circle(original) = topo.edge(edge_id).unwrap().curve() else {
+            panic!("circle fixture");
+        };
+        let original = original.clone();
+        let range = topo.edge(edge_id).unwrap().strict_domain().unwrap();
+        for (offset, qualified) in [(1.818_989_403_545_856_5e-12, true), (1e-9, false)] {
+            let curve = Circle3D::new_with_ref(
+                Point3::new(offset, 0.0, 0.0),
+                original.normal(),
+                1.0,
+                original.u_axis(),
+            )
+            .unwrap();
+            let edge = topo.edge_mut(edge_id).unwrap();
+            edge.set_curve(EdgeCurve::Circle(curve));
+            edge.set_trim(Some(range));
+            let sphere = SphericalSurface::new(center, 1.0).unwrap();
+            assert_eq!(
+                GreatCircleTrim::build(&topo, face, &sphere)
+                    .unwrap()
+                    .is_some(),
+                qualified
+            );
+            if qualified {
+                let point = Point3::new(0.0, 0.6, 0.8);
+                assert_eq!(
+                    qualified_sphere_trim_contains(&topo, face, None, point, HALF_SPACE_EPS)
+                        .unwrap(),
+                    Some(true)
+                );
+                assert!(matches!(
+                    qualified_sphere_trim_contains(&topo, face, None, point, 1e-13),
+                    Err(CheckError::ClassificationFailed(_))
+                ));
+                // A much finer caller tolerance still permits an independently
+                // separated query; uncertainty does not blanket-reject a face.
+                assert_eq!(
+                    qualified_sphere_trim_contains(
+                        &topo,
+                        face,
+                        None,
+                        Point3::new(-0.6, -0.3, 0.55_f64.sqrt()),
+                        1e-13
+                    )
+                    .unwrap(),
+                    Some(true)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_sphere_support_error_and_malformed_dimensionless_frame_decline() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let radius = 1e-15;
+        let (mut topo, face) = concave_upper_patch(radius, center, false);
+        let edge_id = topo
+            .wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[2]
+            .edge();
+        let original = topo.edge(edge_id).unwrap().clone();
+        let EdgeCurve::Circle(circle) = original.curve() else {
+            panic!("circle fixture");
+        };
+        let range = original.strict_domain().unwrap();
+        let sphere = SphericalSurface::new(center, radius).unwrap();
+        // This absolute displacement fits the existing physical band, but it
+        // cannot qualify the radial-projection estimate at this tiny radius.
+        let offset = Circle3D::new_with_ref(
+            Point3::new(0.5 * radius, 0.0, 0.0),
+            circle.normal(),
+            radius,
+            circle.u_axis(),
+        )
+        .unwrap();
+        let edge = topo.edge_mut(edge_id).unwrap();
+        edge.set_curve(EdgeCurve::Circle(offset));
+        edge.set_trim(Some(range));
+        assert!(
+            GreatCircleTrim::build(&topo, face, &sphere)
+                .unwrap()
+                .is_none()
+        );
+        // Exact centers alone also cannot qualify a dimensionlessly malformed
+        // stored frame merely because its physical Gram error is tiny.
+        let malformed = Circle3D::with_axes(
+            center,
+            circle.normal(),
+            radius,
+            circle.u_axis() * 0.1,
+            circle.v_axis() * 0.1,
+        )
+        .unwrap();
+        let edge = topo.edge_mut(edge_id).unwrap();
+        edge.set_curve(EdgeCurve::Circle(malformed));
+        edge.set_trim(Some(range));
+        assert!(
+            GreatCircleTrim::build(&topo, face, &sphere)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sphere_boundary_queries_preserve_requested_tolerance() {
+        use remus_topology::{shell::Shell, solid::Solid};
+        let (mut topo, upper) = concave_upper_patch(1.0, Point3::new(0.0, 0.0, 0.0), false);
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let circle = Circle3D::new_with_ref(
+            sphere.center(),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        let edge = topo.add_edge(edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, false)], true).unwrap());
+        let lower = topo.add_face(Face::new(wire, vec![], FaceSurface::Sphere(sphere)));
+        // These two faces isolate spherical trim queries. The operation-level
+        // regression supplies the three planar wound faces and a closed solid.
+        let shell = topo.add_shell(Shell::new(vec![upper, lower]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let prepared = crate::classify::PreparedSolid::prepare(&topo, solid).unwrap();
+        let mut cache = crate::classify::cache::ClassificationCache::new();
+        for (direction, tolerance, expected) in [
+            (Vec3::new(1.0, 1.0, 1.0), 1e-7, false),
+            (Vec3::new(-1.0, 1.0, 1.0), 1e-7, true),
+            (Vec3::new(1.0, 1.0, -1.0), 1e-7, true),
+            (Vec3::new(1e-11, 0.6, 0.8), 1e-13, false),
+        ] {
+            let q = direction.normalize().unwrap();
+            let point = Point3::new(q.x(), q.y(), q.z());
+            assert_eq!(
+                crate::classify::is_point_on_boundary(&topo, solid, point, tolerance).unwrap(),
+                expected
+            );
+            assert_eq!(
+                prepared.is_point_on_boundary(point, tolerance).unwrap(),
+                expected
+            );
+            let options = crate::classify::ClassifyOptions {
+                tolerance,
+                ..crate::classify::ClassifyOptions::default()
+            };
+            let expected = if expected {
+                crate::classify::PointClassification::OnBoundary
+            } else {
+                crate::classify::PointClassification::Outside
+            };
+            assert_eq!(
+                crate::classify::classify_point(&topo, solid, point, &options).unwrap(),
+                expected
+            );
+            assert_eq!(prepared.classify_point(point, &options).unwrap(), expected);
+            assert_eq!(
+                cache.classify_point(&topo, solid, point, &options).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(cache.stats().misses, 1);
+        assert!(cache.stats().hits >= 3);
+    }
+
+    #[test]
+    fn cyclic_wire_start_and_descending_native_domains_keep_major_arc() {
+        let (mut topo, face) = concave_upper_patch(1.0, Point3::new(0.0, 0.0, 0.0), false);
+        let wire = topo.face(face).unwrap().outer_wire();
+        let old = topo.wire(wire).unwrap().edges().to_vec();
+        let rim = topo.edge(old[0].edge()).unwrap().clone();
+        let EdgeCurve::Circle(circle) = rim.curve() else {
+            panic!("circle fixture");
+        };
+        let middle = topo.add_vertex(Vertex::new(circle.evaluate(PI), 1e-7));
+        let mut head = rim.clone();
+        head.set_end(middle);
+        head.set_trim(Some((FRAC_PI_2, PI)));
+        let mut tail = rim;
+        tail.set_start(middle);
+        tail.set_trim(Some((PI, TAU)));
+        let head = topo.add_edge(head);
+        let tail = topo.add_edge(tail);
+        let shifted = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(tail, true),
+                    old[1],
+                    old[2],
+                    OrientedEdge::new(head, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        topo.set_face_boundary_wires(face, shifted, vec![]).unwrap();
+        assert_eq!(
+            qualified_sphere_trim_contains(
+                &topo,
+                face,
+                None,
+                Point3::new(-0.6, 0.0, 0.8),
+                HALF_SPACE_EPS
+            )
+            .unwrap(),
+            Some(true)
+        );
+        // Reverse each edge's own native range and vertex order, together with
+        // its coedge, preserving the physical directed loop.
+        let uses = topo.wire(shifted).unwrap().edges().to_vec();
+        let mut reversed_uses = Vec::with_capacity(uses.len());
+        for usage in &uses {
+            let edge = topo.edge_mut(usage.edge()).unwrap();
+            let (from, to) = edge.strict_domain().unwrap();
+            let start = edge.start();
+            let end = edge.end();
+            edge.set_start(end);
+            edge.set_end(start);
+            edge.set_trim(Some((to, from)));
+            reversed_uses.push(OrientedEdge::new(usage.edge(), false));
+        }
+        let reversed_wire = topo.add_wire(Wire::new(reversed_uses, true).unwrap());
+        topo.set_face_boundary_wires(face, reversed_wire, vec![])
+            .unwrap();
+        assert_eq!(
+            qualified_sphere_trim_contains(
+                &topo,
+                face,
+                None,
+                Point3::new(-0.6, 0.0, 0.8),
+                HALF_SPACE_EPS
+            )
+            .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            qualified_sphere_trim_contains(
+                &topo,
+                face,
+                None,
+                Point3::new(0.6, 0.0, -0.8),
+                HALF_SPACE_EPS
+            )
+            .unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn unsupported_or_broken_spherical_boundaries_decline() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let (mut topo, face) = concave_upper_patch(1.0, center, false);
+        let edge = topo
+            .wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[0]
+            .edge();
+        let original = topo.edge(edge).unwrap().clone();
+        topo.edge_mut(edge).unwrap().set_curve(EdgeCurve::Line);
+        assert!(
+            GreatCircleTrim::build(&topo, face, &SphericalSurface::new(center, 1.0).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        *topo.edge_mut(edge).unwrap() = original.clone();
+        let duplicate = topo.add_vertex(Vertex::new(
+            topo.vertex(original.end()).unwrap().point(),
+            1e-7,
+        ));
+        topo.edge_mut(edge).unwrap().set_end(duplicate);
+        assert!(
+            GreatCircleTrim::build(&topo, face, &SphericalSurface::new(center, 1.0).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        *topo.edge_mut(edge).unwrap() = original;
+        let curve = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.01),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_curve(EdgeCurve::Circle(curve));
+        assert!(
+            GreatCircleTrim::build(&topo, face, &SphericalSurface::new(center, 1.0).unwrap())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn quadrant_interval_trigonometry_and_unknowns_are_conservative() {
+        use spherical_trim_math::{I, sin_cos};
+        for t in [-2.0 * TAU, -PI, -FRAC_PI_2, 0.0, FRAC_PI_2, PI, TAU, 13.0] {
+            let (s, c) = sin_cos(t).unwrap();
+            assert!(s.lo <= t.sin() && t.sin() <= s.hi);
+            assert!(c.lo <= t.cos() && t.cos() <= c.hi);
+        }
+        assert!(sin_cos(f64::NAN).is_none());
+        assert!(sin_cos(1000.0).is_none());
+        assert!(!I::point(f64::NAN).add(I::point(1.0)).finite());
+        assert!(!I { lo: 2.0, hi: 1.0 }.mul(I::point(1.0)).finite());
+    }
 }

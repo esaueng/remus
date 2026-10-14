@@ -349,21 +349,19 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   (`finding_rotated_cyl_intersect_volumes`, currently passing on main —
 ///   see the X4-probe experiment; the cell stays excluded until that
 ///   experiment reports).
-/// - X5: a CUT of an unmoved prim box out of an unmoved prim sphere
-///   (`finding_sphere_minus_box_open_mesh`, F6: valid B-Rep, exact
-///   π/6 overlap, refinement-growing mesh hole — tessellation affinity).
+/// - X5: a CUT of an unmoved prim box out of an unmoved prim sphere.
+///   The literal unit-octant F6 bundle is an active acceptance regression;
+///   the broader generator family stays excluded pending wider qualification.
 ///   Placed variants and the reverse order stay in generation as tripwires.
 /// - X6: an inward (`distance < 0.0`) offset of a boolean result
 ///   (`finding_inward_offset_of_fuse_untyped`, F7: the offset engine's
 ///   wire-loop assembly failure surfaces as `InvalidInput` instead of a
 ///   typed refusal — offset-lane affinity). Outward offsets of boolean
 ///   results stay in generation as tripwires.
-/// - X7: an unmoved prim sphere–box FUSE pair in either operand order
-///   (`finding_sphere_box_fuse_open_mesh`, F8: the fuse twin of F6's cut —
-///   same valid-B-Rep/open-mesh signature on the union instead of the
-///   remainder; whether one tessellation fix closes both is the owner's
-///   call, so the witnesses stay distinct). Placed variants and other
-///   operators stay in generation as tripwires.
+/// - X7: an unmoved prim sphere–box FUSE pair in either operand order.
+///   The literal F8 union is independently qualified and active below;
+///   the broader generated family remains excluded pending qualification.
+///   Placed variants and other operators stay in generation as tripwires.
 /// - X9: ANY boolean on an unmoved prim sphere–cylinder pair, either order
 ///   (`finding_sphere_cyl_fuse_orientation`, F10: 16 misoriented edges on a
 ///   curved pair the 2.4 matrices qualified elsewhere — B33 orientation
@@ -460,7 +458,8 @@ fn excluded_cell(kind: BooleanOp, a: &GenLive, b: &GenLive) -> Option<&'static s
         if b.kind == GenKind::Cyl && b.rotated {
             return Some("X3");
         }
-        // X5: CUT of an unmoved prim box out of an unmoved prim sphere.
+        // X5: retain the broad sphere-minus-box family exclusion; the literal
+        // unit-octant F6 fixture is independently qualified and active below.
         if a.kind == GenKind::Sphere && !a.placed && b.kind == GenKind::Box && !b.placed {
             return Some("X5");
         }
@@ -5873,25 +5872,22 @@ fn finding_box_cyl_cut_orientation() {
     );
 }
 
-/// 8.1 finding F6 (retained, kernel untouched): an unmoved sphere-minus-box
-/// cut validates clean (validator, edge-id census, AND the position
-/// recount) yet tessellates open at every deflection, with a boundary count
-/// that grows under refinement (14 at 0.1, 64 at 0.01, 156 at 0.001, 745 at
-/// the campaign deflection) — a structural hole, not density.
+/// 8.1 finding F6: the literal unit sphere minus the positive unit box
+/// retains seven octants, with volume 7π/6 and exterior area 17π/4.
+/// The original result validated clean yet had an open mesh and incorrect
+/// analytic trim containment. Agreeing quantities did not exonerate it:
+/// both routes could use the same Gauss fallback after mesh rejection.
 ///
-/// Minimized from CI-matrix seed `0xC102` (4 ops shrink to 3; the box dims
-/// simplify 6.5×3.0×3.5 → 1×1×1, the trailing primitive deletes). The
-/// boolean algebra is exonerated: both volume routes agree (3.671139), the
-/// complementary identities hold within slack, and the paired intersect
-/// measures 0.523545 against the closed-form octant-ball π/6 = 0.523599
-/// (1e-4) — the bite is exactly right, only its triangulation is missing.
-/// Tessellation-lane affinity (contrast F3, whose algebra does not close).
-/// Owns exclusion cell X5.
+/// Minimized from CI-matrix seed `0xC102` (4 ops shrink to 3; box dimensions
+/// 6.5×3.0×3.5 simplify to 1×1×1 and the trailing primitive deletes).
+/// Exact equator carriers, qualified spherical splitting, shared mesh rims
+/// and analytic trim containment are independently checked by
+/// `regress_opseq_sphere_box_cut` and the packaged direct/batch contracts.
+/// The broad generator exclusion X5 remains pending wider qualification.
 ///
-/// Acceptance: the harness `ExactOk` verdict (watertight mesh). No geometry
-/// fix in this harness PR.
+/// Acceptance retains the complete harness `ExactOk` oracle battery,
+/// including its original mesh deflection and resource limits.
 #[test]
-#[ignore = "8.1 finding F6: unmoved sphere-minus-box cut validates clean with exact pi/6 overlap yet tessellates open at every deflection"]
 fn finding_sphere_minus_box_open_mesh() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"radius":1.0},"op":"makeSphere"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
@@ -5908,7 +5904,7 @@ fn finding_sphere_minus_box_open_mesh() {
     assert_eq!(
         report.kind,
         SeqKind::ExactOk,
-        "unmoved sphere-minus-box cut must tessellate watertight"
+        "literal sphere-minus-box cut must satisfy the complete exact oracle battery"
     );
 }
 
@@ -5957,22 +5953,14 @@ fn finding_inward_offset_of_fuse_untyped() {
     );
 }
 
-/// 8.1 finding F8 (retained, kernel untouched): an unmoved sphere–box fuse
-/// validates clean (validator, edge-id census, and the position recount)
-/// yet tessellates open — the fuse twin of F6's sphere-minus-box cut. Same
-/// signature class on the union instead of the remainder: every oracle up
-/// to the mesh gate passes, then the mesh comes back with boundary edges.
-/// Whether one tessellation fix closes both F6 and F8 is the tessellation
-/// owner's call, so the witnesses stay distinct. Owns exclusion cell X7.
-///
-/// Minimized from CI-matrix seed `0xC10C` (8 ops shrink to 3; dims simplify
-/// to unit sphere/box, the inward offset and trailing operations cascade
-/// away — the mesh defect needs only the fuse).
-///
-/// Acceptance: the harness `ExactOk` verdict (watertight mesh). No geometry
-/// fix in this harness PR.
+/// 8.1 finding F8: the literal sphere/box union shares F6's repaired
+/// spherical boundary path. Its independent acceptance volume is 1+7π/6;
+/// exterior area is 6+11π/4. Both operand orders are checked by
+/// `regress_opseq_sphere_box_cut` and fresh/installed packaged contracts.
+/// Minimized from CI-matrix seed `0xC10C` (8 operations shrink to 3).
+/// The broad generator exclusion X7 remains pending wider qualification.
+/// This literal retains the full harness `ExactOk` oracle battery.
 #[test]
-#[ignore = "8.1 finding F8: unmoved sphere-box fuse validates clean yet tessellates open (fuse twin of F6); route to the tessellation lane"]
 fn finding_sphere_box_fuse_open_mesh() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"radius":1.0,"segments":16},"op":"makeSphere"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,

@@ -2628,6 +2628,10 @@ impl PreparedBoundarySegment {
 #[path = "nonplanar/tests.rs"]
 mod boundary_clearance_tests;
 
+#[cfg(test)]
+#[path = "nonplanar/sphere_chart_tests.rs"]
+mod sphere_chart_tests;
+
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
 /// Projects shared edge points into (u,v) parameter space, generates interior
@@ -4885,6 +4889,272 @@ fn fill_sphere_cap_web(
     true
 }
 
+/// Select a hemisphere only after every shared boundary sample qualifies.
+/// This is a pure chart check: candidate selection must not intern vertices
+/// or partially emit a mesh before another frame is considered.
+fn sphere_boundary_hemisphere(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    boundary: &[u32],
+    positions: &[Point3],
+) -> Option<f64> {
+    let radius = sphere.radius();
+    if boundary.len() < 3 || !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
+    let surface_tol = radius.mul_add(1e-8, 1e-10);
+    let hemisphere_tol = radius * 1e-8;
+    let mut z_min = f64::INFINITY;
+    let mut z_max = f64::NEG_INFINITY;
+    for &gid in boundary {
+        let offset = *positions.get(gid as usize)? - sphere.center();
+        let x = offset.dot(sphere.x_axis()) / radius;
+        let y = offset.dot(sphere.y_axis()) / radius;
+        let z = offset.dot(sphere.z_axis());
+        if !x.is_finite()
+            || !y.is_finite()
+            || !z.is_finite()
+            || (offset.length() - radius).abs() > surface_tol
+        {
+            return None;
+        }
+        z_min = z_min.min(z);
+        z_max = z_max.max(z);
+    }
+    // A full latitude cap remains on its structured path. A boundary that
+    // crosses both hemispheres needs another chart, even if one of its arcs
+    // happens to be a great circle through the sphere centre.
+    if z_min >= -hemisphere_tol && z_max > hemisphere_tol {
+        Some(1.0)
+    } else if z_max <= hemisphere_tol && z_min < -hemisphere_tol {
+        Some(-1.0)
+    } else {
+        None
+    }
+}
+
+struct SphereBoundaryConic {
+    center: Point3,
+    normal: Vec3,
+    u: Vec3,
+    v: Vec3,
+    a: f64,
+    b: f64,
+}
+
+fn sphere_boundary_conic(curve: &EdgeCurve) -> Option<SphereBoundaryConic> {
+    match curve {
+        EdgeCurve::Circle(c) => Some(SphereBoundaryConic {
+            center: c.center(),
+            normal: c.normal(),
+            u: c.u_axis(),
+            v: c.v_axis(),
+            a: c.radius(),
+            b: c.radius(),
+        }),
+        EdgeCurve::Ellipse(c) => Some(SphereBoundaryConic {
+            center: c.center(),
+            normal: c.normal(),
+            u: c.u_axis(),
+            v: c.v_axis(),
+            a: c.semi_major(),
+            b: c.semi_minor(),
+        }),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
+    }
+}
+
+/// The new chart selection is confined to native great-circle partitions.
+/// This checks the complete conic support, its authoritative span and the
+/// exact vertex-ID chain; sampled NURBS or general curved loops keep their
+/// established dispatcher.
+fn sphere_great_circle_loop(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+) -> Result<bool, crate::OperationsError> {
+    if edges.is_empty() {
+        return Ok(false);
+    }
+    let l1 = |v: Vec3| v.x().abs() + v.y().abs() + v.z().abs();
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    for (index, oriented) in edges.iter().enumerate() {
+        let edge = topo.edge(oriented.edge())?;
+        let next = topo.edge(edges[(index + 1) % edges.len()].edge())?;
+        let end = if oriented.is_forward() {
+            edge.end()
+        } else {
+            edge.start()
+        };
+        let next_start = if edges[(index + 1) % edges.len()].is_forward() {
+            next.start()
+        } else {
+            next.end()
+        };
+        if end != next_start || edge.strict_domain().is_err() {
+            return Ok(false);
+        }
+        let Some(c) = sphere_boundary_conic(edge.curve()) else {
+            return Ok(false);
+        };
+        let gram =
+            (c.u.dot(c.u) - 1.0).abs() + 2.0 * c.u.dot(c.v).abs() + (c.v.dot(c.v) - 1.0).abs();
+        // For every cos/sin pair, the Gram defect bounds radial deviation
+        // from the intended unit frame. The radius differences and centre
+        // offset then bound the entire carrier's distance from the sphere.
+        // Reserve physical tolerance for the computed bound's roundoff.
+        let rounding = 64.0
+            * f64::EPSILON
+            * (l1(c.center - origin)
+                + l1(sphere.center() - origin)
+                + c.a.abs().max(c.b.abs()) * (l1(c.u) + l1(c.v)));
+        let residual = (c.center - sphere.center()).length()
+            + (c.a - sphere.radius()).abs()
+            + (c.b - sphere.radius()).abs()
+            + c.a.abs().max(c.b.abs()) * gram
+            + rounding;
+        if !residual.is_finite()
+            || gram >= 0.1
+            || residual.next_up() > remus_math::tolerance::Tolerance::new().linear / 8.0
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Bound the actual native arcs in the selected hemisphere, rather than
+/// inferring their interiors from the sampled boundary. Each projected
+/// coordinate is a sinusoid; the geometry layer includes its span extrema.
+fn sphere_native_arcs_in_hemisphere(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+    side: f64,
+) -> Result<bool, crate::OperationsError> {
+    let project = |v: Vec3| {
+        Vec3::new(
+            v.dot(sphere.x_axis()),
+            v.dot(sphere.y_axis()),
+            v.dot(sphere.z_axis()),
+        )
+    };
+    let l1 = |v: Vec3| v.x().abs() + v.y().abs() + v.z().abs();
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    for oriented in edges {
+        let edge = topo.edge(oriented.edge())?;
+        let Some(c) = sphere_boundary_conic(edge.curve()) else {
+            return Ok(false);
+        };
+        let (a, b) = crate::authoritative_edge_domain(edge, "spherical hemisphere chart")?;
+        let center = project(c.center - sphere.center());
+        let center = Point3::new(center.x(), center.y(), center.z());
+        let u = project(c.u);
+        let v = project(c.v);
+        // with_axes retains the supplied coefficients. Also account for
+        // their actual reconstruction so a future constructor change cannot
+        // silently turn this into a bound of another curve.
+        let projected =
+            remus_math::curves::Ellipse3D::with_axes(center, project(c.normal), c.a, c.b, u, v)?;
+        let reconstruction = (projected.center() - center).length()
+            + (projected.u_axis() * projected.semi_major() - u * c.a).length()
+            + (projected.v_axis() * projected.semi_minor() - v * c.b).length();
+        let rounding = 64.0
+            * f64::EPSILON
+            * (l1(c.center - origin)
+                + l1(sphere.center() - origin)
+                + c.a.abs() * l1(c.u)
+                + c.b.abs() * l1(c.v))
+            * l1(sphere.z_axis());
+        let margin = (rounding + reconstruction).next_up();
+        let bounds = remus_geometry::bounds::curve::ellipse_arc_bounds(&projected, a, b);
+        if !bounds.is_prunable() || !margin.is_finite() {
+            return Ok(false);
+        }
+        let bounds = bounds.aabb();
+        let lower = (bounds.min.z() - margin).next_down();
+        let upper = (bounds.max.z() + margin).next_up();
+        let tolerance = sphere.radius() * 1e-8;
+        if !lower.is_finite()
+            || !upper.is_finite()
+            || (side > 0.0 && lower < -tolerance)
+            || (side < 0.0 && upper > tolerance)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Prefer the carrier's own chart, then test great-circle frames against the
+/// entire sampled boundary. A meridian's normal alone does not identify the
+/// hemisphere containing a trimmed patch, and wire start order is arbitrary.
+mod sphere_chart_orientation;
+
+fn sphere_hemisphere_chart(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+    boundary: &[u32],
+    positions: &[Point3],
+) -> Result<Option<remus_math::surfaces::SphericalSurface>, crate::OperationsError> {
+    let qualified = sphere_great_circle_loop(topo, sphere, edges)?;
+    if qualified
+        && let Some(side) = sphere_boundary_hemisphere(sphere, boundary, positions)
+        && sphere_native_arcs_in_hemisphere(topo, sphere, edges, side)?
+        && sphere_chart_orientation::qualifies(topo, sphere, edges, side)?
+    {
+        return Ok(Some(sphere.clone()));
+    }
+    let mut seen_axes: Vec<Vec3> = Vec::new();
+    for oriented in edges {
+        let (center, axis, radius) = match topo.edge(oriented.edge())?.curve() {
+            EdgeCurve::Circle(c) => (c.center(), c.normal(), c.radius()),
+            EdgeCurve::Ellipse(c)
+                if (c.semi_major() - c.semi_minor()).abs() <= sphere.radius() * 1e-10 =>
+            {
+                (c.center(), c.normal(), c.semi_major())
+            }
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => continue,
+        };
+        if (center - sphere.center()).length() <= sphere.radius() * 1e-10
+            && (radius - sphere.radius()).abs() <= sphere.radius() * 1e-10
+        {
+            let candidate = remus_math::surfaces::SphericalSurface::with_axis(
+                sphere.center(),
+                sphere.radius(),
+                axis,
+            )?;
+            if !qualified {
+                // Preserve the old first-great-circle frame for unsupported
+                // sampled carriers. The mesher still checks that frame.
+                return Ok(Some(candidate));
+            }
+            let axis = candidate.z_axis();
+            if seen_axes
+                .iter()
+                .any(|seen| seen.0.map(f64::to_bits) == axis.0.map(f64::to_bits))
+            {
+                continue;
+            }
+            seen_axes.push(axis);
+            if let Some(side) = sphere_boundary_hemisphere(&candidate, boundary, positions)
+                && sphere_native_arcs_in_hemisphere(topo, &candidate, edges, side)?
+                && sphere_chart_orientation::qualifies(topo, &candidate, edges, side)?
+            {
+                return Ok(Some(candidate));
+            }
+        }
+    }
+    Ok((!qualified).then(|| sphere.clone()))
+}
+
 /// Fill a spherical patch that lies wholly in one hemisphere by constrained
 /// triangulation in a stereographic equatorial chart.
 ///
@@ -4903,55 +5173,62 @@ fn fill_sphere_hemisphere_patch(
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
 ) -> Result<bool, crate::OperationsError> {
+    let positions_save = merged.positions.len();
+    let normals_save = merged.normals.len();
+    let indices_save = merged.indices.len();
+    let result = fill_sphere_hemisphere_patch_impl(
+        sphere,
+        boundary,
+        deflection,
+        angular_tol,
+        merged,
+        point_to_global,
+    );
+    if !matches!(result, Ok(true)) {
+        // The implementation only appends vertices and inserts their new
+        // IDs into the map. A late incidence decline must restore both, or
+        // the following mesher can reuse orphaned face-local vertices.
+        let added_vertices = merged.positions.len() > positions_save;
+        merged.positions.truncate(positions_save);
+        merged.normals.truncate(normals_save);
+        merged.indices.truncate(indices_save);
+        if added_vertices {
+            point_to_global.retain(|_, id| (*id as usize) < positions_save);
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_sphere_hemisphere_patch_impl(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    boundary: &[u32],
+    deflection: f64,
+    angular_tol: f64,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<bool, crate::OperationsError> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
 
-    if boundary.len() < 3 || !sphere.radius().is_finite() || sphere.radius() <= 0.0 {
+    let Some(hemisphere) = sphere_boundary_hemisphere(sphere, boundary, &merged.positions) else {
         return Ok(false);
-    }
+    };
 
     let center = sphere.center();
     let radius = sphere.radius();
-    let surface_tol = radius.mul_add(1e-8, 1e-10);
     let hemisphere_tol = radius * 1e-8;
     let mut projected = Vec::with_capacity(boundary.len());
     let mut projected_z = Vec::with_capacity(boundary.len());
-    let mut z_min = f64::INFINITY;
-    let mut z_max = f64::NEG_INFINITY;
     for &gid in boundary {
-        let Some(&point) = merged.positions.get(gid as usize) else {
-            return Ok(false);
-        };
+        let point = merged.positions[gid as usize];
         let offset = point - center;
-        if !offset.x().is_finite()
-            || !offset.y().is_finite()
-            || !offset.z().is_finite()
-            || (offset.length() - radius).abs() > surface_tol
-        {
-            return Ok(false);
-        }
         let x = offset.dot(sphere.x_axis()) / radius;
         let y = offset.dot(sphere.y_axis()) / radius;
         let z = offset.dot(sphere.z_axis());
-        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-            return Ok(false);
-        }
         projected.push(Point2::new(x, y));
         projected_z.push(z / radius);
-        z_min = z_min.min(z);
-        z_max = z_max.max(z);
     }
-
-    // Require a genuinely trimmed single-hemisphere patch.  A primitive
-    // latitude cap remains on its dedicated structured path, and a boundary
-    // crossing both hemispheres must use a different chart.
-    let hemisphere: f64 = if z_min >= -hemisphere_tol && z_max > hemisphere_tol {
-        1.0
-    } else if z_max <= hemisphere_tol && z_min < -hemisphere_tol {
-        -1.0
-    } else {
-        return Ok(false);
-    };
 
     for (point, z) in projected.iter_mut().zip(projected_z) {
         let denominator = hemisphere.mul_add(z, 1.0);
@@ -5596,40 +5873,8 @@ pub(super) fn tessellate_sphere_cap_shared(
     if !circular_rim {
         rim_axis = None;
     }
-    let mut hemisphere_axis = None;
-    for oriented in &cap_edges {
-        let (center, axis, radius) = match topo.edge(oriented.edge())?.curve() {
-            EdgeCurve::Circle(c) => (c.center(), c.normal(), c.radius()),
-            EdgeCurve::Ellipse(c)
-                if (c.semi_major() - c.semi_minor()).abs() <= sphere.radius() * 1e-10 =>
-            {
-                (c.center(), c.normal(), c.semi_major())
-            }
-            // B24: exhaustive over `EdgeCurve` — circles and
-            // near-circles probe the hemisphere above; lines,
-            // NURBS, genuine ellipses, and open conics are skipped.
-            EdgeCurve::Line
-            | EdgeCurve::NurbsCurve(_)
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => continue,
-        };
-        if (center - sphere.center()).length() <= sphere.radius() * 1e-10
-            && (radius - sphere.radius()).abs() <= sphere.radius() * 1e-10
-        {
-            hemisphere_axis = Some(axis);
-            break;
-        }
-    }
-    let hemisphere_sphere = hemisphere_axis
-        .map(|axis| {
-            remus_math::surfaces::SphericalSurface::with_axis(
-                sphere.center(),
-                sphere.radius(),
-                axis,
-            )
-        })
-        .transpose()?;
+    let hemisphere_sphere =
+        sphere_hemisphere_chart(topo, sphere, &cap_edges, &boundary, &merged.positions)?;
     let latitude_sphere = rim_axis
         .map(|axis| {
             remus_math::surfaces::SphericalSurface::with_axis(
@@ -5657,14 +5902,17 @@ pub(super) fn tessellate_sphere_cap_shared(
             merged,
             point_to_global,
         )
-        || fill_sphere_hemisphere_patch(
-            hemisphere_sphere.as_ref().unwrap_or(sphere),
-            &boundary,
-            deflection,
-            angular_tol,
-            merged,
-            point_to_global,
-        )?
+        || match hemisphere_sphere.as_ref() {
+            Some(chart) => fill_sphere_hemisphere_patch(
+                chart,
+                &boundary,
+                deflection,
+                angular_tol,
+                merged,
+                point_to_global,
+            )?,
+            None => false,
+        }
         // A patch whose loop winds once around the carrier's polar axis
         // holds a pole: the parametric CDT below closes its unwrapped loop
         // with a chord and meshes the complementary lens instead (B40).

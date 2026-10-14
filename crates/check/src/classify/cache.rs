@@ -436,6 +436,14 @@ impl ClassifySource for CachedSource<'_> {
     fn check_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError> {
         for (fid, trim) in self.faces.iter().zip(self.trims.iter()) {
             if super::face_surface_distance(self.topo, *fid, point, tolerance)? < tolerance {
+                if let Some(inside) = super::boundary::qualified_sphere_trim_contains(
+                    self.topo, *fid, None, point, tolerance,
+                )? {
+                    if inside {
+                        return Ok(true);
+                    }
+                    continue;
+                }
                 let owned_trim;
                 let trim_ref = if let Some(cached) = trim {
                     cached

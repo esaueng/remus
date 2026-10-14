@@ -13,8 +13,8 @@
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
-//! - fixed material finding F3 must retain its independently integrated
-//!   remainder and mesh watertight; F6 retains its open-mesh signature.
+//! - fixed material findings F3/F6/F8 must retain their independently derived
+//!   remainders and mesh watertight through batch.
 //!
 //! A mismatch between the native verdict and the batch signature separates
 //! engine defects from binding, package-provenance, and harness defects:
@@ -146,9 +146,12 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-sphere-minus-box-mesh.json",
             signature: Signature::Probes {
-                volume_near: (3.671_139, 0.05),
+                volume_near: (
+                    7.0 * std::f64::consts::PI / 6.0,
+                    1e-4 * 7.0 * std::f64::consts::PI / 6.0,
+                ),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -158,13 +161,12 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-sphere-box-fuse-mesh.json",
             signature: Signature::Probes {
-                // Closed-form guess 4.66519 (sphere + box − octant ball);
-                // the open mesh underreads by its hole, so keep the band
-                // wide: this pin separates surfaces, it is not a volume
-                // oracle (that lives natively).
-                volume_near: (4.665_19, 0.1),
+                volume_near: (
+                    1.0 + 7.0 * std::f64::consts::PI / 6.0,
+                    1e-4 * (1.0 + 7.0 * std::f64::consts::PI / 6.0),
+                ),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {
