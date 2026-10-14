@@ -436,6 +436,15 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
 
 impl From<remus_math::MathError> for StructuredWasmError {
     fn from(error: remus_math::MathError) -> Self {
+        if let remus_math::MathError::ResourceLimitExceeded {
+            resource,
+            limit,
+            actual,
+        } = error
+        {
+            return Self::resource_limit(error.to_string(), resource, limit, actual)
+                .with_kernel_diagnostic(&error);
+        }
         let code = match &error {
             remus_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
             remus_math::MathError::Cancelled => WasmErrorCode::Cancelled,
@@ -1053,6 +1062,30 @@ mod work_limit_tests {
         );
         assert_eq!(control.code, WasmErrorCode::OperationFailed);
         assert_eq!(control.details["kernelCode"], "assembly_failed");
+    }
+
+    #[test]
+    fn math_fit_refusals_keep_their_classification() {
+        let structured =
+            super::StructuredWasmError::from(remus_math::MathError::ResourceLimitExceeded {
+                resource: "fit_points",
+                limit: 1 << 20,
+                actual: (1 << 20) + 1,
+            });
+        assert_eq!(structured.code, WasmErrorCode::ResourceLimitExceeded);
+        assert_eq!(structured.category, "resource_limit");
+        assert_eq!(structured.details["resource"], "fit_points");
+        assert_eq!(structured.details["limit"], 1 << 20);
+        assert_eq!(structured.details["actual"], (1 << 20) + 1);
+        assert_eq!(structured.details["kernelCode"], "resource_limit_exceeded");
+
+        let coincident =
+            super::StructuredWasmError::from(remus_math::MathError::CoincidentFitPoints {
+                index: 7,
+            });
+        assert_eq!(coincident.code, WasmErrorCode::InvalidArgument);
+        assert_eq!(coincident.category, "invalid_input");
+        assert_eq!(coincident.details["kernelCode"], "coincident_fit_points");
     }
 
     #[test]

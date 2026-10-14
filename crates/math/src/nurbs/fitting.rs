@@ -18,6 +18,71 @@ use crate::nurbs::basis::basis_funs;
 use crate::nurbs::curve::NurbsCurve;
 use crate::vec::Point3;
 
+/// Most data points any curve-fitting entry point accepts.
+pub const MAX_FIT_POINTS: usize = 1 << 20;
+
+/// Highest fitted degree, the common ceiling of the exchange formats.
+pub const MAX_FIT_DEGREE: usize = 25;
+
+/// Largest dense matrix, in `f64` entries (32 MiB), a fit may allocate.
+pub const MAX_DENSE_FIT_ENTRIES: usize = 1 << 22;
+
+fn check_fit_points(n: usize) -> Result<(), MathError> {
+    if n > MAX_FIT_POINTS {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "fit_points",
+            limit: MAX_FIT_POINTS,
+            actual: n,
+        });
+    }
+    Ok(())
+}
+
+/// The degree a fit actually uses — `degree` capped at `max_degree`, as the
+/// entry points have always done — held to `1..=MAX_FIT_DEGREE`.
+/// `control_points` is the fitted curve's count, reported as
+/// `NurbsCurve::new` would report it.
+fn fit_degree(degree: usize, max_degree: usize, control_points: usize) -> Result<usize, MathError> {
+    let p = degree.min(max_degree);
+    if p == 0 {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points,
+        });
+    }
+    if p > MAX_FIT_DEGREE {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "fit_degree",
+            limit: MAX_FIT_DEGREE,
+            actual: p,
+        });
+    }
+    Ok(p)
+}
+
+fn check_dense_entries(entries: usize) -> Result<(), MathError> {
+    if entries > MAX_DENSE_FIT_ENTRIES {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "dense_fit_entries",
+            limit: MAX_DENSE_FIT_ENTRIES,
+            actual: entries,
+        });
+    }
+    Ok(())
+}
+
+/// Chord-length parameters must strictly increase for interpolation: a
+/// repeated parameter makes two collocation rows identical. Points that
+/// coincide outright, or differ by less than the parameters resolve, are
+/// refused here, before any system is assembled. All points coinciding is
+/// not refused: `chord_length_params` spaces those uniformly.
+fn check_increasing_params(params: &[f64]) -> Result<(), MathError> {
+    match params.windows(2).position(|w| w[1] <= w[0]) {
+        Some(i) => Err(MathError::CoincidentFitPoints { index: i + 1 }),
+        None => Ok(()),
+    }
+}
+
 /// Interpolate a NURBS curve through a set of data points.
 ///
 /// Uses chord-length parameterization and a cubic (degree 3) B-spline.
@@ -39,15 +104,22 @@ use crate::vec::Point3;
 ///
 /// Returns an error if fewer than 2 points are provided or the degree
 /// is too high for the number of points.
+///
+/// Returns [`MathError::InvalidDegree`] for degree 0,
+/// [`MathError::ResourceLimitExceeded`] beyond [`MAX_FIT_POINTS`] points or
+/// a fitted degree above [`MAX_FIT_DEGREE`], and
+/// [`MathError::CoincidentFitPoints`] when two consecutive points share a
+/// chord-length parameter; all before any system is assembled.
 pub fn interpolate(points: &[Point3], degree: usize) -> Result<NurbsCurve, MathError> {
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
-
-    let p = degree.min(n - 1);
+    check_fit_points(n)?;
+    let p = fit_degree(degree, n - 1, n)?;
 
     let params = chord_length_params(points);
+    check_increasing_params(&params)?;
     let knots = build_interpolation_knots(&params, p, n);
     let control_points = solve_interpolation(points, &params, &knots, p)?;
 
@@ -67,7 +139,8 @@ pub fn interpolate(points: &[Point3], degree: usize) -> Result<NurbsCurve, MathE
 ///
 /// Returns an error if fewer than 2 points are provided, `params` does not
 /// match `points` in length or is not increasing on `[0, 1]`, or the
-/// interpolation system is singular.
+/// interpolation system is singular. The size and degree bounds of
+/// [`interpolate`] apply.
 pub fn interpolate_with_params(
     points: &[Point3],
     degree: usize,
@@ -77,6 +150,7 @@ pub fn interpolate_with_params(
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
+    check_fit_points(n)?;
     if params.len() != n {
         return Err(MathError::InvalidControlPointGrid {
             expected_rows: n,
@@ -92,7 +166,7 @@ pub fn interpolate_with_params(
         });
     }
 
-    let p = degree.min(n - 1);
+    let p = fit_degree(degree, n - 1, n)?;
     let knots = build_interpolation_knots(params, p, n);
     let control_points = solve_interpolation(points, params, &knots, p)?;
 
@@ -109,7 +183,10 @@ pub fn interpolate_with_params(
 ///
 /// # Errors
 ///
-/// Returns an error if parameters are invalid.
+/// Returns an error if parameters are invalid. The size and degree bounds
+/// of [`interpolate`] apply, and the dense normal equations (`n·m + 2·m²`
+/// entries for `n` points and `m` control points) are held to
+/// [`MAX_DENSE_FIT_ENTRIES`].
 pub fn approximate(
     points: &[Point3],
     degree: usize,
@@ -119,9 +196,10 @@ pub fn approximate(
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
-    if num_control_points < degree + 1 {
+    check_fit_points(n)?;
+    if num_control_points < degree.saturating_add(1) {
         return Err(MathError::InvalidKnotVector {
-            expected: degree + 1,
+            expected: degree.saturating_add(1),
             got: num_control_points,
         });
     }
@@ -136,8 +214,14 @@ pub fn approximate(
         return interpolate(points, degree);
     }
 
-    let p = degree.min(num_control_points - 1);
+    let p = fit_degree(degree, num_control_points - 1, num_control_points)?;
     let m = num_control_points;
+    // `solve_approximation` holds the n×m basis matrix and the m×m normal
+    // matrix plus one working copy of it.
+    check_dense_entries(
+        n.saturating_mul(m)
+            .saturating_add(m.saturating_mul(m).saturating_mul(2)),
+    )?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
@@ -314,6 +398,7 @@ fn solve_interpolation(
         }
         banded_solve_multi(&mut band, &mut rhs, bw)?;
     } else {
+        check_dense_entries(n.saturating_mul(n))?;
         let mut matrix = vec![vec![0.0; n]; n];
         for (i, (&t, &span)) in params.iter().zip(spans.iter()).enumerate() {
             let basis = basis_funs(span, t, degree, knots);
@@ -773,7 +858,8 @@ fn point_from_basis(
 ///
 /// # Errors
 ///
-/// Returns [`MathError::EmptyInput`] if fewer than 2 points.
+/// Returns [`MathError::EmptyInput`] if fewer than 2 points. The size and
+/// degree bounds of [`interpolate`] apply.
 /// If the iteration has not converged after `max_iterations`, the best-effort
 /// curve (lowest observed error) is returned as `Ok`; no error is raised.
 /// In debug builds (`#[cfg(debug_assertions)]`) a `log::warn!` is emitted;
@@ -790,8 +876,8 @@ pub fn approximate_lspia(
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
-
-    let p = degree.min(n - 1);
+    check_fit_points(n)?;
+    let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
 
     let params = chord_length_params(points);
@@ -924,8 +1010,8 @@ pub(crate) fn approximate_lspia_weighted(
             got: point_weights.len(),
         });
     }
-
-    let p = degree.min(n - 1);
+    check_fit_points(n)?;
+    let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
 
     let params = chord_length_params(points);
@@ -1020,6 +1106,43 @@ mod tests {
     use crate::vec::Point3;
 
     use super::*;
+
+    #[test]
+    fn out_of_band_interpolation_is_held_to_the_dense_budget() {
+        // Strictly increasing parameters crowded into the first span, on
+        // uniform knots, put every row's span at `degree` and fail the band
+        // check (span < row index), so the n×n dense fallback would run:
+        // 2049² entries, just past the 2048² budget.
+        let (n, p) = (2049, 3);
+        let params: Vec<f64> = (0..n).map(|i| i as f64 * 1e-9).collect();
+        let mut knots = vec![0.0; p + 1];
+        knots.extend((1..n - p).map(|i| i as f64 / (n - p) as f64));
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
+        let points: Vec<Point3> = params.iter().map(|&t| Point3::new(t, 0.0, 0.0)).collect();
+        let result = solve_interpolation(&points, &params, &knots, p);
+        assert!(
+            matches!(
+                result,
+                Err(MathError::ResourceLimitExceeded {
+                    resource: "dense_fit_entries",
+                    limit: MAX_DENSE_FIT_ENTRIES,
+                    actual,
+                }) if actual == n * n
+            ),
+            "expected the dense budget refusal, got {result:?}"
+        );
+        // At 2048 rows the same layout fits the budget exactly and reaches
+        // the dense solve, which finds the crowded system singular.
+        let n = 2048;
+        assert_eq!(n * n, MAX_DENSE_FIT_ENTRIES);
+        let mut knots = vec![0.0; p + 1];
+        knots.extend((1..n - p).map(|i| i as f64 / (n - p) as f64));
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
+        assert!(matches!(
+            solve_interpolation(&points[..n], &params[..n], &knots, p),
+            Err(MathError::SingularMatrix)
+        ));
+    }
 
     #[test]
     fn interpolate_two_points_is_line() {
@@ -1381,8 +1504,9 @@ mod tests {
     #[test]
     fn perf_n01_duplicate_points_keep_typed_refusal() {
         // Coincident points collapse a chord gap to zero; the historical
-        // solver reports `SingularMatrix`. The compact path must not turn
-        // that typed refusal into NaN control points or a wrong curve.
+        // solver reported `SingularMatrix`, and the parameter check now
+        // refuses the pair before any solve. Either way the refusal must stay
+        // typed, never NaN control points or a wrong curve.
         let dup = vec![
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(0.0, 0.0, 0.0),
@@ -1392,7 +1516,7 @@ mod tests {
         ];
         assert!(matches!(
             interpolate(&dup, 3),
-            Err(crate::MathError::SingularMatrix)
+            Err(crate::MathError::CoincidentFitPoints { index: 1 })
         ));
     }
 
