@@ -367,7 +367,7 @@ fn ellipse_frame(snap: &EntitySnapshot, id: EllipseId) -> (f64, f64, f64, f64, f
 /// Magnitudes below the threshold (including transient non-positive values
 /// mid-solve) take the documented degenerate contract: zero residual with
 /// zero gradient, matching a degenerate line axis.
-fn ellipse_axes_usable(a: f64, b: f64) -> bool {
+pub(super) fn ellipse_axes_usable(a: f64, b: f64) -> bool {
     a.is_finite() && b.is_finite() && a.abs() >= 1e-300 && b.abs() >= 1e-300
 }
 

@@ -9,8 +9,8 @@ use super::components::{
     refresh_subset_radii, refresh_subset_snapshot, subset_snapshot,
 };
 use super::constraint::{
-    Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, eval_jacobian,
-    eval_residuals, residual_count,
+    Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, ellipse_axes_usable,
+    eval_jacobian, eval_residuals, residual_count,
 };
 use super::diagnostics::{ConstraintResidual, SolveDiagnostics, classify as classify_solve};
 use super::dof::{self, DofAnalysis};
@@ -677,10 +677,47 @@ impl GcsSystem {
             // identical for plain and detailed solves at every tolerance.
             return self.solve_impl(max_iterations, tolerance, capture_final);
         }
-        if decomp.is_single_connected() {
-            return self.solve_dense(max_iterations, tolerance, capture_final);
+        let (mut result, eval, stats) = if decomp.is_single_connected() {
+            self.solve_dense(max_iterations, tolerance, capture_final)?
+        } else {
+            self.solve_components(decomp, max_iterations, tolerance, capture_final)?
+        };
+        self.settle_ellipse_axes(&mut result, tolerance);
+        Ok((result, eval, stats))
+    }
+
+    /// Publish every ellipse with strictly positive semiaxes.
+    ///
+    /// The solver treats `a` and `b` as free scalars, and every residual but
+    /// `EllipseAxisA`/`EllipseAxisB`/`EqualEllipseRadii` reads them squared,
+    /// so an iterate can cross zero and converge on `-a`: the same point set,
+    /// published with an invalid semiaxis. Negating restores the canonical
+    /// sign; the result is then re-measured so `EllipseAxis*` residuals (the
+    /// only sign-sensitive reads) stay honest. A semiaxis below the residual
+    /// threshold collapsed the ellipse into the degenerate fail-quiet path,
+    /// where its residuals read zero without being satisfied: such a solve
+    /// never reports convergence.
+    fn settle_ellipse_axes(&mut self, result: &mut SolveResult, tolerance: f64) {
+        let mut flipped = false;
+        let mut degenerate = false;
+        for (_, ellipse) in self.ellipses.iter_mut() {
+            for axis in [&mut ellipse.a, &mut ellipse.b] {
+                if axis.is_finite() && axis.is_sign_negative() {
+                    *axis = -*axis;
+                    flipped = true;
+                }
+            }
+            if !ellipse_axes_usable(ellipse.a, ellipse.b) {
+                degenerate = true;
+            }
         }
-        self.solve_components(decomp, max_iterations, tolerance, capture_final)
+        if flipped {
+            result.max_residual = self.current_max_residual();
+            result.converged &= result.max_residual < tolerance;
+        }
+        if degenerate {
+            result.converged = false;
+        }
     }
 
     /// The pre-S02 dense solve: one DogLeg loop over the whole system.

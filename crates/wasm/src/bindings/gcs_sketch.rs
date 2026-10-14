@@ -1029,6 +1029,53 @@ mod tests {
         assert_eq!(restored.constraint_residuals[0].constraint, retained);
     }
 
+    /// WASM-2: a point-on-ellipse solve whose iterate crosses `a = 0` used
+    /// to report convergence with `a = -0.2168`, and one that lands on
+    /// `a = 0` reported convergence on a collapsed ellipse.
+    #[test]
+    fn gcs_solve_never_publishes_a_non_positive_semiaxis() {
+        fn run(k: &mut BrepKernel, ops: &serde_json::Value) -> Vec<serde_json::Value> {
+            let out: serde_json::Value =
+                serde_json::from_str(&k.execute_batch(&ops.to_string())).unwrap();
+            out.as_array().unwrap().clone()
+        }
+        for (a0, px, py, expect_converged) in [(0.5, -0.2, 0.1, true), (1.0, 0.4, 0.0, false)] {
+            for solve in ["gcsSolve", "gcsSolveDetailed"] {
+                let mut k = BrepKernel::new();
+                let s =
+                    run(&mut k, &serde_json::json!([{"op":"gcsNew","args":{}}]))[0]["ok"].clone();
+                let built = run(
+                    &mut k,
+                    &serde_json::json!([
+                        {"op":"gcsAddPoint","args":{"sketch":s,"x":0.0,"y":0.0,"fixed":true}},
+                        {"op":"gcsAddPoint","args":{"sketch":s,"x":px,"y":py,"fixed":true}},
+                    ]),
+                );
+                let (c, p) = (built[0]["ok"].clone(), built[1]["ok"].clone());
+                let e = run(
+                    &mut k,
+                    &serde_json::json!([{"op":"gcsAddEllipse","args":{"sketch":s,"center":c,"a":a0,"b":1.0,"angle":0.0}}]),
+                )[0]["ok"]
+                    .clone();
+                let results = run(
+                    &mut k,
+                    &serde_json::json!([
+                        {"op":"gcsAddConstraint","args":{"sketch":s,"constraint":{"type":"pointOnEllipse","point":p,"ellipse":e}}},
+                        {"op":solve,"args":{"sketch":s,"maxIterations":100,"tolerance":1e-10}},
+                        {"op":"gcsEllipseParams","args":{"sketch":s,"ellipse":e}},
+                    ]),
+                );
+                let converged = results[1]["ok"]["converged"].as_bool().unwrap();
+                let params = results[2]["ok"].as_array().unwrap();
+                let (a, b) = (params[2].as_f64().unwrap(), params[3].as_f64().unwrap());
+                assert_eq!(converged, expect_converged, "{solve} a0={a0}: {results:?}");
+                if converged {
+                    assert!(a > 0.0 && b > 0.0, "{solve}: a={a} b={b}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn gcs_dense_budget_direct_and_batch_refuse_atomically() {
         let mut k = BrepKernel::new();
