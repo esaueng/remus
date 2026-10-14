@@ -218,7 +218,9 @@ pub fn surface_knot_insert_v(
 /// If the knot does not exist in the knot vector the curve is returned
 /// unchanged. The removal is accepted only when the deviation between the
 /// two trial control-point sequences (computed from each end toward the
-/// middle) is within `tolerance`.
+/// middle) is within `tolerance`. At degree 1 the sequences do not overlap,
+/// so the dropped control point's distance from its neighbours' chord at `u`
+/// is held to `tolerance` instead.
 ///
 /// # Errors
 ///
@@ -430,21 +432,32 @@ pub fn curve_knot_remove(
     // They should be identical for a perfectly removable knot.
     // Check all overlapping points.
     for idx in 0..p.saturating_sub(1) {
-        let lp = left_pts[idx];
-        let rp = right_pts[idx + 1];
-        let dist = if lp[3].abs() > KNOT_EPS && rp[3].abs() > KNOT_EPS {
-            let dx = lp[0] / lp[3] - rp[0] / rp[3];
-            let dy = lp[1] / lp[3] - rp[1] / rp[3];
-            let dz = lp[2] / lp[3] - rp[2] / rp[3];
-            (dx * dx + dy * dy + dz * dz).sqrt()
+        if homogeneous_distance(left_pts[idx], right_pts[idx + 1]) > tolerance {
+            return Err(MathError::ConvergenceFailure { iterations: 0 });
+        }
+    }
+
+    // At degree 1 the sweeps have no overlap: no unknown survives, so the
+    // loop above checks nothing. A5.8's odd-count branch applies instead —
+    // the one blended point, new[k], must lie on the chord of its fixed
+    // neighbours old[k-1] = new[k-1] and old[k] = new[k+1] at `u`. For a
+    // non-rational polyline that distance is the whole parametric deviation:
+    // both curves are linear on either side of `u` and agree at the ends.
+    if p == 1 {
+        let denom = removed_knots[k + 1] - removed_knots[k];
+        let alpha = if denom.abs() < KNOT_EPS {
+            0.0
         } else {
-            let dx = lp[0] - rp[0];
-            let dy = lp[1] - rp[1];
-            let dz = lp[2] - rp[2];
-            let dw = lp[3] - rp[3];
-            (dx * dx + dy * dy + dz * dz + dw * dw).sqrt()
+            (u - removed_knots[k]) / denom
         };
-        if dist > tolerance {
+        let (prev, next) = (pw[k - 1], pw[k + 1]);
+        let chord = [
+            alpha * next[0] + (1.0 - alpha) * prev[0],
+            alpha * next[1] + (1.0 - alpha) * prev[1],
+            alpha * next[2] + (1.0 - alpha) * prev[2],
+            alpha * next[3] + (1.0 - alpha) * prev[3],
+        ];
+        if homogeneous_distance(pw[k], chord) > tolerance {
             return Err(MathError::ConvergenceFailure { iterations: 0 });
         }
     }
@@ -487,6 +500,24 @@ pub fn curve_knot_remove(
     let new_ws: Vec<f64> = new_pw.iter().map(|h| h[3]).collect();
 
     NurbsCurve::new(p, new_knots, new_cps, new_ws)
+}
+
+/// Distance between two homogeneous points as [`curve_knot_remove`] measures
+/// it: Cartesian once both weights are usable, 4D otherwise.
+#[allow(clippy::suboptimal_flops)]
+fn homogeneous_distance(a: [f64; 4], b: [f64; 4]) -> f64 {
+    if a[3].abs() > KNOT_EPS && b[3].abs() > KNOT_EPS {
+        let dx = a[0] / a[3] - b[0] / b[3];
+        let dy = a[1] / a[3] - b[1] / b[3];
+        let dz = a[2] / a[3] - b[2] / b[3];
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    } else {
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        let dz = a[2] - b[2];
+        let dw = a[3] - b[3];
+        (dx * dx + dy * dy + dz * dz + dw * dw).sqrt()
+    }
 }
 
 /// Refine a curve by inserting multiple knots at once (A5.4).
