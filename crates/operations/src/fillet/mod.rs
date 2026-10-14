@@ -33,7 +33,7 @@ mod rolling_ball;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use geometry::face_surface_normal_at;
+pub(crate) use geometry::{face_surface_normal_at, face_surface_normal_with_grid};
 pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
