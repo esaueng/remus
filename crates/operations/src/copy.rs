@@ -1312,7 +1312,6 @@ fn copy_and_transform_solid_impl(
     normal_matrix: &remus_math::mat::Mat4,
     recorder: &mut TransformRecorder,
 ) -> Result<SolidId, crate::OperationsError> {
-    let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
     let mut transform_plan = crate::transform::plan_solid_transform(topo, solid_id, matrix)?;
     let certificates = crate::transform::translation_edge_certificates(
         topo,
@@ -1404,7 +1403,7 @@ fn copy_and_transform_solid_impl(
     let mut new_shell_ids = Vec::with_capacity(shells.len());
     let mut new_faces = Vec::new();
     let mut ranges = Vec::new();
-    let mut chart_replaced_faces = Vec::new();
+    let mut charts = Vec::new();
     for shell in shells {
         let mut new_face_ids = Vec::with_capacity(shell.len());
         for face in shell {
@@ -1414,7 +1413,6 @@ fn copy_and_transform_solid_impl(
             // and had no anisotropic-scale handling at all, so "equivalent to
             // copy_solid followed by transform_solid" was untrue for any
             // scaling matrix.
-            let source_is_nurbs = matches!(face.surface, FaceSurface::Nurbs(_));
             let new_fid = add_planned_face(
                 topo,
                 (face.outer, &face.inner),
@@ -1427,7 +1425,7 @@ fn copy_and_transform_solid_impl(
             // `transform_face_surface` expects (its non-uniform branches map
             // boundary probes back through the inverse).
             recorder.set_refusal_origin(topo.face_id_from_index(face.old_index));
-            crate::transform::transform_face_surface_recorded(
+            let chart = crate::transform::transform_face_surface_recorded(
                 topo,
                 new_fid,
                 matrix,
@@ -1435,11 +1433,7 @@ fn copy_and_transform_solid_impl(
                 recorder,
             )?;
             recorder.set_refusal_origin(None);
-            if matches!(topo.face(new_fid)?.surface(), FaceSurface::Nurbs(_))
-                && (!source_is_nurbs || chart_reversing)
-            {
-                chart_replaced_faces.push(new_fid);
-            }
+            charts.push((new_fid, chart));
             if let Some(attributes) = face.attributes {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
@@ -1459,15 +1453,9 @@ fn copy_and_transform_solid_impl(
         &authority_edges,
         &new_edges,
     )?;
-    for face in chart_replaced_faces {
-        let uses: Vec<_> = topo
-            .pcurves_for_face(face)
-            .into_iter()
-            .map(|(edge, forward, _)| (edge, forward))
-            .collect();
-        for (edge, forward) in uses {
-            topo.remove_pcurve_oriented(edge, face, forward)?;
-        }
+    // The copied pcurves are still in the source charts.
+    for (face, chart) in charts {
+        crate::transform::reexpress_face_pcurves(topo, face, &chart)?;
     }
 
     add_planned_solid(topo, &new_shell_ids, solid_attributes)
@@ -1880,7 +1868,52 @@ mod tests {
             .into_iter()
             .find(|&candidate| !source.pcurves_for_face(candidate).is_empty())
             .unwrap();
-        assert_single_lifted_pcurve(&source, transformed_face);
+        // The lift count is carried, and the pcurve is re-expressed in the
+        // moved plane's chart: its 3D image moves with the face (B89).
+        let pcurves = source.pcurves_for_face(transformed_face);
+        assert_eq!(pcurves.len(), 1, "copied face must retain one pcurve");
+        let (edge, forward, moved) = &pcurves[0];
+        let coedge = face_coedges(&source, transformed_face)
+            .unwrap()
+            .into_iter()
+            .find(|&coedge_id| {
+                source
+                    .coedge(coedge_id)
+                    .is_ok_and(|coedge| coedge.edge() == *edge && coedge.is_forward() == *forward)
+            })
+            .unwrap();
+        assert_eq!(
+            source.coedge(coedge).unwrap().periodic_winding(),
+            PeriodicWinding::new(3, -2)
+        );
+        let on_plane = |face: FaceId, uv: Point2| {
+            let (normal, d) = match source.face(face).unwrap().surface() {
+                FaceSurface::Plane { normal, d } => Some((*normal, *d)),
+                _ => None,
+            }
+            .unwrap();
+            let foot = normal * d;
+            let chart = remus_math::frame::Frame3::from_normal(
+                remus_math::vec::Point3::new(foot.x(), foot.y(), foot.z()),
+                normal,
+            )
+            .unwrap();
+            chart.origin + chart.x * uv.x() + chart.y * uv.y()
+        };
+        let original = source.pcurve_oriented(oriented.edge(), face, oriented.is_forward());
+        let original = original.unwrap();
+        for (before, after) in [
+            (original.t_start(), moved.t_start()),
+            (original.t_end(), moved.t_end()),
+        ] {
+            let expected = on_plane(face, original.evaluate(before))
+                + remus_math::vec::Vec3::new(10.0, 0.0, 0.0);
+            let actual = on_plane(transformed_face, moved.evaluate(after));
+            assert!(
+                (actual - expected).length() < 1e-12,
+                "{actual:?} != {expected:?}"
+            );
+        }
     }
 
     #[test]
