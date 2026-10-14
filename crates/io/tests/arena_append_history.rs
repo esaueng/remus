@@ -204,9 +204,15 @@ fn fresh_destination_preserves_global_barrier_payload_and_roundtrip_bytes() {
 
     let mut destination = Topology::new();
     let roots = deserialize_document(&document, &mut destination).unwrap();
+    // The trailing barrier severs nothing, so it is not the document's history.
+    let source_entries = source.journal().snapshot().entries;
+    assert!(matches!(
+        &source_entries[2].payload,
+        PayloadSnapshot::Barrier { affected } if affected.is_empty()
+    ));
     assert_eq!(
         destination.journal().snapshot().entries,
-        source.journal().snapshot().entries
+        source_entries[..2]
     );
     assert_eq!(
         serialize_document(&destination, &roots.solids, &[]).unwrap(),

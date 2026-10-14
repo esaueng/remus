@@ -243,6 +243,17 @@ Refinements the serialization implementation added to the design above:
   travel with the document because a naming round trip that drops names
   would be hollow; both solids' and faces' entries ride by dense local
   index.
+- **A document carries its own entities' history, not the session's**
+  (review IO-3, roadmap B89). The writer embeds
+  `Journal::lineage_snapshot`: the entries connected to the document's
+  entities through shared ordinals (ancestors, and descendants of shared
+  ancestors, so a barrier on a split's other half still severs), plus global
+  barriers after the earliest such entry, with the full high-water counters.
+  References anchored in that history resolve exactly as against the full
+  journal; others resolve `UnknownOperation`; a document whose entities no
+  entry mentions has no `journal` field. Earlier writers embedded the whole
+  journal, so a same-session round trip doubled it. The schema and version
+  are unchanged and documents of either writer read identically.
 - **Ordinals are the persistent identity; arena indices never touch the
   file.** The writer remaps live-index keys to the document's dense local
   indices; the reader remaps them to the freshly allocated ids. An entity
