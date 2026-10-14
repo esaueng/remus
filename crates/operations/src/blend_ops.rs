@@ -704,6 +704,10 @@ fn is_planar_line_blend(
 
     Ok(true)
 }
+fn has_cavity_shells(topo: &Topology, solid: SolidId) -> Result<bool, OperationsError> {
+    Ok(!topo.solid(solid)?.inner_shells().is_empty())
+}
+
 fn planar_chamfer_result(
     topo: &mut Topology,
     solid: SolidId,
@@ -1092,7 +1096,9 @@ fn fillet_group(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if is_planar_line_blend(topo, solid, edges)? {
+    // The planar rebuild reassembles the outer shell alone and refuses a
+    // solid with cavities; the walking builder carries them through.
+    if !has_cavity_shells(topo, solid)? && is_planar_line_blend(topo, solid, edges)? {
         // The rolling-ball rebuild handles the validated planar classes
         // (simple prisms), closes multi-edge corner patches, and carries the
         // inner loops of a holed cap through as topology. On richer topology
