@@ -1037,6 +1037,20 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ee0d2cb
 | <a id="perf-o06"></a>PERF-O06 | P1 / 2 / M | Profile recognition graph face-area and edge-relation work, then reuse or accelerate qualified unchanged work; rank opposing planar-face candidate bucketing only from workload evidence. | Preserve complete feature records, area values, edge verdicts, holes, blend exclusions and ambiguous matches; measure area/projection/ray work separately and retain exact-output goldens and current-package workflow qualification. | M/high | Q02, M07 | [B16](#b16) | Partial — one prepared classifier, shared normal samples and exact scalar NURBS-area memoization already ship. [Fresh source-32 graph profile](../performance/perf-o06-recognition-graph.md), local paired 2026.1.59: recognition ~347 ms (12 untraced edits/schedule); two byte-qualified shipping CPU profiles attribute ~79% to quadrant ray crossings (line–NURBS ~47%, torus ~26%), area ~14%, setup <1%. Separate counters qualify 1,538 rays/14,549 candidate-face calls and 40/42 NURBS-area memo hits per edit. Maintained CPU/count observers, portable raw evidence and exact geometry/quantity/feature comparisons ship; that profile contains no runtime optimization. Follow-on ray-crossing implementation and qualification tranches are recorded below. Persistent reuse and other-workload bucketing remain open. |
 | <a id="perf-o07"></a>PERF-O07 | P2 / 5 / S | Plan local direct edits and resize-blend operations against an affected neighborhood, minimizing copied surfaces and repeated trial rebuilds. | Count touched versus total entities; preserve transactional refusal, contact dependencies and total lineage across zero-radius removal and topology changes. | L/high | T01, Q02, M07 | [P-Class 6.2](#p-6-2) | Proposed |
 
+#### PERF-O06-NR: bounded NURBS ray evaluation reuse
+
+Locally qualified — [64-entry exact-parameter reuse](../performance/perf-o06-nurbs-ray-reuse.md),
+seed-point carry and unchanged ray-norm reuse preserve complete root bits and
+shipping geometry, quantities, feature records and edge verdicts. Quiet fresh
+WASM recognition falls about 11.0% on the maintained holder edit; kernel plus
+bulk-transfer time falls about 5.4–5.5%. All four native carrier controls improve
+7.6–11.6%. Both schedules retain 12 edits per revision. Qualification: 8,078
+workspace tests, docs, 13 complexity guards, no-I/O contracts, 52-row census,
+fresh and installed paired WASM, 36 exact snapshot pairs/180 arena-display
+artifacts and 5,760 per-face area-bit pairs. This closes the bounded reuse
+tranche locally; hosted CI, committed-package refresh, broader workloads and
+browser presentation remain separate.
+
 </details>
 
 #### PERF-O06-TR: torus ray norm comparisons

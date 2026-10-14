@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "715366e2720a8d94f38f8b6c3873cd9e7efdae33",
+  "sourceTree": "1f674bb85d934365d29d7bc5056a92169567f049",
+  "baselineSourceCommit": "866581e9d7a9362022d68f950ebddcf155495da0",
+  "packageStatus": "Locally built and tested, not a published package refresh",
+  "localPairedVersion": "2026.1.61",
+  "packageFiles": {
+    "crates/wasm-io/pkg/.gitignore": {
+      "bytes": 1,
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    "crates/wasm-io/pkg/LICENSE-APACHE": {
+      "bytes": 10669,
+      "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+    },
+    "crates/wasm-io/pkg/NOTICE": {
+      "bytes": 608,
+      "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+    },
+    "crates/wasm-io/pkg/package.json": {
+      "bytes": 1007,
+      "sha256": "c62bd13705aef321c3022dcea2891c62b7d4799bcf26464d6a1d53a02c54aba7"
+    },
+    "crates/wasm-io/pkg/remus_wasm_io.d.ts": {
+      "bytes": 5317,
+      "sha256": "a0f5ee52cd031772941537d1184af7175a8de7f87dfb9e42b81c6433d5d4585c"
+    },
+    "crates/wasm-io/pkg/remus_wasm_io.js": {
+      "bytes": 268,
+      "sha256": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d"
+    },
+    "crates/wasm-io/pkg/remus_wasm_io_bg.js": {
+      "bytes": 23496,
+      "sha256": "47a72ae6a17a316dbf80be3b211179094a538034260c338b496dc67d5b340439"
+    },
+    "crates/wasm-io/pkg/remus_wasm_io_bg.wasm": {
+      "bytes": 2778617,
+      "sha256": "a30fd51f9532a99de3a72090e21c923e8925096fddd5bf28040fcecd3da658e3"
+    },
+    "crates/wasm-io/pkg/remus_wasm_io_bg.wasm.d.ts": {
+      "bytes": 3532,
+      "sha256": "bd01bf4aa45bf771e527675e8d095bf5e580ca37aad44d670715e73fd98acdb3"
+    },
+    "crates/wasm-io/pkg/remus_wasm_io_node.cjs": {
+      "bytes": 23809,
+      "sha256": "e90089cf522f2a785ce7c057393b5b053a1e725720f29a0b599e1e00cc329d37"
+    },
+    "crates/wasm/pkg/.gitignore": {
+      "bytes": 1,
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    "crates/wasm/pkg/LICENSE-APACHE": {
+      "bytes": 10669,
+      "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+    },
+    "crates/wasm/pkg/NOTICE": {
+      "bytes": 608,
+      "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+    },
+    "crates/wasm/pkg/package.json": {
+      "bytes": 960,
+      "sha256": "4e01f1cb6c275196733d88de2392a121f89b71c8377a7fe3d0b84d3c35938df3"
+    },
+    "crates/wasm/pkg/remus_wasm.d.ts": {
+      "bytes": 179430,
+      "sha256": "2e47db82c28ac8cf6151cd6c8b1be2ac6b3a37a294b29fd27ac67b88f1f2d62e"
+    },
+    "crates/wasm/pkg/remus_wasm.js": {
+      "bytes": 401,
+      "sha256": "cfda49baec77439c7544a7dca80a5534f07fd735bf65c75302a5fc2f2a30d6c5"
+    },
+    "crates/wasm/pkg/remus_wasm_bg.js": {
+      "bytes": 333220,
+      "sha256": "2a1d3f7733d3d345c12330a48399a16381843312afa0bb3a912cfbc4a8f7e791"
+    },
+    "crates/wasm/pkg/remus_wasm_bg.wasm": {
+      "bytes": 9749112,
+      "sha256": "e4a3ed0a178ce0b268e2ae8e3cc7a59c47946a37b9c3efcf5b46e75173c5b55a"
+    },
+    "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts": {
+      "bytes": 45832,
+      "sha256": "c21d41cea48671134270a6b891fdf99bc6d45f7d9eead1934f063ae4c9389577"
+    },
+    "crates/wasm/pkg/remus_wasm_node.cjs": {
+      "bytes": 335309,
+      "sha256": "54934d4fffd4ba633dd928801461affc6b8b853b3a4774206fa347e8ec7f318b"
+    }
+  },
+  "nativeStages": [
+    {
+      "stage": "workspace",
+      "exitCode": 0,
+      "logSha256": "d79ec619173befad773f78728bc50c795db023af5e18ad340b3c45ab990c90f7",
+      "logBytes": 966034
+    },
+    {
+      "stage": "doctests",
+      "exitCode": 0,
+      "logSha256": "82726b91ec19ffbcc11fb891ca52cc31d9e1d029ce18df8cd284232bffd826a5",
+      "logBytes": 3749
+    },
+    {
+      "stage": "complexity",
+      "exitCode": 0,
+      "logSha256": "aacb28e9ae05f0e20bba128917ac5b05eac44289dcf8b78d04c810c233cb3c34",
+      "logBytes": 3384
+    },
+    {
+      "stage": "no-io",
+      "exitCode": 0,
+      "logSha256": "a3269375058f2bec006696c10b80c31b8493edc9748bff4f7b67cacdc6e83038",
+      "logBytes": 64321
+    },
+    {
+      "stage": "census",
+      "exitCode": 0,
+      "logSha256": "98b521ea402dedd278fa69bacc2bf37e9889a024ff56009bf676a142823e27b5",
+      "logBytes": 48
+    }
+  ],
+  "wasmStages": [
+    {
+      "stage": "wasm-build",
+      "exitCode": 0,
+      "logSha256": "c54d1006d2c0d2dfa9f234c420c35a7e41446f5a4186f66d8a569aed25cefec1",
+      "logBytes": 35904
+    },
+    {
+      "stage": "publisher-metadata-wasm",
+      "exitCode": 0,
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "logBytes": 0
+    },
+    {
+      "stage": "publisher-metadata-wasm-io",
+      "exitCode": 0,
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "logBytes": 0
+    },
+    {
+      "stage": "normalized-installed-consumer",
+      "exitCode": 0,
+      "logSha256": "04a429751f8f8b17b76a911a26692e5d3feec6309195f3758373c90cd247a3f6",
+      "logBytes": 9013
+    },
+    {
+      "stage": "built-pair-version",
+      "exitCode": 0,
+      "logSha256": "617c998ed2f2856e004fbbe2bc69774b312b491f352ae6dd007371304079d0eb",
+      "logBytes": 50
+    },
+    {
+      "stage": "size-gate",
+      "exitCode": 0,
+      "logSha256": "6724023c27234273848067204e851f5d322d4324d61761e7ad337c1fe2c4a7bb",
+      "logBytes": 104
+    }
+  ],
+  "workspace": {
+    "passed": 8078,
+    "skipped": 38,
+    "gpuAdapterRequired": true,
+    "renderTestsSerialized": true
+  },
+  "complexity": {
+    "passed": 13
+  },
+  "census": {
+    "committedRowsMatched": 52
+  },
+  "metadataOnlyAmendProof": {
+    "builtFrom": "a0e8eaab7be1f0ad2c574935780febf11b44dc0a",
+    "qualifiedHead": "715366e2720a8d94f38f8b6c3873cd9e7efdae33",
+    "identicalTree": "1f674bb85d934365d29d7bc5056a92169567f049",
+    "change": "metadata-only amendment through repaired full project hook chain"
+  }
+}

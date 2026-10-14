@@ -14,7 +14,9 @@ use remus_math::analytic_intersection::intersect_plane_torus;
 use remus_math::context::{OperationContext, WorkBudgets};
 use remus_math::nurbs::bezier_clip::curve_curve_intersect_full;
 use remus_math::nurbs::curve::NurbsCurve;
-use remus_math::nurbs::intersection::intersect_nurbs_nurbs_with_context;
+use remus_math::nurbs::intersection::{
+    LineSurfaceSeedGrid, intersect_line_nurbs_with_grid, intersect_nurbs_nurbs_with_context,
+};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::ToroidalSurface;
 use remus_math::vec::{Point3, Vec3};
@@ -198,6 +200,73 @@ fn bench_intersections(c: &mut Criterion) {
         !nurbs_probe.is_empty(),
         "NURBS benchmark fixture must produce a curve"
     );
+
+    // Prepared point classification retains the grid. Time only the same
+    // surface/ray solve on both revisions, including its local workspace and
+    // returned roots; keep surface/grid construction and Cartesian oracles
+    // outside the measured loop.
+    {
+        let mut rays = c.benchmark_group("nurbs_ray_cached");
+        rays.throughput(Throughput::Elements(1));
+        for (name, surface, origin, direction, expected) in [
+            (
+                "bilinear_hit",
+                &tilted,
+                Point3::new(0.3, 0.4, 1.0),
+                Vec3::new(0.0, 0.0, -2.3),
+                vec![Point3::new(0.3, 0.4, -0.1)],
+            ),
+            (
+                "rational_cylinder_secant",
+                &cylinder_z,
+                Point3::new(2.5, 0.25, 0.3),
+                Vec3::new(-1.0, 0.0, 0.0),
+                vec![
+                    Point3::new((1.0_f64 - 0.25 * 0.25).sqrt(), 0.25, 0.3),
+                    Point3::new(-(1.0_f64 - 0.25 * 0.25).sqrt(), 0.25, 0.3),
+                ],
+            ),
+            (
+                "rational_cylinder_miss",
+                &cylinder_z,
+                Point3::new(2.5, 1.05, 0.3),
+                Vec3::new(-1.0, 0.0, 0.0),
+                vec![],
+            ),
+            (
+                "quadratic_hit",
+                &saddle,
+                Point3::new(0.5, 0.5, 1.0),
+                Vec3::new(0.0, 0.0, -1.0),
+                vec![Point3::new(0.5, 0.5, 0.0)],
+            ),
+        ] {
+            let grid = LineSurfaceSeedGrid::for_surface(surface, 20);
+            let hits = intersect_line_nurbs_with_grid(surface, &grid, origin, direction)
+                .expect("ray benchmark fixture must evaluate");
+            assert_eq!(hits.len(), expected.len(), "{name} root count");
+            for point in expected {
+                assert!(
+                    hits.iter().any(|hit| (hit.point - point).length() < 1e-8),
+                    "{name} Cartesian root oracle"
+                );
+            }
+            rays.bench_function(name, |bencher| {
+                bencher.iter(|| {
+                    black_box(
+                        intersect_line_nurbs_with_grid(
+                            black_box(surface),
+                            black_box(&grid),
+                            black_box(origin),
+                            black_box(direction),
+                        )
+                        .expect("ray benchmark must evaluate"),
+                    )
+                });
+            });
+        }
+        rays.finish();
+    }
 
     {
         let mut ssi = c.benchmark_group("ssi");
