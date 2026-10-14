@@ -70,72 +70,114 @@ fn fix_wire_impl(
     config: &FixConfig,
 ) -> Result<FixResult, HealError> {
     let mut result = FixResult::ok();
+    // Each step reads the wire it repairs and records any replacement in
+    // `ctx.reshape`. Steps must see the latest replacement: a later step
+    // reading the original wire rebuilt it from the pre-repair edge list and
+    // its `replace_wire` overwrote the earlier entry, so a reordered wire
+    // came back unordered once a degenerate edge or tail was also removed.
+    let mut current = wire_id;
 
     if config.fix_reorder != FixMode::Off {
-        let r = fix_reorder(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_reorder(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_connectivity != FixMode::Off {
-        let r = fix_connected(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_connected(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_closure != FixMode::Off {
-        let r = fix_closed(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_closed(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_small_edges != FixMode::Off {
-        let r = fix_small(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_small(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_degenerate_edges != FixMode::Off {
-        let r = fix_degenerate(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_degenerate(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_gaps_3d != FixMode::Off {
-        let r = fix_gaps_3d(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_gaps_3d(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_tail != FixMode::Off {
-        let r = fix_tail(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_tail(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_self_intersection != FixMode::Off {
-        let r = fix_self_intersection(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_self_intersection(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_lacking != FixMode::Off
         && let Some(fid) = face_id
     {
-        let r = fix_lacking(topo, wire_id, fid, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_lacking(topo, current, fid, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_notched != FixMode::Off {
-        let r = fix_notched(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_notched(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_intersecting_edges != FixMode::Off {
-        let r = fix_intersecting_edges(topo, wire_id, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_intersecting_edges(topo, current, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     if config.fix_missing_seam != FixMode::Off
         && let Some(fid) = face_id
     {
-        let r = fix_missing_seam(topo, wire_id, fid, ctx, config)?;
-        result.merge(&r);
+        result.merge(&fix_missing_seam(topo, current, fid, ctx, config)?);
+        if !advance(ctx, &mut current) {
+            return Ok(result);
+        }
     }
 
     Ok(result)
+}
+
+/// Follow `current` to the wire the last step replaced it with. Returns
+/// `false` once a step removed the wire, leaving nothing to repair.
+fn advance(ctx: &HealContext, current: &mut WireId) -> bool {
+    match ctx.reshape.resolve_wire(*current) {
+        Some(next) => {
+            *current = next;
+            true
+        }
+        None => false,
+    }
 }
 
 /// Reorder edges to form a connected chain.
@@ -1199,7 +1241,7 @@ mod tests {
     use crate::context::HealContext;
     use crate::fix::config::FixConfig;
     use remus_math::vec::Point3;
-    use remus_topology::edge::Edge;
+    use remus_topology::edge::{Edge, EdgeId};
     use remus_topology::vertex::Vertex;
 
     /// Build an open wire of two collinear edges with a gap of `gap`
@@ -1266,5 +1308,90 @@ mod tests {
             v_from,
             "5mm gap is above MAX_GAP_3D_BOUND (1mm); should not be closed"
         );
+    }
+
+    /// The wire the reshape now resolves `wid` to, as `(edge, forward)`.
+    fn resolved_edges(topo: &Topology, ctx: &HealContext, wid: WireId) -> Vec<OrientedEdge> {
+        let final_wire = ctx.reshape.resolve_wire(wid).expect("wire kept");
+        topo.wire(final_wire).unwrap().edges().to_vec()
+    }
+
+    fn assert_chained(topo: &Topology, edges: &[OrientedEdge], closed: bool) {
+        let n = edges.len();
+        let joints = if closed { n } else { n - 1 };
+        for i in 0..joints {
+            let (a, b) = (edges[i], edges[(i + 1) % n]);
+            assert_eq!(
+                a.oriented_end(topo.edge(a.edge()).unwrap()),
+                b.oriented_start(topo.edge(b.edge()).unwrap()),
+                "edges {i} and {} do not chain: {edges:?}",
+                (i + 1) % n
+            );
+        }
+    }
+
+    fn line(topo: &mut Topology, a: VertexId, b: VertexId) -> EdgeId {
+        topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
+    }
+
+    #[test]
+    fn tail_removal_keeps_the_reordered_wire() {
+        let mut topo = Topology::new();
+        let v: Vec<_> = [0.0, 1.0, 2.0, 3.0, 3.0 + 1e-9]
+            .into_iter()
+            .map(|x| topo.add_vertex(Vertex::new(Point3::new(x, 0.0, 0.0), 1e-7)))
+            .collect();
+        let e: Vec<_> = (0..4).map(|i| line(&mut topo, v[i], v[i + 1])).collect();
+        // Stored out of order, with a sub-tolerance tail last.
+        let wid = topo.add_wire(
+            Wire::new(
+                [e[0], e[2], e[1], e[3]]
+                    .into_iter()
+                    .map(|edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                false,
+            )
+            .unwrap(),
+        );
+
+        let mut ctx = HealContext::new();
+        fix_wire(&mut topo, wid, &mut ctx, &FixConfig::default()).unwrap();
+
+        let edges = resolved_edges(&topo, &ctx, wid);
+        let ids: Vec<_> = edges.iter().map(OrientedEdge::edge).collect();
+        assert_eq!(ids, vec![e[0], e[1], e[2]]);
+        assert_chained(&topo, &edges, false);
+    }
+
+    #[test]
+    fn degenerate_removal_keeps_the_reordered_wire() {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let c = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let (ab, bc, ca) = (
+            line(&mut topo, a, b),
+            line(&mut topo, b, c),
+            line(&mut topo, c, a),
+        );
+        let degenerate = line(&mut topo, b, b);
+        let wid = topo.add_wire(
+            Wire::new(
+                [ab, ca, degenerate, bc]
+                    .into_iter()
+                    .map(|edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+
+        let mut ctx = HealContext::new();
+        fix_wire(&mut topo, wid, &mut ctx, &FixConfig::default()).unwrap();
+
+        let edges = resolved_edges(&topo, &ctx, wid);
+        assert_eq!(edges.len(), 3, "{edges:?}");
+        assert!(edges.iter().all(|oe| oe.edge() != degenerate));
+        assert_chained(&topo, &edges, true);
     }
 }

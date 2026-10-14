@@ -336,8 +336,8 @@ impl ReShape {
         self.wires.insert(id, WireAction::Remove);
     }
 
-    /// Resolve a wire through the replacement chain.
-    fn resolve_wire(&self, mut id: WireId) -> Option<WireId> {
+    /// Resolve a wire through the replacement chain; `None` once removed.
+    pub(crate) fn resolve_wire(&self, mut id: WireId) -> Option<WireId> {
         let mut seen = HashSet::new();
         while seen.insert(id) {
             match self.wires.get(&id) {
