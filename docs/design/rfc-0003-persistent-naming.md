@@ -125,6 +125,7 @@ resolve(ref) ->
   | Ambiguous { candidates, reason }      // fail closed; caller narrows
   | Dangling { deleted_at: OpId }         // target was deleted
   | UnresolvedAcrossOperation { op }      // journal gap (barrier / unresolved)
+  | Stale { reason }                      // model moved past the journal
 ```
 
 Rules:
@@ -404,6 +405,14 @@ Refinements the resolver implementation added to the design above:
   candidate, naming which. `ref_ambiguous` is reserved for the signature
   tier (Stage 2 anchors never guess between candidates: splits are
   `BoundMany`, unresolved events sever).
+- **A chase that reaches the present checks the present** (TOPO-2,
+  2026-10-14). Mutations after the newest entry are the global barrier
+  the next `journal_begin` records, so they sever already; and every
+  bound key must name a live entity, because a checkpoint restore keeps
+  retirements while the journal and tick count roll back. Either case
+  resolves `Stale { reason }` (`ref_stale`, `invalid_input`); one retired
+  piece of a split fails the whole set rather than binding the survivors.
+  Signature anchors resolve against the live model and are unaffected.
 - **`OperationOutput` addresses entry subjects.** Outputs are the entry's
   subjects of the reference's kind except `Deleted` ones (inputs), in the
   entry's deterministic event order; `Unresolved` subjects count (their

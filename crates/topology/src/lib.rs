@@ -309,6 +309,15 @@ pub enum TopologyError {
         reason: String,
     },
 
+    /// The model has moved past what the journal describes (RFC 0003):
+    /// unjournaled mutations after the newest entry, or a lineage ending
+    /// on an entity that is no longer live.
+    #[error("persistent reference is stale: {reason}")]
+    RefStale {
+        /// What the journal does not account for.
+        reason: String,
+    },
+
     /// A serialized journal snapshot violates a journal invariant
     /// (RFC 0003, Stage 5): the snapshot is refused whole rather than
     /// installing history a resolver could mis-follow.
@@ -529,6 +538,10 @@ impl remus_math::diagnostic::ToDiagnostic for TopologyError {
                 Diagnostic::new(FailureCategory::InvalidInput, "ref_no_match", message)
                     .with_detail("reason", reason.as_str())
             }
+            Self::RefStale { reason } => {
+                Diagnostic::new(FailureCategory::InvalidInput, "ref_stale", message)
+                    .with_detail("reason", reason.as_str())
+            }
             Self::JournalSnapshotInvalid { reason } => Diagnostic::new(
                 FailureCategory::InvalidInput,
                 "journal_snapshot_invalid",
@@ -671,6 +684,20 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::InvalidInput);
         assert_eq!(d.code(), "ref_no_match");
+
+        let d = TopologyError::RefStale {
+            reason: "unjournaled mutations after operation 4".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "ref_stale");
+        assert_eq!(
+            d.details()[0],
+            (
+                "reason",
+                DetailValue::Text("unjournaled mutations after operation 4".into())
+            )
+        );
 
         let d = TopologyError::JournalSnapshotInvalid {
             reason: "duplicate ordinal in the index".into(),
