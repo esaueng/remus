@@ -22,7 +22,9 @@ use crate::IoError;
 ///
 /// Each triangle becomes a planar face. Vertices at the same position
 /// (within `tolerance`) are merged. The resulting faces are assembled
-/// into a closed shell and solid.
+/// into a closed shell and solid. A closed, coherently wound mesh is
+/// oriented outward by the sign of its enclosed volume, whatever its stored
+/// normals say.
 ///
 /// # Errors
 ///
@@ -38,31 +40,48 @@ pub fn import_mesh(
     validate_mesh(mesh, tolerance)?;
 
     let vertex_ids = build_vertex_map(topo, &mesh.positions, tolerance);
-    validate_triangle_edge_incidence(&vertex_ids, &mesh.indices)?;
 
-    // Determine whether the mesh winding needs to be flipped.
-    // For a closed mesh, outward-facing triangles produce positive signed
-    // volume via the divergence theorem. If the raw signed volume is negative,
-    // the winding is predominantly inward — we flip all triangles.
-    //
-    // When per-vertex normals are available (e.g. STL), we use them to orient
-    // individual triangles. When normals are absent (e.g. 3MF), we rely on
-    // the signed-volume heuristic to flip the entire mesh if needed.
+    // Stored per-vertex normals (e.g. STL facet normals) may correct the
+    // winding of individual triangles. They cannot decide the orientation of
+    // the whole body: every reader except STL synthesises its normals from
+    // the winding, and an STL facet normal may be zero, so an inward-wound
+    // mesh would always agree with its own normals.
     let has_normals = mesh.normals.len() >= mesh.positions.len();
-    let flip_all = if has_normals {
-        false // per-triangle correction below handles it
-    } else {
-        let mut total = 0.0;
-        for tri in mesh.indices.chunks_exact(3) {
-            let p0 = mesh.positions[tri[0] as usize];
-            let p1 = mesh.positions[tri[1] as usize];
-            let p2 = mesh.positions[tri[2] as usize];
-            let a = Vec3::new(p0.x(), p0.y(), p0.z());
-            let b = Vec3::new(p1.x(), p1.y(), p1.z());
-            let c = Vec3::new(p2.x(), p2.y(), p2.z());
-            total += a.dot(b.cross(c));
+    let mut triangles: Vec<[usize; 3]> = Vec::with_capacity(mesh.indices.len() / 3);
+    for tri in mesh.indices.chunks_exact(3) {
+        let (i0, mut i1, mut i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+
+        // Skip degenerate triangles (two or more coincident vertices).
+        let (v0, v1, v2) = (vertex_ids[i0], vertex_ids[i1], vertex_ids[i2]);
+        if v0 == v1 || v1 == v2 || v0 == v2 {
+            continue;
         }
-        total < 0.0
+
+        if has_normals {
+            let p0 = mesh.positions[i0];
+            let geo_normal = (mesh.positions[i1] - p0).cross(mesh.positions[i2] - p0);
+            if geo_normal.dot(mesh.normals[i0]) < 0.0 {
+                std::mem::swap(&mut i1, &mut i2);
+            }
+        }
+        triangles.push([i0, i1, i2]);
+    }
+    let closed = validate_triangle_edge_incidence(&vertex_ids, &triangles)?;
+
+    // The orientation of the body comes from geometry: a closed, coherently
+    // wound mesh encloses positive signed volume exactly when it faces
+    // outward. An open mesh has no inside; it keeps its winding, except that
+    // a mesh without stored normals keeps the older origin-relative heuristic.
+    let flip_all = if closed {
+        signed_six_volume(
+            &mesh.positions,
+            &triangles,
+            local_reference(&mesh.positions),
+        ) < 0.0
+    } else if has_normals {
+        false
+    } else {
+        signed_six_volume(&mesh.positions, &triangles, Point3::new(0.0, 0.0, 0.0)) < 0.0
     };
 
     let mut face_ids = Vec::new();
@@ -70,36 +89,15 @@ pub fn import_mesh(
     // each triangle its own three edges would leave every face an island: the
     // shell would have no adjacency at all and every edge would read as free.
     let mut edge_map: HashMap<(usize, usize), EdgeId> = HashMap::new();
-    for tri in mesh.indices.chunks_exact(3) {
-        let i0 = tri[0] as usize;
-        let i1 = tri[1] as usize;
-        let i2 = tri[2] as usize;
-
-        let v0 = vertex_ids[i0];
-        let mut v1 = vertex_ids[i1];
-        let mut v2 = vertex_ids[i2];
-
-        // Skip degenerate triangles (two or more coincident vertices).
-        if v0 == v1 || v1 == v2 || v0 == v2 {
-            continue;
-        }
-
-        // Orient triangle: use per-vertex normals when available,
-        // otherwise apply the global flip from signed-volume check.
-        if has_normals {
-            let p0 = mesh.positions[i0];
-            let p1 = mesh.positions[i1];
-            let p2 = mesh.positions[i2];
-            let geo_normal = (p1 - p0).cross(p2 - p0);
-            let mesh_normal = mesh.normals[i0];
-            if geo_normal.dot(mesh_normal) < 0.0 {
-                std::mem::swap(&mut v1, &mut v2);
-            }
-        } else if flip_all {
-            std::mem::swap(&mut v1, &mut v2);
-        }
-
-        let face_id = build_triangle_face(topo, &mut edge_map, v0, v1, v2)?;
+    for &[i0, i1, i2] in &triangles {
+        let (i1, i2) = if flip_all { (i2, i1) } else { (i1, i2) };
+        let face_id = build_triangle_face(
+            topo,
+            &mut edge_map,
+            vertex_ids[i0],
+            vertex_ids[i1],
+            vertex_ids[i2],
+        )?;
         face_ids.push(face_id);
     }
 
@@ -118,38 +116,70 @@ pub fn import_mesh(
     Ok(solid_id)
 }
 
-/// Reject triangle edges incident to more than two non-degenerate faces.
+/// Six times the signed volume the triangles enclose, summed as tetrahedra
+/// about `reference`.
+fn signed_six_volume(positions: &[Point3], triangles: &[[usize; 3]], reference: Point3) -> f64 {
+    triangles
+        .iter()
+        .map(|&[a, b, c]| {
+            let (a, b, c) = (
+                positions[a] - reference,
+                positions[b] - reference,
+                positions[c] - reference,
+            );
+            a.dot(b.cross(c))
+        })
+        .sum()
+}
+
+/// Bounding-box centre of `positions`. Tetrahedra summed about a point of the
+/// body keep their rounding error at the body's scale; about the world origin
+/// it grows with the cube of the body's offset (see B56).
+fn local_reference(positions: &[Point3]) -> Point3 {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in positions {
+        for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+            lo[axis] = lo[axis].min(value);
+            hi[axis] = hi[axis].max(value);
+        }
+    }
+    let mid = |axis: usize| 0.5 * lo[axis] + 0.5 * hi[axis];
+    Point3::new(mid(0), mid(1), mid(2))
+}
+
+/// Reject triangle edges incident to more than two non-degenerate faces, and
+/// report whether the mesh is closed and coherently wound: every welded edge
+/// used by exactly two triangles, once in each direction. Only then is the
+/// signed volume independent of the reference point, so only then does its
+/// sign say which side is inside.
 ///
 /// Incidence is counted after tolerance welding because file formats such as
 /// STL repeat each triangle's positions instead of sharing vertex indices.
 /// This runs before allocating any edges, faces, shells, or solids, so an
-/// over-shared mesh cannot become invalid B-Rep topology.
+/// over-shared mesh cannot become invalid B-Rep topology. `triangles` holds
+/// only the non-degenerate triangles `import_mesh` will build, so skipped
+/// ones contribute no phantom incidences.
 fn validate_triangle_edge_incidence(
     vertex_ids: &[VertexId],
-    indices: &[u32],
-) -> Result<(), IoError> {
-    let mut edge_incidence: HashMap<(usize, usize), usize> = HashMap::new();
+    triangles: &[[usize; 3]],
+) -> Result<bool, IoError> {
+    // Per edge: incident faces, and uses along minus against its key order.
+    let mut edge_incidence: HashMap<(usize, usize), (usize, isize)> = HashMap::new();
 
-    for tri in indices.chunks_exact(3) {
-        let v0 = vertex_ids[tri[0] as usize];
-        let v1 = vertex_ids[tri[1] as usize];
-        let v2 = vertex_ids[tri[2] as usize];
-
-        // `import_mesh` skips these triangles, so they must not contribute
-        // phantom face incidences to an otherwise manifold edge.
-        if v0 == v1 || v1 == v2 || v0 == v2 {
-            continue;
-        }
-
+    for tri in triangles {
+        let [v0, v1, v2] = tri.map(|i| vertex_ids[i]);
         for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-            *edge_incidence.entry(edge_key(a, b)).or_default() += 1;
+            let (incident_faces, net) = edge_incidence.entry(edge_key(a, b)).or_default();
+            *incident_faces += 1;
+            *net += if a.index() < b.index() { 1 } else { -1 };
         }
     }
 
-    if let Some(((start, end), incident_faces)) = edge_incidence
-        .into_iter()
-        .filter(|(_, incident_faces)| *incident_faces > 2)
-        .min_by_key(|(edge, _)| *edge)
+    if let Some(((start, end), (incident_faces, _))) = edge_incidence
+        .iter()
+        .filter(|(_, (incident_faces, _))| *incident_faces > 2)
+        .min_by_key(|(edge, _)| **edge)
     {
         return Err(IoError::InvalidTopology {
             reason: format!(
@@ -159,7 +189,10 @@ fn validate_triangle_edge_incidence(
         });
     }
 
-    Ok(())
+    Ok(!edge_incidence.is_empty()
+        && edge_incidence
+            .values()
+            .all(|&(incident_faces, net)| incident_faces == 2 && net == 0))
 }
 
 /// Validate mesh data before allocating any topology entities.

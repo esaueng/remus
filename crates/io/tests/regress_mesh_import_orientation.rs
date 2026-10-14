@@ -1,0 +1,199 @@
+//! Kernel review 2026-10-14, IO-6 (B91): an inside-out mesh must import
+//! outward.
+//!
+//! `import_mesh` flipped a closed mesh by its signed volume only when the mesh
+//! carried no normals. Every file reader supplies normals: OBJ, PLY, 3MF and
+//! glTF synthesise them from the winding, so they always agree with an inward
+//! winding, and an STL facet normal of zero never disagrees with anything. An
+//! inward-wound OBJ cube, or an STL cube with zero normals, imported with
+//! signed volume −1.
+#![allow(clippy::unwrap_used)]
+
+use std::fmt::Write as _;
+
+use remus_math::vec::Point3;
+use remus_operations::measure;
+use remus_topology::Topology;
+use remus_topology::explorer::{face_vertices, solid_faces, solid_vertices};
+use remus_topology::solid::SolidId;
+
+/// Outward-wound triangles over the unit-cube corners listed by [`corners`].
+const OUTWARD: [[usize; 3]; 12] = [
+    [0, 2, 1],
+    [0, 3, 2],
+    [4, 5, 6],
+    [4, 6, 7],
+    [0, 1, 5],
+    [0, 5, 4],
+    [2, 3, 7],
+    [2, 7, 6],
+    [0, 4, 7],
+    [0, 7, 3],
+    [1, 2, 6],
+    [1, 6, 5],
+];
+
+fn corners(offset: [f64; 3]) -> Vec<Point3> {
+    [
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [1., 1., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+        [1., 0., 1.],
+        [1., 1., 1.],
+        [0., 1., 1.],
+    ]
+    .into_iter()
+    .map(|[x, y, z]| Point3::new(x + offset[0], y + offset[1], z + offset[2]))
+    .collect()
+}
+
+fn triangles(inward: bool) -> Vec<[usize; 3]> {
+    OUTWARD
+        .into_iter()
+        .map(|[a, b, c]| if inward { [a, c, b] } else { [a, b, c] })
+        .collect()
+}
+
+fn cube_obj(offset: [f64; 3], inward: bool) -> String {
+    let mut text = String::new();
+    for p in corners(offset) {
+        writeln!(text, "v {} {} {}", p.x(), p.y(), p.z()).unwrap();
+    }
+    for [a, b, c] in triangles(inward) {
+        writeln!(text, "f {} {} {}", a + 1, b + 1, c + 1).unwrap();
+    }
+    text
+}
+
+/// Binary STL whose facet normals are all zero, as many exporters write them.
+fn cube_stl_zero_normals(offset: [f64; 3], inward: bool) -> Vec<u8> {
+    let points = corners(offset);
+    let tris = triangles(inward);
+    let mut bytes = vec![0u8; 80];
+    bytes.extend((tris.len() as u32).to_le_bytes());
+    for tri in tris {
+        bytes.extend([0f32; 3].into_iter().flat_map(f32::to_le_bytes));
+        for p in tri.map(|i| points[i]) {
+            for value in [p.x(), p.y(), p.z()] {
+                bytes.extend((value as f32).to_le_bytes());
+            }
+        }
+        bytes.extend([0u8; 2]);
+    }
+    bytes
+}
+
+/// Twelve triangles on exactly the eight cube corners, each facing away from
+/// the cube's centre, enclosing a signed volume of +1.
+fn assert_outward_unit_cube(topo: &Topology, solid: SolidId, offset: [f64; 3], label: &str) {
+    let faces = solid_faces(topo, solid).unwrap();
+    assert_eq!(faces.len(), 12, "{label}: triangle count");
+
+    let mut points: Vec<Point3> = solid_vertices(topo, solid)
+        .unwrap()
+        .into_iter()
+        .map(|v| topo.vertex(v).unwrap().point())
+        .collect();
+    assert_eq!(points.len(), 8, "{label}: welded vertex count");
+    for expected in corners(offset) {
+        let found = points.iter().position(|p| (*p - expected).length() < 1e-12);
+        assert!(
+            found.is_some(),
+            "{label}: corner {expected:?} missing from {points:?}"
+        );
+        points.swap_remove(found.unwrap());
+    }
+
+    let centre = Point3::new(offset[0] + 0.5, offset[1] + 0.5, offset[2] + 0.5);
+    for face in faces {
+        let normal = topo.face(face).unwrap().effective_plane_normal().unwrap();
+        for vertex in face_vertices(topo, face).unwrap() {
+            let p = topo.vertex(vertex).unwrap().point();
+            assert!(
+                normal.dot(p - centre) > 0.0,
+                "{label}: face {face:?} normal {normal:?} points into the cube"
+            );
+        }
+    }
+
+    let volume = measure::oriented_solid_volume(topo, solid, 0.1).unwrap();
+    assert!(
+        (volume - 1.0).abs() < 1e-9,
+        "{label}: signed volume {volume}, expected +1"
+    );
+    assert!(
+        !measure::solid_is_inverted(topo, solid).unwrap(),
+        "{label}: solid is inverted"
+    );
+}
+
+const OFFSETS: [[f64; 3]; 2] = [[0.0, 0.0, 0.0], [1000.0, -2000.0, 500.0]];
+
+#[test]
+fn inward_wound_obj_cube_imports_outward() {
+    for offset in OFFSETS {
+        let mut topo = Topology::new();
+        let solid =
+            remus_io::obj::read_obj_solid(&mut topo, &cube_obj(offset, true), 1e-7).unwrap();
+        assert_outward_unit_cube(&topo, solid, offset, &format!("inward OBJ at {offset:?}"));
+    }
+}
+
+#[test]
+fn inward_wound_stl_cube_with_zero_normals_imports_outward() {
+    for offset in OFFSETS {
+        let mut topo = Topology::new();
+        let stl = cube_stl_zero_normals(offset, true);
+        let solid = remus_io::stl::read_stl_solid(&mut topo, &stl, 1e-7).unwrap();
+        assert_outward_unit_cube(&topo, solid, offset, &format!("inward STL at {offset:?}"));
+    }
+}
+
+/// Controls: an outward cube must not be flipped by the same rule.
+#[test]
+fn outward_wound_cubes_stay_outward() {
+    for offset in OFFSETS {
+        let mut topo = Topology::new();
+        let solid =
+            remus_io::obj::read_obj_solid(&mut topo, &cube_obj(offset, false), 1e-7).unwrap();
+        assert_outward_unit_cube(&topo, solid, offset, &format!("outward OBJ at {offset:?}"));
+
+        let mut topo = Topology::new();
+        let stl = cube_stl_zero_normals(offset, false);
+        let solid = remus_io::stl::read_stl_solid(&mut topo, &stl, 1e-7).unwrap();
+        assert_outward_unit_cube(&topo, solid, offset, &format!("outward STL at {offset:?}"));
+    }
+}
+
+/// STL facet normals that agree with an inward winding are both wrong; the
+/// enclosed volume, not the stored normal, decides.
+#[test]
+fn inward_stl_cube_with_matching_inward_normals_imports_outward() {
+    let offset = [0.0, 0.0, 0.0];
+    let points = corners(offset);
+    let mut stl = String::from("solid inward\n");
+    for [a, b, c] in triangles(true) {
+        let n = (points[b] - points[a])
+            .cross(points[c] - points[a])
+            .normalize()
+            .unwrap();
+        writeln!(
+            stl,
+            "facet normal {} {} {}\nouter loop",
+            n.x(),
+            n.y(),
+            n.z()
+        )
+        .unwrap();
+        for p in [points[a], points[b], points[c]] {
+            writeln!(stl, "vertex {} {} {}", p.x(), p.y(), p.z()).unwrap();
+        }
+        stl += "endloop\nendfacet\n";
+    }
+    stl += "endsolid inward\n";
+    let mut topo = Topology::new();
+    let solid = remus_io::stl::read_stl_solid(&mut topo, stl.as_bytes(), 1e-7).unwrap();
+    assert_outward_unit_cube(&topo, solid, offset, "inward ASCII STL, inward normals");
+}
