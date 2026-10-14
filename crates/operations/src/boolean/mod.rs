@@ -738,7 +738,7 @@ fn normalize_hole_windings(
                 continue;
             }
             for wid in inners {
-                if wire_winding_sign(topo, wid, normal)? * outer_sign > 0.0 {
+                if hole_winding_sign(topo, wid, normal)? * outer_sign > 0.0 {
                     flips.push(wid);
                 }
             }
@@ -755,6 +755,40 @@ fn normalize_hole_windings(
         topo.replace_boundary_wire(wid, replacement)?;
     }
     Ok(())
+}
+
+/// [`wire_winding_sign`] for a hole wire, with the sign of a lone closed
+/// circle read off its parameterization instead of sampled.
+///
+/// Every boolean re-checks every hole of every holed plane face, so a plate
+/// drilled hole by hole re-sampled all earlier holes on each cut. A closed
+/// circle's arc-true samples form a regular polygon wound like the curve
+/// parameter, so the sampled Newell normal is `u_axis × v_axis` times a
+/// positive area. Only the sign is used for holes; the outer wire, whose
+/// magnitude is also tested, always samples.
+fn hole_winding_sign(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+    normal: Vec3,
+) -> Result<f64, crate::OperationsError> {
+    if let [oe] = topo.wire(wire)?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        if let EdgeCurve::Circle(circle) = edge.curve()
+            && edge.is_closed()
+        {
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "boolean wire-winding sampling")?;
+            let axis = circle.u_axis().cross(circle.v_axis()).dot(normal);
+            let span = t1 - t0;
+            // A hole circle lies in its face's plane, so its axis is (anti)parallel
+            // to the face normal; anything else keeps the sampled answer.
+            if axis.abs() >= 0.5 && span.abs() > 0.0 {
+                let traversal = if oe.is_forward() { 1.0 } else { -1.0 };
+                return Ok(axis.signum() * span.signum() * traversal);
+            }
+        }
+    }
+    wire_winding_sign(topo, wire, normal)
 }
 
 /// The signed winding of `wire` around `normal`: positive when the loop runs
