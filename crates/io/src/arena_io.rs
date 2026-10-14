@@ -20,6 +20,11 @@
 //! ids; session state, retired slots, assemblies, GCS sketches, and checkpoints
 //! are deliberately outside this format.
 //!
+//! A document carries only the history of its own entities (the journal's
+//! lineage closure over them), never the whole session journal, so loading a
+//! document back into the session that wrote it appends that body's lineage
+//! once instead of duplicating the session's history.
+//!
 //! Loading into an existing session appends document history instead of replacing
 //! it. Imported operation ids and entity ordinals are offset by the destination's
 //! respective high-water counters after recording any preceding history gap;
@@ -1932,31 +1937,32 @@ fn checked_reference_count(
     })
 }
 
-/// Serializes the topology's evolution journal (RFC 0003, Stage 5),
-/// remapping live-index arena keys to this document's dense local
+/// Serializes the history of the document's entities (RFC 0003, Stage 5):
+/// the journal's lineage closure over them, never the whole session's
+/// journal, so re-importing a document cannot duplicate unrelated history.
+/// Live-index arena keys are remapped to this document's dense local
 /// indices. Entities outside the document keep their kind with no local
-/// index, so anchor output ordering stays replay-stable.
+/// index, so anchor output ordering stays replay-stable. Documents whose
+/// entities no entry mentions carry no journal.
 fn serialize_journal(topo: &Topology, builder: &Builder<'_>) -> Option<SerJournal> {
-    use remus_topology::journal::{EntityKind, EventSnapshot, PayloadSnapshot};
+    use remus_topology::journal::{EntityKey, EntityKind, EventSnapshot, PayloadSnapshot};
 
-    if topo.journal().is_empty() {
+    let local = |key: EntityKey| match key.kind {
+        EntityKind::Vertex => builder.vertex_map.get(&key.index).copied(),
+        EntityKind::Edge => builder.edge_map.get(&key.index).copied(),
+        EntityKind::Face => builder.face_map.get(&key.index).copied(),
+    };
+    let snapshot = topo.journal().lineage_snapshot(|key| local(key).is_some());
+    if snapshot.entries.is_empty() {
         return None;
     }
-    let snapshot = topo.journal().snapshot();
     let index = snapshot
         .index
         .into_iter()
-        .map(|(ordinal, key)| {
-            let local = match key.kind {
-                EntityKind::Vertex => builder.vertex_map.get(&key.index).copied(),
-                EntityKind::Edge => builder.edge_map.get(&key.index).copied(),
-                EntityKind::Face => builder.face_map.get(&key.index).copied(),
-            };
-            SerJournalIndexEntry {
-                ordinal,
-                kind: key.kind.as_str().to_owned(),
-                local,
-            }
+        .map(|(ordinal, key)| SerJournalIndexEntry {
+            ordinal,
+            kind: key.kind.as_str().to_owned(),
+            local: local(key),
         })
         .collect();
     let entries = snapshot
