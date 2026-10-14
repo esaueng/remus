@@ -1,10 +1,11 @@
 //! Edge fixing — vertex-curve alignment, degenerate removal, same-parameter.
 
 use remus_math::curves2d::{Curve2D, NurbsCurve2D};
-use remus_math::vec::Point2;
+use remus_math::frame::Frame3;
+use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 
 use super::FixResult;
@@ -326,6 +327,14 @@ fn compute_pcurve_deviation(
 
     let face = topo.face(face_id)?;
     let surface = face.surface();
+    // A plane carries no chart of its own: its pcurves live in the canonical
+    // frame the projector writes and the STEP writer and strict validator
+    // read. `FaceSurface::evaluate` has no answer for a plane, and skipping
+    // those samples read every planar pcurve as deviation 0.
+    let plane_frame = match surface {
+        FaceSurface::Plane { normal, d } => Some(canonical_plane_frame(*normal, *d)?),
+        _ => None,
+    };
 
     let (t0_3d, t1_3d) = edge
         .strict_domain()
@@ -345,15 +354,37 @@ fn compute_pcurve_deviation(
         let t_pc = t0_pc + (t1_pc - t0_pc) * frac;
         let uv = pcurve.evaluate(t_pc);
 
-        if let Some(pt_surf) = surface.evaluate(uv.x(), uv.y()) {
-            let dev = (pt_3d - pt_surf).length();
-            max_dev = max_dev.max(dev);
+        let pt_surf = match &plane_frame {
+            Some(frame) => frame.origin + frame.x * uv.x() + frame.y * uv.y(),
+            None => surface.evaluate(uv.x(), uv.y()).ok_or_else(|| {
+                HealError::AnalysisFailed(format!(
+                    "face {face_id:?} cannot evaluate its {} surface",
+                    surface.type_tag()
+                ))
+            })?,
+        };
+        let dev = (pt_3d - pt_surf).length();
+        // NaN must not compare its way out of the maximum.
+        if dev.is_nan() {
+            return Ok(f64::INFINITY);
         }
-        // If surface.evaluate returns None (plane), skip that sample --
-        // plane PCurves are validated differently.
+        max_dev = max_dev.max(dev);
     }
 
     Ok(max_dev)
+}
+
+/// The canonical chart of the plane `normal · p = d`: origin at the foot of
+/// the perpendicular from the world origin, axes from
+/// [`Frame3::from_normal`](remus_math::frame::Frame3::from_normal). The
+/// in-plane axes are the ones
+/// [`project_points_to_surface`](crate::construct::project_curve::project_points_to_surface)
+/// projects with; the origin is exact for a non-unit `normal` too.
+fn canonical_plane_frame(normal: Vec3, d: f64) -> Result<Frame3, HealError> {
+    let scale = d / normal.dot(normal);
+    let origin = Point3::new(normal.x() * scale, normal.y() * scale, normal.z() * scale);
+    Frame3::from_normal(origin, normal)
+        .map_err(|e| HealError::AnalysisFailed(format!("plane frame: {e}")))
 }
 
 /// Outcome of a budget-bound pcurve repair.
@@ -443,19 +474,21 @@ pub fn repair_pcurve_within_budget(
 #[allow(clippy::unwrap_used)]
 mod repair_budget_tests {
     use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::surfaces::CylindricalSurface;
     use remus_math::traits::ParametricCurve;
-    use remus_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
     use remus_topology::Topology;
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::pcurve::PCurve;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
 
     use crate::context::HealContext;
     use crate::error::HealError;
 
-    use super::repair_pcurve_within_budget;
+    use super::{compute_pcurve_deviation, repair_pcurve_within_budget};
 
     fn cylinder_rim() -> (Topology, EdgeId, FaceId) {
         let mut topo = Topology::new();
@@ -490,6 +523,102 @@ mod repair_budget_tests {
             report.deviation_after
         );
         assert!(topo.has_pcurve(rim, face).unwrap());
+    }
+
+    /// The square `[0, 2]² × {0}` on the plane `z = 0`, and its edge from
+    /// `(0, 0, 0)` to `(2, 0, 0)`.
+    fn square_face() -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let corners = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+        let vertices: Vec<_> = corners
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .collect();
+        let edges: Vec<_> = (0..4)
+            .map(|i| {
+                topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % 4],
+                    EdgeCurve::Line,
+                ))
+            })
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        (topo, edges[0], face)
+    }
+
+    /// A pcurve for the square's first edge in the canonical frame of
+    /// `z = 0` (`u = y`, `v = -x`), shifted by `offset` along `u`.
+    fn bottom_pcurve(offset: f64) -> PCurve {
+        let line = Line2D::new(Point2::new(offset, 0.0), Vec2::new(0.0, -1.0)).unwrap();
+        PCurve::new(Curve2D::Line(line), 0.0, 2.0)
+    }
+
+    #[test]
+    fn plane_pcurve_deviation_is_measured_in_the_canonical_frame() {
+        for (offset, expected) in [(0.0, 0.0), (0.5, 0.5), (-1e-3, 1e-3)] {
+            let (mut topo, edge, face) = square_face();
+            topo.set_pcurve_oriented(edge, face, true, bottom_pcurve(offset))
+                .unwrap();
+            let deviation = compute_pcurve_deviation(&topo, edge, face, true).unwrap();
+            assert!(
+                (deviation - expected).abs() < 1e-12,
+                "offset {offset}: deviation {deviation}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn plane_repair_measures_an_offset_pcurve_against_its_budget() {
+        let (mut topo, edge, face) = square_face();
+        topo.set_pcurve_oriented(edge, face, true, bottom_pcurve(0.5))
+            .unwrap();
+        let mut ctx = HealContext::new();
+
+        let err = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-30).unwrap_err();
+        assert!(
+            matches!(err, HealError::RepairBudgetExceeded { .. }),
+            "an offset planar pcurve must not pass a 1e-30 budget: {err:?}"
+        );
+        let kept = topo.pcurve_oriented(edge, face, true).unwrap();
+        assert!(
+            (kept.evaluate(0.0) - Point2::new(0.5, 0.0)).length() < 1e-15,
+            "the refused repair must restore the original pcurve"
+        );
+
+        let report = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-9).unwrap();
+        assert!((report.deviation_before - 0.5).abs() < 1e-12, "{report:?}");
+        assert!(report.deviation_after <= 1e-9, "{report:?}");
+    }
+
+    #[test]
+    fn auto_same_parameter_rebuilds_only_the_offset_planar_pcurve() {
+        let config = crate::fix::config::FixConfig::default();
+        for (offset, rebuilt) in [(0.0, 0), (0.5, 1)] {
+            let (mut topo, edge, face) = square_face();
+            topo.set_pcurve_oriented(edge, face, true, bottom_pcurve(offset))
+                .unwrap();
+            let mut ctx = HealContext::new();
+            let result =
+                super::fix_same_parameter_on_face(&mut topo, edge, face, &mut ctx, &config)
+                    .unwrap();
+            assert_eq!(result.actions_taken, rebuilt, "offset {offset}");
+            assert!(compute_pcurve_deviation(&topo, edge, face, true).unwrap() < 1e-9);
+        }
     }
 
     #[test]
