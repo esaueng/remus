@@ -5,6 +5,8 @@
 //! extra properties and elements skipped by their declared sizes, and list
 //! properties read with their declared count and item types.
 
+use std::collections::HashSet;
+
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::tessellate::TriangleMesh;
@@ -183,6 +185,9 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
     let mut format = None;
     let mut elements: Vec<Element> = Vec::new();
     let mut skipped_instances = 0_usize;
+    // Hashed so that a header of many declarations parses in linear time.
+    let mut element_names: HashSet<&str> = HashSet::new();
+    let mut property_names: HashSet<&str> = HashSet::new();
     for line in lines {
         let mut tokens = line.split_whitespace();
         match tokens.next() {
@@ -221,9 +226,10 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
                         )?;
                     }
                 }
-                if elements.iter().any(|element| element.name == name) {
+                if !element_names.insert(name) {
                     return Err(header_error(format!("PLY element {name} declared twice")));
                 }
+                property_names.clear();
                 elements.push(Element {
                     name: name.to_string(),
                     count,
@@ -234,8 +240,8 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
                 let element = elements.last_mut().ok_or_else(|| {
                     header_error(format!("PLY property before any element: {line}"))
                 })?;
-                let property = parse_property(&mut tokens, line)?;
-                if element.properties.iter().any(|p| p.name == property.name) {
+                let (property, name) = parse_property(&mut tokens, line)?;
+                if !property_names.insert(name) {
                     return Err(header_error(format!(
                         "PLY element {} declares property {} twice",
                         element.name, property.name
@@ -264,10 +270,10 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
     Ok(PlyHeader { format, elements })
 }
 
-fn parse_property(
-    tokens: &mut std::str::SplitWhitespace<'_>,
+fn parse_property<'a>(
+    tokens: &mut std::str::SplitWhitespace<'a>,
     line: &str,
-) -> Result<Property, crate::IoError> {
+) -> Result<(Property, &'a str), crate::IoError> {
     let scalar = |token: Option<&str>| {
         token
             .and_then(ScalarType::parse)
@@ -289,10 +295,13 @@ fn parse_property(
     let (Some(name), None) = (tokens.next(), tokens.next()) else {
         return Err(header_error(format!("invalid PLY property line: {line}")));
     };
-    Ok(Property {
-        name: name.to_string(),
-        kind,
-    })
+    Ok((
+        Property {
+            name: name.to_string(),
+            kind,
+        },
+        name,
+    ))
 }
 
 /// Where the mesh data sits in the declared elements.
@@ -427,6 +436,16 @@ impl Values for AsciiValues<'_> {
         match ty.integer_range() {
             Some((lo, hi)) => match token.parse::<i64>() {
                 Ok(value) if (lo..=hi).contains(&value) => Ok(value as f64),
+                _ => Err(format!("invalid {ty:?} value '{token}'")),
+            },
+            // A `float` is single precision in both encodings: round it as
+            // the binary reader does, so ASCII and binary agree.
+            None if ty == ScalarType::Float32 => match token.parse::<f32>() {
+                Ok(value)
+                    if value.is_finite() || token.parse::<f64>().is_ok_and(|v| !v.is_finite()) =>
+                {
+                    Ok(f64::from(value))
+                }
                 _ => Err(format!("invalid {ty:?} value '{token}'")),
             },
             None => token

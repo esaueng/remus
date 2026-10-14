@@ -244,3 +244,72 @@ property float z\nelement face 1\nproperty list uchar int vertex_indices\nend_he
         other => panic!("big-endian PLY must be refused by name, got {other:?}"),
     }
 }
+
+/// The packaged smoke test's input: a declared count with no body is refused
+/// at the first missing record, before anything is reserved for it.
+#[test]
+fn declared_vertices_without_a_body_fail_at_the_first_record() {
+    let text = "ply\nformat ascii 1.0\nelement vertex 3000000\nproperty float x\n\
+property float y\nproperty float z\nelement face 0\nend_header\n";
+    match read_ply(text.as_bytes()) {
+        Err(IoError::ParseError { reason }) => {
+            assert!(
+                reason.contains("PLY vertex 0 of 3000000: unexpected end of data"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+/// A `float` is single precision in both encodings, so an ASCII value that
+/// `f32` cannot hold exactly reads as the binary file would.
+#[test]
+fn ascii_floats_round_like_binary_floats() {
+    let header = |format: &str| {
+        format!(
+            "ply\nformat {format} 1.0\nelement vertex 3\nproperty float x\nproperty float y\n\
+property double z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n"
+        )
+    };
+    let rows: [[f64; 3]; 3] = [[16_777_217.0, 0.1, 0.1], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+    let mut ascii = header("ascii");
+    for [x, y, z] in rows {
+        writeln!(ascii, "{x} {y} {z}").unwrap();
+    }
+    ascii += "3 0 1 2\n";
+
+    let mut binary = header("binary_little_endian").into_bytes();
+    for [x, y, z] in rows {
+        binary.extend((x as f32).to_le_bytes());
+        binary.extend((y as f32).to_le_bytes());
+        binary.extend(z.to_le_bytes());
+    }
+    binary.push(3);
+    for index in [0i32, 1, 2] {
+        binary.extend(index.to_le_bytes());
+    }
+
+    let from_ascii = read_ply(ascii.as_bytes()).unwrap();
+    let from_binary = read_ply(&binary).unwrap();
+    for (a, b) in from_ascii.positions.iter().zip(&from_binary.positions) {
+        assert!((*a - *b).length() < 1e-12, "ascii {a:?} vs binary {b:?}");
+    }
+    let first = from_ascii.positions[0];
+    assert!((first.x() - 16_777_216.0).abs() < 1e-12, "x {}", first.x());
+    assert!(
+        (first.y() - f64::from(0.1_f32)).abs() < 1e-12,
+        "y {}",
+        first.y()
+    );
+    // `double` keeps full precision.
+    assert!((first.z() - 0.1).abs() < 1e-15, "z {}", first.z());
+
+    let overflow = "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\n\
+property float z\nend_header\n1e39 0 0\n";
+    assert!(matches!(
+        read_ply(overflow.as_bytes()),
+        Err(IoError::ParseError { .. })
+    ));
+}
