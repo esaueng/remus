@@ -38,6 +38,10 @@ name = "fitting_interpolation"
 harness = false
 name = "truck_reuse"
 
+[[bench]]
+harness = false
+name = "torus_ray_crossings"
+
 [features]
 default = []
 serde = ["dep:serde"]

@@ -683,3 +683,154 @@ fn batch_refuses_bad_probes_and_plane_sense() {
         "plane face must refuse material sense: {results:?}"
     );
 }
+
+mod ray_crossing_torus_tests {
+    //! Batch query contracts on periodic and notched torus boundaries.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use crate::kernel::BrepKernel;
+    use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
+    use remus_math::vec::Point3;
+    use serde_json::{Value, json};
+
+    fn batch(kernel: &mut BrepKernel, op: &str, args: Value) -> Value {
+        let rows: Value = serde_json::from_str(
+            &kernel.execute_batch(&json!([{ "op": op, "args": args }]).to_string()),
+        )
+        .unwrap();
+        assert!(rows[0].get("ok").is_some(), "{op}: {rows}");
+        rows[0]["ok"].clone()
+    }
+
+    /// Already fails on d78230e1 before the ray-solver optimization. These points
+    /// lie exactly on the retained torus support, well away from the removed notch.
+    #[test]
+    #[ignore = "open: trimmed torus boundary containment reports Outside on retained curved support"]
+    fn ray_crossing_torus_notch_curved_boundary_ready_repro() {
+        let mut kernel = BrepKernel::new();
+        let torus = batch(
+            &mut kernel,
+            "makeTorus",
+            json!({"majorRadius": 1.0, "minorRadius": 0.3, "segments": 32}),
+        );
+        let tool = batch(
+            &mut kernel,
+            "makeBox",
+            json!({"width": 0.8, "height": 0.8, "depth": 0.8}),
+        );
+        batch(
+            &mut kernel,
+            "transform",
+            json!({"solid": tool, "matrix": [
+                1.0, 0.0, 0.0, 0.6, 0.0, 1.0, 0.0, -0.4,
+                0.0, 0.0, 1.0, -0.4, 0.0, 0.0, 0.0, 1.0,
+            ]}),
+        );
+        let result = batch(
+            &mut kernel,
+            "booleanWithQuality",
+            json!({"operation": "cut", "solidA": torus, "solidB": tool, "exactOnly": true}),
+        );
+        assert_eq!(result["quality"], "exact");
+        let solid = kernel
+            .resolve_solid(u32::try_from(result["solid"].as_u64().unwrap()).unwrap())
+            .unwrap();
+        let prepared = PreparedSolid::prepare(kernel.topo(), solid).unwrap();
+        for point in [Point3::new(0.0, 1.3, 0.0), Point3::new(-1.0, 0.0, 0.3)] {
+            assert_eq!(
+                prepared
+                    .classify_point(point, &ClassifyOptions::default())
+                    .unwrap(),
+                PointClassification::OnBoundary
+            );
+        }
+    }
+
+    #[test]
+    fn ray_crossing_torus_batch_notch_preserves_material_and_edge_verdicts() {
+        for scale in [0.1, 1.0, 10.0] {
+            for placed in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let torus = batch(
+                    &mut kernel,
+                    "makeTorus",
+                    json!({"majorRadius": 10.0 * scale, "minorRadius": 3.0 * scale, "segments": 32}),
+                );
+                let tool = batch(
+                    &mut kernel,
+                    "makeBox",
+                    json!({"width": 8.0 * scale, "height": 8.0 * scale, "depth": 8.0 * scale}),
+                );
+                batch(
+                    &mut kernel,
+                    "transform",
+                    json!({"solid": tool, "matrix": [
+                        1.0, 0.0, 0.0, 6.0 * scale, 0.0, 1.0, 0.0, -4.0 * scale,
+                        0.0, 0.0, 1.0, -4.0 * scale, 0.0, 0.0, 0.0, 1.0,
+                    ]}),
+                );
+                let (c, s) = if placed {
+                    (0.37_f64.cos(), 0.37_f64.sin())
+                } else {
+                    (1.0, 0.0)
+                };
+                let offset = if placed {
+                    [37.0, -91.0, 13.0]
+                } else {
+                    [0.0; 3]
+                };
+                for solid in [&torus, &tool] {
+                    batch(
+                        &mut kernel,
+                        "transform",
+                        json!({"solid": solid, "matrix": [
+                            c, 0.0, s, offset[0] * scale, 0.0, 1.0, 0.0, offset[1] * scale,
+                            -s, 0.0, c, offset[2] * scale, 0.0, 0.0, 0.0, 1.0,
+                        ]}),
+                    );
+                }
+                let result = batch(
+                    &mut kernel,
+                    "booleanWithQuality",
+                    json!({"operation": "cut", "solidA": torus, "solidB": tool, "exactOnly": true}),
+                );
+                assert_eq!(result["quality"], "exact");
+                let solid = u32::try_from(result["solid"].as_u64().unwrap()).unwrap();
+                let rows = batch(&mut kernel, "solidEdgeRelations", json!({"solid": solid}));
+                assert!(rows.as_array().unwrap().len() > 2);
+                let direct =
+                    serde_json::to_value(kernel.solid_edge_relations_impl(solid, None).unwrap())
+                        .unwrap();
+                assert_eq!(rows, direct);
+                let solid_id = kernel.resolve_solid(solid).unwrap();
+                let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
+                assert!(faces.iter().any(|&face| matches!(
+                    kernel.topo().face(face).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Torus(_)
+                )));
+                let prepared = PreparedSolid::prepare(kernel.topo(), solid_id).unwrap();
+                for (point, expected) in [
+                    ([-10.0, 0.0, 0.0], PointClassification::Inside),
+                    ([10.0, 0.0, 0.0], PointClassification::Outside),
+                    ([0.0, 0.0, 0.0], PointClassification::Outside),
+                    ([10.0, 4.0, 0.0], PointClassification::OnBoundary),
+                ] {
+                    let point = Point3::new(
+                        (c * point[0] + s * point[2] + offset[0]) * scale,
+                        (point[1] + offset[1]) * scale,
+                        (-s * point[0] + c * point[2] + offset[2]) * scale,
+                    );
+                    let options = ClassifyOptions {
+                        tolerance: 1e-7 * scale,
+                        ..ClassifyOptions::default()
+                    };
+                    assert_eq!(
+                        prepared.classify_point(point, &options).unwrap(),
+                        expected,
+                        "scale={scale}, placed={placed}, point={point:?}"
+                    );
+                }
+            }
+        }
+    }
+}
