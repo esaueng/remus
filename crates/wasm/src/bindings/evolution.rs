@@ -14,7 +14,7 @@ use remus_operations::journal_ops;
 use remus_topology::journal::EntryPayload;
 
 use crate::error::{StructuredWasmError, validate_finite};
-use crate::helpers::{get_f64, get_u32, get_u32_array};
+use crate::helpers::{get_f64, get_optional_f64, get_u32, get_u32_array};
 use crate::kernel::BrepKernel;
 
 fn index_u32(index: usize) -> u32 {
@@ -909,16 +909,9 @@ impl BrepKernel {
                 let direction = ["dx", "dy", "dz"]
                     .iter()
                     .zip([0.0, 0.0, 1.0])
-                    .map(|(key, default)| {
-                        args.get(key)
-                            .and_then(serde_json::Value::as_f64)
-                            .unwrap_or(default)
-                    })
-                    .collect::<Vec<_>>();
-                let distance = args
-                    .get("distance")
-                    .and_then(serde_json::Value::as_f64)
-                    .unwrap_or(1.0);
+                    .map(|(key, default)| Ok(get_optional_f64(args, key)?.unwrap_or(default)))
+                    .collect::<Result<Vec<_>, StructuredWasmError>>()?;
+                let distance = get_optional_f64(args, "distance")?.unwrap_or(1.0);
                 self.extrude_journaled_json(
                     face,
                     [direction[0], direction[1], direction[2]],
