@@ -144,9 +144,10 @@ pub fn make_solid_from_shared_faces(
 ///
 /// # Errors
 ///
-/// Returns an error if fewer than 2 faces are provided, or if a face has an
-/// inner wire or a boundary edge that is not an open straight line. A failed
-/// sew rolls back without leaving allocations behind.
+/// Returns an error if fewer than 2 faces are provided, if a face has an
+/// inner wire or a boundary edge that is not an open straight line, or if the
+/// tolerance merges both ends of an edge into one vertex. A failed sew rolls
+/// back without leaving allocations behind.
 pub fn sew_faces(
     topo: &mut Topology,
     faces: &[FaceId],
@@ -245,6 +246,14 @@ fn sew_rebuilt_faces(
         for &(start_pt, end_pt) in &snap.edge_points {
             let v_start = get_or_create_vertex(topo, start_pt, &mut vertex_map);
             let v_end = get_or_create_vertex(topo, end_pt, &mut vertex_map);
+            if v_start == v_end {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "sewing tolerance {tol} merges both ends of a boundary edge into one \
+                         vertex"
+                    ),
+                });
+            }
 
             // Canonical edge key: sorted vertex indices.
             let (key_min, key_max) = if v_start.index() <= v_end.index() {

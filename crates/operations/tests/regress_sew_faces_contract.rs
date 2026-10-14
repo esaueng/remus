@@ -140,3 +140,19 @@ fn loose_planar_quads_still_sew() {
     let volume = solid_volume(&topo, solid, 1e-4).unwrap();
     assert!((volume - 1.0).abs() < 1e-9, "volume {volume}");
 }
+
+#[test]
+fn edges_shorter_than_the_tolerance_are_refused() {
+    // At tolerance 4 every corner of the unit cube rounds to the same merge
+    // cell, so every rebuilt edge would join a vertex to itself.
+    let mut topo = Topology::new();
+    let cube = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let faces = solid_faces(&topo, cube).unwrap();
+    let before = arena_counts(&topo);
+    let error = sew_faces(&mut topo, &faces, 4.0).expect_err("collapsing edges");
+    assert!(
+        matches!(error, OperationsError::InvalidInput { .. }),
+        "unexpected error {error}"
+    );
+    assert_eq!(arena_counts(&topo), before, "refusal left entities");
+}
