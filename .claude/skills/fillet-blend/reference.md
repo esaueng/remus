@@ -20,10 +20,12 @@ There are three fillet code paths and two chamfer paths. "v1 vs v2" is a simplif
 
 ### The dispatcher
 
-`crates/operations/src/blend_ops.rs`, `pub fn fillet_cascade` (B23). One policy for every handle-returning surface. Tries, each inside a transaction and each under the complete-blend, volume, and `validate_shell_closed` guards:
+`crates/operations/src/blend_ops.rs`, `pub fn fillet_cascade` (B23). One policy for every handle-returning surface. It first runs `fillet_preflight`, the checks `fillet_v2` shares: a refusal there (invalid input, or `reject_blend_into_hole`: a band whose setback reaches a hole in its planar support face) is final for every engine (B89). Then it tries, each inside a transaction and each under the complete-blend, volume, and `validate_shell_closed` guards:
 
-1. `blend_ops::fillet_v2` (which for planar-line selections runs `planar_fillet_result`, the rolling-ball rebuild, before the walking builder)
-2. `planar_fillet_result` on its own
+1. `blend_ops::fillet_v2`'s engines (which for planar-line selections run `planar_fillet_result`, the rolling-ball rebuild, before the walking builder)
+2. `planar_fillet_result` on its own, under the same B71 lazy material guard `fillet_v2` gives its own rolling-ball attempt
+
+A band's reach on a planar face is the setback `rolling_ball_setback` computes (r·tan(β/2) between planes, β the angle between outward normals; the walker contact against a curved neighbour), not r: the hole guard and the rolling-ball adjacent-extent guard (Phase 2b) both measure it.
 
 The flat bevel `fillet::fillet` is not consulted for a fillet request. When both fail, the walking engine's typed error is returned and the input is untouched. `BlendResult::engine` discloses the engine that produced the result. The wasm helper `try_fillet` (`crates/wasm/src/helpers.rs`) only drops tangent/degenerate edges via `filter_filletable_edges` and calls the cascade.
 
