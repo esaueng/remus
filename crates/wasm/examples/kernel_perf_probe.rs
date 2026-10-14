@@ -48,7 +48,7 @@ const DISPLAY_ANGLE: f64 = 0.35;
 const MEASURE_DEFLECTION: f64 = 0.08;
 
 struct Stages {
-    names: Vec<&'static str>,
+    names: Vec<String>,
     samples: Vec<Vec<f64>>,
     /// Per-series unit; counts are reported apart from timings.
     units: Vec<&'static str>,
@@ -62,19 +62,19 @@ impl Stages {
             units: Vec::new(),
         }
     }
-    fn push(&mut self, name: &'static str, unit: &'static str, value: f64) {
-        if let Some(i) = self.names.iter().position(|n| *n == name) {
+    fn push(&mut self, name: &str, unit: &'static str, value: f64) {
+        if let Some(i) = self.names.iter().position(|n| n == name) {
             self.samples[i].push(value);
         } else {
-            self.names.push(name);
+            self.names.push(name.to_owned());
             self.samples.push(vec![value]);
             self.units.push(unit);
         }
     }
-    fn record(&mut self, name: &'static str, ms: f64) {
+    fn record(&mut self, name: &str, ms: f64) {
         self.push(name, "ms", ms);
     }
-    fn count(&mut self, name: &'static str, value: usize) {
+    fn count(&mut self, name: &str, value: usize) {
         self.push(name, "count", value as f64);
     }
     fn report(&self, label: &str) {
@@ -82,7 +82,12 @@ impl Stages {
         for (i, (name, s)) in self.names.iter().zip(&self.samples).enumerate() {
             let mut v = s.clone();
             v.sort_by(f64::total_cmp);
-            let med = v[v.len() / 2];
+            let mid = v.len() / 2;
+            let med = if v.len() % 2 == 0 {
+                f64::midpoint(v[mid - 1], v[mid])
+            } else {
+                v[mid]
+            };
             println!(
                 "{name:>22}: {med:12.3} {:12.3} {:12.3} {:>5}  n={}",
                 v[0],
@@ -169,29 +174,35 @@ fn hammer(stage: &str, iters: usize) {
         })
         .expect("+X arm face");
     let mut stages = Stages::new();
-    let edit = |i: usize, stages: &mut Stages| {
-        let mut edited = source.clone();
+    // Clones are made before any sampled loop, so a profiler attributes the
+    // loop to the requested stage, not to copying the 160-face topology.
+    let mut clones: Vec<Topology> = (0..iters).map(|_| source.clone()).collect();
+    let edit = |i: usize, edited: &mut Topology, stages: &mut Stages| {
         let distance = 5.0 + i as f64 * 0.02;
         let t = Instant::now();
-        let result = push_pull::move_faces(&mut edited, solid, &[face], distance).expect("move");
+        let result = push_pull::move_faces(edited, solid, &[face], distance).expect("move");
         stages.record("move", ms(t));
-        (edited, result)
+        result
     };
     if stage == "all" || stage == "move" {
-        for i in 0..iters {
-            let (edited, result) = edit(i, &mut stages);
+        for (i, edited) in clones.iter_mut().enumerate() {
+            let result = edit(i, edited, &mut stages);
             if stage == "all" {
-                analyse(&edited, result, stage, &mut stages);
+                analyse(edited, result, stage, &mut stages);
             }
         }
     } else {
         // Every edit is made before the sampled loop, so a profiler sees the
         // requested stage contiguously. Each edit is still a distinct body, so
         // content-keyed caches behave as in a real drag.
-        let edits: Vec<_> = (0..iters).map(|i| edit(i, &mut stages)).collect();
+        let results: Vec<SolidId> = clones
+            .iter_mut()
+            .enumerate()
+            .map(|(i, edited)| edit(i, edited, &mut stages))
+            .collect();
         println!("edits prepared; analysing stage {stage}");
-        for (edited, result) in &edits {
-            analyse(edited, *result, stage, &mut stages);
+        for (edited, result) in clones.iter().zip(results) {
+            analyse(edited, result, stage, &mut stages);
         }
     }
     stages.report("hammer holder face drag");
@@ -261,12 +272,14 @@ fn all_planar(topo: &Topology, faces: &[FaceId]) -> bool {
         .all(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. }))
 }
 
+/// Fillets `edges`, recording the time under `label` on success and under
+/// `<label>_refused` when the engines refuse (the body is then unchanged).
 fn fillet(
     topo: &mut Topology,
     solid: SolidId,
     edges: &[EdgeId],
     radius: f64,
-    label: &'static str,
+    label: &str,
     stages: &mut Stages,
 ) -> SolidId {
     let t = Instant::now();
@@ -279,6 +292,7 @@ fn fillet(
             r.solid
         }
         Err(e) => {
+            stages.record(&format!("{label}_refused"), elapsed);
             println!(
                 "fillet {label} ({} edges) refused after {elapsed:.1} ms: {e}",
                 edges.len()
@@ -288,118 +302,125 @@ fn fillet(
     }
 }
 
+/// Edge counts selected by [`fillet_plate`].
+struct FilletSelection {
+    corners: usize,
+    pocket_walls: usize,
+    rims: usize,
+}
+
+/// The plate's fillet sequence: outer vertical corners, pocket walls (per
+/// pocket when the whole selection is refused) and top hole rims. Setup and
+/// the `fillet` stage run this same sequence.
+fn fillet_plate(
+    topo: &mut Topology,
+    body: SolidId,
+    stages: &mut Stages,
+) -> (SolidId, FilletSelection) {
+    let corners = select_edges(topo, body, |t, e, faces| {
+        all_planar(t, faces)
+            && is_line(t, e)
+                .is_some_and(|(dx, dy, dz)| dz.abs() > 15.0 && dx.abs() + dy.abs() < 1e-9)
+    });
+    let mut body = fillet(topo, body, &corners, 6.0, "fillet_corners", stages);
+    // Pocket vertical walls (short vertical lines of length 8).
+    let pocket_walls = select_edges(topo, body, |t, e, faces| {
+        all_planar(t, faces)
+            && is_line(t, e).is_some_and(|(dx, dy, dz)| {
+                (dz.abs() - 8.0).abs() < 1e-3 && dx.abs() + dy.abs() < 1e-9
+            })
+    });
+    let before = body;
+    body = fillet(
+        topo,
+        body,
+        &pocket_walls,
+        2.0,
+        "fillet_pocket_walls",
+        stages,
+    );
+    if body == before {
+        // Whole-selection refusal: round each pocket on its own.
+        for chunk in pocket_walls.chunks(4) {
+            let live_edges = solid_edges(topo, body).unwrap();
+            let live: Vec<EdgeId> = chunk
+                .iter()
+                .copied()
+                .filter(|e| live_edges.contains(e))
+                .collect();
+            body = fillet(topo, body, &live, 2.0, "fillet_one_pocket", stages);
+        }
+    }
+    // Rims of the through holes on the top face (circle between plane and cylinder).
+    let rims = select_edges(topo, body, |t, e, faces| {
+        let edge = t.edge(e).unwrap();
+        matches!(edge.curve(), EdgeCurve::Circle(_))
+            && (t.vertex(edge.start()).unwrap().point().z() - 16.0).abs() < 1e-6
+            && faces.len() == 2
+    });
+    body = fillet(topo, body, &rims, 0.8, "fillet_hole_rims", stages);
+    let selection = FilletSelection {
+        corners: corners.len(),
+        pocket_walls: pocket_walls.len(),
+        rims: rims.len(),
+    };
+    (body, selection)
+}
+
 fn plate(stage: &str, iters: usize) {
     // One-off construction timings, kept apart from the requested loop.
     let mut setup = Stages::new();
     let mut base = Topology::new();
     let body = build_plate(&mut base, &mut setup);
     let mut filleted_topo = base.clone();
-    let mut body_f = body;
-    // Outer vertical corners.
-    let corners = select_edges(&filleted_topo, body_f, |t, e, faces| {
-        all_planar(t, faces)
-            && is_line(t, e)
-                .is_some_and(|(dx, dy, dz)| dz.abs() > 15.0 && dx.abs() + dy.abs() < 1e-9)
-    });
-    body_f = fillet(
-        &mut filleted_topo,
-        body_f,
-        &corners,
-        6.0,
-        "fillet_corners",
-        &mut setup,
-    );
-    // Pocket vertical walls (short vertical lines of length 8).
-    let pocket_vert = select_edges(&filleted_topo, body_f, |t, e, faces| {
-        all_planar(t, faces)
-            && is_line(t, e).is_some_and(|(dx, dy, dz)| {
-                (dz.abs() - 8.0).abs() < 1e-3 && dx.abs() + dy.abs() < 1e-9
-            })
-    });
-    body_f = fillet(
-        &mut filleted_topo,
-        body_f,
-        &pocket_vert,
-        2.0,
-        "fillet_pocket_walls",
-        &mut setup,
-    );
-    if solid_faces(&filleted_topo, body_f).unwrap().len() < 100 {
-        // Whole-selection refusal: round each pocket on its own.
-        for chunk in pocket_vert.chunks(4) {
-            let live: Vec<EdgeId> = chunk
-                .iter()
-                .copied()
-                .filter(|&e| solid_edges(&filleted_topo, body_f).unwrap().contains(&e))
-                .collect();
-            body_f = fillet(
-                &mut filleted_topo,
-                body_f,
-                &live,
-                2.0,
-                "fillet_one_pocket",
-                &mut setup,
-            );
-        }
-    }
-    // Rims of the through holes on the top face (circle between plane and cylinder).
-    let rims = select_edges(&filleted_topo, body_f, |t, e, faces| {
-        let edge = t.edge(e).unwrap();
-        matches!(edge.curve(), EdgeCurve::Circle(_))
-            && (t.vertex(edge.start()).unwrap().point().z() - 16.0).abs() < 1e-6
-            && faces.len() == 2
-    });
-    body_f = fillet(
-        &mut filleted_topo,
-        body_f,
-        &rims,
-        0.8,
-        "fillet_hole_rims",
-        &mut setup,
-    );
+    let (body_f, selection) = fillet_plate(&mut filleted_topo, body, &mut setup);
     let face_count = solid_faces(&filleted_topo, body_f).unwrap().len();
     println!(
-        "plate: {} faces before fillet, {face_count} after ({} corner, {} pocket edges)",
+        "plate: {} faces before fillet, {face_count} after ({} corner, {} pocket, {} rim edges)",
         solid_faces(&base, body).unwrap().len(),
-        corners.len(),
-        pocket_vert.len()
+        selection.corners,
+        selection.pocket_walls,
+        selection.rims
     );
     setup.report("plate setup (single run)");
     let mut stages = Stages::new();
     if stage == "fillet" {
-        for _ in 0..iters {
-            let mut topo = base.clone();
-            let mut s = body;
-            let c = select_edges(&topo, s, |t, e, faces| {
-                all_planar(t, faces)
-                    && is_line(t, e)
-                        .is_some_and(|(dx, dy, dz)| dz.abs() > 15.0 && dx.abs() + dy.abs() < 1e-9)
-            });
-            s = fillet(&mut topo, s, &c, 6.0, "fillet_corners", &mut stages);
-            let p = select_edges(&topo, s, |t, e, faces| {
-                all_planar(t, faces)
-                    && is_line(t, e).is_some_and(|(dx, dy, dz)| {
-                        (dz.abs() - 8.0).abs() < 1e-3 && dx.abs() + dy.abs() < 1e-9
-                    })
-            });
-            let _ = fillet(&mut topo, s, &p, 2.0, "fillet_pocket_walls", &mut stages);
+        let mut clones: Vec<Topology> = (0..iters).map(|_| base.clone()).collect();
+        for topo in &mut clones {
+            let _ = fillet_plate(topo, body, &mut stages);
         }
         stages.report("plate fillet");
         return;
     }
     if stage == "boolean" {
-        for i in 0..iters {
-            let mut topo = filleted_topo.clone();
+        // Tools sit in solid web between pockets and holes, so each boolean
+        // is a local edit of an otherwise untouched filleted body.
+        let mut clones: Vec<Topology> = (0..iters).map(|_| filleted_topo.clone()).collect();
+        for (i, topo) in clones.iter_mut().enumerate() {
             let t = Instant::now();
-            let tool = primitives::make_cylinder(&mut topo, 4.0 + i as f64 * 0.01, 40.0).unwrap();
-            translate(&mut topo, tool, 31.0, 52.0, -10.0);
-            let r = boolean(&mut topo, BooleanOp::Cut, body_f, tool).expect("cut filleted");
-            stages.record("cut_filleted", ms(t));
+            let tool = primitives::make_cylinder(topo, 3.5 + i as f64 * 0.01, 40.0).unwrap();
+            translate(topo, tool, 40.0, 59.0, -10.0);
+            let cut = boolean(topo, BooleanOp::Cut, body_f, tool);
+            let elapsed = ms(t);
+            let Ok(cut) = cut.inspect_err(|e| {
+                stages.record("cut_filleted_refused", elapsed);
+                println!("cut refused after {elapsed:.1} ms: {e}");
+            }) else {
+                continue;
+            };
+            stages.record("cut_filleted", elapsed);
             let t = Instant::now();
-            let boss = primitives::make_cylinder(&mut topo, 5.0, 10.0).unwrap();
-            translate(&mut topo, boss, 70.0, 52.0, 12.0);
-            let _ = boolean(&mut topo, BooleanOp::Fuse, r, boss).expect("fuse filleted");
-            stages.record("fuse_filleted", ms(t));
+            let boss = primitives::make_cylinder(topo, 5.0, 10.0).unwrap();
+            translate(topo, boss, 140.0, 59.0, 12.0);
+            let fused = boolean(topo, BooleanOp::Fuse, cut, boss);
+            let elapsed = ms(t);
+            match fused {
+                Ok(_) => stages.record("fuse_filleted", elapsed),
+                Err(e) => {
+                    stages.record("fuse_filleted_refused", elapsed);
+                    println!("fuse refused after {elapsed:.1} ms: {e}");
+                }
+            }
         }
         stages.report("plate booleans on filleted body");
         return;
@@ -422,12 +443,12 @@ fn plate(stage: &str, iters: usize) {
                     .all(|&v| (filleted_topo.vertex(v).unwrap().point().z() - 16.0).abs() < 1e-7)
         })
         .expect("top face");
-    let edit = |i: usize, stages: &mut Stages| {
-        let mut edited = filleted_topo.clone();
+    let mut clones: Vec<Topology> = (0..iters).map(|_| filleted_topo.clone()).collect();
+    let edit = |i: usize, edited: &mut Topology, stages: &mut Stages| {
         let t = Instant::now();
-        let result = push_pull::move_faces(&mut edited, body_f, &[top], 2.0 + i as f64 * 0.02);
+        let result = push_pull::move_faces(edited, body_f, &[top], 2.0 + i as f64 * 0.02);
         let elapsed = ms(t);
-        let result = match result {
+        match result {
             Ok(r) => {
                 stages.record("move", elapsed);
                 r
@@ -436,22 +457,25 @@ fn plate(stage: &str, iters: usize) {
                 println!("move refused: {e}; analysing the unedited filleted body");
                 body_f
             }
-        };
-        (edited, result)
+        }
     };
     if stage == "all" || stage == "move" {
-        for i in 0..iters {
-            let (edited, result) = edit(i, &mut stages);
+        for (i, edited) in clones.iter_mut().enumerate() {
+            let result = edit(i, edited, &mut stages);
             if stage == "all" {
-                analyse(&edited, result, stage, &mut stages);
+                analyse(edited, result, stage, &mut stages);
             }
         }
     } else {
         // Edits first, so a profiler sees the requested stage contiguously.
-        let edits: Vec<_> = (0..iters).map(|i| edit(i, &mut stages)).collect();
+        let results: Vec<SolidId> = clones
+            .iter_mut()
+            .enumerate()
+            .map(|(i, edited)| edit(i, edited, &mut stages))
+            .collect();
         println!("edits prepared; analysing stage {stage}");
-        for (edited, result) in &edits {
-            analyse(edited, *result, stage, &mut stages);
+        for (edited, result) in clones.iter().zip(results) {
+            analyse(edited, result, stage, &mut stages);
         }
     }
     stages.report("filleted plate face drag");
