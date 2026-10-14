@@ -484,7 +484,7 @@ impl BrepKernel {
                     sk.deferred_constraints.push(val);
                 } else {
                     return Err(WasmError::InvalidInput {
-                        reason: format!("failed to parse constraint: {e:?}"),
+                        reason: format!("failed to parse constraint: {e}"),
                     }
                     .into());
                 }

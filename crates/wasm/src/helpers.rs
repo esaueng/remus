@@ -242,6 +242,51 @@ pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, StructuredWas
         })
 }
 
+/// Optional boolean argument: absent or `null` reads as `None`.
+pub fn get_optional_bool(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<bool>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected boolean"),
+                Some(name),
+            )
+        }),
+    }
+}
+
+/// Optional `u32` argument: absent or `null` reads as `None`; a present
+/// value must be an in-range unsigned integer.
+pub fn get_optional_u32(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<u32>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(_) => get_u32(args, name).map(Some),
+    }
+}
+
+/// Optional number argument: absent or `null` reads as `None`. Range checks
+/// stay with the operation so direct and batch calls refuse identically.
+pub fn get_optional_f64(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<f64>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected number"),
+                Some(name),
+            )
+        }),
+    }
+}
+
 /// Extract an index representable by the target's `usize` from a JSON value.
 pub fn json_usize(val: &serde_json::Value, key: &str) -> Result<usize, JsError> {
     val[key]
@@ -791,10 +836,26 @@ mod feature_serialization_tests {
 // ── Sketch constraint parsing ─────────────────────────────────────
 
 /// Parse a sketch constraint from a JSON value.
+///
+/// Returns [`WasmError`] (not `JsError`) so native tests can exercise the
+/// refusal paths.
 pub fn parse_sketch_constraint(
     val: &serde_json::Value,
-) -> Result<remus_operations::sketch::Constraint, JsError> {
+) -> Result<remus_operations::sketch::Constraint, WasmError> {
     use remus_operations::sketch::Constraint;
+    let json_usize = |val: &serde_json::Value, key: &str| -> Result<usize, WasmError> {
+        val[key]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: format!("missing or invalid '{key}' index"),
+            })
+    };
+    let json_f64 = |val: &serde_json::Value, key: &str| -> Result<f64, WasmError> {
+        val[key].as_f64().ok_or_else(|| WasmError::InvalidInput {
+            reason: format!("missing or invalid '{key}'"),
+        })
+    };
     let ty = val["type"].as_str().unwrap_or("");
     match ty {
         "coincident" => {
@@ -833,15 +894,15 @@ pub fn parse_sketch_constraint(
             let p2 = json_usize(val, "p2")?;
             // Backward compat: old API was (p1, p2, value) for single-line angle.
             // New API is (p1, p2, p3, p4, value) for angle between two lines.
-            // When p3/p4 are absent, default to p1/p2 (zero angle between same line).
-            let p3 = val
-                .get("p3")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(p1, |v| v as usize);
-            let p4 = val
-                .get("p4")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(p2, |v| v as usize);
+            // When p3/p4 are absent (or null), default to p1/p2 (zero angle
+            // between same line); a present but malformed index is an error,
+            // never a silent fallback onto the first line.
+            let optional_index = |key: &str, default: usize| match val.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(default),
+                Some(_) => json_usize(val, key),
+            };
+            let p3 = optional_index("p3", p1)?;
+            let p4 = optional_index("p4", p2)?;
             let v = json_f64(val, "value")?;
             Ok(Constraint::Angle(p1, p2, p3, p4, v))
         }
@@ -861,8 +922,57 @@ pub fn parse_sketch_constraint(
         }
         _ => Err(WasmError::InvalidInput {
             reason: format!("unknown constraint type: {ty}"),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod sketch_constraint_parse_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use remus_operations::sketch::Constraint;
+
+    /// WASM-1: absent `p3`/`p4` keep the single-line legacy form, but a
+    /// present malformed index refused nothing and fell back onto `p1`/`p2`,
+    /// silently constraining the wrong line.
+    #[test]
+    fn legacy_angle_refuses_malformed_second_line_indices() {
+        let parse = |json: serde_json::Value| parse_sketch_constraint(&json);
+        let base = serde_json::json!({"type": "angle", "p1": 0, "p2": 1, "value": 0.5});
+        assert!(matches!(
+            parse(base.clone()).unwrap(),
+            Constraint::Angle(0, 1, 0, 1, _)
+        ));
+        let mut explicit_null = base.clone();
+        explicit_null["p3"] = serde_json::Value::Null;
+        assert!(matches!(
+            parse(explicit_null).unwrap(),
+            Constraint::Angle(0, 1, 0, 1, _)
+        ));
+        let mut two_lines = base.clone();
+        two_lines["p3"] = serde_json::json!(2);
+        two_lines["p4"] = serde_json::json!(3);
+        assert!(matches!(
+            parse(two_lines).unwrap(),
+            Constraint::Angle(0, 1, 2, 3, _)
+        ));
+        for (key, bad) in [
+            ("p3", serde_json::json!(-1)),
+            ("p3", serde_json::json!("2")),
+            ("p4", serde_json::json!(1.5)),
+            ("p4", serde_json::json!(true)),
+        ] {
+            let mut json = base.clone();
+            json["p3"] = serde_json::json!(2);
+            json["p4"] = serde_json::json!(3);
+            json[key] = bad.clone();
+            let error = parse(json).unwrap_err();
+            assert!(
+                error.to_string().contains(&format!("'{key}'")),
+                "{key}={bad}: {error}"
+            );
         }
-        .into()),
     }
 }
 

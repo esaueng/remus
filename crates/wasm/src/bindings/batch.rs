@@ -28,8 +28,8 @@ use crate::handles::{
     wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_u32, get_u32_array,
-    get_u32_array_optional, panic_message, try_chamfer,
+    TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_optional_bool, get_optional_f64,
+    get_optional_u32, get_u32, get_u32_array, get_u32_array_optional, panic_message, try_chamfer,
 };
 use crate::kernel::BrepKernel;
 use crate::types::SolidOperationDetailedResult;
@@ -86,22 +86,6 @@ fn get_optional_work_budget(
     }
 }
 
-/// Optional boolean argument: absent or `null` reads as `None`.
-fn get_optional_bool(
-    args: &serde_json::Value,
-    name: &str,
-) -> Result<Option<bool>, StructuredWasmError> {
-    match args.get(name) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
-            StructuredWasmError::invalid_argument(
-                format!("invalid '{name}': expected boolean"),
-                Some(name),
-            )
-        }),
-    }
-}
-
 /// Parse a transform twin's batch arguments before entering its shared body.
 /// Parsing failures still become the twin's typed result envelope.
 fn transform_detailed_batch_args(
@@ -115,23 +99,6 @@ fn transform_detailed_batch_args(
     let mat = super::transform_detailed::parse_transform_matrix_json(matrix)?;
     let elems = mat.0.iter().flatten().copied().collect();
     Ok((solid, elems, exact_only))
-}
-
-/// Optional number argument: absent or `null` reads as `None`. Range checks
-/// stay with the operation so direct and batch calls refuse identically.
-fn get_optional_f64(
-    args: &serde_json::Value,
-    name: &str,
-) -> Result<Option<f64>, StructuredWasmError> {
-    match args.get(name) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
-            StructuredWasmError::invalid_argument(
-                format!("invalid '{name}': expected number"),
-                Some(name),
-            )
-        }),
-    }
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -1020,7 +987,7 @@ impl BrepKernel {
             }
             "makeSphere" => {
                 let r = get_f64(args, "radius")?;
-                let segments = get_u32(args, "segments").unwrap_or(16);
+                let segments = get_optional_u32(args, "segments")?.unwrap_or(16);
                 let segments =
                     validate_work_count(segments, "segments").map_err(StructuredWasmError::from)?;
                 let solid = remus_operations::primitives::make_sphere(self.topo_mut(), r, segments)
@@ -1038,7 +1005,7 @@ impl BrepKernel {
             "makeTorus" => {
                 let major = get_f64(args, "majorRadius")?;
                 let minor = get_f64(args, "minorRadius")?;
-                let segments = get_u32(args, "segments").unwrap_or(16);
+                let segments = get_optional_u32(args, "segments")?.unwrap_or(16);
                 let segments =
                     validate_work_count(segments, "segments").map_err(StructuredWasmError::from)?;
                 let solid = remus_operations::primitives::make_torus(
@@ -1226,7 +1193,7 @@ impl BrepKernel {
             "fuseWithOptions" | "cutWithOptions" | "intersectWithOptions" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let unify_faces = args["unifyFaces"].as_bool();
+                let unify_faces = get_optional_bool(args, "unifyFaces")?;
                 let bool_op = match op {
                     "fuseWithOptions" => BooleanOp::Fuse,
                     "cutWithOptions" => BooleanOp::Cut,
@@ -1679,10 +1646,10 @@ impl BrepKernel {
             }
             "extrude" => {
                 let f = get_u32(args, "face")?;
-                let dx = get_f64(args, "dx").unwrap_or(0.0);
-                let dy = get_f64(args, "dy").unwrap_or(0.0);
-                let dz = get_f64(args, "dz").unwrap_or(1.0);
-                let dist = get_f64(args, "distance").unwrap_or(1.0);
+                let dx = get_optional_f64(args, "dx")?.unwrap_or(0.0);
+                let dy = get_optional_f64(args, "dy")?.unwrap_or(0.0);
+                let dz = get_optional_f64(args, "dz")?.unwrap_or(1.0);
+                let dist = get_optional_f64(args, "distance")?.unwrap_or(1.0);
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let dir = Vec3::new(dx, dy, dz);
                 let solid = extrude(self.topo_mut(), face_id, dir, dist)
@@ -1692,12 +1659,12 @@ impl BrepKernel {
             "revolve" => {
                 let f = get_u32(args, "face")?;
                 let angle_degrees = get_f64(args, "angle")?;
-                let ox = get_f64(args, "originX").unwrap_or(0.0);
-                let oy = get_f64(args, "originY").unwrap_or(0.0);
-                let oz = get_f64(args, "originZ").unwrap_or(0.0);
-                let ax = get_f64(args, "axisX").unwrap_or(0.0);
-                let ay = get_f64(args, "axisY").unwrap_or(0.0);
-                let az = get_f64(args, "axisZ").unwrap_or(1.0);
+                let ox = get_optional_f64(args, "originX")?.unwrap_or(0.0);
+                let oy = get_optional_f64(args, "originY")?.unwrap_or(0.0);
+                let oz = get_optional_f64(args, "originZ")?.unwrap_or(0.0);
+                let ax = get_optional_f64(args, "axisX")?.unwrap_or(0.0);
+                let ay = get_optional_f64(args, "axisY")?.unwrap_or(0.0);
+                let az = get_optional_f64(args, "axisZ")?.unwrap_or(1.0);
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 // Convert degrees to radians to match the direct WASM binding.
                 let solid = revolve(
@@ -1850,10 +1817,10 @@ impl BrepKernel {
             }
             "multiSectionSweep" => {
                 let faces: Vec<u32> = get_u32_array_optional(args, "faces")?;
-                let params: Vec<f64> = args["params"]
-                    .as_array()
-                    .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
-                    .unwrap_or_default();
+                let params: Vec<f64> = match args.get("params") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(_) => get_f64_array(args, "params")?,
+                };
                 if faces.len() != params.len() {
                     return Err("multiSectionSweep: faces and params length mismatch".into());
                 }
@@ -1861,7 +1828,7 @@ impl BrepKernel {
                 let spine = self
                     .extract_nurbs_curve(spine_edge)
                     .map_err(StructuredWasmError::from)?;
-                let ruled = args["ruled"].as_bool().unwrap_or(true);
+                let ruled = get_optional_bool(args, "ruled")?.unwrap_or(true);
                 let sections: Vec<(remus_topology::face::FaceId, f64)> = faces
                     .iter()
                     .zip(params.iter())
@@ -1925,7 +1892,7 @@ impl BrepKernel {
                     get_f64(args, "xAxisY")?,
                     get_f64(args, "xAxisZ")?,
                 );
-                let hidden_lines = args["hiddenLines"].as_bool().unwrap_or(true);
+                let hidden_lines = get_optional_bool(args, "hiddenLines")?.unwrap_or(true);
                 let deflection = get_deflection(args)?;
                 let result = remus_operations::projection::project_edges(
                     &self.topo,
@@ -2293,12 +2260,12 @@ impl BrepKernel {
             }
             "mirror" => {
                 let s = get_u32(args, "solid")?;
-                let px = get_f64(args, "px").unwrap_or(0.0);
-                let py = get_f64(args, "py").unwrap_or(0.0);
-                let pz = get_f64(args, "pz").unwrap_or(0.0);
-                let nx = get_f64(args, "nx").unwrap_or(1.0);
-                let ny = get_f64(args, "ny").unwrap_or(0.0);
-                let nz = get_f64(args, "nz").unwrap_or(0.0);
+                let px = get_optional_f64(args, "px")?.unwrap_or(0.0);
+                let py = get_optional_f64(args, "py")?.unwrap_or(0.0);
+                let pz = get_optional_f64(args, "pz")?.unwrap_or(0.0);
+                let nx = get_optional_f64(args, "nx")?.unwrap_or(1.0);
+                let ny = get_optional_f64(args, "ny")?.unwrap_or(0.0);
+                let nz = get_optional_f64(args, "nz")?.unwrap_or(0.0);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = remus_operations::mirror::mirror(
                     self.topo_mut(),
@@ -2328,7 +2295,7 @@ impl BrepKernel {
             }
             "convertToElementary" => {
                 let s = get_u32(args, "solid")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(crate::helpers::TOL);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(crate::helpers::TOL);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let count =
                     remus_operations::heal::convert_to_elementary(self.topo_mut(), solid_id, tol)
@@ -2340,7 +2307,7 @@ impl BrepKernel {
             }
             "healSolid" => {
                 let s = get_u32(args, "solid")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 remus_operations::heal::heal_solid(self.topo_mut(), solid_id, tol)
                     .map_err(StructuredWasmError::from)?;
@@ -2355,7 +2322,7 @@ impl BrepKernel {
             }
             "repairSolid" => {
                 let s = get_u32(args, "solid")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let report = remus_operations::heal::repair_solid(self.topo_mut(), solid_id, tol)
                     .map_err(StructuredWasmError::from)?;
@@ -2378,7 +2345,7 @@ impl BrepKernel {
                 let x = get_f64(args, "x")?;
                 let y = get_f64(args, "y")?;
                 let z = get_f64(args, "z")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-7);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let pt = Point3::new(x, y, z);
                 let options = remus_check::classify::ClassifyOptions {
@@ -2447,9 +2414,9 @@ impl BrepKernel {
             }
             "circularPattern" => {
                 let s = get_u32(args, "solid")?;
-                let ax = get_f64(args, "ax").unwrap_or(0.0);
-                let ay = get_f64(args, "ay").unwrap_or(0.0);
-                let az = get_f64(args, "az").unwrap_or(1.0);
+                let ax = get_optional_f64(args, "ax")?.unwrap_or(0.0);
+                let ay = get_optional_f64(args, "ay")?.unwrap_or(0.0);
+                let az = get_optional_f64(args, "az")?.unwrap_or(1.0);
                 let count = get_u32(args, "count")?;
                 let count =
                     validate_work_count(count, "count").map_err(StructuredWasmError::from)?;
@@ -2466,12 +2433,12 @@ impl BrepKernel {
             }
             "gridPattern" => {
                 let s = get_u32(args, "solid")?;
-                let dxx = get_f64(args, "dirXx").unwrap_or(1.0);
-                let dxy = get_f64(args, "dirXy").unwrap_or(0.0);
-                let dxz = get_f64(args, "dirXz").unwrap_or(0.0);
-                let dyx = get_f64(args, "dirYx").unwrap_or(0.0);
-                let dyy = get_f64(args, "dirYy").unwrap_or(1.0);
-                let dyz = get_f64(args, "dirYz").unwrap_or(0.0);
+                let dxx = get_optional_f64(args, "dirXx")?.unwrap_or(1.0);
+                let dxy = get_optional_f64(args, "dirXy")?.unwrap_or(0.0);
+                let dxz = get_optional_f64(args, "dirXz")?.unwrap_or(0.0);
+                let dyx = get_optional_f64(args, "dirYx")?.unwrap_or(0.0);
+                let dyy = get_optional_f64(args, "dirYy")?.unwrap_or(1.0);
+                let dyz = get_optional_f64(args, "dirYz")?.unwrap_or(0.0);
                 let sx = get_f64(args, "spacingX")?;
                 let sy = get_f64(args, "spacingY")?;
                 let cx = get_u32(args, "countX")?;
@@ -2804,7 +2771,7 @@ impl BrepKernel {
             "offsetFace" => {
                 let f = get_u32(args, "face")?;
                 let dist = get_f64(args, "distance")?;
-                let samples = get_u32(args, "samples").unwrap_or(16);
+                let samples = get_optional_u32(args, "samples")?.unwrap_or(16);
                 validate_work_product(samples, samples, "sample grid")
                     .map_err(StructuredWasmError::from)?;
                 let samples =
@@ -2885,12 +2852,12 @@ impl BrepKernel {
             }
             "section" => {
                 let s = get_u32(args, "solid")?;
-                let px = get_f64(args, "px").unwrap_or(0.0);
-                let py = get_f64(args, "py").unwrap_or(0.0);
-                let pz = get_f64(args, "pz").unwrap_or(0.0);
-                let nx = get_f64(args, "nx").unwrap_or(0.0);
-                let ny = get_f64(args, "ny").unwrap_or(0.0);
-                let nz = get_f64(args, "nz").unwrap_or(1.0);
+                let px = get_optional_f64(args, "px")?.unwrap_or(0.0);
+                let py = get_optional_f64(args, "py")?.unwrap_or(0.0);
+                let pz = get_optional_f64(args, "pz")?.unwrap_or(0.0);
+                let nx = get_optional_f64(args, "nx")?.unwrap_or(0.0);
+                let ny = get_optional_f64(args, "ny")?.unwrap_or(0.0);
+                let nz = get_optional_f64(args, "nz")?.unwrap_or(1.0);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = remus_operations::section::section(
                     self.topo_mut(),
@@ -2904,12 +2871,12 @@ impl BrepKernel {
             }
             "split" => {
                 let s = get_u32(args, "solid")?;
-                let px = get_f64(args, "px").unwrap_or(0.0);
-                let py = get_f64(args, "py").unwrap_or(0.0);
-                let pz = get_f64(args, "pz").unwrap_or(0.0);
-                let nx = get_f64(args, "nx").unwrap_or(0.0);
-                let ny = get_f64(args, "ny").unwrap_or(0.0);
-                let nz = get_f64(args, "nz").unwrap_or(1.0);
+                let px = get_optional_f64(args, "px")?.unwrap_or(0.0);
+                let py = get_optional_f64(args, "py")?.unwrap_or(0.0);
+                let pz = get_optional_f64(args, "pz")?.unwrap_or(0.0);
+                let nx = get_optional_f64(args, "nx")?.unwrap_or(0.0);
+                let ny = get_optional_f64(args, "ny")?.unwrap_or(0.0);
+                let nz = get_optional_f64(args, "nz")?.unwrap_or(1.0);
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = remus_operations::split::split(
                     self.topo_mut(),
@@ -3021,7 +2988,7 @@ impl BrepKernel {
             }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
-                let tol = get_f64(args, "tolerance").unwrap_or(1e-6);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-6);
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -3052,9 +3019,9 @@ impl BrepKernel {
             }
             "linearPattern" => {
                 let s = get_u32(args, "solid")?;
-                let dx = get_f64(args, "dx").unwrap_or(1.0);
-                let dy = get_f64(args, "dy").unwrap_or(0.0);
-                let dz = get_f64(args, "dz").unwrap_or(0.0);
+                let dx = get_optional_f64(args, "dx")?.unwrap_or(1.0);
+                let dy = get_optional_f64(args, "dy")?.unwrap_or(0.0);
+                let dz = get_optional_f64(args, "dz")?.unwrap_or(0.0);
                 let spacing = get_f64(args, "spacing")?;
                 let count = get_u32(args, "count")?;
                 let count =
@@ -3081,12 +3048,12 @@ impl BrepKernel {
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
-                let dx = get_f64(args, "dirX").unwrap_or(0.0);
-                let dy = get_f64(args, "dirY").unwrap_or(0.0);
-                let dz = get_f64(args, "dirZ").unwrap_or(1.0);
-                let npx = get_f64(args, "neutralX").unwrap_or(0.0);
-                let npy = get_f64(args, "neutralY").unwrap_or(0.0);
-                let npz = get_f64(args, "neutralZ").unwrap_or(0.0);
+                let dx = get_optional_f64(args, "dirX")?.unwrap_or(0.0);
+                let dy = get_optional_f64(args, "dirY")?.unwrap_or(0.0);
+                let dz = get_optional_f64(args, "dirZ")?.unwrap_or(1.0);
+                let npx = get_optional_f64(args, "neutralX")?.unwrap_or(0.0);
+                let npy = get_optional_f64(args, "neutralY")?.unwrap_or(0.0);
+                let npz = get_optional_f64(args, "neutralZ")?.unwrap_or(0.0);
                 let dir = Vec3::new(dx, dy, dz);
                 let neutral = Point3::new(npx, npy, npz);
                 let result = remus_operations::draft::draft(
@@ -3532,6 +3499,197 @@ mod batch_contract_tests {
 
     fn parse(response: &str) -> serde_json::Value {
         serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    /// WASM-5: an optional argument may be absent (or `null`) and take its
+    /// default, but a present, malformed one must refuse as
+    /// `invalid_argument` naming it. Before the fix every case here defaulted
+    /// silently, e.g. `mirror` with `"nx": "1"` mirrored about YZ and
+    /// reported ok.
+    #[test]
+    fn present_malformed_optional_arguments_refuse() {
+        use serde_json::json;
+        let (mut kernel, a, b) = crate::kernel::test_fixtures::kernel_with_two_boxes();
+        let solid_a = kernel.resolve_solid(a).expect("box");
+        let face_id =
+            remus_topology::explorer::solid_faces(kernel.topo(), solid_a).expect("faces")[0];
+        let edge_id =
+            remus_topology::explorer::solid_edges(kernel.topo(), solid_a).expect("edges")[0];
+        let face = face_id_to_u32(face_id);
+        let edge = edge_id_to_u32(edge_id);
+        let xyz = |prefix: &str| {
+            [
+                format!("{prefix}X"),
+                format!("{prefix}Y"),
+                format!("{prefix}Z"),
+            ]
+        };
+        let mut cases: Vec<(&str, serde_json::Value, Vec<String>)> = vec![
+            (
+                "makeSphere",
+                json!({"radius": 1.0}),
+                vec!["segments".into()],
+            ),
+            (
+                "makeTorus",
+                json!({"majorRadius": 3.0, "minorRadius": 1.0}),
+                vec!["segments".into()],
+            ),
+            (
+                "fuseWithOptions",
+                json!({"solidA": a, "solidB": b}),
+                vec!["unifyFaces".into()],
+            ),
+            (
+                "cutWithOptions",
+                json!({"solidA": a, "solidB": b}),
+                vec!["unifyFaces".into()],
+            ),
+            (
+                "extrude",
+                json!({"face": face}),
+                ["dx", "dy", "dz", "distance"].map(String::from).to_vec(),
+            ),
+            (
+                "revolve",
+                json!({"face": face, "angle": 90.0}),
+                [xyz("origin"), xyz("axis")].concat(),
+            ),
+            (
+                "multiSectionSweep",
+                json!({"spineEdge": edge}),
+                vec!["params".into()],
+            ),
+            (
+                "mirror",
+                json!({"solid": a}),
+                ["px", "py", "pz", "nx", "ny", "nz"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            (
+                "section",
+                json!({"solid": a}),
+                ["px", "py", "pz", "nx", "ny", "nz"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            (
+                "split",
+                json!({"solid": a}),
+                ["px", "py", "pz", "nx", "ny", "nz"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            (
+                "convertToElementary",
+                json!({"solid": a}),
+                vec!["tolerance".into()],
+            ),
+            ("healSolid", json!({"solid": a}), vec!["tolerance".into()]),
+            ("repairSolid", json!({"solid": a}), vec!["tolerance".into()]),
+            (
+                "classifyPoint",
+                json!({"solid": a, "x": 0.5, "y": 0.5, "z": 0.5}),
+                vec!["tolerance".into()],
+            ),
+            (
+                "circularPattern",
+                json!({"solid": a}),
+                ["ax", "ay", "az"].map(String::from).to_vec(),
+            ),
+            (
+                "gridPattern",
+                json!({"solid": a}),
+                ["dirXx", "dirXy", "dirXz", "dirYx", "dirYy", "dirYz"]
+                    .map(String::from)
+                    .to_vec(),
+            ),
+            (
+                "linearPattern",
+                json!({"solid": a}),
+                ["dx", "dy", "dz"].map(String::from).to_vec(),
+            ),
+            (
+                "offsetFace",
+                json!({"face": face, "distance": 0.1}),
+                vec!["samples".into()],
+            ),
+            (
+                "sewFaces",
+                json!({"faces": [face]}),
+                vec!["tolerance".into()],
+            ),
+            (
+                "draft",
+                json!({"solid": a, "angle": 5.0, "faces": [face]}),
+                [xyz("dir"), xyz("neutral")].concat(),
+            ),
+            (
+                "propagateAttributesForOp",
+                json!({"op": 0}),
+                vec!["allowInferred".into()],
+            ),
+            (
+                "captureSignatureRef",
+                json!({"kind": "face", "handle": face}),
+                vec!["quantum".into()],
+            ),
+            ("setFaceName", json!({"face": face}), vec!["name".into()]),
+            (
+                "extrudeJournaled",
+                json!({"face": face}),
+                ["dx", "dy", "dz", "distance"].map(String::from).to_vec(),
+            ),
+        ];
+        let mut project = json!({"solid": a});
+        for key in [xyz("origin"), xyz("dir"), xyz("xAxis")].concat() {
+            project[key] = json!(0.5);
+        }
+        cases.push(("projectEdges", project, vec!["hiddenLines".into()]));
+        cases.push((
+            "multiSectionSweep",
+            json!({"spineEdge": edge, "faces": [], "params": []}),
+            vec!["ruled".into()],
+        ));
+
+        for (op, base, keys) in cases {
+            for key in keys {
+                let mut args = base.clone();
+                // A string is malformed for every optional number, index and
+                // boolean in the table; a number for the one optional string.
+                args[&key] = if key == "name" { json!(1) } else { json!("1") };
+                let response =
+                    parse(&kernel.execute_batch_v2(&json!([{"op": op, "args": args}]).to_string()));
+                let error = &response[0]["error"];
+                assert_eq!(error["code"], "invalid_argument", "{op}.{key}: {response}");
+                assert_eq!(
+                    error["details"]["argument"],
+                    key.as_str(),
+                    "{op}.{key}: {response}"
+                );
+            }
+        }
+    }
+
+    /// The same arms still default an absent or `null` optional argument.
+    #[test]
+    fn absent_or_null_optional_arguments_still_default() {
+        use serde_json::json;
+        let (mut kernel, a, _) = crate::kernel::test_fixtures::kernel_with_two_boxes();
+        for args in [
+            json!({"solid": a}),
+            json!({"solid": a, "nx": null, "pz": null}),
+        ] {
+            let response = parse(
+                &kernel.execute_batch_v2(&json!([{"op": "mirror", "args": args}]).to_string()),
+            );
+            assert!(response[0]["ok"].is_u64(), "{response}");
+        }
+        let response = parse(&kernel.execute_batch_v2(
+            &json!([{"op": "makeSphere", "args": {"radius": 1.0, "segments": null}}]).to_string(),
+        ));
+        assert!(response[0]["ok"].is_u64(), "{response}");
     }
 
     #[test]
