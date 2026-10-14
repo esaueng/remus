@@ -36,6 +36,19 @@ pub enum WasmError {
         reason: String,
     },
 
+    /// A `fromBREP` document id that cannot name exactly one entity.
+    #[error("invalid input: fromBREP {location}: {entity} id {id} is {problem}")]
+    InvalidBrepId {
+        /// The id namespace (`"vertex"` or `"edge"`).
+        entity: &'static str,
+        /// The id as written in the document.
+        id: String,
+        /// Where in the document the id appears, e.g. `edges[3].startVertex`.
+        location: String,
+        /// Why the id is refused.
+        problem: BrepIdProblem,
+    },
+
     /// An error from a constraint solve or rank analysis.
     #[error(transparent)]
     Sketch(#[from] remus_sketch::SketchError),
@@ -55,6 +68,40 @@ pub enum WasmError {
     /// An error from a geometric check (outlining, containment, distance).
     #[error(transparent)]
     Check(#[from] remus_check::CheckError),
+}
+
+/// Why a `fromBREP` document id was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrepIdProblem {
+    /// A reference to an id that no entity in the document declares.
+    Unknown,
+    /// A second entity declaring an id already in use.
+    Duplicate,
+    /// An integer outside the `u32` id range, which would otherwise alias a
+    /// smaller id.
+    OutOfRange,
+}
+
+impl BrepIdProblem {
+    /// Stable wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Duplicate => "duplicate",
+            Self::OutOfRange => "out_of_range",
+        }
+    }
+}
+
+impl std::fmt::Display for BrepIdProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unknown => "unknown",
+            Self::Duplicate => "a duplicate",
+            Self::OutOfRange => "outside the u32 id range",
+        })
+    }
 }
 
 /// Stable machine-readable error codes used by structured WASM contracts.
@@ -358,6 +405,15 @@ impl From<WasmError> for StructuredWasmError {
                 structured
             }
             WasmError::InvalidInput { .. } => Self::invalid_argument(message, None),
+            WasmError::InvalidBrepId {
+                location, problem, ..
+            } => {
+                let mut structured = Self::invalid_argument(message, Some(&location));
+                structured
+                    .details
+                    .insert("problem".to_string(), Value::from(problem.as_str()));
+                structured
+            }
             WasmError::Operations(error) => Self::from(error),
             WasmError::Topology(error) => Self::from(error),
             WasmError::Math(error) => Self::from(error),
