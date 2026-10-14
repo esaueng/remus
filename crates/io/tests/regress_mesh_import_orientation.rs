@@ -197,3 +197,67 @@ fn inward_stl_cube_with_matching_inward_normals_imports_outward() {
     let solid = remus_io::stl::read_stl_solid(&mut topo, stl.as_bytes(), 1e-7).unwrap();
     assert_outward_unit_cube(&topo, solid, offset, "inward ASCII STL, inward normals");
 }
+
+/// An OBJ of axis-aligned cubes `(origin, edge, inward)`, plus unused
+/// vertices that no face references.
+fn cubes_obj(cubes: &[([f64; 3], f64, bool)], unused: &[[f64; 3]]) -> String {
+    let mut text = String::new();
+    for (index, &(origin, edge, inward)) in cubes.iter().enumerate() {
+        for p in corners([0.0; 3]) {
+            let [x, y, z] = [p.x(), p.y(), p.z()];
+            writeln!(
+                text,
+                "v {} {} {}",
+                origin[0] + edge * x,
+                origin[1] + edge * y,
+                origin[2] + edge * z
+            )
+            .unwrap();
+        }
+        for [a, b, c] in triangles(inward) {
+            let base = 8 * index + 1;
+            writeln!(text, "f {} {} {}", a + base, b + base, c + base).unwrap();
+        }
+    }
+    for [x, y, z] in unused {
+        writeln!(text, "v {x} {y} {z}").unwrap();
+    }
+    text
+}
+
+fn import_obj_signed_volume(text: &str) -> f64 {
+    let mut topo = Topology::new();
+    let solid = remus_io::obj::read_obj_solid(&mut topo, text, 1e-7).unwrap();
+    measure::oriented_solid_volume(&topo, solid, 0.1).unwrap()
+}
+
+/// Every component of a multi-body mesh inward: all are flipped.
+#[test]
+fn multi_body_mesh_with_every_body_inward_imports_outward() {
+    let text = cubes_obj(&[([0.0; 3], 1.0, true), ([5.0, 0.0, 0.0], 2.0, true)], &[]);
+    let volume = import_obj_signed_volume(&text);
+    assert!((volume - 9.0).abs() < 1e-9, "signed volume {volume}");
+}
+
+/// Mixed component signs: one global flip cannot fix both, and the larger
+/// inward body must not drag the outward one inside out (summing the whole
+/// mesh would have flipped both, giving +8 − 1). A correctly wound cavity
+/// has mixed signs too and must keep them.
+#[test]
+fn mixed_component_orientations_are_left_as_wound() {
+    let mixed = cubes_obj(&[([0.0; 3], 1.0, false), ([5.0, 0.0, 0.0], 2.0, true)], &[]);
+    let volume = import_obj_signed_volume(&mixed);
+    assert!((volume + 7.0).abs() < 1e-9, "signed volume {volume}");
+
+    let cavity = cubes_obj(&[([0.0; 3], 3.0, false), ([1.0; 3], 1.0, true)], &[]);
+    let volume = import_obj_signed_volume(&cavity);
+    assert!((volume - 26.0).abs() < 1e-9, "signed volume {volume}");
+}
+
+/// A far, unreferenced vertex must not move the summation point off the body.
+#[test]
+fn unused_far_vertex_does_not_hide_an_inward_cube() {
+    let text = cubes_obj(&[([0.0; 3], 1.0, true)], &[[1e20, 0.0, 0.0]]);
+    let volume = import_obj_signed_volume(&text);
+    assert!((volume - 1.0).abs() < 1e-9, "signed volume {volume}");
+}
