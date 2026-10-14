@@ -222,7 +222,9 @@ impl BrepKernel {
 
     /// Approximate a curve through points using LSPIA (progressive iteration).
     ///
-    /// Returns an edge handle.
+    /// Returns an edge handle. A fit that does not reach `tolerance` within
+    /// `max_iterations` carries the iterate with the smallest maximum
+    /// deviation; this binding does not report whether it converged.
     #[wasm_bindgen(js_name = "approximateCurveLspia")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn approximate_curve_lspia(
@@ -244,14 +246,14 @@ impl BrepKernel {
         let num_control_points = validate_work_count(num_control_points, "num_control_points")?;
         let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let deg = std::cmp::min(degree as usize, points.len() - 1);
-        let curve = remus_math::nurbs::fitting::approximate_lspia(
+        let fit = remus_math::nurbs::fitting::approximate_lspia(
             &points,
             deg,
             num_control_points,
             tolerance,
             max_iterations,
         )?;
-        Ok(edge_id_to_u32(self.nurbs_curve_to_edge(curve)?))
+        Ok(edge_id_to_u32(self.nurbs_curve_to_edge(fit.curve)?))
     }
 
     /// Interpolate a grid of points into a NURBS surface.
@@ -640,7 +642,9 @@ mod tests {
                 Point3::new(t * 4.0, (t * 6.0).cos(), t * t)
             })
             .collect();
-        let curve = remus_math::nurbs::fitting::approximate_lspia(&points, 3, 6, 1e-6, 50).unwrap();
+        let curve = remus_math::nurbs::fitting::approximate_lspia(&points, 3, 6, 1e-6, 50)
+            .unwrap()
+            .curve;
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
         let handle = edge_id_to_u32(eid);
 
