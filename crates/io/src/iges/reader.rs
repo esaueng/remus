@@ -3,7 +3,7 @@
 //! Parses IGES files and extracts geometric entities (lines, planes,
 //! NURBS curves and surfaces) into topology.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -174,6 +174,7 @@ fn parse_iges_entities(input: &str, limits: ImportLimits) -> Result<Vec<IgesEnti
 
     // Parse directory entries (pairs of lines).
     let mut dir_entries: Vec<(u32, u32, u32)> = Vec::new(); // (entity_type, pd_start, de_seq)
+    let mut seen_de_seq: HashSet<u32> = HashSet::new();
 
     let mut i = 0;
     while i + 1 < d_lines.len() {
@@ -184,6 +185,13 @@ fn parse_iges_entities(input: &str, limits: ImportLimits) -> Result<Vec<IgesEnti
 
         // DE sequence number is in columns 73-80.
         let de_seq = parse_int_field(line1, 73, 80)?;
+        // Parameter data is keyed by this number, so a repeat would hand one
+        // entity's parameters to several entries.
+        if !seen_de_seq.insert(de_seq) {
+            return Err(IoError::ParseError {
+                reason: format!("duplicate IGES directory entry sequence number {de_seq}"),
+            });
+        }
 
         dir_entries.push((entity_type, pd_start, de_seq));
         ensure_limit(
@@ -218,7 +226,7 @@ fn parse_iges_entities(input: &str, limits: ImportLimits) -> Result<Vec<IgesEnti
 
     let mut entities = Vec::new();
     for (entity_type, _pd_start, de_seq) in &dir_entries {
-        let params = pd_by_de.get(de_seq).cloned().unwrap_or_default();
+        let params = pd_by_de.remove(de_seq).unwrap_or_default();
         // Strip the entity type number prefix from params (e.g., "110,..." → "...").
         let clean_params = strip_entity_prefix(&params, *entity_type);
 
