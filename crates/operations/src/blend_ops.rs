@@ -610,6 +610,25 @@ fn sample_edge(
         .collect())
 }
 
+/// Stations at which [`rolling_ball_setback`] solves a curved neighbour's
+/// contact. Against a NURBS support the setback varies along the edge, so this
+/// is a sampled maximum, not a certified bound; it is kept well denser than
+/// the at-least-seven stations the rolling-ball rebuild interpolates its
+/// contact curve through, so it cannot miss a peak the built band reaches.
+const REACH_STATIONS: usize = 17;
+
+/// `REACH_STATIONS` uniform edge fractions, endpoints included.
+#[allow(clippy::cast_precision_loss)]
+const REACH_FRACTIONS: [f64; REACH_STATIONS] = {
+    let mut fractions = [0.0; REACH_STATIONS];
+    let mut i = 0;
+    while i < REACH_STATIONS {
+        fractions[i] = i as f64 / (REACH_STATIONS - 1) as f64;
+        i += 1;
+    }
+    fractions
+};
+
 /// How far across the planar support `face` a constant-radius rolling ball on
 /// the straight edge `edge` touches down — the blend band's reach on that face.
 /// `edge` must be a line: the reach is measured from its chord.
@@ -621,10 +640,11 @@ fn sample_edge(
 /// there.
 ///
 /// Against a curved `other` face the contact comes from the walker section
-/// solve both engines use for curved neighbours. Where that solve fails, the
-/// rolling-ball rebuild falls back to a contact one radius out, so the reach
-/// is then the larger of `radius` and the tangent-plane setback. That
-/// fallback is an estimate: the neighbour's curvature moves the true contact.
+/// solve both engines use for curved neighbours, maximised over
+/// [`REACH_STATIONS`] stations. Where that solve fails, the rolling-ball
+/// rebuild falls back to a contact one radius out, so the reach is then the
+/// larger of `radius` and the tangent-plane setback. That fallback is an
+/// estimate: the neighbour's curvature moves the true contact.
 pub(crate) fn rolling_ball_setback(
     topo: &Topology,
     edge: EdgeId,
@@ -665,7 +685,7 @@ pub(crate) fn rolling_ball_setback(
         other_data.surface(),
         other_data.is_reversed(),
         radius,
-        &[0.0, 0.5, 1.0],
+        &REACH_FRACTIONS,
     ) {
         let reach = sections
             .iter()
@@ -691,6 +711,32 @@ pub(crate) fn rolling_ball_setback(
         }
     }
     Ok(reach)
+}
+
+/// Whether the rolling-ball rebuild places this two-plane stripe's contacts
+/// at the exact setback: it does so only once it classifies the edge convex or
+/// concave, with the same probe it uses here. An unqualified stripe takes its
+/// cross-product fallback, which lays the contacts one radius out.
+fn two_plane_stripe_is_qualified(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    face: FaceId,
+    other: FaceId,
+    radius: f64,
+) -> Result<bool, OperationsError> {
+    if topo.face(other)?.effective_plane_normal().is_none() {
+        return Ok(true);
+    }
+    let e = topo.edge(edge)?;
+    let length = (topo.vertex(e.end())?.point() - topo.vertex(e.start())?.point()).length();
+    let probe = radius
+        .min(length * 0.1)
+        .max(remus_math::tolerance::Tolerance::new().linear * 10.0);
+    Ok(matches!(
+        crate::query::edge_concavity_from_faces(topo, solid, edge, face, other, probe)?,
+        crate::query::EdgeConcavity::Convex | crate::query::EdgeConcavity::Concave
+    ))
 }
 
 /// Refuse a blend whose setback would run into a hole in one of its own
@@ -756,7 +802,19 @@ fn reject_blend_into_hole(
                 } else {
                     let other = faces.iter().copied().find(|&f| f != face_id);
                     let computed = match other {
-                        Some(other) => rolling_ball_setback(topo, edge_id, face_id, other, size)?,
+                        Some(other) => {
+                            let setback =
+                                rolling_ball_setback(topo, edge_id, face_id, other, size)?;
+                            if setback < size
+                                && !two_plane_stripe_is_qualified(
+                                    topo, solid, edge_id, face_id, other, size,
+                                )?
+                            {
+                                setback.max(size)
+                            } else {
+                                setback
+                            }
+                        }
                         None => size,
                     };
                     *reach.insert(computed)
