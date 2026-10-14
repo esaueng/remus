@@ -57,18 +57,24 @@ pub(super) fn parse_variable_fillet_specs(
             .as_u64()
             .ok_or_else(|| WasmError::InvalidInput {
                 reason: "missing 'edge' in fillet spec".into(),
-            })? as u32;
+            })?;
+        let edge_handle = u32::try_from(edge_handle).map_err(|_| WasmError::InvalidInput {
+            reason: "'edge' in fillet spec exceeds the u32 range".into(),
+        })?;
         let edge_id = kernel.resolve_edge(edge_handle)?;
         let start_val = spec["start"]
             .as_f64()
             .or_else(|| spec["startRadius"].as_f64());
         let end_val = spec["end"].as_f64().or_else(|| spec["endRadius"].as_f64());
-        let law_str = spec["law"]
-            .as_str()
-            .unwrap_or_else(|| match (start_val, end_val) {
+        let law_str = match spec.get("law") {
+            None => match (start_val, end_val) {
                 (Some(start), Some(end)) if (start - end).abs() > f64::EPSILON => "linear",
                 _ => "constant",
-            });
+            },
+            Some(value) => value.as_str().ok_or_else(|| WasmError::InvalidInput {
+                reason: "'law' in fillet spec must be constant, linear, or scurve".into(),
+            })?,
+        };
         let law = match law_str {
             "linear" => remus_operations::fillet::FilletRadiusLaw::Linear {
                 start: start_val.unwrap_or(1.0),
@@ -78,9 +84,14 @@ pub(super) fn parse_variable_fillet_specs(
                 start: start_val.unwrap_or(1.0),
                 end: end_val.unwrap_or(1.0),
             },
-            _ => remus_operations::fillet::FilletRadiusLaw::Constant(
+            "constant" => remus_operations::fillet::FilletRadiusLaw::Constant(
                 spec["radius"].as_f64().or(start_val).unwrap_or(1.0),
             ),
+            _ => {
+                return Err(WasmError::InvalidInput {
+                    reason: "'law' in fillet spec must be constant, linear, or scurve".into(),
+                });
+            }
         };
         edge_specs.push(remus_operations::fillet::FilletEdgeSetback {
             edge: edge_id,
@@ -1828,6 +1839,7 @@ impl BrepKernel {
     ///
     /// Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
     /// When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+    /// A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
     ///
     /// Returns a new solid handle.
     ///
@@ -2728,6 +2740,81 @@ mod tests {
     };
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
+
+    #[test]
+    fn variable_fillet_json_rejects_malformed_references_and_laws_without_mutation() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let before = kernel.serialize_solids(&[solid]).unwrap();
+        let slots = kernel.topo().allocated_slot_count();
+        let mut invalid = Vec::new();
+        for value in [
+            serde_json::json!(u64::from(u32::MAX) + 1),
+            serde_json::json!(u64::from(edge) + (1_u64 << 32)),
+            serde_json::json!(-1),
+            serde_json::json!(0.5),
+            serde_json::Value::Null,
+            serde_json::json!("0"),
+        ] {
+            invalid.push(serde_json::json!({ "edge": value, "law": "constant", "radius": 1.0 }));
+        }
+        for law in [
+            serde_json::json!("linear_typo"),
+            serde_json::json!(""),
+            serde_json::Value::Null,
+            serde_json::json!(7),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
+            invalid.push(serde_json::json!({ "edge": edge, "law": law, "radius": 1.0 }));
+        }
+        for spec in invalid {
+            assert!(
+                matches!(
+                    super::parse_variable_fillet_specs(&kernel, std::slice::from_ref(&spec)),
+                    Err(crate::error::WasmError::InvalidInput { .. })
+                ),
+                "{spec}"
+            );
+            assert_eq!(kernel.serialize_solids(&[solid]).unwrap(), before);
+            assert_eq!(kernel.topo().allocated_slot_count(), slots);
+        }
+    }
+
+    #[test]
+    fn variable_fillet_json_keeps_omitted_law_defaults_and_radius_aliases() {
+        use remus_operations::fillet::FilletRadiusLaw;
+
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let specs = [
+            serde_json::json!({ "edge": edge }),
+            serde_json::json!({ "edge": edge, "startRadius": 1.0, "endRadius": 2.0 }),
+            serde_json::json!({ "edge": edge, "law": "linear" }),
+            serde_json::json!({ "edge": edge, "law": "scurve", "start": 2.0, "end": 3.0 }),
+            serde_json::json!({ "edge": edge, "law": "constant", "radius": 4.0, "startSetback": 0.5 }),
+        ];
+        let parsed = super::parse_variable_fillet_specs(&kernel, &specs).unwrap();
+        assert!(
+            matches!(&parsed[0].law, FilletRadiusLaw::Constant(radius) if radius.to_bits() == 1.0_f64.to_bits())
+        );
+        assert!(
+            matches!(&parsed[1].law, FilletRadiusLaw::Linear { start, end } if start.to_bits() == 1.0_f64.to_bits() && end.to_bits() == 2.0_f64.to_bits())
+        );
+        assert!(
+            matches!(&parsed[2].law, FilletRadiusLaw::Linear { start, end } if start.to_bits() == 1.0_f64.to_bits() && end.to_bits() == 1.0_f64.to_bits())
+        );
+        assert!(
+            matches!(&parsed[3].law, FilletRadiusLaw::SCurve { start, end } if start.to_bits() == 2.0_f64.to_bits() && end.to_bits() == 3.0_f64.to_bits())
+        );
+        assert!(
+            matches!(&parsed[4].law, FilletRadiusLaw::Constant(radius) if radius.to_bits() == 4.0_f64.to_bits())
+        );
+        assert_eq!(parsed[4].start_setback.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(parsed[4].end_setback.to_bits(), 0.0_f64.to_bits());
+    }
 
     #[test]
     fn quality_offset_sample_counts_cannot_bypass_the_grid_budget() {

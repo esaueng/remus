@@ -132,6 +132,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Bug Fixes
 
+* Reject overflowing JSON edge and legacy sketch indices before they can
+  alias another entity in wasm32. Variable fillets also reject unknown or
+  non-string supplied radius laws across direct and batch APIs; omitted-law
+  auto-detection and radius aliases retain their defaults. Deferred legacy
+  arc constraints reject overflowing references when solved.
 * Restore retires later opaque sketch, GCS entity, assembly, and component
   handles without reusing their numbers, including repeated restore. Restore
   and discard never reuse checkpoint IDs. Legacy sketch point and curve

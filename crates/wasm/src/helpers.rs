@@ -242,14 +242,17 @@ pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, StructuredWas
         })
 }
 
-/// Extract a `usize` from a JSON value.
+/// Extract an index representable by the target's `usize` from a JSON value.
 pub fn json_usize(val: &serde_json::Value, key: &str) -> Result<usize, JsError> {
-    val[key].as_u64().map(|v| v as usize).ok_or_else(|| {
-        WasmError::InvalidInput {
-            reason: format!("missing or invalid '{key}'"),
-        }
-        .into()
-    })
+    val[key]
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| {
+            WasmError::InvalidInput {
+                reason: format!("missing or invalid '{key}' index"),
+            }
+            .into()
+        })
 }
 
 /// Extract an `f64` from a JSON value.
