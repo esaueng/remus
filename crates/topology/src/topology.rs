@@ -654,14 +654,6 @@ impl Topology {
         // cannot treat it as a rewind to the clone point (TOPO-3).
         let exact = !self.retires_live_entity_of(snapshot);
         self.undo_truncate_for_foreign_restore(snapshot, exact);
-        let mut snapshot_face_authority: HashMap<
-            FaceId,
-            HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
-        > = snapshot
-            .faces
-            .iter()
-            .map(|(face_id, _)| (face_id, snapshot.carried_face_authority(face_id)))
-            .collect();
         self.vertices.restore_preserving_slots(&snapshot.vertices);
         self.edges.restore_preserving_slots(&snapshot.edges);
         self.wires.restore_preserving_slots(&snapshot.wires);
@@ -674,7 +666,6 @@ impl Topology {
         self.loops.restore_preserving_slots(&snapshot.loops);
         self.coedges.restore_preserving_slots(&snapshot.coedges);
         self.attributes.clone_from(&snapshot.attributes);
-        self.pcurves.clone_from(&snapshot.pcurves);
         // Journal entries recorded after the snapshot are truncated with the
         // restore — the journal and the model roll back together, so the
         // history matches the state again — while `OpId`s and ordinals
@@ -684,11 +675,6 @@ impl Topology {
         // exactly the one the restored journal describes.
         self.journal.restore_preserving_ids(&snapshot.journal);
         self.mutation_ticks = snapshot.mutation_ticks;
-        let retired_edges = snapshot
-            .edges
-            .iter()
-            .filter_map(|(id, _)| self.edges.get(id).is_none().then_some(id))
-            .collect();
         let retired_faces = snapshot
             .faces
             .iter()
@@ -699,14 +685,13 @@ impl Topology {
             .iter()
             .filter_map(|(id, _)| self.solids.get(id).is_none().then_some(id))
             .collect();
-        self.pcurves
-            .remove_for_retired_entities(&retired_edges, &retired_faces);
         self.attributes
             .remove_for_retired_entities(&retired_solids, &retired_faces);
         // Retirement is sticky here, so restored faces can reference
         // Loop/Coedge handles that stayed retired. Rebuild the compatibility
-        // index from surviving authority, then promote affected live faces
-        // onto fresh handles while carrying their snapshot pcurves.
+        // index from surviving authority (so the snapshot's index is never
+        // copied), then promote affected live faces onto fresh handles while
+        // carrying their snapshot pcurves.
         self.pcurves = PCurveRegistry::new();
         let mut indexed_uses = Vec::new();
         let mut missing_faces = Vec::new();
@@ -751,7 +736,7 @@ impl Topology {
             let Ok(specs) = self.boundary_loop_specs(&wire_ids, None) else {
                 continue;
             };
-            let carried = snapshot_face_authority.remove(&face_id).unwrap_or_default();
+            let carried = snapshot.carried_face_authority(face_id);
             let _ = self.install_face_loop_specs_carrying(face_id, specs, carried, false);
         }
     }
