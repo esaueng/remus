@@ -37,6 +37,7 @@ use remus_operations::push_pull::{move_faces, push_pull_face, resize_cylindrical
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::revolve::revolve;
 use remus_operations::sweep::{sweep, sweep_wire};
+use remus_topology::transaction::run_transacted;
 
 fn optional_fillet_number(spec: &serde_json::Value, field: &str) -> Result<f64, WasmError> {
     match spec.get(field) {
@@ -1153,75 +1154,15 @@ impl BrepKernel {
         spine_weights: Vec<f64>,
         ruled: bool,
     ) -> Result<u32, JsError> {
-        if face_handles.len() != params.len() {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "face_handles ({}) and params ({}) must have equal length",
-                    face_handles.len(),
-                    params.len()
-                ),
-            }
-            .into());
-        }
-        if !spine_control_points.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "spine_control_points length must be a multiple of 3, got {}",
-                    spine_control_points.len()
-                ),
-            }
-            .into());
-        }
-        let num_pts = spine_control_points.len() / 3;
-        if spine_weights.len() != num_pts {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "spine_weights length ({}) must match control point count ({num_pts})",
-                    spine_weights.len()
-                ),
-            }
-            .into());
-        }
-        for p in &params {
-            validate_finite(*p, "param")?;
-        }
-        for (name, arr) in [
-            ("spine_knots", &spine_knots),
-            ("spine_control_points", &spine_control_points),
-            ("spine_weights", &spine_weights),
-        ] {
-            if let Some(pos) = arr.iter().position(|v| !v.is_finite()) {
-                return Err(WasmError::InvalidInput {
-                    reason: format!("{name}[{pos}] is not finite"),
-                }
-                .into());
-            }
-        }
-
-        let control_points: Vec<Point3> = spine_control_points
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
-        let spine = NurbsCurve::new(
-            spine_degree as usize,
+        Ok(self.multi_section_sweep_impl(
+            &face_handles,
+            &params,
+            spine_degree,
             spine_knots,
-            control_points,
+            &spine_control_points,
             spine_weights,
-        )?;
-
-        let sections: Vec<(remus_topology::face::FaceId, f64)> = face_handles
-            .iter()
-            .zip(params.iter())
-            .map(|(&h, &p)| self.resolve_face(h).map(|f| (f, p)))
-            .collect::<Result<_, _>>()?;
-
-        let solid_id = remus_operations::sweep::multi_section_sweep(
-            self.topo_mut(),
-            &spine,
-            &sections,
             ruled,
-        )?;
-        Ok(solid_id_to_u32(solid_id))
+        )?)
     }
 
     /// Sweep a face along a path with smooth NURBS side surfaces.
@@ -1366,35 +1307,14 @@ impl BrepKernel {
         pitch: f64,
         turns: f64,
     ) -> Result<u32, JsError> {
-        for (name, value) in [
-            ("axis_origin_x", axis_origin_x),
-            ("axis_origin_y", axis_origin_y),
-            ("axis_origin_z", axis_origin_z),
-            ("axis_dir_x", axis_dir_x),
-            ("axis_dir_y", axis_dir_y),
-            ("axis_dir_z", axis_dir_z),
-            ("turns", turns),
-        ] {
-            validate_finite(value, name)?;
-        }
-        validate_positive(radius, "radius")?;
-        validate_positive(pitch, "pitch")?;
-        let face_id = self.resolve_face(profile)?;
-
-        let origin = remus_math::vec::Point3::new(axis_origin_x, axis_origin_y, axis_origin_z);
-        let axis_dir = remus_math::vec::Vec3::new(axis_dir_x, axis_dir_y, axis_dir_z);
-
-        let solid_id = remus_operations::helix::helical_sweep(
-            self.topo_mut(),
-            face_id,
-            origin,
-            axis_dir,
+        Ok(self.helical_sweep_impl(
+            profile,
+            [axis_origin_x, axis_origin_y, axis_origin_z],
+            [axis_dir_x, axis_dir_y, axis_dir_z],
             radius,
             pitch,
             turns,
-            8,
-        )?;
-        Ok(solid_id_to_u32(solid_id))
+        )?)
     }
 
     // ── Split ─────────────────────────────────────────────────────
@@ -1919,71 +1839,16 @@ impl BrepKernel {
         aux_control_points: Vec<f64>,
         aux_weights: Vec<f64>,
     ) -> Result<u32, JsError> {
-        let build = |degree: u32,
-                     knots: Vec<f64>,
-                     cps: Vec<f64>,
-                     weights: Vec<f64>,
-                     label: &str|
-         -> Result<NurbsCurve, JsError> {
-            if degree < 1 {
-                return Err(WasmError::InvalidInput {
-                    reason: format!("{label}_degree must be at least 1"),
-                }
-                .into());
-            }
-            if !cps.len().is_multiple_of(3) {
-                return Err(WasmError::InvalidInput {
-                    reason: format!("{label}_control_points length must be a multiple of 3"),
-                }
-                .into());
-            }
-            if weights.len() != cps.len() / 3 {
-                return Err(WasmError::InvalidInput {
-                    reason: format!("{label}_weights length must match control point count"),
-                }
-                .into());
-            }
-            for (name, arr) in [
-                ("knots", &knots),
-                ("control_points", &cps),
-                ("weights", &weights),
-            ] {
-                if let Some(pos) = arr.iter().position(|v| !v.is_finite()) {
-                    return Err(WasmError::InvalidInput {
-                        reason: format!("{label}_{name}[{pos}] is not finite"),
-                    }
-                    .into());
-                }
-            }
-            let control_points: Vec<Point3> = cps
-                .chunks_exact(3)
-                .map(|c| Point3::new(c[0], c[1], c[2]))
-                .collect();
-            Ok(NurbsCurve::new(
-                degree as usize,
-                knots,
-                control_points,
-                weights,
-            )?)
-        };
-
-        let spine = build(
-            spine_degree,
-            spine_knots,
-            spine_control_points,
-            spine_weights,
-            "spine",
-        )?;
-        let aux = build(
-            aux_degree,
-            aux_knots,
-            aux_control_points,
-            aux_weights,
-            "aux",
-        )?;
-        let face_id = self.resolve_face(face)?;
-        let solid = remus_operations::sweep::sweep_guided(self.topo_mut(), face_id, &spine, aux)?;
-        Ok(solid_id_to_u32(solid))
+        Ok(self.guided_sweep_impl(
+            face,
+            (
+                spine_degree,
+                spine_knots,
+                &spine_control_points,
+                spine_weights,
+            ),
+            (aux_degree, aux_knots, &aux_control_points, aux_weights),
+        )?)
     }
 
     /// Convex Minkowski sum of two solids (`A ⊕ B`).
@@ -2721,6 +2586,158 @@ impl BrepKernel {
         })?;
         Ok(solid_id_to_u32(result))
     }
+}
+
+/// Raw NURBS curve data as the sweep bindings receive it: degree, knots, flat
+/// `[x, y, z, ...]` control points and weights.
+type RawNurbs<'a> = (u32, Vec<f64>, &'a [f64], Vec<f64>);
+
+/// Natively testable bodies of the sweep bindings. Each runs its operation
+/// inside `run_transacted`, so a refusal after the operation has allocated
+/// (placed profile copies, side faces) leaves the session unchanged.
+impl BrepKernel {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn multi_section_sweep_impl(
+        &mut self,
+        face_handles: &[u32],
+        params: &[f64],
+        spine_degree: u32,
+        spine_knots: Vec<f64>,
+        spine_control_points: &[f64],
+        spine_weights: Vec<f64>,
+        ruled: bool,
+    ) -> Result<u32, WasmError> {
+        if face_handles.len() != params.len() {
+            return Err(WasmError::InvalidInput {
+                reason: format!(
+                    "face_handles ({}) and params ({}) must have equal length",
+                    face_handles.len(),
+                    params.len()
+                ),
+            });
+        }
+        for p in params {
+            validate_finite(*p, "param")?;
+        }
+        let spine = raw_nurbs_curve(
+            (
+                spine_degree,
+                spine_knots,
+                spine_control_points,
+                spine_weights,
+            ),
+            "spine",
+        )?;
+        let sections: Vec<(remus_topology::face::FaceId, f64)> = face_handles
+            .iter()
+            .zip(params.iter())
+            .map(|(&h, &p)| self.resolve_face(h).map(|f| (f, p)))
+            .collect::<Result<_, _>>()?;
+        let solid_id = run_transacted(self.topo_mut(), |topo| {
+            remus_operations::sweep::multi_section_sweep(topo, &spine, &sections, ruled)
+        })?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
+    pub(crate) fn helical_sweep_impl(
+        &mut self,
+        profile: u32,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        radius: f64,
+        pitch: f64,
+        turns: f64,
+    ) -> Result<u32, WasmError> {
+        for (name, value) in [
+            ("axis_origin_x", axis_origin[0]),
+            ("axis_origin_y", axis_origin[1]),
+            ("axis_origin_z", axis_origin[2]),
+            ("axis_dir_x", axis_dir[0]),
+            ("axis_dir_y", axis_dir[1]),
+            ("axis_dir_z", axis_dir[2]),
+            ("turns", turns),
+        ] {
+            validate_finite(value, name)?;
+        }
+        validate_positive(radius, "radius")?;
+        validate_positive(pitch, "pitch")?;
+        let face_id = self.resolve_face(profile)?;
+        let origin = Point3::new(axis_origin[0], axis_origin[1], axis_origin[2]);
+        let axis_dir = Vec3::new(axis_dir[0], axis_dir[1], axis_dir[2]);
+        let solid_id = run_transacted(self.topo_mut(), |topo| {
+            remus_operations::helix::helical_sweep(
+                topo, face_id, origin, axis_dir, radius, pitch, turns, 8,
+            )
+        })?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
+    pub(crate) fn guided_sweep_impl(
+        &mut self,
+        face: u32,
+        spine: RawNurbs<'_>,
+        aux: RawNurbs<'_>,
+    ) -> Result<u32, WasmError> {
+        for (degree, label) in [(spine.0, "spine"), (aux.0, "aux")] {
+            if degree < 1 {
+                return Err(WasmError::InvalidInput {
+                    reason: format!("{label}_degree must be at least 1"),
+                });
+            }
+        }
+        let spine = raw_nurbs_curve(spine, "spine")?;
+        let aux = raw_nurbs_curve(aux, "aux")?;
+        let face_id = self.resolve_face(face)?;
+        let solid = run_transacted(self.topo_mut(), |topo| {
+            remus_operations::sweep::sweep_guided(topo, face_id, &spine, aux)
+        })?;
+        Ok(solid_id_to_u32(solid))
+    }
+}
+
+/// Validate and build one [`RawNurbs`] curve; `label` prefixes error messages.
+fn raw_nurbs_curve(
+    (degree, knots, cps, weights): RawNurbs<'_>,
+    label: &str,
+) -> Result<NurbsCurve, WasmError> {
+    if !cps.len().is_multiple_of(3) {
+        return Err(WasmError::InvalidInput {
+            reason: format!(
+                "{label}_control_points length must be a multiple of 3, got {}",
+                cps.len()
+            ),
+        });
+    }
+    if weights.len() != cps.len() / 3 {
+        return Err(WasmError::InvalidInput {
+            reason: format!(
+                "{label}_weights length ({}) must match control point count ({})",
+                weights.len(),
+                cps.len() / 3
+            ),
+        });
+    }
+    for (name, arr) in [
+        ("knots", &knots[..]),
+        ("control_points", cps),
+        ("weights", &weights[..]),
+    ] {
+        if let Some(pos) = arr.iter().position(|v| !v.is_finite()) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("{label}_{name}[{pos}] is not finite"),
+            });
+        }
+    }
+    let control_points: Vec<Point3> = cps
+        .chunks_exact(3)
+        .map(|c| Point3::new(c[0], c[1], c[2]))
+        .collect();
+    Ok(NurbsCurve::new(
+        degree as usize,
+        knots,
+        control_points,
+        weights,
+    )?)
 }
 
 #[cfg(test)]
