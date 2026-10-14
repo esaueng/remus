@@ -320,6 +320,88 @@ struct SolidEntities {
     shells: HashSet<ShellId>,
 }
 
+/// A visited-set over the entity kinds a solid's tree holds. Each `mark_*`
+/// returns whether the entity was newly marked.
+trait EntityMarks {
+    fn mark_shell(&mut self, id: ShellId) -> bool;
+    fn mark_face(&mut self, id: FaceId) -> bool;
+    fn mark_wire(&mut self, id: WireId) -> bool;
+    fn mark_edge(&mut self, id: EdgeId) -> bool;
+    fn mark_vertex(&mut self, id: VertexId);
+}
+
+impl EntityMarks for SolidEntities {
+    fn mark_shell(&mut self, id: ShellId) -> bool {
+        self.shells.insert(id)
+    }
+    fn mark_face(&mut self, id: FaceId) -> bool {
+        self.faces.insert(id)
+    }
+    fn mark_wire(&mut self, id: WireId) -> bool {
+        self.wires.insert(id)
+    }
+    fn mark_edge(&mut self, id: EdgeId) -> bool {
+        self.edges.insert(id)
+    }
+    fn mark_vertex(&mut self, id: VertexId) {
+        self.vertices.insert(id);
+    }
+}
+
+/// [`EntityMarks`] as one flag per arena slot: `delete_solid` marks every
+/// other live body, where hashing each entity cost most of the call
+/// (TOPO-4). Slot indices are dense and never reused, so a flag vector sized
+/// to the arena is exact.
+struct DenseEntityMarks {
+    vertices: Vec<bool>,
+    edges: Vec<bool>,
+    wires: Vec<bool>,
+    faces: Vec<bool>,
+    shells: Vec<bool>,
+}
+
+impl DenseEntityMarks {
+    fn for_topology(topo: &Topology) -> Self {
+        Self {
+            vertices: vec![false; topo.vertices.slot_len()],
+            edges: vec![false; topo.edges.slot_len()],
+            wires: vec![false; topo.wires.slot_len()],
+            faces: vec![false; topo.faces.slot_len()],
+            shells: vec![false; topo.shells.slot_len()],
+        }
+    }
+
+    /// Marks `index`; an out-of-range index (a stale handle the walk then
+    /// refuses) reads as newly marked.
+    fn mark(flags: &mut [bool], index: usize) -> bool {
+        flags
+            .get_mut(index)
+            .is_none_or(|flag| !std::mem::replace(flag, true))
+    }
+
+    fn is_marked(flags: &[bool], index: usize) -> bool {
+        flags.get(index).copied().unwrap_or(false)
+    }
+}
+
+impl EntityMarks for DenseEntityMarks {
+    fn mark_shell(&mut self, id: ShellId) -> bool {
+        Self::mark(&mut self.shells, id.index())
+    }
+    fn mark_face(&mut self, id: FaceId) -> bool {
+        Self::mark(&mut self.faces, id.index())
+    }
+    fn mark_wire(&mut self, id: WireId) -> bool {
+        Self::mark(&mut self.wires, id.index())
+    }
+    fn mark_edge(&mut self, id: EdgeId) -> bool {
+        Self::mark(&mut self.edges, id.index())
+    }
+    fn mark_vertex(&mut self, id: VertexId) {
+        Self::mark(&mut self.vertices, id.index());
+    }
+}
+
 #[derive(Clone)]
 struct BoundaryLoopSpec {
     oriented_edges: Vec<OrientedEdge>,
@@ -1747,7 +1829,7 @@ impl Topology {
             });
         }
 
-        let mut retained = SolidEntities::default();
+        let mut retained = DenseEntityMarks::for_topology(self);
         for (other_id, _) in self.solids.iter() {
             if other_id != solid {
                 self.collect_solid_entities_into(other_id, &mut retained)?;
@@ -1766,26 +1848,38 @@ impl Topology {
         // Wires all carry the wire tag, including face boundaries. Only a
         // wire with no owning face is a standalone root under the current
         // representation; a boundary wire is retained through its live body.
-        let face_owned_wires: HashSet<_> = self
-            .faces
-            .iter()
-            .flat_map(|(_, face)| {
+        let mut face_owned_wires = vec![false; self.wires.slot_len()];
+        for (_, face) in self.faces.iter() {
+            for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            })
-            .collect();
+            {
+                if let Some(owned) = face_owned_wires.get_mut(wire_id.index()) {
+                    *owned = true;
+                }
+            }
+        }
         for (wire_id, _) in self.wires.iter() {
-            if !face_owned_wires.contains(&wire_id) {
+            if !DenseEntityMarks::is_marked(&face_owned_wires, wire_id.index()) {
                 self.collect_wire_entities_into(wire_id, &mut retained)?;
             }
         }
 
+        let kept = |flags: &[bool], index: usize| DenseEntityMarks::is_marked(flags, index);
         retiring
             .vertices
-            .retain(|id| !retained.vertices.contains(id));
-        retiring.edges.retain(|id| !retained.edges.contains(id));
-        retiring.wires.retain(|id| !retained.wires.contains(id));
-        retiring.faces.retain(|id| !retained.faces.contains(id));
-        retiring.shells.retain(|id| !retained.shells.contains(id));
+            .retain(|id| !kept(&retained.vertices, id.index()));
+        retiring
+            .edges
+            .retain(|id| !kept(&retained.edges, id.index()));
+        retiring
+            .wires
+            .retain(|id| !kept(&retained.wires, id.index()));
+        retiring
+            .faces
+            .retain(|id| !kept(&retained.faces, id.index()));
+        retiring
+            .shells
+            .retain(|id| !kept(&retained.shells, id.index()));
 
         // Count the mutation only once validation has passed: a refusal
         // changes nothing, and a tick would open a spurious journal gap.
@@ -1861,10 +1955,10 @@ impl Topology {
         Ok(entities)
     }
 
-    fn collect_solid_entities_into(
+    fn collect_solid_entities_into<M: EntityMarks>(
         &self,
         solid: SolidId,
-        entities: &mut SolidEntities,
+        entities: &mut M,
     ) -> Result<(), TopologyError> {
         let solid_data = self.solid(solid)?;
         for shell_id in std::iter::once(solid_data.outer_shell())
@@ -1875,17 +1969,17 @@ impl Topology {
         Ok(())
     }
 
-    fn collect_shell_entities_into(
+    fn collect_shell_entities_into<M: EntityMarks>(
         &self,
         shell_id: ShellId,
-        entities: &mut SolidEntities,
+        entities: &mut M,
     ) -> Result<(), TopologyError> {
-        if !entities.shells.insert(shell_id) {
+        if !entities.mark_shell(shell_id) {
             return Ok(());
         }
         let shell = self.shell(shell_id)?;
         for &face_id in shell.faces() {
-            if !entities.faces.insert(face_id) {
+            if !entities.mark_face(face_id) {
                 continue;
             }
             let face = self.face(face_id)?;
@@ -1898,25 +1992,25 @@ impl Topology {
         Ok(())
     }
 
-    fn collect_wire_entities_into(
+    fn collect_wire_entities_into<M: EntityMarks>(
         &self,
         wire_id: WireId,
-        entities: &mut SolidEntities,
+        entities: &mut M,
     ) -> Result<(), TopologyError> {
-        if !entities.wires.insert(wire_id) {
+        if !entities.mark_wire(wire_id) {
             return Ok(());
         }
         let wire = self.wire(wire_id)?;
         for oriented_edge in wire.edges() {
             let edge_id = oriented_edge.edge();
-            if !entities.edges.insert(edge_id) {
+            if !entities.mark_edge(edge_id) {
                 continue;
             }
             let edge = self.edge(edge_id)?;
             self.vertex(edge.start())?;
             self.vertex(edge.end())?;
-            entities.vertices.insert(edge.start());
-            entities.vertices.insert(edge.end());
+            entities.mark_vertex(edge.start());
+            entities.mark_vertex(edge.end());
         }
         Ok(())
     }
