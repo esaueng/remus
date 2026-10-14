@@ -51,7 +51,7 @@ def previous_source(repo, source):
 
 
 def merged_prs(repo, base, head):
-    """Numbers of the PRs merged into main whose merge commit lies in base..head."""
+    """The PRs merged into main whose merge commit lies in base..head, by number."""
     commits = []
     page = 1
     while True:
