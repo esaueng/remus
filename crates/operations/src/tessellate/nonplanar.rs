@@ -2496,6 +2496,138 @@ pub(super) fn tessellate_nurbs_blend_band_shared(
     Ok(true)
 }
 
+/// Immutable segment data for the nonplanar grid's boundary-clearance query.
+/// Polygon containment and the distance predicate retain their original order.
+struct PreparedBoundarySegments {
+    segments: Vec<PreparedBoundarySegment>,
+    clearance: f64,
+}
+
+struct PreparedBoundarySegment {
+    start: remus_math::vec::Point2,
+    edge: remus_math::vec::Vec2,
+    length_squared: f64,
+    bounds: Option<([f64; 2], [f64; 2])>,
+}
+
+impl PreparedBoundarySegments {
+    fn new(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>], clearance: f64) -> Self {
+        // A rejected coordinate must force the ORIGINAL rounded norm above
+        // clearance. Verify that implication in the same arithmetic: the
+        // rounded nonnegative sum of squares is at least either rounded
+        // square, and sqrt is monotone. The extra ULPs are a broad-phase
+        // roundoff margin only; the narrow predicate still uses clearance.
+        let radius = clearance.next_up().next_up();
+        let radius = (clearance >= 0.0
+            && clearance.is_finite()
+            && radius.is_finite()
+            && (radius * radius).sqrt() > clearance)
+            .then_some(radius);
+        let segments = std::iter::once(outer)
+            .chain(holes.iter().map(Vec::as_slice))
+            .flat_map(|wire| {
+                (0..wire.len()).map(move |index| {
+                    let (ax, ay) = wire[index];
+                    let (bx, by) = wire[(index + 1) % wire.len()];
+                    PreparedBoundarySegment::new(
+                        remus_math::vec::Point2::new(ax, ay),
+                        remus_math::vec::Point2::new(bx, by),
+                        radius,
+                    )
+                })
+            })
+            .collect();
+        Self {
+            segments,
+            clearance,
+        }
+    }
+
+    fn is_on_boundary(&self, point: remus_math::vec::Point2) -> bool {
+        let finite_query = point.x().is_finite() && point.y().is_finite();
+        self.segments.iter().any(|segment| {
+            if finite_query
+                && let Some((lower, upper)) = segment.bounds
+                && (point.x() < lower[0]
+                    || point.x() > upper[0]
+                    || point.y() < lower[1]
+                    || point.y() > upper[1])
+            {
+                return false;
+            }
+            #[cfg(test)]
+            boundary_clearance_tests::record_distance_test();
+            let fraction = if segment.length_squared > 1e-30 {
+                ((point - segment.start).dot(segment.edge) / segment.length_squared).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let nearest = segment.start + segment.edge * fraction;
+            (point - nearest).length() <= self.clearance
+        })
+    }
+}
+
+impl PreparedBoundarySegment {
+    fn new(
+        start: remus_math::vec::Point2,
+        end: remus_math::vec::Point2,
+        radius: Option<f64>,
+    ) -> Self {
+        let edge = end - start;
+        let length_squared = edge.dot(edge);
+        let bounds = radius.and_then(|radius| {
+            if ![start.x(), start.y(), edge.x(), edge.y(), length_squared]
+                .into_iter()
+                .all(f64::is_finite)
+            {
+                return None;
+            }
+            // The clamped fraction is in [0,1]. Rounded multiplication and
+            // addition are monotone, so each COMPUTED nearest coordinate is
+            // between start and start + edge, even when subtracting the
+            // original endpoints rounded edge away from their ideal delta.
+            // A NaN fraction cannot satisfy the narrow distance predicate.
+            // The degenerate branch always uses fraction=0.
+            let other = if length_squared > 1e-30 {
+                start + edge
+            } else {
+                start
+            };
+            let lower = [
+                (start.x().min(other.x()) - radius).next_down(),
+                (start.y().min(other.y()) - radius).next_down(),
+            ];
+            let upper = [
+                (start.x().max(other.x()) + radius).next_up(),
+                (start.y().max(other.y()) + radius).next_up(),
+            ];
+            // Outward rounding bounds the REAL expanded sums too. Outside
+            // that interval, rounded point-nearest is at least radius, whose
+            // rounded single-coordinate norm was checked above. Overflow or
+            // an unknown range retains the complete narrow scan.
+            if !other.x().is_finite() || !other.y().is_finite() {
+                return None;
+            }
+            lower
+                .into_iter()
+                .chain(upper)
+                .all(f64::is_finite)
+                .then_some((lower, upper))
+        });
+        Self {
+            start,
+            edge,
+            length_squared,
+            bounds,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "nonplanar/tests.rs"]
+mod boundary_clearance_tests;
+
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
 /// Projects shared edge points into (u,v) parameter space, generates interior
@@ -3161,26 +3293,20 @@ pub(super) fn tessellate_nonplanar_cdt(
         let hole_uvs_ref = &hole_uvs;
         // Grid points on a shared boundary would create face-local subdivisions
         // absent from its neighbor, even though both start with the same rim.
+        let boundary_clearance = 1e-10 * du.max(dv).max(1.0);
+        let prepared_boundary =
+            PreparedBoundarySegments::new(boundary_uv_ref, hole_uvs_ref, boundary_clearance);
         let on_boundary = |point: Point2| {
-            std::iter::once(boundary_uv_ref)
-                .chain(hole_uvs_ref.iter())
-                .any(|hole| {
-                    (0..hole.len()).any(|index| {
-                        let (ax, ay) = hole[index];
-                        let (bx, by) = hole[(index + 1) % hole.len()];
-                        let a = Point2::new(ax, ay);
-                        let b = Point2::new(bx, by);
-                        let edge = b - a;
-                        let length_sq = edge.dot(edge);
-                        let fraction = if length_sq > 1e-30 {
-                            ((point - a).dot(edge) / length_sq).clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        };
-                        let nearest = a + edge * fraction;
-                        (point - nearest).length() <= 1e-10 * du.max(dv).max(1.0)
-                    })
-                })
+            #[cfg(test)]
+            if boundary_clearance_tests::use_reference() {
+                return boundary_clearance_tests::reference_is_on_boundary(
+                    boundary_uv_ref,
+                    hole_uvs_ref,
+                    point,
+                    boundary_clearance,
+                );
+            }
+            prepared_boundary.is_on_boundary(point)
         };
         let has_ellipse_wire = wire.edges().iter().any(|oriented| {
             topo.edge(oriented.edge())

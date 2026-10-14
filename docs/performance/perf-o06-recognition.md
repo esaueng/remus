@@ -1,5 +1,16 @@
 # O06 subset: whole-solid feature recognition and edge relations
 
+Current source-32 follow-up: [recognition graph attribution](perf-o06-recognition-graph.md)
+qualifies fresh paired WASM, quiet raw measurements and separate diagnostic work
+counts. Quadrant ray/NURBS/torus work is the measured next target; the historical
+measurements and implementation details below remain pinned to their original builds.
+
+Earlier priority, 2026-10-13: the [committed-package refresh](face-drag-refresh-2026-10-13.md)
+identified recognition graph construction as the remaining stage; per-call
+preparation already shipped and candidate matching was tiny on that workload.
+That prompted the fresh graph attribution linked above. The sampled profiles
+below describe their pinned historical builds.
+
 Follow-up, 2026-10-10: the line-NURBS Newton solver now uses the existing
 specialized first-partial scratch solve, while retaining its original position
 evaluation. A bounded scalar memo also serves repeated standalone NURBS face

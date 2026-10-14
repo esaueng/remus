@@ -17,8 +17,10 @@ import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
+import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
+import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -62,6 +64,7 @@ const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_
 
 runSecurityResourceRegressions({ BrepKernel, RemusIo });
 runTruckNurbsReusePackaged({ BrepKernel });
+runOpseqF3Packaged({ BrepKernel });
 
 const DEFLECTION = 0.1;
 
@@ -1699,5 +1702,6 @@ runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
+runOpseqF5Packaged({ BrepKernel });
 
 console.log('\nAll smoke tests passed');

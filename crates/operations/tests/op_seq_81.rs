@@ -5673,28 +5673,34 @@ fn finding_coax_cylinder_fuse_orientation() {
     );
 }
 
-/// 8.1 finding F3 (retained, kernel untouched): a cut whose tool is a
-/// 30°-rotated cylinder returns a degenerate 3-face solid measuring 0.0
-/// while the paired fuse (170.19 against stock+tool 186.53) implies a ~27.6
-/// remainder.
+/// 8.1 finding F3 regression: before the fix, a cut whose tool is a
+/// 30°-rotated cylinder returned a degenerate 3-face solid measuring 0.0
+/// instead of the independently integrated 30.24010542122668 remainder.
 ///
 /// Minimized from campaign seed `17450404173350609447` (4 ops stay 4 ops;
-/// dims simplify). The result validates clean yet tessellates open at every
+/// dims simplify). The old result validated clean yet tessellated open at every
 /// deflection (36 boundary edges even at 0.1) and the independent Gauss
 /// route declines to measure it — a material-loss wrong success, not a
 /// tessellation-density artifact.
 ///
 /// Acceptance: the harness `ExactOk` verdict (valid topology, watertight
-/// mesh, mass agreement, translation invariance, identities). No geometry
-/// fix in this harness PR.
+/// mesh, mass agreement, translation invariance, identities). Native geometry
+/// regressions also pin independent volume and retained material.
 #[test]
-#[ignore = "8.1 finding F3: rotated-cylinder-tool cut drops its remainder (valid 3-face 0-volume result, open mesh, refused mass route)"]
 fn finding_rotated_cyl_cut_material() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.5,"radius":5.5},"op":"makeCylinder"},{"args":{"height":3.5,"radius":2.0},"op":"makeCylinder"},{"args":{"matrix":[1.0,0.0,0.0,4.0,0.0,0.8660254037844386,-0.5,-2.0,0.0,0.5,0.8660254037844386,-0.5,0.0,0.0,0.0,1.0],"solid":0},"op":"transform"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
     )
     .expect("finding bundle parses");
-    let limits = SeqLimits::default();
+    let mut limits = SeqLimits::default();
+    // This regression retains the full diagonal-derived mesh and translated
+    // volume battery. Its unoptimized replay takes several minutes; CI uses
+    // the optimized test profile. Give this correctness replay
+    // a bounded ten-minute default while preserving an explicit caller budget
+    // and the two-minute default for generated campaigns.
+    if std::env::var_os("OPSEQ81_SEQ_TIMEOUT_MS").is_none() {
+        limits.timeout_ms = 600_000;
+    }
     let report = execute_sequence(&ops, &limits, Fault::None);
     for n in &report.notes {
         println!(
@@ -5831,20 +5837,22 @@ fn x4_cell_probe_holds_no_wrong_success() {
     assert_eq!(wrong, 0, "X4 cell must hold no wrong-success witness");
 }
 
-/// 8.1 finding F5 (retained, kernel untouched): an unmoved
-/// cylinder-minus-box cut carries 8 shared edges with inconsistent face
-/// orientations while reading a plausible tessellated volume (36.98) —
-/// the Gauss route collapses to 7.86 on the same body.
+/// 8.1 finding F5 regression: a full-height cylinder-minus-box cut must
+/// orient synthesized major-arc caps against their true curved boundary.
+/// The vertex-only winding test produced eight same-sense shared edges even
+/// though both current volume routes agreed with the independent closed form
+/// 36.97604860915388. The original discovery's Gauss reading of 7.86 no
+/// longer reproduces; volume alone does not detect this orientation defect.
 ///
 /// Minimized from campaign seed `13916448401417584040` (5 ops shrink to 3).
 /// Orientation-family affinity with F1/F2 (B33), but on a box–cylinder cut
 /// pair rather than a coaxial cylinder pair, so it owns a distinct
 /// exclusion cell (X2) and repro.
 ///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// Acceptance: the full harness `ExactOk` verdict. Independent native and
+/// packaged regressions also pin exact carriers, opposing coedges, material,
+/// closed-form quantities, mesh closure and unchanged operands.
 #[test]
-#[ignore = "8.1 finding F5: unmoved cyl-minus-box cut misorients 8 shared edges (tess 36.98 vs Gauss 7.86)"]
 fn finding_box_cyl_cut_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"depth":6.5,"height":1.0,"width":1.5},"op":"makeBox"},{"args":{"height":6.5,"radius":1.5},"op":"makeCylinder"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
@@ -6114,9 +6122,11 @@ fn finding_pointed_cone_fuse_orientation() {
     );
 }
 
-/// 8.1 finding F12 (retained, kernel untouched): a cut of a translated
-/// cylinder pair carries 3 shared edges with inconsistent face
-/// orientations. Orientation-family affinity (B33) in a translated (never
+/// 8.1 finding F12 regression: a cut of a translated cylinder pair must
+/// retain opposing shared boundaries around its crescent caps. The original
+/// result carried three same-sense edges. The qualified native conic-area
+/// winding repair also covers this two-circle cap. Orientation-family
+/// affinity (B33) in a translated (never
 /// rotated) configuration — outside the X1 coaxial cell (axes offset by
 /// the translation), the X2 box cell, and the X3 rotated-tool cell.
 /// Surfaced by exploratory seed `17342833678310861339` through a fuse's
@@ -6127,10 +6137,10 @@ fn finding_pointed_cone_fuse_orientation() {
 /// a translated-but-unrotated side); rotated variants stay with X3 and the
 /// tripwires.
 ///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// Acceptance: the harness `ExactOk` verdict. Independent circle-overlap
+/// quantities and material, boundary and mesh oracles qualify this witness
+/// across scale and rigid placement.
 #[test]
-#[ignore = "8.1 finding F12: translated cylinder-pair cut misorients 3 shared edges; route to the B33 orientation family"]
 fn finding_translated_cyl_cut_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":5.0,"radius":8.0},"op":"makeCylinder"},{"args":{"height":2.0,"radius":6.0},"op":"makeCylinder"},{"args":{"matrix":[1.0,0.0,0.0,1.0,0.0,1.0,0.0,2.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],"solid":0},"op":"transform"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,

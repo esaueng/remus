@@ -6069,6 +6069,14 @@ fn split_face_2d_impl(
     };
 
     // If no section edges, the face is unsplit -- return as-is with original holes.
+    if original_inner_wires.is_empty()
+        && let Some(relocated) =
+            special_cases::relocate_clear_seam(&boundary_edges, sections, &surface, tol.linear)?
+    {
+        boundary_edges = relocated;
+    }
+
+    // If no section edges, the face is unsplit -- return as-is with original holes.
     if sections.is_empty() {
         return Ok(vec![SplitSubFace {
             surface,

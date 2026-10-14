@@ -109,11 +109,26 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo,check,operations,wasm:** rotated finite-cylinder cuts retain the
+  stock crescent in differential finding F3. Qualified circular caps clip
+  complete ellipse intervals at boundary events. Oblique cap-plane lines use
+  their common disc interval. Regular oblique cylinder sections interpolate
+  their junctions with whole-span support and finite-face bounds. Certified cap
+  events retain their endpoint authority through pave creation. Qualified full
+  two-rim cylinder charts use a clear parameter seam; ellipse validation
+  respects arc trims.
+  Native and packaged direct/batch regressions check independent material
+  grids, volume, opposing coedges, watertight meshes and unchanged operands.
+* **algo,operations,wasm:** synthesized coplanar-overlap caps use their
+  qualified line/conic boundary area for winding. The full-height
+  cylinder-minus-box cut in finding F5 no longer carries eight same-sense
+  shared edges around its major-arc caps; the translated cylinder-pair
+  crescent in F12 also retains opposing shared boundaries. Signed trims and carriers stay
+  intact; unsupported or numerically unresolved loops keep the existing path.
 * **algo,operations,wasm:** planar closed line sections that cross or touch an
   existing line-boundary hole are partitioned with that boundary instead of
   becoming overlapping inner wires. Ribbed and pocketed plate booleans retain
   exact B-Rep results; disjoint and nested footprints keep their existing path.
-
 * **wasm:** checkpoint restore retires later opaque sketch, GCS entity,
   assembly, and component handles without reusing their numbers. Restore and
   discard never reuse checkpoint IDs; repeated restore preserves the allocation

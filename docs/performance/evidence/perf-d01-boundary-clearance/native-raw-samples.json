@@ -1,0 +1,468 @@
+{
+  "settings": {
+    "sampleSize": 20,
+    "warmupSeconds": 1,
+    "measurementTargetSeconds": 3,
+    "actualCollection": "Criterion extended the target to fit20single-iteration samples; retain warnings and arrays."
+  },
+  "benchmarks": [
+    {
+      "benchmark": "perf-d01 fresh holder quantity width=5",
+      "before": {
+        "sample": {
+          "sampling_mode": "Flat",
+          "iters": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "times": [
+            241099695.0,
+            246201022.0,
+            246475061.0,
+            247590200.0,
+            245923869.0,
+            245800986.0,
+            245981347.0,
+            246072369.0,
+            245810664.0,
+            245455012.0,
+            245866851.0,
+            245792400.0,
+            246151650.0,
+            247704276.0,
+            246645142.0,
+            245721616.0,
+            246392765.0,
+            245309657.0,
+            245276324.0,
+            246357398.0
+          ]
+        },
+        "estimates": {
+          "mean": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 245258173.1425,
+              "upper_bound": 246349843.37625
+            },
+            "point_estimate": 245881415.2,
+            "standard_error": 280711.8013179963
+          },
+          "median": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 245796693.0,
+              "upper_bound": 246279210.0
+            },
+            "point_estimate": 245952608.0,
+            "standard_error": 135242.7681475563
+          },
+          "median_abs_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 193720.21906077862,
+              "upper_bound": 844247.2812116146
+            },
+            "point_estimate": 484220.1166033745,
+            "standard_error": 172661.357459119
+          },
+          "slope": null,
+          "std_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 395874.9237726845,
+              "upper_bound": 2011507.2377474247
+            },
+            "point_estimate": 1291159.8895062737,
+            "standard_error": 468324.01307642047
+          }
+        },
+        "benchmark": {
+          "group_id": "perf-d01 fresh holder quantity width=5",
+          "function_id": null,
+          "value_str": null,
+          "throughput": null,
+          "full_id": "perf-d01 fresh holder quantity width=5",
+          "directory_name": "perf-d01 fresh holder quantity width=5",
+          "title": "perf-d01 fresh holder quantity width=5"
+        },
+        "tukey": [
+          244000096.75,
+          244887400.375,
+          247253543.375,
+          248140847.0
+        ]
+      },
+      "new": {
+        "sample": {
+          "sampling_mode": "Flat",
+          "iters": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "times": [
+            186249390.0,
+            185047558.0,
+            184894237.0,
+            193144190.0,
+            191500522.0,
+            192541631.0,
+            187385650.0,
+            187703561.0,
+            190042715.0,
+            185034152.0,
+            187109117.0,
+            186368436.0,
+            185741780.0,
+            185419140.0,
+            184661347.0,
+            180503363.0,
+            181997279.0,
+            184383371.0,
+            187228342.0,
+            185364637.0
+          ]
+        },
+        "estimates": {
+          "mean": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 185290948.61124998,
+              "upper_bound": 188011926.26625
+            },
+            "point_estimate": 186616020.9,
+            "standard_error": 698701.276126253
+          },
+          "median": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 185040855.0,
+              "upper_bound": 187306996.0
+            },
+            "point_estimate": 185995585.0,
+            "standard_error": 674865.5868739876
+          },
+          "median_abs_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 800924.9686807394,
+              "upper_bound": 4195271.63271904
+            },
+            "point_estimate": 1902913.3597165346,
+            "standard_error": 887257.6161611216
+          },
+          "slope": null,
+          "std_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 2000493.5830857053,
+              "upper_bound": 4030431.744329244
+            },
+            "point_estimate": 3204534.999368451,
+            "standard_error": 519174.9365828996
+          }
+        },
+        "benchmark": {
+          "group_id": "perf-d01 fresh holder quantity width=5",
+          "function_id": null,
+          "value_str": null,
+          "throughput": null,
+          "full_id": "perf-d01 fresh holder quantity width=5",
+          "directory_name": "perf-d01 fresh holder quantity width=5",
+          "title": "perf-d01 fresh holder quantity width=5"
+        },
+        "tukey": [
+          177601309.75,
+          181300241.5,
+          191164059.5,
+          194862991.25
+        ]
+      },
+      "changeEstimates": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": -0.24724177492213611,
+            "upper_bound": -0.23545107062529924
+          },
+          "point_estimate": -0.2410324271632872,
+          "standard_error": 0.0030220094709221177
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": -0.24796815124643845,
+            "upper_bound": -0.23850786163675475
+          },
+          "point_estimate": -0.24377469906722848,
+          "standard_error": 0.0026294553348615826
+        }
+      }
+    },
+    {
+      "benchmark": "perf-d01 fresh holder quantity width=5.06",
+      "before": {
+        "sample": {
+          "sampling_mode": "Flat",
+          "iters": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "times": [
+            242266843.0,
+            243980173.0,
+            246421179.0,
+            246925653.0,
+            246197476.0,
+            257664884.0,
+            249280717.0,
+            255305020.0,
+            251707106.0,
+            248973005.0,
+            245470421.0,
+            249872687.0,
+            248367069.0,
+            248249797.0,
+            248973015.0,
+            251750217.0,
+            251175411.0,
+            248836197.0,
+            251862520.0,
+            250507417.0
+          ]
+        },
+        "estimates": {
+          "mean": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 247675869.78125,
+              "upper_bound": 250767929.82999998
+            },
+            "point_estimate": 249189340.35,
+            "standard_error": 785783.5735882128
+          },
+          "median": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 247587725.0,
+              "upper_bound": 250841414.0
+            },
+            "point_estimate": 248973010.0,
+            "standard_error": 739428.6908430988
+          },
+          "median_abs_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 1203048.3356416225,
+              "upper_bound": 4676685.187572241
+            },
+            "point_estimate": 3524312.1190309525,
+            "standard_error": 895976.379441687
+          },
+          "slope": null,
+          "std_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 2246334.021048638,
+              "upper_bound": 4644930.8605303215
+            },
+            "point_estimate": 3611668.226402925,
+            "standard_error": 616489.1172396621
+          }
+        },
+        "benchmark": {
+          "group_id": "perf-d01 fresh holder quantity width=5.06",
+          "function_id": null,
+          "value_str": null,
+          "throughput": null,
+          "full_id": "perf-d01 fresh holder quantity width=5.06",
+          "directory_name": "perf-d01 fresh holder quantity width=5.06",
+          "title": "perf-d01 fresh holder quantity width=5.06"
+        },
+        "tukey": [
+          233273133.75,
+          240036334.125,
+          258071535.125,
+          264834735.5
+        ]
+      },
+      "new": {
+        "sample": {
+          "sampling_mode": "Flat",
+          "iters": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "times": [
+            186290608.0,
+            185144851.0,
+            185627093.0,
+            186011741.0,
+            185581297.0,
+            185851979.0,
+            186046517.0,
+            186402470.0,
+            186081483.0,
+            185398782.0,
+            185786845.0,
+            187486099.0,
+            186010208.0,
+            185620511.0,
+            186986685.0,
+            185626072.0,
+            187109357.0,
+            186186521.0,
+            185786395.0,
+            186153219.0
+          ]
+        },
+        "estimates": {
+          "mean": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 185823527.56,
+              "upper_bound": 186318912.20125
+            },
+            "point_estimate": 186059436.65,
+            "standard_error": 126884.53704446713
+          },
+          "median": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 185706744.0,
+              "upper_bound": 186169870.0
+            },
+            "point_estimate": 186010974.5,
+            "standard_error": 125047.51293257657
+          },
+          "median_abs_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 214196.4072972536,
+              "upper_bound": 744033.9011907578
+            },
+            "point_estimate": 491863.66076767445,
+            "standard_error": 138019.86757507364
+          },
+          "slope": null,
+          "std_dev": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 329124.8148124841,
+              "upper_bound": 747224.5553829682
+            },
+            "point_estimate": 583082.7304069904,
+            "standard_error": 105640.53536250177
+          }
+        },
+        "benchmark": {
+          "group_id": "perf-d01 fresh holder quantity width=5.06",
+          "function_id": null,
+          "value_str": null,
+          "throughput": null,
+          "full_id": "perf-d01 fresh holder quantity width=5.06",
+          "directory_name": "perf-d01 fresh holder quantity width=5.06",
+          "title": "perf-d01 fresh holder quantity width=5.06"
+        },
+        "tukey": [
+          183869722.75,
+          184748280.25,
+          187091100.25,
+          187969657.75
+        ]
+      },
+      "changeEstimates": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": -0.2581496279027236,
+            "upper_bound": -0.24870671650491424
+          },
+          "point_estimate": -0.2533411084572502,
+          "standard_error": 0.002397667099421323
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": -0.25876729430332424,
+            "upper_bound": -0.24863656911908694
+          },
+          "point_estimate": -0.252886991646203,
+          "standard_error": 0.0022501312480722735
+        }
+      }
+    }
+  ]
+}
