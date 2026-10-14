@@ -314,7 +314,8 @@ impl BrepKernel {
             num_cps_v as usize,
             tolerance,
             max_iterations,
-        )?;
+        )?
+        .surface;
         Ok(face_id_to_u32(self.nurbs_surface_to_face(surface)?))
     }
 

@@ -159,6 +159,7 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
 | Curve/surface fitting (LSPIA) | `nurbs/fitting.rs`, `nurbs/surface_fitting.rs` |
 | Bit-identity oracle for the cached-basis LSPIA loop against the verbatim old loop (tests) | `nurbs/fitting/lspia_oracle_tests.rs` |
+| Bit-identity oracle for surface LSPIA's best-iterate result against every iterate of the verbatim old loop (tests) | `nurbs/surface_fitting/lspia_oracle_tests.rs` |
 | Point projection onto curves | `nurbs/projection.rs` |
 | Self-intersection detection | `nurbs/self_intersection.rs` |
 | 3D curves (Line, Circle, Ellipse, Parabola, Hyperbola) | `curves.rs` |

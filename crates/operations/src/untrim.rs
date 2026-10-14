@@ -113,6 +113,7 @@ pub fn untrim_face(
         .map_err(|e| OperationsError::InvalidInput {
             reason: format!("untrim LSPIA surface fitting failed: {e}"),
         })?
+        .surface
     } else {
         interpolate_surface(&grid, degree, degree).map_err(|e| OperationsError::InvalidInput {
             reason: format!("untrim surface interpolation failed: {e}"),
