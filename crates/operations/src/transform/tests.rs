@@ -1564,8 +1564,14 @@ fn reverse_order_transform(
         }
         transform_edges_recorded(live, &edge_ids, matrix, &mut recorder)?;
         restore_translation_certificates(live, certificates)?;
-        for fid in face_ids {
+        for &fid in &face_ids {
             transform_face_surface_recorded(live, fid, matrix, &normal_matrix, &mut recorder)?;
+        }
+        // The loop re-traversal allocates fresh loops and coedges, so it runs
+        // as its own phase in the production (ascending) order.
+        if recorder.orientation_reversing {
+            face_ids.reverse();
+            reverse_face_boundaries(live, &face_ids)?;
         }
         Ok(())
     })

@@ -617,6 +617,7 @@ mod legacy {
 
         let mut new_shell_ids = Vec::new();
         let mut copied_face_ids = HashMap::new();
+        let mut created_faces = Vec::new();
         let mut chart_replaced_faces = Vec::new();
         for ssnap in &shell_snaps {
             let mut new_face_ids = Vec::new();
@@ -664,6 +665,7 @@ mod legacy {
                     topo.set_face_attributes(new_fid, attributes)?;
                 }
                 copied_face_ids.insert(fsnap.old_index, new_fid);
+                created_faces.push(new_fid);
                 new_face_ids.push(new_fid);
             }
             let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
@@ -684,6 +686,9 @@ mod legacy {
             for (edge, forward) in uses {
                 topo.remove_pcurve_oriented(edge, face, forward)?;
             }
+        }
+        if chart_reversing {
+            crate::transform::reverse_face_boundaries(topo, &created_faces)?;
         }
 
         let new_outer = new_shell_ids[0];
