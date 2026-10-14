@@ -94,8 +94,66 @@ they do not establish a whole-recognition or browser speedup.
 Native batch and packaged regressions retain periodic notched torus material
 and hole probes, planar-boundary classification, complete edge-relation rows
 and feature records across scale/placement and direct/batch query routes.
-Quiet before/after timings and final immutable-head workspace/package
-qualification are pending and will be recorded separately.
+Full quiet timing and local qualification are recorded below.
+
+## Quiet measured results
+
+The candidate runtime is `ad46fac59c160bee5388aad9065ffffd66ecd8d5`; its fresh
+local version-61 kernel is 9,747,911 bytes, SHA256
+`edd2f2c1344351d5274a021f6c0b94a5a88fa482872c08e6a7873aeb62293e11`.
+It adds 191 bytes against fresh d782 and preserves the translator's exact bytes.
+The committed older version-60 artifacts are a separate size-gate baseline.
+
+Each schedule uses two fresh processes per revision, two warmup edits and six
+retained edits per process: 12 retained edits per revision/schedule. Runs are
+untraced, serial and pinned to one CPU after validation/build jobs end. Production
+memos and cache defaults remain enabled, module/JIT state stays warm within a
+process, and each edit restores a fresh body. Every source, harness, native
+executable and package-file input guard passes before/after timing.
+
+| Maintained holder workflow, median ms | baseline | candidate | decrease |
+|---|---:|---:|---:|
+| Geometry-first recognition | 344.515 | 331.353 | 3.82% |
+| Volume-first recognition | 343.429 | 331.035 | 3.61% |
+| Geometry-first kernel + bulk mesh transfer | 689.354 | 676.838 | 1.82% |
+| Volume-first kernel + bulk mesh transfer | 691.530 | 680.695 | 1.57% |
+
+The pipeline covers move, validation, bounds, display mesh, volume, recognition
+and bulk mesh getters. Constructor/restore, browser/GPU work and presentation
+are excluded. These are local retained process samples, not production p95.
+The two optimizations are measured independently against d782; a combined gain
+has not been measured.
+
+Native Criterion uses identical benchmark source/profiling flags/default
+features, serial baseline/candidate processes and twenty samples per group.
+The following estimates are per 64-ray batch; reported changes use Criterion's
+change estimator, not rounded time-estimate ratios.
+
+| Native carrier group | baseline estimate | candidate estimate | reported decrease |
+|---|---:|---:|---:|
+| Crossings | 306.13 us | 257.66 us | 15.97% |
+| Misses | 230.59 us | 154.07 us | 33.42% |
+| Near grazes | 1.2596 ms | 1.0780 ms | 14.50% |
+
+## Final local qualification
+
+All four schedule/round comparisons preserve 36 source/warmup/retained snapshot
+pairs, 180 byte-exact arena/display artifacts, complete feature JSON and volume
+bits. Separate untimed arena replays preserve 5,760 per-face area-bit pairs,
+whole area/volume/bounds and complete edge relations, with unchanged arenas.
+
+All 8,078 workspace tests pass (39 skips, including the separately retained
+preexisting boundary repro). GPU rendering requires an adapter and is serialized.
+Documentation tests, 13 complexity guards, no-I/O WASM contracts and all 52
+committed census rows pass. Fresh optimized paired WASM, full smoke and installed
+consumers, publisher-normalized installed consumers, paired version and trusted
+size gates pass. Relative growth over the committed package includes inherited
+F6 support; this optimization adds only 191 bytes over a fresh baseline build.
+
+[Local qualification](evidence/perf-o06-torus-ray-crossings/local-qualification.json)
+records exact runtime/package identities and gate results; raw timing and exact
+output comparisons are retained beside it. Hosted CI, committed package refresh,
+broader workloads and browser presentation remain separate.
 
 A preexisting curved-boundary classifier limitation remains open: on the
 untouched baseline, the scale-.1 notched torus reports Outside at exact curved
