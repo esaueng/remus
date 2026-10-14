@@ -6092,8 +6092,9 @@ fn split_face_2d_impl(
     // No-seam face shortcut: faces whose boundary is entirely Line edges
     // (no seam edges) can't be split by the wire builder (it needs vertical
     // seam connections to form rectangular bands). Construct cap + band
-    // sub-faces directly instead. Applies to sphere hemispheres and any
-    // other face topology without seam edges.
+    // sub-faces directly instead. Exact equator partitions of spherical
+    // hemispheres have the same seam-free topology and use the qualified
+    // adapter below; arbitrary curved boundaries retain their existing path.
     let all_boundary_line = boundary_edges.iter().all(|e| {
         matches!(e.curve_3d, EdgeCurve::Line)
             // Exclude degenerate seam edges (start approx end) -- those are periodic
@@ -6109,7 +6110,9 @@ fn split_face_2d_impl(
     let has_open_section = sections
         .iter()
         .any(|s| (s.start - s.end).length() > tol.linear);
-    if all_boundary_line && !is_plane && has_open_section {
+    let exact_sphere_equator = original_inner_wires.is_empty()
+        && special_cases::is_sphere_equator_partition(&surface, &boundary_edges, tol.linear);
+    if (all_boundary_line || exact_sphere_equator) && !is_plane && has_open_section {
         return split_noseam_face_direct(
             &surface,
             &boundary_edges,

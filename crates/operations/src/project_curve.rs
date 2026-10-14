@@ -1600,6 +1600,36 @@ fn sphere_trim_rim(
             return Ok(Some(circle.clone()));
         }
     }
+    // A native sphere's equator is an exact circle partition. Certify its
+    // entire directed native turn rather than treating its arcs as chords.
+    // The equator can use any central support frame: the spherical carrier
+    // itself is invariant under rotations of its parameter axes.
+    if let Some(first) = edges.first() {
+        let edge = topo.edge(first.edge()).map_err(OperationsError::from)?;
+        if let EdgeCurve::Circle(circle) = edge.curve() {
+            let framed =
+                SphericalSurface::with_axis(sphere.center(), sphere.radius(), circle.normal())
+                    .map_err(|error| math_to_ops("spherical equator support", error))?;
+            if crate::boolean::circular_sphere_equator_partition(
+                topo,
+                &framed,
+                &edges,
+                TANGENT_BAND * sphere.radius(),
+            ) {
+                let (a, b) = edge.strict_domain().map_err(|_| {
+                    ProjectCurveError::Operations(OperationsError::InvalidInput {
+                        reason: "spherical equator edge has no valid native range".to_string(),
+                    })
+                })?;
+                let positive = (b > a) == first.is_forward();
+                return Ok(Some(if positive {
+                    circle.clone()
+                } else {
+                    circle.reversed()
+                }));
+            }
+        }
+    }
     let mut vertices = Vec::new();
     let mut normal = Vec3::new(0.0, 0.0, 0.0);
     for oriented in edges {
@@ -2287,9 +2317,9 @@ impl FaceCtx {
         if let TargetGeom::Sphere(sphere) = &target
             && let Some(rim) = sphere_trim_rim(topo, face, sphere)?
         {
-            // Primitive hemisphere wires contain straight equatorial
-            // chords. Its exact trim is the great-circle rim, including
-            // exact sweep-plane split events between stored vertices.
+            // Qualified primitive hemisphere wires represent one exact
+            // great-circle rim, including sweep-plane split events between
+            // stored vertices in both native-arc and legacy-chord forms.
             let id = boundaries
                 .first()
                 .ok_or_else(|| {

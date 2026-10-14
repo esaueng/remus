@@ -566,6 +566,26 @@ mod tests {
             let point = topo.vertex(vertex).unwrap().point();
             topo.vertex_mut(vertex).unwrap().set_point(point + offset);
         }
+        // Circle carriers now carry the native equator geometry; move
+        // them with their vertices and spherical faces at this large scale.
+        for edge in remus_topology::explorer::solid_edges(&topo, b).unwrap() {
+            let source = topo.edge(edge).unwrap();
+            let remus_topology::edge::EdgeCurve::Circle(circle) = source.curve() else {
+                unreachable!();
+            };
+            let moved = remus_math::curves::Circle3D::with_axes(
+                circle.center() + offset,
+                circle.normal(),
+                circle.radius(),
+                circle.u_axis(),
+                circle.v_axis(),
+            )
+            .unwrap();
+            let trim = source.trim();
+            let target = topo.edge_mut(edge).unwrap();
+            target.set_curve(remus_topology::edge::EdgeCurve::Circle(moved));
+            target.set_trim(trim);
+        }
         for face in remus_topology::explorer::solid_faces(&topo, b).unwrap() {
             topo.face_mut(face)
                 .unwrap()

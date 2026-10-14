@@ -279,6 +279,39 @@ fn drilled_sphere_band_integrals_are_pinned() {
     let tool = make_cylinder(&mut topo, 1.5, 20.0).unwrap();
     let tool = translated(&mut topo, tool, 0.0, 0.0, -10.0);
     let solid = boolean(&mut topo, BooleanOp::Cut, ball, tool).unwrap();
+    // A central cylindrical tunnel leaves a napkin ring. These quantities
+    // are independent of trim sampling and justify the intentional exact
+    // Circle equator's rounding changes in the lower-hemisphere bit pins.
+    let half_height = (25.0_f64 - 2.25).sqrt();
+    let expected_volume = 4.0 * PI * half_height.powi(3) / 3.0;
+    let expected_area = 4.0 * PI * (5.0 + 1.5) * half_height;
+    let options = PropertiesOptions::default();
+    let volume = remus_check::properties::solid_volume(&topo, solid, &options).unwrap();
+    let area = remus_check::properties::solid_area(&topo, solid, &options).unwrap();
+    assert!((volume - expected_volume).abs() < 1e-8);
+    assert!((area - expected_area).abs() < 1e-8);
+    let mut spherical_halves = 0;
+    for id in solid_faces(&topo, solid).unwrap() {
+        let face = topo.face(id).unwrap();
+        if let FaceSurface::Sphere(sphere) = face.surface() {
+            spherical_halves += 1;
+            assert_eq!(sphere.radius().to_bits(), 5.0_f64.to_bits());
+            assert_eq!(face.inner_wires().len(), 1);
+            let hole = topo.wire(face.inner_wires()[0]).unwrap();
+            assert_eq!(hole.edges().len(), 1);
+            let EdgeCurve::Circle(rim) = topo.edge(hole.edges()[0].edge()).unwrap().curve() else {
+                panic!("napkin-ring boundary must retain its exact circle")
+            };
+            assert!((rim.center().z().abs() - half_height).abs() < 1e-12);
+            assert!((rim.radius() - 1.5).abs() < 1e-12);
+            let contribution =
+                integrate_face_fixed_about(&topo, id, 8, Point3::new(0.0, 0.0, 0.0)).unwrap();
+            let half_area = 2.0 * PI * 5.0 * half_height;
+            assert!((contribution.area - half_area).abs() < 1e-8);
+            assert!((contribution.volume - 5.0 * half_area / 3.0).abs() < 1e-8);
+        }
+    }
+    assert_eq!(spherical_halves, 2);
     assert_golden("drilled_sphere_band.golden", &render(&topo, solid));
 }
 

@@ -139,15 +139,165 @@ fn sphere_cylinder_support_certificate_requires_finite_positive_clearance() {
 }
 
 #[test]
+fn complete_sphere_accepts_certified_circle_partitions_and_legacy_lines() {
+    use crate::primitives::make_sphere;
+    use remus_math::mat::Mat4;
+    for radius in [0.001, 1.0, 1000.0] {
+        for segments in [4, 7, 16] {
+            for placed in [false, true] {
+                let mut topo = Topology::new();
+                let solid = make_sphere(&mut topo, radius, segments).unwrap();
+                if placed {
+                    // Keep each rigid placement's native carrier frame.
+                    // Applying translation while the axes are coordinate
+                    // directions avoids the established writer's cancellation
+                    // on a combined large translation/rotation below.
+                    let translation = Mat4::translation(13.0 * radius, -7.0 * radius, 3.0 * radius);
+                    let rotation = Mat4::rotation_z(0.43) * Mat4::rotation_x(0.71);
+                    crate::transform::transform_solid(&mut topo, solid, &translation).unwrap();
+                    crate::transform::transform_solid(&mut topo, solid, &rotation).unwrap();
+                }
+                let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+                assert!(full_sphere_primitive(&topo, &faces));
+                // Opposite stored domains with opposite coedge directions
+                // retain exactly the original native traversal.
+                for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+                    let edge = topo.edge_mut(edge_id).unwrap();
+                    let (a, b) = edge.strict_domain().unwrap();
+                    let (start, end) = (edge.start(), edge.end());
+                    edge.set_start(end);
+                    edge.set_end(start);
+                    edge.set_trim(Some((b, a)));
+                }
+                for &face in &faces {
+                    let edges = topo
+                        .wire(topo.face(face).unwrap().outer_wire())
+                        .unwrap()
+                        .edges();
+                    let reversed: Vec<_> = edges
+                        .iter()
+                        .map(|oe| {
+                            if oe.is_forward() {
+                                OrientedEdge::new(oe.edge(), false)
+                            } else {
+                                OrientedEdge::new(oe.edge(), true)
+                            }
+                        })
+                        .collect();
+                    let wire = topo.add_wire(Wire::new(reversed, true).unwrap());
+                    topo.set_face_boundary_wires(face, wire, vec![]).unwrap();
+                }
+                assert!(full_sphere_primitive(&topo, &faces));
+                for edge in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+                    topo.edge_mut(edge).unwrap().set_curve(EdgeCurve::Line);
+                }
+                assert!(full_sphere_primitive(&topo, &faces), "legacy seam");
+            }
+        }
+    }
+}
+
+#[test]
+fn complete_sphere_circle_certificate_preserves_existing_equator_allowance() {
+    use crate::primitives::make_sphere;
+    use remus_math::mat::Mat4;
+    let mut topo = Topology::new();
+    let solid = make_sphere(&mut topo, 1000.0, 8).unwrap();
+    // The existing sphere-frame writer subtracts translated unit points;
+    // this combined pose exceeds the inherited equator roundoff certificate.
+    // Circle support must not silently widen that pre-existing gate.
+    let placement = Mat4::translation(13_000.0, -7000.0, 3000.0)
+        * Mat4::rotation_z(0.43)
+        * Mat4::rotation_x(0.71);
+    crate::transform::transform_solid(&mut topo, solid, &placement).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    assert!(!full_sphere_primitive(&topo, &faces));
+    for edge in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        topo.edge_mut(edge).unwrap().set_curve(EdgeCurve::Line);
+    }
+    assert!(!full_sphere_primitive(&topo, &faces));
+}
+
+#[test]
+fn complete_sphere_circle_certificate_rejects_false_native_authority() {
+    use crate::primitives::make_sphere;
+    use remus_math::curves::Circle3D;
+    let mut original = Topology::new();
+    let solid = make_sphere(&mut original, 1.0, 8).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&original, solid).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&original, solid).unwrap();
+    let edge_id = edges[0];
+    let (a, b) = original.edge(edge_id).unwrap().strict_domain().unwrap();
+    for mutation in 0..11 {
+        let mut topo = original.clone();
+        match mutation {
+            0 => topo.edge_mut(edge_id).unwrap().set_trim(None),
+            1 => topo
+                .edge_mut(edge_id)
+                .unwrap()
+                .set_trim(Some((a, (a + b) * 0.5))),
+            2 => topo
+                .edge_mut(edge_id)
+                .unwrap()
+                .set_trim(Some((a, b - std::f64::consts::TAU))),
+            3 => topo
+                .edge_mut(edge_id)
+                .unwrap()
+                .set_trim(Some((a, b + std::f64::consts::TAU))),
+            4 => topo
+                .edge_mut(edge_id)
+                .unwrap()
+                .set_trim(Some((a + 0.01, b + 0.01))),
+            5 => topo.edge_mut(edge_id).unwrap().set_curve(EdgeCurve::Line),
+            6 => {
+                let start = topo.edge(edge_id).unwrap().start();
+                let twin = topo.add_vertex(topo.vertex(start).unwrap().clone());
+                topo.edge_mut(edge_id).unwrap().set_start(twin);
+            }
+            _ => {
+                for &id in &edges {
+                    let edge = topo.edge(id).unwrap();
+                    let EdgeCurve::Circle(circle) = edge.curve() else {
+                        unreachable!()
+                    };
+                    let carrier = Circle3D::with_axes(
+                        circle.center()
+                            + if mutation == 7 {
+                                Vec3::new(0.0, 0.0, 0.1)
+                            } else {
+                                Vec3::new(0.0, 0.0, 0.0)
+                            },
+                        circle.normal(),
+                        if mutation == 8 { 1.1 } else { circle.radius() },
+                        circle.u_axis() * if mutation == 9 { 1.1 } else { 1.0 },
+                        if mutation == 10 {
+                            circle.u_axis()
+                        } else {
+                            circle.v_axis()
+                        },
+                    )
+                    .unwrap();
+                    let trim = edge.trim();
+                    topo.edge_mut(id)
+                        .unwrap()
+                        .set_curve(EdgeCurve::Circle(carrier));
+                    topo.edge_mut(id).unwrap().set_trim(trim);
+                }
+            }
+        }
+        assert!(!full_sphere_primitive(&topo, &faces), "mutation {mutation}");
+    }
+}
+
+#[test]
 fn sphere_cylinder_containment_requires_complete_non_inverted_carriers() {
     use crate::primitives::{make_cylinder, make_sphere};
     use remus_algo::classifier::try_build_analytic_classifier;
     for mutate_sphere in [false, true] {
         for mutation in 0..4 {
-            // Native sphere equator Lines have canonical [0,1] authority
-            // even without stored trims; the absent-trim control belongs to
-            // Circle rims, and the separate seam control to the cylinder.
-            if mutate_sphere && mutation >= 2 {
+            // Both native sphere equator arcs and cylinder rims require
+            // stored Circle authority; only the cylinder has a Line seam.
+            if mutate_sphere && mutation == 3 {
                 continue;
             }
             let mut topo = Topology::new();
@@ -192,8 +342,12 @@ fn sphere_cylinder_containment_requires_complete_non_inverted_carriers() {
                 } else {
                     Some((
                         0.0,
-                        if mutate_sphere || mutation == 3 {
+                        if mutation == 3 {
                             0.5
+                        } else if mutate_sphere {
+                            // A partial native arc remains a legal Circle
+                            // domain, but no longer covers its seam vertices.
+                            std::f64::consts::TAU / 32.0
                         } else {
                             std::f64::consts::PI
                         },

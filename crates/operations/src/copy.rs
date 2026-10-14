@@ -1313,6 +1313,7 @@ fn copy_and_transform_solid_impl(
     recorder: &mut TransformRecorder,
 ) -> Result<SolidId, crate::OperationsError> {
     let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
+    let mut transform_plan = crate::transform::plan_solid_transform(topo, solid_id, matrix)?;
     let certificates = crate::transform::translation_edge_certificates(
         topo,
         &remus_topology::explorer::solid_edges(topo, solid_id)?,
@@ -1363,9 +1364,14 @@ fn copy_and_transform_solid_impl(
         // parameterization, remap the handled Circle→Ellipse axis swap,
         // drop otherwise (RFC 0002).
         let from = edge.curve.type_tag();
-        let (new_curve, new_trim) =
-            crate::transform::transform_edge_curve_with_trim(&edge.curve, edge.trim, matrix)?;
+        let (new_curve, new_trim) = transform_plan
+            .edges
+            .remove(&edge.old_index)
+            .ok_or_else(|| plan_error("transform plan is missing a copied edge image".into()))?;
         let to = new_curve.as_ref().map_or(from, |curve| curve.type_tag());
+        if let Some(curve) = &new_curve {
+            recorder.record_rational_edge_points(from, curve);
+        }
         let mut copied_edge = Edge::with_tolerance(
             new_start,
             new_end,

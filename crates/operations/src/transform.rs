@@ -2,6 +2,7 @@
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
@@ -399,6 +400,14 @@ impl TransformRecorder {
         }
     }
 
+    pub(crate) fn record_rational_edge_points(&mut self, from: &str, curve: &EdgeCurve) {
+        if from != "nurbs_curve"
+            && let EdgeCurve::NurbsCurve(curve) = curve
+        {
+            self.control_points_total += curve.control_points().len();
+        }
+    }
+
     pub(crate) fn record_fit(&mut self, evidence: FittedFaceEvidence) {
         self.fitted.push(evidence);
     }
@@ -751,20 +760,197 @@ pub fn preflight_solid_transform(
     solid: SolidId,
     matrix: &Mat4,
 ) -> Result<Vec<FacePlan>, crate::OperationsError> {
+    Ok(plan_solid_transform(topo, solid, matrix)?.faces)
+}
+
+/// Pure images are prepared before either in-place vertex writes or copied
+/// entity allocation. A nonlinear boundary reparameterization is admitted only
+/// when every live use has a compatible exact NURBS surface and no UV trace.
+pub(crate) struct SolidTransformPlan {
+    faces: Vec<FacePlan>,
+    pub(crate) edges: DetHashMap<usize, TransformedEdgeCurve>,
+}
+
+pub(crate) fn plan_solid_transform(
+    topo: &Topology,
+    solid: SolidId,
+    matrix: &Mat4,
+) -> Result<SolidTransformPlan, crate::OperationsError> {
     let (_, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
-    for eid in &edge_ids {
-        let edge = topo.edge(*eid)?;
-        // Pure: clone, transform, discard. Propagates the refusal unchanged.
-        let _ = transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
-    }
     let similarity = is_uniform_scale(matrix);
     let identity = Mat4::identity();
-    let mut plans: Vec<FacePlan> = face_ids
+    let mut faces: Vec<FacePlan> = face_ids
         .iter()
-        .map(|fid| plan_face_surface(topo, *fid, similarity, &identity))
+        .map(|&fid| plan_face_surface(topo, fid, similarity, &identity))
         .collect::<Result<_, _>>()?;
-    plans.compact_sort_by_key(|plan| plan.face.index());
-    Ok(plans)
+    faces.compact_sort_by_key(|plan| plan.face.index());
+    let face_plans: DetHashMap<_, _> = faces.iter().map(|plan| (plan.face, plan)).collect();
+    let mut global_uses = None;
+    let mut edges = DetHashMap::default();
+    for eid in edge_ids {
+        let edge = topo.edge(eid)?;
+        let image = match transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix) {
+            Ok(image) => image,
+            Err(error) => {
+                if !matches!(&error, crate::OperationsError::InvalidInput { .. })
+                    || !matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+                {
+                    return Err(error);
+                }
+                if global_uses.is_none() {
+                    global_uses = Some(GlobalBoundaryUses::build(topo)?);
+                }
+                if !global_uses
+                    .as_ref()
+                    .is_some_and(|uses| uses.qualifies(topo, eid, &face_plans))
+                {
+                    return Err(error);
+                }
+                rational_conic_edge_image(edge, matrix)?
+            }
+        };
+        edges.insert(eid.index(), image);
+    }
+    Ok(SolidTransformPlan { faces, edges })
+}
+
+/// One lazy pass over all authoritative uses, including foreign bodies.
+/// The live-arena count proves no orphaned coedge was omitted by that walk.
+struct GlobalBoundaryUses {
+    uses: DetHashMap<EdgeId, Vec<remus_topology::coedge::CoedgeId>>,
+    complete: bool,
+}
+
+impl GlobalBoundaryUses {
+    fn build(topo: &Topology) -> Result<Self, crate::OperationsError> {
+        let mut uses: DetHashMap<EdgeId, Vec<remus_topology::coedge::CoedgeId>> =
+            DetHashMap::default();
+        let mut visited = DetHashSet::default();
+        let mut complete = true;
+        for (fid, face) in topo.faces().iter() {
+            if face.boundary_loops().is_empty() {
+                // An empty legacy/full-carrier boundary has no uses to
+                // index. Nonempty underived authority remains conservative.
+                for wire in
+                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+                {
+                    complete &= topo.wire(wire)?.edges().is_empty();
+                }
+            }
+            for &loop_id in face.boundary_loops() {
+                let boundary = topo.face_loop(loop_id)?;
+                complete &= boundary.face() == fid;
+                for &id in boundary.coedges() {
+                    let coedge = topo.coedge(id)?;
+                    complete &= visited.insert(id) && coedge.parent_loop() == loop_id;
+                    uses.entry(coedge.edge()).or_default().push(id);
+                }
+            }
+        }
+        complete &= visited.len() == topo.num_coedges();
+        Ok(Self { uses, complete })
+    }
+
+    fn qualifies(
+        &self,
+        topo: &Topology,
+        edge: EdgeId,
+        plans: &DetHashMap<FaceId, &FacePlan>,
+    ) -> bool {
+        let Some(uses) = self.uses.get(&edge) else {
+            return false;
+        };
+        self.complete
+            && !uses.is_empty()
+            && uses.iter().all(|&id| {
+                let Ok(coedge) = topo.coedge(id) else {
+                    return false;
+                };
+                let Ok(boundary) = topo.face_loop(coedge.parent_loop()) else {
+                    return false;
+                };
+                let face_id = boundary.face();
+                let (Ok(face), Some(plan)) = (topo.face(face_id), plans.get(&face_id)) else {
+                    return false;
+                };
+                coedge.pcurve().is_none()
+                    && coedge.periodic_winding() == remus_topology::coedge::PeriodicWinding::ZERO
+                    && (matches!(face.surface(), FaceSurface::Nurbs(_))
+                        || (matches!(face.surface(), FaceSurface::Sphere(_))
+                            && plan.method == SurfaceMethod::ExactRational))
+            })
+    }
+}
+
+fn rational_conic_edge_image(
+    edge: &remus_topology::edge::Edge,
+    matrix: &Mat4,
+) -> Result<TransformedEdgeCurve, crate::OperationsError> {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Point3;
+    let (a, b) = crate::authoritative_edge_domain(edge, "exact rational body boundary")?;
+    let span = (b - a).abs();
+    if a.abs() > 64.0 * std::f64::consts::TAU
+        || b.abs() > 64.0 * std::f64::consts::TAU
+        || !span.is_finite()
+        || span == 0.0
+        || span > std::f64::consts::TAU
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "rational boundary conversion requires a bounded native conic span".into(),
+        });
+    }
+    let (center, u, v, ru, rv) = match edge.curve() {
+        EdgeCurve::Circle(c) => (c.center(), c.u_axis(), c.v_axis(), c.radius(), c.radius()),
+        EdgeCurve::Ellipse(e) => (
+            e.center(),
+            e.u_axis(),
+            e.v_axis(),
+            e.semi_major(),
+            e.semi_minor(),
+        ),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "rational boundary conversion requires a Circle or Ellipse".into(),
+            });
+        }
+    };
+    // Build at unit scale so the converter's tangent intersection cannot
+    // silently use its midpoint fallback merely because the body is tiny.
+    // Mapping this canonical rational arc through the actual conic basis is
+    // exact as a point set, including descending angular traversal.
+    let unit = Circle3D::new_with_ref(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+        Vec3::new(1.0, 0.0, 0.0),
+    )?;
+    let source = remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(&unit, a, b)?;
+    let points: Vec<_> = source
+        .control_points()
+        .iter()
+        .map(|p| matrix.mul_point(center + u * (ru * p.x()) + v * (rv * p.y())))
+        .collect();
+    if points
+        .iter()
+        .any(|p| p.0.iter().any(|value| !value.is_finite()))
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "rational boundary image has non-finite control points".into(),
+        });
+    }
+    let image = NurbsCurve::new(
+        source.degree(),
+        source.knots().to_vec(),
+        points,
+        source.weights().to_vec(),
+    )?;
+    // Angular parameters are not the new rational curve's native coordinates.
+    let trim = image.domain();
+    Ok((Some(EdgeCurve::NurbsCurve(image)), Some(trim)))
 }
 
 /// Reject a transform that collapses the model; accept every one that does not.
@@ -936,6 +1122,7 @@ fn execute_solid_transform(
 ) -> Result<(), crate::OperationsError> {
     // Collect all unique vertex IDs, edge IDs, and face IDs in a read phase.
     let (vertex_ids, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
+    let mut plan = plan_solid_transform(topo, solid, matrix)?;
     let translation_certificates = translation_edge_certificates(topo, &edge_ids, matrix)?;
 
     // Mutate phase 1: transform each vertex.
@@ -946,7 +1133,14 @@ fn execute_solid_transform(
     }
 
     // Mutate phase 2: transform edge curves (NURBS, Circle, Ellipse).
-    transform_edges_recorded(topo, &edge_ids, matrix, recorder)?;
+    for &eid in &edge_ids {
+        let image = plan.edges.remove(&eid.index()).ok_or_else(|| {
+            crate::OperationsError::InvalidInput {
+                reason: "solid transform plan is missing an edge image".into(),
+            }
+        })?;
+        apply_edge_image(topo, eid, image, recorder)?;
+    }
     restore_translation_certificates(topo, translation_certificates)?;
 
     // Mutate phase 3: transform face surface geometry.
@@ -1950,19 +2144,29 @@ pub(crate) fn transform_edges_recorded(
 ) -> Result<(), crate::OperationsError> {
     for &eid in edge_ids {
         let edge = topo.edge(eid)?;
-        let from = edge.curve().type_tag();
-        let (new_curve, new_trim) =
-            transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
-        let to = new_curve.as_ref().map_or(from, |curve| curve.type_tag());
-        if let Some(curve) = new_curve {
-            let edge = topo.edge_mut(eid)?;
-            edge.set_curve(curve);
-            edge.set_trim(new_trim);
-        } else if topo.edge(eid)?.trim().is_some() {
-            topo.edge_mut(eid)?.set_trim(None);
-        }
-        recorder.record_edge(eid, from, to);
+        let image = transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
+        apply_edge_image(topo, eid, image, recorder)?;
     }
+    Ok(())
+}
+
+fn apply_edge_image(
+    topo: &mut Topology,
+    eid: EdgeId,
+    (new_curve, new_trim): TransformedEdgeCurve,
+    recorder: &mut TransformRecorder,
+) -> Result<(), crate::OperationsError> {
+    let from = topo.edge(eid)?.curve().type_tag();
+    let to = new_curve.as_ref().map_or(from, EdgeCurve::type_tag);
+    if let Some(curve) = new_curve {
+        recorder.record_rational_edge_points(from, &curve);
+        let edge = topo.edge_mut(eid)?;
+        edge.set_curve(curve);
+        edge.set_trim(new_trim);
+    } else if topo.edge(eid)?.trim().is_some() {
+        topo.edge_mut(eid)?.set_trim(None);
+    }
+    recorder.record_edge(eid, from, to);
     Ok(())
 }
 
