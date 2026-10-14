@@ -995,9 +995,12 @@ fn circular_pattern_typed_refusals_preserve_geometry_history_and_resolution() {
     {
         let mut topo = Topology::new();
         let source = disjoint_box(&mut topo, 1.0);
-        let anchor = anchor_all_entities(&mut topo, source);
+        // Retire the foreign solid before anchoring: unjournaled work after
+        // the newest entry leaves every reference stale, and the point here
+        // is that the refusal itself disturbs nothing.
         let retired = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
         topo.delete_solid(retired).unwrap();
+        let anchor = anchor_all_entities(&mut topo, source);
         let before = topo.journal().snapshot();
         let geometry = remus_io::step::writer::write_step(&topo, &[source]).unwrap();
         let failed = circular_pattern_journaled(&mut topo, retired, Z_AXIS, 2);
