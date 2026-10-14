@@ -82,6 +82,7 @@ struct CacheEntry {
     faces: Vec<FaceId>,
     bvh: Bvh,
     trims: Vec<Option<super::boundary::FaceTrimData>>,
+    skeleton: super::graze::BoundarySkeleton,
     retained_bytes: usize,
 }
 
@@ -258,6 +259,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    skeleton: &entry.skeleton,
                 };
                 super::classify_point_with_source(&source, point, options)
             }
@@ -267,6 +269,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    skeleton: &entry.skeleton,
                 };
                 super::classify_point_with_source(&source, point, options)
             }
@@ -304,6 +307,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    skeleton: &entry.skeleton,
                 };
                 points
                     .iter()
@@ -316,6 +320,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    skeleton: &entry.skeleton,
                 };
                 points
                     .iter()
@@ -368,6 +373,7 @@ impl ClassificationCache {
         }
         let bvh = Bvh::build(&face_aabbs);
         crate::perf::bump_classify_bvh_build();
+        let skeleton = super::graze::BoundarySkeleton::build(topo, &faces)?;
 
         let retained_bytes = estimate_retained_bytes(
             &face_aabbs,
@@ -375,7 +381,8 @@ impl ClassificationCache {
             &trims,
             faces.capacity(),
             trims.capacity(),
-        );
+        )
+        .saturating_add(skeleton.retained_bytes());
         let entry = CacheEntry {
             lineage: identity.lineage,
             generation: identity.generation,
@@ -384,6 +391,7 @@ impl ClassificationCache {
             faces,
             bvh,
             trims,
+            skeleton,
             retained_bytes,
         };
         // Check admission before stale cleanup or FIFO eviction, so a single
@@ -430,6 +438,7 @@ struct CachedSource<'a> {
     faces: &'a [FaceId],
     bvh: &'a Bvh,
     trims: &'a [Option<super::boundary::FaceTrimData>],
+    skeleton: &'a super::graze::BoundarySkeleton,
 }
 
 impl ClassifySource for CachedSource<'_> {
@@ -476,6 +485,10 @@ impl ClassifySource for CachedSource<'_> {
             )?;
         }
         Ok(crossings)
+    }
+
+    fn ray_grazes_boundary(&self, point: Point3, direction: Vec3) -> Result<bool, CheckError> {
+        self.skeleton.grazed_by(self.topo, point, direction)
     }
 }
 
