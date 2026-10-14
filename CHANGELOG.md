@@ -109,6 +109,13 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **io,wasm:** arena-document replay validates analytic carriers, not only
+  NURBS: a zero or non-unit plane normal, a skewed or non-unit frame, a
+  non-positive radius, semi-axis or focal length, a non-finite value or a cone
+  half-angle outside (0, π/2) is refused with the new
+  `IoError::InvalidGeometry { code, reason }` (WASM: invalid argument with
+  `kernelCode`) instead of decoding `Ok` (B98, review IO-7). Native callers
+  matching `IoError` exhaustively need an arm for the new variant.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam
