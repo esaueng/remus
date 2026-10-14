@@ -100,12 +100,19 @@ pub fn offset_polygon_2d(
             let miter_pt = Point2::new(p0.x() + t * d0x, p0.y() + t * d0y);
 
             // Miter limit: if the miter point is too far from the original
-            // vertex, clamp to prevent spikes at near-parallel edges.
+            // vertex, clamp to prevent spikes at near-parallel edges. Spikes
+            // only form where the offset edges diverge (`cross` and `distance`
+            // share a sign); where they overlap, the far miter point is their
+            // true crossing and a bevel would pull the vertex back toward the
+            // source corner.
             let miter_dist = ((miter_pt.x() - vertices[i].x()).powi(2)
                 + (miter_pt.y() - vertices[i].y()).powi(2))
             .sqrt();
 
-            if miter_dist > miter_limit_dist && miter_limit_dist > tolerance {
+            if cross * distance > 0.0
+                && miter_dist > miter_limit_dist
+                && miter_limit_dist > tolerance
+            {
                 // Bevel: use the average of the two offset points.
                 result.push(Point2::new(
                     (p0.x() + p1.x()) * 0.5,
@@ -326,6 +333,35 @@ mod tests {
             acc += poly[i].x() * poly[j].y() - poly[j].x() * poly[i].y();
         }
         acc * 0.5
+    }
+
+    /// The inset of a triangle is the triangle scaled about its incenter by
+    /// `(r - d) / r`, `r` the inradius. The 28° apex miter lies 2.06 below the
+    /// apex, beyond the 2·d miter limit; beveling it there left the apex
+    /// 0.12 below the source apex and the area at 84.48 instead of 76.02.
+    #[test]
+    fn inset_sharp_triangle_keeps_far_miter() {
+        let tri = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(10.0, 0.0),
+            Point2::new(5.0, 20.0),
+        ];
+        let d = 0.5;
+        let inradius = 100.0 / (5.0 + 425.0_f64.sqrt());
+        let scale = (inradius - d) / inradius;
+        for poly in [tri.clone(), tri.iter().rev().copied().collect()] {
+            let inset = offset_polygon_2d(&poly, -d, 1e-10).unwrap();
+            assert_eq!(inset.len(), 3);
+            let area = signed_area(&inset).abs();
+            assert!(
+                (area - 100.0 * scale * scale).abs() < 1e-9,
+                "inset area {area}, expected {}",
+                100.0 * scale * scale
+            );
+            let apex_y = inset.iter().map(|p| p.y()).fold(f64::MIN, f64::max);
+            let expected_apex_y = inradius + scale * (20.0 - inradius);
+            assert!((apex_y - expected_apex_y).abs() < 1e-9, "apex at {apex_y}");
+        }
     }
 
     #[test]
