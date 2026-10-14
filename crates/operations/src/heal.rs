@@ -11,10 +11,10 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
-use remus_topology::shell::Shell;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
-use remus_topology::wire::{OrientedEdge, Wire};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 /// Combined result of [`repair_solid`]: validation before, healing, validation after.
 #[derive(Debug, Clone)]
@@ -491,6 +491,10 @@ fn verify_configured_healing(
 ///
 /// Returns the number of vertices merged.
 ///
+/// Every shell (outer plus each cavity) is merged on its own, over every
+/// boundary loop of its faces, holes included: a cavity vertex never merges
+/// into an outer-shell vertex.
+///
 /// # Errors
 /// Returns an error if topology lookups fail.
 pub fn merge_coincident_vertices(
@@ -504,25 +508,58 @@ pub fn merge_coincident_vertices(
         Tolerance::new().linear
     };
 
+    let mut merged = 0;
+    for shell_id in solid_shell_ids(topo, solid)? {
+        merged += merge_shell_coincident_vertices(topo, shell_id, tol)?;
+    }
+    Ok(merged)
+}
+
+/// The outer shell followed by every cavity shell, in solid order.
+fn solid_shell_ids(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Vec<ShellId>, crate::OperationsError> {
     let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    Ok(std::iter::once(solid_data.outer_shell())
+        .chain(solid_data.inner_shells().iter().copied())
+        .collect())
+}
+
+/// Every edge use of a shell, in face then loop order (outer loop first,
+/// then each hole loop).
+fn shell_oriented_edges(
+    topo: &Topology,
+    shell_id: ShellId,
+) -> Result<Vec<OrientedEdge>, crate::OperationsError> {
+    let mut uses = Vec::new();
+    for &fid in topo.shell(shell_id)?.faces() {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            uses.extend_from_slice(topo.wire(wid)?.edges());
+        }
+    }
+    Ok(uses)
+}
+
+fn merge_shell_coincident_vertices(
+    topo: &mut Topology,
+    shell_id: ShellId,
+    tol: f64,
+) -> Result<usize, crate::OperationsError> {
+    let uses = shell_oriented_edges(topo, shell_id)?;
 
     let mut vertex_ids: Vec<VertexId> = Vec::new();
     let mut positions: Vec<Point3> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            for &vid in &[edge.start(), edge.end()] {
-                if seen.insert(vid.index()) {
-                    let point = topo.vertex(vid)?.point();
-                    vertex_ids.push(vid);
-                    positions.push(point);
-                }
+    for oe in &uses {
+        let edge = topo.edge(oe.edge())?;
+        for &vid in &[edge.start(), edge.end()] {
+            if seen.insert(vid.index()) {
+                let point = topo.vertex(vid)?.point();
+                vertex_ids.push(vid);
+                positions.push(point);
             }
         }
     }
@@ -549,14 +586,7 @@ pub fn merge_coincident_vertices(
         return Ok(0);
     }
 
-    let mut edge_ids = Vec::new();
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            edge_ids.push(oe.edge());
-        }
-    }
+    let mut edge_ids: Vec<EdgeId> = uses.iter().map(OrientedEdge::edge).collect();
     edge_ids.compact_sort_by_key(|e| e.index());
     edge_ids.dedup_by_key(|e| e.index());
 
@@ -598,6 +628,7 @@ pub fn merge_coincident_vertices(
 /// An edge whose start and end vertices are within `tolerance` of each
 /// other is considered degenerate. Such edges are collapsed: their
 /// references in wires are removed, and the wire is rebuilt without them.
+/// Every boundary loop of every face is visited, cavities and holes included.
 ///
 /// Returns the number of degenerate edges removed.
 ///
@@ -615,54 +646,69 @@ pub fn remove_degenerate_edges(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut removed_count = 0;
 
     for &fid in &face_ids {
         let face = topo.face(fid)?;
-        let wire_id = face.outer_wire();
-        let wire = topo.wire(wire_id)?;
-
-        let mut new_edges = Vec::new();
-        let mut any_removed = false;
-
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let start_pos = topo.vertex(edge.start())?.point();
-            let end_pos = topo.vertex(edge.end())?.point();
-            let len_sq = (end_pos - start_pos).length_squared();
-
-            if len_sq < tol_sq && edge.start() != edge.end() {
-                any_removed = true;
-                removed_count += 1;
-            } else {
-                new_edges.push(*oe);
-            }
+        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .collect();
+        for wire_id in wire_ids {
+            removed_count += remove_degenerate_edges_from_wire(topo, fid, wire_id, tol_sq)?;
         }
+    }
 
-        if any_removed && !new_edges.is_empty() {
-            // Create a NEW wire instead of modifying in-place. In-place
-            // modification via wire_mut corrupts other solids that share
-            // the same wire ID (analytic_boolean shares edges/wires across
-            // faces via edge_map dedup in a single topology arena).
-            let new_wire = remus_topology::wire::Wire::new(new_edges, wire.is_closed())?;
-            let new_wire_id = topo.add_wire(new_wire);
-            let face = topo.face(fid)?;
-            let outer = if face.outer_wire() == wire_id {
-                new_wire_id
-            } else {
-                face.outer_wire()
-            };
-            let inner = face
-                .inner_wires()
-                .iter()
-                .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
-                .collect();
-            topo.set_face_boundary_wires(fid, outer, inner)?;
+    Ok(removed_count)
+}
+
+/// Drop the degenerate edges of one boundary loop of `fid`, rebuilding the
+/// loop as a new wire; returns the number of edges dropped.
+fn remove_degenerate_edges_from_wire(
+    topo: &mut Topology,
+    fid: FaceId,
+    wire_id: WireId,
+    tol_sq: f64,
+) -> Result<usize, crate::OperationsError> {
+    let wire = topo.wire(wire_id)?;
+    let is_closed = wire.is_closed();
+
+    let mut new_edges = Vec::new();
+    let mut removed_count = 0;
+
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let start_pos = topo.vertex(edge.start())?.point();
+        let end_pos = topo.vertex(edge.end())?.point();
+        let len_sq = (end_pos - start_pos).length_squared();
+
+        if len_sq < tol_sq && edge.start() != edge.end() {
+            removed_count += 1;
+        } else {
+            new_edges.push(*oe);
         }
+    }
+
+    if removed_count > 0 && !new_edges.is_empty() {
+        // Create a NEW wire instead of modifying in-place. In-place
+        // modification via wire_mut corrupts other solids that share
+        // the same wire ID (analytic_boolean shares edges/wires across
+        // faces via edge_map dedup in a single topology arena).
+        let new_wire = remus_topology::wire::Wire::new(new_edges, is_closed)?;
+        let new_wire_id = topo.add_wire(new_wire);
+        let face = topo.face(fid)?;
+        let outer = if face.outer_wire() == wire_id {
+            new_wire_id
+        } else {
+            face.outer_wire()
+        };
+        let inner = face
+            .inner_wires()
+            .iter()
+            .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
+            .collect();
+        topo.set_face_boundary_wires(fid, outer, inner)?;
     }
 
     Ok(removed_count)
@@ -864,6 +910,9 @@ pub fn fix_face_orientations(
 /// the gap by merging the mismatched vertices. This is common when
 /// importing models from other CAD systems with different tolerances.
 ///
+/// Every shell (outer plus each cavity) is scanned on its own, over every
+/// boundary loop of its faces, holes included.
+///
 /// Returns the number of gaps closed.
 ///
 /// # Errors
@@ -880,9 +929,22 @@ pub fn close_wire_gaps(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    let mut gaps_closed = 0;
+    for shell_id in solid_shell_ids(topo, solid)? {
+        gaps_closed += close_shell_wire_gaps(topo, shell_id, tol_sq)?;
+    }
+
+    Ok(gaps_closed)
+}
+
+/// [`close_wire_gaps`] on one shell: every boundary loop of every face, and
+/// each merge rewrites every edge use in the shell, holes included.
+fn close_shell_wire_gaps(
+    topo: &mut Topology,
+    shell_id: ShellId,
+    tol_sq: f64,
+) -> Result<usize, crate::OperationsError> {
+    let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
 
     let mut gaps_closed = 0;
 
@@ -939,31 +1001,23 @@ pub fn close_wire_gaps(
             // Apply merges using "snapshot then allocate" pattern.
             for (merge_from, merge_to) in &merge_pairs {
                 // Snapshot: collect all edges that need updating.
-                let solid_d = topo.solid(solid)?;
-                let sh = topo.shell(solid_d.outer_shell())?;
-                let fids: Vec<_> = sh.faces().to_vec();
-
                 let mut updates = Vec::new();
-                for &fid2 in &fids {
-                    let f = topo.face(fid2)?;
-                    let w = topo.wire(f.outer_wire())?;
-                    for oe in w.edges() {
-                        let edge = topo.edge(oe.edge())?;
-                        let cur_start = edge.start();
-                        let cur_end = edge.end();
-                        let new_start = if cur_start == *merge_from {
-                            *merge_to
-                        } else {
-                            cur_start
-                        };
-                        let new_end = if cur_end == *merge_from {
-                            *merge_to
-                        } else {
-                            cur_end
-                        };
-                        if new_start != cur_start || new_end != cur_end {
-                            updates.push((oe.edge(), new_start, new_end));
-                        }
+                for oe in shell_oriented_edges(topo, shell_id)? {
+                    let edge = topo.edge(oe.edge())?;
+                    let cur_start = edge.start();
+                    let cur_end = edge.end();
+                    let new_start = if cur_start == *merge_from {
+                        *merge_to
+                    } else {
+                        cur_start
+                    };
+                    let new_end = if cur_end == *merge_from {
+                        *merge_to
+                    } else {
+                        cur_end
+                    };
+                    if new_start != cur_start || new_end != cur_end {
+                        updates.push((oe.edge(), new_start, new_end));
                     }
                 }
 

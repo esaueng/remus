@@ -34,6 +34,8 @@ pub mod fix;
 pub mod pipeline;
 pub mod reshape;
 pub mod status;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod upgrade;
 
 pub use error::HealError;

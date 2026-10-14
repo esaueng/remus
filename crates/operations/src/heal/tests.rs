@@ -192,6 +192,81 @@ fn close_wire_gaps_clean_box() {
     assert_eq!(count, 0, "clean box should have no wire gaps");
 }
 
+/// A 3³ block with a 1³ cavity at `(1, 1, 1)`, and a 1e-9 gap opened at one
+/// corner of the outer shell or of the cavity: the end of one edge moves to a
+/// twin vertex, so the two loops using that edge no longer chain there.
+fn hollow_block_with_corner_gap(topo: &mut Topology, in_cavity: bool) -> SolidId {
+    let outer = crate::primitives::make_box(topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let hollow =
+        crate::boolean::boolean(topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    let solid = topo.solid(hollow).unwrap();
+    assert_eq!(solid.inner_shells().len(), 1);
+    let shell = if in_cavity {
+        solid.inner_shells()[0]
+    } else {
+        solid.outer_shell()
+    };
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let wire = topo.face(face).unwrap().outer_wire();
+    let edge = topo.wire(wire).unwrap().edges()[0].edge();
+    let corner = topo.edge(edge).unwrap().end();
+    let p = topo.vertex(corner).unwrap().point();
+    let twin = topo.add_vertex(remus_topology::vertex::Vertex::new(
+        Point3::new(p.x() + 1e-9, p.y(), p.z()),
+        1e-7,
+    ));
+    topo.edge_mut(edge).unwrap().set_end(twin);
+    hollow
+}
+
+#[test]
+fn heal_closes_the_same_corner_gap_in_the_cavity_as_on_the_outer_shell() {
+    for in_cavity in [false, true] {
+        let mut topo = Topology::new();
+        let solid = hollow_block_with_corner_gap(&mut topo, in_cavity);
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .error_count()
+                > 0,
+            "in_cavity = {in_cavity}: the opened gap must be a validation error"
+        );
+
+        let report = heal_solid(&mut topo, solid, 1e-7)
+            .unwrap_or_else(|e| panic!("in_cavity = {in_cavity}: heal refused: {e}"));
+
+        assert_eq!(report.wire_gaps_closed, 1, "in_cavity = {in_cavity}");
+        let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!(
+            (volume - 26.0).abs() < 1e-6,
+            "in_cavity = {in_cavity}: volume {volume}"
+        );
+    }
+}
+
+#[test]
+fn merge_coincident_vertices_reaches_the_cavity() {
+    let mut topo = Topology::new();
+    let solid = hollow_block_with_corner_gap(&mut topo, true);
+    assert_eq!(
+        merge_coincident_vertices(&mut topo, solid, 1e-7).unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .error_count(),
+        0
+    );
+}
+
 // ── Small face removal tests ────────────────────────
 
 #[test]
