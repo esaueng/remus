@@ -6263,23 +6263,20 @@ fn finding_cylinder_offset_open_mesh() {
     );
 }
 
-/// 8.1 finding F16 (retained, kernel untouched): an intersect of a
-/// y-mirrored unit box with a unit cylinder carries 6 shared edges with
-/// inconsistent face orientations (volume π/4 reads correctly — the defect
-/// is orientation-only). The unmirrored twin intersects exactly (π/4,
-/// full battery green), so the mirror is load-bearing: a mirrored operand
-/// validates clean standalone (the harness mirror arm runs the full
-/// topology gate) yet misassembles in the boolean. First mirror-lane
-/// orientation witness; whether it shares F11's root (whose fuse also
-/// consumes a mirror) is the owners' call — the pairs, operators, and
-/// counts differ, so the witnesses stay distinct. Owns exclusion cell X13
-/// (intersect/cut consuming a mirrored box); mirrored non-box operands
-/// and fuses stay in generation.
+/// 8.1 finding F16 (fixed): an intersect of a y-mirrored unit box with a
+/// unit cylinder carried 6 shared edges with inconsistent face orientations
+/// (volume π/4 read correctly — the defect was orientation-only). Root
+/// cause: the mirror kept every wire's traversal, so each loop of the
+/// mirrored box wound against its stored normal; reflections now
+/// re-traverse every loop (`transform::reverse_face_boundaries`). The
+/// mirrored operand validated clean standalone because the harness topology
+/// gate reads shell pairing, which the stale winding did not disturb. Owns
+/// exclusion cell X13 (intersect/cut consuming a mirrored box), which stays
+/// excluded from generation until the cell is re-qualified.
 ///
 /// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// volumes).
 #[test]
-#[ignore = "8.1 finding F16: mirrored-box intersect misorients 6 shared edges (unmirrored twin exact); route to the boolean orientation lane"]
 fn finding_mirrored_box_intersect_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"nx":0.0,"ny":1.0,"nz":0.0,"px":0.0,"py":0.0,"pz":0.0,"solid":1},"op":"mirror"},{"args":{"exactOnly":true,"operation":"intersect","solidA":2,"solidB":0},"op":"booleanWithQuality"}]"#,
