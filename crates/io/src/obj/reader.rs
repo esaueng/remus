@@ -66,32 +66,32 @@ pub fn read_obj_with_limits(
                 )?;
             }
             Some("f") => {
-                let face_indices = parse_face_indices(&mut parts, line)?;
-                if face_indices.len() < 3 {
-                    return Err(crate::IoError::ParseError {
-                        reason: format!("face with fewer than 3 vertices: {line}"),
-                    });
+                // Fan-triangulate while reading the corners, checking the
+                // budget before every triangle. Collecting the corners
+                // first let one long `f` line allocate its whole corner
+                // list (8 bytes per token, plus growth) before the budget
+                // refused it.
+                let mut face = parts.map(|token| parse_face_corner(token, line));
+                let too_short = || crate::IoError::ParseError {
+                    reason: format!("face with fewer than 3 vertices: {line}"),
+                };
+                let first = face.next().transpose()?.ok_or_else(too_short)?;
+                let mut previous = face.next().transpose()?.ok_or_else(too_short)?;
+                let mut triangulated = false;
+                for corner in face {
+                    let corner = corner?;
+                    ensure_limit(
+                        "OBJ triangles",
+                        corners.len() / 3 + 1,
+                        limits.max_model_entities,
+                    )?;
+                    corners.extend([first, previous, corner]);
+                    previous = corner;
+                    triangulated = true;
                 }
-                // Budget the face BEFORE fan-triangulating it: a single N-gon
-                // yields N-2 triangles, so checking only after the push loop
-                // lets one hostile face allocate ~3N indices past the budget.
-                ensure_limit(
-                    "OBJ triangles",
-                    corners.len() / 3 + face_indices.len().saturating_sub(2),
-                    limits.max_model_entities,
-                )?;
-                // Fan triangulation: v0-v1-v2, v0-v2-v3, v0-v3-v4, ...
-                let v0 = face_indices[0];
-                for i in 1..face_indices.len() - 1 {
-                    corners.push(v0);
-                    corners.push(face_indices[i]);
-                    corners.push(face_indices[i + 1]);
+                if !triangulated {
+                    return Err(too_short());
                 }
-                ensure_limit(
-                    "OBJ triangles",
-                    corners.len() / 3,
-                    limits.max_model_entities,
-                )?;
             }
             _ => {
                 // Ignore unsupported lines (vt, g, mtllib, usemtl, s, etc.)
@@ -187,28 +187,21 @@ fn parse_face_index(token: &str, line: &str) -> Result<u32, crate::IoError> {
     Ok((idx - 1) as u32) // OBJ is 1-indexed
 }
 
-fn parse_face_indices(
-    parts: &mut std::str::SplitWhitespace<'_>,
-    line: &str,
-) -> Result<Vec<(u32, Option<u32>)>, crate::IoError> {
-    parts
-        .map(|token| {
-            let mut fields = token.split('/');
-            let position = parse_face_index(fields.next().unwrap_or(""), line)?;
-            let _texture = fields.next();
-            let normal = fields
-                .next()
-                .filter(|field| !field.is_empty())
-                .map(|field| parse_face_index(field, line))
-                .transpose()?;
-            if fields.next().is_some() {
-                return Err(crate::IoError::ParseError {
-                    reason: format!("invalid OBJ face corner: {token}"),
-                });
-            }
-            Ok((position, normal))
-        })
-        .collect()
+fn parse_face_corner(token: &str, line: &str) -> Result<(u32, Option<u32>), crate::IoError> {
+    let mut fields = token.split('/');
+    let position = parse_face_index(fields.next().unwrap_or(""), line)?;
+    let _texture = fields.next();
+    let normal = fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .map(|field| parse_face_index(field, line))
+        .transpose()?;
+    if fields.next().is_some() {
+        return Err(crate::IoError::ParseError {
+            reason: format!("invalid OBJ face corner: {token}"),
+        });
+    }
+    Ok((position, normal))
 }
 
 fn parse_3_floats(
@@ -284,7 +277,7 @@ pub fn read_obj_solid(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -365,6 +358,49 @@ f 4294967296 2 3
             format!("{err}").contains("OBJ triangles"),
             "expected a triangle-budget error, got {err}"
         );
+    }
+
+    /// IO-9 (kernel review 2026-10-14): the reader collected a whole `f`
+    /// line before checking the budget, so an 8 MB line cost about 48 MB of
+    /// corner storage before it was refused. Refusal must come at the first
+    /// triangle past the budget, reported as exactly one over it, instead of
+    /// after the whole line (999,998 triangles here).
+    #[test]
+    fn long_face_line_is_refused_at_the_first_triangle_over_budget() {
+        use crate::limits::ImportLimits;
+        let corners = 1_000_000;
+        let mut obj = String::from("v 0 0 0\nv 1 0 0\nv 1 1 0\nf");
+        obj.reserve(corners * 2);
+        for i in 0..corners {
+            obj.push(' ');
+            obj.push(char::from(b'1' + (i % 3) as u8));
+        }
+        obj.push('\n');
+        let limits = ImportLimits {
+            max_model_entities: 10,
+            ..ImportLimits::default()
+        };
+        match read_obj_with_limits(&obj, limits) {
+            Err(crate::IoError::LimitExceeded {
+                resource,
+                limit,
+                actual,
+            }) => {
+                assert_eq!(resource, "OBJ triangles");
+                assert_eq!((limit, actual), (10, 11));
+            }
+            other => panic!("expected a triangle-budget refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn face_corners_are_validated_and_counted_like_before() {
+        for bad in ["f 1 2\n", "f 1\n", "f\n", "f 1 2 x\n", "f 1 2 3/4/5/6\n"] {
+            let obj = format!("v 0 0 0\nv 1 0 0\nv 1 1 0\n{bad}");
+            assert!(read_obj(&obj).is_err(), "{bad:?} must be refused");
+        }
+        let mesh = read_obj("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n").unwrap();
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
     }
 
     #[test]
