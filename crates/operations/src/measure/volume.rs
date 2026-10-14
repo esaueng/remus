@@ -4067,11 +4067,110 @@ impl SignedTriangle {
         }));
         summation_point(cancel, triangles.iter().flat_map(|t| t.points))
     }
+
+    /// Every face of `solid` read as signed triangles when each one is a
+    /// planar triangle of line edges, else `None`.
+    ///
+    /// A face may be pierced by holes bounded by line edges: each hole adds a
+    /// fan over its polygon wound against the face's triangle, so its area
+    /// subtracts. Reading the outer triangle alone credited the removed
+    /// patch, and with the hole's edges missing the directed edges could not
+    /// cancel, so the sum also moved with the body (B92). The winding comes
+    /// from the triangle's own normal rather than the hole wire's stored
+    /// direction, which no caller guarantees. The fan's diagonals cancel
+    /// among themselves, leaving the hole's own edges to cancel against the
+    /// walls that use them.
+    fn of_solid(
+        topo: &Topology,
+        solid: SolidId,
+    ) -> Result<Option<Vec<Self>>, crate::OperationsError> {
+        use remus_topology::face::FaceSurface;
+
+        let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+        let mut triangles: Vec<Self> = Vec::with_capacity(faces.len());
+        for fid in faces {
+            let face = topo.face(fid)?;
+            if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+                return Ok(None);
+            }
+            let Some(outer) = line_loop(topo, face.outer_wire())? else {
+                return Ok(None);
+            };
+            let [(a, ia), (b, ib), (c, ic)] = outer[..] else {
+                return Ok(None);
+            };
+
+            // Enumerating the cavity shells is not enough on its own: a
+            // cavity's faces are stored REVERSED, and the wire winding alone
+            // does not say so. Without this the void's tetrahedra add instead
+            // of subtract and a hollow triangulated body reads as the outer
+            // body PLUS the void.
+            let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
+            triangles.push(Self {
+                orientation,
+                ids: [ia, ib, ic],
+                points: [a, b, c],
+            });
+
+            let outer_area = (b - a).cross(c - a);
+            for &inner in face.inner_wires() {
+                let Some(mut hole) = line_loop(topo, inner)? else {
+                    return Ok(None);
+                };
+                if hole.len() < 3 {
+                    return Ok(None);
+                }
+                let (h0, _) = hole[0];
+                let hole_area = hole
+                    .windows(2)
+                    .map(|w| (w[0].0 - h0).cross(w[1].0 - h0))
+                    .fold(Vec3::new(0.0, 0.0, 0.0), |sum, v| sum + v);
+                if hole_area.dot(outer_area) > 0.0 {
+                    hole.reverse();
+                }
+                let (h0, i0) = hole[0];
+                triangles.extend(hole.windows(2).skip(1).map(|w| Self {
+                    orientation,
+                    ids: [i0, w[0].1, w[1].1],
+                    points: [h0, w[0].0, w[1].0],
+                }));
+            }
+        }
+        Ok(Some(triangles))
+    }
+}
+
+/// The vertices of `wire` in traversal order with their indices, or `None`
+/// when any of its edges is not a line.
+fn line_loop(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+) -> Result<Option<Vec<(Point3, usize)>>, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let wire = topo.wire(wire)?;
+    let mut points = Vec::with_capacity(wire.edges().len());
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(None);
+        }
+        let vid = if oe.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        };
+        points.push((topo.vertex(vid)?.point(), vid.index()));
+    }
+    Ok(Some(points))
 }
 
 /// Compute the volume of a solid directly from its face vertex
-/// positions, bypassing tessellation. Only valid for solids composed
-/// entirely of planar triangular faces (e.g. mesh imports).
+/// positions, bypassing tessellation.
+///
+/// Only valid for solids composed entirely of planar triangular faces
+/// (e.g. mesh imports). A face may be pierced by holes bounded by line
+/// edges, whose area subtracts.
 ///
 /// Returns an error if the solid contains non-planar or
 /// non-triangular faces.
@@ -4085,80 +4184,22 @@ pub fn solid_volume_from_faces(
     solid: SolidId,
     _deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    use remus_topology::edge::EdgeCurve;
-    use remus_topology::face::FaceSurface;
-
-    // Outer shell plus every cavity shell.
-    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-
     // Signed triangles, gathered first so the tetrahedra can be taken about
     // the body's own `summation_point` rather than the world origin (B56).
-    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
-    let mut all_planar_triangles = true;
-
-    for fid in faces {
-        let face = topo.face(fid)?;
-
-        // Only use the fast path for planar faces with exactly 3 line edges.
-        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
-            all_planar_triangles = false;
-            break;
-        }
-
-        let wire = topo.wire(face.outer_wire())?;
-        let edges = wire.edges();
-        if edges.len() != 3 {
-            all_planar_triangles = false;
-            break;
-        }
-
-        let mut pts = Vec::with_capacity(3);
-        let mut ids = Vec::with_capacity(3);
-        for oe in edges {
-            let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                all_planar_triangles = false;
-                break;
-            }
-            let vid = if oe.is_forward() {
-                edge.start()
-            } else {
-                edge.end()
-            };
-            pts.push(topo.vertex(vid)?.point());
-            ids.push(vid.index());
-        }
-        if !all_planar_triangles {
-            break;
-        }
-
-        // Enumerating the cavity shells is not enough on its own: a cavity's
-        // faces are stored REVERSED, and the wire winding alone does not say
-        // so. Without this the void's tetrahedra add instead of subtract and a
-        // hollow triangulated body reads as the outer body PLUS the void.
-        let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        triangles.push(SignedTriangle {
-            orientation,
-            ids: [ids[0], ids[1], ids[2]],
-            points: [pts[0], pts[1], pts[2]],
-        });
-    }
-
-    if all_planar_triangles {
-        let reference = SignedTriangle::summation_point(&triangles);
-        let total: f64 = triangles
-            .iter()
-            .map(|t| {
-                let [a, b, c] = t.points;
-                t.orientation * six_tetra_volume(reference, a, b, c)
-            })
-            .sum();
-        Ok((total / 6.0).abs())
-    } else {
-        Err(crate::OperationsError::InvalidInput {
+    let Some(triangles) = SignedTriangle::of_solid(topo, solid)? else {
+        return Err(crate::OperationsError::InvalidInput {
             reason: "solid contains non-planar or non-triangular faces".to_string(),
+        });
+    };
+    let reference = SignedTriangle::summation_point(&triangles);
+    let total: f64 = triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.points;
+            t.orientation * six_tetra_volume(reference, a, b, c)
         })
-    }
+        .sum();
+    Ok((total / 6.0).abs())
 }
 
 /// Compute the full mass properties of a solid, assuming uniform density.
@@ -4311,55 +4352,11 @@ fn center_of_mass_from_faces(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<Point3, crate::OperationsError> {
-    use remus_topology::edge::EdgeCurve;
-    use remus_topology::face::FaceSurface;
-
-    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-
-    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
-    for fid in faces {
-        let face = topo.face(fid)?;
-        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
-            return Err(crate::OperationsError::InvalidInput {
-                reason: "non-planar face".to_string(),
-            });
-        }
-        let wire = topo.wire(face.outer_wire())?;
-        let edges = wire.edges();
-        if edges.len() != 3 {
-            return Err(crate::OperationsError::InvalidInput {
-                reason: "non-triangular face".to_string(),
-            });
-        }
-
-        let mut pts = Vec::with_capacity(3);
-        let mut ids = Vec::with_capacity(3);
-        for oe in edges {
-            let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "non-line edge".to_string(),
-                });
-            }
-            let vid = if oe.is_forward() {
-                edge.start()
-            } else {
-                edge.end()
-            };
-            pts.push(topo.vertex(vid)?.point());
-            ids.push(vid.index());
-        }
-
-        // A face carried reversed points its wire the other way round, so its
-        // tetrahedra count with the opposite sign. Cavity shells are stored
-        // exactly that way.
-        let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        triangles.push(SignedTriangle {
-            orientation,
-            ids: [ids[0], ids[1], ids[2]],
-            points: [pts[0], pts[1], pts[2]],
+    let Some(triangles) = SignedTriangle::of_solid(topo, solid)? else {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "solid contains non-planar or non-triangular faces".to_string(),
         });
-    }
+    };
 
     // Tetrahedra about the body's `summation_point` (B56): each has its apex
     // at the reference, so its centroid is the reference plus a quarter of
