@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use remus_math::vec::Point3;
 use remus_topology::Topology;
+use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
 
@@ -91,25 +92,55 @@ fn fix_solid_inner(
     Ok(result)
 }
 
-/// Merge coincident vertices across a solid.
+/// Merge coincident vertices in every shell of a solid.
 ///
 /// For each pair of vertices within `ctx.tolerance.linear` distance,
 /// the higher-index vertex is replaced by the lower-index one. Edge
 /// start/end references are updated via the `ReShape` replacement tracker.
 ///
+/// Each shell (outer plus every cavity) is merged on its own, as
+/// [`fix_small_faces`](super::small_face::fix_small_faces) does: a cavity
+/// vertex never merges into an outer-shell vertex.
+///
 /// Ported from `remus-operations` `heal::merge_coincident_vertices`.
-#[allow(clippy::too_many_lines)]
 fn merge_coincident_vertices(
     topo: &mut Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
 ) -> Result<FixResult, HealError> {
+    let solid_data = topo.solid(solid_id)?;
+    let shell_ids: Vec<ShellId> = std::iter::once(solid_data.outer_shell())
+        .chain(solid_data.inner_shells().iter().copied())
+        .collect();
+
+    let mut merged_count = 0usize;
+    for shell_id in shell_ids {
+        merged_count += merge_shell_coincident_vertices(topo, shell_id, ctx)?;
+    }
+
+    if merged_count == 0 {
+        return Ok(FixResult::ok());
+    }
+
+    ctx.info(format!("merged {merged_count} coincident vertices"));
+
+    Ok(FixResult::changed(
+        Status::DONE2,
+        super::RepairActionKind::CoincidentVertexMerged,
+        merged_count,
+    ))
+}
+
+/// Merge coincident vertices within one shell; returns the merge count.
+#[allow(clippy::too_many_lines)]
+fn merge_shell_coincident_vertices(
+    topo: &mut Topology,
+    shell_id: ShellId,
+    ctx: &mut HealContext,
+) -> Result<usize, HealError> {
     let tol = ctx.tolerance.linear;
 
-    let solid_data = topo.solid(solid_id)?;
-    let shell_id = solid_data.outer_shell();
-    let shell = topo.shell(shell_id)?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
 
     let mut vertex_ids: Vec<VertexId> = Vec::new();
     let mut positions: Vec<Point3> = Vec::new();
@@ -154,7 +185,7 @@ fn merge_coincident_vertices(
     }
 
     if merged_count == 0 {
-        return Ok(FixResult::ok());
+        return Ok(0);
     }
 
     for (&from_idx, &to_vid) in &merge_to {
@@ -211,11 +242,43 @@ fn merge_coincident_vertices(
         edge.set_end(new_end);
     }
 
-    ctx.info(format!("merged {merged_count} coincident vertices"));
+    Ok(merged_count)
+}
 
-    Ok(FixResult::changed(
-        Status::DONE2,
-        super::RepairActionKind::CoincidentVertexMerged,
-        merged_count,
-    ))
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use remus_topology::Topology;
+
+    use super::merge_coincident_vertices;
+    use crate::context::HealContext;
+    use crate::test_fixtures::{broken_junctions, cavity_shell, hollow_block, open_corner_gap};
+
+    /// The same 1e-9 corner gap, opened on either shell of a hollow block,
+    /// must be merged either way.
+    #[test]
+    fn coincident_vertices_merge_in_the_cavity_as_on_the_outer_shell() {
+        for in_cavity in [false, true] {
+            let mut topo = Topology::new();
+            let solid = hollow_block(&mut topo);
+            let shell = if in_cavity {
+                cavity_shell(&topo, solid)
+            } else {
+                topo.solid(solid).unwrap().outer_shell()
+            };
+            let (corner, twin) = open_corner_gap(&mut topo, shell, 1e-9);
+            assert_eq!(broken_junctions(&topo, shell), 2);
+
+            let mut ctx = HealContext::new();
+            let result = merge_coincident_vertices(&mut topo, solid, &mut ctx).unwrap();
+
+            assert_eq!(result.actions_taken, 1, "in_cavity = {in_cavity}");
+            assert_eq!(
+                ctx.reshape.resolve_vertex(twin),
+                ctx.reshape.resolve_vertex(corner),
+                "in_cavity = {in_cavity}: corner and twin resolve to one vertex"
+            );
+            assert_eq!(broken_junctions(&topo, shell), 0, "in_cavity = {in_cavity}");
+        }
+    }
 }
