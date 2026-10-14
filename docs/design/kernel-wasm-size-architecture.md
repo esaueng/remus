@@ -175,7 +175,10 @@ first, then the re-pin.
 2. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR
    description naming the capability and its tier; the job fails without it.
 3. Each package refresh records sizes in its PR body, as the OpenZCAD updater
-   already does.
+   already does, and carries the `WASM-Size:` lines of the source PRs merged
+   since the previous refresh, each marked with its PR number
+   (`scripts/publish-wasm-package-pr.py`). Growth no source PR declared still
+   fails the refresh's gate.
 
 ### W2 — Ceiling step 1 (Remus + OpenZCAD, paired)
 

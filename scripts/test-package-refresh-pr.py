@@ -140,28 +140,36 @@ class PackageRefreshTests(unittest.TestCase):
     def test_carries_source_declarations_so_declared_growth_passes_the_gate(self):
         squash = 'WASM-Size: +100 KiB raw, curve projection, Tier: core (writes the journal)'
         landed = 'WASM-Size: +40 KiB raw, sketch solver, Tier: lazy:sketch'
+        unnumbered = 'WASM-Size: +30 KiB raw, draft angles, Tier: core'
         fillers = [commit(f'{n:040x}', f'docs: filler {n}') for n in range(1, 101)]
+        # A hand-made refresh landed under a source-style title still marks its lines.
+        sketch = pull(12, '3' * 40, f'{landed}\nWASM-Size: +9 KiB raw, old, Tier: core (carried from #3, by hand)\n')
         self.history(
             [*fillers,
-             # The previous refresh's PR already carried a line: never carry it twice.
+             # An earlier refresh PR: its lines were carried there, never carry them again.
              commit('d' * 40, 'chore(wasm): refresh packages to v2026.1.3 from ' + 'e' * 12 + ' (#6)'),
              commit('1' * 40, 'feat(ops): curve projection (#11)'),
              commit('2' * 40, 'feat(sketch): solver step'),
              commit('3' * 40, 'Merge pull request #12 from fixture/sketch'),
              commit('4' * 40, 'fix(io): no size change (#13)'),
              # A subject naming a PR merged elsewhere does not count.
-             commit('5' * 40, 'docs: follow up on (#14)')],
-            [pull(6, 'd' * 40, f'{squash} (carried from #11)'),
-             pull(11, '1' * 40, f'Adds projection.\r\n\r\n{squash}\r\n<!-- WASM-Size: hidden, Tier: core -->'),
-             pull(12, '3' * 40, f'{landed}\n'),
+             commit('5' * 40, 'docs: follow up on (#14)'),
+             commit('6' * 40, 'feat(ops): draft angles')],
+            [pull(6, 'd' * 40, f'{squash}\n{landed} (carried from #12)'),
+             pull(11, '1' * 40, f'Adds projection.\r\n\r\n{squash}\r\n<!--\r\nWASM-Size: hidden template, Tier: core\r\n-->'),
+             sketch,
              pull(13, '4' * 40, 'WASM-Size: none'),
              pull(14, 'f' * 40, 'WASM-Size: +1 MiB raw, unrelated, Tier: core')],
-            {'2' * 40: [pull(12, '3' * 40, f'{landed}\n'), pull(15, None, 'WASM-Size: open, Tier: core', merged=False)]})
+            {'2' * 40: [sketch,
+                        # An open PR's test merge, or a PR into another branch, is no source.
+                        pull(15, '2' * 40, 'WASM-Size: open, Tier: core', merged=False),
+                        pull(16, '2' * 40, 'WASM-Size: release, Tier: core', base='release')],
+             '6' * 40: [pull(17, '6' * 40, unnumbered)]})
         body = self.description()
         self.assertIn('## WASM size declarations', body)
         self.assertEqual([line for line in body.splitlines() if line.startswith('WASM-Size:')],
                          [f'{squash} (carried from #11)', f'{landed} (carried from #12)',
-                          'WASM-Size: none (carried from #13)'])
+                          'WASM-Size: none (carried from #13)', f'{unnumbered} (carried from #17)'])
         self.assertIn(f'`{PREVIOUS[:12]}`..`{self.source[:12]}`', body)
         self.assertEqual(self.gate(body, 140 * KIB), [])
         # A carried declaration never excuses a hard limit.
