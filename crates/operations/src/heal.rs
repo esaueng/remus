@@ -670,10 +670,12 @@ pub fn remove_degenerate_edges(
 ///
 /// The chord is a lower bound on the length, so a long chord decides at once.
 /// A short-chord Line is as long as its chord, which includes the zero-length
-/// self-loop left when its two ends were fused. A closed curve (one vertex at
-/// both ends) is never degenerate here: a rim it bounds alone keeps it, so
-/// dropping it from its other wires would unpair it. An open short-chord
-/// curve is degenerate only when its length is bounded below the tolerance
+/// self-loop left when its two ends were fused. A full-turn circle or
+/// ellipse with one vertex at both ends is a rim, never degenerate here: a
+/// rim it bounds alone keeps it, so dropping it from its other wires would
+/// unpair it. Any other short-chord curve, including a sliver whose ends
+/// vertex merging fused, is degenerate only when its length is bounded below
+/// the tolerance
 /// over its parameter authority: a circle, parabola or hyperbola arc by its
 /// arc length, an ellipse arc by semi-major times span, a polynomial NURBS by
 /// its control polygon. A rational NURBS has no such cheap bound and is kept;
@@ -692,14 +694,20 @@ fn edge_is_degenerate(
     if matches!(edge.curve(), EdgeCurve::Line) {
         return Ok(true);
     }
-    if edge.start() == edge.end() {
-        return Ok(false);
-    }
-    // Without a parameter authority the edge's extent is unknown: keep it.
-    let Ok((t0, t1)) = edge.strict_domain() else {
-        return Ok(false);
+    // The stored trim bounds the edge even where vertex merging closed it and
+    // the strict check (which wants a full turn on a closed circle) refuses
+    // it; without any finite trim the extent is unknown: keep the edge.
+    let (t0, t1) = match (edge.strict_domain(), edge.trim()) {
+        (Ok(domain), _) => domain,
+        (Err(_), Some((t0, t1))) if t0.is_finite() && t1.is_finite() => (t0, t1),
+        (Err(_), _) => return Ok(false),
     };
     let span = (t1 - t0).abs();
+    let full_turn = matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+        && span >= std::f64::consts::TAU - Tolerance::new().angular;
+    if edge.start() == edge.end() && full_turn {
+        return Ok(false);
+    }
     let upper_bound = match edge.curve() {
         EdgeCurve::Circle(circle) => circle.radius() * span,
         EdgeCurve::Ellipse(ellipse) => ellipse.semi_major().max(ellipse.semi_minor()) * span,

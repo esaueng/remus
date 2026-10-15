@@ -439,6 +439,37 @@ fn untrimmed_curved_edge_is_never_degenerate() {
     assert!(!edge_is_degenerate(&topo, edge, 1e-14).unwrap());
 }
 
+/// A short arc or parabola whose two ends vertex merging fused is a sliver,
+/// not a rim: its length bound decides, while a full circle on one vertex
+/// stays.
+#[test]
+fn collapsed_curved_slivers_are_degenerate() {
+    use remus_math::curves::{Circle3D, Parabola3D};
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let mut arc = Edge::new(v, v, EdgeCurve::Circle(circle.clone()));
+    arc.set_trim(Some((0.0, 1e-9)));
+    let arc = topo.add_edge(arc);
+    let mut rim = Edge::new(v, v, EdgeCurve::Circle(circle));
+    rim.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let rim = topo.add_edge(rim);
+
+    let parabola =
+        Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.1).unwrap();
+    let w = topo.add_vertex(Vertex::new(parabola.evaluate(0.0), 1e-7));
+    let mut sliver = Edge::new(w, w, EdgeCurve::Parabola(parabola));
+    sliver.set_trim(Some((0.0, 1e-9)));
+    let sliver = topo.add_edge(sliver);
+
+    let tol_sq = 1e-14;
+    assert!(edge_is_degenerate(&topo, arc, tol_sq).unwrap());
+    assert!(edge_is_degenerate(&topo, sliver, tol_sq).unwrap());
+    assert!(!edge_is_degenerate(&topo, rim, tol_sq).unwrap());
+}
+
 /// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
 /// bounds its cap alone, so dropping it from the lateral wire would unpair it.
 #[test]
