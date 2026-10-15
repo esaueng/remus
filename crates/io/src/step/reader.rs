@@ -4278,9 +4278,13 @@ impl<'a> StepBuilder<'a> {
                 // signed distance only along a unit normal, and the arena
                 // refuses any other. Rescaling names the same plane; a normal
                 // already unit to roundoff keeps its bits, and a zero one is
-                // kept as written (see `build_axis2_placement`).
-                let normal = if (normal.length() - 1.0).abs() > 4.0 * f64::EPSILON {
-                    normal.normalize().unwrap_or(normal)
+                // kept as written (see `build_axis2_placement`). Dividing by
+                // the largest component first keeps the squared length from
+                // overflowing or underflowing for ratios like `1E200`.
+                let largest = normal.x().abs().max(normal.y().abs()).max(normal.z().abs());
+                let normal = if (normal.length() - 1.0).abs() > 4.0 * f64::EPSILON && largest > 0.0
+                {
+                    (normal * largest.recip()).normalize().unwrap_or(normal)
                 } else {
                     normal
                 };

@@ -287,6 +287,14 @@ fn serializer_refuses_what_the_reader_would() {
 /// crosses the arena: the WASM translator serializes every STEP import.
 #[test]
 fn step_plane_with_unnormalized_direction_crosses_the_arena() {
+    // Ratios whose squared length overflows or underflows f64 are still
+    // valid directions.
+    for scale in ["2.5E0", "1.0E200", "1.0E-200"] {
+        step_plane_with_scaled_directions_crosses_the_arena(scale);
+    }
+}
+
+fn step_plane_with_scaled_directions_crosses_the_arena(scale: &str) {
     let mut source = Topology::new();
     let solid = make_box(&mut source, 1.0, 2.0, 3.0).unwrap();
     let text = write_step(&source, &[solid]).unwrap();
@@ -296,14 +304,14 @@ fn step_plane_with_unnormalized_direction_crosses_the_arena() {
         .map(|line| {
             if line.contains("DIRECTION(") {
                 scaled += 1;
-                line.replace("1.00000000000000000E0", "2.5E0")
+                line.replace("1.00000000000000000E0", scale)
             } else {
                 line.to_owned()
             }
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(scaled > 0 && text.contains("2.5E0"), "{text}");
+    assert!(scaled > 0 && text.contains(scale), "{text}");
 
     let mut topo = Topology::new();
     let solids = read_step(&text, &mut topo).unwrap();
