@@ -695,15 +695,32 @@ fn edge_is_degenerate(
     if edge.start() == edge.end() {
         return Ok(false);
     }
+    // Without a parameter authority the edge's extent is unknown: keep it.
     let Ok((t0, t1)) = edge.strict_domain() else {
-        return Ok(true);
+        return Ok(false);
     };
     let span = (t1 - t0).abs();
     let upper_bound = match edge.curve() {
         EdgeCurve::Circle(circle) => circle.radius() * span,
         EdgeCurve::Ellipse(ellipse) => ellipse.semi_major().max(ellipse.semi_minor()) * span,
         EdgeCurve::Parabola(parabola) => parabola.arc_length(t0, t1),
-        EdgeCurve::Hyperbola(hyperbola) => hyperbola.arc_length(t0, t1),
+        // Speed sqrt(a^2 sinh^2 t + b^2 cosh^2 t) <= a |sinh t| + b cosh t,
+        // integrated in closed form (the quadrature in `arc_length` can
+        // undershoot).
+        EdgeCurve::Hyperbola(hyperbola) => {
+            let (lo, hi) = (t0.min(t1), t0.max(t1));
+            let abs_sinh_integral = if lo >= 0.0 {
+                hi.cosh() - lo.cosh()
+            } else if hi <= 0.0 {
+                lo.cosh() - hi.cosh()
+            } else {
+                (lo.cosh() - 1.0) + (hi.cosh() - 1.0)
+            };
+            hyperbola.semi_major().mul_add(
+                abs_sinh_integral,
+                hyperbola.semi_minor() * (hi.sinh() - lo.sinh()),
+            )
+        }
         // A polynomial B-spline is no longer than its control polygon, and
         // any span of it no longer than the whole.
         EdgeCurve::NurbsCurve(curve) if !curve.is_rational() => curve
