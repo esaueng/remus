@@ -108,6 +108,29 @@ fn dot_normal_point(n: Vec3, p: Point3) -> f64 {
     n.dot(Vec3::new(p.x(), p.y(), p.z()))
 }
 
+/// Refuse a solid with cavity shells in an engine that rebuilds only the
+/// outer shell.
+///
+/// These engines assemble their result from the outer shell's faces, so a
+/// cavity would be dropped from the result. The result still validates and
+/// its volume is off only by the cavity's volume.
+pub(crate) fn refuse_cavity_shells(
+    topo: &remus_topology::Topology,
+    solid: remus_topology::solid::SolidId,
+    operation: &'static str,
+) -> Result<(), OperationsError> {
+    let cavities = topo.solid(solid)?.inner_shells().len();
+    if cavities == 0 {
+        return Ok(());
+    }
+    Err(OperationsError::Unsupported {
+        operation,
+        reason: format!(
+            "solid has {cavities} cavity shell(s); this engine rebuilds only the outer shell"
+        ),
+    })
+}
+
 /// Resolve an edge's stored parameter authority without reconstructing it
 /// from endpoint projection.
 #[cfg_attr(target_arch = "wasm32", inline(never))]
