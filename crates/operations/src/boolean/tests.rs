@@ -10681,6 +10681,42 @@ fn scaling_nway_ff_seeds_junctions_once_per_run() {
     );
 }
 
+/// N-way phase EF samples each face's outline once per run. A face's
+/// containment depends only on its boundary, which EF never changes, so the
+/// pass caches it; before, every solid pair a body was in sampled all six of
+/// its faces again (a touching-grid box is in up to eight pairs).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_ef_samples_each_face_outline_once() {
+    use remus_math::mat::Mat4;
+
+    for n in [3, 6] {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let samplings = remus_algo::perf::snapshot().face_outline_samplings;
+        let faces = 6 * (n * n) as u64;
+        assert!(samplings > 0, "{n}x{n}: phase EF sampled no outline");
+        assert!(
+            samplings <= faces,
+            "{n}x{n}: phase EF sampled {samplings} face outlines for {faces} faces"
+        );
+    }
+}
+
 /// The holed plate of the boolean bench (`single_boolean_at_face_count`,
 /// F~54): a 100 x 100 x 10 box cut by sixteen r = 2 cylinders on a 20 mm
 /// grid, each spanning z = -5..15, plus one more such tool at `(x, y)`.

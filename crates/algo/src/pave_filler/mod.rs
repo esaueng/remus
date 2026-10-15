@@ -391,9 +391,17 @@ pub fn run_pave_filler_n_with_pairs(
         context.check_cancelled()?;
         phase_vf::perform(topo, sources[i], sources[j], tol, arena)?;
     }
+    let mut face_containments = phase_ef::FaceContainments::default();
     for &(i, j) in &pairs {
         context.check_cancelled()?;
-        phase_ef::perform(topo, sources[i], sources[j], tol, arena)?;
+        phase_ef::perform_cached(
+            topo,
+            sources[i],
+            sources[j],
+            tol,
+            arena,
+            &mut face_containments,
+        )?;
     }
     // Every FF pair starts from the same seeded junction registry, so seed it
     // once. Its inputs (edge pave blocks and their paves, same-domain
