@@ -1273,6 +1273,7 @@ mod curved {
     use remus_math::tolerance::Tolerance;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeDomainError};
     use remus_topology::face::FaceId;
 
     use crate::OperationsError;
@@ -1424,35 +1425,110 @@ mod curved {
 
     /// Points along every boundary edge of `face`.
     fn boundary_samples(topo: &Topology, face: FaceId) -> Result<Vec<Point3>, OperationsError> {
-        Ok(edge_chains(topo, face, 8)?.into_iter().flatten().collect())
+        let mut points = Vec::new();
+        for edge in boundary_edges(topo, face)? {
+            points.extend(edge.chain(8));
+        }
+        Ok(points)
     }
 
-    /// Each boundary edge of `face` sampled at `steps` equal parameter
-    /// intervals.
-    fn edge_chains(
-        topo: &Topology,
-        face: FaceId,
-        steps: u32,
-    ) -> Result<Vec<Vec<Point3>>, OperationsError> {
+    /// One boundary edge of a face, with its endpoints and parameter range.
+    struct BoundaryEdge {
+        edge: Edge,
+        start: Point3,
+        end: Point3,
+        range: (f64, f64),
+    }
+
+    impl BoundaryEdge {
+        fn at(&self, s: f64) -> Point3 {
+            let (t0, t1) = self.range;
+            self.edge
+                .curve()
+                .evaluate_with_endpoints(t0 + (t1 - t0) * s, self.start, self.end)
+        }
+
+        /// The edge at `steps` equal parameter intervals.
+        fn chain(&self, steps: u32) -> Vec<Point3> {
+            (0..=steps)
+                .map(|k| self.at(f64::from(k) / f64::from(steps)))
+                .collect()
+        }
+    }
+
+    fn boundary_edges(topo: &Topology, face: FaceId) -> Result<Vec<BoundaryEdge>, OperationsError> {
         let face = topo.face(face)?;
-        let mut chains = Vec::new();
+        let mut edges = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oriented in topo.wire(wire)?.edges() {
-                let edge = topo.edge(oriented.edge())?;
+                let edge = topo.edge(oriented.edge())?.clone();
                 let start = topo.vertex(edge.start())?.point();
                 let end = topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.domain_with_endpoints(start, end);
-                chains.push(
-                    (0..=steps)
-                        .map(|k| {
-                            let t = t0 + (t1 - t0) * f64::from(k) / f64::from(steps);
-                            edge.curve().evaluate_with_endpoints(t, start, end)
-                        })
-                        .collect(),
-                );
+                let range = match edge.strict_domain() {
+                    Ok(range) => range,
+                    Err(EdgeDomainError::Missing { .. }) => {
+                        edge.curve().reconstruct_domain_from_endpoints(start, end)
+                    }
+                    Err(error) => {
+                        return Err(unsupported(format!(
+                            "section of a face whose edge has invalid parameter authority: \
+                             {error}"
+                        )));
+                    }
+                };
+                edges.push(BoundaryEdge {
+                    edge,
+                    start,
+                    end,
+                    range,
+                });
             }
         }
-        Ok(chains)
+        Ok(edges)
+    }
+
+    /// The boundary edges of `face` that lie in the plane, as polylines
+    /// within a sagitta of `1e-6` of their length (floored at the linear
+    /// tolerance), and the largest sagitta reached.
+    fn in_plane_edges(
+        topo: &Topology,
+        face: FaceId,
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+    ) -> Result<(Vec<(Point3, Point3)>, f64), OperationsError> {
+        const MAX_STEPS: u32 = 4096;
+        let coplanar_tol = tol.linear * 100.0;
+        let mut segments = Vec::new();
+        let mut sagitta: f64 = 0.0;
+        for edge in boundary_edges(topo, face)? {
+            let mut steps = 32;
+            let mut chain = edge.chain(steps);
+            if !chain
+                .iter()
+                .all(|&p| (dot_normal_point(normal, p) - d).abs() < coplanar_tol)
+            {
+                continue;
+            }
+            loop {
+                let length: f64 = chain.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+                let deviation = (0..steps)
+                    .map(|k| {
+                        let mid = edge.at((f64::from(k) + 0.5) / f64::from(steps));
+                        let (a, b) = (chain[k as usize], chain[k as usize + 1]);
+                        (mid - (a + (b - a) * 0.5)).length()
+                    })
+                    .fold(0.0_f64, f64::max);
+                if deviation <= (1e-6 * length).max(tol.linear) || steps >= MAX_STEPS {
+                    sagitta = sagitta.max(deviation);
+                    break;
+                }
+                steps *= 2;
+                chain = edge.chain(steps);
+            }
+            segments.extend(chain.windows(2).map(|w| (w[0], w[1])));
+        }
+        Ok((segments, sagitta))
     }
 
     /// Where the cutting plane crosses the face's boundary polygons, by the
@@ -1535,34 +1611,20 @@ mod curved {
         }
         // A piece running along a boundary edge that lies in the plane is the
         // face's own boundary, shared with its neighbour (and deduplicated);
-        // it is kept without classifying a point on the trim itself. The
-        // edge is sampled finely enough that the carrier samples, which lie
-        // on the same curve, stay within its sagitta, under a quarter chord.
-        let coplanar_tol = tol.linear * 100.0;
-        let in_plane: Vec<(Point3, Point3)> = edge_chains(topo, face, 32)?
-            .into_iter()
-            .filter(|chain| {
-                chain
-                    .iter()
-                    .all(|&p| (dot_normal_point(normal, p) - d).abs() < coplanar_tol)
-            })
-            .flat_map(|chain| chain.windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>())
-            .collect();
-        let band = 0.25
-            * in_plane
-                .iter()
-                .map(|&(a, b)| (b - a).length())
-                .fold(tol.linear * 1000.0, f64::max);
-        let along_boundary = |p: Point3| {
+        // it is kept without classifying a point on the trim itself. Both of
+        // its ends (carrier samples or crossings) then lie on that edge's
+        // curve, so within the edge polyline's sagitta of it. The band is
+        // that approximation error, not a chord fraction: on a slender
+        // torus the carrier's other loop runs closer than a rim chord.
+        let (in_plane, sagitta) = in_plane_edges(topo, face, normal, d, tol)?;
+        let band = 2.0 * sagitta + tol.linear * 100.0;
+        let near_boundary = |p: Point3| {
             in_plane
                 .iter()
                 .any(|&(a, b)| segment_distance(p, a, b) <= band)
         };
         let surface = topo.face(face)?.surface();
         let on_face = |p: Point3| -> Result<bool, OperationsError> {
-            if along_boundary(p) {
-                return Ok(true);
-            }
             let on_carrier = surface
                 .project_point(p)
                 .and_then(|(u, v)| surface.evaluate(u, v))
@@ -1579,7 +1641,9 @@ mod curved {
                 .collect();
             for piece in points.windows(2) {
                 let (p, q) = (piece[0], piece[1]);
-                if (q - p).length() > tol.linear && on_face(p + (q - p) * 0.5)? {
+                if (q - p).length() > tol.linear
+                    && ((near_boundary(p) && near_boundary(q)) || on_face(p + (q - p) * 0.5)?)
+                {
                     segments.push((p, q));
                 }
             }
@@ -1602,15 +1666,21 @@ mod curved {
     mod tests {
         #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-        use std::f64::consts::PI;
+        use std::f64::consts::{PI, TAU};
 
-        use remus_math::vec::Point3;
+        use remus_math::curves::Circle3D;
+        use remus_math::tolerance::Tolerance;
+        use remus_math::vec::{Point3, Vec3};
         use remus_topology::Topology;
+        use remus_topology::edge::{Edge, EdgeCurve};
         use remus_topology::explorer::solid_faces;
-        use remus_topology::face::FaceSurface;
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
-        use super::cone_section;
+        use super::{append_clipped, cone_section};
         use crate::primitives::make_cone;
+        use crate::revolve::revolve;
 
         /// A vertical plane at distance `c = 1.999` from the axis of the
         /// frustum `ρ = 2 − z/3` meets its lateral face for
@@ -1647,6 +1717,91 @@ mod curved {
                 })
                 .count();
             assert!(on_face >= 16, "{on_face} branch samples on the face");
+        }
+
+        /// A slender torus band (R = 100, r = 1, v ∈ [−π/3, π/3]) cut flush
+        /// with its top rim at ρ = 100.5. The carrier's other loop at that
+        /// height, ρ = 99.5, runs 1 from the rim: well inside a quarter of a
+        /// 32-segment rim chord (≈ 4.9), so a chord-scaled boundary band kept
+        /// it as the rim. Only the rim may survive.
+        #[test]
+        fn far_carrier_loop_beside_an_in_plane_rim_is_dropped() {
+            let mut topo = Topology::new();
+            let (major, h) = (100.0, (PI / 3.0).sin());
+            let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
+            let [a, b, c, d] = [
+                corner(major - 2.0, -h),
+                corner(major + 0.5, -h),
+                corner(major + 0.5, h),
+                corner(major - 2.0, h),
+            ]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let tube = Circle3D::new_with_ref(
+                Point3::new(major, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                1.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let mut line = |s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+            let (bottom, top, inner) = (line(a, b), line(c, d), line(d, a));
+            let arc = topo.add_edge(Edge::new(b, c, EdgeCurve::Circle(tube)));
+            let edges = [bottom, arc, top, inner].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let profile = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, -1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let solid = revolve(
+                &mut topo,
+                profile,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                TAU,
+            )
+            .unwrap();
+            let face = solid_faces(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Torus(_)))
+                .expect("a torus band");
+
+            #[allow(clippy::cast_precision_loss)]
+            let circle = |rho: f64| -> Vec<Point3> {
+                (0..=128)
+                    .map(|k| {
+                        let u = TAU * f64::from(k) / 128.0;
+                        Point3::new(rho * u.cos(), rho * u.sin(), h)
+                    })
+                    .collect()
+            };
+            let polylines = [circle(major + 0.5), circle(major - 0.5)];
+            let normal = Vec3::new(0.0, 0.0, 1.0);
+            let mut segments = Vec::new();
+            append_clipped(
+                &topo,
+                face,
+                &polylines,
+                normal,
+                h,
+                Tolerance::new(),
+                &mut segments,
+            )
+            .unwrap();
+            assert!(!segments.is_empty(), "the rim is part of the section");
+            for (p, q) in segments {
+                for x in [p, q] {
+                    let rho = x.x().hypot(x.y());
+                    assert!(
+                        (rho - (major + 0.5)).abs() < 1e-6,
+                        "section point at ρ = {rho}"
+                    );
+                }
+            }
         }
     }
 }
