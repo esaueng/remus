@@ -8,12 +8,13 @@
 //! common, with occasional out-of-range indices, non-finite coordinates and
 //! extreme offsets.
 //!
-//! Oracles: no two welded vertices lie within the weld tolerance; an accepted
-//! mesh yields one solid whose faces are planar triangles, no more than the
-//! input triangle count, with every edge used by at most two face uses
-//! (import refuses over-shared edges); a refusal that input validation can
-//! decide must leave the topology empty, and an over-shared or all-degenerate
-//! refusal must allocate no edge, wire, loop, coedge, face, shell or solid.
+//! Oracles: no two welded vertices lie within the weld tolerance and every
+//! corner has one within it; an accepted mesh yields one solid whose faces
+//! are planar triangles, no more than the input triangle count, with every
+//! edge used by at most two face uses (import refuses over-shared edges); a
+//! refusal that input validation can decide must leave the topology empty,
+//! and an over-shared or all-degenerate refusal must allocate no edge, wire,
+//! loop, coedge, face, shell or solid.
 
 #![no_main]
 
@@ -118,22 +119,41 @@ fn build(u: &mut Unstructured<'_>) -> arbitrary::Result<(TriangleMesh, f64, bool
     ))
 }
 
-/// The weld keeps the first vertex within tolerance of each corner and
-/// creates one only when none exists, so no two vertices it created may lie
-/// within tolerance of each other. Exact duplicates and corners moved half a
-/// tolerance must therefore have merged.
-fn assert_welded(topo: &Topology, tolerance: f64) {
+/// The weld's own squared-distance expression, so rounding cannot differ.
+fn weld_distance_sq(vertex: Point3, corner: Point3) -> f64 {
+    let (ex, ey, ez) = (
+        vertex.x() - corner.x(),
+        vertex.y() - corner.y(),
+        vertex.z() - corner.z(),
+    );
+    ex.mul_add(ex, ey.mul_add(ey, ez * ez))
+}
+
+/// The weld maps each corner to the first vertex within tolerance and creates
+/// one at the corner only when none exists. So no two vertices lie within
+/// tolerance of each other (exact duplicates and corners moved half a
+/// tolerance must have merged), and every corner has a vertex within
+/// tolerance (a weld radius grown past the tolerance swallows corners moved
+/// one and a half tolerances with no vertex near them).
+fn assert_welded(topo: &Topology, positions: &[Point3], tolerance: f64) {
     let tol_sq = tolerance * tolerance;
     let points: Vec<_> = topo.vertices().iter().map(|(_, v)| v.point()).collect();
-    for (i, a) in points.iter().enumerate() {
-        for b in &points[i + 1..] {
-            // The weld's own distance expression, so rounding cannot differ.
-            let (ex, ey, ez) = (a.x() - b.x(), a.y() - b.y(), a.z() - b.z());
+    if points.is_empty() {
+        return;
+    }
+    for (i, &a) in points.iter().enumerate() {
+        for &b in &points[i + 1..] {
             assert!(
-                ex.mul_add(ex, ey.mul_add(ey, ez * ez)) >= tol_sq,
+                weld_distance_sq(a, b) >= tol_sq,
                 "vertices {a:?} and {b:?} lie within the weld tolerance {tolerance}"
             );
         }
+    }
+    for &corner in positions {
+        assert!(
+            points.iter().any(|&v| weld_distance_sq(v, corner) < tol_sq),
+            "corner {corner:?} has no vertex within the weld tolerance {tolerance}"
+        );
     }
 }
 
@@ -144,7 +164,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let mut topo = Topology::new();
     let result = remus_io::stl::import_mesh(&mut topo, &mesh, tolerance);
-    assert_welded(&topo, tolerance);
+    assert_welded(&topo, &mesh.positions, tolerance);
     match result {
         Ok(solid) => {
             assert!(!decidable_refusal, "invalid mesh input was accepted");
