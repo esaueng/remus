@@ -18,6 +18,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::BlendError;
+use crate::body_edit::BodyEdit;
 
 /// Which side of the contact curve to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,37 +65,6 @@ const VERTEX_TOL: f64 = 1e-7;
 /// Tolerance for the 2D segment intersection parameter test.
 const PARAM_TOL: f64 = 1e-10;
 
-/// Return the endpoint of the boundary edge `split` that lies at `point`
-/// (within `tolerance`), or mint a new vertex there.
-///
-/// Contact splits on shared boundary edges must reuse one vertex per
-/// position: two trims splitting the same edge at the same point would
-/// otherwise mint coincident vertices, and the two resulting contact edges
-/// would meet the cap wire at different ids — leaving use-1 stubs the
-/// end-cap notch cannot share. The first split is propagated into every wire
-/// that uses the edge, so the second trim meets that vertex as an endpoint of
-/// the sub-edge it splits.
-///
-/// The search must not look past the split edge. Matching any vertex in the
-/// arena stitched one body's fillet onto vertices of another live solid (an
-/// in-place copy filleted after its original), so transforming one result
-/// moved the other's corners; it also cost O(arena) per contact as history
-/// grew.
-fn find_or_add_vertex(
-    topo: &mut Topology,
-    split: OrientedEdge,
-    point: Point3,
-    tolerance: f64,
-) -> Result<VertexId, BlendError> {
-    let edge = topo.edge(split.edge())?;
-    for vid in [edge.start(), edge.end()] {
-        if (topo.vertex(vid)?.point() - point).length() <= tolerance {
-            return Ok(vid);
-        }
-    }
-    Ok(topo.add_vertex(Vertex::new(point, tolerance)))
-}
-
 /// A point where the contact line crosses a face boundary edge.
 struct BoundaryHit {
     /// Index into the wire's oriented-edge list.
@@ -130,6 +100,9 @@ struct BoundaryHit {
 /// `keep_side`. The `keep_side` heuristic (normal · (center − contact)) is
 /// constant per face orientation and cannot encode the in-plane side; it
 /// remains only as a fallback when neither chain contains a spine edge.
+///
+/// Boundary edges are split through `edit`, so a neighbour face the input
+/// body shares is copied rather than edited.
 #[allow(clippy::too_many_lines)]
 pub fn trim_face(
     topo: &mut Topology,
@@ -138,6 +111,7 @@ pub fn trim_face(
     contact_uv: &[(f64, f64)],
     keep: TrimKeep,
     avoid_edges: &[EdgeId],
+    edit: &mut BodyEdit<'_>,
 ) -> Result<TrimResult, BlendError> {
     let face = topo.face(face_id)?;
     if !face.surface().is_planar() {
@@ -254,25 +228,27 @@ pub fn trim_face(
         return Err(BlendError::TrimmingFailure { face: face_id });
     }
 
-    let va_id = find_or_add_vertex(
-        topo,
-        edge_data[hit_a.edge_idx].0,
-        hit_a.point_3d,
-        VERTEX_TOL,
-    )?;
-    let vb_id = find_or_add_vertex(
-        topo,
-        edge_data[hit_b.edge_idx].0,
-        hit_b.point_3d,
-        VERTEX_TOL,
-    )?;
+    let va_id = edit.find_or_add_vertex(topo, hit_a.point_3d, VERTEX_TOL);
+    let vb_id = edit.find_or_add_vertex(topo, hit_b.point_3d, VERTEX_TOL);
 
     // Each hit splits one oriented edge into two sub-edges:
     //   original: oriented from S→E
     //   sub-edge 1: S → V_hit  (forward w.r.t. original orientation)
     //   sub-edge 2: V_hit → E
-    let (sub_a1, sub_a2) = split_edge_at(topo, &edge_data[hit_a.edge_idx].0, va_id)?;
-    let (sub_b1, sub_b2) = split_edge_at(topo, &edge_data[hit_b.edge_idx].0, vb_id)?;
+    let (sub_a1, sub_a2) = split_edge_at(
+        topo,
+        edit,
+        Some(face_id),
+        &edge_data[hit_a.edge_idx].0,
+        va_id,
+    )?;
+    let (sub_b1, sub_b2) = split_edge_at(
+        topo,
+        edit,
+        Some(face_id),
+        &edge_data[hit_b.edge_idx].0,
+        vb_id,
+    )?;
 
     // The contact edge connects the two intersection vertices.
     // Its direction determines which side is "left" vs "right".
@@ -460,10 +436,15 @@ pub fn trim_face(
 
 /// Split an oriented boundary edge at a new vertex, producing two sub-edges.
 ///
+/// `trimmed` is the face being trimmed along the split, if any: its trimmed
+/// copy replaces it, so the split leaves it alone.
+///
 /// Returns `(before, after)` as [`OrientedEdge`] values following the same
 /// traversal direction as the input.
 fn split_edge_at(
     topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    trimmed: Option<FaceId>,
     oe: &OrientedEdge,
     split_vertex: VertexId,
 ) -> Result<(OrientedEdge, OrientedEdge), BlendError> {
@@ -528,7 +509,15 @@ fn split_edge_at(
     if matches!(curve, EdgeCurve::Line) {
         let e1_id = topo.add_edge(Edge::new(start_vid, split_vertex, EdgeCurve::Line));
         let e2_id = topo.add_edge(Edge::new(split_vertex, end_vid, EdgeCurve::Line));
-        propagate_split(topo, oe.edge(), oe.is_forward(), e1_id, e2_id)?;
+        propagate_split(
+            topo,
+            edit,
+            trimmed,
+            oe.edge(),
+            oe.is_forward(),
+            e1_id,
+            e2_id,
+        )?;
         return Ok((
             OrientedEdge::new(e1_id, true),
             OrientedEdge::new(e2_id, true),
@@ -566,7 +555,15 @@ fn split_edge_at(
     let e1_id = topo.add_edge(e1);
     let e2_id = topo.add_edge(e2);
 
-    propagate_split(topo, oe.edge(), oe.is_forward(), e1_id, e2_id)?;
+    propagate_split(
+        topo,
+        edit,
+        trimmed,
+        oe.edge(),
+        oe.is_forward(),
+        e1_id,
+        e2_id,
+    )?;
 
     // Both sub-edges are traversed forward in the oriented direction
     // because we constructed them S→V and V→E matching the traversal.
@@ -668,7 +665,8 @@ fn periodic_split_parameter(projected: f64, t0: f64, t1: f64) -> Result<f64, Ble
     }
 }
 
-/// Rewrite every wire referencing the split edge to use its two sub-edges.
+/// Rewrite every boundary of the body under construction that references
+/// the split edge to use its two sub-edges.
 ///
 /// A boundary edge crossed by a contact curve is usually shared with a
 /// neighbor face that is not itself trimmed (a cap or rim face). Rebuilding
@@ -676,21 +674,26 @@ fn periodic_split_parameter(projected: f64, t0: f64, t1: f64) -> Result<f64, Ble
 /// old unsplit edge: the kept sub-edge and the stale edge each end up used
 /// by a single face, opening the shell along the shared span.
 ///
+/// The rewrite goes through `edit`: a neighbor the input body still uses is
+/// copied, and the copy takes its place in the result. `trimmed`, the face
+/// being split, if any, is left alone because its trimmed copy replaces it.
+///
 /// `split_forward` is the traversal direction the sub-edges were built in:
 /// `e1` runs oriented-start→vertex and `e2` vertex→oriented-end for an
 /// occurrence with that orientation; an opposite occurrence traverses
 /// `e2` then `e1`, both reversed.
 fn propagate_split(
     topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    trimmed: Option<FaceId>,
     old_edge: EdgeId,
     split_forward: bool,
     e1: EdgeId,
     e2: EdgeId,
 ) -> Result<(), BlendError> {
-    let mut updates: Vec<(WireId, Vec<OrientedEdge>, bool)> = Vec::new();
-    for (wid, wire) in topo.wires().iter() {
+    let rewritten = edit.rewrite_wires(topo, trimmed, |_, wire| {
         if !wire.edges().iter().any(|oe| oe.edge() == old_edge) {
-            continue;
+            return Ok(None);
         }
         let mut new_edges: Vec<OrientedEdge> = Vec::with_capacity(wire.edges().len() + 1);
         for oe in wire.edges() {
@@ -706,12 +709,8 @@ fn propagate_split(
                 new_edges.push(*oe);
             }
         }
-        updates.push((wid, new_edges, wire.is_closed()));
-    }
-    for (wid, edges, closed) in updates {
-        let replacement = Wire::new(edges, closed)?;
-        topo.replace_boundary_wire(wid, replacement)?;
-    }
+        Ok(Some(Wire::new(new_edges, wire.is_closed())?))
+    })?;
     // Drop registry pcurves keyed by the now-unreferenced edge so per-face
     // enumeration (pcurves_for_face) cannot pick up a stale full-span entry.
     // The sub-edges deliberately get none: downstream consumers regenerate
@@ -720,6 +719,7 @@ fn propagate_split(
     let stale_uses: Vec<(FaceId, bool)> = topo
         .pcurves_for_edge(old_edge)
         .into_iter()
+        .filter(|(fid, _, _)| rewritten.contains(fid))
         .map(|(fid, forward, _)| (fid, forward))
         .collect();
     for (fid, forward) in stale_uses {
@@ -953,6 +953,7 @@ pub fn trim_face_general(
     contact: &NurbsCurve,
     keep: TrimKeep,
     avoid_edges: &[EdgeId],
+    edit: &mut BodyEdit<'_>,
 ) -> Result<TrimResult, BlendError> {
     let (contact_t0, contact_t1) = contact.domain();
     let contact_3d = [contact.evaluate(contact_t0), contact.evaluate(contact_t1)];
@@ -990,7 +991,15 @@ pub fn trim_face_general(
             })
             .collect();
 
-        return trim_face(topo, face_id, &contact_3d, &contact_uv, keep, avoid_edges);
+        return trim_face(
+            topo,
+            face_id,
+            &contact_3d,
+            &contact_uv,
+            keep,
+            avoid_edges,
+            edit,
+        );
     }
 
     // Non-planar path: a walking contact is bounded by the same end faces as
@@ -1097,8 +1106,8 @@ pub fn trim_face_general(
 
     let va = topo.add_vertex(Vertex::new(hit_a.point_3d, hit_a.tolerance));
     let vb = topo.add_vertex(Vertex::new(hit_b.point_3d, hit_b.tolerance));
-    let (sub_a1, sub_a2) = split_edge_at(topo, &oe_a, va)?;
-    let (sub_b1, sub_b2) = split_edge_at(topo, &oe_b, vb)?;
+    let (sub_a1, sub_a2) = split_edge_at(topo, edit, Some(face_id), &oe_a, va)?;
+    let (sub_b1, sub_b2) = split_edge_at(topo, edit, Some(face_id), &oe_b, vb)?;
     let (ea_pre, ea_post) = (sub_a1.edge(), sub_a2.edge());
     let (eb_pre, eb_post) = (sub_b1.edge(), sub_b2.edge());
 
@@ -1226,9 +1235,16 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use crate::body_edit::EditScope;
     use remus_math::curves::Circle3D;
+    use remus_math::det_hash::DetHashMap;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
+
+    /// A scope whose input body is every face built so far.
+    fn input_scope(topo: &Topology) -> EditScope {
+        EditScope::new(topo, topo.faces().iter().map(|(id, _)| id)).unwrap()
+    }
 
     /// Helper: create a unit square face on the XY plane (z=0).
     ///
@@ -1279,6 +1295,8 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
             face_id,
@@ -1286,6 +1304,7 @@ mod tests {
             &contact_uv,
             TrimKeep::Side(TrimSide::Left),
             &[],
+            &mut scope.edit(&mut replacements),
         )
         .expect("trim should succeed");
 
@@ -1374,15 +1393,18 @@ mod tests {
     }
 
     #[test]
-    fn split_propagates_into_neighbor_wire() {
+    fn split_propagates_into_a_copy_of_the_input_neighbor() {
         let mut topo = Topology::new();
         let (face_id, verts, edges) = make_square_face(&mut topo);
         let neighbor = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
+        let neighbor_wire_before = topo.face(neighbor).unwrap().outer_wire();
 
         // Vertical contact line at x = 0.5 splits e0 (shared with the
         // neighbor) and e2 (unshared).
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
             face_id,
@@ -1390,16 +1412,27 @@ mod tests {
             &contact_uv,
             TrimKeep::Side(TrimSide::Left),
             &[],
+            &mut scope.edit(&mut replacements),
         )
         .expect("trim should succeed");
 
-        // The neighbor must no longer reference the stale unsplit edge.
-        let neighbor_wire = topo
-            .wire(topo.face(neighbor).unwrap().outer_wire())
-            .unwrap();
+        // The input neighbor is untouched; a copy takes the split. The
+        // trimmed face itself is not copied: its trim replaces it.
+        assert_eq!(
+            topo.face(neighbor).unwrap().outer_wire(),
+            neighbor_wire_before
+        );
+        let original_wire = topo.wire(neighbor_wire_before).unwrap();
+        assert_eq!(original_wire.edges().len(), 4);
+        assert!(original_wire.edges().iter().any(|oe| oe.edge() == edges[0]));
+        assert_eq!(replacements.len(), 1);
+        let copy = replacements[&neighbor];
+
+        // The copy must no longer reference the stale unsplit edge.
+        let neighbor_wire = topo.wire(topo.face(copy).unwrap().outer_wire()).unwrap();
         assert!(
             neighbor_wire.edges().iter().all(|oe| oe.edge() != edges[0]),
-            "neighbor still references the split edge {:?}",
+            "neighbor copy still references the split edge {:?}",
             edges[0]
         );
         assert_eq!(
@@ -1407,7 +1440,7 @@ mod tests {
             5,
             "neighbor wire should gain one edge from the split"
         );
-        assert_wire_connected(&topo, neighbor);
+        assert_wire_connected(&topo, copy);
         assert_wire_connected(&topo, result.trimmed_face);
 
         // The neighbor's replacement must traverse v1 -> split vertex -> v0
@@ -1450,6 +1483,68 @@ mod tests {
     }
 
     #[test]
+    fn split_rewrites_a_face_the_build_allocated_in_place() {
+        let mut topo = Topology::new();
+        let (face_id, verts, edges) = make_square_face(&mut topo);
+        // The scope opens before the neighbor exists, so the neighbor is the
+        // build's own face: rewritten, not copied.
+        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let neighbor = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
+        let neighbor_wire = topo.face(neighbor).unwrap().outer_wire();
+
+        let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
+        let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        let mut replacements = DetHashMap::default();
+        trim_face(
+            &mut topo,
+            face_id,
+            &contact_3d,
+            &contact_uv,
+            TrimKeep::Side(TrimSide::Left),
+            &[],
+            &mut scope.edit(&mut replacements),
+        )
+        .expect("trim should succeed");
+
+        assert!(replacements.is_empty());
+        assert_eq!(topo.face(neighbor).unwrap().outer_wire(), neighbor_wire);
+        let wire = topo.wire(neighbor_wire).unwrap();
+        assert_eq!(wire.edges().len(), 5);
+        assert!(wire.edges().iter().all(|oe| oe.edge() != edges[0]));
+        assert_wire_connected(&topo, neighbor);
+    }
+
+    #[test]
+    fn split_leaves_a_face_outside_the_body_alone() {
+        let mut topo = Topology::new();
+        let (face_id, verts, edges) = make_square_face(&mut topo);
+        // Pre-existing but not part of the input body: another solid's face.
+        let foreign = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
+        let foreign_wire = topo.face(foreign).unwrap().outer_wire();
+        let scope = EditScope::new(&topo, [face_id]).unwrap();
+
+        let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
+        let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        let mut replacements = DetHashMap::default();
+        trim_face(
+            &mut topo,
+            face_id,
+            &contact_3d,
+            &contact_uv,
+            TrimKeep::Side(TrimSide::Left),
+            &[],
+            &mut scope.edit(&mut replacements),
+        )
+        .expect("trim should succeed");
+
+        assert!(replacements.is_empty());
+        assert_eq!(topo.face(foreign).unwrap().outer_wire(), foreign_wire);
+        let wire = topo.wire(foreign_wire).unwrap();
+        assert_eq!(wire.edges().len(), 4);
+        assert!(wire.edges().iter().any(|oe| oe.edge() == edges[0]));
+    }
+
+    #[test]
     fn seam_style_repeated_edge_bails_without_mutation() {
         let mut topo = Topology::new();
 
@@ -1479,6 +1574,8 @@ mod tests {
 
         let contact_3d = vec![Point3::new(0.5, -1.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, -1.0), (0.5, 1.0)];
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
             face_id,
@@ -1486,6 +1583,7 @@ mod tests {
             &contact_uv,
             TrimKeep::Side(TrimSide::Left),
             &[],
+            &mut scope.edit(&mut replacements),
         );
         assert!(
             matches!(result, Err(BlendError::TrimmingFailure { .. })),
@@ -1502,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn propagate_split_drops_stale_pcurve_entries() {
+    fn propagate_split_copies_pcurves_of_kept_uses_only() {
         use remus_math::curves2d::{Curve2D, Line2D};
         use remus_math::vec::{Point2, Vec2};
         use remus_topology::pcurve::PCurve;
@@ -1510,17 +1608,20 @@ mod tests {
         let mut topo = Topology::new();
         let (face_id, verts, edges) = make_square_face(&mut topo);
         let neighbor = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
+        let kept = topo
+            .wire(topo.face(neighbor).unwrap().outer_wire())
+            .unwrap()
+            .edges()[1];
 
         let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
-        topo.set_pcurve(
-            edges[0],
-            neighbor,
-            PCurve::new(Curve2D::Line(line), 0.0, 1.0),
-        )
-        .unwrap();
+        let pcurve = PCurve::new(Curve2D::Line(line), 0.0, 1.0);
+        topo.set_pcurve(edges[0], neighbor, pcurve.clone()).unwrap();
+        topo.set_pcurve(kept.edge(), neighbor, pcurve).unwrap();
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         trim_face(
             &mut topo,
             face_id,
@@ -1528,12 +1629,20 @@ mod tests {
             &contact_uv,
             TrimKeep::Side(TrimSide::Left),
             &[],
+            &mut scope.edit(&mut replacements),
         )
         .expect("trim should succeed");
 
+        // The input neighbor keeps both of its pcurves.
+        assert!(topo.has_pcurve(edges[0], neighbor).unwrap());
+        assert!(topo.has_pcurve(kept.edge(), neighbor).unwrap());
+        // Its copy keeps the pcurve of the use it still makes and has no
+        // stale entry for the replaced edge.
+        let copy = replacements[&neighbor];
+        assert!(!topo.has_pcurve(edges[0], copy).unwrap());
         assert!(
-            !topo.has_pcurve(edges[0], neighbor).unwrap(),
-            "stale pcurve entry for the replaced edge must be removed"
+            topo.pcurve_oriented(kept.edge(), copy, kept.is_forward())
+                .is_some()
         );
     }
 
@@ -1548,7 +1657,10 @@ mod tests {
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        // Each square is its own body, so each trim runs in its own build scope.
         let trim = |topo: &mut Topology, face| {
+            let scope = EditScope::new(topo, [face]).unwrap();
+            let mut replacements = DetHashMap::default();
             trim_face(
                 topo,
                 face,
@@ -1556,6 +1668,7 @@ mod tests {
                 &contact_uv,
                 TrimKeep::Side(TrimSide::Left),
                 &[],
+                &mut scope.edit(&mut replacements),
             )
             .expect("trim should succeed")
         };
@@ -1594,6 +1707,8 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
             face_id,
@@ -1601,6 +1716,7 @@ mod tests {
             &contact_uv,
             TrimKeep::Side(TrimSide::Right),
             &[],
+            &mut scope.edit(&mut replacements),
         )
         .expect("trim should succeed");
 
@@ -1655,6 +1771,8 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
             face_id,
@@ -1662,6 +1780,7 @@ mod tests {
             &contact_uv,
             TrimKeep::Side(TrimSide::Left),
             &[],
+            &mut scope.edit(&mut replacements),
         )
         .expect("should return untrimmed result");
 
@@ -1739,8 +1858,16 @@ mod tests {
         source.set_trim(Some((0.0, std::f64::consts::PI)));
         let source_id = topo.add_edge(source);
 
-        let (before, after) =
-            split_edge_at(&mut topo, &OrientedEdge::new(source_id, false), split).unwrap();
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
+        let (before, after) = split_edge_at(
+            &mut topo,
+            &mut scope.edit(&mut replacements),
+            None,
+            &OrientedEdge::new(source_id, false),
+            split,
+        )
+        .unwrap();
         assert_eq!(
             topo.edge(before.edge()).unwrap().strict_domain().unwrap(),
             (std::f64::consts::PI, std::f64::consts::FRAC_PI_2)
@@ -1768,8 +1895,16 @@ mod tests {
         let source_id = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
         let edge_count = topo.num_edges();
 
+        let scope = input_scope(&topo);
+        let mut replacements = DetHashMap::default();
         assert!(matches!(
-            split_edge_at(&mut topo, &OrientedEdge::new(source_id, true), split),
+            split_edge_at(
+                &mut topo,
+                &mut scope.edit(&mut replacements),
+                None,
+                &OrientedEdge::new(source_id, true),
+                split,
+            ),
             Err(BlendError::InvalidInput { .. })
         ));
         assert_eq!(topo.num_edges(), edge_count);
