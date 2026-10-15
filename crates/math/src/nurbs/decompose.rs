@@ -63,12 +63,19 @@ fn check_first_span(knots: &[f64], p: usize) -> Result<(), MathError> {
     Ok(())
 }
 
-/// The largest weight, by which the clamping paths divide all weights first.
-/// A common weight factor leaves a rational curve unchanged, but knot
-/// insertion forms the products `w·P`, which a common scale such as 1e-300
-/// would underflow to zero.
-fn max_weight(weights: impl Iterator<Item = f64>) -> f64 {
-    weights.fold(0.0, f64::max)
+/// The factor the clamping paths divide all weights by first: the largest
+/// weight. A common weight factor leaves a rational curve unchanged, but
+/// knot insertion forms the products `w·P`, which a common scale such as
+/// 1e-300 would underflow to zero. When dividing would round a positive
+/// weight to zero (weights more than the whole `f64` range apart) the
+/// weights are kept as they are, so a valid curve is never made invalid.
+fn weight_scale(weights: impl Iterator<Item = f64> + Clone) -> f64 {
+    let max = weights.clone().fold(0.0, f64::max);
+    if weights.into_iter().all(|w| w / max > 0.0) {
+        max
+    } else {
+        1.0
+    }
 }
 
 /// Clamp a curve to its own domain by inserting both domain ends to
@@ -84,7 +91,7 @@ fn clamp_curve(curve: &NurbsCurve) -> Result<NurbsCurve, MathError> {
         return Ok(curve.clone());
     }
     check_first_span(curve.knots(), p)?;
-    let scale = max_weight(curve.weights().iter().copied());
+    let scale = weight_scale(curve.weights().iter().copied());
     let unit = NurbsCurve::new(
         p,
         curve.knots().to_vec(),
@@ -110,7 +117,7 @@ fn clamp_surface(surface: &NurbsSurface) -> Result<NurbsSurface, MathError> {
     if clamped_u && clamped_v {
         return Ok(surface.clone());
     }
-    let scale = max_weight(surface.weights().iter().flatten().copied());
+    let scale = weight_scale(surface.weights().iter().flatten().copied());
     let mut ends = NurbsSurface::new(
         pu,
         pv,
