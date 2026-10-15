@@ -34,7 +34,9 @@ use crate::vec::Point3;
 
 pub use chaining::chain_intersection_points;
 pub use curve_surface::{CurveSurfaceHit, intersect_curve_surface};
-pub use line::{LineSurfaceSeedGrid, intersect_line_nurbs, intersect_line_nurbs_with_grid};
+pub use line::{
+    LineSurfaceSeedGrid, intersect_line_nurbs, intersect_line_nurbs_with_grid, line_hit_reach,
+};
 pub use plane::intersect_plane_nurbs;
 pub use surface_seeding::{intersect_nurbs_nurbs, intersect_nurbs_nurbs_with_context};
 

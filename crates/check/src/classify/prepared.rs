@@ -25,6 +25,8 @@ use remus_topology::solid::SolidId;
 use super::{ClassifyOptions, ClassifySource, PointClassification};
 use crate::CheckError;
 
+mod ray_prefilter;
+
 /// One face's share of the frozen preparation.
 #[derive(Debug, Clone)]
 struct PreparedFace {
@@ -46,6 +48,11 @@ struct PreparedFace {
     /// plane the boundary test's polygon containment uses. `None`
     /// when no prune is proven exact for this face.
     trim_window: Option<TrimWindow>,
+    /// Whether the support is a NURBS surface.
+    nurbs: bool,
+    /// Knot-span boxes of a NURBS support for the ray prefilter, built on
+    /// first use; `None` inside when they cannot be certified.
+    span_boxes: std::sync::OnceLock<Option<ray_prefilter::SpanBoxes>>,
 }
 
 /// The rectangle, in the boundary test's projection plane, that contains every
@@ -187,9 +194,11 @@ fn hull_excludes(hull: Aabb3, point: Point3, tolerance: f64) -> bool {
 /// same candidates and reach exactly the same verdicts.
 ///
 /// Queries also fill a per-face cache of work that depends on neither the
-/// point nor the ray (NURBS seed grids, trim polygons projected to UV), and
-/// the boundary test skips a NURBS face whose certified control box is out of
-/// tolerance reach; both return what the one-shot path computes (O06).
+/// point nor the ray (NURBS seed grids, trim polygons projected to UV), the
+/// boundary test skips a NURBS face whose certified control box is out of
+/// tolerance reach, and the crossing count skips a NURBS face whose knot-span
+/// boxes a ray stays clear of; all return what the one-shot path computes
+/// (O06).
 #[derive(Debug, Clone)]
 pub struct PreparedSolid<'a> {
     topo: &'a Topology,
@@ -230,18 +239,19 @@ impl<'a> PreparedSolid<'a> {
                 face_aabbs.push((i, bounds));
             }
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
-            let support_hull = match topo.face(fid).map(remus_topology::face::Face::surface) {
-                Ok(FaceSurface::Nurbs(surface)) => nurbs_support_hull(surface),
-                // Analytic distances are closed-form; nothing to skip.
-                Ok(
-                    FaceSurface::Plane { .. }
-                    | FaceSurface::Cylinder(_)
-                    | FaceSurface::Cone(_)
-                    | FaceSurface::Sphere(_)
-                    | FaceSurface::Torus(_),
-                )
-                | Err(_) => None,
-            };
+            let (support_hull, nurbs) =
+                match topo.face(fid).map(remus_topology::face::Face::surface) {
+                    Ok(FaceSurface::Nurbs(surface)) => (nurbs_support_hull(surface), true),
+                    // Analytic distances are closed-form; nothing to skip.
+                    Ok(
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_),
+                    )
+                    | Err(_) => (None, false),
+                };
             let trim_window = match (&trim, topo.face(fid)) {
                 (Some(trim), Ok(face)) => TrimWindow::of(face.surface(), trim),
                 _ => None,
@@ -252,6 +262,8 @@ impl<'a> PreparedSolid<'a> {
                 cache: super::boundary::FaceCache::default(),
                 support_hull,
                 trim_window,
+                nurbs,
+                span_boxes: std::sync::OnceLock::new(),
             });
         }
         let bvh = Bvh::build(&face_aabbs);
@@ -459,6 +471,49 @@ impl<'a> PreparedSolid<'a> {
     ///
     /// Returns an error if a topology lookup fails.
     pub fn count_ray_crossings(&self, origin: Point3, direction: Vec3) -> Result<u32, CheckError> {
+        let candidates = self.bvh.query_ray(origin, direction);
+
+        let mut crossings = 0u32;
+        for face_idx in candidates {
+            // A NURBS support the ray provably misses contributes no crossing
+            // (see `ray_misses_nurbs_face`).
+            if self.ray_misses_nurbs_face(face_idx, origin, direction) {
+                continue;
+            }
+            let prepared = &self.prepared_faces[face_idx];
+            let owned_trim;
+            let trim = if let Some(cached) = &prepared.trim {
+                Some(cached)
+            } else {
+                owned_trim = super::boundary::FaceTrimData::build(self.topo, prepared.fid)?;
+                Some(&owned_trim)
+            };
+            crossings += super::boundary::count_face_ray_crossings_cached(
+                self.topo,
+                prepared.fid,
+                trim,
+                Some(&prepared.cache),
+                origin,
+                direction,
+            )?;
+        }
+        Ok(crossings)
+    }
+}
+
+impl PreparedSolid<'_> {
+    /// [`PreparedSolid::count_ray_crossings`] without the NURBS span
+    /// prefilter, kept verbatim as the differential oracle for that skip.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a topology lookup fails.
+    #[doc(hidden)]
+    pub fn count_ray_crossings_unfiltered(
+        &self,
+        origin: Point3,
+        direction: Vec3,
+    ) -> Result<u32, CheckError> {
         let candidates = self.bvh.query_ray(origin, direction);
 
         let mut crossings = 0u32;

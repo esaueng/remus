@@ -917,6 +917,27 @@ impl Completion<'_> {
     }
 }
 
+/// Bound on how far from the caller's line an appended root can lie.
+///
+/// Covers every root [`complete_line_roots`] appends for control points with
+/// no coordinate larger than `magnitude` in absolute value and a line
+/// through `origin`. A root passes Newton's final check against the norm of
+/// `pad`, whose entries are at most `ROUNDOFF · max(magnitude, |o|)` for the
+/// rebased origin `o`. That origin is the line's point nearest the centre
+/// `c` of the control box, up to the rebase's rounding: `|o - c|` is at most
+/// the distance from `c` to the root (half the box diagonal at most,
+/// `√3 · magnitude`) plus the root's distance from the line, plus
+/// `8ε · |c - origin|` from the rounded parameter along the line. So
+/// `|o| < 3.5 · magnitude + 8ε · |origin|` up to terms of order
+/// `ε · magnitude`, and the root lies within
+/// `√3 · ROUNDOFF · (3.5 · magnitude + 8ε · |origin|)` of the rebased line,
+/// which is within one rounding of the caller's. This returns more than
+/// twice that, plus a floor for the rounding of tiny coordinates.
+pub(super) fn hit_reach(magnitude: f64, origin: Point3) -> f64 {
+    let origin_norm = Vec3::new(origin.x(), origin.y(), origin.z()).length();
+    16.0 * ROUNDOFF * (1.0 + magnitude + 2.0 * f64::EPSILON * origin_norm)
+}
+
 /// The strict acceptance of a completion root: both plane distances of the
 /// point from the line within their own rounding allowance.
 struct Perpendicular {
@@ -1139,5 +1160,73 @@ mod tests {
         let (along_x, on_face) = (Vec3::new(1.0, 0.0, 0.0), Point3::new(0.0, 4.99, 0.0));
         assert!(line_meets_box(on_face, along_x, bounds, pad));
         assert!(!line_meets_box(o, along_x, bounds, pad));
+    }
+    /// Every hit the solver reports lies within `line_hit_reach` of the
+    /// line. Far from the origin the completion pass accepts a line that
+    /// misses a plane patch by up to its round-off allowance, wider than the
+    /// grid pass's `1e-5`, so the bound must grow with the coordinates.
+    #[test]
+    fn reported_hits_stay_within_line_hit_reach() {
+        use super::super::{GRID_ROOT_TOLERANCE, intersect_line_nurbs, line_hit_reach};
+
+        let mut widest = 0.0_f64;
+        for height in [0.0, 1e3, 1e6, 1e9, 1e12] {
+            let corner = |x: f64, y: f64| Point3::new(x, y, height);
+            let surface = NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    vec![corner(0.0, 0.0), corner(0.0, 1.0)],
+                    vec![corner(1.0, 0.0), corner(1.0, 1.0)],
+                ],
+                vec![vec![1.0; 2]; 2],
+            )
+            .unwrap();
+            let magnitude = height.max(1.0);
+            // The pass's allowance across a line along x or y above the patch.
+            let allowance = ROUNDOFF * height;
+            for fraction in [0.0_f64, 0.25, 0.5, 0.9, 1.1, 2.0] {
+                for floor in [0.0, 0.5e-5, 0.9e-5, 1.1e-5] {
+                    let offset = fraction.mul_add(allowance, floor);
+                    for far in [1.0, 1e5, 1e10, 1e15] {
+                        for along_x in [true, false] {
+                            let (origin, dir) = if along_x {
+                                (
+                                    Point3::new(-far, 0.5, height + offset),
+                                    Vec3::new(1.0, 0.0, 0.0),
+                                )
+                            } else {
+                                (
+                                    Point3::new(0.5, -far, height + offset),
+                                    Vec3::new(0.0, 1.0, 0.0),
+                                )
+                            };
+                            let reach = line_hit_reach(magnitude, origin);
+                            for hit in intersect_line_nurbs(&surface, origin, dir, 20).unwrap() {
+                                // Exact across an axis-aligned line, however far.
+                                let across = if along_x {
+                                    hit.point.y() - origin.y()
+                                } else {
+                                    hit.point.x() - origin.x()
+                                };
+                                let distance = across.hypot(hit.point.z() - origin.z());
+                                assert!(
+                                    distance <= reach,
+                                    "height {height}, offset {offset}, far {far}: \
+                                     hit {distance} off the line, reach {reach}"
+                                );
+                                widest = widest.max(distance);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            widest > GRID_ROOT_TOLERANCE,
+            "no hit past the grid tolerance: {widest}"
+        );
     }
 }

@@ -1,8 +1,12 @@
-//! Differential oracle for the prepared boundary test's trim-window prune, over the
-//! imported STEP fixtures and synthetic bodies: `PreparedSolid::is_point_on_boundary`
-//! with the trim-window prune against the unpruned loop, on points on and
-//! within a few tolerances of every face (seams, sphere caps, NURBS faces
-//! included).
+//! Differential oracles for the prepared classifier's exact skips, over the
+//! imported STEP fixtures and synthetic bodies:
+//!
+//! * `PreparedSolid::is_point_on_boundary` with the trim-window prune against
+//!   the unpruned loop, on points on and within a few tolerances of every face
+//!   (seams, sphere caps, NURBS faces included);
+//! * `PreparedSolid::count_ray_crossings` with the NURBS knot-span prefilter
+//!   against the unfiltered count, from the same kind of points along the
+//!   classifier's vote directions (the dragged hammer holder included).
 
 #![allow(
     clippy::unwrap_used,
@@ -17,15 +21,16 @@ use std::path::Path;
 
 use remus_check::classify::PreparedSolid;
 use remus_math::mat::Mat4;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::chamfer::chamfer;
 use remus_operations::fillet::fillet_rolling_ball;
 use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
+use remus_operations::push_pull::move_faces;
 use remus_operations::tessellate::tessellate_solid;
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
-use remus_topology::explorer::{solid_edges, solid_vertices};
+use remus_topology::explorer::{face_vertices, solid_edges, solid_faces, solid_vertices};
 use remus_topology::solid::SolidId;
 
 type Body = (String, Topology, SolidId);
@@ -63,6 +68,30 @@ fn step_bodies() -> Vec<Body> {
         bodies.len()
     );
     bodies
+}
+
+/// The hammer holder after the face drag `kernel_perf_probe` analyses: its
+/// +X arm face moved out by 5.
+fn hammer_edit() -> Body {
+    let text = std::fs::read_to_string(data_dir().join("shapr3d_hammer_holder.step")).unwrap();
+    let mut topo = Topology::new();
+    let solid = remus_io::step::reader::read_step(&text, &mut topo).unwrap()[0];
+    let face = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.x() > 0.999)
+                && face_vertices(&topo, face)
+                    .unwrap()
+                    .iter()
+                    .all(|&v| (topo.vertex(v).unwrap().point().x() - 48.0).abs() < 1e-7)
+        })
+        .unwrap();
+    let edited = move_faces(&mut topo, solid, &[face], 5.0).unwrap();
+    ("hammer edit".to_string(), topo, edited)
 }
 
 fn translated(topo: &mut Topology, solid: SolidId, x: f64, y: f64, z: f64) {
@@ -195,4 +224,49 @@ fn pruned_boundary_test_matches_unpruned_loop() {
         on_boundary * 10 > checked,
         "the corpus must reach the boundary"
     );
+}
+
+/// The NURBS knot-span prefilter never changes a crossing count.
+#[test]
+fn nurbs_ray_prefilter_matches_unfiltered_counts() {
+    let directions = [
+        Vec3::new(
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+            0.350_889_803_483_932_2,
+        ),
+        Vec3::new(
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+        ),
+        Vec3::new(
+            0.740_535_693_464_567_5,
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+        ),
+        Vec3::new(-0.6, 0.0, -0.8),
+        Vec3::new(0.0, 0.0, 1.0),
+    ];
+    let mut bodies = step_bodies();
+    bodies.extend(synthetic_bodies());
+    bodies.push(hammer_edit());
+    let mut rays = 0usize;
+    for (name, topo, solid) in &bodies {
+        let prepared = PreparedSolid::prepare(topo, *solid).unwrap();
+        for point in boundary_corpus(topo, *solid, 1.0e-3).into_iter().step_by(3) {
+            for direction in directions {
+                let filtered = prepared.count_ray_crossings(point, direction);
+                let reference = prepared.count_ray_crossings_unfiltered(point, direction);
+                assert_eq!(
+                    format!("{filtered:?}"),
+                    format!("{reference:?}"),
+                    "{name} from {point:?} along {direction:?}"
+                );
+                rays += 1;
+            }
+        }
+    }
+    eprintln!("NURBS ray prefilter: {rays} rays compared");
+    assert!(rays > 100_000, "only {rays} rays compared");
 }
