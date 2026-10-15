@@ -253,6 +253,54 @@ fn extension_attributes_do_not_override_core_placement() {
     assert_positions(&meshes[1].positions, &cube_corners(|p| p));
 }
 
+/// Extension elements that share a core local name are not core build or
+/// component instructions, and another extension's `path` is not the
+/// production extension's `p:path`.
+#[test]
+fn extension_elements_are_not_core_build_instructions() {
+    let vendor = r#"xmlns:v="urn:vendor""#;
+    let data = model(
+        "millimeter",
+        &[
+            cube_object(1),
+            format!(
+                r#"<object id="2" type="model" {vendor}><components><component objectid="1"/><v:component objectid="1" transform="1 0 0 0 1 0 0 0 1 9 9 9"/></components></object>"#
+            ),
+        ],
+        Some(&[
+            format!(r#"<item {vendor} objectid="2" v:path="/elsewhere"/>"#),
+            format!(r#"<v:item {vendor} objectid="1" transform="1 0 0 0 1 0 0 0 1 50 0 0"/>"#),
+        ]),
+    );
+    // A vendor build after the core build names nothing the core reads.
+    let data_with_vendor_build = {
+        let mut zip = zip::ZipArchive::new(Cursor::new(data.as_slice())).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("3D/3dmodel.model").unwrap(), &mut xml)
+            .unwrap();
+        let xml = xml.replace(
+            "</build>",
+            &format!(r#"</build><v:build {vendor}><v:item objectid="1"/></v:build>"#),
+        );
+        let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        out.start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        out.write_all(xml.as_bytes()).unwrap();
+        out.finish().unwrap().into_inner()
+    };
+    let meshes = read_threemf(&data_with_vendor_build).unwrap();
+    assert_eq!(meshes.len(), 1, "only the core item");
+    assert_positions(&meshes[0].positions, &cube_corners(|p| p));
+
+    // A `path` whose prefix no declaration binds is refused, not guessed.
+    let undeclared = model(
+        "millimeter",
+        &[cube_object(1)],
+        Some(&[r#"<item q:path="/3D/Objects/part.model" objectid="1"/>"#.to_string()]),
+    );
+    assert!(parse_error(&undeclared).contains("production extension"));
+}
+
 fn parse_error(data: &[u8]) -> String {
     match read_threemf(data) {
         Err(IoError::ParseError { reason }) => reason,
