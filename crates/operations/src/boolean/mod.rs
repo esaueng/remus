@@ -184,24 +184,90 @@ pub fn trim_sheet_by_sheet(
 /// history use [`crate::journal_ops::boolean_journaled`], which records
 /// the same events into the evolution journal.
 ///
+/// The result passes the same provenance-preserving acceptance gate as
+/// [`boolean_with_evolution`]'s faithful path; a result [`boolean`] would
+/// refuse for being open, non-manifold or semantically wrong is refused
+/// here too.
+///
 /// # Errors
 ///
-/// Returns [`crate::OperationsError`] if any GFA stage fails.
+/// Returns [`crate::OperationsError`] if any GFA stage fails, and
+/// [`crate::OperationsError::ExactOnlyUnattainable`] when the GFA result
+/// fails the acceptance gate. Every error rolls the topology back.
 pub fn boolean_with_entity_evolution(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), crate::OperationsError> {
-    refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
+        gated_entity_evolution_boolean(topo, op, solid_a, solid_b)
+    })
+}
+
+/// The GFA entity-evolution boolean plus its acceptance gate, without the
+/// carrier-relation refusal or a transaction.
+///
+/// A refused result's topology is already in the arena, so callers must run
+/// this inside a transaction.
+pub(crate) fn gated_entity_evolution_boolean(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<(SolidId, EntityEvolution), crate::OperationsError> {
     let algo_op = match op {
         BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
         BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
         BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
     };
-    Ok(remus_algo::gfa::boolean_with_entity_evolution(
-        topo, algo_op, solid_a, solid_b,
-    )?)
+    let (result, evolution) =
+        remus_algo::gfa::boolean_with_entity_evolution(topo, algo_op, solid_a, solid_b)?;
+    // Rewinding hole wires keeps every face, edge and vertex id, so the
+    // evolution stays exact. The edge-removing heals the faithful
+    // `boolean_with_evolution` path runs would orphan edge records; a
+    // result that needs them is refused instead.
+    normalize_hole_windings(topo, result)?;
+    let tol = remus_math::tolerance::Tolerance::default();
+    if !provenance_result_accepted(topo, op, result, solid_a, solid_b, tol) {
+        return Err(crate::OperationsError::ExactOnlyUnattainable);
+    }
+    Ok((result, evolution))
+}
+
+/// Acceptance gate for a raw GFA result whose entity ids are reported as
+/// provenance.
+///
+/// [`boolean`]'s gate may first rewrite the result (`unify_faces`, vertex
+/// merging), which would discard that provenance, so a result reaching this
+/// gate must already be a valid closed manifold. Structural validation alone
+/// cannot detect a closed Cut result that incorrectly retains the tool
+/// interior, hence the semantic checks.
+fn provenance_result_accepted(
+    topo: &Topology,
+    op: BooleanOp,
+    result: SolidId,
+    a: SolidId,
+    b: SolidId,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    if !is_closed_manifold(topo, result).is_ok_and(|closed| closed)
+        || (op == BooleanOp::Intersect && !has_free_edges(topo, result).is_ok_and(|free| !free))
+    {
+        return false;
+    }
+    let cut_safe = op != BooleanOp::Cut
+        || remus_algo::classifier::try_build_analytic_classifier(topo, b)
+            .as_ref()
+            .is_none_or(|cls_b| {
+                let components = crate::boolean::assembly::face_components(topo, result);
+                all_component_centers_outside(topo, &components, cls_b, tol)
+            });
+    cut_safe
+        && operands_are_represented(topo, op, result, a, b, tol)
+        && result_within_operand_bounds(topo, op, result, a, b, tol)
+        && validate_boolean_result(topo, result).is_ok()
 }
 
 /// Run an exact boolean and preserve disconnected result regions as a
@@ -2334,27 +2400,10 @@ fn boolean_with_evolution_impl(
                 && crate::heal::remove_wire_spurs(topo, result).is_ok()
                 && normalize_hole_windings(topo, result).is_ok();
 
-            // Apply the same semantic safety checks as the standard GFA path.
-            // Structural validation alone cannot detect a closed Cut result
-            // that incorrectly retains the tool interior.
-            let components = crate::boolean::assembly::face_components(topo, result);
-            let cut_safe = op != BooleanOp::Cut
-                || remus_algo::classifier::try_build_analytic_classifier(topo, b)
-                    .as_ref()
-                    .is_none_or(|cls_b| {
-                        all_component_centers_outside(topo, &components, cls_b, tol)
-                    });
-            let semantic_ok = is_closed_manifold(topo, result).is_ok_and(|closed| closed)
-                && (op != BooleanOp::Intersect
-                    || has_free_edges(topo, result).is_ok_and(|free| !free))
-                && cut_safe
-                && operands_are_represented(topo, op, result, a, b, tol)
-                && result_within_operand_bounds(topo, op, result, a, b, tol);
-
             // Trust the faithful path only if its result is valid; otherwise
             // fall through to boolean()'s full pipeline (fast paths + mesh
             // fallback + validation), matching boolean()'s contract.
-            if healed_ok && semantic_ok && validate_boolean_result(topo, result).is_ok() {
+            if healed_ok && provenance_result_accepted(topo, op, result, a, b, tol) {
                 let mut evo = crate::evolution::EvolutionMap::exact();
                 let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {
