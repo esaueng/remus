@@ -3398,6 +3398,115 @@ fn conics_share_support(a: &EdgeCurve, b: &EdgeCurve, tol: f64) -> bool {
     }
 }
 
+/// Where the NURBS arc refinement places vertex `p` on an edge with
+/// endpoints `(sp, ep)` and trim start and length `(t0, span)`: the closest of
+/// the `samples` (taken at `span / (samples.len() - 1)` steps), refined by a
+/// 40-step ternary search on the neighbouring steps, as `(fraction,
+/// parameter)` when that point lies within `snap` of `p`.
+fn nurbs_cut_at(
+    curve: &EdgeCurve,
+    (sp, ep): (Point3, Point3),
+    (t0, span): (f64, f64),
+    samples: &[Point3],
+    p: Point3,
+    snap: f64,
+) -> Option<(f64, f64)> {
+    let n_samples = samples.len().saturating_sub(1);
+    let mut best_k = 0;
+    let mut best = f64::MAX;
+    for (k, q) in samples.iter().enumerate() {
+        let d = (*q - p).length();
+        if d < best {
+            best = d;
+            best_k = k;
+        }
+    }
+    let mut lo = best_k.saturating_sub(1) as f64 / n_samples as f64;
+    let mut hi = (best_k + 1).min(n_samples) as f64 / n_samples as f64;
+    for _ in 0..40 {
+        let m1 = lo + (hi - lo) / 3.0;
+        let m2 = hi - (hi - lo) / 3.0;
+        let d1 = (curve.evaluate_with_endpoints(span.mul_add(m1, t0), sp, ep) - p).length();
+        let d2 = (curve.evaluate_with_endpoints(span.mul_add(m2, t0), sp, ep) - p).length();
+        if d1 < d2 {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let fraction = 0.5 * (lo + hi);
+    let parameter = span.mul_add(fraction, t0);
+    if (curve.evaluate_with_endpoints(parameter, sp, ep) - p).length() > snap {
+        return None;
+    }
+    Some((fraction, parameter))
+}
+
+/// Boxes that hold every point `NurbsCurve::evaluate` returns at a finite
+/// parameter, one per non-empty knot span.
+///
+/// Evaluation clamps the parameter into `[knots[p], knots[n]]` and evaluates
+/// on one non-empty span containing it (an end parameter falls into the
+/// first or last span), as the average of that span's `p + 1` control points
+/// under non-negative basis values times positive weights. The point lies in
+/// their box up to rounding of a few ulps of the largest coordinate, which the
+/// `1e-12` relative growth covers. Refuses a non-finite or non-positive
+/// weight, a non-finite knot or control point, a decreasing knot vector, an
+/// empty first or last span, or inconsistent lengths.
+fn nurbs_span_boxes(curve: &remus_math::nurbs::curve::NurbsCurve) -> Option<Vec<(Point3, Point3)>> {
+    let (p, points, weights, knots) = (
+        curve.degree(),
+        curve.control_points(),
+        curve.weights(),
+        curve.knots(),
+    );
+    let n = points.len();
+    let finite = |q: &Point3| q.x().is_finite() && q.y().is_finite() && q.z().is_finite();
+    if p == 0
+        || n <= p
+        || knots.len() != n + p + 1
+        || weights.len() != n
+        || !knots.iter().all(|k| k.is_finite())
+        || !knots.windows(2).all(|pair| pair[0] <= pair[1])
+        || knots[p] >= knots[p + 1]
+        || knots[n - 1] >= knots[n]
+        || !weights.iter().all(|&w| w.is_finite() && w > 0.0)
+        || !points.iter().all(finite)
+    {
+        return None;
+    }
+    let mut boxes = Vec::with_capacity(n - p);
+    for k in p..n {
+        if knots[k] >= knots[k + 1] {
+            continue;
+        }
+        let span = &points[k - p..=k];
+        let (mut lo, mut hi) = (span[0], span[0]);
+        for q in span {
+            lo = Point3::new(lo.x().min(q.x()), lo.y().min(q.y()), lo.z().min(q.z()));
+            hi = Point3::new(hi.x().max(q.x()), hi.y().max(q.y()), hi.z().max(q.z()));
+        }
+        let scale = [lo.x(), lo.y(), lo.z(), hi.x(), hi.y(), hi.z()]
+            .iter()
+            .fold(1.0_f64, |m, c| m.max(c.abs()));
+        let grow = Vec3::new(1.0, 1.0, 1.0) * (1e-12 * scale);
+        boxes.push((lo - grow, hi + grow));
+    }
+    Some(boxes)
+}
+
+/// Distance from `p` to the box `(lo, hi)`; zero inside, and zero for a NaN
+/// coordinate, which keeps such a point.
+fn box_distance(p: Point3, (lo, hi): &(Point3, Point3)) -> f64 {
+    let gap = |c: f64, l: f64, h: f64| (l - c).max(c - h).max(0.0);
+    let (dx, dy, dz) = (
+        gap(p.x(), lo.x(), hi.x()),
+        gap(p.y(), lo.y(), hi.y()),
+        gap(p.z(), lo.z(), hi.z()),
+    );
+    dz.mul_add(dz, dx.mul_add(dx, dy * dy)).sqrt()
+}
+
 /// Split Circle/Ellipse arc edges at interior vertices that lie ON the arc.
 ///
 /// The arc analogue of [`split_edges_at_collinear_vertices`]. Two operands can
@@ -3572,42 +3681,36 @@ fn split_arc_edges_at_collinear_vertices(
                     amax.z().max(q.z()),
                 );
             }
+            // A finite trim keeps every searched parameter finite, so the span
+            // boxes cover every point the search evaluates.
+            let span_boxes = if let EdgeCurve::NurbsCurve(nurbs) = &curve
+                && t0.is_finite()
+                && t1.is_finite()
+                && span.is_finite()
+            {
+                nurbs_span_boxes(nurbs)
+            } else {
+                None
+            };
             let mut cuts: Vec<(f64, f64, VertexId)> = Vec::new();
             for ci in grid.box_candidates(amin, amax, snap * 2.0) {
                 let (vid, p) = verts[ci];
                 if (p - sp).length() < snap || (p - ep).length() < snap {
                     continue;
                 }
-                let mut best_k = 0;
-                let mut best = f64::MAX;
-                for (k, q) in samples.iter().enumerate() {
-                    let d = (*q - p).length();
-                    if d < best {
-                        best = d;
-                        best_k = k;
-                    }
-                }
-                let mut lo = best_k.saturating_sub(1) as f64 / n_samples as f64;
-                let mut hi = (best_k + 1).min(n_samples) as f64 / n_samples as f64;
-                for _ in 0..40 {
-                    let m1 = lo + (hi - lo) / 3.0;
-                    let m2 = hi - (hi - lo) / 3.0;
-                    let d1 =
-                        (curve.evaluate_with_endpoints(span.mul_add(m1, t0), sp, ep) - p).length();
-                    let d2 =
-                        (curve.evaluate_with_endpoints(span.mul_add(m2, t0), sp, ep) - p).length();
-                    if d1 < d2 {
-                        hi = m2;
-                    } else {
-                        lo = m1;
-                    }
-                }
-                let fraction = 0.5 * (lo + hi);
-                let parameter = span.mul_add(fraction, t0);
-                if (curve.evaluate_with_endpoints(parameter, sp, ep) - p).length() > snap {
+                // Farther than `2 snap` from every box, `p` is farther than
+                // `snap` from every point the search can evaluate, so the
+                // search would reject it.
+                if span_boxes.as_ref().is_some_and(|boxes| {
+                    boxes.iter().all(|aabb| box_distance(p, aabb) > 2.0 * snap)
+                }) {
                     continue;
                 }
-                cuts.push((fraction, parameter, vid));
+                if let Some((fraction, parameter)) =
+                    nurbs_cut_at(&curve, (sp, ep), (t0, span), &samples, p, snap)
+                {
+                    cuts.push((fraction, parameter, vid));
+                }
             }
             if cuts.is_empty() {
                 continue;
@@ -6779,3 +6882,6 @@ mod tests {
 
 #[cfg(test)]
 mod helper_oracle_tests;
+
+#[cfg(test)]
+mod arc_refine_oracle_tests;
