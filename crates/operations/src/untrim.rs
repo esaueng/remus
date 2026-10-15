@@ -465,6 +465,76 @@ mod tests {
         }
     }
 
+    /// Grids above 100 points take the LSPIA branch, which none of the tests
+    /// above (8×8, 10×10) reach. With more samples than control points (30²
+    /// samples, 20² control points) its old step size diverged (B103): the
+    /// fit fell back to the initial grid, 0.13 from the samples.
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn untrim_lspia_fit_passes_near_its_samples() {
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let control_points: Vec<Vec<Point3>> = (0..4)
+            .map(|i| {
+                (0..4)
+                    .map(|j| {
+                        let z = [0.0, 0.4, -0.3, 0.1][i] + [0.2, -0.1, 0.3, 0.0][j];
+                        Point3::new(j as f64 / 3.0, i as f64 / 3.0, z)
+                    })
+                    .collect()
+            })
+            .collect();
+        let surface = NurbsSurface::new(
+            3,
+            3,
+            knots.clone(),
+            knots,
+            control_points,
+            vec![vec![1.0; 4]; 4],
+        )
+        .expect("valid bicubic surface");
+
+        let n = 30;
+        let result = untrim_face(&surface, &rectangular_trim(), 10, n).unwrap();
+
+        // The rectangular trim covers the whole domain, so the samples are
+        // the original surface on a uniform n × n parameter grid. LSPIA fits
+        // each sample at its averaged chord-length parameters, so measure it
+        // there (computed independently); a projection distance would also
+        // accept the unfitted initial net, which lies near the samples as a set.
+        let grid: Vec<Vec<Point3>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| surface.evaluate(i as f64 / (n - 1) as f64, j as f64 / (n - 1) as f64))
+                    .collect()
+            })
+            .collect();
+        let averaged = |lines: &[Vec<Point3>]| -> Vec<f64> {
+            let mut sum = vec![0.0; n];
+            for line in lines {
+                let mut acc = vec![0.0; n];
+                for k in 1..n {
+                    acc[k] = acc[k - 1] + (line[k] - line[k - 1]).length();
+                }
+                for k in 0..n {
+                    sum[k] += acc[k] / acc[n - 1];
+                }
+            }
+            sum.iter().map(|s| s / n as f64).collect()
+        };
+        let columns: Vec<Vec<Point3>> = (0..n)
+            .map(|j| grid.iter().map(|row| row[j]).collect())
+            .collect();
+        let params_u = averaged(&columns);
+        let params_v = averaged(&grid);
+        let mut worst = 0.0f64;
+        for (i, row) in grid.iter().enumerate() {
+            for (j, q) in row.iter().enumerate() {
+                worst = worst.max((result.evaluate(params_u[i], params_v[j]) - *q).length());
+            }
+        }
+        assert!(worst < 0.02, "LSPIA untrim misses its samples by {worst}");
+    }
+
     #[test]
     fn untrim_empty_trims_returns_error() {
         let surface = flat_bilinear_surface();
