@@ -319,3 +319,38 @@ fn weights_spanning_the_f64_range_refuse_rather_than_accept() {
         );
     }
 }
+
+#[test]
+fn a_large_common_offset_does_not_cancel_the_deviation() {
+    // Review follow-up: x = p, p + ulp, p + 3·ulp at p = 1e12 with the knot
+    // at 0.2. The chord there is p + 0.6·ulp, so the middle point is 0.4 ulp
+    // off it (4.9e-5). Forming the chord in absolute coordinates rounded it
+    // onto the middle point and the bound came out 0.
+    let p = 1e12_f64;
+    let ulp = f64::from_bits(p.to_bits() + 1) - p;
+    let curve = polyline(
+        vec![0.0, 0.0, 0.2, 1.0, 1.0],
+        &[
+            [p, 0.0, 0.0],
+            [p + ulp, 0.0, 0.0],
+            [p + 3.0 * ulp, 0.0, 0.0],
+        ],
+        vec![1.0; 3],
+    );
+    assert!(is_refused(&curve_knot_remove(&curve, 0.2, 1e-6)));
+    assert!(curve_knot_remove(&curve, 0.2, 0.5 * ulp).is_ok());
+}
+
+#[test]
+fn a_tiny_deviation_does_not_underflow_to_zero() {
+    // Review follow-up: the corner (0, 1e-200, 0) squares to 1e-400, which
+    // underflowed to 0 and let the removal through at tolerance 0.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [0.0, 1e-200, 0.0], [0.0, 0.0, 0.0]],
+        vec![1.0; 3],
+    );
+    assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.0)));
+    assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.5e-200)));
+    assert!(curve_knot_remove(&curve, 0.5, 1e-200).is_ok());
+}
