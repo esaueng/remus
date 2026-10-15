@@ -8,7 +8,7 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
-use remus_topology::coedge::{CoedgeId, PeriodicWinding};
+use remus_topology::coedge::PeriodicWinding;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
@@ -1698,26 +1698,26 @@ fn orient_nurbs_for_map(
 /// each orientation flipped. A shared edge flips on both of its faces, so
 /// the shell's opposite-use pairing is unchanged.
 ///
-/// Boundary authority stays with its use: the pcurve and periodic lift of
-/// `(edge, forward)` move to `(edge, !forward)` with the parameter range
-/// swapped, so the pcurve still runs from the use's oriented start to its
-/// oriented end. The two branches of a seam swap uses, each keeping its own
-/// UV branch.
+/// Boundary authority stays with its use: in a reversed loop of `n` uses,
+/// coedge `i` is the old coedge `n − 1 − i`, so it takes that coedge's
+/// pcurve with the parameter range swapped (still running from the use's
+/// oriented start to its oriented end) and its periodic lift. Carrying by
+/// position keeps repeated `(edge, orientation)` uses distinct; a seam's
+/// two branches each keep their own UV branch.
 ///
-/// Cost: each wire replacement scans the topology's face arena for other
-/// faces sharing the wire, so this is O(wires × arena faces).
+/// All wires are replaced in one batch, so the face arena is scanned once.
 pub(crate) fn reverse_face_boundaries(
     topo: &mut Topology,
     faces: &[FaceId],
 ) -> Result<(), crate::OperationsError> {
-    type UseAuthority = DetHashMap<(EdgeId, bool), (Option<PCurve>, PeriodicWinding)>;
+    type LoopAuthority = Vec<(Option<PCurve>, PeriodicWinding)>;
 
-    // Snapshot every face before replacing any wire: a replacement rebuilds
-    // the loops of every face that uses the wire.
+    // Snapshot every face's loops before any wire is replaced: a replacement
+    // rebuilds the loops of every face that uses the wire.
     let mut seen = DetHashSet::default();
-    let mut wires = Vec::new();
     let mut seen_wires = DetHashSet::default();
-    let mut carried: Vec<(FaceId, UseAuthority)> = Vec::new();
+    let mut replacements = Vec::new();
+    let mut carried: Vec<(FaceId, Vec<LoopAuthority>)> = Vec::new();
     for &face_id in faces {
         if !seen.insert(face_id) {
             continue;
@@ -1726,70 +1726,72 @@ pub(crate) fn reverse_face_boundaries(
         for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
         {
             if seen_wires.insert(wire_id) {
-                wires.push(wire_id);
+                let wire = topo.wire(wire_id)?;
+                let uses = wire
+                    .edges()
+                    .iter()
+                    .rev()
+                    .map(|used| OrientedEdge::new(used.edge(), !used.is_forward()))
+                    .collect();
+                replacements.push((wire_id, Wire::new(uses, wire.is_closed())?));
             }
         }
-        let mut uses = DetHashMap::default();
-        for coedge_id in face_coedge_ids(topo, face_id)? {
-            let coedge = topo.coedge(coedge_id)?;
-            uses.insert(
-                (coedge.edge(), coedge.is_forward()),
-                (coedge.pcurve().cloned(), coedge.periodic_winding()),
-            );
+        let mut loops = Vec::new();
+        for &loop_id in topo.loops_of_face(face_id).unwrap_or_default() {
+            let mut authority = Vec::new();
+            for &coedge_id in topo.face_loop(loop_id)?.coedges() {
+                let coedge = topo.coedge(coedge_id)?;
+                authority.push((coedge.pcurve().cloned(), coedge.periodic_winding()));
+            }
+            loops.push(authority);
         }
-        carried.push((face_id, uses));
+        carried.push((face_id, loops));
     }
 
-    for wire_id in wires {
-        let wire = topo.wire(wire_id)?;
-        let uses = wire
-            .edges()
-            .iter()
-            .rev()
-            .map(|used| OrientedEdge::new(used.edge(), !used.is_forward()))
-            .collect();
-        let reversed = Wire::new(uses, wire.is_closed())?;
-        topo.replace_boundary_wire(wire_id, reversed)?;
-    }
+    topo.replace_boundary_wires(replacements)?;
 
-    for (face_id, uses) in carried {
-        for coedge_id in face_coedge_ids(topo, face_id)? {
-            let coedge = topo.coedge(coedge_id)?;
-            let source = uses.get(&(coedge.edge(), !coedge.is_forward()));
-            let (pcurve, winding) =
-                source.map_or((None, PeriodicWinding::ZERO), |(pcurve, winding)| {
-                    (
-                        pcurve
-                            .as_ref()
-                            .map(|p| PCurve::new(p.curve().clone(), p.t_end(), p.t_start())),
-                        *winding,
-                    )
+    for (face_id, loops) in carried {
+        // A legacy face had no loops to carry; its rebuilt view starts bare.
+        if loops.is_empty() {
+            continue;
+        }
+        let rebuilt = topo.loops_of_face(face_id).unwrap_or_default().to_vec();
+        if rebuilt.len() != loops.len() {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "reflected face {face_id:?} rebuilt {} loops from {}",
+                    rebuilt.len(),
+                    loops.len()
+                ),
+            });
+        }
+        for (loop_id, mut authority) in rebuilt.into_iter().zip(loops) {
+            let coedges = topo.face_loop(loop_id)?.coedges().to_vec();
+            if coedges.len() != authority.len() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "reflected loop {loop_id:?} rebuilt {} uses from {}",
+                        coedges.len(),
+                        authority.len()
+                    ),
                 });
-            match pcurve {
-                Some(pcurve) => {
-                    topo.set_coedge_pcurve(coedge_id, pcurve)?;
-                }
-                None => {
-                    topo.remove_coedge_pcurve(coedge_id)?;
-                }
             }
-            topo.set_coedge_periodic_winding(coedge_id, winding)?;
+            authority.reverse();
+            for (coedge_id, (pcurve, winding)) in coedges.into_iter().zip(authority) {
+                match pcurve {
+                    Some(p) => {
+                        let swapped = PCurve::new(p.curve().clone(), p.t_end(), p.t_start());
+                        topo.set_coedge_pcurve(coedge_id, swapped)?;
+                    }
+                    None => {
+                        topo.remove_coedge_pcurve(coedge_id)?;
+                    }
+                }
+                topo.set_coedge_periodic_winding(coedge_id, winding)?;
+            }
         }
     }
     Ok(())
-}
-
-/// The coedges of a face's loops, outer then inner; empty for a legacy face
-/// whose loops were never derived.
-fn face_coedge_ids(
-    topo: &Topology,
-    face_id: FaceId,
-) -> Result<Vec<CoedgeId>, crate::OperationsError> {
-    let mut coedges = Vec::new();
-    for &loop_id in topo.loops_of_face(face_id).unwrap_or_default() {
-        coedges.extend_from_slice(topo.face_loop(loop_id)?.coedges());
-    }
-    Ok(coedges)
 }
 
 /// Control-point footprint of a NURBS surface: deterministic output-size

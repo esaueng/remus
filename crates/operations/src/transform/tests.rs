@@ -1767,3 +1767,69 @@ fn reflection_carries_use_authority_to_the_flipped_use() {
         );
     }
 }
+
+/// Two uses of the same edge in the same orientation keep distinct
+/// authority across a reflection: carrying by position, not by the
+/// non-unique `(edge, orientation)` key.
+#[test]
+fn reflection_keeps_repeated_uses_distinct() {
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2, Vec3};
+    use remus_topology::coedge::PeriodicWinding;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::pcurve::PCurve;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let mut topo = Topology::new();
+    let v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let e = topo.add_edge(edge);
+    let uses = vec![OrientedEdge::new(e, true), OrientedEdge::new(e, true)];
+    let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let coedges = topo
+        .face_loop(topo.loops_of_face(face).unwrap()[0])
+        .unwrap()
+        .coedges()
+        .to_vec();
+    assert_eq!(coedges.len(), 2);
+    for (i, &coedge) in (0_i32..).zip(&coedges) {
+        let tag = f64::from(i);
+        let line = Line2D::new(Point2::new(tag, 0.0), Vec2::new(0.0, 1.0)).unwrap();
+        topo.set_coedge_pcurve(coedge, PCurve::new(Curve2D::Line(line), tag, tag + 1.0))
+            .unwrap();
+        topo.set_coedge_periodic_winding(coedge, PeriodicWinding::new(i, 0))
+            .unwrap();
+    }
+
+    transform_face(&mut topo, face, &Mat4::scale(1.0, 1.0, -1.0)).unwrap();
+
+    let coedges = topo
+        .face_loop(topo.loops_of_face(face).unwrap()[0])
+        .unwrap()
+        .coedges()
+        .to_vec();
+    // Reversed loop: new use 0 is old use 1 and vice versa.
+    for (new, old) in coedges.iter().zip([1_i32, 0]) {
+        let coedge = topo.coedge(*new).unwrap();
+        assert!(!coedge.is_forward());
+        let tag = f64::from(old);
+        let pcurve = coedge.pcurve().unwrap();
+        assert_eq!(pcurve.evaluate(0.0).x().to_bits(), tag.to_bits());
+        assert_eq!(pcurve.t_start().to_bits(), (tag + 1.0).to_bits());
+        assert_eq!(pcurve.t_end().to_bits(), tag.to_bits());
+        assert_eq!(coedge.periodic_winding(), PeriodicWinding::new(old, 0));
+    }
+}
