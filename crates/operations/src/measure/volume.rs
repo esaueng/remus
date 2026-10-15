@@ -279,23 +279,107 @@ fn torus_wire_wraps_tube(
     (winding.abs() - TAU).abs() <= 1.0e-6
 }
 
-/// Count mesh edges incident to a number of triangles other than 2 (boundary or
-/// non-manifold edges). Zero means a closed 2-manifold.
+/// The two edge censuses the whole-solid mesh route reads, from one pass over
+/// a triangle index list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EdgeCensus {
+    /// Undirected edges (a degenerate `(i, i)` edge included) used by a
+    /// number of triangles other than 2: boundary or non-manifold edges.
+    bad_edges: usize,
+    /// Whether every non-degenerate undirected edge is run as often in one
+    /// direction as in the other (see [`directed_edges_cancel`]).
+    edges_cancel: bool,
+}
+
+/// [`EdgeCensus`] of the triangles in `indices` (trailing indices short of a
+/// triangle ignored).
 ///
-/// The undirected edge keys are sorted rather than hashed: each run of equal
-/// keys is one edge and its length the edge's triangle count, so the count
-/// is the hash-map census's exactly (see the oracle in this module's tests).
-fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
-    let mut keys: Vec<(u32, u32)> = Vec::with_capacity(mesh.indices.len());
-    for tri in mesh.indices.chunks_exact(3) {
-        for &(i, j) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
-            keys.push(if i < j { (i, j) } else { (j, i) });
+/// Each edge use is bucketed under its smaller endpoint by a counting sort,
+/// then each bucket is sorted by the larger endpoint: a run of equal larger
+/// endpoints is one undirected edge, so the counts are those of sorting
+/// every `(smaller, larger)` key at once. The buckets average a handful of
+/// uses, where the whole-list sort was `O(n log n)` over three keys per
+/// triangle. The hash-map censuses this replaces are the oracle (see this
+/// module's tests).
+fn edge_census(indices: &[u32]) -> EdgeCensus {
+    let triangles = indices.chunks_exact(3);
+    let Some(vertex_count) = triangles
+        .clone()
+        .flatten()
+        .max()
+        .map(|&max| max as usize + 1)
+    else {
+        return EdgeCensus {
+            bad_edges: 0,
+            edges_cancel: true,
+        };
+    };
+    let uses = |tri: &[u32]| [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
+    let mut starts = vec![0_usize; vertex_count + 1];
+    for tri in triangles.clone() {
+        for (i, j) in uses(tri) {
+            starts[i.min(j) as usize + 1] += 1;
         }
     }
-    keys.sort_unstable();
-    keys.chunk_by(|a, b| a == b)
-        .filter(|run| run.len() != 2)
-        .count()
+    for v in 0..vertex_count {
+        starts[v + 1] += starts[v];
+    }
+    // The larger endpoint in the high bits and the direction in the low two
+    // (0 down, 1 degenerate, 2 up), so sorting a bucket groups by edge.
+    let mut fill = starts.clone();
+    let mut keyed = vec![0_u64; starts[vertex_count]];
+    for tri in triangles {
+        for (i, j) in uses(tri) {
+            let direction = match i.cmp(&j) {
+                std::cmp::Ordering::Less => 2,
+                std::cmp::Ordering::Equal => 1,
+                std::cmp::Ordering::Greater => 0,
+            };
+            let slot = &mut fill[i.min(j) as usize];
+            keyed[*slot] = (u64::from(i.max(j)) << 2) | direction;
+            *slot += 1;
+        }
+    }
+    let mut bad_edges = 0;
+    let mut edges_cancel = true;
+    for v in 0..vertex_count {
+        let bucket = &mut keyed[starts[v]..starts[v + 1]];
+        #[cfg(test)]
+        CENSUS_BUCKET_WORK.with(|work| work.set(work.get() + bucket.len() * bucket.len()));
+        bucket.sort_unstable();
+        for run in bucket.chunk_by(|a, b| a >> 2 == b >> 2) {
+            if run.len() != 2 {
+                bad_edges += 1;
+            }
+            let net: i64 = run
+                .iter()
+                .map(|&k| match k & 3 {
+                    2 => 1,
+                    0 => -1,
+                    _ => 0,
+                })
+                .sum();
+            edges_cancel &= net == 0;
+        }
+    }
+    EdgeCensus {
+        bad_edges,
+        edges_cancel,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Sum over [`edge_census`] buckets of the squared bucket length on this
+    /// thread: a bound on the bucket sorts' comparisons, independent of the
+    /// host. A single whole-list bucket would make it quadratic in the uses.
+    static CENSUS_BUCKET_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count mesh edges incident to a number of triangles other than 2 (boundary or
+/// non-manifold edges). Zero means a closed 2-manifold.
+fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
+    edge_census(&mesh.indices).bad_edges
 }
 
 /// Whether `BK_VOL_TRACE` is set, resolved once per process.
@@ -472,8 +556,10 @@ fn closed_mesh_or_exact_volume(
     mesh: &tessellate::TriangleMesh,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    if mesh_is_closed(mesh) {
-        let volume = signed_volume_from_mesh(mesh);
+    // One census answers both the closure test and the summation point.
+    let census = edge_census(&mesh.indices);
+    if !mesh.indices.is_empty() && census.bad_edges == 0 {
+        let volume = (whole_mesh_six_volume_about(mesh, census.edges_cancel) / 6.0).abs();
         vol_trace(|| format!("{why}: closed whole-solid mesh -> {volume}"));
         return Ok((volume > 1e-12).then_some(volume));
     }
@@ -2633,9 +2719,14 @@ fn six_tetra_volume(reference: Point3, p0: Point3, p1: Point3, p2: Point3) -> f6
 /// Six times the signed tetrahedra sum over a whole-solid mesh, about its
 /// [`summation_point`].
 fn whole_mesh_six_volume(mesh: &tessellate::TriangleMesh) -> f64 {
+    whole_mesh_six_volume_about(mesh, edge_census(&mesh.indices).edges_cancel)
+}
+
+/// [`whole_mesh_six_volume`] given its [`EdgeCensus::edges_cancel`].
+fn whole_mesh_six_volume_about(mesh: &tessellate::TriangleMesh, edges_cancel: bool) -> f64 {
     let triangles = || mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]);
     let reference = summation_point(
-        directed_edges_cancel(triangles()),
+        edges_cancel,
         mesh.indices.iter().map(|&i| mesh.positions[i as usize]),
     );
     triangles()
