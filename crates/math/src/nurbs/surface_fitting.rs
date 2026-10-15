@@ -155,9 +155,9 @@ pub struct LspiaSurfaceFit {
 /// comes back with `converged: true`. Otherwise the first iterate with the
 /// smallest maximum deviation comes back with `converged: false`: LSPIA's
 /// least-squares residual falls monotonically, but its maximum deviation need
-/// not, so the last iterate can be worse than an earlier one. A diverging run
-/// stops at the first later iterate that overflows (non-finite control points
-/// or deviation) and returns the best iterate measured before it.
+/// not, so the last iterate can be worse than an earlier one. A run stops at
+/// the first later iterate that overflows (non-finite control points or
+/// deviation) and returns the best iterate measured before it.
 ///
 /// # Errors
 ///
@@ -236,7 +236,9 @@ pub fn approximate_surface_lspia(
         .collect();
 
     // Compute step size for LSPIA convergence.
-    // Estimate lambda_max per direction via max column sum of squared basis values.
+    // Upper bound on lambda_max of the tensor normal matrix, one factor per
+    // direction (see `col_sum_lambda`); 1 / bound stays inside LSPIA's
+    // convergence interval (0, 2 / lambda_max).
     let mu_u = col_sum_lambda(&basis_u_data, pu, mu);
     let mu_v = col_sum_lambda(&basis_v_data, pv, mv);
     let lambda_max = mu_u * mu_v;
@@ -259,8 +261,9 @@ pub fn approximate_surface_lspia(
             weights.clone(),
         ) {
             Ok(surface) => surface,
-            // A diverging run overflows its control points; keep the best
-            // iterate measured so far rather than turning it into an error.
+            // Defensive: under the bounded step the iteration contracts, but
+            // an iterate that overflows must not turn the best fit into an
+            // error.
             Err(_) if best.is_some() => break,
             Err(e) => return Err(e),
         };
@@ -375,14 +378,19 @@ fn compute_grid_params_v(points: &[Vec<Point3>], rows: usize, cols: usize) -> Ve
     params
 }
 
-/// Estimate the spectral radius of `N^T N` via max column sum of squared basis values.
+/// Upper bound on the spectral radius of `N^T N`: its largest row sum
+/// (Gershgorin; every entry is non-negative), which equals the largest column
+/// sum of `N` because each row of `N` sums to at most 1 (partition of unity).
+///
+/// The sum of *squared* basis values is the diagonal of `N^T N`, a lower
+/// bound on lambda_max; a step from it can exceed 2 / lambda_max and diverge.
 fn col_sum_lambda(basis_data: &[(usize, Vec<f64>)], p: usize, m: usize) -> f64 {
     let mut col_sums = vec![0.0f64; m];
     for (span, n_vals) in basis_data {
         for (k, &nv) in n_vals.iter().enumerate() {
             let j = span - p + k;
             if j < m {
-                col_sums[j] += nv * nv;
+                col_sums[j] += nv;
             }
         }
     }
@@ -555,7 +563,7 @@ mod tests {
     /// Review finding MATH-9 (surface twin): the loop returned the grid after
     /// the last update unmeasured. On a 7×7 flat grid with the centre raised
     /// to z = 1 (degree 1, 3×3 control points) the residual falls at every
-    /// step but the maximum deviation goes 0.889, 0.982, 0.695, 0.921, … and
+    /// step but the maximum deviation goes 0.889, 0.593, 0.669, 0.717, … and
     /// settles at 0.825, so a larger budget returned a worse surface.
     #[test]
     #[allow(clippy::cast_precision_loss)]
@@ -587,17 +595,18 @@ mod tests {
             );
             previous = deviation;
         }
-        // Iterate 2 is the best of the whole run.
+        // Iterate 1 is the best of the whole run.
         let fit = approximate_surface_lspia(&grid, 1, 1, 3, 3, 1e-6, 30).unwrap();
-        assert_eq!(fit.iteration, 2);
-        assert!((fit.max_error - 0.695_086).abs() < 1e-6, "{fit:?}");
+        assert_eq!(fit.iteration, 1);
+        assert!((fit.max_error - 0.592_642).abs() < 1e-6, "{fit:?}");
     }
 
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn lspia_surface_reports_convergence() {
         // 6×6 flat grid, (1, 1) raised, interpolating degree-1 fit: the
-        // deviation falls 0.943, 0.304, 0.216, … and crosses 0.2 early.
+        // deviation falls 0.943, 0.458, 0.291, 0.213, 0.174, … and crosses
+        // 0.2 at iterate 4.
         let grid: Vec<Vec<Point3>> = (0..6)
             .map(|i| {
                 (0..6)
@@ -626,13 +635,14 @@ mod tests {
         );
     }
 
-    /// Codex review on #1092: on this plane the iteration diverges (see B97)
-    /// and overflows near iterate 1,050. A larger budget, up to the WASM
-    /// binding's 10,000, must still return the best fit, not an
-    /// `InvalidControlPointValue` error.
+    /// The step was 1 / (product of the largest diagonal entries of N^T N),
+    /// a lower bound on lambda_max, so the iteration diverged on ordinary
+    /// grids: this plane's x/y deviation went 0.19 → 120 (10 iterations) →
+    /// 3.5e13 (50), overflowing near iterate 1,050. `lspia_surface_fits_plane`
+    /// missed it because z never moves on a z = const plane.
     #[test]
     #[allow(clippy::cast_precision_loss)]
-    fn lspia_surface_overflowing_run_keeps_best_fit() {
+    fn lspia_surface_plane_converges_in_every_coordinate() {
         let grid: Vec<Vec<Point3>> = (0..10)
             .map(|i| {
                 (0..10)
@@ -640,19 +650,107 @@ mod tests {
                     .collect()
             })
             .collect();
-        let short = approximate_surface_lspia(&grid, 3, 3, 6, 6, 1e-6, 1000).unwrap();
-        for budget in [1100, 10_000] {
-            let fit = approximate_surface_lspia(&grid, 3, 3, 6, 6, 1e-6, budget).unwrap();
-            assert!(!fit.converged, "budget {budget}: {fit:?}");
-            assert_eq!(fit.iteration, short.iteration, "budget {budget}");
-            assert_eq!(fit.max_error.to_bits(), short.max_error.to_bits());
+        let mut previous = f64::INFINITY;
+        for budget in [0, 1, 2, 5, 10, 20, 50, 100] {
+            let fit = approximate_surface_lspia(&grid, 3, 3, 6, 6, 0.0, budget).unwrap();
+            assert_eq!(
+                fit.iteration, budget,
+                "a contracting run ends on its last iterate"
+            );
             let deviation = lspia_max_deviation(&grid, &fit.surface);
             assert!(
-                (deviation - fit.max_error).abs() < 1e-12,
-                "budget {budget}: reported {} vs re-measured {deviation}",
-                fit.max_error
+                deviation < previous,
+                "budget {budget}: deviation {deviation} did not fall below {previous}"
             );
+            previous = deviation;
         }
+        assert!(
+            previous < 5e-4,
+            "deviation after 100 iterations: {previous}"
+        );
+
+        let fit = approximate_surface_lspia(&grid, 3, 3, 6, 6, 1e-3, 100).unwrap();
+        assert!(fit.converged, "{fit:?}");
+        assert!(lspia_max_deviation(&grid, &fit.surface) < 1e-3);
+    }
+
+    /// Largest eigenvalue of the dense `N^T N` by power iteration, built
+    /// directly from the basis rows (independent of `col_sum_lambda`).
+    fn dense_lambda_max(basis: &[(usize, Vec<f64>)], p: usize, m: usize) -> f64 {
+        let mut n = vec![vec![0.0; m]; basis.len()];
+        for (row, (span, vals)) in n.iter_mut().zip(basis) {
+            for (k, &v) in vals.iter().enumerate() {
+                row[span - p + k] = v;
+            }
+        }
+        let mut x = vec![1.0; m];
+        let mut lambda = 0.0;
+        for _ in 0..500 {
+            let nx: Vec<f64> = n
+                .iter()
+                .map(|r| r.iter().zip(&x).map(|(a, b)| a * b).sum())
+                .collect();
+            let mut y = vec![0.0; m];
+            for (r, &v) in n.iter().zip(&nx) {
+                for (yj, &a) in y.iter_mut().zip(r) {
+                    *yj += a * v;
+                }
+            }
+            let norm = y.iter().map(|v| v * v).sum::<f64>().sqrt();
+            lambda = norm / x.iter().map(|v| v * v).sum::<f64>().sqrt();
+            x = y.iter().map(|v| v / norm).collect();
+        }
+        lambda
+    }
+
+    /// The step bound must not fall below lambda_max of `N^T N` in either
+    /// direction; the old squared-sum estimate did.
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn lspia_step_bound_dominates_lambda_max() {
+        let mut old_underestimated = false;
+        for (len, degree, m) in [
+            (10, 3, 6),
+            (8, 3, 6),
+            (7, 1, 3),
+            (7, 2, 5),
+            (20, 3, 20),
+            (6, 1, 6),
+        ] {
+            let pts: Vec<Point3> = (0..len)
+                .map(|i| {
+                    let t = i as f64 / (len - 1) as f64;
+                    Point3::new(t + 0.3 * t * t, 0.0, 0.0)
+                })
+                .collect();
+            let params = fitting::chord_length_params(&pts);
+            let p = degree.min(len - 1);
+            let knots = fitting::build_approximation_knots(&params, p, m, len);
+            let basis: Vec<(usize, Vec<f64>)> = params
+                .iter()
+                .map(|&u| {
+                    let span = fitting::find_span(u, p, &knots, m);
+                    (span, basis_funs(span, u, p, &knots))
+                })
+                .collect();
+            let lambda = dense_lambda_max(&basis, p, m);
+            let bound = col_sum_lambda(&basis, p, m);
+            assert!(
+                bound >= lambda * (1.0 - 1e-12),
+                "({len}, {degree}, {m}): bound {bound} < lambda_max {lambda}"
+            );
+            let mut diag = vec![0.0f64; m];
+            for (span, vals) in &basis {
+                for (k, &v) in vals.iter().enumerate() {
+                    diag[span - p + k] += v * v;
+                }
+            }
+            old_underestimated |= diag.iter().copied().fold(0.0, f64::max) < lambda;
+        }
+        assert!(
+            old_underestimated,
+            "no case shows the old estimate below lambda_max"
+        );
     }
 
     #[test]
@@ -687,12 +785,17 @@ mod tests {
         let surface = approximate_surface_lspia(&grid, 3, 3, 6, 6, 1e-4, 100)
             .unwrap()
             .surface;
-        let p = surface.evaluate(0.5, 0.5);
-        // Expected z = 0.25 + 0.25 = 0.5
-        assert!(
-            (p.z() - 0.5).abs() < 0.15,
-            "paraboloid z at center: expected ~0.5, got {}",
-            p.z()
-        );
+        // Parameter (0.5, 0.5) is not position (0.5, 0.5) under chord-length
+        // parameters, so check the surface against z = x^2 + y^2 where it is.
+        for i in 0..=4 {
+            for j in 0..=4 {
+                let p = surface.evaluate(i as f64 / 4.0, j as f64 / 4.0);
+                let miss = p.z() - (p.x() * p.x() + p.y() * p.y());
+                assert!(
+                    miss.abs() < 0.02,
+                    "({i}, {j}): {p:?} misses z = x² + y² by {miss}"
+                );
+            }
+        }
     }
 }
