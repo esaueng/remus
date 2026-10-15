@@ -8,11 +8,13 @@
 //! authority (its edge, stored pcurve, periodic winding) and the solid's
 //! connectivity: which edge and vertices each use names (first-seen
 //! ordinals), how many uses share each, and which faces each edge and vertex
-//! bounds. Tessellation workloads digest position bits and indices. Two
-//! builds whose digests match produced bit-identical output. Solids also
-//! print a `canonical` digest of the same content that ignores face order,
-//! cavity order and closed-wire start, for workloads whose order varies run
-//! to run.
+//! bounds. Any face whose loops break authority (loop count, owner, closure,
+//! coedge count or parent) changes both digests and is counted in
+//! `loop_anomalies`. Tessellation workloads digest position bits and
+//! indices. Two builds whose digests match produced bit-identical output.
+//! Solids also print a `canonical` digest of the same content that ignores
+//! face order, cavity order and closed-wire start, for workloads whose order
+//! varies run to run.
 //!
 //! glibc selects libm variants by CPU feature, and valgrind's virtual CPU
 //! reports fewer features, so digests compare native with native and
@@ -194,6 +196,48 @@ impl Sharing {
     }
 }
 
+/// Anomalies in a face's loop authority, as text. Empty when the face has
+/// one loop per wire, each owned by the face, closed like its wire, holding
+/// one coedge per wire use, every coedge naming that loop as its parent.
+fn loop_anomalies(topo: &Topology, fid: remus_topology::face::FaceId) -> String {
+    let face = topo.face(fid).unwrap();
+    let wires: Vec<_> = std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .collect();
+    let loops = topo.loops_of_face(fid).unwrap_or(&[]);
+    let mut out = String::new();
+    if loops.len() != wires.len() {
+        write!(out, "loops={}/{};", loops.len(), wires.len()).unwrap();
+    }
+    for (j, &l) in loops.iter().enumerate() {
+        let lp = topo.face_loop(l).unwrap();
+        if lp.face() != fid {
+            write!(out, "{j}:face;").unwrap();
+        }
+        if let Some(&wid) = wires.get(j) {
+            let wire = topo.wire(wid).unwrap();
+            if lp.is_closed() != wire.is_closed() {
+                write!(out, "{j}:closed;").unwrap();
+            }
+            if lp.coedges().len() != wire.edges().len() {
+                write!(
+                    out,
+                    "{j}:uses={}/{};",
+                    lp.coedges().len(),
+                    wire.edges().len()
+                )
+                .unwrap();
+            }
+        }
+        for (k, &c) in lp.coedges().iter().enumerate() {
+            if topo.coedge(c).unwrap().parent_loop() != l {
+                write!(out, "{j}.{k}:parent;").unwrap();
+            }
+        }
+    }
+    out
+}
+
 /// Digests of a solid: `strict` hashes each shell (outer, then inner) and
 /// its faces in stored order, every wire from its stored first edge;
 /// `canonical` is the same content with faces sorted within each shell, inner
@@ -216,6 +260,7 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     let mut scratch = String::new();
     let mut face_hash = std::collections::HashMap::new();
     let mut shell_hashes = Vec::new();
+    let mut anomalous_faces = 0usize;
     for (role, &shell) in shells.iter().enumerate() {
         let shell_faces = topo.shell(shell).unwrap().faces();
         // Shell boundary and role: 0 for the outer shell, 1 for a cavity.
@@ -231,6 +276,13 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
             head.debug(&scratch);
             head.u64(u64::from(face.is_reversed()));
             head.u64(face.inner_wires().len() as u64);
+            // Only an anomaly changes the hash, so valid output keeps its
+            // digest.
+            let anomalies = loop_anomalies(topo, fid);
+            if !anomalies.is_empty() {
+                anomalous_faces += 1;
+                head.str(&anomalies);
+            }
             strict.u64(head.0);
             let mut canon_wires = Vec::new();
             // Loop `j` holds the coedges of wire `j`, position by position.
@@ -368,8 +420,8 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     }
     canonical.u64(incidence.0);
     format!(
-        "faces={} edges={} vertices={} oriented_edges={} kinds={kinds:?} digest={:016x} \
-         canonical={:016x}",
+        "faces={} edges={} vertices={} oriented_edges={} kinds={kinds:?} \
+         loop_anomalies={anomalous_faces} digest={:016x} canonical={:016x}",
         faces.len(),
         sharing.edge_uses.len(),
         sharing.vertex_uses.len(),

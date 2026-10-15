@@ -23,7 +23,9 @@ their numbers.
   (vertex position bits, curve, trim, tolerance, and each use's coedge edge,
   stored pcurve and periodic winding). It also covers connectivity: which edge
   and vertices each use names, how many uses share each, and which faces each
-  edge and vertex bounds. Lazily filled caches in a `Debug` rendering (the
+  edge and vertex bounds. A face whose loops break authority (loop count,
+  owner, closure, coedge count or parent) changes the digest and is counted.
+  Lazily filled caches in a `Debug` rendering (the
   NURBS weight `OnceLock`s) are left out.
   A `canonical` digest of the same content ignores face order, cavity order and
   the start of each closed wire. Mesh workloads digest position bits, normal
