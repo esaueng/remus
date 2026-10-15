@@ -369,3 +369,17 @@ fn a_tiny_weight_and_a_tiny_offset_together_still_count() {
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.0)));
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.5e-200)));
 }
+
+#[test]
+fn a_weight_ratio_below_the_normal_range_refuses() {
+    // Review follow-up: MIN_POSITIVE / 1e16 rounds to zero, which dropped
+    // the far control point's ρ·dn ≈ 2.2e-16 and removed the knot at
+    // tolerance 0 although the curve moves by about 1.1e-16 at the knot.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1e308, 0.0, 0.0]],
+        vec![2e16, 1e16, f64::MIN_POSITIVE],
+    );
+    assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.0)));
+    assert!(is_refused(&curve_knot_remove(&curve, 0.5, 1e-17)));
+}
