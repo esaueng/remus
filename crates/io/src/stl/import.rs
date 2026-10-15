@@ -221,15 +221,13 @@ fn validate_mesh(mesh: &TriangleMesh, tolerance: f64) -> Result<(), IoError> {
 /// still be up to a diagonal apart, and two points a hair either side of a
 /// cell boundary are neighbours. Every candidate is distance-checked, and the
 /// 27-cell probe is what stops a boundary-straddling pair from being missed.
+/// [`weld_cell`] keeps both properties at any coordinate magnitude.
 fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -> Vec<VertexId> {
     let tol_sq = tolerance * tolerance;
     let mut buckets: HashMap<(i64, i64, i64), Vec<(Point3, VertexId)>> = HashMap::new();
     let mut map = Vec::with_capacity(positions.len());
 
-    // `as i64` saturates rather than wrapping, so an extreme
-    // coordinate-to-tolerance ratio degrades to larger buckets, never to a
-    // wrong cell.
-    let cell = |v: f64| -> i64 { (v / tolerance).floor() as i64 };
+    let cell = |v: f64| weld_cell(v, tolerance);
 
     for &pos in positions {
         let (cx, cy, cz) = (cell(pos.x()), cell(pos.y()), cell(pos.z()));
@@ -274,6 +272,48 @@ fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -
     }
 
     map
+}
+
+/// `2^50`: a coordinate this many tolerances from the origin is in the far
+/// field of [`weld_cell`].
+const WELD_NEAR_FIELD: f64 = 1_125_899_906_842_624.0;
+
+/// Weld-grid cell of one coordinate: two coordinates less than `tolerance`
+/// apart always land in the same or adjacent cells, and a cell holds a
+/// bounded number of coordinates that are pairwise `tolerance` apart.
+///
+/// A plain `value / tolerance` grid does not survive large coordinates: past
+/// `2^63·tolerance` the `as i64` cast saturates, every coordinate shares one
+/// cell, and the weld turns quadratic.
+///
+/// Near the origin (`|value| < 2^50·tolerance`) cells are `2·tolerance` wide.
+/// The quotient stays below `2^49`, so the cast is exact, and its rounding
+/// error (below `2^-4`) cannot push two coordinates whose exact quotients are
+/// less than 0.5 apart into cells two apart.
+///
+/// Past `2^50·tolerance` one ulp already exceeds `tolerance/8`, so the far
+/// field is bucketed by the float's own spacing: eight consecutive
+/// representable magnitudes per cell, counted from the near-field limit,
+/// which keeps the index below `2^61`. Two far coordinates within
+/// `tolerance` are fewer than eight ulps apart, so their cells differ by at
+/// most one, and a coordinate just past the limit lands next to the last
+/// near-field cell.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn weld_cell(value: f64, tolerance: f64) -> i64 {
+    const NEAR_CELLS: i64 = 1 << 49;
+    let near_limit = tolerance * WELD_NEAR_FIELD;
+    let magnitude = value.abs();
+    if magnitude < near_limit {
+        return (value / (2.0 * tolerance)).floor() as i64;
+    }
+    // Both magnitudes are finite and non-negative, so their bit patterns are
+    // ordered like the values; the difference is below 2^63.
+    let steps = ((magnitude.to_bits() - near_limit.to_bits()) >> 3) as i64;
+    if value > 0.0 {
+        NEAR_CELLS + steps
+    } else {
+        -NEAR_CELLS - 1 - steps
+    }
 }
 
 /// Return the shared edge between `a` and `b`, creating it on first use.
@@ -361,6 +401,125 @@ mod tests {
 
     use super::*;
     use crate::stl::reader::read_stl;
+
+    /// The weld's definition, quadratic: each position takes the
+    /// earliest-created vertex strictly within `tolerance`, else creates one.
+    fn reference_weld(positions: &[Point3], tolerance: f64) -> Vec<usize> {
+        let tol_sq = tolerance * tolerance;
+        let mut created: Vec<Point3> = Vec::new();
+        positions
+            .iter()
+            .map(|&pos| {
+                let near = created.iter().position(|p| {
+                    let (ex, ey, ez) = (p.x() - pos.x(), p.y() - pos.y(), p.z() - pos.z());
+                    ex.mul_add(ex, ey.mul_add(ey, ez * ez)) < tol_sq
+                });
+                near.unwrap_or_else(|| {
+                    created.push(pos);
+                    created.len() - 1
+                })
+            })
+            .collect()
+    }
+
+    fn grid_weld(positions: &[Point3], tolerance: f64) -> Vec<usize> {
+        let mut topo = Topology::new();
+        let ids = build_vertex_map(&mut topo, positions, tolerance);
+        let mut order: HashMap<VertexId, usize> = HashMap::new();
+        ids.into_iter()
+            .map(|id| {
+                let next = order.len();
+                *order.entry(id).or_insert(next)
+            })
+            .collect()
+    }
+
+    /// Coordinates clustered within a few tolerances (or a few ulps) of
+    /// `base`, which ranges over the origin, both sides of the near-field
+    /// limit, and far coordinates of either sign.
+    fn clustered(base: f64, tolerance: f64, steps: &[(i8, i8, i8)], ulps: bool) -> Vec<Point3> {
+        let along = |b: f64, k: i8| {
+            if ulps {
+                let mut v = b;
+                for _ in 0..k.unsigned_abs() {
+                    v = if k > 0 { v.next_up() } else { v.next_down() };
+                }
+                v
+            } else {
+                b + f64::from(k) * 0.35 * tolerance
+            }
+        };
+        steps
+            .iter()
+            .map(|&(i, j, k)| Point3::new(along(base, i), along(-base, j), along(base, k)))
+            .collect()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn grid_weld_matches_the_quadratic_definition_at_every_magnitude(
+            base_index in 0_usize..8,
+            tolerance_exp in -12_i32..2,
+            ulps in proptest::bool::ANY,
+            steps in proptest::collection::vec((-6_i8..6, -6_i8..6, -6_i8..6), 1..60),
+        ) {
+            let tolerance = 10_f64.powi(tolerance_exp);
+            let limit = tolerance * WELD_NEAR_FIELD;
+            let base = [
+                0.0,
+                1.0,
+                limit,
+                limit.next_down(),
+                limit - 0.6 * tolerance,
+                -limit,
+                1e12,
+                -3e300,
+            ][base_index];
+            let positions = clustered(base, tolerance, &steps, ulps);
+            proptest::prop_assert_eq!(
+                grid_weld(&positions, tolerance),
+                reference_weld(&positions, tolerance)
+            );
+        }
+    }
+
+    #[test]
+    fn weld_cells_of_coordinates_within_tolerance_are_adjacent() {
+        for tolerance in [1e-9, 1e-7, 0.3, 5e-324, 1e300] {
+            let limit = tolerance * WELD_NEAR_FIELD;
+            for base in [
+                0.0,
+                limit,
+                -limit,
+                2.0 * limit,
+                1e12,
+                -1e12,
+                1e300,
+                f64::MAX,
+            ] {
+                for start in [base.next_down(), base, base.next_up(), base - tolerance] {
+                    // Walk ulp by ulp across `tolerance` from `start`.
+                    let mut v = start;
+                    for _ in 0..64 {
+                        if !(v - start).abs().lt(&tolerance) || !v.is_finite() {
+                            break;
+                        }
+                        let (a, b) = (weld_cell(start, tolerance), weld_cell(v, tolerance));
+                        assert!(
+                            a.abs_diff(b) <= 1,
+                            "tol {tolerance:e}: {start:e} -> {a}, {v:e} -> {b}"
+                        );
+                        v = v.next_up();
+                    }
+                }
+            }
+        }
+        // Distinct far coordinates spread over distinct cells instead of one.
+        let cells: std::collections::BTreeSet<i64> = (0..1000)
+            .map(|i| weld_cell(1e12 + f64::from(i), 1e-9))
+            .collect();
+        assert_eq!(cells.len(), 1000);
+    }
     use crate::stl::writer::{self, StlFormat};
 
     #[test]
