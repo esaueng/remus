@@ -523,6 +523,44 @@ fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64
         .count()
 }
 
+/// The rim of a pointed-cone outer wire that also carries its seam to the
+/// apex: the wire minus that seam, or `None` when the wire is not that shape.
+///
+/// Only a DOUBLED seam (one Line edge to the apex, used in both directions)
+/// beside a full-turn rim (closed circles) qualifies. A cone sector's two
+/// distinct generators also reach the apex, and its open rim arc must not be
+/// widened to the whole turn the single-rim apex synthesis assumes.
+fn pointed_cone_rim(
+    topo: &Topology,
+    wire: &remus_topology::wire::Wire,
+    apex: Point3,
+) -> Option<Vec<remus_topology::wire::OrientedEdge>> {
+    use remus_topology::edge::EdgeCurve;
+    let tol = remus_math::tolerance::Tolerance::default().linear;
+    let mut rim = Vec::with_capacity(wire.edges().len());
+    let mut seam_uses = Vec::new();
+    for &oe in wire.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let reaches_apex = matches!(edge.curve(), EdgeCurve::Line)
+            && [edge.start(), edge.end()].into_iter().any(|vid| {
+                topo.vertex(vid)
+                    .is_ok_and(|v| (v.point() - apex).length() <= tol)
+            });
+        if reaches_apex {
+            seam_uses.push((oe.edge(), oe.is_forward()));
+        } else if matches!(edge.curve(), EdgeCurve::Circle(_)) && edge.start() == edge.end() {
+            rim.push(oe);
+        } else {
+            return None;
+        }
+    }
+    let doubled = seam_uses.iter().all(|&(id, forward)| {
+        seam_uses.iter().filter(|&&(other, _)| other == id).count() == 2
+            && seam_uses.contains(&(id, !forward))
+    });
+    (doubled && !seam_uses.is_empty() && !rim.is_empty()).then_some(rim)
+}
+
 /// Tessellate a cylindrical or conical face with inner wires in its unwrapped
 /// UV chart. All wire polylines become CDT constraints; inner-loop cells are
 /// then removed before the vertices are mapped back to the analytic surface.
@@ -554,29 +592,14 @@ pub(super) fn tessellate_revolved_with_holes(
     // same `u`, so the chart polygon degenerates; drop them and let the
     // single-rim apex synthesis below rebuild that boundary on both sides.
     let rim_only;
-    let outer_wire = if let Some((_, apex_point)) = apex {
-        let tol = remus_math::tolerance::Tolerance::default().linear;
-        let mut kept = Vec::with_capacity(outer_wire.edges().len());
-        for &oe in outer_wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let reaches_apex = matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
-                && [edge.start(), edge.end()].into_iter().any(|vid| {
-                    topo.vertex(vid)
-                        .is_ok_and(|v| (v.point() - apex_point).length() <= tol)
-                });
-            if !reaches_apex {
-                kept.push(oe);
+    let outer_wire =
+        match apex.map(|(_, apex_point)| pointed_cone_rim(topo, outer_wire, apex_point)) {
+            Some(Some(rim)) => {
+                rim_only = remus_topology::wire::Wire::new(rim, true)?;
+                &rim_only
             }
-        }
-        if kept.len() == outer_wire.edges().len() || kept.is_empty() {
-            outer_wire
-        } else {
-            rim_only = remus_topology::wire::Wire::new(kept, true)?;
-            &rim_only
-        }
-    } else {
-        outer_wire
-    };
+            _ => outer_wire,
+        };
     let (mut all_positions, mut outer_uvs) =
         sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol, edge_points)?;
     if outer_uvs.len() < 3 {
@@ -2630,5 +2653,67 @@ mod polygon_oracle_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod pointed_cone_rim_tests {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    use super::pointed_cone_rim;
+
+    #[test]
+    fn make_cone_seam_pair_leaves_its_full_turn_rim() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cone(&mut topo, 0.5, 0.0, 4.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let lateral = faces
+            .iter()
+            .map(|&f| topo.face(f).unwrap())
+            .find(|f| matches!(f.surface(), remus_topology::face::FaceSurface::Cone(_)))
+            .unwrap();
+        let wire = topo.wire(lateral.outer_wire()).unwrap();
+        assert_eq!(wire.edges().len(), 3);
+        let rim = pointed_cone_rim(&topo, wire, Point3::new(0.0, 0.0, 4.0)).unwrap();
+        assert_eq!(rim.len(), 1);
+        assert!(matches!(
+            topo.edge(rim[0].edge()).unwrap().curve(),
+            EdgeCurve::Circle(_)
+        ));
+    }
+
+    /// A quarter cone sector: an open rim arc and two DISTINCT generators to
+    /// the apex. Both generators reach the apex, but they bound the sector, so
+    /// the wire must be left alone.
+    #[test]
+    fn cone_sector_generators_are_not_a_seam() {
+        let mut topo = Topology::new();
+        let tol = 1e-7;
+        let apex = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 4.0), tol));
+        let p0 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.0, 0.0), tol));
+        let p1 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.5, 0.0), tol));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
+        let mut arc = Edge::new(p0, p1, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((0.0, std::f64::consts::FRAC_PI_2)));
+        let arc = topo.add_edge(arc);
+        let up = topo.add_edge(Edge::new(p1, apex, EdgeCurve::Line));
+        let down = topo.add_edge(Edge::new(apex, p0, EdgeCurve::Line));
+        let wire = Wire::new(
+            vec![
+                OrientedEdge::new(arc, true),
+                OrientedEdge::new(up, true),
+                OrientedEdge::new(down, true),
+            ],
+            true,
+        )
+        .unwrap();
+        assert!(pointed_cone_rim(&topo, &wire, Point3::new(0.0, 0.0, 4.0)).is_none());
     }
 }
