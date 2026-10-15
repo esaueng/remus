@@ -109,6 +109,10 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **operations:** `make_cone` with a zero bottom radius (apex down) now uses
+  its base circle in the lateral face opposite to the cap. The cone carried one
+  shared edge used the same way by both faces and a lateral face wound against
+  its normal, and fuses consuming it inherited the defect (finding F11).
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam
