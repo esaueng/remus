@@ -23,7 +23,7 @@
 //! claims are gaps, never implicit preservation.
 
 use remus_algo::bop::BooleanOp;
-use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
+use remus_algo::gfa::{self, EdgeEvent, EntityEvolution, VertexEvent};
 use remus_topology::Topology;
 use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
 use remus_topology::face::FaceId;
@@ -114,18 +114,18 @@ pub fn begin_scoped(
 /// Runs a GFA boolean and journals its construction-derived vertex, edge,
 /// and face history as one evolution entry.
 ///
-/// This is the exact GFA path only ([`remus_algo::gfa::boolean_with_entity_evolution`],
+/// This is the exact GFA path only ([`gfa::boolean_with_entity_evolution`],
 /// Issue 12): there is no approximate fallback here, because a mesh
 /// fallback has no construction records to journal — a caller accepting
 /// approximate results journals that operation as a barrier instead. Like
-/// the underlying entry point, identical operands are not special-cased.
-/// The result passes the same acceptance gate as
-/// [`crate::boolean::boolean_with_entity_evolution`].
+/// the underlying entry point, identical operands are not special-cased; the
+/// result passes the same exact-result gate as
+/// [`crate::boolean::boolean_with_entity_evolution`] before it is journaled.
 ///
 /// # Errors
 ///
 /// Returns [`OperationsError`] if the boolean fails, its result fails the
-/// acceptance gate ([`OperationsError::ExactOnlyUnattainable`]), or its
+/// exact-result gate ([`OperationsError::ExactOnlyUnattainable`]), or its
 /// evolution record is malformed. Scope creation, geometry export and history
 /// recording share one transaction, so refusal restores topology and
 /// unpublished history together.
@@ -141,13 +141,13 @@ pub fn boolean_journaled(
         // the boolean consumed without a record (the GFA does not record face
         // deletions) severs instead of resolving to a retired handle.
         let pending = begin_scoped(topo, boolean_kind(op), &[solid_a, solid_b])?;
-        let gated_op = match op {
+        let (solid, evolution) = gfa::boolean_with_entity_evolution(topo, op, solid_a, solid_b)?;
+        let gate_op = match op {
             BooleanOp::Fuse => crate::boolean::BooleanOp::Fuse,
             BooleanOp::Cut => crate::boolean::BooleanOp::Cut,
             BooleanOp::Intersect => crate::boolean::BooleanOp::Intersect,
         };
-        let (solid, evolution) =
-            crate::boolean::gated_entity_evolution_boolean(topo, gated_op, solid_a, solid_b)?;
+        crate::boolean::require_exact_boolean_result(topo, gate_op, solid_a, solid_b, solid)?;
         let draft = draft_from_entity_evolution(&evolution);
         let op = topo.journal_record_evolution(pending, draft)?;
         Ok(JournaledBoolean { solid, op })

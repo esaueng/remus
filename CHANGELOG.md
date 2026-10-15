@@ -109,13 +109,6 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
-* **operations,wasm:** `boolean_with_entity_evolution` (wasm entity-evolution
-  booleans) and `boolean_journaled` now apply the provenance-preserving result
-  gate of `boolean_with_evolution` and roll back. A raw GFA result that is
-  open, non-manifold or semantically wrong is refused with
-  `ExactOnlyUnattainable`, as `boolean` refuses it, instead of being returned
-  as a solid. A pocket cut through the hammer-holder lettering used to come
-  back with 23 free edges.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam

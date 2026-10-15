@@ -4,7 +4,9 @@
 //! `boolean_with_entity_evolution` and `boolean_journaled` used to return the
 //! raw GFA result unchecked. A pocket cut through the embossed letters of the
 //! public hammer-holder fixture makes the GFA build an open shell, which
-//! `boolean` refuses; both entity routes handed it back as a solid.
+//! `boolean` refuses; both entity routes handed it back as a solid. This pins
+//! that real-part case against the exact-result gate (`regress_exact_boolean_gate`
+//! covers the primitive cases).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
