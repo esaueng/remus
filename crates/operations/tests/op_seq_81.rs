@@ -6073,23 +6073,26 @@ fn finding_sphere_cyl_fuse_orientation() {
     );
 }
 
-/// 8.1 finding F11 (retained, kernel untouched): a fuse of a mirrored,
-/// rigid-moved cylinder with an unmoved pointed cone carries 1 shared edge
-/// with inconsistent face orientations. Orientation-family affinity on a
-/// pointed-cone operand — the cone that F9 implicates on the offset side
-/// implicates the fuse assembly here. Minimized from campaign seed
+/// 8.1 finding F11 regression: a fuse of a mirrored, rigid-moved cylinder
+/// with an unmoved pointed cone must keep opposing shared boundaries. The
+/// original result carried 1 same-sense shared edge, and the fuse was
+/// innocent: `makeCone(0, 1, 1)` points its apex down, and `make_cone` used
+/// the base circle forward in both its lateral wire and its cap, so the cone
+/// was already misoriented before any boolean (B90). The mirrored cylinder
+/// is not load-bearing; the mirror's own winding defect (F16, B89) does not
+/// affect this disjoint fuse. Minimized from campaign seed
 /// `11912020744051371592` (8 ops shrink to 5; the second cylinder, two
 /// placements, and the trailing mirror cascade away; dims simplify to
-/// unit). The verdict is 5/5 stable across replays. Owns exclusion cell
-/// X10 (broad: fuse consuming any cone — the same campaign seed,
-/// regenerated after earlier cells, minimizes character-for-character
-/// into this witness from a placed frustum start); other operators stay
-/// in generation.
+/// unit). Owns exclusion cell X10 (broad: fuse consuming any cone — the
+/// same campaign seed, regenerated after earlier cells, minimizes
+/// character-for-character into this witness from a placed frustum start);
+/// other operators stay in generation.
 ///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// Acceptance: the harness `ExactOk` verdict. Closed-form volume, validity,
+/// mesh orientation and material probes over apex-down cones at three
+/// scales, and this fuse without its mirror, pin the fix in
+/// `regress_cone_apex_down.rs`.
 #[test]
-#[ignore = "8.1 finding F11: fuse of a moved cylinder with a pointed cone misorients one shared edge; route to the B33 orientation family"]
 fn finding_pointed_cone_fuse_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"bottomRadius":0.0,"height":1.0,"topRadius":1.0},"op":"makeCone"},{"args":{"nx":1.0,"ny":0.0,"nz":0.0,"px":0.0,"py":0.0,"pz":0.0,"solid":0},"op":"mirror"},{"args":{"matrix":[1.0,0.0,0.0,1.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,-3.0,0.0,0.0,0.0,1.0],"solid":2},"op":"transform"},{"args":{"exactOnly":true,"operation":"fuse","solidA":2,"solidB":1},"op":"booleanWithQuality"}]"#,
