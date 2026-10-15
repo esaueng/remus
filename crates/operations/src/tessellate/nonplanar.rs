@@ -6065,27 +6065,29 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
 /// Check if a 2D point is inside a polygon defined by (u, v) coordinates.
 /// Uses the winding number algorithm for robustness.
 pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::Point2) -> bool {
-    let n = polygon.len();
     let mut winding = 0i32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let yi = polygon[i].1;
-        let yj = polygon[j].1;
+    let mut segment = |(xi, yi): (f64, f64), (xj, yj): (f64, f64)| {
         if yi <= pt.y() {
             if yj > pt.y() {
-                let cross = (polygon[j].0 - polygon[i].0) * (pt.y() - yi)
-                    - (pt.x() - polygon[i].0) * (yj - yi);
+                let cross = (xj - xi) * (pt.y() - yi) - (pt.x() - xi) * (yj - yi);
                 if cross > 0.0 {
                     winding += 1;
                 }
             }
         } else if yj <= pt.y() {
-            let cross =
-                (polygon[j].0 - polygon[i].0) * (pt.y() - yi) - (pt.x() - polygon[i].0) * (yj - yi);
+            let cross = (xj - xi) * (pt.y() - yi) - (pt.x() - xi) * (yj - yi);
             if cross < 0.0 {
                 winding -= 1;
             }
         }
+    };
+    // Segment k runs from vertex k to vertex k + 1, the last one back to the
+    // first: the same segments in the same order as indexing `(k + 1) % n`.
+    for pair in polygon.windows(2) {
+        segment(pair[0], pair[1]);
+    }
+    if let (Some(&last), Some(&first)) = (polygon.last(), polygon.first()) {
+        segment(last, first);
     }
     winding != 0
 }
@@ -6154,31 +6156,25 @@ fn classify_dense_candidate(
     point: remus_math::vec::Point2,
     clearance: f64,
 ) -> (bool, bool) {
-    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
-    // site, so both index ranges coincide.
     let mut winding = 0i32;
     let mut clear = true;
-    for i in 0..boundary_uv.len() {
-        let j = (i + 1) % boundary_uv.len();
-        let yi = boundary_uv[i].1;
-        let yj = boundary_uv[j].1;
+    let mut segment = |(xi, yi): (f64, f64),
+                       (xj, yj): (f64, f64),
+                       a: remus_math::vec::Point2,
+                       b: remus_math::vec::Point2| {
         if yi <= v {
             if yj > v {
-                let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
-                    - (u - boundary_uv[i].0) * (yj - yi);
+                let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
                 if cross > 0.0 {
                     winding += 1;
                 }
             }
         } else if yj <= v {
-            let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
-                - (u - boundary_uv[i].0) * (yj - yi);
+            let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
             if cross < 0.0 {
                 winding -= 1;
             }
         }
-        let a = boundary_cdt[i];
-        let b = boundary_cdt[j];
         let ab = b - a;
         let length_squared = ab.dot(ab);
         let t = if length_squared > 1.0e-30 {
@@ -6188,6 +6184,19 @@ fn classify_dense_candidate(
         };
         let foot = remus_math::vec::Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
         clear = (point - foot).length() > clearance && clear;
+    };
+    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
+    // site, so both walk the same segments, in `point_in_polygon_2d`'s order.
+    for (uv, cdt) in boundary_uv.windows(2).zip(boundary_cdt.windows(2)) {
+        segment(uv[0], uv[1], cdt[0], cdt[1]);
+    }
+    if let (Some(&last), Some(&first), Some(&a), Some(&b)) = (
+        boundary_uv.last(),
+        boundary_uv.first(),
+        boundary_cdt.get(boundary_uv.len().wrapping_sub(1)),
+        boundary_cdt.first(),
+    ) {
+        segment(last, first, a, b);
     }
     (winding != 0, clear)
 }
@@ -6384,6 +6393,9 @@ pub(super) fn tessellate_nonplanar_snap(
 
 #[cfg(test)]
 mod interior_sample_tests;
+
+#[cfg(test)]
+mod polygon_scan_oracle_tests;
 
 #[cfg(test)]
 mod rim_angle_tests {
