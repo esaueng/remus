@@ -3,8 +3,10 @@
 //!
 //! Each workload runs once and prints a digest of its result: per face in
 //! solid order, the surface type and exact `Debug` geometry, orientation, and
-//! every wire's ordered traversal with vertex position bits, curve geometry
-//! and each use's coedge authority (stored pcurve, periodic winding). Tessellation workloads digest position bits and indices. Two
+//! every wire's ordered traversal with vertex position bits, curve geometry,
+//! each use's coedge authority (stored pcurve, periodic winding) and the
+//! solid's connectivity: which edge and vertices each use names (first-seen
+//! ordinals) and how many uses share each. Tessellation workloads digest position bits and indices. Two
 //! builds whose digests match produced bit-identical output. Solids also
 //! print a `canonical` digest of the same content that ignores face order
 //! and closed-wire start, for workloads whose order varies run to run.
@@ -75,11 +77,18 @@ fn oriented_edge_hash(
     topo: &Topology,
     oe: &remus_topology::wire::OrientedEdge,
     coedge: Option<remus_topology::coedge::CoedgeId>,
+    sharing: &Sharing,
     scratch: &mut String,
 ) -> u64 {
     let mut h = Fnv::new();
     let edge = topo.edge(oe.edge()).unwrap();
     h.u64(u64::from(oe.is_forward()));
+    // How many uses share this edge and each end vertex: connectivity that
+    // survives reordering, so a duplicated or aliased entity changes it.
+    h.u64(sharing.edge_uses[&oe.edge()]);
+    for vid in [oe.oriented_start(edge), oe.oriented_end(edge)] {
+        h.u64(sharing.vertex_uses[&vid]);
+    }
     for vid in [oe.oriented_start(edge), oe.oriented_end(edge)] {
         let v = topo.vertex(vid).unwrap();
         let p = v.point();
@@ -114,6 +123,44 @@ fn oriented_edge_hash(
     h.0
 }
 
+/// Use counts of every edge and vertex over a solid's wire uses, and each
+/// entity's first-seen ordinal in solid order.
+struct Sharing {
+    edge_uses: std::collections::HashMap<remus_topology::edge::EdgeId, u64>,
+    vertex_uses: std::collections::HashMap<remus_topology::vertex::VertexId, u64>,
+    edge_ordinal: std::collections::HashMap<remus_topology::edge::EdgeId, u64>,
+    vertex_ordinal: std::collections::HashMap<remus_topology::vertex::VertexId, u64>,
+}
+
+impl Sharing {
+    fn of(topo: &Topology, faces: &[remus_topology::face::FaceId]) -> Self {
+        let mut sharing = Self {
+            edge_uses: std::collections::HashMap::new(),
+            vertex_uses: std::collections::HashMap::new(),
+            edge_ordinal: std::collections::HashMap::new(),
+            vertex_ordinal: std::collections::HashMap::new(),
+        };
+        for &fid in faces {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    let edge = topo.edge(oe.edge()).unwrap();
+                    *sharing.edge_uses.entry(oe.edge()).or_default() += 1;
+                    let next = sharing.edge_ordinal.len() as u64;
+                    sharing.edge_ordinal.entry(oe.edge()).or_insert(next);
+                    for vid in [oe.oriented_start(edge), oe.oriented_end(edge)] {
+                        *sharing.vertex_uses.entry(vid).or_default() += 1;
+                        let next = sharing.vertex_ordinal.len() as u64;
+                        sharing.vertex_ordinal.entry(vid).or_insert(next);
+                    }
+                }
+            }
+        }
+        sharing
+    }
+}
+
 /// Digests of a solid: `strict` hashes faces in solid order and every wire
 /// from its stored first edge; `canonical` is the same content with faces
 /// sorted and each closed wire rotated to its smallest edge hash, so it is
@@ -122,6 +169,7 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     let mut strict = Fnv::new();
     let mut face_hashes = Vec::new();
     let faces = solid_faces(topo, solid).unwrap();
+    let sharing = Sharing::of(topo, &faces);
     let mut edges = 0usize;
     let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
     let mut scratch = String::new();
@@ -149,13 +197,20 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
                 .edges()
                 .iter()
                 .enumerate()
-                .map(|(k, oe)| oriented_edge_hash(topo, oe, coedges.get(k).copied(), &mut scratch))
+                .map(|(k, oe)| {
+                    oriented_edge_hash(topo, oe, coedges.get(k).copied(), &sharing, &mut scratch)
+                })
                 .collect();
             edges += uses.len();
             strict.u64(u64::from(wire.is_closed()));
             strict.u64(uses.len() as u64);
-            for &u in &uses {
+            for (&u, oe) in uses.iter().zip(wire.edges()) {
                 strict.u64(u);
+                // Which entity each use names, by first-seen ordinal.
+                let edge = topo.edge(oe.edge()).unwrap();
+                strict.u64(sharing.edge_ordinal[&oe.edge()]);
+                strict.u64(sharing.vertex_ordinal[&oe.oriented_start(edge)]);
+                strict.u64(sharing.vertex_ordinal[&oe.oriented_end(edge)]);
             }
             let start = if wire.is_closed() {
                 (0..uses.len()).min_by_key(|&i| uses[i]).unwrap_or(0)
@@ -177,12 +232,17 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     }
     face_hashes.sort_unstable();
     let mut canonical = Fnv::new();
+    canonical.u64(sharing.edge_uses.len() as u64);
+    canonical.u64(sharing.vertex_uses.len() as u64);
     for f in face_hashes {
         canonical.u64(f);
     }
     format!(
-        "faces={} oriented_edges={} kinds={kinds:?} digest={:016x} canonical={:016x}",
+        "faces={} edges={} vertices={} oriented_edges={} kinds={kinds:?} digest={:016x} \
+         canonical={:016x}",
         faces.len(),
+        sharing.edge_uses.len(),
+        sharing.vertex_uses.len(),
         edges,
         strict.0,
         canonical.0
@@ -279,15 +339,17 @@ fn sequential_fuse_16() -> String {
 
 /// `cut(box,cyl) x10` in `cad_operations`.
 fn cut_box_cyl_x10() -> String {
-    let mut out = String::new();
+    let mut all = Fnv::new();
+    let mut last = String::new();
     for _ in 0..10 {
         let mut topo = Topology::new();
         let a = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let cyl = primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
         let r = boolean(&mut topo, BooleanOp::Cut, a, cyl).unwrap();
-        out = solid_digest(&topo, r);
+        last = solid_digest(&topo, r);
+        all.str(&last);
     }
-    out
+    format!("{last} all={:016x}", all.0)
 }
 
 /// `mesh sphere (tol=0.01)` in `cad_operations`.
