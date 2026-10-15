@@ -141,9 +141,11 @@ cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 PR CI compiles every target. The scheduled `Fuzz Smoke` workflow runs the
 public model-reader, boolean-tree, modifier, NURBS-surface,
 topology-mutation, arena-roundtrip, tessellation, curve-intersection,
-offset, GCS, STEP-body, mesh-import and persistent-reference campaigns for two
-minutes each and
-retains crash artifacts. `arena_reader` and `wasm_batch` currently compile
-in PR CI but are not scheduled. All four B19 engine slices (tessellation,
+offset and GCS campaigns for two minutes each and retains crash artifacts.
+`arena_reader`, `wasm_batch`, `step_bodies`, `mesh_import` and
+`persistent_ref` currently compile in PR CI but are not scheduled. The
+schedule's `fuzz.yml` pins `fleet-fuzz.yml` to a commit on `main`, so adding a
+target to its matrix takes two changes: the matrix edit lands first, then the
+pin moves to that commit. All four B19 engine slices (tessellation,
 curve-intersection, offset, GCS) landed with independent oracles,
 committed geometric seeds, and weekly scheduling in PR #441.
