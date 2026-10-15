@@ -181,7 +181,10 @@ mutation lands:
   rebuilds the pcurve index from loop/coedge authority as that restore always
   did: nothing on a restore fixed point, one copy and restore otherwise (for
   example a standalone profile face whose extrusion was deleted with the
-  edges they shared). The one intended difference: a failed call's own
+  edges they shared). The refused-replacement path of
+  `remus_offset::replace_surface_with_entity_map` does the same (it retires
+  nothing pre-existing, so nothing is revived there). The one intended
+  difference: a failed call's own
   retirements are revived exactly rather than kept with checkpoint-barrier
   semantics. Diagnostics differ too: after a refused call the arenas keep
   the capacity the call grew (the copy's restore reallocated them), so the

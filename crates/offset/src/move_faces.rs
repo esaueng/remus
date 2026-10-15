@@ -152,10 +152,17 @@ pub fn replace_surface_with_entity_map(
     face: FaceId,
     replacement: FaceSurface,
 ) -> Result<MoveFacesEntityResult, OffsetError> {
-    let snapshot = topo.clone();
+    let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let result = replace_surface_impl(topo, solid, face, replacement);
     if result.is_err() {
-        topo.restore_preserving_handle_slots(&snapshot);
+        // Lands where the full-copy restore this replaced did: the rewind
+        // leaves the attempt's own slots as that restore left them, and the
+        // index rebuild it always applied follows (a no-op on a restore
+        // fixed point).
+        snapshot.restore_like_copy(topo);
+        topo.normalize_as_restored();
+    } else {
+        snapshot.commit(topo);
     }
     result
 }
@@ -1776,6 +1783,211 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
+
+    /// `replace_surface_with_entity_map` before its rollback scope, verbatim.
+    fn legacy_replace_surface_with_entity_map(
+        topo: &mut Topology,
+        solid: SolidId,
+        face: FaceId,
+        replacement: FaceSurface,
+    ) -> Result<MoveFacesEntityResult, OffsetError> {
+        let snapshot = topo.clone();
+        let result = replace_surface_impl(topo, solid, face, replacement);
+        if result.is_err() {
+            topo.restore_preserving_handle_slots(&snapshot);
+        }
+        result
+    }
+
+    /// The operation under its rollback scope, or under the full-copy
+    /// restore it replaced (`legacy`). A `late_fault` refuses a committed
+    /// result after every write: the dirtiest refusal the operation can
+    /// make, which its own corpus refusals (all pre-write) never reach.
+    fn replace_surface_under(
+        legacy: bool,
+        late_fault: bool,
+        topo: &mut Topology,
+        (solid, face, replacement): (SolidId, FaceId, FaceSurface),
+    ) -> Result<MoveFacesEntityResult, OffsetError> {
+        if !late_fault {
+            return if legacy {
+                legacy_replace_surface_with_entity_map(topo, solid, face, replacement)
+            } else {
+                replace_surface_with_entity_map(topo, solid, face, replacement)
+            };
+        }
+        let fault = |result: Result<MoveFacesEntityResult, OffsetError>| {
+            result.and_then(|_| {
+                Err(OffsetError::InvalidInput {
+                    reason: "late fault".into(),
+                })
+            })
+        };
+        if legacy {
+            let snapshot = topo.clone();
+            let result = fault(replace_surface_impl(topo, solid, face, replacement));
+            if result.is_err() {
+                topo.restore_preserving_handle_slots(&snapshot);
+            }
+            result
+        } else {
+            let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
+            let result = fault(replace_surface_impl(topo, solid, face, replacement));
+            if result.is_err() {
+                snapshot.restore_like_copy(topo);
+                topo.normalize_as_restored();
+            } else {
+                snapshot.commit(topo);
+            }
+            result
+        }
+    }
+
+    fn outcome(result: &Result<MoveFacesEntityResult, OffsetError>) -> String {
+        fn sorted<V: std::fmt::Debug>(map: &HashMap<usize, V>) -> Vec<(usize, &V)> {
+            let mut entries: Vec<_> = map.iter().map(|(k, v)| (*k, v)).collect();
+            entries.sort_unstable_by_key(|(k, _)| *k);
+            entries
+        }
+        match result {
+            Ok(r) => format!(
+                "{:?} {:?} {:?} {:?}",
+                r.solid,
+                sorted(&r.face_map),
+                sorted(&r.edge_map),
+                sorted(&r.vertex_map)
+            ),
+            Err(error) => format!("refused: {error}"),
+        }
+    }
+
+    #[test]
+    fn replace_surface_rollback_scope_matches_the_full_copy_restore() {
+        use remus_operations::{boolean, primitives, transform};
+        let mut base = Topology::new();
+        let blank = primitives::make_box(&mut base, 60.0, 40.0, 10.0).unwrap();
+        let tool = primitives::make_cylinder(&mut base, 4.0, 30.0).unwrap();
+        transform::transform_solid(
+            &mut base,
+            tool,
+            &remus_math::mat::Mat4::translation(10.0, 10.0, -10.0),
+        )
+        .unwrap();
+        let plate = boolean::boolean(&mut base, boolean::BooleanOp::Cut, blank, tool).unwrap();
+        let mut cases = Vec::new();
+        for face in solid_faces(&base, plate).unwrap() {
+            let surface = base.face(face).unwrap().surface();
+            if let FaceSurface::Plane { normal, d } = surface {
+                for delta in [-60.0, -5.0, -0.5, 0.25, 3.0, 45.0] {
+                    let (normal, d) = (*normal, d + delta);
+                    cases.push((face, FaceSurface::Plane { normal, d }));
+                }
+                // Tilted supports through a point of the source plane.
+                let through = Point3::new(0.0, 0.0, 0.0) + *normal * *d;
+                let side = if normal.x().abs() < 0.9 {
+                    Vec3::new(1.0, 0.0, 0.0)
+                } else {
+                    Vec3::new(0.0, 1.0, 0.0)
+                };
+                for tilt in [0.05, 0.4, 2.0, 8.0] {
+                    for shift in [0.0, 2.0] {
+                        let normal = *normal + side * tilt;
+                        let d = normal.dot(through - Point3::new(0.0, 0.0, 0.0)) + shift;
+                        cases.push((face, FaceSurface::Plane { normal, d }));
+                    }
+                }
+            } else if let FaceSurface::Cylinder(c) = surface {
+                for radius in [1.0, 3.5, 5.0, 9.0, 11.0, 50.0] {
+                    let cylinder =
+                        CylindricalSurface::with_ref_dir(c.origin(), c.axis(), radius, c.x_axis())
+                            .unwrap();
+                    cases.push((face, FaceSurface::Cylinder(cylinder)));
+                }
+            }
+        }
+        // The same document taken off the restore fixed point, as a sketch
+        // workflow does: a profile face extruded (its edges shared with the
+        // bottom cap), then the extrusion deleted. The deletion drops the
+        // standalone profile face's index entries while its loops stay live,
+        // so the full-copy restore rebuilt them on every refusal.
+        let mut off_fixed_point = base.clone();
+        let square = [
+            (100.0, 100.0),
+            (104.0, 100.0),
+            (104.0, 103.0),
+            (100.0, 103.0),
+        ]
+        .map(|(x, y)| Point3::new(x, y, 0.0));
+        let profile =
+            remus_topology::builder::make_polygon_wire(&mut off_fixed_point, &square, 1e-7)
+                .and_then(|wire| {
+                    remus_topology::builder::make_face_from_wire(&mut off_fixed_point, wire)
+                })
+                .unwrap();
+        let extruded = remus_operations::extrude::extrude(
+            &mut off_fixed_point,
+            profile,
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .unwrap();
+        off_fixed_point.delete_solid(extruded).unwrap();
+        assert!(base.is_restore_fixed_point());
+        assert!(!off_fixed_point.is_restore_fixed_point());
+        let (mut refusals, mut late_faults, mut rebuilt) = (0, 0, 0);
+        for base in [&base, &off_fixed_point] {
+            for scoped in [false, true] {
+                for late_fault in [false, true] {
+                    for (face, replacement) in &cases {
+                        let mut current = base.clone();
+                        let mut legacy = base.clone();
+                        let outer = scoped.then(|| {
+                            (
+                                remus_topology::transaction::RollbackSnapshot::capture(
+                                    &mut current,
+                                ),
+                                remus_topology::transaction::RollbackSnapshot::capture(&mut legacy),
+                            )
+                        });
+                        let call = (plate, *face, replacement.clone());
+                        let new =
+                            replace_surface_under(false, late_fault, &mut current, call.clone());
+                        let old = replace_surface_under(true, late_fault, &mut legacy, call);
+                        let context = format!("{face:?} {replacement:?} late fault {late_fault}");
+                        assert_eq!(outcome(&new), outcome(&old), "{context}");
+                        assert_eq!(format!("{current:?}"), format!("{legacy:?}"), "{context}");
+                        if new.is_err() {
+                            refusals += 1;
+                            late_faults += usize::from(outcome(&new).ends_with("late fault"));
+                            if base.is_restore_fixed_point() {
+                                remus_topology::validation::validate_boundary_authority(&current)
+                                    .unwrap();
+                            } else {
+                                assert!(current.is_restore_fixed_point(), "{context}");
+                                rebuilt += 1;
+                            }
+                            assert_eq!(
+                                solid_faces(&current, plate).unwrap(),
+                                solid_faces(base, plate).unwrap()
+                            );
+                        }
+                        if let Some((current_scope, legacy_scope)) = outer {
+                            current_scope.restore(&mut current);
+                            legacy_scope.restore(&mut legacy);
+                            assert_eq!(format!("{current:?}"), format!("{legacy:?}"), "{context}");
+                        }
+                    }
+                }
+            }
+        }
+        // Corpus refusals all happen before the first write; the injected
+        // late faults roll back every write of a committed edit. Half of the
+        // refusals start off the fixed point.
+        assert!(
+            refusals > late_faults && late_faults >= 16 && rebuilt * 2 == refusals,
+            "{refusals} {late_faults} {rebuilt}"
+        );
+    }
 
     fn assert_edge_oracles(topo: &Topology, edge_id: EdgeId, expected_range: (f64, f64)) {
         let edge = topo.edge(edge_id).unwrap();
