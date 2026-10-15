@@ -71,20 +71,51 @@ fn check_first_span(knots: &[f64], p: usize) -> Result<(), MathError> {
 /// near 2⁻⁶⁰⁰ underflowed before) and keeps both weight extremes normal even
 /// when they lie further apart than the `f64` range. The division is exact,
 /// and ordinary weights (geometric mean within √2 of 1) are left unchanged.
-/// If even centring cannot keep both ends normal, the weights are kept.
-fn weight_scale(weights: impl Iterator<Item = f64>) -> f64 {
-    let (min, max) = weights.fold((f64::INFINITY, 0.0_f64), |(lo, hi), w| {
-        (lo.min(w), hi.max(w))
-    });
+///
+/// Where a large weight sits on a large control point, centring the weights
+/// alone can still overflow `w·P` (weight 2¹⁰⁰⁰ on a coordinate 2⁶⁰⁰), so
+/// the power is then raised just far enough to keep every `w·|P|` one bit
+/// below overflow, as long as the smallest weight stays normal. If no power
+/// of two satisfies both, the weights are kept.
+///
+/// `points` yields each weight with the largest absolute coordinate of its
+/// control point.
+fn weight_scale(points: &[(f64, f64)]) -> f64 {
+    let (mut w_min, mut w_max, mut top) = (f64::INFINITY, 0.0_f64, f64::NEG_INFINITY);
+    for &(w, m) in points {
+        w_min = w_min.min(w);
+        w_max = w_max.max(w);
+        // log2(w·|P|) without forming the product, which may overflow.
+        top = top.max(if m > 0.0 {
+            w.log2() + m.log2()
+        } else {
+            w.log2()
+        });
+    }
+    let centre = 0.5 * (w_min.log2() + w_max.log2());
+    // Keep `w·|P| / 2^e` below 2^1023, one bit short of overflow, which
+    // leaves headroom for the rounding of the insertion's convex blends.
+    let floor = (top - 1022.0).ceil();
     #[allow(clippy::cast_possible_truncation)]
     // `log2(f64::MAX)` rounds to 1024; keep the power of two finite and normal.
-    let exponent = ((0.5 * (min.log2() + max.log2())).round() as i32).clamp(-1022, 1023);
+    let exponent = (centre.round().max(floor) as i32).clamp(-1022, 1023);
     let scale = 2.0_f64.powi(exponent);
-    if (min / scale).is_normal() && (max / scale).is_normal() {
-        scale
-    } else {
-        1.0
-    }
+    let fits = (w_min / scale).is_normal()
+        && (w_max / scale).is_normal()
+        && points.iter().all(|&(w, m)| ((w / scale) * m).is_finite());
+    if fits { scale } else { 1.0 }
+}
+
+/// Each weight paired with the largest absolute coordinate of its control
+/// point, for [`weight_scale`].
+fn weighted_extent<'a>(
+    points: impl Iterator<Item = &'a Point3>,
+    weights: impl Iterator<Item = &'a f64>,
+) -> Vec<(f64, f64)> {
+    points
+        .zip(weights)
+        .map(|(p, &w)| (w, p.x().abs().max(p.y().abs()).max(p.z().abs())))
+        .collect()
 }
 
 /// Clamp a curve to its own domain by inserting both domain ends to
@@ -100,7 +131,10 @@ fn clamp_curve(curve: &NurbsCurve) -> Result<NurbsCurve, MathError> {
         return Ok(curve.clone());
     }
     check_first_span(curve.knots(), p)?;
-    let scale = weight_scale(curve.weights().iter().copied());
+    let scale = weight_scale(&weighted_extent(
+        curve.control_points().iter(),
+        curve.weights().iter(),
+    ));
     let unit = NurbsCurve::new(
         p,
         curve.knots().to_vec(),
@@ -126,7 +160,10 @@ fn clamp_surface(surface: &NurbsSurface) -> Result<NurbsSurface, MathError> {
     if clamped_u && clamped_v {
         return Ok(surface.clone());
     }
-    let scale = weight_scale(surface.weights().iter().flatten().copied());
+    let scale = weight_scale(&weighted_extent(
+        surface.control_points().iter().flatten(),
+        surface.weights().iter().flatten(),
+    ));
     let mut ends = NurbsSurface::new(
         pu,
         pv,

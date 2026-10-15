@@ -35,7 +35,7 @@ use remus_math::nurbs::decompose::{
     curve_degree_elevate, curve_to_bezier_segments, surface_to_bezier_patches,
 };
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 
 /// Uniform cubic B-spline span → Bezier, rows sum to 1.
 const M: [[f64; 4]; 4] = [
@@ -587,6 +587,77 @@ fn small_weights_with_small_coordinates_do_not_underflow() {
     for row in patches[0].surface.control_points() {
         for (got, want) in row.iter().zip(&expected) {
             assert_close(*got, *want, 1e-13 * tiny, "patch point");
+        }
+    }
+}
+
+#[test]
+fn a_large_weight_on_a_large_control_point_does_not_overflow() {
+    // Review follow-up: centring the weights alone chose 2^500 for weights
+    // [1, 2^1000, 1], leaving w·P = 2^1100 for a coordinate 2^600, so the
+    // endpoint insertion overflowed and the decomposition was refused. The
+    // reference is the same geometry with every weight multiplied by
+    // 2^-1000 (exact), whose w·P stays finite.
+    let big = 2.0_f64.powi(600);
+    let points = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(big, big, 0.0),
+        Point3::new(2.0 * big, 0.0, 0.0),
+    ];
+    let knots = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+    let curve = NurbsCurve::new(
+        2,
+        knots.clone(),
+        points.clone(),
+        vec![1.0, 2.0_f64.powi(1000), 1.0],
+    )
+    .expect("positive weights are valid");
+    let tiny = 2.0_f64.powi(-1000);
+    let reference = NurbsCurve::new(2, knots, points.clone(), vec![tiny, 1.0, tiny]).unwrap();
+    let segments = curve_to_bezier_segments(&curve).expect("decomposes");
+    let expected = curve_to_bezier_segments(&reference).unwrap();
+    assert_eq!(segments.len(), 1);
+    for (got, want) in segments[0]
+        .control_points()
+        .iter()
+        .zip(expected[0].control_points())
+    {
+        assert_close(*got, *want, 1e-13 * big, "Bezier point");
+    }
+    assert!(max_deviation(&reference, &segments[0], 64) <= 1e-13 * big);
+
+    let surface = NurbsSurface::new(
+        2,
+        1,
+        vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        points
+            .iter()
+            .map(|p| vec![*p, *p + Vec3::new(0.0, 0.0, big)])
+            .collect(),
+        vec![vec![1.0, 1.0], vec![2.0_f64.powi(1000); 2], vec![1.0, 1.0]],
+    )
+    .expect("positive weights are valid");
+    let reference = NurbsSurface::new(
+        2,
+        1,
+        surface.knots_u().to_vec(),
+        surface.knots_v().to_vec(),
+        surface.control_points().to_vec(),
+        vec![vec![tiny, tiny], vec![1.0, 1.0], vec![tiny, tiny]],
+    )
+    .unwrap();
+    let patches = surface_to_bezier_patches(&surface).expect("decomposes");
+    let expected = surface_to_bezier_patches(&reference).unwrap();
+    assert_eq!(patches.len(), 1);
+    for (got_row, want_row) in patches[0]
+        .surface
+        .control_points()
+        .iter()
+        .zip(expected[0].surface.control_points())
+    {
+        for (got, want) in got_row.iter().zip(want_row) {
+            assert_close(*got, *want, 1e-13 * big, "patch point");
         }
     }
 }
