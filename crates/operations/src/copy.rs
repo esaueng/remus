@@ -1862,11 +1862,13 @@ mod tests {
             let uv = pcurve.evaluate(4.5);
             // The canonical plane chart shared by the SameParameter proof
             // and the STEP reader and writer.
-            let (normal, d) = match *topo.face(face).unwrap().surface() {
-                FaceSurface::Plane { normal, d } => Some((normal, d)),
-                _ => None,
-            }
-            .unwrap();
+            let plane =
+                if let FaceSurface::Plane { normal, d } = *topo.face(face).unwrap().surface() {
+                    Some((normal, d))
+                } else {
+                    None
+                };
+            let (normal, d) = plane.unwrap();
             let origin =
                 remus_math::vec::Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
             let chart = remus_math::frame::Frame3::from_normal(origin, normal).unwrap();
