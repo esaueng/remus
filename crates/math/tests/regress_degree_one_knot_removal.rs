@@ -22,8 +22,11 @@
 )]
 
 use remus_math::MathError;
+use remus_math::context::OperationContext;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::knot_ops::{curve_knot_insert, curve_knot_remove};
+use remus_math::nurbs::reduction::simplify_curve;
+use remus_math::nurbs::reuse::{ReductionOptions, ReuseError};
 use remus_math::vec::Point3;
 
 fn polyline(knots: Vec<f64>, points: &[[f64; 3]], weights: Vec<f64>) -> NurbsCurve {
@@ -382,4 +385,45 @@ fn a_weight_ratio_below_the_normal_range_refuses() {
     );
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.0)));
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 1e-17)));
+}
+
+#[test]
+fn certified_reduction_still_gets_its_candidate_past_the_ratio_gate() {
+    // Review follow-up: a rational line with end weights 1e-200 and 1e108,
+    // with u = 0.5 inserted, has the ratio w_prev / w_mid ≈ 2e-308, which is
+    // subnormal. The gate refuses that removal at every finite tolerance, but
+    // the certified reduction asks `curve_knot_remove` for a candidate at
+    // tolerance f64::MAX and certifies it itself, so the gate must not
+    // pre-empt it: the decision belongs to the certificate, as on `main`.
+    let line = polyline(
+        vec![0.0, 0.0, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [1.0, 2.0, 0.0]],
+        vec![1e-200, 1e108],
+    );
+    let inserted = curve_knot_insert(&line, 0.5, 1).unwrap();
+    let w = inserted.weights();
+    assert!(
+        (w[0] / w[1]).is_subnormal(),
+        "premise: ratio {:e}",
+        w[0] / w[1]
+    );
+    assert!(is_refused(&curve_knot_remove(&inserted, 0.5, 1.0)));
+    let candidate = curve_knot_remove(&inserted, 0.5, f64::MAX).unwrap();
+    assert_eq!(candidate.control_points().len(), 2);
+    for (got, want) in candidate.control_points().iter().zip(line.control_points()) {
+        assert!((*got - *want).length() <= 1e-12, "{got:?} vs {want:?}");
+    }
+    // The certificate, not the candidate generator, now rules on this knot.
+    // Its Bernstein bound cannot resolve weights 308 decades apart, which is
+    // a typed refusal; a silent "no removable knot" would mean the
+    // generator had swallowed the candidate.
+    match simplify_curve(
+        &inserted,
+        &ReductionOptions::default(),
+        &OperationContext::new(),
+    ) {
+        Ok(reduced) => assert_eq!(reduced.removed_knots, 1),
+        Err(ReuseError::BoundUnavailable { .. }) => {}
+        Err(other) => panic!("unexpected refusal {other:?}"),
+    }
 }
