@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
 use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
 use remus_math::vec::Vec3;
 use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
@@ -19,10 +20,12 @@ use remus_operations::sew::sew_faces;
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::Solid;
+use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 fn arena_counts(topo: &Topology) -> (usize, usize, usize, usize) {
@@ -150,6 +153,53 @@ fn edges_shorter_than_the_tolerance_are_refused() {
     let faces = solid_faces(&topo, cube).unwrap();
     let before = arena_counts(&topo);
     let error = sew_faces(&mut topo, &faces, 4.0).expect_err("collapsing edges");
+    assert!(
+        matches!(error, OperationsError::InvalidInput { .. }),
+        "unexpected error {error}"
+    );
+    assert_eq!(arena_counts(&topo), before, "refusal left entities");
+}
+
+/// A planar `z = height` face bounded by straight edges through `corners`.
+fn polygon_face(topo: &mut Topology, corners: &[[f64; 2]], height: f64) -> FaceId {
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|&[x, y]| topo.add_vertex(Vertex::new(Point3::new(x, y, height), 1e-7)))
+        .collect();
+    let edges = (0..vertices.len())
+        .map(|i| {
+            let edge = Edge::new(
+                vertices[i],
+                vertices[(i + 1) % vertices.len()],
+                EdgeCurve::Line,
+            );
+            OrientedEdge::new(topo.add_edge(edge), true)
+        })
+        .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: height,
+        },
+    ))
+}
+
+#[test]
+fn corners_merged_by_the_tolerance_are_refused() {
+    // A thin diamond whose two side corners lie 0.002 apart: every edge is
+    // about 1 long, but at tolerance 0.01 the side corners share a merge cell
+    // and the loop would pinch into reused edges.
+    let mut topo = Topology::new();
+    let diamond = [[0.0, 0.0], [1.0, -0.001], [2.0, 0.0], [1.0, 0.001]];
+    let faces = [
+        polygon_face(&mut topo, &diamond, 0.0),
+        polygon_face(&mut topo, &diamond, 5.0),
+    ];
+    let before = arena_counts(&topo);
+    let error = sew_faces(&mut topo, &faces, 0.01).expect_err("pinched loop");
     assert!(
         matches!(error, OperationsError::InvalidInput { .. }),
         "unexpected error {error}"

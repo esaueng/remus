@@ -146,8 +146,9 @@ pub fn make_solid_from_shared_faces(
 ///
 /// Returns an error if fewer than 2 faces are provided, if a face has an
 /// inner wire or a boundary edge that is not an open straight line, or if the
-/// tolerance merges both ends of an edge into one vertex. A failed sew rolls
-/// back without leaving allocations behind.
+/// tolerance merges two corners of one face boundary (including both ends of
+/// an edge) into one vertex. A failed sew rolls back without leaving
+/// allocations behind.
 pub fn sew_faces(
     topo: &mut Topology,
     faces: &[FaceId],
@@ -242,10 +243,12 @@ fn sew_rebuilt_faces(
 
     for snap in &face_snapshots {
         let mut oriented_edges: Vec<OrientedEdge> = Vec::with_capacity(snap.edge_points.len());
+        let mut corners: Vec<usize> = Vec::with_capacity(snap.edge_points.len());
 
         for &(start_pt, end_pt) in &snap.edge_points {
             let v_start = get_or_create_vertex(topo, start_pt, &mut vertex_map);
             let v_end = get_or_create_vertex(topo, end_pt, &mut vertex_map);
+            corners.push(v_start.index());
             if v_start == v_end {
                 return Err(crate::OperationsError::InvalidInput {
                     reason: format!(
@@ -273,6 +276,18 @@ fn sew_rebuilt_faces(
             });
 
             oriented_edges.push(OrientedEdge::new(edge_id, is_forward));
+        }
+
+        // Two non-adjacent corners can also merge without any single edge
+        // collapsing, which pinches the loop and reuses its edges.
+        corners.sort_unstable();
+        if corners.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "sewing tolerance {tol} merges two corners of one face boundary into one \
+                     vertex"
+                ),
+            });
         }
 
         let wire = Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
