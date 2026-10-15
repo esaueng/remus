@@ -456,15 +456,37 @@ mod tests {
         }
     }
 
+    /// How [`patch`] bounds the first half of its bottom rim.
+    #[derive(Clone, Copy)]
+    enum Rim {
+        Circle,
+        /// A rational quadratic NURBS arc.
+        Nurbs,
+        /// A straight chord, the one curve that reads its endpoints.
+        Chord,
+    }
+
+    /// The one input in which a [`patch`] differs from the plain one.
+    #[derive(Clone, Copy)]
+    enum Tweak {
+        None,
+        /// The second edge used backwards, nothing else changed.
+        FlippedUse,
+        /// A stored tolerance on the third edge.
+        EdgeTolerance,
+        /// The vertex between the two rim halves moved by this much.
+        MovedVertex(f64),
+    }
+
     /// A five-edge patch `[u0, u0 + du] x [v0, v0 + 1.0]` whose bottom rim
-    /// is split in two; with `nurbs`, the first half is a rational quadratic
-    /// NURBS arc instead of a circle arc. Neither is a four-arc rectangle, so
-    /// both take the sampled trim.
+    /// is split in two, its first half bounded as `rim` says. None is a
+    /// four-arc rectangle, so all take the sampled trim.
     fn patch(
         topo: &mut Topology,
         t: &ToroidalSurface,
         (u0, v0, du): (f64, f64, f64),
-        nurbs: bool,
+        rim: Rim,
+        tweak: Tweak,
     ) -> FaceId {
         use remus_math::nurbs::curve::NurbsCurve;
         let (u1, v1) = (u0 + du, v0 + 1.0);
@@ -488,25 +510,33 @@ mod tests {
             )
             .unwrap()
         };
-        let vertices = [(u0, v0), (um, v0), (u1, v0), (u1, v1), (u0, v1)]
-            .map(|(u, v)| topo.add_vertex(Vertex::new(t.evaluate(u, v), 1e-7)));
+        let nudge = match tweak {
+            Tweak::MovedVertex(by) => t.z_axis() * by,
+            Tweak::None | Tweak::FlippedUse | Tweak::EdgeTolerance => Vec3::new(0.0, 0.0, 0.0),
+        };
+        let mut points =
+            [(u0, v0), (um, v0), (u1, v0), (u1, v1), (u0, v1)].map(|(u, v)| t.evaluate(u, v));
+        points[1] = points[1] + nudge;
+        let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
         let bottom = major(v0);
-        let first = if nurbs {
-            let half = 0.5 * (um - u0);
-            let mid = u0 + half;
-            let apex = bottom.center()
-                + (bottom.u_axis() * mid.cos() + bottom.v_axis() * mid.sin())
-                    * (bottom.radius() / half.cos());
-            let curve = NurbsCurve::new(
-                2,
-                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-                vec![bottom.evaluate(u0), apex, bottom.evaluate(um)],
-                vec![1.0, half.cos(), 1.0],
-            )
-            .unwrap();
-            (EdgeCurve::NurbsCurve(curve), (0.0, 1.0))
-        } else {
-            (EdgeCurve::Circle(bottom.clone()), (u0, um))
+        let first = match rim {
+            Rim::Nurbs => {
+                let half = 0.5 * (um - u0);
+                let mid = u0 + half;
+                let apex = bottom.center()
+                    + (bottom.u_axis() * mid.cos() + bottom.v_axis() * mid.sin())
+                        * (bottom.radius() / half.cos());
+                let curve = NurbsCurve::new(
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![bottom.evaluate(u0), apex, bottom.evaluate(um)],
+                    vec![1.0, half.cos(), 1.0],
+                )
+                .unwrap();
+                (EdgeCurve::NurbsCurve(curve), (0.0, 1.0))
+            }
+            Rim::Chord => (EdgeCurve::Line, (0.0, 1.0)),
+            Rim::Circle => (EdgeCurve::Circle(bottom.clone()), (u0, um)),
         };
         let curves = [
             first,
@@ -521,7 +551,11 @@ mod tests {
             .map(|(i, (c, domain))| {
                 let mut e = Edge::new(vertices[i], vertices[(i + 1) % 5], c);
                 e.set_trim(Some(domain));
-                OrientedEdge::new(topo.add_edge(e), true)
+                if i == 2 && matches!(tweak, Tweak::EdgeTolerance) {
+                    e.set_tolerance(Some(1e-4)).unwrap();
+                }
+                let forward = !(i == 1 && matches!(tweak, Tweak::FlippedUse));
+                OrientedEdge::new(topo.add_edge(e), forward)
             })
             .collect();
         let wire = topo.add_wire(Wire::new(edges, true).unwrap());
@@ -546,15 +580,15 @@ mod tests {
         for (major, minor) in [(12.0, 3.0), (0.12, 0.03), (1200.0, 300.0)] {
             let t = torus(major, minor);
             for anchor in [(0.3, 0.4, 1.2), (5.8, 5.9, 1.2)] {
-                for nurbs in [false, true] {
-                    faces.push(patch(topo, &t, anchor, nurbs));
+                for rim in [Rim::Circle, Rim::Nurbs] {
+                    faces.push(patch(topo, &t, anchor, rim, Tweak::None));
                 }
             }
         }
         let t = torus(12.0, 3.0_f64.next_up());
-        faces.push(patch(topo, &t, (0.3, 0.4, 1.2), true));
+        faces.push(patch(topo, &t, (0.3, 0.4, 1.2), Rim::Nurbs, Tweak::None));
         let t = torus(12.0, 3.0);
-        faces.push(patch(topo, &t, (0.3, 0.4, 3.3), false));
+        faces.push(patch(topo, &t, (0.3, 0.4, 3.3), Rim::Circle, Tweak::None));
         faces
     }
 
@@ -675,5 +709,100 @@ mod tests {
 
         set_thread_ray_geom_memo_bytes(crate::ray_geom_memo::DEFAULT_RAY_GEOM_MEMO_BYTES);
         set_thread_ray_geom_memo_capacity(0);
+    }
+
+    /// Faces that differ from another in one input the trim builder reads (an
+    /// edge's use, an edge tolerance, a vertex position, each classifier
+    /// tolerance) get keys of their own, so the memo, holding the other face,
+    /// misses on them and computes their own trim.
+    #[test]
+    fn trim_keys_tell_apart_faces_differing_in_one_input() {
+        use crate::ray_geom_memo::{
+            enable_thread_ray_geom_memo, set_thread_ray_geom_memo_capacity,
+            thread_ray_geom_memo_stats,
+        };
+        let mut topo = Topology::new();
+        let t = torus(12.0, 3.0);
+        let anchor = (0.3, 0.4, 1.2);
+        let base = Tolerance::default();
+        let plain = patch(&mut topo, &t, anchor, Rim::Circle, Tweak::None);
+        let chord = patch(&mut topo, &t, anchor, Rim::Chord, Tweak::None);
+        let cases = [
+            (
+                "edge use",
+                patch(&mut topo, &t, anchor, Rim::Circle, Tweak::FlippedUse),
+                base,
+                plain,
+            ),
+            (
+                "edge tolerance",
+                patch(&mut topo, &t, anchor, Rim::Circle, Tweak::EdgeTolerance),
+                base,
+                plain,
+            ),
+            (
+                "vertex position",
+                patch(&mut topo, &t, anchor, Rim::Chord, Tweak::MovedVertex(1e-3)),
+                base,
+                chord,
+            ),
+            (
+                "linear tolerance",
+                plain,
+                Tolerance {
+                    linear: base.linear * 2.0,
+                    ..base
+                },
+                plain,
+            ),
+            (
+                "angular tolerance",
+                plain,
+                // Above `linear / metric`, so the builder's margin follows it.
+                Tolerance {
+                    angular: 1e-6,
+                    ..base
+                },
+                plain,
+            ),
+            (
+                "relative tolerance",
+                plain,
+                Tolerance {
+                    relative: base.relative * 2.0,
+                    ..base
+                },
+                plain,
+            ),
+        ];
+        let mut changed_trims = 0;
+        for (what, face, tol, other) in cases {
+            let (key, other_key) = (trim_key(&topo, face, tol), trim_key(&topo, other, base));
+            assert!(key.is_some() && other_key.is_some(), "{what}: no key");
+            assert_ne!(key, other_key, "{what}: same key");
+            let direct = format!("{:?}", trimmed_torus_polygon(&topo, face, tol));
+            let other_direct = format!("{:?}", trimmed_torus_polygon(&topo, other, base));
+            changed_trims += usize::from(direct != other_direct);
+            set_thread_ray_geom_memo_capacity(0);
+            enable_thread_ray_geom_memo();
+            let _ = trimmed_torus_polygon_memoized(&topo, other, base);
+            let before = thread_ray_geom_memo_stats();
+            let memoized = format!("{:?}", trimmed_torus_polygon_memoized(&topo, face, tol));
+            let after = thread_ray_geom_memo_stats();
+            set_thread_ray_geom_memo_capacity(0);
+            assert_eq!(memoized, direct, "{what}: memo answered with another trim");
+            assert_eq!(
+                (
+                    after.misses - before.misses,
+                    after.hits - before.hits,
+                    after.len
+                ),
+                (1, 0, 2),
+                "{what}: {after:?}"
+            );
+        }
+        // Every input but the unread relative tolerance changes the trim, so
+        // a key without it would return a wrong one.
+        assert_eq!(changed_trims, cases.len() - 1);
     }
 }
