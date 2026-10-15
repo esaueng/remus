@@ -1268,6 +1268,7 @@ mod curved {
 
     use std::f64::consts::TAU;
 
+    use remus_math::compact_sort::CompactSort;
     use remus_math::surfaces::ConicalSurface;
     use remus_math::tolerance::Tolerance;
     use remus_math::vec::{Point3, Vec3};
@@ -1474,31 +1475,50 @@ mod curved {
             }
             return Ok(());
         };
-        let crossing_near = |a: Point3, b: Point3| -> Result<Point3, OperationsError> {
-            let span = (b - a).length();
-            crossings
+        // Every crossing belongs to the chord nearest it. Each chord is cut
+        // at its crossings and each piece kept by its own midpoint, so a
+        // trimmed span or a hole narrower than one chord is not dropped or
+        // bridged by classifying only the chord's ends.
+        let chords: Vec<(Point3, Point3)> = polylines
+            .iter()
+            .flat_map(|polyline| polyline.windows(2).map(|w| (w[0], w[1])))
+            .collect();
+        let mut cuts: Vec<Vec<(f64, Point3)>> = vec![Vec::new(); chords.len()];
+        for &x in &crossings {
+            let nearest = chords
                 .iter()
-                .map(|&x| (segment_distance(x, a, b), x))
-                .filter(|(distance, _)| *distance <= span.max(tol.linear * 1000.0))
-                .min_by(|l, r| l.0.total_cmp(&r.0))
-                .map(|(_, x)| x)
-                .ok_or_else(|| {
-                    unsupported(
-                        "a curved section leaves its face away from every boundary crossing".into(),
-                    )
-                })
+                .enumerate()
+                .map(|(i, &(a, b))| (segment_distance(x, a, b), i))
+                .min_by(|l, r| l.0.total_cmp(&r.0));
+            if let Some((distance, i)) = nearest {
+                let (a, b) = chords[i];
+                let ab = b - a;
+                if distance <= ab.length().max(tol.linear * 1000.0) {
+                    let along = (x - a).dot(ab) / ab.length_squared().max(f64::MIN_POSITIVE);
+                    cuts[i].push((along, x));
+                }
+            }
+        }
+        let surface = topo.face(face)?.surface();
+        let on_face = |p: Point3| -> Result<bool, OperationsError> {
+            let on_carrier = surface
+                .project_point(p)
+                .and_then(|(u, v)| surface.evaluate(u, v))
+                .unwrap_or(p);
+            Ok(remus_check::classify::surface_point_in_face(
+                topo, face, on_carrier,
+            )?)
         };
-        for polyline in polylines {
-            let inside = polyline
-                .iter()
-                .map(|&p| remus_check::classify::surface_point_in_face(topo, face, p))
-                .collect::<Result<Vec<bool>, _>>()?;
-            for (w, side) in polyline.windows(2).zip(inside.windows(2)) {
-                match (side[0], side[1]) {
-                    (true, true) => segments.push((w[0], w[1])),
-                    (true, false) => segments.push((w[0], crossing_near(w[0], w[1])?)),
-                    (false, true) => segments.push((crossing_near(w[0], w[1])?, w[1])),
-                    (false, false) => {}
+        for (&(a, b), mut cut) in chords.iter().zip(cuts) {
+            cut.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
+            let points: Vec<Point3> = std::iter::once(a)
+                .chain(cut.into_iter().map(|(_, x)| x))
+                .chain(std::iter::once(b))
+                .collect();
+            for piece in points.windows(2) {
+                let (p, q) = (piece[0], piece[1]);
+                if (q - p).length() > tol.linear && on_face(p + (q - p) * 0.5)? {
+                    segments.push((p, q));
                 }
             }
         }

@@ -89,6 +89,96 @@ fn dome(topo: &mut Topology) -> SolidId {
     solid
 }
 
+/// The unit sphere between `z = 0.5` and `z = top`, closed by two planar
+/// discs: a sphere band between two rims.
+fn truncated_dome(topo: &mut Topology, top: f64) -> SolidId {
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let rim = |topo: &mut Topology, z: f64| {
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, z), up, (1.0 - z * z).sqrt()).unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        topo.add_edge(edge)
+    };
+    let (low, high) = (rim(topo, 0.5), rim(topo, top));
+    let wire = |topo: &mut Topology, edge, forward| {
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap())
+    };
+    // The band keeps the region between its rims: the low rim counter-clockwise
+    // about +z (pole side kept), the high rim clockwise (pole side removed).
+    let band_outer = wire(topo, low, true);
+    let band_hole = wire(topo, high, false);
+    let band = topo.add_face(Face::new(
+        band_outer,
+        vec![band_hole],
+        FaceSurface::Sphere(SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap()),
+    ));
+    let base_wire = wire(topo, low, false);
+    let base = topo.add_face(Face::new(
+        base_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: -up,
+            d: -0.5,
+        },
+    ));
+    let lid_wire = wire(topo, high, true);
+    let lid = topo.add_face(Face::new(
+        lid_wire,
+        vec![],
+        FaceSurface::Plane { normal: up, d: top },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![band, base, lid]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    assert!(validate_solid(topo, solid).unwrap().is_valid());
+    solid
+}
+
+/// A face narrower than one of the 64 carrier chords: the unit sphere's band
+/// between `z = 0.5` and `z = 0.52`, lidded, spans 0.023 rad of the section
+/// circle against a 0.098 rad chord. Classifying only the chord ends drops
+/// that span whenever both ends land off the band, leaving the two lid
+/// chords unjoined.
+#[test]
+fn b91_section_keeps_a_span_narrower_than_a_chord() {
+    let top = 0.52_f64;
+    let mut topo = Topology::new();
+    let solid = truncated_dome(&mut topo, top);
+    let probe = |p: Point3| classify_point(&topo, solid, p, 0.01, 1e-7).unwrap();
+    assert_eq!(
+        probe(Point3::new(0.0, 0.0, 0.51)),
+        PointClassification::Inside
+    );
+    assert_eq!(
+        probe(Point3::new(0.0, 0.0, 0.6)),
+        PointClassification::Outside
+    );
+    // Through the axis: the unit circle's strip 0.5 ≤ z ≤ top, the difference
+    // of the segments above each, `(θ − sin θ)/2` with θ = 2·acos(z).
+    let segment = |z: f64| {
+        let angle = 2.0 * z.acos();
+        0.5 * (angle - angle.sin())
+    };
+    for normal in [
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.6, 0.8, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(-0.28, 0.96, 0.0),
+    ] {
+        // The strip ends on the rims' sampled 32-gons (the planar arm's
+        // `wire_polygon`), so it can fall short of the circle by their
+        // relative sagitta, 1 − cos(π/32) ≈ 4.8e-3, on top of the arcs' own
+        // 64-chord deficit.
+        let area = section_area(&mut topo, solid, Point3::new(0.0, 0.0, 0.0), normal);
+        let expected = segment(0.5) - segment(top);
+        let rel = (area - expected).abs() / expected;
+        assert!(
+            rel <= 1.0 - (PI / 32.0).cos() + 0.5 * CHORD_BOUND,
+            "{normal:?}: section area {area}, closed form {expected} ({rel:e})"
+        );
+    }
+}
+
 /// The review's case: `z = 0` misses the dome, so the section is empty.
 #[test]
 fn b91_plane_below_a_dome_misses_it() {
