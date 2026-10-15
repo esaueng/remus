@@ -83,12 +83,18 @@ pub fn linear_image(matrix: &Mat4, direction: Vec3) -> Vec3 {
     )
 }
 
-/// The chart of a `Plane { normal, d }` face: origin `normal·d`, axes from
+/// The chart of a `Plane { normal, d }` face: origin `normal·d/|normal|²`
+/// (the foot of the plane, also for a non-unit normal), axes from
 /// [`Frame3::from_normal`]. This is the chart the strict `SameParameter`
-/// proof (`PlaneChart::canonical`) and the STEP reader and writer evaluate
-/// plane pcurves in; all of them must agree.
+/// proof (`PlaneChart::canonical`) and the STEP reader evaluate plane
+/// pcurves in; the STEP writer's origin `normal·d` agrees for unit normals.
 fn plane_chart(normal: Vec3, d: f64) -> Result<Frame3, crate::OperationsError> {
-    let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+    let denominator = normal.dot(normal);
+    let origin = Point3::new(
+        normal.x() * d / denominator,
+        normal.y() * d / denominator,
+        normal.z() * d / denominator,
+    );
     Ok(Frame3::from_normal(origin, normal)?)
 }
 
@@ -1035,5 +1041,34 @@ mod tests {
         }
         assert!(map.determinant() < 0.0, "a reflection reverses the chart");
         assert!(map.conformal_scale().is_some());
+    }
+
+    #[test]
+    fn non_unit_plane_normals_chart_from_the_plane_foot() {
+        // `normal = (0, 0, 2.5), d = 7.5` is `z = 3`, which the shear
+        // `x' = x + (z − 3)` fixes pointwise: the chart map is the identity.
+        // An origin at `normal·d` (z = 18.75, off the plane) shifted u by 15.75.
+        let shear = Mat4([
+            [1.0, 0.0, 1.0, -3.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        let source = plane_chart(Vec3::new(0.0, 0.0, 2.5), 7.5).unwrap();
+        assert!((source.origin - Point3::new(0.0, 0.0, 3.0)).length() < 1e-15);
+        let map = UvAffine::plane(
+            &shear,
+            (Vec3::new(0.0, 0.0, 2.5), 7.5),
+            (Vec3::new(0.0, 0.0, 1.0), 3.0),
+        )
+        .unwrap();
+        for (u, v) in [(0.0, 0.0), (1.0, -2.0), (-3.5, 0.25)] {
+            let uv = map.point(Point2::new(u, v));
+            assert!((uv.x() - u).abs() < 1e-12 && (uv.y() - v).abs() < 1e-12);
+            let lifted = shear.mul_point(source.origin + source.x * u + source.y * v);
+            assert!(
+                (lifted - (source.origin + source.x * uv.x() + source.y * uv.y())).length() < 1e-12
+            );
+        }
     }
 }
