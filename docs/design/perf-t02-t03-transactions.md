@@ -166,9 +166,28 @@ mutation lands:
   that scope; the validator observes staged state before the decision.
 - **Retained checkpoints:** user checkpoints are independent full clones
   (`Rc<Topology>`); undo rewind never touches them. The WASM checkpoint
-  first-write copy (`Rc::make_mut`) and the non-boolean batch dispatch
-  clones remain O(document size) and are disclosed as remaining costs, not
-  claimed as wins.
+  first-write copy (`Rc::make_mut`) remains O(document size) and is
+  disclosed as a remaining cost, not claimed as a win. Every WASM mutating
+  boundary (batch items, `with_topology_transaction`, the typed modifier
+  twins, `fromBREP`) now opens a rollback scope instead of cloning the
+  document, and commits it as soon as the call succeeds, so a checkpoint
+  taken right after never keeps the call's records alive. A refusal lands
+  where the full-copy restore it replaced landed. The scope rewinds like a
+  copy (`RollbackSnapshot::restore_like_copy`: slots the call allocated keep
+  their last contents as tombstones, as the copy's restore left them). Where
+  that copy was restored with checkpoint-barrier semantics (every family but
+  the typed modifier twins and the batch fuse/cut/intersect arm, which
+  already rolled back exactly), `Topology::normalize_as_restored` then
+  rebuilds the pcurve index from loop/coedge authority as that restore always
+  did: nothing on a restore fixed point, one copy and restore otherwise (for
+  example a standalone profile face whose extrusion was deleted with the
+  edges they shared). The one intended difference: a failed call's own
+  retirements are revived exactly rather than kept with checkpoint-barrier
+  semantics. Diagnostics differ too: after a refused call the arenas keep
+  the capacity the call grew (the copy's restore reallocated them), so the
+  capacity-based `arena_bytes` behind `checkpointMemoryStats` byte
+  estimates can read higher. A refused read-only batch item still leaves
+  the document untouched without any restore.
 - **Restore behavior:** `RollbackSnapshot::capture` / `restore` and
   `run_transacted` / `run_validated` keep their signatures. `restore`
   rewinds to its mark. The former snapshot compatibility method for sticky

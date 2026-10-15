@@ -356,6 +356,19 @@ impl<T: Clone> Arena<T> {
         self.finish_live_restore(snapshot, previous_slots);
     }
 
+    /// [`Self::restore_for_rollback`] for the first `limit` slots only: the
+    /// rest keep their contents and liveness. For an earlier state of this
+    /// arena, which never holds more slots than it does now.
+    pub(crate) fn restore_for_rollback_below(&mut self, snapshot: &Self, limit: usize) {
+        for (slot, value) in self.items.iter_mut().zip(&snapshot.items).take(limit) {
+            slot.clone_from(value);
+        }
+        for (is_live, &was_live) in self.live.iter_mut().zip(&snapshot.live).take(limit) {
+            *is_live = was_live;
+        }
+        self.live_len = self.live.iter().filter(|is_live| **is_live).count();
+    }
+
     /// Writes the snapshot's slots over this arena's in place, appending any
     /// it has beyond them. Slots past the snapshot keep their tombstones
     /// where they are: nothing is reallocated, cloned or dropped for them.

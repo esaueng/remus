@@ -250,7 +250,100 @@ mod exact_boolean_gate_tests {
     }
 }
 
-// ── Checkpoint restore of the value the kernel still holds ─────────
+// ── Boundary rollback fault matrix (every migrated family) ─────────
+
+/// Every live entity, its boundary authority, pcurves, attributes and the
+/// journal. Slot and journal-id high-water marks only grow, so they are
+/// compared separately ([`high_water`]); tombstone contents are
+/// deliberately absent: no API can read them.
+pub(super) fn live_state(t: &remus_topology::Topology) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    macro_rules! arena {
+        ($method:ident) => {
+            let arena = t.$method();
+            let _ = writeln!(
+                out,
+                "{} {:?}",
+                stringify!($method),
+                arena.iter().collect::<Vec<_>>()
+            );
+        };
+    }
+    arena!(vertices);
+    arena!(edges);
+    arena!(wires);
+    arena!(faces);
+    arena!(shells);
+    arena!(solids);
+    arena!(compounds);
+    arena!(compsolids);
+    let _ = writeln!(
+        out,
+        "loops={} coedges={} uses={} ticks={}",
+        t.num_loops(),
+        t.num_coedges(),
+        t.num_pcurves(),
+        t.mutation_ticks()
+    );
+    for (face, _) in t.faces().iter() {
+        let _ = writeln!(
+            out,
+            "{face:?} {:?} {:?}",
+            t.attributes().face(face),
+            t.pcurves_for_face(face)
+        );
+        for &loop_id in t.loops_of_face(face).unwrap_or_default() {
+            let boundary = t.face_loop(loop_id);
+            let _ = writeln!(out, "  {loop_id:?} {boundary:?}");
+            if let Ok(boundary) = boundary {
+                for &coedge in boundary.coedges() {
+                    let _ = writeln!(out, "    {coedge:?} {:?}", t.coedge(coedge));
+                }
+            }
+        }
+    }
+    for (edge, _) in t.edges().iter() {
+        let _ = writeln!(out, "{edge:?} {:?}", t.coedges_of_edge(edge));
+    }
+    for (solid, _) in t.solids().iter() {
+        let _ = writeln!(out, "{solid:?} {:?}", t.attributes().solid(solid));
+    }
+    let mut journal = t.journal().snapshot();
+    journal.next_op = 0;
+    journal.next_ordinal = 0;
+    let _ = writeln!(out, "{journal:?}");
+    out
+}
+
+/// Slot and journal-id high-water marks: never rewound, never reissued.
+pub(super) fn high_water(t: &remus_topology::Topology) -> String {
+    let journal = t.journal().snapshot();
+    format!(
+        "{:?} {} {} {}",
+        slot_marks(t),
+        t.allocated_slot_count(),
+        journal.next_op,
+        journal.next_ordinal
+    )
+}
+
+/// Session state a topology rollback must never touch.
+pub(super) fn session_state(k: &BrepKernel) -> String {
+    format!(
+        "{:?}{:?}{:?}{:?}{}",
+        k.assemblies, k.sketches, k.gcs_sketches, k.checkpoints, k.poisoned
+    )
+}
+
+/// Whether the next journaled operation would first record a barrier for
+/// unjournaled mutations: a rollback must leave this exactly as it was.
+pub(super) fn journal_gap(t: &remus_topology::Topology) -> bool {
+    let mut probe = t.clone();
+    let entries = probe.journal().len();
+    let _ = probe.journal_begin("gap-probe");
+    probe.journal().len() != entries
+}
 
 /// Per-arena slot high-water marks.
 pub(super) fn slot_marks(t: &remus_topology::Topology) -> [usize; 8] {
@@ -266,16 +359,349 @@ pub(super) fn slot_marks(t: &remus_topology::Topology) -> [usize; 8] {
     ]
 }
 
-/// Slot and journal-id high-water marks: never rewound, never reissued.
-pub(super) fn high_water(t: &remus_topology::Topology) -> String {
-    let journal = t.journal().snapshot();
-    format!(
-        "{:?} {} {} {}",
-        slot_marks(t),
-        t.allocated_slot_count(),
-        journal.next_op,
-        journal.next_ordinal
+/// Every handle issued in `[from, to)` must stay stale.
+pub(super) fn assert_stale(t: &remus_topology::Topology, from: [usize; 8], to: [usize; 8]) {
+    for (arena, (&start, &end)) in from.iter().zip(&to).enumerate() {
+        for index in start..end {
+            let live = match arena {
+                0 => t.vertex_id_from_index(index).is_some(),
+                1 => t.edge_id_from_index(index).is_some(),
+                2 => t.wire_id_from_index(index).is_some(),
+                3 => t.face_id_from_index(index).is_some(),
+                4 => t.shell_id_from_index(index).is_some(),
+                5 => t.solid_id_from_index(index).is_some(),
+                6 => t.compound_id_from_index(index).is_some(),
+                _ => t.compsolid_id_from_index(index).is_some(),
+            };
+            assert!(!live, "arena {arena} slot {index} came back to life");
+        }
+    }
+}
+
+/// What a refusal must leave untouched.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Observed {
+    live: String,
+    session: String,
+    gap: bool,
+}
+
+pub(super) fn observe(k: &BrepKernel) -> Observed {
+    remus_topology::validation::validate_boundary_authority(k.topo()).unwrap();
+    Observed {
+        live: live_state(k.topo()),
+        session: session_state(k),
+        gap: journal_gap(k.topo()),
+    }
+}
+
+/// Seeds assembly, legacy sketch and GCS sketch state so a rollback that
+/// touched session state would show.
+fn seed_session(k: &mut BrepKernel) {
+    k.assembly_new("retained").unwrap();
+    let sketch = k.sketch_new().unwrap();
+    k.sketch_add_point(sketch, 1.0, 2.0, false).unwrap();
+    k.gcs_new().unwrap();
+}
+
+fn batch(k: &mut BrepKernel, operations: &serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(&k.execute_batch(&operations.to_string())).unwrap()
+}
+
+/// A refusal through `refuse` must restore every observed field exactly,
+/// leave every handle it allocated stale (also after later allocations and
+/// a checkpoint restore), and let the next success commit normally.
+/// `refuse` returns whether the call refused; `succeed` whether it committed.
+fn assert_refusal_rolls_back(
+    k: &mut BrepKernel,
+    family: &str,
+    refuse: &mut dyn FnMut(&mut BrepKernel) -> bool,
+    succeed: &mut dyn FnMut(&mut BrepKernel) -> bool,
+) {
+    assert!(succeed(k), "{family}: first success");
+    let checkpoint = k.checkpoint().unwrap();
+    let mut failed = Vec::new();
+    for round in 0..3 {
+        let before = observe(k);
+        let marks = slot_marks(k.topo());
+        assert!(refuse(k), "{family}: refusal {round} must fail");
+        assert_eq!(observe(k), before, "{family}: refusal {round}");
+        failed.push((marks, slot_marks(k.topo())));
+        assert!(succeed(k), "{family}: success after refusal {round}");
+        k.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        for &(from, to) in &failed {
+            assert_stale(k.topo(), from, to);
+        }
+    }
+    k.restore(checkpoint).unwrap();
+    k.make_box_solid(1.0, 1.0, 1.0).unwrap();
+    for &(from, to) in &failed {
+        assert_stale(k.topo(), from, to);
+    }
+}
+
+/// Handles of the shared fixture: two boxes, a drilled plate and its bore.
+pub(super) struct Fixture {
+    pub(super) block: u32,
+    pub(super) small: u32,
+    plate: u32,
+    bore: u32,
+    edge: u32,
+    face: u32,
+}
+
+fn handle(index: usize) -> u32 {
+    u32::try_from(index).unwrap()
+}
+
+pub(super) fn fixture(k: &mut BrepKernel) -> Fixture {
+    use remus_operations::{boolean, primitives, transform};
+    seed_session(k);
+    let block = k.make_box_solid(10.0, 10.0, 10.0).unwrap();
+    let small = k.make_box_solid(4.0, 4.0, 4.0).unwrap();
+    let mut source = remus_topology::Topology::new();
+    let blank = primitives::make_box(&mut source, 60.0, 40.0, 10.0).unwrap();
+    let tool = primitives::make_cylinder(&mut source, 4.0, 30.0).unwrap();
+    transform::transform_solid(
+        &mut source,
+        tool,
+        &remus_math::mat::Mat4::translation(10.0, 10.0, -10.0),
     )
+    .unwrap();
+    let drilled = boolean::boolean(&mut source, boolean::BooleanOp::Cut, blank, tool).unwrap();
+    let bytes = remus_io::arena_io::serialize_solids(&source, &[drilled]).unwrap();
+    let plate = k.deserialize_solids(&bytes).unwrap()[0];
+    let plate_id = k.resolve_solid(plate).unwrap();
+    let bore = remus_topology::explorer::solid_faces(k.topo(), plate_id)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            matches!(
+                k.topo().face(f).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .unwrap();
+    let block_id = k.resolve_solid(block).unwrap();
+    let edge = remus_topology::explorer::solid_edges(k.topo(), block_id).unwrap()[0];
+    let face = remus_topology::explorer::solid_faces(k.topo(), block_id).unwrap()[0];
+    Fixture {
+        block,
+        small,
+        plate,
+        bore: handle(bore.index()),
+        edge: handle(edge.index()),
+        face: handle(face.index()),
+    }
+}
+
+const SINGULAR: [f64; 16] = [0.0; 16];
+
+const SHIFT: [f64; 16] = [
+    1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+
+/// `(family, committing op, refused op)` for the non-boolean mutating batch
+/// arm, the boolean arm, and the typed modifier twins (which refuse inside
+/// an `ok` envelope).
+pub(super) fn batch_cases(
+    f: &Fixture,
+) -> Vec<(&'static str, serde_json::Value, serde_json::Value)> {
+    use serde_json::json;
+    let (block, small, plate, bore, edge, face) =
+        (f.block, f.small, f.plate, f.bore, f.edge, f.face);
+    vec![
+        (
+            "transform",
+            json!({"op":"transform","args":{"solid":small,"matrix":SHIFT}}),
+            json!({"op":"transform","args":{"solid":small,"matrix":SINGULAR}}),
+        ),
+        (
+            "fillet",
+            json!({"op":"fillet","args":{"solid":block,"edges":[edge],"radius":1.0}}),
+            json!({"op":"fillet","args":{"solid":block,"edges":[edge],"radius":50.0}}),
+        ),
+        (
+            "chamfer",
+            json!({"op":"chamfer","args":{"solid":block,"edges":[edge],"distance":1.0}}),
+            json!({"op":"chamfer","args":{"solid":block,"edges":[edge],"distance":50.0}}),
+        ),
+        (
+            "shell",
+            json!({"op":"shell","args":{"solid":block,"faces":[face],"thickness":1.0}}),
+            json!({"op":"shell","args":{"solid":block,"faces":[face],"thickness":20.0}}),
+        ),
+        (
+            "moveFaces bore",
+            json!({"op":"moveFaces","args":{"solid":plate,"faces":[bore],"distance":0.5}}),
+            json!({"op":"moveFaces","args":{"solid":plate,"faces":[bore],"distance":-7.0}}),
+        ),
+        (
+            "moveFaces planar",
+            json!({"op":"moveFaces","args":{"solid":block,"faces":[face],"distance":1.0}}),
+            json!({"op":"moveFaces","args":{"solid":block,"faces":[face],"distance":-20.0}}),
+        ),
+        (
+            "pushPullFace",
+            json!({"op":"pushPullFace","args":{"solid":block,"face":face,"distance":2.0}}),
+            json!({"op":"pushPullFace","args":{"solid":block,"face":face,"distance":-20.0}}),
+        ),
+        (
+            "resizeCylindricalFace",
+            json!({"op":"resizeCylindricalFace","args":{"solid":plate,"face":bore,"radius":3.0}}),
+            json!({"op":"resizeCylindricalFace","args":{"solid":plate,"face":bore,"radius":30.0}}),
+        ),
+        (
+            "offsetSolid",
+            json!({"op":"offsetSolid","args":{"solid":block,"distance":1.0}}),
+            json!({"op":"offsetSolid","args":{"solid":block,"distance":-20.0}}),
+        ),
+        (
+            "copySolid",
+            json!({"op":"copySolid","args":{"solid":block}}),
+            json!({"op":"copySolid","args":{"solid":99_999}}),
+        ),
+        (
+            "fuse",
+            json!({"op":"fuse","args":{"solidA":block,"solidB":small}}),
+            json!({"op":"cut","args":{"solidA":block,"solidB":block}}),
+        ),
+        (
+            "filletDetailed",
+            json!({"op":"filletDetailed","args":{"solid":block,"edges":[edge],"radius":1.0}}),
+            json!({"op":"filletDetailed","args":{"solid":block,"edges":[edge],"radius":50.0}}),
+        ),
+        (
+            "chamferDetailed",
+            json!({"op":"chamferDetailed","args":{"solid":block,"edges":[edge],"distance":1.0}}),
+            json!({"op":"chamferDetailed","args":{"solid":block,"edges":[edge],"distance":50.0}}),
+        ),
+        (
+            "shellDetailed",
+            json!({"op":"shellDetailed","args":{"solid":block,"faces":[face],"thickness":1.0}}),
+            json!({"op":"shellDetailed","args":{"solid":block,"faces":[face],"thickness":20.0}}),
+        ),
+        (
+            "offsetDetailed",
+            json!({"op":"offsetDetailed","args":{"solid":block,"distance":1.0}}),
+            json!({"op":"offsetDetailed","args":{"solid":block,"distance":-20.0}}),
+        ),
+    ]
+}
+
+/// Whether a batch row committed (typed twins report refusals in `ok`).
+pub(super) fn committed(row: &serde_json::Value) -> bool {
+    row.get("error").is_none() && row["ok"]["status"] != "error"
+}
+
+#[test]
+fn batch_refusals_roll_back_exactly_and_items_commit_independently() {
+    for v2 in [false, true] {
+        let mut k = BrepKernel::new();
+        let f = fixture(&mut k);
+        for (family, ok, bad) in batch_cases(&f) {
+            let run = |k: &mut BrepKernel, op: &serde_json::Value| {
+                let ops = serde_json::Value::Array(vec![op.clone()]);
+                let response = if v2 {
+                    k.execute_batch_v2(&ops.to_string())
+                } else {
+                    k.execute_batch(&ops.to_string())
+                };
+                let rows: serde_json::Value = serde_json::from_str(&response).unwrap();
+                committed(&rows[0])
+            };
+            assert_refusal_rolls_back(&mut k, family, &mut |k| !run(k, &bad), &mut |k| run(k, &ok));
+            // One batch: the refused middle item rolls back alone.
+            let before = slot_marks(k.topo());
+            let rows = batch(&mut k, &serde_json::json!([ok, bad, ok]));
+            assert!(
+                committed(&rows[0]) && committed(&rows[2]),
+                "{family}: {rows}"
+            );
+            assert!(!committed(&rows[1]), "{family}: {rows}");
+            assert!(slot_marks(k.topo()) >= before);
+        }
+    }
+}
+
+#[test]
+fn direct_topology_transaction_refusals_roll_back_exactly() {
+    let mut k = BrepKernel::new();
+    let f = fixture(&mut k);
+    assert_refusal_rolls_back(
+        &mut k,
+        "offsetSolid direct",
+        &mut |k| k.offset_solid_impl(f.block, -20.0).is_err(),
+        &mut |k| k.transform_solid_binding(f.small, SHIFT.to_vec()).is_ok(),
+    );
+    // An injected fault after allocations, in-place edits, a retirement and
+    // a journal record: the failed call's retirement is revived.
+    let block = k.resolve_solid(f.block).unwrap();
+    let small = k.resolve_solid(f.small).unwrap();
+    let input = k.serialize_solids(&[f.block, f.small]).unwrap();
+    let mut leaked = Vec::new();
+    assert_refusal_rolls_back(
+        &mut k,
+        "injected",
+        &mut |k| {
+            k.with_topology_transaction(|topo| {
+                leaked.push(remus_operations::primitives::make_box(topo, 1.0, 2.0, 3.0)?);
+                remus_operations::transform::transform_solid(
+                    topo,
+                    small,
+                    &remus_math::mat::Mat4::translation(1.0, 0.0, 0.0),
+                )?;
+                topo.set_solid_attributes(
+                    block,
+                    remus_topology::attributes::EntityAttributes {
+                        name: Some("staged".into()),
+                        ..Default::default()
+                    },
+                )?;
+                topo.delete_solid(block).unwrap();
+                let pending = topo.journal_begin("injected");
+                let _ = topo.journal_record_barrier(pending, Vec::new());
+                Err::<(), remus_operations::OperationsError>(
+                    remus_operations::OperationsError::InvalidInput {
+                        reason: "injected".into(),
+                    },
+                )
+            })
+            .is_err()
+        },
+        &mut |k| k.make_box_solid(1.0, 1.0, 1.0).is_ok(),
+    );
+    assert_eq!(k.serialize_solids(&[f.block, f.small]).unwrap(), input);
+    for id in leaked {
+        assert!(k.topo().solid(id).is_err());
+    }
+}
+
+#[test]
+fn failed_operation_retirements_are_revived_not_sticky() {
+    // The documented boundary semantic change: the full-copy boundary
+    // restored with checkpoint-barrier semantics, so a failed operation's
+    // retirement stayed sticky. The rollback scope undoes it exactly.
+    let mut k = BrepKernel::new();
+    let solid = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
+    let id = k.resolve_solid(solid).unwrap();
+    let mut legacy = k.topo().clone();
+    let snapshot = legacy.clone();
+    legacy.delete_solid(id).unwrap();
+    legacy.restore_preserving_handle_slots(&snapshot);
+    assert!(
+        legacy.solid(id).is_err(),
+        "the legacy boundary kept it retired"
+    );
+
+    let before = observe(&k);
+    let result = k.with_topology_transaction(|topo| {
+        topo.delete_solid(id).unwrap();
+        Err::<(), _>(remus_topology::TopologyError::WireNotClosed)
+    });
+    assert!(result.is_err());
+    assert!(k.topo().solid(id).is_ok());
+    assert_eq!(observe(&k), before);
 }
 
 /// Takes the document off the restore fixed point the way a sketch workflow
@@ -308,6 +734,99 @@ pub(super) fn break_fixed_point(k: &mut BrepKernel) {
     assert!(!k.topo().is_restore_fixed_point());
 }
 
+#[test]
+fn successful_items_leave_no_undo_records_for_a_checkpoint_to_keep() {
+    // A committed scope releases its records at once: a checkpoint taken
+    // right after shares the topology value and would otherwise keep one
+    // item's records for its whole life.
+    for v2 in [false, true] {
+        let mut k = BrepKernel::new();
+        let f = fixture(&mut k);
+        for (family, ok, _) in batch_cases(&f) {
+            let ops = serde_json::Value::Array(vec![ok]);
+            let response = if v2 {
+                k.execute_batch_v2(&ops.to_string())
+            } else {
+                k.execute_batch(&ops.to_string())
+            };
+            let rows: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert!(committed(&rows[0]), "{family}: {rows}");
+            let saved = k.checkpoint().unwrap();
+            let stored = &k.checkpoints.get(saved as usize).unwrap().topo;
+            assert_eq!(stored.undo_record_count(), 0, "{family}");
+        }
+    }
+    let mut k = BrepKernel::new();
+    let f = fixture(&mut k);
+    k.transform_solid_binding(f.small, SHIFT.to_vec()).unwrap();
+    assert_eq!(k.topo().undo_record_count(), 0, "direct transaction");
+    k.from_brep_impl(&brep_json(false)).unwrap();
+    assert_eq!(k.topo().undo_record_count(), 0, "fromBREP");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "shared inside a boundary rollback scope")]
+fn a_boundary_scope_refuses_to_rewind_a_shared_topology() {
+    let mut k = BrepKernel::new();
+    let _ = k.with_kernel_transaction(crate::kernel::Refusal::Exact, |k| {
+        k.checkpoint().unwrap();
+        Err::<(), _>(())
+    });
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "replaced inside a boundary rollback scope")]
+fn a_boundary_scope_refuses_to_rewind_a_replaced_topology() {
+    let mut k = BrepKernel::new();
+    let _ = k.with_kernel_transaction(crate::kernel::Refusal::Exact, |k| {
+        k.topo = std::rc::Rc::new(remus_topology::Topology::new());
+        Err::<(), _>(())
+    });
+}
+
+/// A one-triangle `fromBREP` document; `missing_vertex` makes it refuse.
+pub(super) fn brep_json(missing_vertex: bool) -> String {
+    serde_json::json!({
+        "vertices": [
+            {"id": 0, "position": [0.0, 0.0, 0.0]},
+            {"id": 1, "position": [1.0, 0.0, 0.0]},
+            {"id": 2, "position": [0.0, 1.0, 0.0]}
+        ],
+        "edges": [
+            {"id": 0, "curveType": "line", "startVertex": 0, "endVertex": 1},
+            {"id": 1, "curveType": "line", "startVertex": 1, "endVertex": 2},
+            {"id": 2, "curveType": "line", "startVertex": 2,
+             "endVertex": if missing_vertex { 7 } else { 0 }}
+        ],
+        "faces": [{
+            "outerWireEdges": [0, 1, 2],
+            "outerWireOrientations": [true, true, true],
+            "surfaceType": "plane",
+            "surfaceParams": {"normal": [0.0, 0.0, 1.0], "d": 0.0},
+            "reversed": false,
+            "innerWires": []
+        }]
+    })
+    .to_string()
+}
+
+#[test]
+fn from_brep_refusals_roll_back_exactly() {
+    let mut k = BrepKernel::new();
+    fixture(&mut k);
+    let (good, bad) = (brep_json(false), brep_json(true));
+    assert_refusal_rolls_back(
+        &mut k,
+        "fromBREP",
+        &mut |k| k.from_brep_impl(&bad).is_err(),
+        &mut |k| k.from_brep_impl(&good).is_ok(),
+    );
+}
+
+// ── Checkpoint restore of the value the kernel still holds ─────────
+
 /// The same short modeling history in each kernel.
 fn shared_history(kernels: [&mut BrepKernel; 2]) -> u32 {
     let mut small = 0;
@@ -318,12 +837,6 @@ fn shared_history(kernels: [&mut BrepKernel; 2]) -> u32 {
     }
     small
 }
-
-const SINGULAR: [f64; 16] = [0.0; 16];
-
-const SHIFT: [f64; 16] = [
-    1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-];
 
 fn assert_same_topology(a: &BrepKernel, b: &BrepKernel, context: &str) {
     assert_eq!(
@@ -393,8 +906,4 @@ fn restoring_a_still_shared_value_off_the_fixed_point_still_restores() {
     let snapshot = std::rc::Rc::clone(&copied.checkpoints.get(saved as usize).unwrap().topo);
     copied.topo_mut().restore_preserving_handle_slots(&snapshot);
     assert_same_topology(&skipped, &copied, "off the fixed point");
-}
-
-fn batch(k: &mut BrepKernel, operations: &serde_json::Value) -> serde_json::Value {
-    serde_json::from_str(&k.execute_batch(&operations.to_string())).unwrap()
 }

@@ -604,6 +604,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
 | Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
+| Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
@@ -615,7 +616,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
 | Accounted checkpoint storage, allocated WASM pages and phase timing bindings | `bindings/performance.rs` |
-| Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
+| Boundary rollback fault matrix for every mutating family (batch arms, typed modifier twins, direct transactions, `fromBREP`) and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
 | Sketch input validation contracts: legacy `angle` second line, add-time deferred-constraint checks, positive GCS ellipse semiaxes (tests) | `bindings/sketch_validation_tests.rs` |
 | Directional curve projection (P-Class 7.4 direct + batch, `project-curve:<code>` refusals) | `bindings/project_curve.rs` |
@@ -625,6 +626,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Read-only certified NURBS carrier reduction and cubic fitting | `bindings/nurbs_reuse.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Optional `executeBatch` arguments: absent reads as the default, present but malformed is refused (contract tests) | `bindings/batch_optional_args_tests.rs` |
+| Differential oracle: the full-copy batch rollback dispatcher kept verbatim, in lockstep with the rollback scope (tests) | `bindings/batch_rollback_oracle_tests.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |

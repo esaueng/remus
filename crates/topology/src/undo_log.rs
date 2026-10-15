@@ -167,6 +167,30 @@ pub enum UndoRecord {
     },
 }
 
+impl UndoRecord {
+    /// The arena slot a slot record writes back, if it is one.
+    const fn slot(&self) -> Option<(ArenaTag, usize)> {
+        match self {
+            Self::Vertex { index, .. } => Some((ArenaTag::Vertex, *index)),
+            Self::Edge { index, .. } => Some((ArenaTag::Edge, *index)),
+            Self::Wire { index, .. } => Some((ArenaTag::Wire, *index)),
+            Self::Face { index, .. } => Some((ArenaTag::Face, *index)),
+            Self::Shell { index, .. } => Some((ArenaTag::Shell, *index)),
+            Self::Solid { index, .. } => Some((ArenaTag::Solid, *index)),
+            Self::Compound { index, .. } => Some((ArenaTag::Compound, *index)),
+            Self::CompSolid { index, .. } => Some((ArenaTag::CompSolid, *index)),
+            Self::Loop { index, .. } => Some((ArenaTag::Loop, *index)),
+            Self::Coedge { index, .. } => Some((ArenaTag::Coedge, *index)),
+            Self::PcurveUse { .. }
+            | Self::SolidAttribute { .. }
+            | Self::FaceAttribute { .. }
+            | Self::JournalCreated { .. }
+            | Self::JournalReplace { .. }
+            | Self::ForeignRestore { .. } => None,
+        }
+    }
+}
+
 /// A scope's entry position: log length, journal length, tick count, and
 /// per-arena slot counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -816,9 +840,16 @@ impl Topology {
         self.undo.generation
     }
 
-    /// Number of retained undo records (diagnostic for tests and benchmarks).
-    #[cfg(test)]
-    pub(crate) fn undo_record_count(&self) -> usize {
+    /// Whether the scope opened at `mark` is still on this value's stack.
+    pub(crate) fn undo_scope_is_open(&self, mark: UndoMark) -> bool {
+        self.undo.scopes.iter().any(|scope| scope.mark == mark)
+    }
+
+    /// Number of retained undo records: a diagnostic for tests (a value
+    /// with no open scope, such as a stored checkpoint, should hold none).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn undo_record_count(&self) -> usize {
         self.undo.records.len()
     }
 
@@ -877,6 +908,22 @@ impl Topology {
     /// transaction API restores each snapshot at most once, so this is
     /// unreachable through it).
     pub(crate) fn undo_rewind_scope(&mut self, mark: UndoMark) {
+        self.undo_rewind_scope_with(mark, None);
+    }
+
+    /// [`Self::undo_rewind_scope`] that lands where restoring a full copy
+    /// taken at the mark lands, tombstones included: every slot the scope
+    /// allocated keeps its last contents when it retires, instead of the
+    /// contents a record or a foreign-restore inverse held for it. Live
+    /// state is identical either way; only those inaccessible tombstones
+    /// differ.
+    pub(crate) fn undo_rewind_scope_like_copy(&mut self, mark: UndoMark) {
+        self.undo_rewind_scope_with(mark, Some(mark.slot_marks));
+    }
+
+    /// Rewinds to `mark`; with `keep_from`, slots at or above those per-arena
+    /// counts keep their contents (see [`Self::undo_rewind_scope_like_copy`]).
+    fn undo_rewind_scope_with(&mut self, mark: UndoMark, keep_from: Option<[usize; 10]>) {
         // Any rewind invalidates persistent preparation, even when the
         // restored tick equals an earlier generation (ABA). The cache
         // generation only moves forward; the journal tick still rolls back.
@@ -888,12 +935,23 @@ impl Topology {
                 let Some(record) = self.undo.pop() else {
                     break;
                 };
-                match record {
-                    UndoRecord::JournalCreated { mut pairs } => created.append(&mut pairs),
-                    UndoRecord::JournalReplace { old } => {
+                match (record, keep_from) {
+                    (UndoRecord::JournalCreated { mut pairs }, _) => created.append(&mut pairs),
+                    (UndoRecord::JournalReplace { old }, _) => {
                         self.journal.restore_preserving_ids(&old);
                     }
-                    other => self.apply_undo_record(other),
+                    (UndoRecord::ForeignRestore { old }, Some(limits)) => {
+                        self.restore_rollback_fields_below(&old, limits);
+                    }
+                    (other, Some(limits)) => {
+                        if other
+                            .slot()
+                            .is_none_or(|(tag, index)| index < limits[tag as usize])
+                        {
+                            self.apply_undo_record(other);
+                        }
+                    }
+                    (other, None) => self.apply_undo_record(other),
                 }
             }
             // After every record inverse: a foreign-restore inverse may
@@ -1666,6 +1724,114 @@ mod tests {
             );
             outer.restore(&mut t);
             assert_eq!(live_state(&t), before, "{name}");
+        }
+    }
+
+    /// A refused operation: it edits its own allocation inside a nested
+    /// scope that commits, restores an inner copy (inexact when `retire`
+    /// deletes a solid the copy holds, so the outer scope records a full
+    /// inverse), edits pre-existing and own state again and fails.
+    fn refused_operation(topo: &mut Topology, face: FaceId, retire: bool) -> TopologyError {
+        let point = |x: f64| Point3::new(x, x, x);
+        let own = topo.add_vertex(Vertex::new(point(1.0), 1e-7));
+        let nested = crate::transaction::RollbackSnapshot::capture(topo);
+        topo.vertex_mut(own).unwrap().set_point(point(2.0));
+        nested.commit(topo);
+        let extra = unit_box(topo, 9.0);
+        let copy = topo.clone();
+        unit_box(topo, 13.0);
+        topo.set_face_attributes(
+            face,
+            EntityAttributes {
+                name: Some("staged".into()),
+                ..EntityAttributes::default()
+            },
+        )
+        .unwrap();
+        if retire {
+            topo.delete_solid(extra).unwrap();
+        }
+        topo.restore_preserving_handle_slots(&copy);
+        topo.vertex_mut(own).unwrap().set_point(point(3.0));
+        topo.face_mut(face).unwrap().set_reversed(true);
+        TopologyError::WireNotClosed
+    }
+
+    #[test]
+    fn a_copy_like_rewind_and_rebuild_land_where_the_full_copy_restore_lands() {
+        // The boundaries that replaced "copy, run, barrier-restore the copy
+        // on refusal" rewind their scope like a copy and then rebuild the
+        // index; those that replaced "copy, run, rollback-restore the copy"
+        // only rewind like a copy. The complete state (`Debug`: tombstones
+        // and the pcurve index included) must match the copy's restore, on
+        // and off the restore fixed point.
+        let mut documents = off_fixed_point_documents();
+        let mut consistent = Topology::new();
+        let (face, _) = triangle(&mut consistent);
+        documents.push(("consistent", consistent, face));
+        for (name, document, face) in &documents {
+            for retire in [false, true] {
+                let context = format!("{name}, inner retirement {retire}");
+                let mut legacy = document.clone();
+                let copy = legacy.clone();
+                refused_operation(&mut legacy, *face, retire);
+                legacy.restore_preserving_handle_slots(&copy);
+
+                let mut current = document.clone();
+                let scope = crate::transaction::RollbackSnapshot::capture(&mut current);
+                refused_operation(&mut current, *face, retire);
+                scope.restore_like_copy(&mut current);
+                current.normalize_as_restored();
+                assert_eq!(format!("{current:?}"), format!("{legacy:?}"), "{context}");
+                assert!(current.is_restore_fixed_point(), "{context}");
+                assert_eq!(current.undo_record_count(), 0, "{context}");
+
+                // Without the rebuild it lands where the copy's exact
+                // rollback restore lands.
+                let mut exact_legacy = document.clone();
+                let copy = exact_legacy.clone();
+                refused_operation(&mut exact_legacy, *face, retire);
+                exact_legacy.restore_for_rollback(&copy);
+                let mut exact = document.clone();
+                let scope = crate::transaction::RollbackSnapshot::capture(&mut exact);
+                refused_operation(&mut exact, *face, retire);
+                scope.restore_like_copy(&mut exact);
+                assert_eq!(
+                    format!("{exact:?}"),
+                    format!("{exact_legacy:?}"),
+                    "{context}"
+                );
+
+                // A plain rewind reaches the same live state, but writes the
+                // nested record's value into the operation's own tombstone.
+                let mut plain = document.clone();
+                let scope = crate::transaction::RollbackSnapshot::capture(&mut plain);
+                refused_operation(&mut plain, *face, retire);
+                scope.restore(&mut plain);
+                plain.normalize_as_restored();
+                assert_eq!(live_state(&plain), live_state(&legacy), "{context}");
+                assert_ne!(format!("{plain:?}"), format!("{legacy:?}"), "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn normalizing_matches_a_self_restore_and_copies_nothing_on_a_fixed_point() {
+        let mut consistent = Topology::new();
+        triangle(&mut consistent);
+        unit_box(&mut consistent, 5.0);
+        let identity = consistent.cache_identity();
+        let before = format!("{consistent:?}");
+        consistent.normalize_as_restored();
+        assert_eq!(consistent.cache_identity(), identity, "nothing was touched");
+        assert_eq!(format!("{consistent:?}"), before);
+        for (name, mut document, _) in off_fixed_point_documents() {
+            let mut restored = document.clone();
+            let copy = restored.clone();
+            restored.restore_preserving_handle_slots(&copy);
+            document.normalize_as_restored();
+            assert_eq!(format!("{document:?}"), format!("{restored:?}"), "{name}");
+            assert!(document.is_restore_fixed_point(), "{name}");
         }
     }
 }

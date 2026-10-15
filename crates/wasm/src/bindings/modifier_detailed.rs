@@ -41,6 +41,7 @@ use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use remus_topology::transaction::RollbackSnapshot;
 
 use remus_operations::OperationsError;
 use remus_operations::blend_ops::BlendResult;
@@ -542,14 +543,16 @@ impl BrepKernel {
 
     /// Shared envelope discipline for the modifier twins.
     ///
-    /// Refuses on a poisoned kernel, snapshots topology, and restores it on
-    /// any refusal with [`Topology::restore_for_rollback`]: the refused call
+    /// Refuses on a poisoned kernel, opens a mutation-local rollback scope,
+    /// commits it on success and rewinds it on any refusal: the refused call
     /// was never observed, so its allocations *and* retirements are undone
-    /// and every live entity is exactly as it was. Handles the attempt
+    /// and every live entity is exactly as it was (as the full-copy
+    /// `restore_for_rollback` this replaced left it). Handles the attempt
     /// allocated stay permanently invalid (slots are never reused). The
-    /// unwind guard only helps native hosts (wasm32 aborts on
-    /// panic; `panics.rs` records the message there); a caught panic poisons
-    /// the kernel exactly as the legacy `fillet` binding does.
+    /// unwind guard only helps native hosts (wasm32 aborts on panic;
+    /// `panics.rs` records the message there); a caught panic poisons the
+    /// kernel exactly as the legacy `fillet` binding does, after the same
+    /// rewind (every write is recorded before it lands).
     fn run_modifier_detailed(
         &mut self,
         operation: &'static str,
@@ -564,19 +567,25 @@ impl BrepKernel {
                 .with_direct_operation(operation),
             );
         }
-        let snapshot = self.topo().clone();
+        #[cfg(test)]
+        if envelope_oracle_tests::LEGACY_ENVELOPE.get() {
+            return self.legacy_run_modifier_detailed(operation, panic_label, body);
+        }
+        let snapshot = RollbackSnapshot::capture(self.topo_mut());
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(self)));
+        self.debug_assert_scope_held(&snapshot);
         match outcome {
             Ok(Ok((value, details))) => {
+                snapshot.commit(self.topo_mut());
                 SolidOperationDetailedResult::success_with_details(value, details)
             }
             Ok(Err(error)) => {
-                self.topo_mut().restore_for_rollback(&snapshot);
+                snapshot.restore_like_copy(self.topo_mut());
                 SolidOperationDetailedResult::error(error.with_direct_operation(operation))
             }
             Err(panic_info) => {
                 self.poisoned = true;
-                self.topo_mut().restore_for_rollback(&snapshot);
+                snapshot.restore_like_copy(self.topo_mut());
                 SolidOperationDetailedResult::error(
                     StructuredWasmError::operation_failed(panic_message(&panic_info, panic_label))
                         .with_direct_operation(operation),
@@ -655,3 +664,7 @@ fn blend_outcome(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "modifier_detailed/envelope_oracle_tests.rs"]
+mod envelope_oracle_tests;

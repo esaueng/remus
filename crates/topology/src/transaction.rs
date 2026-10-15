@@ -80,6 +80,30 @@ impl RollbackSnapshot {
         topo.undo_rewind_scope(self.mark);
     }
 
+    /// [`Self::restore`] that lands exactly where restoring a full copy taken
+    /// at capture (`restore_for_rollback`) lands, tombstones included: every
+    /// slot the scope allocated keeps its last contents as it retires. The
+    /// live state is the same as [`Self::restore`]'s; only those
+    /// inaccessible contents differ (a plain rewind may write back what a
+    /// nested record or restore held for them). For boundaries that replaced
+    /// such a copy and must leave identical `Debug` and memory estimates.
+    pub fn restore_like_copy(self, topo: &mut Topology) {
+        if topo.undo_generation() != self.generation {
+            // See `restore`.
+            return;
+        }
+        topo.undo_rewind_scope_like_copy(self.mark);
+    }
+
+    /// Whether `topo` still holds this scope open: the value it was captured
+    /// from (a clone or a wholesale replacement starts its own coordination
+    /// without it), with no restore since that left no live scope behind.
+    /// [`Self::restore`] and [`Self::commit`] act only on such a value.
+    #[must_use]
+    pub fn is_open_in(&self, topo: &Topology) -> bool {
+        topo.undo_generation() == self.generation && topo.undo_scope_is_open(self.mark)
+    }
+
     /// Commit this scope eagerly: its records merge into the enclosing
     /// scope, or are released when the last scope closes. Dropping the
     /// snapshot without restoring commits lazily with the same effect.

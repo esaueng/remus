@@ -927,6 +927,53 @@ impl Topology {
         distinct == self.pcurves.len()
     }
 
+    /// Leaves this value exactly as [`Self::restore_preserving_handle_slots`]
+    /// from an identical copy would: the pcurve compatibility index rebuilt
+    /// from loop/coedge authority, and live faces whose authority is not
+    /// live re-derived onto fresh handles.
+    ///
+    /// For a boundary that replaced a full-copy barrier restore with an
+    /// exact rollback: the rollback returns the index as the entry state had
+    /// it, while the barrier restore always rebuilt it. Applying this after
+    /// the rollback lands where that restore did, apart from the failed
+    /// operation's own retirements, which the rollback revives. Nothing is
+    /// copied on a restore fixed point (the usual document); otherwise this
+    /// costs the one copy and restore the barrier paid.
+    pub fn normalize_as_restored(&mut self) {
+        if self.is_restore_fixed_point() {
+            return;
+        }
+        let copy = self.clone();
+        self.restore_preserving_handle_slots(&copy);
+    }
+
+    /// [`Self::restore_rollback_fields`] for slots below `limits` (per arena,
+    /// in `ArenaTag` order) only: slots at or above keep their
+    /// contents and liveness. `snapshot` must be an earlier state of this
+    /// value, so it holds at least `limits` slots and no more than this does.
+    pub(crate) fn restore_rollback_fields_below(&mut self, snapshot: &Self, limits: [usize; 10]) {
+        self.bump_cache_generation();
+        let [v, e, w, f, sh, so, c, cs, l, ce] = limits;
+        self.vertices
+            .restore_for_rollback_below(&snapshot.vertices, v);
+        self.edges.restore_for_rollback_below(&snapshot.edges, e);
+        self.wires.restore_for_rollback_below(&snapshot.wires, w);
+        self.faces.restore_for_rollback_below(&snapshot.faces, f);
+        self.shells.restore_for_rollback_below(&snapshot.shells, sh);
+        self.solids.restore_for_rollback_below(&snapshot.solids, so);
+        self.compounds
+            .restore_for_rollback_below(&snapshot.compounds, c);
+        self.compsolids
+            .restore_for_rollback_below(&snapshot.compsolids, cs);
+        self.loops.restore_for_rollback_below(&snapshot.loops, l);
+        self.coedges
+            .restore_for_rollback_below(&snapshot.coedges, ce);
+        self.attributes.clone_from(&snapshot.attributes);
+        self.pcurves.clone_from(&snapshot.pcurves);
+        self.journal.restore_preserving_ids(&snapshot.journal);
+        self.mutation_ticks = snapshot.mutation_ticks;
+    }
+
     pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {
         // `restore_for_rollback` already bumped; direct callers (undo
         // machinery) must also invalidate, since the tick rolls back.
