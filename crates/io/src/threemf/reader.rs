@@ -219,7 +219,9 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     }
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
-                    "components" => in_components = true,
+                    "components" if is_core_element(reader.resolver(), e.name()) => {
+                        in_components = true;
+                    }
                     "component"
                         if in_components && is_core_element(reader.resolver(), e.name()) =>
                     {
@@ -299,7 +301,9 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     }
                     "vertices" => in_vertices = false,
                     "triangles" => in_triangles = false,
-                    "components" => in_components = false,
+                    "components" if is_core_element(reader.resolver(), e.name()) => {
+                        in_components = false;
+                    }
                     "build" if is_core_element(reader.resolver(), e.name()) => in_build = false,
                     _ => {}
                 }
