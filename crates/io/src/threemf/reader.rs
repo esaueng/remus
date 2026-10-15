@@ -667,8 +667,10 @@ fn parse_placement(
         let qualified = attr.key.prefix().is_some();
         match attr.key.local_name().as_ref() {
             "objectid" if !qualified => {
+                // `xs:positiveInteger` collapses surrounding XML whitespace.
                 let value = normalized_attribute(&attr, what)?;
-                object_id = Some(parse_u32_attr(&value, &format!("{what} objectid"))?);
+                let value = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                object_id = Some(parse_u32_attr(value, &format!("{what} objectid"))?);
             }
             "transform" if !qualified => {
                 let value = normalized_attribute(&attr, what)?;
