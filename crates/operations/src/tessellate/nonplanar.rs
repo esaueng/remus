@@ -4966,6 +4966,49 @@ fn sphere_boundary_conic(curve: &EdgeCurve) -> Option<SphereBoundaryConic> {
     }
 }
 
+/// A complete native equator in the carrier's own chart can use the analytic
+/// hemisphere grid. Partial, tilted, holed and sampled trims must keep the
+/// shared-boundary mesher. Check native spans, not just sampled endpoints.
+pub(super) fn has_analytic_sphere_equator(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return Ok(false);
+    };
+    let edges = topo.wire(face.outer_wire())?.edges();
+    // The analytic latitude-range reader needs at least three boundary vertices.
+    if !face.inner_wires().is_empty()
+        || edges.len() < 3
+        || !sphere_great_circle_loop(topo, sphere, edges)?
+    {
+        return Ok(false);
+    }
+    let mut turn = 0.0;
+    let mut direction = 0.0_f64;
+    for oriented in edges {
+        let edge = topo.edge(oriented.edge())?;
+        let Some(conic) = sphere_boundary_conic(edge.curve()) else {
+            return Ok(false);
+        };
+        if conic.normal.cross(sphere.z_axis()).length() > 1e-10 {
+            return Ok(false);
+        }
+        let Ok((a, b)) = edge.strict_domain() else {
+            return Ok(false);
+        };
+        let delta = (b - a)
+            * conic.u.cross(conic.v).dot(sphere.z_axis())
+            * if oriented.is_forward() { 1.0 } else { -1.0 };
+        if delta == 0.0 || !delta.is_finite() || direction * delta < 0.0 {
+            return Ok(false);
+        }
+        direction = delta;
+        turn += delta;
+    }
+    Ok((turn.abs() - std::f64::consts::TAU).abs() <= 1e-10)
+}
+
 /// The new chart selection is confined to native great-circle partitions.
 /// This checks the complete conic support, its authoritative span and the
 /// exact vertex-ID chain; sampled NURBS or general curved loops keep their
@@ -5795,6 +5838,7 @@ pub(super) fn tessellate_sphere_cap_shared(
     deflection: f64,
     angular_tol: f64,
     allow_latitude_cap: bool,
+    allow_analytic_hemisphere: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
@@ -5824,6 +5868,10 @@ pub(super) fn tessellate_sphere_cap_shared(
                 break;
             }
         }
+    }
+
+    if allow_analytic_hemisphere && has_analytic_sphere_equator(topo, face_data)? {
+        return Ok(false);
     }
 
     let pos_save = merged.positions.len();
@@ -5950,6 +5998,7 @@ pub(super) fn tessellate_sphere_cap_shared(
 ///
 /// Returns `None` when neither path produces triangles; the caller falls back
 /// to the rectangular sweep so behavior never degrades.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_trimmed_sphere_uvs(
     topo: &Topology,
     face_id: FaceId,
@@ -5958,6 +6007,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
     deflection: f64,
     angular_tol: f64,
     try_cdt: bool,
+    allow_analytic_hemisphere: bool,
 ) -> Option<super::TriangleMeshUV> {
     let empty_pool: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
     let mut merged = TriangleMesh::default();
@@ -5969,6 +6019,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
         deflection,
         angular_tol,
         false,
+        allow_analytic_hemisphere,
         &empty_pool,
         &mut merged,
         &mut point_to_global,
