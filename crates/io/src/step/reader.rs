@@ -5186,14 +5186,24 @@ impl<'a> StepBuilder<'a> {
         let surface = self.topo.face(face_id)?.surface();
         let principal_start = Self::surface_uv(surface, start_point)?;
         let principal_end = Self::surface_uv(surface, end_point)?;
-        let principal_mid = open_edge_midpoint(edge, start_point, end_point)
-            .and_then(|mid| Self::surface_uv(surface, mid).ok());
+        let principal_trace = open_edge_use_trace(
+            edge,
+            self.topo.vertex(edge.start())?.point(),
+            self.topo.vertex(edge.end())?.point(),
+            coedge.is_forward(),
+        )
+        .and_then(|trace| {
+            trace
+                .into_iter()
+                .map(|point| Self::surface_uv(surface, point).ok())
+                .collect::<Option<Vec<_>>>()
+        });
         let (expected_start, expected_end) = lift_pcurve_endpoint_branches(
             surface,
             &curve,
             principal_start,
             principal_end,
-            principal_mid,
+            principal_trace.as_deref(),
         );
         let range = match declared_range {
             Some(range) => match select_full_turn_cylinder_pcurve_range(
@@ -8490,40 +8500,66 @@ fn project_ellipse2d(ellipse: &Ellipse2D, point: Point2) -> f64 {
         .rem_euclid(std::f64::consts::TAU)
 }
 
-/// The 3D midpoint of an open edge's own parameter domain, the anchor that
-/// ties both pcurve endpoint lifts to the branch the edge actually sweeps.
-/// `None` for closed edges (a full turn has no interior anchor within half
-/// a period of both ends) and for edges without a strict domain.
-fn open_edge_midpoint(edge: &Edge, start: Point3, end: Point3) -> Option<Point3> {
+/// Interior samples of an open edge, ordered along the use (`forward` keeps
+/// the edge's own direction): the trace that ties both pcurve endpoint lifts
+/// to the branch the edge actually sweeps. `None` for closed edges (their
+/// full-turn ranges are resolved separately) and for edges without a strict
+/// domain.
+fn open_edge_use_trace(
+    edge: &Edge,
+    start: Point3,
+    end: Point3,
+    forward: bool,
+) -> Option<Vec<Point3>> {
+    /// Segments of the sampled trace. The 3D parameterization need not
+    /// advance uniformly with the periodic UV coordinate, so one midpoint is
+    /// not enough; the unwrap only fails where a sixteenth of the parameter
+    /// domain sweeps half a period.
+    const SEGMENTS: u32 = 16;
     if edge.start() == edge.end() {
         return None;
     }
-    if matches!(edge.curve(), EdgeCurve::Line) {
-        return Some(start + (end - start) * 0.5);
+    let domain = if matches!(edge.curve(), EdgeCurve::Line) {
+        None
+    } else {
+        Some(edge.strict_domain().ok()?)
+    };
+    let mut trace = Vec::with_capacity(SEGMENTS as usize - 1);
+    for k in 1..SEGMENTS {
+        let f = f64::from(k) / f64::from(SEGMENTS);
+        let point = match domain {
+            None => start + (end - start) * f,
+            Some((t0, t1)) => edge
+                .curve()
+                .evaluate_with_endpoints(t0 + f * (t1 - t0), start, end),
+        };
+        if !point.0.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        trace.push(point);
     }
-    let (t0, t1) = edge.strict_domain().ok()?;
-    let mid = edge
-        .curve()
-        .evaluate_with_endpoints(0.5 * (t0 + t1), start, end);
-    mid.0.iter().all(|value| value.is_finite()).then_some(mid)
+    if !forward {
+        trace.reverse();
+    }
+    Some(trace)
 }
 
 /// Lifts the principal UV of a use's endpoints onto one periodic branch.
 ///
-/// With `mid` (the principal UV of an open edge's 3D midpoint) the midpoint
-/// is lifted next to the curve's reference point and both endpoints next to
-/// the lifted midpoint: an arc spanning less than a full period keeps each
-/// end within half a period of its midpoint, so the two lifts agree with the
-/// edge's sweep. Lifting each endpoint independently next to the reference
-/// ties at exactly half a period away (a quarter-cylinder band whose LINE
+/// Without `trace` both endpoints are lifted next to the 2D curve's
+/// reference point. With `trace` (principal UVs of an open edge's interior
+/// samples, in use order) the start is lifted next to the reference and each
+/// following sample, then the end, next to the one before it: the lifts
+/// unwrap the edge's own sweep. Lifting the end independently ties at exactly
+/// half a period from the reference (a quarter-cylinder band whose LINE
 /// pcurve origin sits a half turn from one end) and could pick the far
 /// branch, tracing three quarters of the cylinder instead of one.
 fn lift_pcurve_endpoint_branches(
     surface: &FaceSurface,
     curve: &Curve2D,
-    mut start: Point2,
-    mut end: Point2,
-    mid: Option<Point2>,
+    start: Point2,
+    end: Point2,
+    trace: Option<&[Point2]>,
 ) -> (Point2, Point2) {
     let reference = match curve {
         Curve2D::Line(line) => line.origin(),
@@ -8535,31 +8571,31 @@ fn lift_pcurve_endpoint_branches(
             .copied()
             .unwrap_or(Point2::new(0.0, 0.0)),
     };
-    let lift = |value: f64, target: f64| {
-        value + ((target - value) / std::f64::consts::TAU).round() * std::f64::consts::TAU
+    let (u_periodic, v_periodic) = match surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => (true, false),
+        FaceSurface::Torus(_) => (true, true),
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => return (start, end),
     };
-    let reference = match (surface, mid) {
-        (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_), _) | (_, None) => reference,
-        (FaceSurface::Torus(_), Some(mid)) => {
-            Point2::new(lift(mid.x(), reference.x()), lift(mid.y(), reference.y()))
-        }
-        (_, Some(mid)) => Point2::new(lift(mid.x(), reference.x()), mid.y()),
+    let lift = |value: Point2, target: Point2| {
+        let axis = |value: f64, target: f64, periodic: bool| {
+            if periodic {
+                value + ((target - value) / std::f64::consts::TAU).round() * std::f64::consts::TAU
+            } else {
+                value
+            }
+        };
+        Point2::new(
+            axis(value.x(), target.x(), u_periodic),
+            axis(value.y(), target.y(), v_periodic),
+        )
     };
-    match surface {
-        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
-            start = Point2::new(lift(start.x(), reference.x()), start.y());
-            end = Point2::new(lift(end.x(), reference.x()), end.y());
-        }
-        FaceSurface::Torus(_) => {
-            start = Point2::new(
-                lift(start.x(), reference.x()),
-                lift(start.y(), reference.y()),
-            );
-            end = Point2::new(lift(end.x(), reference.x()), lift(end.y(), reference.y()));
-        }
-        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
-    }
-    (start, end)
+    let start = lift(start, reference);
+    let anchor = trace.map_or(reference, |trace| {
+        trace
+            .iter()
+            .fold(start, |previous, &sample| lift(sample, previous))
+    });
+    (start, lift(end, anchor))
 }
 
 fn pcurve_winding(
@@ -11181,12 +11217,13 @@ mod tests {
 
     /// A quarter-band LINE pcurve whose origin sits half a turn from the
     /// use's end: lifting each end independently ties at that half turn and
-    /// lands the end three quarters of a turn away. Anchoring both ends on
-    /// the edge's midpoint keeps the quarter turn.
+    /// lands the end three quarters of a turn away. Unwrapping along the
+    /// edge's own trace keeps the quarter turn, and still does when the 3D
+    /// parameterization crowds most samples near one end.
     #[test]
     #[allow(clippy::approx_constant)] // The file's 12-digit rounding of −π/2.
-    fn periodic_endpoint_lifts_follow_the_edge_midpoint_through_a_half_turn_tie() {
-        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+    fn periodic_endpoint_lifts_unwrap_the_edge_trace_through_a_half_turn_tie() {
+        use std::f64::consts::{FRAC_PI_2, PI};
         let surface = FaceSurface::Cylinder(
             remus_math::surfaces::CylindricalSurface::new(
                 Point3::new(0.0, 0.0, 0.0),
@@ -11207,15 +11244,24 @@ mod tests {
             "{independent:?}"
         );
 
-        let (lifted_start, lifted_end) = lift_pcurve_endpoint_branches(
-            &surface,
-            &curve,
-            start,
-            end,
-            Some(Point2::new(FRAC_PI_4, 0.0)),
-        );
+        let quarter: Vec<_> = (1..4)
+            .map(|k| Point2::new(FRAC_PI_2 * f64::from(k) / 4.0, 0.0))
+            .collect();
+        let (lifted_start, lifted_end) =
+            lift_pcurve_endpoint_branches(&surface, &curve, start, end, Some(&quarter));
         assert_eq!(lifted_start.x().to_bits(), 0.0_f64.to_bits());
         assert_eq!(lifted_end.x().to_bits(), FRAC_PI_2.to_bits());
+
+        // Three quarters of a turn whose samples crowd near the start: one
+        // anchor at u = 0.1 would lift the end to −π/2.
+        let three_quarters = Point2::new(3.0 * FRAC_PI_2, 0.0);
+        let crowded: Vec<_> = [0.02, 0.05, 0.1, 0.8, 2.0, PI, 4.2]
+            .into_iter()
+            .map(|u| Point2::new(u, 0.0))
+            .collect();
+        let (_, lifted_end) =
+            lift_pcurve_endpoint_branches(&surface, &curve, start, three_quarters, Some(&crowded));
+        assert_eq!(lifted_end.x().to_bits(), three_quarters.x().to_bits());
     }
 
     #[test]
