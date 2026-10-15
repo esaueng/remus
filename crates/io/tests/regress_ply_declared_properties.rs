@@ -1,4 +1,4 @@
-//! Kernel review 2026-10-14, IO-5 (B89): the PLY reader must read the body
+//! Kernel review 2026-10-14, IO-5 (B124): the PLY reader must read the body
 //! the header declares.
 //!
 //! The reader assumed `float x y z` vertices (plus `nx ny nz` when any
