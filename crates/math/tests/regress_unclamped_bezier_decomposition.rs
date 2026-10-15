@@ -379,3 +379,43 @@ fn start_multiplicity_above_degree_is_refused_as_on_the_clamped_path() {
         Err(MathError::InvalidKnotValue { index: 4, .. })
     ));
 }
+
+#[test]
+fn a_common_weight_scale_does_not_collapse_the_clamped_curve() {
+    // Review follow-up: weights sharing the scale 1e-300 describe the same
+    // curve as unit weights, but inserting the end knots formed w·P ≈ 1e-330,
+    // which underflowed to zero and returned the origin.
+    let n = 4;
+    let points: Vec<Point3> = de_boor_points(n)
+        .iter()
+        .map(|p| Point3::new(p.x() * 1e-30, p.y() * 1e-30, p.z() * 1e-30))
+        .collect();
+    let expected = bezier_from_uniform(&points);
+    for scale in [1e-300, 1e300] {
+        let curve = NurbsCurve::new(3, uniform_knots(n + 4), points.clone(), vec![scale; n])
+            .expect("a common weight scale is a valid curve");
+        let segments = curve_to_bezier_segments(&curve).expect("decomposes");
+        assert_eq!(segments.len(), 1);
+        for (got, want) in segments[0].control_points().iter().zip(&expected) {
+            assert_close(*got, *want, 1e-44, &format!("weights {scale:e}"));
+        }
+        let surface = NurbsSurface::new(
+            3,
+            3,
+            uniform_knots(8),
+            uniform_knots(8),
+            vec![points.clone(); 4],
+            vec![vec![scale; 4]; 4],
+        )
+        .expect("a common weight scale is a valid surface");
+        let patches = surface_to_bezier_patches(&surface).expect("decomposes");
+        assert_eq!(patches.len(), 1);
+        // Every row is the same polygon, so in v the patch is constant and
+        // each row of the patch is the curve's Bezier polygon.
+        for row in patches[0].surface.control_points() {
+            for (got, want) in row.iter().zip(&expected) {
+                assert_close(*got, *want, 1e-44, &format!("surface weights {scale:e}"));
+            }
+        }
+    }
+}
