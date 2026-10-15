@@ -1498,10 +1498,11 @@ pub(crate) fn transform_face_surface_recorded(
                     (new_cyl.x_axis(), new_cyl.y_axis()),
                     axial_scale(matrix, cyl_clone.axis()),
                     false,
-                    // `(±u + φ, s·v)` is conformal only at unit scale (`u` is
-                    // an angle, `v` a length); the arm already routes this
-                    // matrix as a similarity.
-                    equal_within_analytic_roundoff(axial_scale(matrix, cyl_clone.axis()), 1.0),
+                    // `(±u + φ, s·v)` is conformal only when `s` is exactly
+                    // one (`u` is an angle, `v` a length). Left unclaimed, a
+                    // circle stays one only when its image radii come out
+                    // exactly equal and orthogonal.
+                    false,
                 );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Cylinder(new_cyl));
@@ -1549,10 +1550,11 @@ pub(crate) fn transform_face_surface_recorded(
                     (new_cone.x_axis(), new_cone.y_axis()),
                     axial_scale(matrix, cone_clone.axis()),
                     false,
-                    // `(±u + φ, s·v)` is conformal only at unit scale (`u` is
-                    // an angle, `v` a length); the arm already routes this
-                    // matrix as a similarity.
-                    equal_within_analytic_roundoff(axial_scale(matrix, cone_clone.axis()), 1.0),
+                    // `(±u + φ, s·v)` is conformal only when `s` is exactly
+                    // one (`u` is an angle, `v` a length). Left unclaimed, a
+                    // circle stays one only when its image radii come out
+                    // exactly equal and orthogonal.
+                    false,
                 );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
                 ChartMap::Affine(chart)

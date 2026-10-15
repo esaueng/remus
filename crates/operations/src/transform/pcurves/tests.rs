@@ -409,6 +409,61 @@ fn near_unit_anisotropy_keeps_the_ellipse() {
     );
 }
 
+/// A cylinder or cone chart scales `v` by the map's axial scale, so it is
+/// conformal only when that scale is exactly one: a deliberate `1 + 2e-15`
+/// scale must turn a circle pcurve into the exact ellipse, while a
+/// translation keeps the circle.
+#[test]
+fn near_unit_axial_scale_keeps_revolved_circles_exact() {
+    let stretch = 1.0 + 2e-15;
+    let radius = 1e9;
+    let circle = PCurve::new(
+        Curve2D::Circle(Circle2D::new(Point2::new(0.3, 0.2), radius).unwrap()),
+        0.0,
+        TAU,
+    );
+    for (carrier, surface, corners) in carriers() {
+        if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+            continue;
+        }
+        let mut topo = Topology::new();
+        let face = face_on(&mut topo, surface.clone(), corners);
+        let ChartMap::Affine(map) =
+            transform_face(&mut topo, face, &Mat4::scale(stretch, stretch, stretch))
+        else {
+            panic!("{carrier}: a near-unit similarity must map the chart affinely");
+        };
+        let image = map.apply(&circle).unwrap();
+        for k in 0..=8 {
+            let f = f64::from(k) / 8.0;
+            let t = TAU * f;
+            let expected = map.point(circle.evaluate(t));
+            let actual = image.evaluate(image.t_start() + f * (image.t_end() - image.t_start()));
+            // A few ulps at radius 1e9; the averaged-radius circle misses
+            // by `radius·(stretch − 1)/2 ≈ 1e-6`.
+            assert!(
+                (actual - expected).length() <= 3e-7,
+                "{carrier}: {:?} traces {actual:?}, not {expected:?}",
+                image.curve()
+            );
+        }
+
+        let mut topo = Topology::new();
+        let face = face_on(&mut topo, surface, corners);
+        let ChartMap::Affine(map) =
+            transform_face(&mut topo, face, &Mat4::translation(10.0, -3.0, 4.0))
+        else {
+            panic!("{carrier}: a translation must map the chart affinely");
+        };
+        let image = map.apply(&circle).unwrap();
+        assert!(
+            matches!(image.curve(), Curve2D::Circle(_)),
+            "{carrier}: {:?}",
+            image.curve()
+        );
+    }
+}
+
 #[test]
 fn derived_winding_follows_the_principal_branch() {
     let cylinder = FaceSurface::Cylinder(
