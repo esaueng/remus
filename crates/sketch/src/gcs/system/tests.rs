@@ -3115,3 +3115,27 @@ fn semiaxis_flip_counts_its_residual_pass() {
     assert_eq!(published.residual_evals, unchecked.residual_evals + 1);
     assert_eq!(published.jacobian_evals, unchecked.jacobian_evals);
 }
+
+#[test]
+fn tiny_semiaxis_does_not_exempt_the_other_from_collapse() {
+    // `a` starts below the threshold and is kept, but `b` is driven there by
+    // the solve and must still be refused and restored.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, f64::MIN_POSITIVE, 1.0, 0.0).unwrap();
+    sys.add_constraint(Constraint::EllipseAxisB(e, f64::MIN_POSITIVE))
+        .unwrap();
+    let err = sys.solve(50, TOL).unwrap_err();
+    assert!(matches!(err, SketchError::DegenerateEllipse), "{err}");
+    let data = sys.ellipse(e).unwrap();
+    assert_eq!(
+        (data.a.to_bits(), data.b),
+        (f64::MIN_POSITIVE.to_bits(), 1.0)
+    );
+}
