@@ -20,8 +20,8 @@
 
 use remus_math::MathError;
 use remus_math::nurbs::fitting::{
-    MAX_DENSE_FIT_ENTRIES, MAX_FIT_DEGREE, MAX_FIT_POINTS, MAX_FIT_WORK, approximate,
-    approximate_lspia, interpolate, interpolate_with_params,
+    MAX_DENSE_FIT_ENTRIES, MAX_FIT_DEGREE, MAX_FIT_POINTS, MAX_FIT_WORK, MAX_SPARSE_FIT_ENTRIES,
+    approximate, approximate_lspia, interpolate, interpolate_with_params,
 };
 use remus_math::vec::Point3;
 
@@ -226,4 +226,29 @@ fn lspia_iteration_work_is_bounded() {
     // The in-tree callers (degree ≤ 3, 100 iterations) stay inside the
     // budget for every point count the point bound admits.
     const { assert!(MAX_FIT_POINTS * 4 * 101 <= MAX_FIT_WORK) };
+}
+
+#[test]
+fn banded_and_basis_storage_is_bounded() {
+    // Review follow-up: 2²⁰ distinct points at degree 25 pass the point and
+    // degree bounds, take the compact interpolation path and would allocate
+    // a band of n·(3p + 1) = 79 691 776 doubles (608 MiB). Collinear points
+    // keep the setup cheap; the refusal comes before the band exists.
+    let n = MAX_FIT_POINTS;
+    let points: Vec<Point3> = (0..n).map(|i| Point3::new(i as f64, 0.0, 0.0)).collect();
+    assert_eq!(
+        limit(interpolate(&points, MAX_FIT_DEGREE)),
+        (
+            "sparse_fit_entries",
+            MAX_SPARSE_FIT_ENTRIES,
+            n * (3 * 25 + 1)
+        )
+    );
+    // LSPIA's per-point basis table is the same kind of storage: n·(p + 1).
+    assert_eq!(
+        limit(approximate_lspia(&points, MAX_FIT_DEGREE, 64, 0.0, 0)),
+        ("sparse_fit_entries", MAX_SPARSE_FIT_ENTRIES, n * 26)
+    );
+    // A cubic fit through every admitted point stays inside the budget.
+    const { assert!(MAX_FIT_POINTS * (3 * 3 + 1) <= MAX_SPARSE_FIT_ENTRIES) };
 }
