@@ -1500,15 +1500,16 @@ pub fn fillet_rolling_ball_with_origins(
                     _ => radius,
                 };
                 // Contacts sit at the exact setback only on a qualified two-plane
-                // stripe; an unqualified one takes the cross-product fallback below,
+                // stripe. An unqualified one, and a curved-neighbour stripe whose
+                // section solve (below) fails, take the cross-product fallback,
                 // which lays them one radius out.
                 let both_planar = face_list
                     .iter()
                     .all(|f| face_polygons.contains_key(&f.index()));
-                let setback = if both_planar && !planar_edge_sides.contains_key(&edge_id.index()) {
-                    setback.max(radius)
-                } else {
+                let setback = if both_planar && planar_edge_sides.contains_key(&edge_id.index()) {
                     setback
+                } else {
+                    setback.max(radius)
                 };
                 for &edge_pt in &[p_start, p_end] {
                     // (the reach the band needs, what the face offers) at the
