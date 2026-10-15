@@ -17,6 +17,11 @@ use crate::status::Status;
 /// Number of sample points for PCurve deviation analysis.
 const SAME_PARAM_SAMPLES: usize = 20;
 
+/// Samples that judge a rebuilt pcurve: the fit interpolates the
+/// [`SAME_PARAM_SAMPLES`] nodes, so its error shows only between them; this
+/// grid adds every interval's midpoint.
+const REBUILD_CHECK_SAMPLES: usize = 2 * SAME_PARAM_SAMPLES;
+
 /// Fix a single edge: vertex tolerance, degenerate removal, `SameParameter` stub.
 ///
 /// # Fixes applied
@@ -91,7 +96,8 @@ pub fn fix_same_parameter_on_face(
 
 /// [`fix_same_parameter_on_face`] with the deviation a rebuild must meet.
 ///
-/// `accept` qualifies a planar circle for its exact chart pcurve and, when
+/// `accept` decides whether an existing pcurve needs a rebuild, qualifies a
+/// planar circle for its exact chart pcurve and, when
 /// `post_check` is set, judges a planar rebuild after the fact (restoring
 /// the original and refusing when it misses). The budgeted repair passes its
 /// own budget and judges, and rolls back, by itself.
@@ -150,7 +156,7 @@ fn same_parameter_use(
 
     if has_pcurve {
         let max_dev = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
-        let tol = ctx.tolerance.linear;
+        let tol = accept;
         let needs_fix = max_dev > tol;
 
         if !config.fix_same_parameter.should_fix(needs_fix) {
@@ -201,7 +207,8 @@ fn same_parameter_use(
     // edge's own distance from the plane (or a fit that cannot follow it):
     // no pcurve repairs that, so keep the caller's and say so.
     if post_check && plane.is_some() {
-        let after = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
+        let after =
+            pcurve_deviation_sampled(topo, edge_id, face_id, forward, REBUILD_CHECK_SAMPLES)?;
         if after.is_nan() || after > accept {
             match original {
                 Some(pcurve) => topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?,
@@ -343,6 +350,17 @@ fn compute_pcurve_deviation(
     face_id: FaceId,
     forward: bool,
 ) -> Result<f64, HealError> {
+    pcurve_deviation_sampled(topo, edge_id, face_id, forward, SAME_PARAM_SAMPLES)
+}
+
+/// [`compute_pcurve_deviation`] over `samples` equal parameter steps.
+fn pcurve_deviation_sampled(
+    topo: &Topology,
+    edge_id: EdgeId,
+    face_id: FaceId,
+    forward: bool,
+    samples: usize,
+) -> Result<f64, HealError> {
     let pcurve = topo
         .pcurve_oriented(edge_id, face_id, forward)
         .ok_or_else(|| {
@@ -379,9 +397,9 @@ fn compute_pcurve_deviation(
 
     let mut max_dev = 0.0_f64;
 
-    for i in 0..=SAME_PARAM_SAMPLES {
+    for i in 0..=samples {
         #[allow(clippy::cast_precision_loss)]
-        let frac = i as f64 / SAME_PARAM_SAMPLES as f64;
+        let frac = i as f64 / samples as f64;
 
         // The pcurve traces the USE: a reversed use starts at the edge's end.
         let t_3d = if forward {
@@ -605,8 +623,9 @@ pub fn repair_pcurve_within_budget(
     };
     same_parameter_use(topo, edge_id, face_id, ctx, &config, budget, false)?;
 
-    let deviation_after = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
-    if deviation_after > budget {
+    let deviation_after =
+        pcurve_deviation_sampled(topo, edge_id, face_id, forward, REBUILD_CHECK_SAMPLES)?;
+    if deviation_after.is_nan() || deviation_after > budget {
         // Roll back: a repair that misses its budget must not look like
         // success, and must not replace the caller's data.
         match original {
@@ -804,6 +823,79 @@ mod repair_budget_tests {
         let kept = topo.pcurve_oriented(edge, face, true).unwrap();
         assert!((kept.evaluate(0.0) - Point2::new(0.0, 0.0)).length() < 1e-15);
         assert!((compute_pcurve_deviation(&topo, edge, face, true).unwrap() - 1e-3).abs() < 1e-12);
+    }
+
+    /// A budget tighter than the context tolerance decides the rebuild too:
+    /// a pcurve 1e-8 off (within the default 1e-7) is rebuilt exactly to meet
+    /// a 1e-12 budget.
+    #[test]
+    fn budget_tighter_than_the_context_triggers_the_rebuild() {
+        let (mut topo, edge, face) = square_face();
+        topo.set_pcurve_oriented(edge, face, true, bottom_pcurve(1e-8))
+            .unwrap();
+        let mut ctx = HealContext::new();
+        let report = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-12).unwrap();
+        assert!(report.deviation_before > 9e-9, "{report:?}");
+        assert!(report.deviation_after <= 1e-12, "{report:?}");
+    }
+
+    /// A planar circle carried as an ellipse with equal axes takes the
+    /// fitted path: the cubic interpolant meets the curve at its 21 nodes and
+    /// strays about 1e-4 between them, which the rebuild check must see.
+    #[test]
+    fn fitted_planar_pcurve_is_judged_between_its_nodes() {
+        use remus_math::curves::Ellipse3D;
+
+        let build = || {
+            let mut topo = Topology::new();
+            let ellipse = Ellipse3D::new(
+                Point3::new(1.0, 2.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.5,
+                1.5,
+            )
+            .unwrap();
+            let p0 = ParametricCurve::evaluate(&ellipse, 0.0);
+            let v = topo.add_vertex(Vertex::new(p0, 1e-7));
+            let mut rim_edge = Edge::new(v, v, EdgeCurve::Ellipse(ellipse));
+            rim_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+            let rim = topo.add_edge(rim_edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            (topo, rim, face)
+        };
+
+        let (mut topo, rim, face) = build();
+        let mut ctx = HealContext::new();
+        let config = crate::fix::config::FixConfig {
+            fix_same_parameter: crate::fix::config::FixMode::On,
+            ..Default::default()
+        };
+        let result =
+            super::fix_same_parameter_on_face(&mut topo, rim, face, &mut ctx, &config).unwrap();
+        assert_eq!(result.actions_taken, 0, "{result:?}");
+        assert_eq!(
+            result.refusals.first().map(|r| r.kind),
+            Some(crate::fix::RepairRefusalKind::PcurveDeviationRemains),
+            "{result:?}"
+        );
+        assert!(topo.pcurve_oriented(rim, face, true).is_none());
+
+        let (mut topo, rim, face) = build();
+        let mut ctx = HealContext::new();
+        let err = repair_pcurve_within_budget(&mut topo, rim, face, &mut ctx, 1e-7).unwrap_err();
+        assert!(
+            matches!(err, HealError::RepairBudgetExceeded { achieved, .. } if achieved > 1e-6),
+            "{err:?}"
+        );
+        assert!(topo.pcurve_oriented(rim, face, true).is_none());
     }
 
     /// A circle 1e-8 off its plane is within the default 1e-7 tolerance: it
