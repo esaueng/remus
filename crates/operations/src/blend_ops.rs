@@ -2303,7 +2303,11 @@ mod tests {
             match edge.curve() {
                 EdgeCurve::Line if edge.start() != edge.end() => perimeter.push(edge_id),
                 EdgeCurve::Circle(_) => rim.push(edge_id),
-                _ => {}
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::NurbsCurve(_) => {}
             }
         }
         assert_eq!((perimeter.len(), rim.is_empty()), (4, false));
