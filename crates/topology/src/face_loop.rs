@@ -541,6 +541,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_boundary_reversal_is_not_a_mutation() {
+        let mut topo = Topology::new();
+        let _ = triangle_face(&mut topo);
+        let generation = topo.cache_generation();
+
+        topo.reverse_face_boundaries(&[]).unwrap();
+
+        assert_eq!(topo.cache_generation(), generation);
+    }
+
+    #[test]
     fn boundary_reversal_refuses_a_stale_face_before_writing() {
         let mut topo = Topology::new();
         let (face, wire) = triangle_face(&mut topo);
