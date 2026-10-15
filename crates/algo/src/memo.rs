@@ -116,6 +116,8 @@ impl<K: Hash + Eq + Clone, V: Clone> BoundedMemo<K, V> {
     /// budget; ignored when off. An entry heavier than the whole budget is not
     /// stored, so it evicts nothing. A key already held keeps its stored
     /// weight: its value is a function of the key, so it is the same value.
+    /// The store keeps two clones of the key, one in its map and one in its
+    /// eviction queue, so a weight in bytes counts the key twice.
     pub fn insert_weighted(&mut self, key: &K, value: &V, weight: usize) {
         if self.capacity == 0 {
             return;

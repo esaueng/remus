@@ -30,7 +30,7 @@ pub const DEFAULT_RAY_GEOM_MEMO_CAPACITY: usize = 1024;
 
 /// Default byte budget of a thread's memo once enabled: keys and trim
 /// polygons together. The 160-face hammer holder's four sampled trims take
-/// about 210 KB.
+/// about 255 KB.
 pub const DEFAULT_RAY_GEOM_MEMO_BYTES: usize = 8 << 20;
 
 /// Exact bits of everything a face's ray geometry depends on.
@@ -132,9 +132,11 @@ pub(crate) fn memoized(
         return trim;
     }
     let trim = compute();
-    let bytes = std::mem::size_of_val(key.as_slice())
+    // Both copies of the key the store holds (see `insert_weighted`).
+    let bytes = 2 * std::mem::size_of_val(key.as_slice())
         + trim.as_ref().map_or(0, TorusTrim::heap_bytes)
-        + std::mem::size_of::<(RayGeomKey, Option<TorusTrim>)>();
+        + std::mem::size_of::<(RayGeomKey, Option<TorusTrim>)>()
+        + std::mem::size_of::<(RayGeomKey, usize)>();
     MEMO.with(|memo| {
         if let Ok(mut memo) = memo.try_borrow_mut() {
             memo.insert_weighted(key, &trim, bytes);

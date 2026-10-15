@@ -805,4 +805,33 @@ mod tests {
         // a key without it would return a wrong one.
         assert_eq!(changed_trims, cases.len() - 1);
     }
+
+    /// The byte count covers every heap byte the memo holds for an entry:
+    /// both copies of its key (map and eviction queue) and the trim polygon.
+    #[test]
+    fn trim_memo_counts_both_copies_of_its_keys() {
+        use crate::ray_geom_memo::{
+            enable_thread_ray_geom_memo, set_thread_ray_geom_memo_capacity,
+            thread_ray_geom_memo_stats,
+        };
+        let mut topo = Topology::new();
+        let faces = memo_corpus(&mut topo);
+        let tol = Tolerance::default();
+        for &face in &faces {
+            set_thread_ray_geom_memo_capacity(0);
+            enable_thread_ray_geom_memo();
+            let trim = trimmed_torus_polygon_memoized(&topo, face, tol);
+            let bytes = thread_ray_geom_memo_stats().bytes;
+            set_thread_ray_geom_memo_capacity(0);
+            let key = trim_key(&topo, face, tol).unwrap();
+            let held = 2 * key.len() * std::mem::size_of::<u64>()
+                + trim.as_ref().map_or(0, |t| {
+                    t.polygon.len() * std::mem::size_of::<remus_math::vec::Point2>()
+                });
+            assert!(
+                (held..=held + 256).contains(&bytes),
+                "{bytes} bytes counted for {held} held"
+            );
+        }
+    }
 }
