@@ -419,3 +419,39 @@ fn a_common_weight_scale_does_not_collapse_the_clamped_curve() {
         }
     }
 }
+
+#[test]
+fn weights_too_far_apart_to_normalize_are_kept() {
+    // Review follow-up: dividing by the largest weight rounds the smallest
+    // subnormal weight, beside 2.0, to zero, and the rebuilt curve was then
+    // refused as invalid. Both ends already carry multiplicity p, so the
+    // clamp inserts nothing and the curve decomposes exactly, as before.
+    let tiny = f64::from_bits(1);
+    let curve = NurbsCurve::new(
+        1,
+        vec![-1.0, 0.0, 1.0, 2.0],
+        vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 2.0, 3.0)],
+        vec![tiny, 2.0],
+    )
+    .expect("positive weights are valid");
+    let segments = curve_to_bezier_segments(&curve).expect("decomposes");
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].control_points(), curve.control_points());
+    assert_eq!(segments[0].weights(), curve.weights());
+
+    let surface = NurbsSurface::new(
+        1,
+        1,
+        vec![-1.0, 0.0, 1.0, 2.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ],
+        vec![vec![tiny, 1.0], vec![2.0, 2.0]],
+    )
+    .expect("positive weights are valid");
+    let patches = surface_to_bezier_patches(&surface).expect("decomposes");
+    assert_eq!(patches.len(), 1);
+    assert_eq!(patches[0].surface.weights(), surface.weights());
+}
