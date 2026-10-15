@@ -518,11 +518,6 @@ struct Completion<'a> {
     /// Rounding allowance of the homogeneous `f` and `g` control values.
     slack_f: f64,
     slack_g: f64,
-    /// Weights enter divided by this (the largest weight): a common weight
-    /// factor leaves the surface unchanged and must not overflow the
-    /// products. Divided, not multiplied by a reciprocal, which overflows for
-    /// a subnormal common factor.
-    max_weight: f64,
     /// Newton's own (3D) acceptance; [`Perpendicular`] then decides.
     tolerance: f64,
     perpendicular: Perpendicular,
@@ -619,11 +614,10 @@ pub(super) fn complete_line_roots(
         n1,
         n2,
         pad,
-        // Weights enter divided by the largest, so the homogeneous values are
-        // bounded by the plane distances.
+        // Weights enter divided by the block's largest (see `block`), so the
+        // homogeneous values are bounded by the plane distances.
         slack_f,
         slack_g,
-        max_weight: surface.max_weight(),
         // Along the line a large coordinate legitimately rounds Newton's 3D
         // residual; the perpendicular test below is the strict one.
         tolerance: pad.iter().map(|a| a * a).sum::<f64>().sqrt(),
@@ -705,10 +699,21 @@ impl Completion<'_> {
         let scratch = &mut self.scratch;
         scratch.window_f.clear();
         scratch.window_g.clear();
+        // Weights enter divided by the block's largest, a positive factor that
+        // changes no sign or zero: a common or regional weight factor leaves
+        // the surface unchanged, and must neither overflow the products nor
+        // shrink them below the rounding slack (a region of weights ~1e-200
+        // beside weights ~1 would leave every value inside the slack).
+        // Divided, not multiplied by a reciprocal, which overflows for a
+        // subnormal factor.
+        let block_weight = weights[rows.clone()]
+            .iter()
+            .flat_map(|row| row[cols.clone()].iter().copied())
+            .fold(0.0_f64, f64::max);
         for i in rows.clone() {
             for j in cols.clone() {
                 let rel = cps[i][j] - self.line.origin;
-                let w = weights[i][j] / self.max_weight;
+                let w = weights[i][j] / block_weight;
                 scratch.window_f.push(w * self.n1.dot(rel));
                 scratch.window_g.push(w * self.n2.dot(rel));
             }
@@ -734,6 +739,18 @@ impl Completion<'_> {
                     scratch
                         .g
                         .extend_from_slice(&scratch.window_g[at..=at + hull.degree_v]);
+                }
+                // Rescale to the span's own largest weight, for a span whose
+                // weights sit far below the rest of its block.
+                let span_weight = weights[ku - hull.degree_u..=ku]
+                    .iter()
+                    .flat_map(|row| row[kv - hull.degree_v..=kv].iter().copied())
+                    .fold(0.0_f64, f64::max)
+                    / block_weight;
+                if span_weight < 1.0 {
+                    for value in scratch.f.iter_mut().chain(scratch.g.iter_mut()) {
+                        *value /= span_weight;
+                    }
                 }
                 if one_signed(&scratch.f, slack_f) || one_signed(&scratch.g, slack_g) {
                     continue;
