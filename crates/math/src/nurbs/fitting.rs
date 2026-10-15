@@ -160,8 +160,17 @@ fn check_dense_entries(entries: usize) -> Result<(), MathError> {
 /// repeated parameter makes two collocation rows identical. Points that
 /// coincide outright, or differ by less than the parameters resolve, are
 /// refused here, before any system is assembled. All points coinciding is
-/// not refused: `chord_length_params` spaces those uniformly.
+/// not refused: `chord_length_params` spaces those uniformly. A non-finite
+/// parameter (finite points whose chord lengths overflow) is refused as out
+/// of range, as [`interpolate_with_params`] refuses it.
 fn check_increasing_params(params: &[f64]) -> Result<(), MathError> {
+    if let Some(&value) = params.iter().find(|t| !t.is_finite()) {
+        return Err(MathError::ParameterOutOfRange {
+            value,
+            min: 0.0,
+            max: 1.0,
+        });
+    }
     match params.windows(2).position(|w| w[1] <= w[0]) {
         Some(i) => Err(MathError::CoincidentFitPoints { index: i + 1 }),
         None => Ok(()),
@@ -192,9 +201,11 @@ fn check_increasing_params(params: &[f64]) -> Result<(), MathError> {
 ///
 /// Returns [`MathError::InvalidDegree`] for degree 0,
 /// [`MathError::ResourceLimitExceeded`] beyond [`MAX_FIT_POINTS`] points or
-/// a fitted degree above [`MAX_FIT_DEGREE`], and
+/// a fitted degree above [`MAX_FIT_DEGREE`],
 /// [`MathError::CoincidentFitPoints`] when two consecutive points share a
-/// chord-length parameter; all before any system is assembled.
+/// chord-length parameter, and [`MathError::ParameterOutOfRange`] when a
+/// chord-length parameter is not finite (chord lengths that overflow); all
+/// before any system is assembled.
 pub fn interpolate(points: &[Point3], degree: usize) -> Result<NurbsCurve, MathError> {
     let n = points.len();
     if n < 2 {
@@ -282,6 +293,12 @@ pub fn approximate(
         return Err(MathError::EmptyInput);
     }
     check_fit_points(n)?;
+    if degree == 0 {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points: num_control_points,
+        });
+    }
     if num_control_points < degree.saturating_add(1) {
         return Err(MathError::InvalidKnotVector {
             expected: degree.saturating_add(1),
