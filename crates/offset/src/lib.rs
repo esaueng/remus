@@ -191,6 +191,15 @@ fn thick_solid_impl(
     exclude: &[FaceId],
     options: OffsetOptions,
 ) -> Result<ThickSolidResult, OffsetError> {
+    let linear = options.tolerance.linear;
+    let angular = options.tolerance.angular;
+    if !linear.is_finite() || linear <= 0.0 || !angular.is_finite() || angular <= 0.0 {
+        return Err(OffsetError::InvalidInput {
+            reason: format!(
+                "offset tolerance must be finite and positive, got linear {linear}, angular {angular}"
+            ),
+        });
+    }
     if !distance.is_finite() || distance.abs() < options.tolerance.linear {
         return Err(OffsetError::InvalidInput {
             reason: "offset distance must be non-zero and finite".into(),

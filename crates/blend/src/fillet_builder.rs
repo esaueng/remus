@@ -2814,6 +2814,9 @@ pub fn equal_radius_cap(
     radius: f64,
     tol: remus_math::tolerance::Tolerance,
 ) -> Option<EqualRadiusCap> {
+    if !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
     let EdgeCurve::Circle(circle) = edge.curve() else {
         return None;
     };
@@ -2951,6 +2954,20 @@ pub fn blend_cross_sections(
     fractions: &[f64],
 ) -> Result<Vec<BlendCrossSection>, BlendError> {
     use remus_math::vec::Point3;
+
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(BlendError::InvalidInput {
+            reason: format!("blend radius must be finite and positive, got {radius}"),
+        });
+    }
+    if let Some(fraction) = fractions
+        .iter()
+        .find(|f| !f.is_finite() || !(0.0..=1.0).contains(*f))
+    {
+        return Err(BlendError::InvalidInput {
+            reason: format!("cross-section fraction {fraction} must be finite and in [0, 1]"),
+        });
+    }
 
     {
         let edge = topo.edge(edge_id)?;

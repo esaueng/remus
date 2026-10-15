@@ -160,9 +160,9 @@ pub fn draft_with_evolution(
 ) -> Result<(SolidId, EvolutionMap), OperationsError> {
     let tol = Tolerance::new();
 
-    if angle_radians.abs() <= tol.angular {
+    if !angle_radians.is_finite() || angle_radians.abs() <= tol.angular {
         return Err(OperationsError::InvalidInput {
-            reason: "draft angle must be non-zero".into(),
+            reason: format!("draft angle must be finite and non-zero, got {angle_radians}"),
         });
     }
     if draft_faces.is_empty() {

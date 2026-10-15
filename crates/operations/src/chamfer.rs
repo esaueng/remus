@@ -120,9 +120,9 @@ pub(crate) fn chamfer_with_origins(
     edges: &[EdgeId],
     distance: f64,
 ) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
-    if distance <= 0.0 {
+    if !distance.is_finite() || distance <= 0.0 {
         return Err(crate::OperationsError::InvalidInput {
-            reason: format!("chamfer distance must be positive, got {distance}"),
+            reason: format!("chamfer distance must be finite and positive, got {distance}"),
         });
     }
     if edges.is_empty() {
@@ -168,9 +168,9 @@ pub(crate) fn chamfer_asymmetric_with_origins(
     d1: f64,
     d2: f64,
 ) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
-    if d1 <= 0.0 || d2 <= 0.0 {
+    if !d1.is_finite() || !d2.is_finite() || d1 <= 0.0 || d2 <= 0.0 {
         return Err(crate::OperationsError::InvalidInput {
-            reason: format!("chamfer distances must be positive, got d1={d1}, d2={d2}"),
+            reason: format!("chamfer distances must be finite and positive, got d1={d1}, d2={d2}"),
         });
     }
     if edges.is_empty() {
