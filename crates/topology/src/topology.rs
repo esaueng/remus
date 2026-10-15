@@ -1565,10 +1565,16 @@ impl Topology {
             // Record every removed index entry before destroying it; entries
             // of a pre-existing face trip an armed append-only guard here,
             // before any retirement or write lands.
-            for (edge, forward, _) in self.pcurves.uses_for_face(face_id) {
+            let removed = self.pcurves.uses_for_face(face_id);
+            for &(edge, forward, _) in &removed {
                 self.record_pcurve_write(edge, face_id, forward)?;
             }
-            self.pcurves.remove_face(face_id);
+            // Exactly the face's entries: removing them by key avoids a
+            // second pass over every use in the document.
+            for (edge, forward, _) in removed {
+                self.pcurves
+                    .remove_key(PCurveKey::new(edge, face_id, forward));
+            }
             let old_loops = self
                 .faces
                 .get(face_id)

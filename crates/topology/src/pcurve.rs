@@ -127,8 +127,8 @@ impl PCurve {
 /// Every face allocation indexes one entry per boundary use, so the key hash
 /// sits on the construction hot path. The fixed-seed FNV map hashes these
 /// integer keys several times faster than the std SipHash map. No consumer
-/// depends on iteration order (queries sort, removals `retain`, and `Debug`
-/// renders sorted); the hasher is not DoS-resistant, which is fine for keys
+/// depends on iteration order (queries sort, removals go by key or `retain`,
+/// and `Debug` renders sorted); the hasher is not DoS-resistant, which is fine for keys
 /// that are arena handles minted by this topology, never external input.
 #[derive(Default, Clone)]
 pub struct PCurveRegistry {
@@ -222,7 +222,9 @@ impl PCurveRegistry {
         });
     }
 
-    /// Removes every index entry for one face before its loops are replaced.
+    /// Removes every index entry for one face with a pass over the whole
+    /// registry: the oracle for removing a face's listed keys (tests).
+    #[cfg(test)]
     pub(crate) fn remove_face(&mut self, face: FaceId) {
         self.uses.retain(|key, _| key.face != face);
     }
@@ -460,6 +462,40 @@ mod tests {
             Some(coedge),
             "an unrelated face's entry survives"
         );
+    }
+
+    #[test]
+    fn removing_a_faces_listed_keys_matches_the_whole_registry_removal() {
+        let (mut topo, edge, face) = make_simple_topology();
+        let mut faces = vec![face];
+        for _ in 0..4 {
+            faces.push(extra_triangle_face(&mut topo));
+        }
+        let edges: Vec<_> = topo.edges().iter().map(|(id, _)| id).collect();
+        let coedge = topo.coedges_of_edge(edge)[0];
+        let mut registry = PCurveRegistry::new();
+        for (i, &face) in faces.iter().enumerate() {
+            for (j, &edge) in edges.iter().enumerate() {
+                // Sparse, with seam pairs (both branches) on some uses.
+                if (i + j) % 3 != 0 {
+                    registry.index_use(edge, face, true, coedge);
+                }
+                if (i * j) % 4 == 1 {
+                    registry.index_use(edge, face, false, coedge);
+                }
+            }
+        }
+        for &face in &faces {
+            let mut whole = registry.clone();
+            whole.remove_face(face);
+            let mut listed = registry.clone();
+            for (edge, forward, _) in listed.uses_for_face(face) {
+                listed.remove_key(PCurveKey::new(edge, face, forward));
+            }
+            assert_eq!(format!("{listed:?}"), format!("{whole:?}"));
+            assert!(listed.same_uses(&whole));
+            assert!(listed.uses_for_face(face).is_empty());
+        }
     }
 
     #[test]
