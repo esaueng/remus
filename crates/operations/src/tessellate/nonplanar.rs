@@ -2075,7 +2075,10 @@ fn make_band_emit<'a>(
     // and a band vertex is in about six triangles: keep each vertex's value,
     // keyed by its index and checked against its position bits (a caller may
     // truncate and refill the pool), instead of projecting it per triangle.
-    let reference = std::cell::RefCell::new(Vec::<Option<VertexReference>>::new());
+    // Keyed by index in a map, not a vector over the pool: the pool is shared
+    // by every face of a solid, and each face's emitter touches only its own
+    // vertices.
+    let reference = std::cell::RefCell::new(DetHashMap::<u32, VertexReference>::default());
     move |merged: &mut TriangleMesh, a: u32, b: u32, c: u32| {
         if a == b || b == c || a == c {
             return;
@@ -2097,18 +2100,14 @@ fn make_band_emit<'a>(
         let mut reference = reference.borrow_mut();
         let mut n_at = |index: u32, p: Point3| -> Vec3 {
             let bits = [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()];
-            let index = index as usize;
-            if reference.len() <= index {
-                reference.resize(merged.positions.len().max(index + 1), None);
-            }
-            if let Some((cached, normal)) = reference[index]
+            if let Some(&(cached, normal)) = reference.get(&index)
                 && cached == bits
             {
                 return normal;
             }
             let (u, v) = project(p);
             let normal = surf_normal(u, v);
-            reference[index] = Some((bits, normal));
+            reference.insert(index, (bits, normal));
             normal
         };
         let outward = n_at(a, pa) + n_at(b, pb) + n_at(c, pc);
