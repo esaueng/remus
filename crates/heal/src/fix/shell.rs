@@ -245,4 +245,52 @@ mod tests {
             assert!(n0.dot(n1) > 0.0, "face {k} normal flipped");
         }
     }
+
+    /// A use whose sense the reorder flips keeps its pcurve through the
+    /// reshape: the old one, range reversed.
+    #[test]
+    fn a_flipped_use_keeps_its_pcurve_through_the_reshape() {
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::vec::{Point2, Vec2};
+        use remus_topology::pcurve::PCurve;
+
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let face = topo.shell(shell).unwrap().faces()[2];
+        let wire = topo.face(face).unwrap().outer_wire();
+        let mut uses = topo.wire(wire).unwrap().edges().to_vec();
+        uses[2] = OrientedEdge::new(uses[2].edge(), !uses[2].is_forward());
+        let broken = topo.add_wire(Wire::new(uses.clone(), true).unwrap());
+        topo.set_face_boundary_wires(face, broken, vec![]).unwrap();
+        let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
+        for oe in &uses {
+            topo.set_pcurve_oriented(
+                oe.edge(),
+                face,
+                oe.is_forward(),
+                PCurve::new(Curve2D::Line(line.clone()), 0.0, 1.0),
+            )
+            .unwrap();
+        }
+
+        let mut ctx = HealContext::new();
+        let config = FixConfig {
+            fix_same_parameter: crate::fix::config::FixMode::Off,
+            ..FixConfig::default()
+        };
+        fix_shell(&mut topo, shell, &mut ctx, &config).unwrap();
+        ctx.reshape.apply(&mut topo, solid).unwrap();
+
+        let rebuilt = topo.face(face).unwrap().outer_wire();
+        assert_ne!(rebuilt, broken);
+        for oe in topo.wire(rebuilt).unwrap().edges() {
+            let pcurve = topo.pcurve_oriented(oe.edge(), face, oe.is_forward());
+            assert!(pcurve.is_some(), "use of {:?} lost its pcurve", oe.edge());
+            let pcurve = pcurve.unwrap();
+            if oe.edge() == uses[2].edge() {
+                assert!((pcurve.t_start() - 1.0).abs() < 1e-15, "{pcurve:?}");
+            }
+        }
+    }
 }
