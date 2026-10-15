@@ -3285,6 +3285,10 @@ pub(super) fn tessellate_nonplanar_cdt(
 
         (pt3, nrm)
     };
+    // The surface sample each interior point was given at the merge-cell
+    // filter, by CDT id, beside the point itself: emission reuses it when the
+    // CDT still holds that point bit for bit (the closure is pure).
+    let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
 
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) = interior_grid_resolution(chart_surface, du, dv, deflection, angular_tol);
@@ -3603,8 +3607,15 @@ pub(super) fn tessellate_nonplanar_cdt(
             .chain(hole_boundaries_3d.iter().flatten())
             .map(|&(point, _, _, _)| point_merge_key(point, MERGE_GRID))
             .collect();
-        interior_pts
-            .retain(|&point| taken.insert(point_merge_key(interior_point_3d(point).0, MERGE_GRID)));
+        let mut kept_samples = Vec::with_capacity(interior_pts.len());
+        interior_pts.retain(|&point| {
+            let sample = interior_point_3d(point);
+            let kept = taken.insert(point_merge_key(sample.0, MERGE_GRID));
+            if kept {
+                kept_samples.push(sample);
+            }
+            kept
+        });
         if !interior_pts.is_empty() {
             let interior_cdt_ids = cdt
                 .insert_points_hilbert(&interior_pts)
@@ -3612,6 +3623,16 @@ pub(super) fn tessellate_nonplanar_cdt(
             let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
             if cdt_to_global.len() <= max_interior {
                 cdt_to_global.resize(max_interior + 1, None);
+            }
+            interior_samples.resize(max_interior + 1, None);
+            for ((&id, &point), &sample) in interior_cdt_ids
+                .iter()
+                .zip(&interior_pts)
+                .zip(&kept_samples)
+            {
+                if let Some(slot) = interior_samples.get_mut(id) {
+                    slot.get_or_insert((point, sample));
+                }
             }
         }
     }
@@ -3638,7 +3659,18 @@ pub(super) fn tessellate_nonplanar_cdt(
         if let Some(gid) = cdt_to_global.get(i).copied().flatten() {
             final_global_ids[i] = gid;
         } else if i >= 3 {
-            let (pt3, nrm) = interior_point_3d(cdt_verts[i]);
+            let reused = interior_samples
+                .get(i)
+                .copied()
+                .flatten()
+                .filter(|(point, _)| {
+                    point.x().to_bits() == cdt_verts[i].x().to_bits()
+                        && point.y().to_bits() == cdt_verts[i].y().to_bits()
+                });
+            #[cfg(test)]
+            let reused = interior_sample_tests::observe(reused);
+            let (pt3, nrm) =
+                reused.map_or_else(|| interior_point_3d(cdt_verts[i]), |(_, sample)| sample);
             let key = point_merge_key(pt3, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
                 let idx = merged.positions.len() as u32;
@@ -6349,6 +6381,9 @@ pub(super) fn tessellate_nonplanar_snap(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod interior_sample_tests;
 
 #[cfg(test)]
 mod rim_angle_tests {
