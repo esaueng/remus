@@ -20,8 +20,8 @@
 
 use remus_math::MathError;
 use remus_math::nurbs::fitting::{
-    MAX_DENSE_FIT_ENTRIES, MAX_FIT_DEGREE, MAX_FIT_POINTS, approximate, approximate_lspia,
-    interpolate, interpolate_with_params,
+    MAX_DENSE_FIT_ENTRIES, MAX_FIT_DEGREE, MAX_FIT_POINTS, MAX_FIT_WORK, approximate,
+    approximate_lspia, interpolate, interpolate_with_params,
 };
 use remus_math::vec::Point3;
 
@@ -188,4 +188,42 @@ fn least_squares_dense_budget_is_enforced_before_assembly() {
     assert!(n * m + 2 * m * m <= MAX_DENSE_FIT_ENTRIES);
     let fitted = approximate(&points, 3, m).expect("inside the dense budget");
     assert_eq!(fitted.control_points().len(), m);
+}
+
+#[test]
+fn least_squares_work_is_bounded_not_only_its_memory() {
+    // Review follow-up: 3345 points and 836 control points fit the dense
+    // entry budget (4 194 212 of 4 194 304) but forming NᵀN alone is
+    // n·m² ≈ 2.34·10⁹ multiply-adds, more than the 8192 × 512 case.
+    let (n, m) = (3345, 836);
+    assert!(
+        n * m + 2 * m * m <= MAX_DENSE_FIT_ENTRIES,
+        "premise: entries fit"
+    );
+    let work = n * m * m + m * m * m;
+    assert!(work > MAX_FIT_WORK);
+    assert_eq!(
+        limit(approximate(&helix(n), 3, m)),
+        ("fit_work", MAX_FIT_WORK, work)
+    );
+    // 8192 × 64 stays inside both budgets (see the dense-budget test).
+    const { assert!(8192 * 64 * 64 + 64 * 64 * 64 <= MAX_FIT_WORK) };
+}
+
+#[test]
+fn lspia_iteration_work_is_bounded() {
+    // Review follow-up: every LSPIA iteration touches p + 1 basis values per
+    // point, and the iteration count is the caller's (WASM allows 10 000).
+    // 10 000 points at degree 3 with 30 000 iterations is
+    // 10⁴ · 4 · 30 001 ≈ 1.2·10⁹ updates.
+    let n = 10_000;
+    let work = n * 4 * 30_001;
+    assert!(work > MAX_FIT_WORK);
+    assert_eq!(
+        limit(approximate_lspia(&helix(n), 3, 100, 0.0, 30_000)),
+        ("fit_work", MAX_FIT_WORK, work)
+    );
+    // The in-tree callers (degree ≤ 3, 100 iterations) stay inside the
+    // budget for every point count the point bound admits.
+    const { assert!(MAX_FIT_POINTS * 4 * 101 <= MAX_FIT_WORK) };
 }

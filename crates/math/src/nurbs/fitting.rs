@@ -27,6 +27,59 @@ pub const MAX_FIT_DEGREE: usize = 25;
 /// Largest dense matrix, in `f64` entries (32 MiB), a fit may allocate.
 pub const MAX_DENSE_FIT_ENTRIES: usize = 1 << 22;
 
+/// Most arithmetic a fit may do: multiply-adds for least squares
+/// (`n·m² + m³`), basis-weighted updates for LSPIA
+/// (`n·(p + 1)·(max_iterations + 1)`). About a second at full optimization.
+pub const MAX_FIT_WORK: usize = 1 << 30;
+
+fn check_fit_work(work: usize) -> Result<(), MathError> {
+    if work > MAX_FIT_WORK {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "fit_work",
+            limit: MAX_FIT_WORK,
+            actual: work,
+        });
+    }
+    Ok(())
+}
+
+/// The first index `j` minimizing `|params[j] - t|`, exactly as a linear
+/// scan with a strict `<` finds it, in O(log n) when `params` is finite and
+/// nondecreasing (`sorted`); otherwise by that linear scan.
+///
+/// On a sorted slice the computed distance is nonincreasing below the first
+/// parameter `>= t` and nondecreasing from it (subtraction is monotone), so
+/// the earliest minimizer is either that index or the first index of the
+/// run of equal distances just below it; a tie goes to the lower one.
+fn nearest_param_index(params: &[f64], t: f64, sorted: bool) -> usize {
+    if !sorted || !t.is_finite() {
+        let mut best_idx = 0;
+        let mut best_dist = f64::INFINITY;
+        for (j, &param) in params.iter().enumerate() {
+            let d = (param - t).abs();
+            if d < best_dist {
+                best_dist = d;
+                best_idx = j;
+            }
+        }
+        return best_idx;
+    }
+    let k = params.partition_point(|&q| q < t);
+    let right = params.get(k).map(|&q| (q - t).abs());
+    let left = k.checked_sub(1).map(|j| (params[j] - t).abs());
+    match left {
+        Some(dl) if right.is_none_or(|dr| dl <= dr) => {
+            params[..k].partition_point(|&q| (q - t).abs() > dl)
+        }
+        _ => k.min(params.len().saturating_sub(1)),
+    }
+}
+
+/// Whether every parameter is finite and none decreases.
+fn params_sorted(params: &[f64]) -> bool {
+    params.iter().all(|q| q.is_finite()) && params.windows(2).all(|w| w[0] <= w[1])
+}
+
 fn check_fit_points(n: usize) -> Result<(), MathError> {
     if n > MAX_FIT_POINTS {
         return Err(MathError::ResourceLimitExceeded {
@@ -221,6 +274,12 @@ pub fn approximate(
     check_dense_entries(
         n.saturating_mul(m)
             .saturating_add(m.saturating_mul(m).saturating_mul(2)),
+    )?;
+    // Forming NᵀN costs n·m² multiply-adds and the three dense solves about
+    // m³ together.
+    check_fit_work(
+        n.saturating_mul(m.saturating_mul(m))
+            .saturating_add(m.saturating_mul(m).saturating_mul(m)),
     )?;
 
     let params = chord_length_params(points);
@@ -879,11 +938,16 @@ pub fn approximate_lspia(
     check_fit_points(n)?;
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
+    check_fit_work(
+        n.saturating_mul(p + 1)
+            .saturating_mul(max_iterations.saturating_add(1)),
+    )?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
 
     // Initialize control points by sampling closest data points.
+    let sorted = params_sorted(&params);
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
         let t = if m > 1 {
@@ -891,16 +955,7 @@ pub fn approximate_lspia(
         } else {
             0.0
         };
-        let mut best_idx = 0;
-        let mut best_dist = f64::INFINITY;
-        for (j, &param) in params.iter().enumerate() {
-            let d = (param - t).abs();
-            if d < best_dist {
-                best_dist = d;
-                best_idx = j;
-            }
-        }
-        control_points.push(points[best_idx]);
+        control_points.push(points[nearest_param_index(&params, t, sorted)]);
     }
 
     let weights = vec![1.0; m];
@@ -1013,11 +1068,16 @@ pub(crate) fn approximate_lspia_weighted(
     check_fit_points(n)?;
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
+    check_fit_work(
+        n.saturating_mul(p + 1)
+            .saturating_mul(max_iterations.saturating_add(1)),
+    )?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
 
     // Initialize control points by sampling closest data points.
+    let sorted = params_sorted(&params);
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
         let t = if m > 1 {
@@ -1025,16 +1085,7 @@ pub(crate) fn approximate_lspia_weighted(
         } else {
             0.0
         };
-        let mut best_idx = 0;
-        let mut best_dist = f64::INFINITY;
-        for (j, &param) in params.iter().enumerate() {
-            let d = (param - t).abs();
-            if d < best_dist {
-                best_dist = d;
-                best_idx = j;
-            }
-        }
-        control_points.push(points[best_idx]);
+        control_points.push(points[nearest_param_index(&params, t, sorted)]);
     }
 
     let weights = vec![1.0; m];
@@ -1106,6 +1157,81 @@ mod tests {
     use crate::vec::Point3;
 
     use super::*;
+
+    /// The linear scan `nearest_param_index` replaces, verbatim.
+    fn nearest_by_scan(params: &[f64], t: f64) -> usize {
+        let mut best_idx = 0;
+        let mut best_dist = f64::INFINITY;
+        for (j, &param) in params.iter().enumerate() {
+            let d = (param - t).abs();
+            if d < best_dist {
+                best_dist = d;
+                best_idx = j;
+            }
+        }
+        best_idx
+    }
+
+    #[test]
+    fn nearest_param_index_matches_the_linear_scan() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut cases: Vec<Vec<f64>> = vec![
+            vec![0.0],
+            vec![0.0, 1.0],
+            vec![0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0],
+            // Distinct parameters whose distances to t = 1 round equal:
+            // the scan keeps the first, so the search must too.
+            vec![0.0, 1e-20, 2e-20, 3e-20, 1.0],
+            vec![0.0, 0.25, 0.25, 0.75, 1.0],
+        ];
+        for len in [2usize, 3, 7, 40, 300] {
+            for _ in 0..20 {
+                let mut v: Vec<f64> = (0..len).map(|_| (next() * 8.0).floor() / 8.0).collect();
+                v.extend((0..len).map(|_| next()));
+                v.sort_by(f64::total_cmp);
+                cases.push(v);
+            }
+        }
+        for params in &cases {
+            let sorted = params_sorted(params);
+            assert!(sorted);
+            for m in [1usize, 2, 3, 5, 17, 64] {
+                for i in 0..m {
+                    let t = if m > 1 {
+                        i as f64 / (m - 1) as f64
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(
+                        nearest_param_index(params, t, sorted),
+                        nearest_by_scan(params, t),
+                        "params {params:?}, t {t}"
+                    );
+                }
+            }
+            for t in [-1.0, 0.125, 0.3, 0.5, 2.0] {
+                assert_eq!(
+                    nearest_param_index(params, t, sorted),
+                    nearest_by_scan(params, t)
+                );
+            }
+        }
+        // NaN parameters are not sorted and take the scan itself.
+        let nan = [0.0, f64::NAN, f64::NAN, 1.0];
+        assert!(!params_sorted(&nan));
+        for t in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                nearest_param_index(&nan, t, false),
+                nearest_by_scan(&nan, t)
+            );
+        }
+    }
 
     #[test]
     fn out_of_band_interpolation_is_held_to_the_dense_budget() {
