@@ -186,7 +186,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
                     "components" => in_components = true,
-                    "component" if in_components => {
+                    "component" if in_components && is_core_element(&reader, e) => {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
@@ -229,7 +229,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             object.indices.extend([v1, v2, v3]);
                         }
                     }
-                    "component" if in_components => {
+                    "component" if in_components && is_core_element(&reader, e) => {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
@@ -519,6 +519,26 @@ fn push_component(
         object.components.push(component);
     }
     Ok(())
+}
+
+/// The 3MF core namespace.
+const CORE_NAMESPACE: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
+
+/// Whether `e` is a core element. Elements of another namespace belong to an
+/// extension this reader does not support and are ignored; an unqualified
+/// element counts as core, since files without a namespace declaration are
+/// accepted.
+fn is_core_element(
+    reader: &quick_xml::NsReader<&[u8]>,
+    e: &quick_xml::events::BytesStart<'_>,
+) -> bool {
+    use quick_xml::name::ResolveResult;
+
+    match reader.resolver().resolve_element(e.name()).0 {
+        ResolveResult::Unbound => true,
+        ResolveResult::Bound(ns) => ns.as_ref() == CORE_NAMESPACE,
+        ResolveResult::Unknown(_) => false,
+    }
 }
 
 /// The 3MF production extension's namespace.

@@ -341,3 +341,21 @@ fn extension_attributes_are_matched_by_namespace() {
         &cube_corners(|p| Point3::new(p.x() + 10.0, p.y(), p.z())),
     );
 }
+
+/// An extension's element named `component` inside `<components>` is not a
+/// core component: it neither adds geometry nor needs an `objectid`.
+#[test]
+fn extension_component_elements_are_ignored() {
+    let data = model(
+        "millimeter",
+        &[
+            cube_object(1),
+            r#"<object id="2" type="model"><components xmlns:v="urn:example:vendor"><component objectid="1"/><v:component/><v:component objectid="1"/></components></object>"#.to_string(),
+        ],
+        &[2],
+    );
+    let meshes = read_threemf(&data).unwrap();
+    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes[0].indices.len(), 12 * 3, "one cube, not two");
+    assert_positions(&meshes[0].positions, &cube_corners(|p| p));
+}
