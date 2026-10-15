@@ -1,4 +1,4 @@
-//! B90: public operation entry points must refuse NaN and infinite scalars.
+//! B124: public operation entry points must refuse NaN and infinite scalars.
 //!
 //! Positivity checks written `x <= 0.0` (or `x <= tol`, `approx_eq(x, 0.0)`)
 //! are false for NaN, and most are false for +∞, so a non-finite distance,
@@ -73,7 +73,7 @@ fn refuses<T>(name: &str, op: impl Fn(&mut Fixture, f64) -> Result<T, Operations
 }
 
 #[test]
-fn b90_offsets_and_sweeps_refuse_non_finite_distances() {
+fn b124_offsets_and_sweeps_refuse_non_finite_distances() {
     refuses("offset_face_with_quality", |f, d| {
         remus_operations::offset_face::offset_face_with_quality(&mut f.topo, f.square, d, None)
     });
@@ -163,7 +163,7 @@ fn b90_offsets_and_sweeps_refuse_non_finite_distances() {
 }
 
 #[test]
-fn b90_helix_refuses_non_finite_radius_and_pitch() {
+fn b124_helix_refuses_non_finite_radius_and_pitch() {
     refuses("helical_sweep radius", |f, r| {
         remus_operations::helix::helical_sweep(
             &mut f.topo,
@@ -207,7 +207,7 @@ fn b90_helix_refuses_non_finite_radius_and_pitch() {
 }
 
 #[test]
-fn b90_blends_refuse_non_finite_sizes() {
+fn b124_blends_refuse_non_finite_sizes() {
     refuses("chamfer", |f, d| {
         remus_operations::chamfer::chamfer(&mut f.topo, f.cube, &[f.edge], d)
     });
@@ -235,7 +235,7 @@ fn b90_blends_refuse_non_finite_sizes() {
 }
 
 #[test]
-fn b90_body_edits_refuse_non_finite_parameters() {
+fn b124_body_edits_refuse_non_finite_parameters() {
     refuses("shell", |f, t| {
         remus_operations::shell_op::shell(&mut f.topo, f.cube, t, &[f.top])
     });
@@ -280,7 +280,7 @@ fn b90_body_edits_refuse_non_finite_parameters() {
 
 /// The blend engine's own builder refuses before building contact points.
 #[test]
-fn b90_chamfer_builder_refuses_non_finite_distances() {
+fn b124_chamfer_builder_refuses_non_finite_distances() {
     for value in BAD {
         for (d1, d2) in [(value, 0.1), (0.1, value)] {
             let mut f = fixture();
@@ -310,7 +310,7 @@ fn b90_chamfer_builder_refuses_non_finite_distances() {
 /// The offset engine refuses a non-finite tolerance instead of carrying it
 /// into every intersection.
 #[test]
-fn b90_thick_solid_refuses_a_non_finite_tolerance() {
+fn b124_thick_solid_refuses_a_non_finite_tolerance() {
     for value in BAD {
         for field in ["linear", "angular", "relative"] {
             let mut f = fixture();
