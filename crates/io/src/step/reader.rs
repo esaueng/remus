@@ -10759,6 +10759,23 @@ fn parse_multiplicities(group: &str) -> Option<Vec<u32>> {
         .collect()
 }
 
+/// Parse a knot-value aggregate like `(0., 0.5, 1.)`.
+///
+/// Every member must be a finite real. `parse_floats` skips members that do
+/// not parse, so a malformed knot whose survivors happened to match the
+/// multiplicity count passed the pairing check as a different knot vector;
+/// here any skipped member refuses the list.
+fn parse_knot_values(group: &str) -> Option<Vec<f64>> {
+    let members = group
+        .trim()
+        .strip_prefix('(')?
+        .strip_suffix(')')?
+        .split(',')
+        .count();
+    let values = parse_floats(group).ok()?;
+    (values.len() == members).then_some(values)
+}
+
 /// Split B-spline attributes into top-level bare tokens (name, degrees,
 /// enums) and top-level parenthesized groups (control points,
 /// multiplicities, knots), in order.
@@ -11017,8 +11034,8 @@ fn parse_bspline_surface_attrs(
     let u_mults = parse_multiplicities(&groups[1])?;
     let v_mults = parse_multiplicities(&groups[2])?;
 
-    let u_knots = parse_floats(&groups[3]).ok()?;
-    let v_knots = parse_floats(&groups[4]).ok()?;
+    let u_knots = parse_knot_values(&groups[3])?;
+    let v_knots = parse_knot_values(&groups[4])?;
 
     Some((
         degree_u, degree_v, cp_grid, u_mults, v_mults, u_knots, v_knots,
@@ -11133,7 +11150,7 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
 
     let cp_refs = parse_refs(&groups[0]);
     let mults = parse_multiplicities(&groups[1])?;
-    let knots = parse_floats(&groups[2]).ok()?;
+    let knots = parse_knot_values(&groups[2])?;
 
     Some((degree, cp_refs, mults, knots))
 }
@@ -14185,6 +14202,23 @@ mod tests {
             let error = curve_geometry(&body, 5).unwrap_err().to_string();
             assert!(error.contains(count), "{mults} {knots}: {error}");
         }
+        // A malformed knot member must refuse the curve, not vanish and leave
+        // survivors that happen to pair with the multiplicities.
+        for knots in ["(0.,oops,1.)", "(0.,,1.)", "(0.,1.E999,1.)", "()"] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',2,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.,(3,3),{knots},.UNSPECIFIED.);"
+            );
+            assert!(curve_geometry(&body, 5).is_err(), "{knots} must be refused");
+        }
+        let body = format!(
+            "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',2,(#1,#2,#3),\
+             .UNSPECIFIED.,.F.,.F.,(3,3),( 0. , 1.E0 ),.UNSPECIFIED.);"
+        );
+        assert!(
+            curve_geometry(&body, 5).is_ok(),
+            "spaced knot members parse"
+        );
         for mults in ["(2,1.5,2)", "(2,x,2)", "(2,-1,2)", "()"] {
             let body = format!(
                 "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
@@ -14209,6 +14243,10 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("2 knot multiplicities for 3"), "{error}");
+        assert!(
+            surface_geometry(&surface("(0.,x,1.)"), 5).is_err(),
+            "a malformed u knot must be refused"
+        );
     }
 
     #[test]
