@@ -8395,12 +8395,26 @@ fn select_pcurve_range(
     let hits = |parameter: f64, expected: Point2| {
         periodic_difference(curve.evaluate(parameter), expected, periodic).length() <= tolerance
     };
-    let direct = hits(range.0, expected_start) && hits(range.1, expected_end);
-    if direct {
+    // Whole periods between an end and its lifted vertex. Both ends must sit
+    // the same number of periods away, so the declared trace sweeps the same
+    // turns as the edge rather than adding revolutions it never traverses.
+    let turns = |parameter: f64, expected: Point2| {
+        (curve.evaluate(parameter) - expected) * (1.0 / std::f64::consts::TAU)
+    };
+    let same_turns = |a: (f64, Point2), b: (f64, Point2)| {
+        let (ta, tb) = (turns(a.0, a.1), turns(b.0, b.1));
+        (ta.x().round() - tb.x().round()).abs() < 0.5
+            && (ta.y().round() - tb.y().round()).abs() < 0.5
+    };
+    let matches = |start: f64, end: f64| {
+        hits(start, expected_start)
+            && hits(end, expected_end)
+            && same_turns((start, expected_start), (end, expected_end))
+    };
+    if matches(range.0, range.1) {
         return Ok(range);
     }
-    let reversed = hits(range.1, expected_start) && hits(range.0, expected_end);
-    if reversed {
+    if matches(range.1, range.0) {
         return Ok((range.1, range.0));
     }
     let actual_start = curve.evaluate(range.0);
@@ -11578,7 +11592,8 @@ mod tests {
     }
 
     /// A declared range is the pcurve's own trace: its ends may sit a whole
-    /// period away from the lifted vertices and still be accepted.
+    /// period away from the lifted vertices and still be accepted, but only
+    /// by the same whole period at both ends, so the trace adds no turns.
     #[test]
     fn declared_pcurve_range_matches_its_vertices_modulo_the_period() {
         use std::f64::consts::{FRAC_PI_2, TAU};
@@ -11592,6 +11607,20 @@ mod tests {
             select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (false, false), 7).is_err()
         );
         assert!(select_pcurve_range(&curve, (0.0, 1.0), expected, (true, false), 7).is_err());
+        // A quarter-turn edge declared with an extra revolution, either way.
+        assert!(
+            select_pcurve_range(&curve, (0.0, TAU + FRAC_PI_2), expected, (true, false), 7)
+                .is_err()
+        );
+        assert!(
+            select_pcurve_range(&curve, (TAU + FRAC_PI_2, 0.0), expected, (true, false), 7)
+                .is_err()
+        );
+        // The same trace declared end first is still accepted, reoriented.
+        assert_eq!(
+            select_pcurve_range(&curve, (FRAC_PI_2, 0.0), expected, (true, false), 7).unwrap(),
+            (0.0, FRAC_PI_2)
+        );
     }
 
     #[test]
