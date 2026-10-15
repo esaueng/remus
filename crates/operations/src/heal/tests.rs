@@ -383,6 +383,84 @@ fn dropping_a_short_edge_keeps_every_loop_connected() {
     }
 }
 
+/// A second solid sharing a face boundary with the healed one keeps its
+/// edges: the fusion copies a shared edge for the healed solid instead of
+/// re-pointing it in place.
+#[test]
+fn fusing_a_short_edge_leaves_a_sharing_solid_alone() {
+    use remus_topology::face::Face;
+    use remus_topology::solid::Solid;
+
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    let short = split_off_a_short_edge(&mut topo, solid, false);
+    let corner = topo.edge(short).unwrap().end();
+
+    // A face of the solid that meets the corner without using the short
+    // edge, shared (wire and all) by a one-face solid.
+    let shared_face = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&fid| {
+            let uses = topo
+                .wire(topo.face(fid).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .to_vec();
+            uses.iter().all(|oe| oe.edge() != short)
+                && uses.iter().any(|oe| {
+                    let e = topo.edge(oe.edge()).unwrap();
+                    e.start() == corner || e.end() == corner
+                })
+        })
+        .unwrap();
+    let (wire, surface) = {
+        let face = topo.face(shared_face).unwrap();
+        (face.outer_wire(), face.surface().clone())
+    };
+    let twin = topo.add_face(Face::new(wire, vec![], surface));
+    let shell = topo.add_shell(Shell::new(vec![twin]).unwrap());
+    let other = topo.add_solid(Solid::new(shell, vec![]));
+    let ends = |topo: &Topology| -> Vec<(VertexId, VertexId)> {
+        remus_topology::explorer::solid_faces(topo, other)
+            .unwrap()
+            .into_iter()
+            .flat_map(|fid| {
+                topo.wire(topo.face(fid).unwrap().outer_wire())
+                    .unwrap()
+                    .edges()
+                    .to_vec()
+            })
+            .map(|oe| {
+                let e = topo.edge(oe.edge()).unwrap();
+                (e.start(), e.end())
+            })
+            .collect()
+    };
+    let before = ends(&topo);
+    assert!(before.iter().any(|&(a, b)| a == corner || b == corner));
+
+    assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 2);
+    assert_eq!(ends(&topo), before, "the sharing solid's edges moved");
+    assert_eq!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .error_count(),
+        0
+    );
+    let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((volume - 26.0).abs() < 1e-6, "{volume}");
+}
+
 #[test]
 fn merge_coincident_vertices_reaches_the_cavity() {
     let mut topo = Topology::new();

@@ -628,7 +628,8 @@ fn merge_shell_coincident_vertices(
 /// An edge whose start and end vertices are within `tolerance` of each
 /// other is considered degenerate. Such edges are collapsed: their two
 /// vertices are fused into the start vertex (every edge of the solid using
-/// the end vertex is re-pointed), so the loops stay connected, and their
+/// the end vertex is re-pointed, or copied for this solid when a face
+/// outside it uses the edge too), so the loops stay connected, and their
 /// references in wires are removed, each wire rebuilt without them. Every
 /// boundary loop of every face is visited, cavities and holes included. A
 /// loop whose every edge is degenerate has nothing to rebuild and is left
@@ -706,15 +707,50 @@ pub fn remove_degenerate_edges(
     }
     solid_edges.compact_sort_by_key(|e| e.index());
     solid_edges.dedup_by_key(|e| e.index());
+    let mut moved: BTreeMap<EdgeId, (VertexId, VertexId)> = BTreeMap::new();
     for eid in solid_edges {
-        let (start, end) = {
-            let edge = topo.edge(eid)?;
-            (edge.start(), edge.end())
-        };
-        let (new_start, new_end) = (find(&parent, start), find(&parent, end));
-        if (new_start, new_end) != (start, end) {
-            // In place, as in `merge_coincident_vertices`: the curve and its
-            // trim are unchanged by a fusion within tolerance.
+        if drop.contains(&eid) {
+            continue;
+        }
+        let edge = topo.edge(eid)?;
+        let (new_start, new_end) = (find(&parent, edge.start()), find(&parent, edge.end()));
+        if (new_start, new_end) != (edge.start(), edge.end()) {
+            moved.insert(eid, (new_start, new_end));
+        }
+    }
+
+    // An edge another face outside this solid also uses gets a copy for
+    // this solid; the rest are re-pointed in place, as in
+    // `merge_coincident_vertices` (a fusion within tolerance changes neither
+    // the curve nor its trim). Scanned only when there is something to move.
+    let own: BTreeSet<FaceId> = face_ids.iter().copied().collect();
+    let mut shared: BTreeSet<EdgeId> = BTreeSet::new();
+    if !moved.is_empty() {
+        for (fid, face) in topo.faces().iter() {
+            if own.contains(&fid) {
+                continue;
+            }
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                if let Ok(wire) = topo.wire(wid) {
+                    shared.extend(
+                        wire.edges()
+                            .iter()
+                            .map(OrientedEdge::edge)
+                            .filter(|e| moved.contains_key(e)),
+                    );
+                }
+            }
+        }
+    }
+    let mut rekey: BTreeMap<EdgeId, EdgeId> = BTreeMap::new();
+    for (&eid, &(new_start, new_end)) in &moved {
+        if shared.contains(&eid) {
+            let mut copy = topo.edge(eid)?.clone();
+            copy.set_start(new_start);
+            copy.set_end(new_end);
+            rekey.insert(eid, topo.add_edge(copy));
+        } else {
             let edge = topo.edge_mut(eid)?;
             edge.set_start(new_start);
             edge.set_end(new_end);
@@ -722,19 +758,36 @@ pub fn remove_degenerate_edges(
     }
 
     let mut removed_count = 0;
-    for (fid, wid) in loops {
-        removed_count += remove_edges_from_wire(topo, fid, wid, &drop)?;
+    for &(fid, wid) in &loops {
+        removed_count += rebuild_wire_without(topo, fid, wid, &drop, &rekey)?;
+    }
+    // A copied edge carries its source's pcurves on this solid's faces.
+    for &fid in &face_ids {
+        let carried: Vec<(EdgeId, bool, remus_topology::pcurve::PCurve)> = topo
+            .pcurves_for_face(fid)
+            .into_iter()
+            .filter_map(|(edge, forward, pcurve)| {
+                rekey
+                    .get(&edge)
+                    .map(|&copy| (copy, forward, pcurve.clone()))
+            })
+            .collect();
+        for (copy, forward, pcurve) in carried {
+            topo.set_pcurve_oriented(copy, fid, forward, pcurve)?;
+        }
     }
     Ok(removed_count)
 }
 
-/// Drop the uses of `drop` from one boundary loop of `fid`, rebuilding the
-/// loop as a new wire; returns the number of uses dropped.
-fn remove_edges_from_wire(
+/// Drop the uses of `drop` from one boundary loop of `fid` and re-key the
+/// uses of `rekey`, rebuilding the loop as a new wire when either applies;
+/// returns the number of uses dropped.
+fn rebuild_wire_without(
     topo: &mut Topology,
     fid: FaceId,
     wire_id: WireId,
     drop: &std::collections::BTreeSet<EdgeId>,
+    rekey: &std::collections::BTreeMap<EdgeId, EdgeId>,
 ) -> Result<usize, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let is_closed = wire.is_closed();
@@ -742,11 +795,15 @@ fn remove_edges_from_wire(
         .edges()
         .iter()
         .filter(|oe| !drop.contains(&oe.edge()))
-        .copied()
+        .map(|oe| match rekey.get(&oe.edge()) {
+            Some(&copy) => OrientedEdge::new(copy, oe.is_forward()),
+            None => *oe,
+        })
         .collect();
     let removed_count = wire.edges().len() - new_edges.len();
+    let rekeyed = wire.edges().iter().any(|oe| rekey.contains_key(&oe.edge()));
 
-    if removed_count > 0 && !new_edges.is_empty() {
+    if (removed_count > 0 || rekeyed) && !new_edges.is_empty() {
         // Create a NEW wire instead of modifying in-place. In-place
         // modification via wire_mut corrupts other solids that share
         // the same wire ID (analytic_boolean shares edges/wires across
