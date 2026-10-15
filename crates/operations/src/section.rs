@@ -1329,7 +1329,13 @@ mod curved {
         let Some(above) = nappe else {
             return Ok(Vec::new());
         };
-        let limit = 4.0 * reach;
+        // The samples locate the face but cannot bound it: a trim can bulge
+        // far out between them. The branch reaches a closed-form bound.
+        let mut bound = reach;
+        for edge in boundary_edges(topo, face)? {
+            bound = bound.max(edge.distance_bound(cone.apex())?);
+        }
+        let limit = 4.0 * bound;
         let apex_offset = d - dot_normal_point(normal, cone.apex());
         if apex_offset.abs() <= Tolerance::new().linear {
             return Err(unsupported(
@@ -1447,6 +1453,40 @@ mod curved {
             self.edge
                 .curve()
                 .evaluate_with_endpoints(t0 + (t1 - t0) * s, self.start, self.end)
+        }
+
+        /// An upper bound on the distance from `from` to any point of the
+        /// edge: the farther end of a line; a conic's distance from its
+        /// centre (or vertex) plus its largest offset over the trimmed
+        /// range; a NURBS curve's farthest control point, its convex hull
+        /// holding the curve when its weights are positive.
+        fn distance_bound(&self, from: Point3) -> Result<f64, OperationsError> {
+            let to = |p: Point3| (p - from).length();
+            let (t0, t1) = self.range;
+            let far = t0.abs().max(t1.abs());
+            Ok(match self.edge.curve() {
+                EdgeCurve::Line => to(self.start).max(to(self.end)),
+                EdgeCurve::Circle(c) => to(c.center()) + c.radius(),
+                EdgeCurve::Ellipse(e) => to(e.center()) + e.semi_major().max(e.semi_minor()),
+                EdgeCurve::Parabola(p) => {
+                    to(p.vertex()) + (far * far / (4.0 * p.focal_length().abs())).hypot(far)
+                }
+                EdgeCurve::Hyperbola(h) => {
+                    to(h.center())
+                        + (h.semi_major() * far.cosh()).hypot(h.semi_minor() * far.sinh())
+                }
+                EdgeCurve::NurbsCurve(n) => {
+                    if !n.weights().iter().all(|&w| w > 0.0) {
+                        return Err(unsupported(
+                            "section of a NURBS trim without positive weights".into(),
+                        ));
+                    }
+                    n.control_points()
+                        .iter()
+                        .map(|&p| to(p))
+                        .fold(0.0, f64::max)
+                }
+            })
         }
 
         /// The edge at `steps` equal parameter intervals.
@@ -2827,6 +2867,54 @@ mod curved {
                     .unwrap();
             assert_eq!(in_plane.len(), 1, "only the closing line is in the plane");
             assert!(in_plane[0].chain.iter().all(|p| p.z().abs() < 1e-7));
+        }
+
+        /// A cone face (half-angle π/4) bounded by one closed degree-1 NURBS
+        /// trim at generator distance 1.5, except for a spike to distance 100
+        /// at parameter 1/64. The 8 samples per edge that locate the face all
+        /// sit at 1.5, so a reach taken from them stopped every branch at
+        /// 4 × 1.5 = 6. The plane at generator distance 50 crosses only the
+        /// spike; its ring must reach it.
+        #[test]
+        fn cone_branch_reaches_a_trim_lobe_between_samples() {
+            let apex = Point3::new(0.0, 0.0, 0.0);
+            let axis = Vec3::new(0.0, 0.0, 1.0);
+            let cone = remus_math::surfaces::ConicalSurface::new(apex, axis, PI / 4.0).unwrap();
+            let points: Vec<Point3> = (0..=64)
+                .map(|k| {
+                    let v = if k == 1 { 100.0 } else { 1.5 };
+                    cone.evaluate(TAU * f64::from(k % 64) / 64.0, v)
+                })
+                .collect();
+            let trim = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..64).map(|k| f64::from(k) / 64.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                points.clone(),
+                vec![1.0; 65],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(points[0], 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(trim));
+            edge.set_trim(Some((0.0, 1.0)));
+            let edge = topo.add_edge(edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone.clone())));
+            let height = cone.evaluate(0.0, 50.0).z();
+            let branches = super::cone_section(&topo, face, &cone, axis, height).unwrap();
+            let farthest = branches
+                .iter()
+                .flatten()
+                .map(|p| (*p - apex).length())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                (farthest - 50.0).abs() < 1e-9,
+                "the section ring at generator distance 50 reaches {farthest}"
+            );
         }
 
         /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
