@@ -18,7 +18,7 @@
 //!   positions) of every edge of the face, after circle sync, torus
 //!   densification, seam splits, contact refinement and Steiner reconcile;
 //! * the tolerances and policy: linear deflection, angular tolerance,
-//!   `circle_floor`, and the per-face latitude-cap flag;
+//!   `circle_floor`, and the latitude-cap and analytic-hemisphere flags;
 //! * the merge-grid lookups it performs on the shared vertex pool.
 //!
 //! The key (`FaceKey`) records all of the first three. Global vertex ids
@@ -253,6 +253,7 @@ pub(super) struct MeshRequest {
     pub(super) angular_tol: f64,
     pub(super) circle_floor: bool,
     pub(super) allow_latitude_cap: bool,
+    pub(super) allow_analytic_hemisphere: bool,
 }
 
 /// Content key of one face's stage-D mesh.
@@ -633,6 +634,7 @@ pub(super) fn face_key(
     b.scalar(request.angular_tol);
     b.flag(request.circle_floor);
     b.flag(request.allow_latitude_cap);
+    b.flag(request.allow_analytic_hemisphere);
     b.flag(face.is_reversed());
 
     let mut edge_ordinals: DetHashMap<usize, u64> = DetHashMap::default();

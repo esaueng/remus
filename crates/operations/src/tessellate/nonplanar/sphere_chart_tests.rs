@@ -151,6 +151,7 @@ fn sphere_chart_uses_the_complete_patch_and_keeps_shared_boundary_ids() {
                                 deflection * radius,
                                 0.35,
                                 false,
+                                false,
                                 &pool,
                                 &mut mesh,
                                 &mut map
