@@ -7,9 +7,9 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F12 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F12/F16 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
-//! - open orientation findings F10/F11/F16 must show validation errors through
+//! - open orientation findings F10/F11 must show validation errors through
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
@@ -244,11 +244,11 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-mirrored-box-intersect-orientation.json",
             signature: Signature::Probes {
-                // Quarter-cylinder bite reads correctly; the defect is
-                // orientation-only.
-                volume_near: (std::f64::consts::FRAC_PI_4, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // Fixed (B100): the mirror re-traverses its loops, so the
+                // quarter-cylinder bite validates clean.
+                volume_near: (std::f64::consts::FRAC_PI_4, 1e-4),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
     ]
