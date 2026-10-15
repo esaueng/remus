@@ -11,6 +11,7 @@ use remus_topology::BodyClass;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::pcurve::PCurve;
 use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
@@ -190,6 +191,7 @@ fn sew_rebuilt_faces(
         let wire = topo.wire(face.outer_wire())?;
 
         let mut edge_points: Vec<(Point3, Point3)> = Vec::new();
+        let mut pcurves: Vec<Option<PCurve>> = Vec::new();
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             if !matches!(edge.curve(), EdgeCurve::Line) || edge.is_closed() {
@@ -214,12 +216,17 @@ fn sew_rebuilt_faces(
             } else {
                 edge_points.push((end, start));
             }
+            pcurves.push(
+                topo.pcurve_oriented(oe.edge(), fid, oe.is_forward())
+                    .cloned(),
+            );
         }
 
         face_snapshots.push(FaceSnapshot {
             surface,
             reversed,
             edge_points,
+            pcurves,
         });
     }
 
@@ -290,6 +297,10 @@ fn sew_rebuilt_faces(
             });
         }
 
+        let uses: Vec<(EdgeId, bool)> = oriented_edges
+            .iter()
+            .map(|oe| (oe.edge(), oe.is_forward()))
+            .collect();
         let wire = Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
         let wire_id = topo.add_wire(wire);
 
@@ -299,6 +310,13 @@ fn sew_rebuilt_faces(
             Face::new(wire_id, vec![], snap.surface.clone())
         };
         let face_id = topo.add_face(face);
+        // A pcurve runs along its use's traversal, which the rebuilt use
+        // keeps, so it carries over unchanged whichever way the new edge runs.
+        for (&(edge_id, forward), pcurve) in uses.iter().zip(&snap.pcurves) {
+            if let Some(pcurve) = pcurve {
+                topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve.clone())?;
+            }
+        }
         new_face_ids.push(face_id);
     }
 
@@ -315,6 +333,8 @@ struct FaceSnapshot {
     reversed: bool,
     /// Edge endpoints in traversal order: `[(start, end), ...]`
     edge_points: Vec<(Point3, Point3)>,
+    /// The pcurve of each boundary use, parallel to `edge_points`.
+    pcurves: Vec<Option<PCurve>>,
 }
 
 #[cfg(test)]
