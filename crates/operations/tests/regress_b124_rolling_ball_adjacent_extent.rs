@@ -160,3 +160,45 @@ fn acute_ridge_whose_setback_stays_on_the_face_still_rounds() {
         );
     }
 }
+
+/// The other side of the setback: on a 110° ridge an r = 2 ball touches the
+/// faces 2/tan(55°) = 1.40 out, so a face 1.7 deep holds the band although it
+/// is shorter than r. The rebuild classifies this ridge and uses its exact
+/// contacts, so the guard must not fall back to the radius; the old
+/// radius-against-length bound refused it.
+#[test]
+fn obtuse_ridge_whose_setback_fits_a_face_shorter_than_r_still_rounds() {
+    let r = 2.0;
+    let theta = 110.0_f64.to_radians();
+    let depth = 1.7;
+    assert!(r / (theta / 2.0).tan() < depth && depth < r);
+
+    let mut topo = Topology::new();
+    let body = prism(&mut topo, theta, depth, 12.0, Vec3::new(0.0, 0.0, 1.0));
+    let edge = ridge(&topo, body);
+    let counts = solid_entity_counts(&topo, body).unwrap();
+    for (name, run) in engines() {
+        let mut t = topo.clone();
+        let result = run(&mut t, body, &[edge], r)
+            .unwrap_or_else(|e| panic!("{name}: the band fits the face: {e}"));
+        assert_ne!(solid_entity_counts(&t, result.solid).unwrap(), counts);
+        let report = remus_check::validate::validate_solid(
+            &t,
+            result.solid,
+            &remus_check::validate::ValidateOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.error_count(), 0, "{name}: {:?}", report.issues);
+        assert_eq!(
+            classify_point(
+                &t,
+                result.solid,
+                Point3::new(0.1, 0.05, HEIGHT / 2.0),
+                &ClassifyOptions::default()
+            )
+            .unwrap(),
+            PointClassification::Outside,
+            "{name}: the ridge tip is rounded away"
+        );
+    }
+}
