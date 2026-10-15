@@ -232,6 +232,27 @@ fn missing_or_empty_build_falls_back_to_unreferenced_objects() {
     }
 }
 
+/// Core `transform` and `objectid` are unqualified attributes; a vendor
+/// extension's `v:transform` neither replaces nor invalidates them.
+#[test]
+fn extension_attributes_do_not_override_core_placement() {
+    let data = model(
+        "millimeter",
+        &[cube_object(1)],
+        Some(&[
+            r#"<item xmlns:v="urn:vendor" v:transform="not a matrix" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 3" v:objectid="9"/>"#.to_string(),
+            r#"<item xmlns:v="urn:vendor" objectid="1" v:transform="1 0 0 0 1 0 0 0 1 50 0 0"/>"#.to_string(),
+        ]),
+    );
+    let meshes = read_threemf(&data).unwrap();
+    assert_eq!(meshes.len(), 2);
+    assert_positions(
+        &meshes[0].positions,
+        &cube_corners(|p| Point3::new(p.x(), p.y(), p.z() + 3.0)),
+    );
+    assert_positions(&meshes[1].positions, &cube_corners(|p| p));
+}
+
 fn parse_error(data: &[u8]) -> String {
     match read_threemf(data) {
         Err(IoError::ParseError { reason }) => reason,
