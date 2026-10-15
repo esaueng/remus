@@ -174,34 +174,105 @@ pub fn trim_sheet_by_sheet(
     })
 }
 
+/// The semantic gate an exact GFA result must pass when there is no fallback
+/// to hand it to: closed manifolds, no free edges in an intersection, no
+/// retained tool interior in a cut, every operand represented, every vertex
+/// inside the operands' bounds, and a structurally valid solid. Disconnected
+/// outer components additionally pass the standard disjointness and
+/// intersection-set checks.
+///
+/// Structural validation alone cannot see a closed Cut result that keeps
+/// the tool interior, and the raw GFA does not special-case identical or
+/// contained operands, which can come back as an open shell.
+fn exact_result_is_acceptable(
+    topo: &Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    result: SolidId,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    let components = crate::boolean::assembly::face_components(topo, result);
+    // As in `boolean`'s gate, the tool-interior probe applies to a result the
+    // GFA split into several pieces. A single outer component's box centre
+    // can legitimately sit inside the tool: a tool wholly inside the blank
+    // leaves the outer shell intact around a cavity.
+    let cut_safe = op != BooleanOp::Cut
+        || components.len() < 2
+        || remus_algo::classifier::try_build_analytic_classifier_with_tolerance(topo, b, tol)
+            .as_ref()
+            .is_none_or(|cls_b| {
+                all_component_centers_outside(topo, result, &components, cls_b, tol)
+            });
+    is_closed_manifold(topo, result).is_ok_and(|closed| closed)
+        && (op != BooleanOp::Intersect || has_free_edges(topo, result).is_ok_and(|free| !free))
+        && cut_safe
+        && operands_are_represented(topo, op, result, a, b, tol)
+        && result_within_operand_bounds(topo, op, result, a, b, tol)
+        && validate_boolean_result(topo, result).is_ok()
+        && (components.len() < 2
+            || (components_are_disjoint_pieces(topo, &components)
+                && (op != BooleanOp::Intersect
+                    || intersect_multi_region_semantically_safe(topo, result, a, b, tol))))
+}
+
+/// Refuse an exact-only GFA result that fails [`exact_result_is_acceptable`].
+pub(crate) fn require_exact_boolean_result(
+    topo: &Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    result: SolidId,
+) -> Result<(), crate::OperationsError> {
+    if exact_result_is_acceptable(
+        topo,
+        op,
+        a,
+        b,
+        result,
+        remus_math::tolerance::Tolerance::new(),
+    ) {
+        Ok(())
+    } else {
+        Err(crate::OperationsError::ExactOnlyUnattainable)
+    }
+}
+
 /// Runs an exact GFA boolean, returning construction-derived vertex,
 /// edge, and face history (Issue 12) alongside the result — the L3
 /// surface of [`remus_algo::gfa::boolean_with_entity_evolution`].
 ///
 /// Exact path only: there is no approximate fallback, because a mesh
 /// fallback has no construction records. Like the underlying entry
-/// point, identical operands are not special-cased. For journaled
-/// history use [`crate::journal_ops::boolean_journaled`], which records
-/// the same events into the evolution journal.
+/// point, identical operands are not special-cased; the result must pass
+/// the same semantic gate as the other exact-only paths, so a GFA result
+/// that comes back open or misclassified is refused rather than returned.
+/// For journaled history use [`crate::journal_ops::boolean_journaled`],
+/// which records the same events into the evolution journal.
 ///
 /// # Errors
 ///
-/// Returns [`crate::OperationsError`] if any GFA stage fails.
+/// Returns [`crate::OperationsError`] if any GFA stage fails, and
+/// [`crate::OperationsError::ExactOnlyUnattainable`] if its result fails the
+/// exact-result gate. Every refusal rolls the topology back.
 pub fn boolean_with_entity_evolution(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), crate::OperationsError> {
-    refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
-    let algo_op = match op {
-        BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
-        BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
-        BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
-    };
-    Ok(remus_algo::gfa::boolean_with_entity_evolution(
-        topo, algo_op, solid_a, solid_b,
-    )?)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
+        let algo_op = match op {
+            BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+            BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+            BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+        };
+        let (result, evolution) =
+            remus_algo::gfa::boolean_with_entity_evolution(topo, algo_op, solid_a, solid_b)?;
+        require_exact_boolean_result(topo, op, solid_a, solid_b, result)?;
+        Ok((result, evolution))
+    })
 }
 
 /// Run an exact boolean and preserve disconnected result regions as a
@@ -1596,7 +1667,7 @@ fn boolean_with_context_impl(
                     )
                     .as_ref()
                     .is_none_or(|cls_b| {
-                        all_component_centers_outside(topo, &components_vec, cls_b, tol)
+                        all_component_centers_outside(topo, result, &components_vec, cls_b, tol)
                     });
                 // Intersect's mirror hazard: GFA could emit a piece that is not
                 // part of A∩B at all. Reject when any component's AABB-centre
@@ -2367,27 +2438,10 @@ fn boolean_with_evolution_impl(
                 && crate::heal::remove_wire_spurs(topo, result).is_ok()
                 && normalize_hole_windings(topo, result).is_ok();
 
-            // Apply the same semantic safety checks as the standard GFA path.
-            // Structural validation alone cannot detect a closed Cut result
-            // that incorrectly retains the tool interior.
-            let components = crate::boolean::assembly::face_components(topo, result);
-            let cut_safe = op != BooleanOp::Cut
-                || remus_algo::classifier::try_build_analytic_classifier(topo, b)
-                    .as_ref()
-                    .is_none_or(|cls_b| {
-                        all_component_centers_outside(topo, &components, cls_b, tol)
-                    });
-            let semantic_ok = is_closed_manifold(topo, result).is_ok_and(|closed| closed)
-                && (op != BooleanOp::Intersect
-                    || has_free_edges(topo, result).is_ok_and(|free| !free))
-                && cut_safe
-                && operands_are_represented(topo, op, result, a, b, tol)
-                && result_within_operand_bounds(topo, op, result, a, b, tol);
-
             // Trust the faithful path only if its result is valid; otherwise
             // fall through to boolean()'s full pipeline (fast paths + mesh
             // fallback + validation), matching boolean()'s contract.
-            if healed_ok && semantic_ok && validate_boolean_result(topo, result).is_ok() {
+            if healed_ok && exact_result_is_acceptable(topo, op, a, b, result, tol) {
                 let mut evo = crate::evolution::EvolutionMap::exact();
                 let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {
@@ -5584,10 +5638,18 @@ fn intersect_multi_region_semantically_safe(
         let a_volume = intersection_audit_mesh_volumes(topo, a)?;
         let b_volume = intersection_audit_mesh_volumes(topo, b)?;
         let mut audit = topo.clone();
-        let a_minus_b = boolean(&mut audit, BooleanOp::Cut, a, b)?;
-        let a_cut_volume = intersection_audit_mesh_volumes(&audit, a_minus_b)?;
-        let b_minus_a = boolean(&mut audit, BooleanOp::Cut, b, a)?;
-        let b_cut_volume = intersection_audit_mesh_volumes(&audit, b_minus_a)?;
+        let difference_volume = |audit: &mut Topology, blank, tool| {
+            match boolean(audit, BooleanOp::Cut, blank, tool) {
+                Ok(difference) => intersection_audit_mesh_volumes(audit, difference),
+                // A contained or identical blank's canonical Cut outcome is
+                // the empty set. Its exact zero volume is part of the set
+                // identity, not an inability to audit a valid intersection.
+                Err(crate::OperationsError::EmptyResult { .. }) => Ok((0.0, 0.0)),
+                Err(error) => Err(error),
+            }
+        };
+        let a_cut_volume = difference_volume(&mut audit, a, b)?;
+        let b_cut_volume = difference_volume(&mut audit, b, a)?;
         Ok((
             result_volume,
             (a_volume.0 - a_cut_volume.0, a_volume.1 - a_cut_volume.1),
@@ -5715,24 +5777,26 @@ fn intersection_audit_mesh_volumes(
     Ok((measure(0.01)?, measure(0.005)?))
 }
 
-/// True when the outer-shell face components represent disjoint solid
-/// pieces (e.g., a previous cut split one solid into N parts), false
-/// when one component is concentric inside another (a hollow solid:
-/// outer surface + cavity surface both live in the outer shell).
-///
-/// The check is AABB-based: if any component's bounding box is
-/// strictly contained in another's, treat the whole solid as hollow
-/// and skip the multi-region split path.
 /// Check that every component's AABB centre classifies as outside the
-/// supplied classifier. Used to reject multi-region GFA Cut results that
-/// erroneously include the tool's interior as one of the pieces.
+/// supplied tool classifier, or re-probe from certified retained material
+/// when the centre is in a concavity or an inner cavity shell. Used to reject
+/// multi-region GFA Cut results that erroneously include the tool interior.
 fn all_component_centers_outside(
     topo: &Topology,
+    result: SolidId,
     components: &[Vec<FaceId>],
     classifier: &remus_algo::classifier::AnalyticClassifier,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     use remus_algo::FaceClass;
+    let Ok(solid) = topo.solid(result) else {
+        return false;
+    };
+    let has_cavities = !solid.inner_shells().is_empty();
+    // Only needed when a component centre lies inside the tool. Prepare once
+    // across all such components and include every inner shell, so enclosure
+    // by an outer surface is never mistaken for retained cavity material.
+    let mut material_classifier = None;
     for comp in components {
         let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
         let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -5769,12 +5833,27 @@ fn all_component_centers_outside(
             (min.z() + max.z()) * 0.5,
         );
         if matches!(classifier.classify(centre, tol), Some(FaceClass::Inside)) {
-            // The box centre speaks for the component only when the component
-            // encloses it. A crescent lobe's centre can sit in the removed
-            // material (B53: the finding-17 coplanar-cap cut leaves a lobe
+            // The box centre speaks for the component only when the result
+            // retains material there. A crescent lobe's centre can sit in
+            // removed material (B53: the finding-17 coplanar-cap cut leaves a lobe
             // hugging the box corner whose box centre lies inside the cone),
-            // so re-probe from a point the component genuinely encloses.
-            match component_interior_probe(topo, comp, centre, (min, max)) {
+            // as can a hollow piece's centre, so choose an enclosed material
+            // probe after subtracting inner shells. Unresolved probes refuse.
+            if has_cavities && material_classifier.is_none() {
+                let Ok(prepared) = remus_check::classify::PreparedSolid::prepare(topo, result)
+                else {
+                    return false;
+                };
+                material_classifier = Some(prepared);
+            }
+            match component_material_probe(
+                topo,
+                comp,
+                centre,
+                (min, max),
+                material_classifier.as_ref(),
+                tol,
+            ) {
                 Some(probe)
                     if matches!(classifier.classify(probe, tol), Some(FaceClass::Outside)) => {}
                 _ => return false,
@@ -5784,29 +5863,63 @@ fn all_component_centers_outside(
     true
 }
 
-/// A point strictly inside the closed component `faces`, for a component whose
-/// box `centre` it does NOT enclose; `None` when the centre is enclosed (it is
-/// then the right sample) or no enclosed probe is found.
+/// A point strictly inside retained material of the closed component `faces`.
+/// The centre is returned when it is material; otherwise bounded candidates
+/// are tried. `material_classifier` subtracts the result's inner cavity shells.
+/// `None` when no material probe can be certified.
 ///
 /// Candidates step inward from the centroids of the component's largest
 /// triangles by 1 % and 0.3 % of its box diagonal (both normal senses, so the
 /// stored winding is not trusted); ray parity against the component's own
 /// tessellation, at a chord error of 0.1 % of the diagonal, certifies each one
 /// — every step clears that chord error at least threefold.
-fn component_interior_probe(
+/// With cavity shells and exclusively planar component carriers, failed coarse
+/// probes are followed by at most 32 halvings toward the boundary. Planar
+/// carriers have no surface chord error; the complete result classifier must
+/// still certify strict material membership. Offsets stop at four times the
+/// operation's linear/relative tolerance or coordinate roundoff floor, so
+/// unresolved/sub-tolerance walls remain refusals. Curved admission is unchanged.
+fn component_material_probe(
     topo: &Topology,
     faces: &[FaceId],
     centre: Point3,
     (min, max): (Point3, Point3),
+    material_classifier: Option<&remus_check::classify::PreparedSolid<'_>>,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Option<Point3> {
     const MAX_SEED_TRIANGLES: usize = 16;
+    const MAX_PLANAR_REFINEMENTS: usize = 32;
     let diag = (max - min).length();
     if !diag.is_finite() || diag <= 0.0 {
         return None;
     }
     let triangles = component_triangles(topo, faces, diag / 1000.0)?;
-    if triangles_enclose_points(&triangles, &[centre])?.first() == Some(&true) {
-        return None;
+    let material_enclosed = |points: &[Point3]| -> Option<Vec<bool>> {
+        let enclosed = triangles_enclose_points(&triangles, points)?;
+        let Some(prepared) = material_classifier else {
+            return Some(enclosed);
+        };
+        let classifications = prepared
+            .classify_points(
+                points,
+                &remus_check::classify::ClassifyOptions {
+                    tolerance: tol.linear,
+                    ..Default::default()
+                },
+            )
+            .ok()?;
+        Some(
+            enclosed
+                .into_iter()
+                .zip(classifications)
+                .map(|(enclosed, classification)| {
+                    enclosed && classification == remus_check::classify::PointClassification::Inside
+                })
+                .collect(),
+        )
+    };
+    if material_enclosed(&[centre])?.first() == Some(&true) {
+        return Some(centre);
     }
     let mut seeds: Vec<(f64, Point3, Vec3)> = triangles
         .iter()
@@ -5829,11 +5942,62 @@ fn component_interior_probe(
             }
         }
     }
-    let enclosed = triangles_enclose_points(&triangles, &candidates)?;
-    candidates
-        .into_iter()
+    let enclosed = material_enclosed(&candidates)?;
+    if let Some(probe) = candidates
+        .iter()
         .zip(enclosed)
-        .find_map(|(p, inside)| inside.then_some(p))
+        .find_map(|(&p, inside)| inside.then_some(p))
+    {
+        return Some(probe);
+    }
+    // Sub-chord offsets cannot be certified from curved triangle centroids.
+    // The additional narrow search applies only when every component carrier
+    // is exactly planar AND the complete result classifier subtracts cavities.
+    material_classifier?;
+    for &fid in faces {
+        match topo.face(fid).ok()?.surface() {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return None,
+        }
+    }
+    let coordinate_scale = [min.x(), min.y(), min.z(), max.x(), max.y(), max.z()]
+        .into_iter()
+        .map(f64::abs)
+        .fold(diag, f64::max);
+    let floor = 4.0
+        * tol
+            .linear
+            .max(tol.relative * diag)
+            .max(64.0 * f64::EPSILON * coordinate_scale);
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    let mut offset = 3e-3 * diag;
+    for _ in 0..MAX_PLANAR_REFINEMENTS {
+        if offset <= floor {
+            break;
+        }
+        offset = (offset * 0.5).max(floor);
+        candidates.clear();
+        for &(_, centroid, unit) in seeds.iter().take(MAX_SEED_TRIANGLES) {
+            for sense in [1.0, -1.0] {
+                candidates.push(centroid + unit * (sense * offset));
+            }
+        }
+        let enclosed = material_enclosed(&candidates)?;
+        if let Some(probe) = candidates
+            .iter()
+            .zip(enclosed)
+            .find_map(|(&p, inside)| inside.then_some(p))
+        {
+            return Some(probe);
+        }
+    }
+    None
 }
 
 /// Does the closed surface made of `faces` enclose `p`?
