@@ -298,6 +298,37 @@ fn boundary_vertex_change_misses() {
     assert_eq!((stats.hits, stats.misses), (0, 2));
 }
 
+/// An edge's own tolerance feeds `Edge::strict_domain` in the face mesher, so
+/// setting or changing it changes the key.
+#[test]
+fn boundary_edge_tolerance_change_misses() {
+    let _reset = fresh_memo();
+    let mut topo = Topology::new();
+    let outer = square(&mut topo, 0.5, 1.5);
+    let face = topo.add_face(remus_topology::face::Face::new(
+        outer,
+        Vec::new(),
+        FaceSurface::Nurbs(flat_patch()),
+    ));
+    assert_area_bits(&topo, face, DEFLECTION);
+
+    let edge = topo.wire(outer).unwrap().edges()[0].edge();
+    for (index, tolerance) in [Some(1e-3), Some(0.0), None].into_iter().enumerate() {
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_tolerance(tolerance)
+            .unwrap();
+        assert_area_bits(&topo, face, DEFLECTION);
+        let stats = thread_nurbs_area_memo_stats().unwrap();
+        let expected = if tolerance.is_none() {
+            (1, 3)
+        } else {
+            (0, index as u64 + 2)
+        };
+        assert_eq!((stats.hits, stats.misses), expected, "{tolerance:?}");
+    }
+}
+
 #[test]
 fn errors_are_not_retained_and_a_later_success_is_measured() {
     let _reset = fresh_memo();

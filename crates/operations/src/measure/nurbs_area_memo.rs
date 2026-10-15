@@ -57,7 +57,7 @@ pub const DEFAULT_NURBS_AREA_MEMO_CAPACITY: usize = 512;
 pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 /// Bump when the key's content or request encoding changes.
-const KEY_VERSION: u64 = 0x5245_4d55_534e_4132;
+const KEY_VERSION: u64 = 0x5245_4d55_534e_4133;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -405,6 +405,14 @@ impl KeyWriter {
                         self.word(1);
                         self.real(t0);
                         self.real(t1);
+                    }
+                    None => self.word(0),
+                }
+                // `Edge::strict_domain` validates closed conic trims against it.
+                match edge.tolerance() {
+                    Some(tolerance) => {
+                        self.word(1);
+                        self.real(tolerance);
                     }
                     None => self.word(0),
                 }
