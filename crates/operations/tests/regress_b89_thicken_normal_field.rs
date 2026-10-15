@@ -295,7 +295,19 @@ fn b89_hemisphere_thickens_to_a_spherical_shell() {
 /// its rim walls are cones whose apexes sit on the axis.
 #[test]
 fn b89_frustum_wall_thickens_by_pappus() {
-    let (r0, r1, h) = (4.0, 2.0, 3.0);
+    frustum_wall_thickens_by_pappus(4.0, 2.0, 3.0);
+}
+
+/// A nearly flat frustum (radii 4 and 0.1 over a height of 2e-7, half-angle
+/// 5e-8): its top rim sits 0.1·h/3.9 ≈ 5e-9 above the apex, within the
+/// linear tolerance, though 0.1 from it along the generator. It is not at
+/// its apex, and thickens like any other cone wall.
+#[test]
+fn b89_shallow_frustum_wall_is_not_at_its_apex() {
+    frustum_wall_thickens_by_pappus(4.0, 0.1, 2e-7);
+}
+
+fn frustum_wall_thickens_by_pappus(r0: f64, r1: f64, h: f64) {
     for t in [0.5, -0.5] {
         let mut topo = Topology::new();
         let frustum = make_cone(&mut topo, r0, r1, h).unwrap();

@@ -237,8 +237,10 @@ fn thicken_curved(
     // allocated.
     let mut offset_positions: BTreeMap<VertexId, Point3> = BTreeMap::new();
     for (&vertex, &(p, _)) in &positions {
+        // Measured along the generator: the axial height is only v·sin a,
+        // which a shallow cone keeps under tolerance far from its apex.
         if let FaceSurface::Cone(cone) = &surface
-            && cone.axis().dot(p - cone.apex()) <= check_tol
+            && cone.project_point(p).1 <= check_tol
         {
             return Err(unsupported(
                 "a cone face reaching its apex has no offset normal there".into(),
