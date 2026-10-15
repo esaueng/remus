@@ -24,10 +24,11 @@
 //! exactly two incident edges in the solid. Vertices that fail any gate
 //! are left untouched.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
@@ -56,9 +57,10 @@ pub fn collapse_collinear_wire_vertices(
     // edge. Every productive pass removes at least one vertex from every wire
     // that used it, so the vertex count bounds the passes.
     let pass_limit = remus_topology::explorer::solid_vertices(topo, solid_id)?.len() + 1;
+    let mut absorbed = AbsorbedPoints::new();
     let mut collapsed = 0;
     for _ in 0..pass_limit {
-        let pass = collapse_pass(topo, solid_id, tol)?;
+        let pass = collapse_pass(topo, solid_id, tol, &mut absorbed)?;
         if pass == 0 {
             break;
         }
@@ -67,12 +69,33 @@ pub fn collapse_collinear_wire_vertices(
     Ok(collapsed)
 }
 
+/// Vertices each merged edge replaced, keyed by edge index. A later pass
+/// judges a vertex only against its current neighbours, so without these a
+/// chain could drift: V1 and V3 each within tolerance of their pass-one
+/// chords, then V2 within tolerance of the final chord while V1 and V3 lie
+/// farther from it. Every absorbed point must stay within tolerance of any
+/// chord that replaces its edge.
+type AbsorbedPoints = BTreeMap<usize, Vec<Point3>>;
+
+/// Whether `point` lies strictly between `p` and `q` and within `lin_tol` of
+/// the segment.
+fn within_chord(point: Point3, p: Point3, q: Point3, lin_tol: f64) -> bool {
+    let pq = q - p;
+    let t = (point - p).dot(pq) / pq.dot(pq);
+    if t <= lin_tol || t >= 1.0 - lin_tol {
+        return false;
+    }
+    let perp = point - (p + pq * t);
+    perp.dot(perp) <= lin_tol * lin_tol
+}
+
 /// One collapse pass over non-overlapping candidate vertices.
 #[allow(clippy::too_many_lines)]
 fn collapse_pass(
     topo: &mut Topology,
     solid_id: SolidId,
     tol: Tolerance,
+    absorbed: &mut AbsorbedPoints,
 ) -> Result<usize, HealError> {
     // 1. Gather every (face_id, wire_id) pair in the solid. Faces hold
     //    one outer wire plus zero-or-more inner wires (holes); both are
@@ -238,21 +261,20 @@ fn collapse_pass(
         let p_pt = topo.vertex(p_vid)?.point();
         let q_pt = topo.vertex(q_vid)?.point();
         let pq = q_pt - p_pt;
-        let pq_len_sq = pq.dot(pq);
-        if pq_len_sq < lin_tol_sq {
+        if pq.dot(pq) < lin_tol_sq {
             continue; // P and Q coincident
         }
-        let pv = v_pt - p_pt;
-        let t = pv.dot(pq) / pq_len_sq;
-        // Strictly between: 0 < t < 1, with a tolerance margin so end
-        // collisions don't masquerade as interior.
-        if t <= lin_tol || t >= 1.0 - lin_tol {
-            continue;
-        }
-        // Perpendicular distance from V to line PQ, scaled by pq length.
-        let projection = p_pt + pq * t;
-        let perp = v_pt - projection;
-        if perp.dot(perp) > lin_tol_sq {
+        // Strictly between (0 < t < 1, with a tolerance margin so end
+        // collisions don't masquerade as interior) and within tolerance of
+        // the chord, as must be every vertex earlier passes merged away.
+        let earlier = [eid1, eid2]
+            .into_iter()
+            .filter_map(|eid| absorbed.get(&eid.index()))
+            .flatten();
+        if !std::iter::once(&v_pt)
+            .chain(earlier)
+            .all(|&point| within_chord(point, p_pt, q_pt, lin_tol))
+        {
             continue;
         }
 
@@ -286,6 +308,14 @@ fn collapse_pass(
             continue; // Defensive — should not match the V-touching edges
         }
         claimed.extend([eid1, eid2, new_edge]);
+        let mut points: Vec<Point3> = [eid1, eid2, new_edge]
+            .into_iter()
+            .filter_map(|eid| absorbed.get(&eid.index()))
+            .flatten()
+            .copied()
+            .collect();
+        points.push(v_pt);
+        absorbed.insert(new_edge.index(), points);
         plans.push(CollapsePlan {
             vertex,
             old_edges: [eid1, eid2],
@@ -535,54 +565,60 @@ mod tests {
         uses.values().filter(|&&n| n == 1).count()
     }
 
-    /// Two coplanar rectangles share the line P - V1 - V2 - Q, split twice.
-    /// V1 and V2 are both collapsible and share the V1-V2 edge; collapsing
-    /// both in one pass put the faces on different P-Q chains.
+    /// Two coplanar quads, left (x = 0) and right (x = 2), sharing the
+    /// polyline `chain`, which runs near x = 1 in +y. Both faces use every
+    /// chain edge, once in each direction.
+    fn faces_sharing_chain(topo: &mut Topology, chain: &[Point3]) -> (FaceId, FaceId, SolidId) {
+        let ids: Vec<_> = chain.iter().map(|&p| vertex(topo, p)).collect();
+        let (first, last) = (chain[0], chain[chain.len() - 1]);
+        let left_bottom = vertex(topo, Point3::new(0.0, first.y(), 0.0));
+        let left_top = vertex(topo, Point3::new(0.0, last.y(), 0.0));
+        let right_bottom = vertex(topo, Point3::new(2.0, first.y(), 0.0));
+        let right_top = vertex(topo, Point3::new(2.0, last.y(), 0.0));
+        let line = |topo: &mut Topology, a, b| topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let shared: Vec<_> = ids.windows(2).map(|w| line(topo, w[0], w[1])).collect();
+        let face = |topo: &mut Topology, edges: Vec<OrientedEdge>| {
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            let plane = FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            };
+            topo.add_face(Face::new(wire, Vec::new(), plane))
+        };
+        let (p, q) = (ids[0], ids[ids.len() - 1]);
+        let mut left_edges = vec![OrientedEdge::new(line(topo, left_bottom, p), true)];
+        left_edges.extend(shared.iter().map(|&e| OrientedEdge::new(e, true)));
+        left_edges.push(OrientedEdge::new(line(topo, q, left_top), true));
+        left_edges.push(OrientedEdge::new(line(topo, left_top, left_bottom), true));
+        let left = face(topo, left_edges);
+        let mut right_edges = vec![
+            OrientedEdge::new(line(topo, p, right_bottom), true),
+            OrientedEdge::new(line(topo, right_bottom, right_top), true),
+            OrientedEdge::new(line(topo, right_top, q), true),
+        ];
+        right_edges.extend(shared.iter().rev().map(|&e| OrientedEdge::new(e, false)));
+        let right = face(topo, right_edges);
+        let solid = wrap_in_solid(topo, vec![left, right]);
+        (left, right, solid)
+    }
+
+    fn outer_edge_count(topo: &Topology, face: FaceId) -> usize {
+        topo.wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()
+            .len()
+    }
+
+    /// The shared line P - V1 - V2 - Q, split twice. V1 and V2 are both
+    /// collapsible and share the V1-V2 edge; collapsing both in one pass put
+    /// the faces on different P-Q chains.
     #[test]
     fn adjacent_collinear_vertices_collapse_onto_one_shared_edge() {
         let mut topo = Topology::new();
-        let p = vertex(&mut topo, Point3::new(1.0, 0.0, 0.0));
-        let v1 = vertex(&mut topo, Point3::new(1.0, 1.0, 0.0));
-        let v2 = vertex(&mut topo, Point3::new(1.0, 2.0, 0.0));
-        let q = vertex(&mut topo, Point3::new(1.0, 3.0, 0.0));
-        let left_bottom = vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
-        let left_top = vertex(&mut topo, Point3::new(0.0, 3.0, 0.0));
-        let right_bottom = vertex(&mut topo, Point3::new(2.0, 0.0, 0.0));
-        let right_top = vertex(&mut topo, Point3::new(2.0, 3.0, 0.0));
-        let line = |topo: &mut Topology, a, b| topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
-        let shared = [
-            line(&mut topo, p, v1),
-            line(&mut topo, v1, v2),
-            line(&mut topo, v2, q),
-        ];
-        let plane = || FaceSurface::Plane {
-            normal: Vec3::new(0.0, 0.0, 1.0),
-            d: 0.0,
-        };
-        let face = |topo: &mut Topology, edges: Vec<OrientedEdge>| {
-            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
-            topo.add_face(Face::new(wire, Vec::new(), plane()))
-        };
-        // Left: (0,0) -> P -> V1 -> V2 -> Q -> (0,3); right runs the line back.
-        let left_edges = vec![
-            OrientedEdge::new(line(&mut topo, left_bottom, p), true),
-            OrientedEdge::new(shared[0], true),
-            OrientedEdge::new(shared[1], true),
-            OrientedEdge::new(shared[2], true),
-            OrientedEdge::new(line(&mut topo, q, left_top), true),
-            OrientedEdge::new(line(&mut topo, left_top, left_bottom), true),
-        ];
-        let left = face(&mut topo, left_edges);
-        let right_edges = vec![
-            OrientedEdge::new(line(&mut topo, p, right_bottom), true),
-            OrientedEdge::new(line(&mut topo, right_bottom, right_top), true),
-            OrientedEdge::new(line(&mut topo, right_top, q), true),
-            OrientedEdge::new(shared[2], false),
-            OrientedEdge::new(shared[1], false),
-            OrientedEdge::new(shared[0], false),
-        ];
-        let right = face(&mut topo, right_edges);
-        let solid = wrap_in_solid(&mut topo, vec![left, right]);
+        let chain: Vec<_> = (0..4)
+            .map(|y| Point3::new(1.0, f64::from(y), 0.0))
+            .collect();
+        let (left, right, solid) = faces_sharing_chain(&mut topo, &chain);
         assert_eq!(once_used_edges(&topo, solid), 6);
 
         let collapsed =
@@ -594,10 +630,33 @@ mod tests {
             6,
             "the faces must share one P-Q edge"
         );
-        for fid in [left, right] {
-            let wire = topo.wire(topo.face(fid).unwrap().outer_wire()).unwrap();
-            assert_eq!(wire.edges().len(), 4);
-        }
+        assert_eq!(outer_edge_count(&topo, left), 4);
+        assert_eq!(outer_edge_count(&topo, right), 4);
+    }
+
+    /// Repeated passes must not drift: with offsets (0, 1.35, 0.9, 1.35, 0)
+    /// x 1e-7 off the line, V1 and V3 each lie 0.9e-7 from their pass-one
+    /// chords and V2 lies 0.9e-7 from the final P-Q chord, but V1 and V3
+    /// lie 1.35e-7 from that chord, beyond the 1e-7 tolerance. Only V1 and
+    /// V3 may go.
+    #[test]
+    fn repeated_passes_keep_every_removed_vertex_within_tolerance() {
+        let tol = Tolerance::new();
+        let offsets = [0.0, 1.35, 0.9, 1.35, 0.0].map(|k| k * tol.linear);
+        let mut topo = Topology::new();
+        let chain: Vec<_> = offsets
+            .iter()
+            .zip(0..)
+            .map(|(&dx, y)| Point3::new(1.0 + dx, f64::from(y), 0.0))
+            .collect();
+        let (left, right, solid) = faces_sharing_chain(&mut topo, &chain);
+
+        let collapsed = collapse_collinear_wire_vertices(&mut topo, solid, tol).unwrap();
+
+        assert_eq!(collapsed, 2, "V2 must stay: the P-Q chord misses V1 and V3");
+        assert_eq!(once_used_edges(&topo, solid), 6);
+        assert_eq!(outer_edge_count(&topo, left), 5);
+        assert_eq!(outer_edge_count(&topo, right), 5);
     }
 
     #[test]
