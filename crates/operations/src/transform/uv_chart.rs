@@ -24,6 +24,7 @@ use remus_math::mat::Mat4;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::Topology;
 use remus_topology::coedge::{CoedgeId, PeriodicWinding};
+use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 
@@ -179,7 +180,12 @@ impl UvAffine {
     /// vertex. `None` when no curve of the same family represents the image
     /// with a parameter affine in the old one (a conic under a non-conformal
     /// map) or the image is degenerate.
-    fn map_pcurve(&self, pcurve: &PCurve) -> Option<PCurve> {
+    ///
+    /// On a plane, `circle_radius` is the retained 3D circle's radius.
+    /// Its frame chooses the scale inside the analytic roundoff band;
+    /// independently averaging UV scales can move a large circle beyond
+    /// the linear tolerance. Other surfaces' UV radii are not 3D lengths.
+    fn map_pcurve(&self, pcurve: &PCurve, circle_radius: Option<f64>) -> Option<PCurve> {
         let (t0, t1) = (pcurve.t_start(), pcurve.t_end());
         let positive = self.determinant() > 0.0;
         let (curve, start, end) = match pcurve.curve() {
@@ -203,7 +209,14 @@ impl UvAffine {
                 // the axis at `phase/2` also reverses it.
                 let axis = self.vector(Vec2::new(1.0, 0.0));
                 let phase = axis.y().atan2(axis.x());
-                let image = Circle2D::new(self.point(circle.center()), circle.radius() * scale);
+                let mapped_radius = circle.radius() * scale;
+                let radius = circle_radius.unwrap_or(mapped_radius);
+                // Only reconcile the existing analytic roundoff convention,
+                // never an unrelated disagreement between input carriers.
+                if !equal_within_analytic_roundoff(radius, mapped_radius) {
+                    return None;
+                }
+                let image = Circle2D::new(self.point(circle.center()), radius);
                 let (start, end) = if positive {
                     (t0 + phase, t1 + phase)
                 } else {
@@ -359,10 +372,21 @@ pub fn apply_face_chart_map(
         let Some(pcurve) = topo.coedge(coedge)?.pcurve() else {
             continue;
         };
+        let circle_radius = if surface.is_planar() {
+            if let EdgeCurve::Circle(circle) = topo.edge(topo.coedge(coedge)?.edge())?.curve() {
+                Some(circle.radius())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let pcurve = match rewrite {
             None => pcurve.clone(),
             Some(target) => {
-                if let Some(image) = target.and_then(|affine| affine.map_pcurve(pcurve)) {
+                if let Some(image) =
+                    target.and_then(|affine| affine.map_pcurve(pcurve, circle_radius))
+                {
                     topo.set_coedge_pcurve(coedge, image.clone())?;
                     image
                 } else {
@@ -482,7 +506,7 @@ mod tests {
             rotation(2.2, 0.4, true),
         ] {
             for source in [&circle, &ellipse, &line, &nurbs] {
-                let image = map.map_pcurve(source).expect("conformal image");
+                let image = map.map_pcurve(source, None).expect("conformal image");
                 assert_same_points(source, &image, &map);
             }
         }
@@ -499,7 +523,7 @@ mod tests {
             0.0,
             4.0,
         );
-        let image = map.map_pcurve(&line).expect("line image");
+        let image = map.map_pcurve(&line, None).expect("line image");
         assert_same_points(&line, &image, &map);
         assert_eq!(image.t_end().to_bits(), 8.0_f64.to_bits());
         let circle = PCurve::new(
@@ -507,7 +531,21 @@ mod tests {
             0.0,
             1.0,
         );
-        assert!(map.map_pcurve(&circle).is_none());
+        assert!(map.map_pcurve(&circle, None).is_none());
+        assert!(map.map_pcurve(&circle, Some(3.0)).is_none());
+    }
+
+    #[test]
+    fn retained_circle_radius_only_reconciles_analytic_roundoff() {
+        let map = rotation(0.0, 1.0, false);
+        let circle = PCurve::new(
+            Curve2D::Circle(Circle2D::new(Point2::new(0.0, 0.0), 1.0).unwrap()),
+            0.0,
+            1.0,
+        );
+        // A different 3D radius must not rescue an inconsistent pcurve.
+        assert!(map.map_pcurve(&circle, Some(1.01)).is_none());
+        assert!(map.map_pcurve(&circle, Some(f64::NAN)).is_none());
     }
 
     /// Every pcurve use on the curved faces of `solid`, keyed by face
@@ -777,7 +815,7 @@ mod tests {
             -3.0e16,
             5.0e16,
         );
-        let image = map.map_pcurve(&line).expect("tiny-scale line image");
+        let image = map.map_pcurve(&line, None).expect("tiny-scale line image");
         for k in 0..=8 {
             let f = f64::from(k) / 8.0;
             let expected =
