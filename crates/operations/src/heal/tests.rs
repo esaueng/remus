@@ -448,9 +448,40 @@ fn fusing_a_short_edge_leaves_a_sharing_solid_alone() {
     };
     let before = ends(&topo);
     assert!(before.iter().any(|&(a, b)| a == corner || b == corner));
+    // Every use of the shared face carries a pcurve, which a copied edge
+    // must keep.
+    let uses = topo.wire(wire).unwrap().edges().to_vec();
+    for oe in &uses {
+        let line = remus_math::curves2d::Line2D::new(
+            remus_math::vec::Point2::new(0.0, 0.0),
+            remus_math::vec::Vec2::new(1.0, 0.0),
+        )
+        .unwrap();
+        topo.set_pcurve_oriented(
+            oe.edge(),
+            shared_face,
+            oe.is_forward(),
+            remus_topology::pcurve::PCurve::new(
+                remus_math::curves2d::Curve2D::Line(line),
+                0.0,
+                1.0,
+            ),
+        )
+        .unwrap();
+    }
 
     assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 2);
     assert_eq!(ends(&topo), before, "the sharing solid's edges moved");
+    let rebuilt = topo.face(shared_face).unwrap().outer_wire();
+    assert_ne!(rebuilt, wire, "a moved shared edge must be copied");
+    for oe in topo.wire(rebuilt).unwrap().edges() {
+        assert!(
+            topo.pcurve_oriented(oe.edge(), shared_face, oe.is_forward())
+                .is_some(),
+            "use of {:?} lost its pcurve",
+            oe.edge()
+        );
+    }
     assert_eq!(
         crate::validate::validate_solid(&topo, solid)
             .unwrap()
