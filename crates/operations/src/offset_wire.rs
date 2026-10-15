@@ -79,6 +79,11 @@ pub fn offset_wire_with_join(
 ) -> Result<WireId, crate::OperationsError> {
     let tol = Tolerance::new();
 
+    if !distance.is_finite() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("offset distance must be finite, got {distance}"),
+        });
+    }
     if tol.approx_eq(distance, 0.0) {
         return Err(crate::OperationsError::InvalidInput {
             reason: "offset distance is zero".into(),

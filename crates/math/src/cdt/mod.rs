@@ -37,7 +37,7 @@ mod locate;
 #[cfg(test)]
 mod tests;
 
-use crate::det_hash::DetHashSet;
+use crate::det_hash::{DetHashSet, DetLookupHashMap};
 
 use crate::MathError;
 use crate::predicates::{in_circle, orient2d};
@@ -158,7 +158,7 @@ enum DupIndex {
     /// No grid yet; queries scan the vertices.
     Scan,
     /// Spatial hash from cell to the vertices filed under it.
-    Grid(std::collections::HashMap<(i64, i64), Vec<usize>>),
+    Grid(DetLookupHashMap<(i64, i64), Vec<usize>>),
 }
 
 impl DupIndex {
@@ -166,7 +166,7 @@ impl DupIndex {
     fn initial() -> Self {
         #[cfg(test)]
         if work::legacy_predicates() {
-            return Self::Grid(std::collections::HashMap::new());
+            return Self::Grid(DetLookupHashMap::default());
         }
         Self::Scan
     }
@@ -333,8 +333,8 @@ impl Cdt {
             DupIndex::Grid(grid) => grid.entry(cell).or_default().push(vi),
             DupIndex::Scan => {
                 if self.vertices.len() - self.super_count >= DUP_SCAN_MAX {
-                    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
-                        std::collections::HashMap::new();
+                    let mut grid: DetLookupHashMap<(i64, i64), Vec<usize>> =
+                        DetLookupHashMap::default();
                     for (i, &v) in self.vertices.iter().enumerate().skip(self.super_count) {
                         grid.entry(dup_grid_cell(v)).or_default().push(i);
                     }

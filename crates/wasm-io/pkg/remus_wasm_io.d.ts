@@ -51,7 +51,10 @@ export class RemusIo {
      */
     exportStlAscii(bodies: Uint8Array, deflection: number): Uint8Array;
     /**
-     * Read a 3MF package; every object becomes a solid root of one document.
+     * Read a 3MF package; every build item becomes a solid root of one
+     * document, in build order and placed by its item transform (an object
+     * listed twice gives two solids). Without build items, every object no
+     * component references is a root.
      */
     import3mf(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint8Array;
     /**

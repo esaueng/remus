@@ -578,6 +578,67 @@ fn rolled_back_journal_ids_and_new_boundary_handles_are_never_reissued() {
     assert_eq!(format!("{:?}", resolve(&t, &reference)), resolved);
 }
 
+/// TOPO-3: a handle-preserving restore keeps retirements made after its
+/// snapshot and re-promotes the faces they orphaned, so it does not land on
+/// the clone-time state. Inside a live scope it must stay undoable: here the
+/// boundary loops go [0] → [1] → [2], and the rollback must revive [0].
+#[test]
+fn handle_preserving_restore_inside_a_scope_rolls_back_exactly() {
+    let mut t = Topology::new();
+    let face = triangle_face(&mut t);
+    let before = state(&t);
+    let original = t.loops_of_face(face).unwrap().to_vec();
+    let mut staged = Vec::new();
+    let result = run_transacted(&mut t, |t| {
+        let checkpoint = t.clone();
+        let wire = t.face(face)?.outer_wire();
+        t.set_face_boundary_wires(face, wire, vec![])?;
+        staged.extend_from_slice(t.loops_of_face(face).unwrap());
+        t.restore_preserving_handle_slots(&checkpoint);
+        assert!(t.face_loop(original[0]).is_err(), "retirement is sticky");
+        staged.extend_from_slice(t.loops_of_face(face).unwrap());
+        Err::<(), _>(TopologyError::WireNotClosed)
+    });
+    assert!(result.is_err());
+    assert_eq!(t.loops_of_face(face).unwrap(), original.as_slice());
+    assert!(
+        t.face_loop(original[0]).is_ok(),
+        "rollback revives the loop"
+    );
+    crate::validation::validate_face_loops(&t, face).unwrap();
+    assert_eq!(state(&t), before);
+    assert_eq!(staged.len(), 2);
+    for id in staged {
+        assert!(t.face_loop(id).is_err());
+    }
+}
+
+/// TOPO-3 without a live scope: the same restore on a clone that inherited
+/// its source's lineage rolls the tick back to the clone point, so a later
+/// clone of it would pass for an unchanged prefix of the source's log and a
+/// scoped restore of that clone would drop the source's rollback records.
+#[test]
+fn handle_preserving_restore_rebases_an_inheriting_clone() {
+    let mut t = Topology::new();
+    let face = triangle_face(&mut t);
+    let before = state(&t);
+    let mut intermediate = t.clone();
+    let checkpoint = intermediate.clone();
+    let wire = intermediate.face(face).unwrap().outer_wire();
+    intermediate
+        .set_face_boundary_wires(face, wire, vec![])
+        .unwrap();
+    intermediate.restore_preserving_handle_slots(&checkpoint);
+    let snapshot = intermediate.clone();
+    let result = run_transacted(&mut t, |t| {
+        t.restore_for_rollback(&snapshot);
+        Err::<(), _>(TopologyError::WireNotClosed)
+    });
+    assert!(result.is_err());
+    crate::validation::validate_face_loops(&t, face).unwrap();
+    assert_eq!(state(&t), before);
+}
+
 /// Append-only construction commits at O(new content): no full copy, no
 /// retained log, and every allocation stays live above the entry marks.
 #[test]
@@ -1157,5 +1218,33 @@ fn rewriting_own_allocations_matches_full_snapshot_oracle() {
             outcomes.push(state(&t));
         }
         assert_eq!(outcomes[0], outcomes[1], "stop {stop}");
+    }
+}
+
+/// A snapshot cloned before the scope opened is not a prefix of the scope's
+/// log even when the log lengths coincide: restoring it inside the scope
+/// must still let the rollback revive what was allocated in between.
+#[test]
+fn restoring_a_snapshot_older_than_the_scope_rolls_back_exactly() {
+    for preserving_slots in [false, true] {
+        let mut t = Topology::new();
+        let checkpoint = t.clone();
+        let between = seed(&mut t);
+        let before = state(&t);
+        let result = run_transacted(&mut t, |t| {
+            if preserving_slots {
+                t.restore_preserving_handle_slots(&checkpoint);
+            } else {
+                t.restore_for_rollback(&checkpoint);
+            }
+            assert!(t.vertex(between).is_err());
+            Err::<(), _>(TopologyError::WireNotClosed)
+        });
+        assert!(result.is_err());
+        assert!(
+            t.vertex(between).is_ok(),
+            "preserving slots: {preserving_slots}"
+        );
+        assert_eq!(state(&t), before, "preserving slots: {preserving_slots}");
     }
 }

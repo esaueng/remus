@@ -391,15 +391,23 @@ pub fn run_pave_filler_n_with_pairs(
         context.check_cancelled()?;
         phase_vf::perform(topo, sources[i], sources[j], tol, arena)?;
     }
+    let mut face_containments = phase_ef::FaceContainments::default();
     for &(i, j) in &pairs {
         context.check_cancelled()?;
-        phase_ef::perform(topo, sources[i], sources[j], tol, arena)?;
+        phase_ef::perform_cached(
+            topo,
+            sources[i],
+            sources[j],
+            tol,
+            arena,
+            &mut face_containments,
+        )?;
     }
     // Every FF pair starts from the same seeded junction registry, so seed it
     // once. Its inputs (edge pave blocks and their paves, same-domain
     // vertices, vertex points) are written only by VV/VE/EE/EF above and by
     // coplanar FF and make_blocks below, never by FF itself.
-    let junction_seeds = phase_ff::seed_junctions(topo, arena);
+    let mut junction_seeds = phase_ff::seed_junctions(topo, arena);
     for &(i, j) in &pairs {
         context.check_cancelled()?;
         phase_ff::perform_with_junction_seeds(
@@ -408,16 +416,24 @@ pub fn run_pave_filler_n_with_pairs(
             sources[j],
             context,
             arena,
-            &junction_seeds,
+            &mut junction_seeds,
         )?;
     }
     debug_assert!(
         phase_ff::seeds_match_fresh(&junction_seeds, topo, arena),
         "phase FF wrote a junction seed input; shared seeding is stale"
     );
+    let mut coplanar_index = phase_ff_coplanar::ArenaFaceIndex::default();
     for &(i, j) in &pairs {
         context.check_cancelled()?;
-        phase_ff_coplanar::perform(topo, sources[i], sources[j], tol, arena)?;
+        phase_ff_coplanar::perform_indexed(
+            topo,
+            sources[i],
+            sources[j],
+            tol,
+            arena,
+            &mut coplanar_index,
+        )?;
     }
 
     // Stage 2: Resolution (solid-agnostic — reads the accumulated arena).

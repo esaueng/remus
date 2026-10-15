@@ -3,7 +3,6 @@
 # output. Remove an entry when the file migrates to remus_math::det_hash or BTreeMap.
 crates/blend/src/chamfer_builder.rs
 crates/blend/src/fillet_builder.rs
-crates/blend/src/g1_chain.rs
 crates/check/src/distance/mod.rs
 crates/check/src/validate/mod.rs
 crates/check/src/validate/shell.rs
@@ -22,7 +21,6 @@ crates/heal/src/fix/split_vertex.rs
 crates/heal/src/fix/wire.rs
 crates/heal/src/pipeline/registry.rs
 crates/heal/src/reshape.rs
-crates/heal/src/upgrade/collapse_collinear_vertices.rs
 crates/heal/src/upgrade/merge_split_rim_arcs.rs
 crates/heal/src/upgrade/shell_sewing.rs
 crates/heal/src/upgrade/split_self_intersecting_wires.rs

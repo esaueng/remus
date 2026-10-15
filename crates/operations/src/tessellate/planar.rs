@@ -6,6 +6,7 @@ use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface,
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 
+use super::PointMergeMap;
 use super::edge_sampling::{
     circle_param_range, enforce_edge_sample_limit, measure_max_chord_deviation,
     sample_wire_positions, segments_for_chord_deviation_a,
@@ -2038,7 +2039,7 @@ pub(super) fn tessellate_planar_shared_with_holes(
     normal: Vec3,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<(), crate::OperationsError> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;

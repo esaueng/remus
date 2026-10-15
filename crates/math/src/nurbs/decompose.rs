@@ -7,16 +7,225 @@ use crate::nurbs::knot_ops::{curve_knot_insert, surface_knot_insert_u, surface_k
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Point3;
 
+/// Knot comparison epsilon shared with the multiplicity scans below and
+/// with `curve_knot_insert`'s own multiplicity count.
+const KNOT_EPS: f64 = 1e-15;
+
+/// Whether the first and last `p + 1` knots each coincide.
+fn is_clamped(knots: &[f64], p: usize) -> bool {
+    let n = knots.len() - p - 1;
+    knots[..=p].iter().all(|&k| (k - knots[p]).abs() < KNOT_EPS)
+        && knots[n..].iter().all(|&k| (k - knots[n]).abs() < KNOT_EPS)
+}
+
+/// The control-point window `start..end` and knot vector of a curve clamped
+/// to `[a, b]`, given a knot vector in which both `a` and `b` already carry
+/// multiplicity at least `p`.
+///
+/// With multiplicity `p` at `a`, the curve passes through the control point
+/// `L - p` there (`L` the last index of `a`), and no earlier control point
+/// or knot below `a` influences `[a, b]`; symmetrically it passes through
+/// control point `F - 1` at `b` (`F` the first index of `b`). Replacing the
+/// outer knots with `p + 1` copies of each end therefore keeps every basis
+/// function on `[a, b]` unchanged.
+fn clamped_window(
+    knots: &[f64],
+    p: usize,
+    a: f64,
+    b: f64,
+) -> Result<(usize, usize, Vec<f64>), MathError> {
+    let last_a = knots.iter().rposition(|&k| (k - a).abs() < KNOT_EPS);
+    let first_b = knots.iter().position(|&k| (k - b).abs() < KNOT_EPS);
+    // A domain narrower than the knot epsilon reads both ends as one knot;
+    // refuse it rather than slice backwards.
+    let (Some(last_a), Some(first_b)) = (last_a, first_b) else {
+        return Err(MathError::InvalidKnotValue { index: p, value: a });
+    };
+    if last_a < p || first_b <= last_a {
+        return Err(MathError::InvalidKnotValue { index: p, value: a });
+    }
+    let mut clamped = vec![a; p + 1];
+    clamped.extend_from_slice(&knots[last_a + 1..first_b]);
+    clamped.extend(std::iter::repeat_n(b, p + 1));
+    Ok((last_a - p, first_b, clamped))
+}
+
+/// Refuse a knot vector whose first span is empty: the start of the domain
+/// then carries multiplicity above `p` and the curve has no value there. The
+/// clamped decomposition refuses the same input at its first collapsed span.
+fn check_first_span(knots: &[f64], p: usize) -> Result<(), MathError> {
+    if (knots[p + 1] - knots[p]).abs() < KNOT_EPS {
+        return Err(MathError::InvalidKnotValue {
+            index: p + 1,
+            value: knots[p],
+        });
+    }
+    Ok(())
+}
+
+/// The factor the clamping paths divide all weights by first: the power of
+/// two nearest the geometric mean of the smallest and largest weight. A
+/// common weight factor leaves a rational curve unchanged, but knot
+/// insertion forms `w·P` and blends `α·w`; centring the weights on 1 keeps
+/// `w·P` at the magnitude of `P` itself (weights of 2⁻⁵⁰⁰ with coordinates
+/// near 2⁻⁶⁰⁰ underflowed before) and keeps both weight extremes normal even
+/// when they lie further apart than the `f64` range. The division is exact,
+/// and ordinary weights (geometric mean within √2 of 1) are left unchanged.
+///
+/// Where a large weight sits on a large control point, centring the weights
+/// alone can still overflow `w·P` (weight 2¹⁰⁰⁰ on a coordinate 2⁶⁰⁰), so
+/// the power is then raised just far enough to keep every `w·|P|` one bit
+/// below overflow, as long as the smallest weight stays normal. If no power
+/// of two satisfies both, the weights are kept.
+///
+/// `points` yields each weight with the largest absolute coordinate of its
+/// control point.
+fn weight_scale(points: &[(f64, f64)]) -> f64 {
+    let (mut w_min, mut w_max, mut top) = (f64::INFINITY, 0.0_f64, f64::NEG_INFINITY);
+    for &(w, m) in points {
+        w_min = w_min.min(w);
+        w_max = w_max.max(w);
+        // log2(w·|P|) without forming the product, which may overflow.
+        top = top.max(if m > 0.0 {
+            w.log2() + m.log2()
+        } else {
+            w.log2()
+        });
+    }
+    let centre = 0.5 * (w_min.log2() + w_max.log2());
+    // Keep `w·|P| / 2^e` below 2^1023, one bit short of overflow, which
+    // leaves headroom for the rounding of the insertion's convex blends.
+    let floor = (top - 1022.0).ceil();
+    #[allow(clippy::cast_possible_truncation)]
+    // `log2(f64::MAX)` rounds to 1024; keep the power of two finite and normal.
+    let exponent = (centre.round().max(floor) as i32).clamp(-1022, 1023);
+    let scale = 2.0_f64.powi(exponent);
+    let fits = (w_min / scale).is_normal()
+        && (w_max / scale).is_normal()
+        && points.iter().all(|&(w, m)| ((w / scale) * m).is_finite());
+    if fits { scale } else { 1.0 }
+}
+
+/// Each weight paired with the largest absolute coordinate of its control
+/// point, for [`weight_scale`].
+fn weighted_extent<'a>(
+    points: impl Iterator<Item = &'a Point3>,
+    weights: impl Iterator<Item = &'a f64>,
+) -> Vec<(f64, f64)> {
+    points
+        .zip(weights)
+        .map(|(p, &w)| (w, p.x().abs().max(p.y().abs()).max(p.z().abs())))
+        .collect()
+}
+
+/// Clamp a curve to its own domain by inserting both domain ends to
+/// multiplicity `p` (Boehm insertion, Piegl & Tiller A5.1) and dropping what
+/// lies outside.
+///
+/// The geometry on the domain is unchanged; only the knots outside it and
+/// the control points they carried are discarded. A clamped curve is
+/// returned as is.
+fn clamp_curve(curve: &NurbsCurve) -> Result<NurbsCurve, MathError> {
+    let p = curve.degree();
+    if is_clamped(curve.knots(), p) {
+        return Ok(curve.clone());
+    }
+    check_first_span(curve.knots(), p)?;
+    let scale = weight_scale(&weighted_extent(
+        curve.control_points().iter(),
+        curve.weights().iter(),
+    ));
+    let unit = NurbsCurve::new(
+        p,
+        curve.knots().to_vec(),
+        curve.control_points().to_vec(),
+        curve.weights().iter().map(|w| w / scale).collect(),
+    )?;
+    let (a, b) = curve.domain();
+    let ends = curve_knot_insert(&curve_knot_insert(&unit, a, p)?, b, p)?;
+    let (start, end, knots) = clamped_window(ends.knots(), p, a, b)?;
+    NurbsCurve::new(
+        p,
+        knots,
+        ends.control_points()[start..end].to_vec(),
+        ends.weights()[start..end].to_vec(),
+    )
+}
+
+/// [`clamp_curve`] for both parameter directions of a surface.
+fn clamp_surface(surface: &NurbsSurface) -> Result<NurbsSurface, MathError> {
+    let (pu, pv) = (surface.degree_u(), surface.degree_v());
+    let clamped_u = is_clamped(surface.knots_u(), pu);
+    let clamped_v = is_clamped(surface.knots_v(), pv);
+    if clamped_u && clamped_v {
+        return Ok(surface.clone());
+    }
+    let scale = weight_scale(&weighted_extent(
+        surface.control_points().iter().flatten(),
+        surface.weights().iter().flatten(),
+    ));
+    let mut ends = NurbsSurface::new(
+        pu,
+        pv,
+        surface.knots_u().to_vec(),
+        surface.knots_v().to_vec(),
+        surface.control_points().to_vec(),
+        surface
+            .weights()
+            .iter()
+            .map(|row| row.iter().map(|w| w / scale).collect())
+            .collect(),
+    )?;
+    if !clamped_u {
+        check_first_span(surface.knots_u(), pu)?;
+        let (a, b) = surface.domain_u();
+        ends = surface_knot_insert_u(&surface_knot_insert_u(&ends, a, pu)?, b, pu)?;
+    }
+    if !clamped_v {
+        check_first_span(surface.knots_v(), pv)?;
+        let (a, b) = surface.domain_v();
+        ends = surface_knot_insert_v(&surface_knot_insert_v(&ends, a, pv)?, b, pv)?;
+    }
+    let (rows, knots_u) = if clamped_u {
+        (0..ends.control_points().len(), ends.knots_u().to_vec())
+    } else {
+        let (a, b) = surface.domain_u();
+        let (start, end, knots) = clamped_window(ends.knots_u(), pu, a, b)?;
+        (start..end, knots)
+    };
+    let (cols, knots_v) = if clamped_v {
+        (0..ends.control_points()[0].len(), ends.knots_v().to_vec())
+    } else {
+        let (a, b) = surface.domain_v();
+        let (start, end, knots) = clamped_window(ends.knots_v(), pv, a, b)?;
+        (start..end, knots)
+    };
+    let control_points = ends.control_points()[rows.clone()]
+        .iter()
+        .map(|row| row[cols.clone()].to_vec())
+        .collect();
+    let weights = ends.weights()[rows]
+        .iter()
+        .map(|row| row[cols.clone()].to_vec())
+        .collect();
+    NurbsSurface::new(pu, pv, knots_u, knots_v, control_points, weights)
+}
+
 /// Decompose a NURBS curve into Bezier segments.
 ///
 /// Each segment is a NURBS curve of the same degree with a clamped knot vector
 /// (all interior knots at full multiplicity). The segments are parametrically
 /// contiguous — segment *i* goes from knot *i* to knot *i+1*.
 ///
+/// An unclamped curve is clamped to its domain first: its control points are
+/// not Bezier points at the domain ends until both ends reach multiplicity
+/// `p`.
+///
 /// # Errors
 ///
 /// Returns an error if internal knot insertion fails.
 pub fn curve_to_bezier_segments(curve: &NurbsCurve) -> Result<Vec<NurbsCurve>, MathError> {
+    let curve = &clamp_curve(curve)?;
     let p = curve.degree();
     let knots = curve.knots();
 
@@ -137,7 +346,8 @@ impl BezierPatch {
 ///
 /// Inserts knots in both u and v directions until all interior knots reach
 /// full multiplicity (equal to degree), then extracts individual patches.
-/// Each patch has `(degree_u + 1) × (degree_v + 1)` control points.
+/// Each patch has `(degree_u + 1) × (degree_v + 1)` control points. A
+/// direction with unclamped end knots is clamped to its domain first.
 ///
 /// # Errors
 ///
@@ -148,7 +358,7 @@ pub fn surface_to_bezier_patches(surface: &NurbsSurface) -> Result<Vec<BezierPat
     let pv = surface.degree_v();
 
     // Step 1: Insert u-knots to full multiplicity.
-    let mut refined = surface.clone();
+    let mut refined = clamp_surface(surface)?;
     {
         let knots_u = refined.knots_u().to_vec();
         let mut i = pu + 1;
@@ -270,12 +480,19 @@ pub fn curve_degree_elevate(curve: &NurbsCurve, t: usize) -> Result<NurbsCurve, 
     }
 
     let p = curve.degree();
-    let new_p = p + t;
+    let new_p = p.checked_add(t).ok_or_else(|| MathError::InvalidDegree {
+        degree: usize::MAX,
+        control_points: curve.control_points().len(),
+    })?;
+    // Checked before decomposition: the coefficients need C(new_p, i), which
+    // overflows `u64` past degree ~62 (and `usize` on wasm32 near 31).
+    let bezalfs = compute_bezalfs(p, t).ok_or_else(|| MathError::InvalidDegree {
+        degree: new_p,
+        control_points: curve.control_points().len(),
+    })?;
 
     let segments = curve_to_bezier_segments(curve)?;
     let n_segs = segments.len();
-
-    let bezalfs = compute_bezalfs(p, t);
 
     let mut all_cps: Vec<[f64; 4]> = Vec::new();
     let mut all_knots: Vec<f64> = Vec::new();
@@ -351,26 +568,32 @@ pub fn curve_degree_elevate(curve: &NurbsCurve, t: usize) -> Result<NurbsCurve, 
     NurbsCurve::new(new_p, all_knots, new_cps, new_ws)
 }
 
-/// Compute the Bezier degree elevation coefficients.
+/// Compute the Bezier degree elevation coefficients, or `None` when a
+/// binomial overflows.
 ///
 /// `bezalfs[i][j] = C(p,j) * C(t, i-j) / C(p+t, i)`
 #[allow(clippy::cast_precision_loss)]
-fn compute_bezalfs(p: usize, t: usize) -> Vec<Vec<f64>> {
-    let new_p = p + t;
+fn compute_bezalfs(p: usize, t: usize) -> Option<Vec<Vec<f64>>> {
+    let new_p = p.checked_add(t)?;
+    // C(new_p, new_p / 2) is the largest coefficient and its product chain
+    // bounds every other one, so checking it first refuses an elevation the
+    // `u64` binomials cannot represent before the table is allocated.
+    checked_binomial(new_p, new_p / 2)?;
     let mut bezalfs = vec![vec![0.0; p + 1]; new_p + 1];
 
     for (i, row) in bezalfs.iter_mut().enumerate().take(new_p + 1) {
         let j_min = i.saturating_sub(t);
         let j_max = i.min(p);
+        let c_new = checked_binomial(new_p, i)? as f64;
         for (j, val) in row.iter_mut().enumerate().take(j_max + 1).skip(j_min) {
-            *val = binomial(p, j) as f64 * binomial(t, i - j) as f64 / binomial(new_p, i) as f64;
+            *val = checked_binomial(p, j)? as f64 * checked_binomial(t, i - j)? as f64 / c_new;
         }
     }
 
-    bezalfs
+    Some(bezalfs)
 }
 
-use super::basis::binomial;
+use super::basis::checked_binomial;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]

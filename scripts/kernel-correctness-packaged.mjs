@@ -290,7 +290,10 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
         const label = `${surface} ${operation} ${fixture.name} tilted axes`;
         assert.equal(kernel.validateSolid(first), 0, label);
         assert.equal(kernel.validateSolid(second), 0, label);
-        const before = kernel.serializeSolids(Uint32Array.of(first, second));
+        // A document carries only its own bodies' history, so include the
+        // seeded body to keep the earlier entry in the comparison.
+        const bodies = Uint32Array.of(first, second, seeded.result.solid);
+        const before = kernel.serializeSolids(bodies);
         const priorReference = kernel.resolveRef(seeded.reference);
         assert.ok(JSON.parse(new TextDecoder().decode(before)).journal.entries.length > 0, label);
         if (surface === 'direct') {
@@ -308,7 +311,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
             assert.equal(error.details.kernelCode, 'exact_only_unattainable', label);
           }
         }
-        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(first, second)), before,
+        assert.deepEqual(kernel.serializeSolids(bodies), before,
           `${label}: operand geometry and existing history preserved`);
         assert.equal(kernel.resolveRef(seeded.reference), priorReference, label);
         kernel.free();

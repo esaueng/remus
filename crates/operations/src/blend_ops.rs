@@ -255,6 +255,60 @@ impl BlendSize {
     }
 }
 
+/// The input-only facts the blend postconditions read, each computed at most
+/// once: the part-scaled validation options and the input's per-check error
+/// magnitudes.
+///
+/// [`validate_blend_solid_against_input`] and [`validate_blend_volume`] run
+/// back to back on one topology state, and each recomputed both: an
+/// edge-length pass over the input and a whole-solid validation of it. Both
+/// are deterministic functions of that state, so the value the first check
+/// computes is the one the second would, and an error still surfaces from
+/// the first check that computes the fact. The borrow on the topology keeps
+/// a baseline from outliving the state it describes.
+pub(crate) struct BlendBaseline<'a> {
+    topo: &'a Topology,
+    input: SolidId,
+    options: Option<remus_check::validate::ValidateOptions>,
+    magnitudes: Option<std::collections::HashMap<remus_check::validate::CheckId, f64>>,
+}
+
+impl<'a> BlendBaseline<'a> {
+    /// A baseline for blends of `input` in the current topology state.
+    pub(crate) const fn new(topo: &'a Topology, input: SolidId) -> Self {
+        Self {
+            topo,
+            input,
+            options: None,
+            magnitudes: None,
+        }
+    }
+
+    /// [`postcondition_options`] of the input.
+    fn options(&mut self) -> Result<&remus_check::validate::ValidateOptions, OperationsError> {
+        match self.options {
+            Some(ref options) => Ok(options),
+            None => Ok(self
+                .options
+                .insert(postcondition_options(self.topo, self.input)?)),
+        }
+    }
+
+    /// [`error_magnitudes`] of the input under [`Self::options`].
+    fn magnitudes(
+        &mut self,
+    ) -> Result<&std::collections::HashMap<remus_check::validate::CheckId, f64>, OperationsError>
+    {
+        if let Some(ref magnitudes) = self.magnitudes {
+            Ok(magnitudes)
+        } else {
+            let (topo, input) = (self.topo, self.input);
+            let magnitudes = error_magnitudes(topo, input, self.options()?)?;
+            Ok(self.magnitudes.insert(magnitudes))
+        }
+    }
+}
+
 /// Reject a blend whose volume change is geometrically impossible.
 ///
 /// A blend only moves material inside a bounded tube around each edge the
@@ -285,16 +339,17 @@ impl BlendSize {
 /// `pub(crate)` so the legacy v1 engines (`fillet::fillet`,
 /// `fillet::fillet_variable`, `fillet::fillet_rolling_ball_with_origins`)
 /// apply the same oracle: they are public API and must be fail-closed even
-/// when called without the v2 dispatcher's guards.
+/// when called without the v2 dispatcher's guards. `baseline` describes the
+/// input solid in the current topology state.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn validate_blend_volume(
-    topo: &Topology,
+    baseline: &mut BlendBaseline<'_>,
     operation: &'static str,
-    input_solid: SolidId,
     result_solid: SolidId,
     edges: &[EdgeId],
     size: BlendSize,
 ) -> Result<(), OperationsError> {
+    let (topo, input_solid) = (baseline.topo, baseline.input);
     let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
     let delta = after - before;
@@ -403,8 +458,7 @@ pub(crate) fn validate_blend_volume(
     // The blend postcondition deliberately permits repairing baseline defects,
     // so do not turn an inherited orientation error into a confident sign
     // verdict. The angle-adjusted magnitude bound still applies.
-    let options = postcondition_options(topo, input_solid)?;
-    let input_is_validation_clean = error_magnitudes(topo, input_solid, &options)?.is_empty();
+    let input_is_validation_clean = baseline.magnitudes()?.is_empty();
     if input_is_validation_clean
         && convexities.len() == budget_edges.len()
         && !convexities.is_empty()
@@ -476,12 +530,15 @@ fn error_magnitudes(
 
 /// Validate the blend result against the INPUT solid as a baseline: defects
 /// already present in the input (e.g. boolean-inherited orientation quirks
-/// on closed circle edges) do not fail the blend; only regressions do.
+/// on closed circle edges) do not fail the blend; only regressions do. Then
+/// apply [`validate_blend_volume`] on the same baseline.
 fn validate_complete_blend(
     topo: &Topology,
     operation: &'static str,
     input_solid: SolidId,
     result: &BlendResult,
+    edges: &[EdgeId],
+    size: BlendSize,
 ) -> Result<(), OperationsError> {
     if result.is_partial {
         return Err(OperationsError::PartialResult {
@@ -490,7 +547,9 @@ fn validate_complete_blend(
             failed: result.failed.len(),
         });
     }
-    validate_blend_solid_against_input(topo, operation, input_solid, result.solid)
+    let mut baseline = BlendBaseline::new(topo, input_solid);
+    validate_blend_solid_against_input(&mut baseline, operation, result.solid)?;
+    validate_blend_volume(&mut baseline, operation, result.solid, edges, size)
 }
 
 /// The baseline-regression half of [`validate_complete_blend`], for engines
@@ -533,13 +592,12 @@ fn postcondition_options(
 }
 
 pub(crate) fn validate_blend_solid_against_input(
-    topo: &Topology,
+    baseline: &mut BlendBaseline<'_>,
     operation: &'static str,
-    input_solid: SolidId,
     result_solid: SolidId,
 ) -> Result<(), OperationsError> {
-    let options = postcondition_options(topo, input_solid)?;
-    let report = remus_check::validate::validate_solid(topo, result_solid, &options)?;
+    let topo = baseline.topo;
+    let report = remus_check::validate::validate_solid(topo, result_solid, baseline.options()?)?;
     if report.is_valid() {
         return Ok(());
     }
@@ -552,7 +610,7 @@ pub(crate) fn validate_blend_solid_against_input(
         }
         map
     };
-    let before = error_magnitudes(topo, input_solid, &options)?;
+    let before = baseline.magnitudes()?;
     let regressed = after
         .iter()
         .any(|(check, &mag)| mag > before.get(check).copied().unwrap_or(0.0));
@@ -652,7 +710,7 @@ fn planar_setback_per_unit(
 ///
 /// When a neighbour is not a plane the setback depends on its curvature as
 /// well; this then keeps `radius`, the bound this guard has always used.
-fn fillet_contact_setback(
+pub(crate) fn fillet_contact_setback(
     topo: &Topology,
     faces: &[FaceId],
     radius: f64,
@@ -942,11 +1000,8 @@ fn cavity_spine_is_straight(
 /// How far from `edge` a blend of `size` can change material, or `None` when
 /// that cannot be bounded.
 ///
-/// For a straight spine between planar supports, the band meets each face
-/// `size * tan(theta / 2)` from the edge, where
-/// `theta` is the angle between the faces' outward normals (one setback for a
-/// right-angle edge, growing without bound as the wedge closes). Twice the
-/// larger of that setback and `size` conservatively covers the rounded band.
+/// Twice the larger of the band's setback (see [`planar_ridge_setback`]) and
+/// `size` conservatively covers the rounded band.
 /// [`cavity_spine_is_straight`] excludes vertex blends and slanted end caps.
 fn blend_reach(
     topo: &Topology,
@@ -954,20 +1009,43 @@ fn blend_reach(
     edge: EdgeId,
     size: f64,
 ) -> Result<Option<f64>, OperationsError> {
+    if !size.is_finite() || size <= 0.0 {
+        return Ok(None);
+    }
+    let Some(setback) = planar_ridge_setback(topo, adjacency, edge)? else {
+        return Ok(None);
+    };
+    let reach = 2.0 * size * setback.max(1.0);
+    Ok(reach.is_finite().then_some(reach))
+}
+
+/// How far, per unit blend size, a blend band on a straight ridge between two
+/// planar supports runs up each face.
+///
+/// The band meets each face `size * tan(theta / 2)` from the edge, where
+/// `theta` is the angle between the faces' outward normals: one size for a
+/// right-angle edge, growing without bound as the wedge closes. Returns
+/// `None` when `edge` is not a straight ridge between two distinct planar
+/// faces, and `Some(f64::INFINITY)` when the wedge is too thin to trust a
+/// finite setback.
+fn planar_ridge_setback(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edge: EdgeId,
+) -> Result<Option<f64>, OperationsError> {
     // Past this the setback exceeds a dozen blend sizes (a wedge under ~10°):
     // treat it as unbounded rather than trust a box that large.
     const MAX_SETBACK: f64 = 12.0;
-    if !size.is_finite() || size <= 0.0 || !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
+    if !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
         return Ok(None);
     }
     let Some(setback) = planar_setback_per_unit(topo, adjacency.faces_for_edge(edge))? else {
         return Ok(None);
     };
     if !setback.is_finite() || setback > MAX_SETBACK {
-        return Ok(None);
+        return Ok(Some(f64::INFINITY));
     }
-    let reach = 2.0 * size * setback.max(1.0);
-    Ok(reach.is_finite().then_some(reach))
+    Ok(Some(setback))
 }
 
 fn planar_chamfer_result(
@@ -987,15 +1065,14 @@ fn planar_chamfer_result(
         face_origins: Some(face_origins),
         engine: BlendEngine::PlanarBevel,
     };
-    validate_complete_blend(topo, "chamfer", solid, &result)?;
     // The fast path gets the same volume guard as the walking path. Closedness
     // and manifoldness alone do not prove a bevel is right: a setback that
     // overruns its face folds the polygon through itself and still validates.
-    validate_blend_volume(
+    validate_complete_blend(
         topo,
         "chamfer",
         solid,
-        result_solid,
+        &result,
         edges,
         BlendSize::Chamfer { d1, d2 },
     )?;
@@ -1024,28 +1101,20 @@ fn planar_fillet_result(
 ) -> Result<BlendResult, OperationsError> {
     let (result_solid, face_origins) =
         crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius)?;
-    let result = BlendResult {
+    // The fast path gets the same postconditions as the walking path — and
+    // needs the volume guard more since it learned to rebuild holed caps: a
+    // setback that crosses an inner loop folds the cap through itself and
+    // still validates as a closed 2-manifold. The engine applies both checks,
+    // with exactly these arguments, to the state it returns, so they are not
+    // repeated here.
+    Ok(BlendResult {
         solid: result_solid,
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
         face_origins: Some(face_origins),
         engine: BlendEngine::RollingBall,
-    };
-    validate_complete_blend(topo, "fillet", solid, &result)?;
-    // The fast path gets the same volume guard as the walking path — and needs
-    // it more since it learned to rebuild holed caps: a setback that crosses an
-    // inner loop folds the cap through itself and still validates as a closed
-    // 2-manifold. Only the volume rules catch that.
-    validate_blend_volume(
-        topo,
-        "fillet",
-        solid,
-        result_solid,
-        edges,
-        BlendSize::Fillet { radius },
-    )?;
-    Ok(result)
+    })
 }
 
 /// Sample an edge into a polyline whose chords are no longer than `step`.
@@ -1103,11 +1172,17 @@ fn union_find_root(parent: &mut [usize], mut i: usize) -> usize {
 /// Partition a selection into groups of edges whose blends cannot reach each
 /// other.
 ///
-/// A constant-size blend only reshapes material within `size` of its own edge,
-/// so two edges further apart than `2·size` — and not joined through the same
-/// tangent-continuous ridgeline — round into surfaces that never meet. They
-/// are separate features that happen to have been named in one call, and
-/// nothing about how one of them is built constrains the other.
+/// A constant-size blend reshapes material within its band of its own edge:
+/// `size` on a right-angle edge, but the full setback `size * tan(theta / 2)`
+/// on a straight edge between planes whose outward normals are `theta` apart
+/// (`1.73·size` on a 60° ridge; see [`planar_ridge_setback`]). Two edges
+/// further apart than the sum of their bands — and not joined through the
+/// same tangent-continuous ridgeline — round into surfaces that never meet.
+/// They are separate features that happen to have been named in one call, and
+/// nothing about how one of them is built constrains the other. A ridge too
+/// thin for a finite setback reaches everything and keeps its whole selection
+/// together. Curved edges keep the `size` band: their setback is not
+/// certified here.
 ///
 /// This matters because the two fillet engines are complementary rather than
 /// ranked. The planar rebuild is the only one that closes a vertex blend where
@@ -1124,7 +1199,7 @@ fn union_find_root(parent: &mut [usize], mut i: usize) -> usize {
 /// stays in one group, so nothing is ever applied in sequence that has to be
 /// solved together. It is also only consulted after one engine has already
 /// refused the selection whole, so a selection that works today never reaches
-/// it at all — four corner edges of a box are `2·size` apart and would split,
+/// it at all — four corner edges of a box further apart than `2·size` would split,
 /// but the planar rebuild takes them together and is never asked twice.
 ///
 /// Groups keep the caller's edge order, and are themselves ordered by first
@@ -1143,17 +1218,27 @@ fn independent_blend_groups(
     // What each seed actually blends: both engines expand a seed to its whole
     // G1 ridgeline first, so two distant seeds on one smooth run belong
     // together even though the seeds themselves are far apart.
+    let index = remus_blend::g1_chain::G1ChainIndex::build(topo, solid)?;
+    let adjacency = topo.build_adjacency(solid)?;
     let mut chains: Vec<Vec<EdgeId>> = Vec::with_capacity(edges.len());
     let mut outlines: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(edges.len());
+    // How far each seed's band runs from its ridgeline: the widest setback of
+    // any member, never below `size`.
+    let mut bands: Vec<f64> = Vec::with_capacity(edges.len());
     for &edge in edges {
-        let chain = remus_blend::g1_chain::expand_g1_chain(topo, solid, &[edge], tol)?;
+        let chain = remus_blend::g1_chain::expand_g1_chain_with(&index, &[edge], tol)?;
         let chain = if chain.is_empty() { vec![edge] } else { chain };
         let mut outline = Vec::new();
+        let mut setback = 1.0f64;
         for &member in &chain {
             outline.extend(edge_polyline(topo, member, size * 0.25)?);
+            if let Some(member_setback) = planar_ridge_setback(topo, &adjacency, member)? {
+                setback = setback.max(member_setback);
+            }
         }
         chains.push(chain);
         outlines.push(outline);
+        bands.push(size * setback);
     }
 
     // Union-find over the seeds.
@@ -1161,12 +1246,14 @@ fn independent_blend_groups(
     // A polyline chord may sit up to half its own length from the true curve,
     // so widen the reach test by that much rather than risk splitting a pair
     // that in fact touches.
-    let reach = 2.0f64.mul_add(size, size * 0.25);
+    let slack = size * 0.25;
     for i in 0..edges.len() {
         for j in (i + 1)..edges.len() {
             let shares_ridgeline = chains[i].iter().any(|e| chains[j].contains(e));
-            let touches =
-                shares_ridgeline || polyline_distance(&outlines[i], &outlines[j]) <= reach;
+            let reach = bands[i] + bands[j] + slack;
+            let touches = shares_ridgeline
+                || !reach.is_finite()
+                || polyline_distance(&outlines[i], &outlines[j]) <= reach;
             if touches {
                 let (ri, rj) = (
                     union_find_root(&mut parent, i),
@@ -1393,12 +1480,11 @@ fn fillet_group(
         let mut builder = FilletBuilder::new(t, solid);
         builder.add_edges(edges, radius);
         let result = builder.build()?;
-        validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "fillet",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Fillet { radius },
         )?;
@@ -1436,12 +1522,11 @@ fn fillet_group(
         let mut builder = FilletBuilder::new(t, solid);
         builder.add_edges_with_law(edges, remus_blend::radius_law::RadiusLaw::Constant(radius));
         let result = builder.build()?;
-        validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "fillet",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Fillet { radius },
         )?;
@@ -1653,12 +1738,11 @@ fn fillet_by_feature(
     // Per-feature validation compared each step with the step before it; this
     // compares the finished body with what the caller actually handed in, so
     // the volume budget covers every named edge at once.
-    validate_complete_blend(topo, "fillet", solid, &result)?;
-    validate_blend_volume(
+    validate_complete_blend(
         topo,
         "fillet",
         solid,
-        current,
+        &result,
         edges,
         BlendSize::Fillet { radius },
     )?;
@@ -1681,9 +1765,9 @@ pub fn fillet_v2(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if radius <= 0.0 {
+    if !radius.is_finite() || radius <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: "radius must be positive".into(),
+            reason: format!("radius must be finite and positive, got {radius}"),
         });
     }
     if edges.is_empty() {
@@ -1754,7 +1838,12 @@ pub fn fillet_cascade(
         // does not itself check that the setback clears their holes; without
         // this the fallback quietly succeeds where `fillet_v2` refused.
         reject_blend_into_hole(t, solid, edges, radius)?;
-        let result = planar_fillet_result(t, solid, edges, radius)?;
+        // The same lazy B71 material guard `fillet_v2` gives its own
+        // rolling-ball attempt, so the fallback cannot ship a wrong-side band
+        // the walking engine's route would have refused.
+        let result = attempt_with_lazy_material_guard(t, solid, edges, radius, |t| {
+            planar_fillet_result(t, solid, edges, radius)
+        })?;
         reject_open_shell(t, result.solid)?;
         Ok(result)
     }) {
@@ -1823,9 +1912,9 @@ pub fn chamfer_v2(
     d1: f64,
     d2: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if d1 <= 0.0 || d2 <= 0.0 {
+    if !d1.is_finite() || !d2.is_finite() || d1 <= 0.0 || d2 <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: "distances must be positive".into(),
+            reason: format!("distances must be finite and positive, got d1={d1}, d2={d2}"),
         });
     }
     if edges.is_empty() {
@@ -1846,12 +1935,11 @@ pub fn chamfer_v2(
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_asymmetric(edges, d1, d2);
         let result = builder.build()?;
-        validate_complete_blend(t, "chamfer", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "chamfer",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Chamfer { d1, d2 },
         )?;
@@ -1871,12 +1959,12 @@ pub fn chamfer_distance_angle(
     distance: f64,
     angle: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if distance <= 0.0 {
+    if !distance.is_finite() || distance <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: "distance must be positive".into(),
+            reason: format!("distance must be finite and positive, got {distance}"),
         });
     }
-    if angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2 {
+    if !angle.is_finite() || angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2 {
         return Err(OperationsError::InvalidInput {
             reason: "angle must be between 0 and \u{03c0}/2".into(),
         });
@@ -1901,12 +1989,11 @@ pub fn chamfer_distance_angle(
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_distance_angle(edges, distance, angle);
         let result = builder.build()?;
-        validate_complete_blend(t, "chamfer", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "chamfer",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Chamfer { d1: distance, d2 },
         )?;
@@ -2110,7 +2197,8 @@ mod tests {
                 },
             ),
         ] {
-            let error = validate_blend_volume(&topo, name, solid, copy, &selection, size)
+            let mut baseline = super::BlendBaseline::new(&topo, solid);
+            let error = validate_blend_volume(&mut baseline, name, copy, &selection, size)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("must move at least"), "{size:?}: {error}");
@@ -2119,9 +2207,8 @@ mod tests {
         // The noise band scales with the request, not the body, so on planar
         // faces (measured exactly) even a hairline no-op is visible.
         let error = validate_blend_volume(
-            &topo,
+            &mut super::BlendBaseline::new(&topo, solid),
             "fillet",
-            solid,
             copy,
             &selection,
             BlendSize::Fillet { radius: 0.01 },
@@ -2188,6 +2275,163 @@ mod tests {
             (reach - expected).abs() < 1e-9,
             "45° edge: {reach} vs {expected}"
         );
+    }
+
+    /// The edge of `solid` whose chord midpoint is `at`.
+    fn edge_at(topo: &Topology, solid: SolidId, at: Point3) -> EdgeId {
+        remus_topology::explorer::solid_edges(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                let edge = topo.edge(e).unwrap();
+                let a = topo.vertex(edge.start()).unwrap().point();
+                let b = topo.vertex(edge.end()).unwrap().point();
+                ((a + (b - a) * 0.5) - at).length() < 1e-9
+            })
+            .unwrap()
+    }
+
+    /// `profile` (in the XY plane) extruded `depth` along +z.
+    fn prism(topo: &mut Topology, profile: &[Point3], depth: f64) -> SolidId {
+        let wire = remus_topology::builder::make_polygon_wire(topo, profile, 1e-7).unwrap();
+        let face = remus_topology::builder::make_face_from_wire(topo, wire).unwrap();
+        crate::extrude::extrude(topo, face, remus_math::vec::Vec3::new(0.0, 0.0, 1.0), depth)
+            .unwrap()
+    }
+
+    /// Two parallel 60° edges 3r apart bound one floor face. Each band runs
+    /// `r * tan(60°) = 1.73 r` across that floor, so the two overlap there
+    /// (3.46 r > 3 r) although the edges are further apart than `2r`. Grouping
+    /// by the radius alone split them into two features filleted in sequence.
+    #[test]
+    fn acute_ridges_within_their_setbacks_stay_one_group() {
+        let r = 1.0;
+        let inset = 2.0 / 3.0f64.sqrt();
+        let mut topo = Topology::new();
+        // Trapezoid with 60° base angles at (0,0) and (3,0), height 2.
+        let body = prism(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+                Point3::new(3.0 - inset, 2.0, 0.0),
+                Point3::new(inset, 2.0, 0.0),
+            ],
+            10.0,
+        );
+        let left = edge_at(&topo, body, Point3::new(0.0, 0.0, 5.0));
+        let right = edge_at(&topo, body, Point3::new(3.0, 0.0, 5.0));
+
+        let adjacency = topo.build_adjacency(body).unwrap();
+        for edge in [left, right] {
+            let setback = planar_ridge_setback(&topo, &adjacency, edge)
+                .unwrap()
+                .unwrap();
+            assert!((setback - 3.0f64.sqrt()).abs() < 1e-9, "{setback}");
+        }
+
+        let groups = independent_blend_groups(&topo, body, &[left, right], r).unwrap();
+        assert_eq!(groups, vec![vec![left, right]]);
+
+        // Halving the radius halves both bands (1.73 + 1.73 + 0.25 slack
+        // = 3.71 half-radii < 6): now they really are independent.
+        let groups = independent_blend_groups(&topo, body, &[left, right], 0.5 * r).unwrap();
+        assert_eq!(groups, vec![vec![left], vec![right]]);
+    }
+
+    /// A ridge too thin for a finite setback reaches everything: it keeps the
+    /// whole selection together however far apart the edges are.
+    #[test]
+    fn unbounded_setback_keeps_the_selection_together() {
+        let mut topo = Topology::new();
+        // A 5° sliver at the origin, a right-angle edge 100 away.
+        let tip = 5.0f64.to_radians().tan() * 100.0;
+        let body = prism(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(100.0, 0.0, 0.0),
+                Point3::new(100.0, tip, 0.0),
+            ],
+            4.0,
+        );
+        let sliver = edge_at(&topo, body, Point3::new(0.0, 0.0, 2.0));
+        let square = edge_at(&topo, body, Point3::new(100.0, 0.0, 2.0));
+        let adjacency = topo.build_adjacency(body).unwrap();
+        assert_eq!(
+            planar_ridge_setback(&topo, &adjacency, sliver).unwrap(),
+            Some(f64::INFINITY)
+        );
+        let groups = independent_blend_groups(&topo, body, &[sliver, square], 0.1).unwrap();
+        assert_eq!(groups, vec![vec![sliver, square]]);
+    }
+
+    /// Right-angle edges keep the `2·size` reach: four vertical box edges 10
+    /// apart split below a radius of 10 / 2.25 and join above it, exactly as
+    /// before setbacks were read.
+    #[test]
+    fn box_corner_grouping_is_unchanged() {
+        let mut topo = Topology::new();
+        let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let verticals: Vec<EdgeId> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .into_iter()
+            .map(|(x, y)| edge_at(&topo, cube, Point3::new(x, y, 5.0)))
+            .collect();
+
+        let groups = independent_blend_groups(&topo, cube, &verticals, 4.4).unwrap();
+        assert_eq!(groups.len(), 4, "{groups:?}");
+        let groups = independent_blend_groups(&topo, cube, &verticals, 4.5).unwrap();
+        assert_eq!(groups, vec![verticals.clone()]);
+
+        // A top edge shares a corner with two verticals.
+        let top = edge_at(&topo, cube, Point3::new(5.0, 0.0, 10.0));
+        let groups =
+            independent_blend_groups(&topo, cube, &[verticals[0], verticals[2], top], 1.0).unwrap();
+        assert_eq!(groups, vec![vec![verticals[0], top], vec![verticals[2]]]);
+    }
+
+    /// The plate perimeter and a bore rim 7.75 away stay two features at R2
+    /// (the `regress_mixed_rim_perimeter_fillet` part): the perimeter's
+    /// right-angle edges and the curved rim both keep the `size` band.
+    #[test]
+    fn plate_perimeter_and_bore_rim_stay_separate() {
+        let mut topo = Topology::new();
+        let plate = crate::primitives::make_box(&mut topo, 80.0, 60.0, 6.0).unwrap();
+        let drill = crate::primitives::make_cylinder(&mut topo, 2.25, 10.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            drill,
+            &remus_math::mat::Mat4::translation(10.0, 10.0, -2.0),
+        )
+        .unwrap();
+        let body = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, plate, drill)
+            .unwrap();
+
+        let mut perimeter = Vec::new();
+        let mut rim = Vec::new();
+        for edge_id in remus_topology::explorer::solid_edges(&topo, body).unwrap() {
+            let edge = topo.edge(edge_id).unwrap();
+            let a = topo.vertex(edge.start()).unwrap().point();
+            let b = topo.vertex(edge.end()).unwrap().point();
+            if (a.z() - 6.0).abs() > 1e-9 || (b.z() - 6.0).abs() > 1e-9 {
+                continue;
+            }
+            match edge.curve() {
+                EdgeCurve::Line if edge.start() != edge.end() => perimeter.push(edge_id),
+                EdgeCurve::Circle(_) => rim.push(edge_id),
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::NurbsCurve(_) => {}
+            }
+        }
+        assert_eq!((perimeter.len(), rim.is_empty()), (4, false));
+
+        let mut selection = perimeter.clone();
+        selection.extend(&rim);
+        let groups = independent_blend_groups(&topo, body, &selection, 2.0).unwrap();
+        assert_eq!(groups, vec![perimeter, rim]);
     }
 
     #[test]

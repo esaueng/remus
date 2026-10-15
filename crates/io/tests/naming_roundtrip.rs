@@ -142,12 +142,41 @@ fn journal_survives_further_editing_after_a_reload() {
 #[test]
 fn entities_outside_the_document_report_not_present_after_reload() {
     let mut topo = Topology::new();
-    let (_, op) = journaled_named_fuse(&mut topo);
-    // Export a bystander solid only: the journal rides along, but the
-    // fuse's entities are not in the document.
+    let (fused, op) = journaled_named_fuse(&mut topo);
+    // Export one half of a split: the fuse's history rides along, but the
+    // other half's entities are not in the document.
+    let split = remus_operations::journal_ops::split_journaled(
+        &mut topo,
+        fused,
+        remus_math::vec::Point3::new(7.5, 0.0, 0.0),
+        remus_math::vec::Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let document = serialize_document(&topo, &[split.result.positive], &[]).unwrap();
+    let mut restored = Topology::new();
+    deserialize_document(&document, &mut restored).unwrap();
+    let outside = (0..64)
+        .map(|index| PersistentRef::operation_output(split.op, EntityKind::Face, index))
+        .find(|reference| {
+            let Resolution::Bound { entity, .. } = resolve(&topo, reference) else {
+                return false;
+            };
+            let face = topo.face_id_from_index(entity.index).unwrap();
+            remus_topology::explorer::solid_faces(&topo, split.result.negative)
+                .unwrap()
+                .contains(&face)
+        })
+        .expect("the split has an output on the half left out");
+    let r = resolve(&restored, &outside);
+    assert!(
+        matches!(r, Resolution::NoMatch { .. }),
+        "a reference to an entity the document does not contain must \
+         report no match, never bind a stale index: {r:?}"
+    );
+
+    // A document holding none of the fuse's lineage carries none of it.
     let bystander = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let document = serialize_document(&topo, &[bystander], &[]).unwrap();
-
     let mut restored = Topology::new();
     deserialize_document(&document, &mut restored).unwrap();
     let r = resolve(
@@ -155,9 +184,8 @@ fn entities_outside_the_document_report_not_present_after_reload() {
         &PersistentRef::operation_output(op, EntityKind::Face, 0),
     );
     assert!(
-        matches!(r, Resolution::NoMatch { .. }),
-        "a reference to an entity the document does not contain must \
-         report no match, never bind a stale index: {r:?}"
+        matches!(r, Resolution::UnknownOperation { op: unknown } if unknown == op),
+        "{r:?}"
     );
 }
 
@@ -210,4 +238,53 @@ fn journal_less_documents_stay_byte_identical() {
         "the additive fields must be absent when empty, so historical \
          output stays byte-identical"
     );
+}
+
+/// A save/load cannot turn an unvouched source lineage into a binding. A
+/// transform changes topology after the latest journal entry, including the
+/// boundary and pcurve rewrites performed for a reflection.
+#[test]
+fn unjournaled_source_tail_stays_unresolved_after_arena_roundtrip() {
+    use remus_math::mat::Mat4;
+    use remus_topology::journal::UNJOURNALED_MUTATIONS;
+    for matrix in [
+        Mat4::translation(3.0, -2.0, 1.0),
+        Mat4::scale(-1.0, 1.0, 1.0),
+    ] {
+        let mut source = Topology::new();
+        let (solid, op) = journaled_named_fuse(&mut source);
+        let reference = PersistentRef::operation_output(op, EntityKind::Face, 0);
+        assert!(matches!(
+            resolve(&source, &reference),
+            Resolution::Bound { .. }
+        ));
+        remus_operations::transform::transform_solid(&mut source, solid, &matrix).unwrap();
+        assert!(matches!(
+            resolve(&source, &reference),
+            Resolution::Stale { .. }
+        ));
+        let journal = source.journal().snapshot();
+        let ticks = source.mutation_ticks();
+        let document = serialize_document(&source, &[solid], &[]).unwrap();
+        assert_eq!(
+            document,
+            serialize_document(&source, &[solid], &[]).unwrap()
+        );
+        assert_eq!(source.journal().snapshot(), journal, "saving is read-only");
+        assert_eq!(source.mutation_ticks(), ticks);
+        let mut restored = Topology::new();
+        let roots = deserialize_document(&document, &mut restored).unwrap();
+        assert_eq!(
+            document,
+            serialize_document(&restored, &roots.solids, &[]).unwrap(),
+            "a replayed gap must not allocate another barrier"
+        );
+        let resolution = resolve(&restored, &reference);
+        assert!(
+            matches!(resolution,
+                Resolution::UnresolvedAcrossOperation { ref kind, .. } if kind == UNJOURNALED_MUTATIONS
+            ),
+            "a source reference with an unjournaled tail must remain unresolved after loading: {resolution:?}"
+        );
+    }
 }

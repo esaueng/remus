@@ -7,6 +7,7 @@
 pub(crate) mod boundary;
 pub use boundary::surface_point_in_face;
 pub mod cache;
+pub(crate) mod graze;
 pub mod prepared;
 pub(crate) mod ray_surface;
 pub(crate) mod winding;
@@ -39,7 +40,9 @@ pub enum PointClassification {
 pub struct ClassifyOptions {
     /// Distance threshold for "on boundary" detection.
     pub tolerance: f64,
-    /// Maximum recovery attempts when ray hits face boundary.
+    /// Maximum recovery attempts when ray hits face boundary: extra ray
+    /// directions drawn, beyond the three base rays, to replace rays that
+    /// pass through an edge or vertex of the solid.
     pub max_recovery_attempts: usize,
 }
 
@@ -55,9 +58,11 @@ impl Default for ClassifyOptions {
 /// Classify a point relative to a solid using analytic ray casting.
 ///
 /// Uses three irrational ray directions for majority-vote consensus.
-/// If the first two agree, the third is skipped. If all three disagree
-/// (very rare — indicates grazing rays), perturbed recovery directions
-/// are tried.
+/// If the first two agree, the third is skipped. A ray that passes through
+/// an edge or vertex of the solid (within a small margin) abstains: its
+/// crossing count is unreliable, so up to
+/// [`ClassifyOptions::max_recovery_attempts`] perturbed recovery directions
+/// are drawn in its place.
 ///
 /// This is the one-shot convenience path: it gathers the face list and
 /// rebuilds the BVH and trim polygons on every call. For repeated queries
@@ -76,7 +81,25 @@ pub fn classify_point(
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-    classify_point_with_source(&OneShotSource { topo, faces }, point, options)
+    let skeleton = graze::BoundarySkeleton::build(topo, &faces)?;
+    classify_point_with_source(
+        &OneShotSource {
+            topo,
+            faces,
+            skeleton,
+        },
+        point,
+        options,
+    )
+}
+
+/// Internal refusal carried through crossing APIs when a NURBS contact is
+/// too close to tangency to determine crossing parity. The shared vote loop
+/// treats this one qualified error as an abstention and tries another ray.
+pub(crate) const NURBS_RAY_GRAZE: &str = "NURBS ray contact has unresolved crossing parity";
+
+fn is_nurbs_ray_graze(error: &CheckError) -> bool {
+    matches!(error, CheckError::ClassificationFailed(message) if message == NURBS_RAY_GRAZE)
 }
 
 /// Source of boundary and crossing answers for the shared vote loop.
@@ -90,14 +113,19 @@ pub(crate) trait ClassifySource {
     fn check_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError>;
     /// Crossings of one ray over the faces the boundary test covers.
     fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError>;
+    /// Whether one ray passes through an edge or vertex of those faces, so
+    /// that its crossing count cannot be trusted.
+    fn ray_grazes_boundary(&self, point: Point3, direction: Vec3) -> Result<bool, CheckError>;
 }
 
 /// One-shot [`ClassifySource`]: freshly gathered faces, bounds and BVH built
 /// per ray, trim polygons built per candidate face — exactly the work the
-/// pre-PERF-Q01 `classify_point` always did.
+/// pre-PERF-Q01 `classify_point` always did — plus the boundary skeleton the
+/// grazing test reads, built once per query.
 pub(crate) struct OneShotSource<'a> {
     pub(crate) topo: &'a Topology,
     pub(crate) faces: Vec<FaceId>,
+    pub(crate) skeleton: graze::BoundarySkeleton,
 }
 
 impl ClassifySource for OneShotSource<'_> {
@@ -108,19 +136,23 @@ impl ClassifySource for OneShotSource<'_> {
     fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError> {
         count_ray_crossings(self.topo, &self.faces, point, direction)
     }
+
+    fn ray_grazes_boundary(&self, point: Point3, direction: Vec3) -> Result<bool, CheckError> {
+        self.skeleton.grazed_by(self.topo, point, direction)
+    }
 }
 
 /// Shared ray-vote loop behind both [`classify_point`] and [`PreparedSolid`].
 ///
 /// Three irrational ray directions vote by crossing parity, with early exit
-/// once two agree; three-way disagreement (grazing rays) falls back to
-/// perturbed recovery directions. `source` supplies the boundary test and
-/// the per-ray crossing counts.
+/// once two agree. A ray that grazes the boundary skeleton abstains, and the
+/// perturbed recovery directions stand in for it; with no ray grazing, the
+/// three base rays decide exactly as they always have. `source` supplies the
+/// boundary test, the per-ray crossing counts and the grazing test.
 ///
 /// # Errors
 ///
 /// Returns an error if the source's topology lookups fail.
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 pub(crate) fn classify_point_with_source(
     source: &impl ClassifySource,
     point: Point3,
@@ -149,12 +181,19 @@ pub(crate) fn classify_point_with_source(
             0.573_576_436_351_046,
         ),
     ];
+    let recovery_dirs = (0..options.max_recovery_attempts).map(recovery_direction);
 
     let mut inside_votes = 0u32;
     let mut outside_votes = 0u32;
-
-    for &dir in &base_dirs {
-        let crossings = source.count_crossings(point, dir)?;
+    for dir in base_dirs.into_iter().chain(recovery_dirs) {
+        if source.ray_grazes_boundary(point, dir)? {
+            continue;
+        }
+        let crossings = match source.count_crossings(point, dir) {
+            Ok(crossings) => crossings,
+            Err(error) if is_nurbs_ray_graze(&error) => continue,
+            Err(error) => return Err(error),
+        };
         if crossings % 2 == 1 {
             inside_votes += 1;
         } else {
@@ -169,35 +208,46 @@ pub(crate) fn classify_point_with_source(
         }
     }
 
-    // All three disagreed (very rare). Try perturbed directions as recovery.
-    for attempt in 0..options.max_recovery_attempts {
-        // Generate a pseudo-random direction from attempt index using golden ratio.
-        let seed = (attempt as f64 + 1.0) * 0.618_033_988_749_895;
-        let theta = seed * std::f64::consts::TAU;
-        let phi = (seed * std::f64::consts::E).fract() * std::f64::consts::PI;
-        let dir = Vec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
-
-        let crossings = source.count_crossings(point, dir)?;
-        if crossings % 2 == 1 {
-            inside_votes += 1;
+    // Recovery ran out with no two clean rays agreeing. One clean vote
+    // stands alone; otherwise fall back on the base rays' plain majority,
+    // grazing or not — the verdict before any ray could abstain.
+    if inside_votes != outside_votes {
+        return Ok(if inside_votes > outside_votes {
+            PointClassification::Inside
         } else {
-            outside_votes += 1;
-        }
-        let remaining = options.max_recovery_attempts as u32 - attempt as u32;
-        if inside_votes > outside_votes + remaining {
-            return Ok(PointClassification::Inside);
-        }
-        if outside_votes > inside_votes + remaining {
-            return Ok(PointClassification::Outside);
+            PointClassification::Outside
+        });
+    }
+    let mut base_inside = 0u32;
+    let mut base_count = 0u32;
+    for dir in base_dirs {
+        match source.count_crossings(point, dir) {
+            Ok(crossings) => {
+                base_inside += crossings % 2;
+                base_count += 1;
+            }
+            Err(error) if is_nurbs_ray_graze(&error) => {}
+            Err(error) => return Err(error),
         }
     }
-
-    // Majority vote from all attempts.
-    if inside_votes > outside_votes {
-        Ok(PointClassification::Inside)
+    if base_count == 0 || 2 * base_inside == base_count {
+        return Err(CheckError::ClassificationFailed(NURBS_RAY_GRAZE.into()));
+    }
+    Ok(if 2 * base_inside > base_count {
+        PointClassification::Inside
     } else {
-        Ok(PointClassification::Outside)
-    }
+        PointClassification::Outside
+    })
+}
+
+/// The `attempt`-th recovery direction: a golden-ratio sequence on the unit
+/// sphere.
+#[allow(clippy::cast_precision_loss)]
+fn recovery_direction(attempt: usize) -> Vec3 {
+    let seed = (attempt as f64 + 1.0) * 0.618_033_988_749_895;
+    let theta = seed * std::f64::consts::TAU;
+    let phi = (seed * std::f64::consts::E).fract() * std::f64::consts::PI;
+    Vec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos())
 }
 
 /// Distance from `point` to the support surface of one face.
@@ -448,7 +498,9 @@ fn count_ray_crossings(
         .enumerate()
         .filter_map(|(i, &fid)| {
             crate::perf::bump_classify_face_aabb_eval();
-            crate::util::face_aabb(topo, fid).ok().map(|aabb| (i, aabb))
+            crate::util::face_ray_bound(topo, fid)
+                .ok()
+                .map(|aabb| (i, aabb))
         })
         .collect();
     let bvh = Bvh::build(&face_aabbs);
@@ -1002,6 +1054,318 @@ mod tests {
             let result = classify_point(&topo, solid, p, &opts).unwrap();
             assert_eq!(result, PointClassification::Outside, "probe {p:?}");
         }
+    }
+
+    const BASE_DIRS: [Vec3; 3] = [
+        Vec3::new(
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+            0.350_889_803_483_932_2,
+        ),
+        Vec3::new(
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+        ),
+        Vec3::new(
+            0.740_535_693_464_567_5,
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+        ),
+    ];
+
+    /// A planar tetrahedron around `origin` with one vertex on each of the
+    /// first two base rays (at 1.5 and 2.5), the other two behind the origin.
+    /// Both rays leave through a vertex shared by three faces.
+    fn tetrahedron_on_base_rays(topo: &mut Topology, origin: Point3) -> SolidId {
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let back = (BASE_DIRS[0] + BASE_DIRS[1]).normalize().unwrap();
+        let side = BASE_DIRS[0].cross(BASE_DIRS[1]).normalize().unwrap();
+        let mut p = [
+            origin + BASE_DIRS[0] * 1.5,
+            origin + BASE_DIRS[1] * 2.5,
+            origin - back * 2.0 + side * 1.5,
+            origin - back * 2.0 - side * 1.5,
+        ];
+        // Outward faces need (p1 - p0) × (p2 - p0) · (p3 - p0) < 0.
+        if (p[1] - p[0]).cross(p[2] - p[0]).dot(p[3] - p[0]) > 0.0 {
+            p.swap(1, 2);
+        }
+        let v: Vec<_> = p
+            .iter()
+            .map(|&q| topo.add_vertex(Vertex::new(q, 1e-7)))
+            .collect();
+        let mut edges = std::collections::BTreeMap::new();
+        let mut faces = Vec::new();
+        for tri in [[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]] {
+            let mut uses = Vec::new();
+            for k in 0..3 {
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                let key = (a.min(b), a.max(b));
+                let edge = *edges.entry(key).or_insert_with(|| {
+                    topo.add_edge(Edge::new(v[key.0], v[key.1], EdgeCurve::Line))
+                });
+                uses.push(OrientedEdge::new(edge, a < b));
+            }
+            let normal = (p[tri[1]] - p[tri[0]])
+                .cross(p[tri[2]] - p[tri[0]])
+                .normalize()
+                .unwrap();
+            let q = p[tri[0]];
+            let d = normal.dot(Vec3::new(q.x(), q.y(), q.z()));
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            faces.push(topo.add_face(Face::new(wire, vec![], FaceSurface::Plane { normal, d })));
+        }
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    /// Regression (HC-11): both rays through a vertex counted 0 crossings,
+    /// outvoting the clean third ray, so an interior point read Outside and
+    /// the recovery loop, unreachable behind three binary votes, never ran.
+    #[test]
+    fn rays_through_vertices_abstain_and_recovery_decides() {
+        let origin = Point3::new(0.0, -0.2, 0.3);
+        let mut topo = Topology::new();
+        let solid = tetrahedron_on_base_rays(&mut topo, origin);
+        let opts = ClassifyOptions::default();
+
+        let prepared = PreparedSolid::prepare(&topo, solid).unwrap();
+        assert_eq!(
+            prepared.count_ray_crossings(origin, BASE_DIRS[2]).unwrap(),
+            1
+        );
+
+        assert_eq!(
+            classify_point(&topo, solid, origin, &opts).unwrap(),
+            PointClassification::Inside
+        );
+        assert_eq!(
+            prepared.classify_point(origin, &opts).unwrap(),
+            PointClassification::Inside
+        );
+        let mut cache = ClassificationCache::default();
+        assert_eq!(
+            cache.classify_point(&topo, solid, origin, &opts).unwrap(),
+            PointClassification::Inside
+        );
+    }
+
+    /// The same tetrahedron translated far from the world origin: the graze
+    /// margin must cover the roundoff of coordinates near 1e9 (one ULP is
+    /// about 1.2e-7 there), or the vertex rays vote again.
+    #[test]
+    fn rays_through_vertices_abstain_far_from_the_origin() {
+        for offset in [1e6, 1e9] {
+            let origin = Point3::new(offset, -0.2 - offset, 0.3 + offset);
+            let mut topo = Topology::new();
+            let solid = tetrahedron_on_base_rays(&mut topo, origin);
+            let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+            let skeleton = graze::BoundarySkeleton::build(&topo, &faces).unwrap();
+            for dir in &BASE_DIRS[..2] {
+                assert!(
+                    skeleton.grazed_by(&topo, origin, *dir).unwrap(),
+                    "offset {offset}: ray {dir:?}"
+                );
+            }
+            assert_eq!(
+                classify_point(&topo, solid, origin, &ClassifyOptions::default()).unwrap(),
+                PointClassification::Inside,
+                "offset {offset}"
+            );
+        }
+    }
+
+    /// A ray cast from far away (1e9) at a unit cube's corner rounds at the
+    /// origin's scale: the edge boxes, axis-aligned and thin, must be widened
+    /// by the same per-query margin as the distance test.
+    #[test]
+    fn rays_from_a_distant_origin_graze_thin_edge_boxes() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let skeleton = graze::BoundarySkeleton::build(&topo, &faces).unwrap();
+        let origin = Point3::new(1e9, 0.7e9, 0.3e9);
+        // 1.4e-6 off the vertical edge at x = y = 1: far inside the query's
+        // ~5.7e-5 roundoff margin, far outside the build-time box padding.
+        let target = Point3::new(1.0 + 1e-6, 1.0 + 1e-6, 0.5);
+        assert!(skeleton.grazed_by(&topo, origin, target - origin).unwrap());
+    }
+
+    #[test]
+    fn skeleton_flags_exactly_the_rays_through_vertices() {
+        let origin = Point3::new(0.0, -0.2, 0.3);
+        let mut topo = Topology::new();
+        let solid = tetrahedron_on_base_rays(&mut topo, origin);
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let skeleton = graze::BoundarySkeleton::build(&topo, &faces).unwrap();
+        for (dir, grazes) in BASE_DIRS.iter().zip([true, true, false]) {
+            assert_eq!(
+                skeleton.grazed_by(&topo, origin, *dir).unwrap(),
+                grazes,
+                "ray {dir:?}"
+            );
+        }
+    }
+
+    /// Curved edges graze through their chords, sampled on first use: a ray
+    /// through a rim vertex or a seam chord vertex abstains; one clear of
+    /// every edge does not.
+    #[test]
+    fn skeleton_flags_rays_through_curved_edges() {
+        let (big_r, rho, angle) = (6.0_f64, 2.0_f64, 2.0 * std::f64::consts::PI / 3.0);
+        let mut topo = Topology::new();
+        let solid = make_partial_torus_band(&mut topo, big_r, rho, angle);
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let skeleton = graze::BoundarySkeleton::build(&topo, &faces).unwrap();
+
+        let mid = angle / 2.0;
+        let origin = Point3::new(big_r * mid.cos(), big_r * mid.sin(), 0.0);
+        let rim_vertex = Point3::new(big_r, 0.0, -rho);
+        // The seam's middle chord vertex (sample 16 of 32 over [0, angle]).
+        let seam_mid = Point3::new(big_r * mid.cos(), big_r * mid.sin(), -rho);
+        for (target, grazes) in [
+            (rim_vertex, true),
+            (seam_mid, true),
+            (origin + Vec3::new(0.0, 0.0, 1.0), false),
+        ] {
+            assert_eq!(
+                skeleton.grazed_by(&topo, origin, target - origin).unwrap(),
+                grazes,
+                "ray to {target:?}"
+            );
+        }
+        assert_eq!(
+            classify_point(&topo, solid, origin, &ClassifyOptions::default()).unwrap(),
+            PointClassification::Inside
+        );
+    }
+
+    /// A source whose rays graze or not by index and count fixed parities.
+    struct ScriptedSource {
+        /// `(grazes, crossings)` per ray, base rays first, in draw order.
+        rays: Vec<(bool, u32)>,
+        directions: Vec<Vec3>,
+        counted: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl ScriptedSource {
+        fn new(rays: Vec<(bool, u32)>) -> Self {
+            let directions = BASE_DIRS
+                .iter()
+                .copied()
+                .chain((0..rays.len().saturating_sub(3)).map(recovery_direction))
+                .collect();
+            Self {
+                rays,
+                directions,
+                counted: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn index(&self, direction: Vec3) -> usize {
+            self.directions
+                .iter()
+                .position(|d| {
+                    d.0.iter()
+                        .zip(direction.0.iter())
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                })
+                .unwrap()
+        }
+    }
+
+    impl ClassifySource for ScriptedSource {
+        fn check_boundary(&self, _: Point3, _: f64) -> Result<bool, CheckError> {
+            Ok(false)
+        }
+
+        fn count_crossings(&self, _: Point3, direction: Vec3) -> Result<u32, CheckError> {
+            let i = self.index(direction);
+            self.counted.borrow_mut().push(i);
+            if self.rays[i].1 == u32::MAX {
+                return Err(CheckError::ClassificationFailed(NURBS_RAY_GRAZE.into()));
+            }
+            Ok(self.rays[i].1)
+        }
+
+        fn ray_grazes_boundary(&self, _: Point3, direction: Vec3) -> Result<bool, CheckError> {
+            Ok(self.rays[self.index(direction)].0)
+        }
+    }
+
+    #[test]
+    fn uncertain_nurbs_tangencies_abstain_and_recovery_decides() {
+        let source = ScriptedSource::new(vec![
+            (false, u32::MAX),
+            (false, u32::MAX),
+            (false, 1),
+            (false, 1),
+        ]);
+        let options = ClassifyOptions {
+            tolerance: 1e-7,
+            max_recovery_attempts: 1,
+        };
+        assert_eq!(
+            classify_point_with_source(&source, Point3::new(0.0, 0.0, 0.0), &options).unwrap(),
+            PointClassification::Inside
+        );
+        assert_eq!(*source.counted.borrow(), vec![0, 1, 2, 3]);
+        let source = ScriptedSource::new(vec![(false, u32::MAX); 3]);
+        let options = ClassifyOptions {
+            max_recovery_attempts: 0,
+            ..options
+        };
+        assert!(classify_point_with_source(&source, Point3::new(0.0, 0.0, 0.0), &options).is_err());
+    }
+
+    #[test]
+    fn grazing_rays_draw_recovery_directions_up_to_the_option() {
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let options = |attempts| ClassifyOptions {
+            tolerance: 1e-6,
+            max_recovery_attempts: attempts,
+        };
+        // Two grazing base rays that read Outside, then clean recovery rays
+        // that read Inside: the second recovery ray settles it.
+        let rays = vec![(true, 0), (true, 2), (false, 1), (false, 1), (false, 1)];
+        let source = ScriptedSource::new(rays.clone());
+        assert_eq!(
+            classify_point_with_source(&source, origin, &options(2)).unwrap(),
+            PointClassification::Inside
+        );
+        assert_eq!(*source.counted.borrow(), vec![2, 3]);
+
+        // No recovery allowed: the lone clean base ray decides.
+        let source = ScriptedSource::new(rays);
+        assert_eq!(
+            classify_point_with_source(&source, origin, &options(0)).unwrap(),
+            PointClassification::Inside
+        );
+        assert_eq!(*source.counted.borrow(), vec![2]);
+
+        // Every ray grazes: fall back on the base rays' plain majority.
+        let rays = vec![(true, 0), (true, 2), (true, 1), (true, 1)];
+        let source = ScriptedSource::new(rays);
+        assert_eq!(
+            classify_point_with_source(&source, origin, &options(1)).unwrap(),
+            PointClassification::Outside
+        );
+        assert_eq!(*source.counted.borrow(), vec![0, 1, 2]);
+
+        // Clean base rays: the recovery directions are never drawn.
+        let rays = vec![(false, 1), (false, 0), (false, 3), (false, 0)];
+        let source = ScriptedSource::new(rays);
+        assert_eq!(
+            classify_point_with_source(&source, origin, &options(1)).unwrap(),
+            PointClassification::Inside
+        );
+        assert_eq!(*source.counted.borrow(), vec![0, 1, 2]);
     }
 
     /// A cap disc bounded by a single closed circle edge must get a full-disc

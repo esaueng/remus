@@ -336,6 +336,17 @@ impl<T: Clone> Arena<T> {
         self.live_len = self.live.iter().filter(|is_live| **is_live).count();
     }
 
+    /// Whether a slot live in `snapshot` is retired here — a retirement
+    /// [`Self::restore_preserving_slots`] keeps, so that restore would not
+    /// reproduce `snapshot`.
+    pub(crate) fn retires_live_slot_of(&self, snapshot: &Self) -> bool {
+        snapshot
+            .live
+            .iter()
+            .zip(&self.live)
+            .any(|(&then, &now)| then && !now)
+    }
+
     /// Restore the arena to the exact snapshot state without reusing any
     /// slot that has existed in this arena.
     ///

@@ -22,7 +22,9 @@ use crate::IoError;
 ///
 /// Each triangle becomes a planar face. Vertices at the same position
 /// (within `tolerance`) are merged. The resulting faces are assembled
-/// into a closed shell and solid.
+/// into a closed shell and solid. A closed, coherently wound mesh is
+/// oriented outward by the sign of its enclosed volume, whatever its stored
+/// normals say.
 ///
 /// # Errors
 ///
@@ -38,31 +40,52 @@ pub fn import_mesh(
     validate_mesh(mesh, tolerance)?;
 
     let vertex_ids = build_vertex_map(topo, &mesh.positions, tolerance);
-    validate_triangle_edge_incidence(&vertex_ids, &mesh.indices)?;
 
-    // Determine whether the mesh winding needs to be flipped.
-    // For a closed mesh, outward-facing triangles produce positive signed
-    // volume via the divergence theorem. If the raw signed volume is negative,
-    // the winding is predominantly inward — we flip all triangles.
-    //
-    // When per-vertex normals are available (e.g. STL), we use them to orient
-    // individual triangles. When normals are absent (e.g. 3MF), we rely on
-    // the signed-volume heuristic to flip the entire mesh if needed.
+    // Stored per-vertex normals (e.g. STL facet normals) may correct the
+    // winding of individual triangles. They cannot decide the orientation of
+    // the whole body: every reader except STL synthesises its normals from
+    // the winding, and an STL facet normal may be zero, so an inward-wound
+    // mesh would always agree with its own normals.
     let has_normals = mesh.normals.len() >= mesh.positions.len();
-    let flip_all = if has_normals {
-        false // per-triangle correction below handles it
-    } else {
-        let mut total = 0.0;
-        for tri in mesh.indices.chunks_exact(3) {
-            let p0 = mesh.positions[tri[0] as usize];
-            let p1 = mesh.positions[tri[1] as usize];
-            let p2 = mesh.positions[tri[2] as usize];
-            let a = Vec3::new(p0.x(), p0.y(), p0.z());
-            let b = Vec3::new(p1.x(), p1.y(), p1.z());
-            let c = Vec3::new(p2.x(), p2.y(), p2.z());
-            total += a.dot(b.cross(c));
+    let mut triangles: Vec<[usize; 3]> = Vec::with_capacity(mesh.indices.len() / 3);
+    for tri in mesh.indices.chunks_exact(3) {
+        let (i0, mut i1, mut i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+
+        // Skip degenerate triangles (two or more coincident vertices).
+        let (v0, v1, v2) = (vertex_ids[i0], vertex_ids[i1], vertex_ids[i2]);
+        if v0 == v1 || v1 == v2 || v0 == v2 {
+            continue;
         }
-        total < 0.0
+
+        if has_normals {
+            let p0 = mesh.positions[i0];
+            let geo_normal = (mesh.positions[i1] - p0).cross(mesh.positions[i2] - p0);
+            if geo_normal.dot(mesh.normals[i0]) < 0.0 {
+                std::mem::swap(&mut i1, &mut i2);
+            }
+        }
+        triangles.push([i0, i1, i2]);
+    }
+    let closed = validate_triangle_edge_incidence(&vertex_ids, &triangles)?;
+
+    // The orientation of the body comes from geometry. A closed, coherently
+    // wound component encloses positive signed volume exactly when it faces
+    // outward, so a closed mesh whose every component is inward is flipped.
+    // Mixed signs may be a correctly wound cavity or a partly inverted
+    // multi-body file, which one flip cannot tell apart; those, and open
+    // meshes, keep the previous rule: no global flip with stored normals, the
+    // origin-relative signed volume without.
+    let inward = closed.then(|| {
+        closed_components_inward(
+            &welded_positions(&mesh.positions, &vertex_ids),
+            &vertex_ids,
+            &triangles,
+        )
+    });
+    let flip_all = match inward.flatten() {
+        Some(inward) => inward,
+        None if has_normals => false,
+        None => signed_six_volume(&mesh.positions, &triangles, Point3::new(0.0, 0.0, 0.0)) < 0.0,
     };
 
     let mut face_ids = Vec::new();
@@ -70,36 +93,15 @@ pub fn import_mesh(
     // each triangle its own three edges would leave every face an island: the
     // shell would have no adjacency at all and every edge would read as free.
     let mut edge_map: HashMap<(usize, usize), EdgeId> = HashMap::new();
-    for tri in mesh.indices.chunks_exact(3) {
-        let i0 = tri[0] as usize;
-        let i1 = tri[1] as usize;
-        let i2 = tri[2] as usize;
-
-        let v0 = vertex_ids[i0];
-        let mut v1 = vertex_ids[i1];
-        let mut v2 = vertex_ids[i2];
-
-        // Skip degenerate triangles (two or more coincident vertices).
-        if v0 == v1 || v1 == v2 || v0 == v2 {
-            continue;
-        }
-
-        // Orient triangle: use per-vertex normals when available,
-        // otherwise apply the global flip from signed-volume check.
-        if has_normals {
-            let p0 = mesh.positions[i0];
-            let p1 = mesh.positions[i1];
-            let p2 = mesh.positions[i2];
-            let geo_normal = (p1 - p0).cross(p2 - p0);
-            let mesh_normal = mesh.normals[i0];
-            if geo_normal.dot(mesh_normal) < 0.0 {
-                std::mem::swap(&mut v1, &mut v2);
-            }
-        } else if flip_all {
-            std::mem::swap(&mut v1, &mut v2);
-        }
-
-        let face_id = build_triangle_face(topo, &mut edge_map, v0, v1, v2)?;
+    for &[i0, i1, i2] in &triangles {
+        let (i1, i2) = if flip_all { (i2, i1) } else { (i1, i2) };
+        let face_id = build_triangle_face(
+            topo,
+            &mut edge_map,
+            vertex_ids[i0],
+            vertex_ids[i1],
+            vertex_ids[i2],
+        )?;
         face_ids.push(face_id);
     }
 
@@ -118,38 +120,130 @@ pub fn import_mesh(
     Ok(solid_id)
 }
 
-/// Reject triangle edges incident to more than two non-degenerate faces.
+/// Six times the signed volume the triangles enclose, summed as tetrahedra
+/// about `reference`.
+fn signed_six_volume(positions: &[Point3], triangles: &[[usize; 3]], reference: Point3) -> f64 {
+    triangles
+        .iter()
+        .map(|&[a, b, c]| {
+            let (a, b, c) = (
+                positions[a] - reference,
+                positions[b] - reference,
+                positions[c] - reference,
+            );
+            a.dot(b.cross(c))
+        })
+        .sum()
+}
+
+/// Each position replaced by the position of the vertex it was welded to,
+/// the first position that created that vertex. The orientation test then
+/// measures the geometry the faces are built from: sub-tolerance cracks
+/// between repeated copies (as in STL) do not enter the volume.
+fn welded_positions(positions: &[Point3], vertex_ids: &[VertexId]) -> Vec<Point3> {
+    let mut first: HashMap<usize, Point3> = HashMap::new();
+    positions
+        .iter()
+        .zip(vertex_ids)
+        .map(|(&position, id)| *first.entry(id.index()).or_insert(position))
+        .collect()
+}
+
+/// `Some(true)` when every connected component of a closed, coherently wound
+/// mesh encloses negative signed volume, `Some(false)` when every one encloses
+/// positive volume, and `None` when the signs are mixed or one is zero.
+///
+/// Components are joined across shared edges, not shared vertices: two shells
+/// that only touch at a corner are separate bodies with their own orientation.
+/// Each component is closed, since both triangles on each of its edges belong
+/// to it, so its signed volume decides its orientation.
+///
+/// Each component's tetrahedra are summed about one of its own vertices:
+/// about a far point, such as the world origin or the centre of a box that
+/// includes unused or distant vertices, the rounding error grows with the
+/// cube of the distance and can swamp the component's volume (see B56).
+fn closed_components_inward(
+    positions: &[Point3],
+    vertex_ids: &[VertexId],
+    triangles: &[[usize; 3]],
+) -> Option<bool> {
+    // Union-find over triangles, joining the two triangles on each edge.
+    let mut parent: Vec<usize> = (0..triangles.len()).collect();
+    let mut first_on_edge: HashMap<(usize, usize), usize> = HashMap::new();
+    for (index, tri) in triangles.iter().enumerate() {
+        let [a, b, c] = tri.map(|i| vertex_ids[i]);
+        for (start, end) in [(a, b), (b, c), (c, a)] {
+            match first_on_edge.entry(edge_key(start, end)) {
+                std::collections::hash_map::Entry::Occupied(other) => {
+                    let (root, other) = (
+                        find_root(&mut parent, index),
+                        find_root(&mut parent, *other.get()),
+                    );
+                    parent[other] = root;
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(index);
+                }
+            }
+        }
+    }
+
+    // Per component: its reference vertex and six times its signed volume.
+    let mut components: HashMap<usize, (Point3, f64)> = HashMap::new();
+    for (index, tri) in triangles.iter().enumerate() {
+        let (reference, volume) = components
+            .entry(find_root(&mut parent, index))
+            .or_insert((positions[tri[0]], 0.0));
+        *volume += signed_six_volume(positions, std::slice::from_ref(tri), *reference);
+    }
+    let mut volumes = components.values().map(|&(_, volume)| volume);
+    let first = volumes.next()?;
+    let inward = first < 0.0;
+    (first != 0.0 && volumes.all(|volume| volume != 0.0 && (volume < 0.0) == inward))
+        .then_some(inward)
+}
+
+/// Union-find root of `node`, halving the path on the way.
+fn find_root(parent: &mut [usize], mut node: usize) -> usize {
+    while parent[node] != node {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    node
+}
+
+/// Reject triangle edges incident to more than two non-degenerate faces, and
+/// report whether the mesh is closed and coherently wound: every welded edge
+/// used by exactly two triangles, once in each direction. Only then is the
+/// signed volume independent of the reference point, so only then does its
+/// sign say which side is inside.
 ///
 /// Incidence is counted after tolerance welding because file formats such as
 /// STL repeat each triangle's positions instead of sharing vertex indices.
 /// This runs before allocating any edges, faces, shells, or solids, so an
-/// over-shared mesh cannot become invalid B-Rep topology.
+/// over-shared mesh cannot become invalid B-Rep topology. `triangles` holds
+/// only the non-degenerate triangles `import_mesh` will build, so skipped
+/// ones contribute no phantom incidences.
 fn validate_triangle_edge_incidence(
     vertex_ids: &[VertexId],
-    indices: &[u32],
-) -> Result<(), IoError> {
-    let mut edge_incidence: HashMap<(usize, usize), usize> = HashMap::new();
+    triangles: &[[usize; 3]],
+) -> Result<bool, IoError> {
+    // Per edge: incident faces, and uses along minus against its key order.
+    let mut edge_incidence: HashMap<(usize, usize), (usize, isize)> = HashMap::new();
 
-    for tri in indices.chunks_exact(3) {
-        let v0 = vertex_ids[tri[0] as usize];
-        let v1 = vertex_ids[tri[1] as usize];
-        let v2 = vertex_ids[tri[2] as usize];
-
-        // `import_mesh` skips these triangles, so they must not contribute
-        // phantom face incidences to an otherwise manifold edge.
-        if v0 == v1 || v1 == v2 || v0 == v2 {
-            continue;
-        }
-
+    for tri in triangles {
+        let [v0, v1, v2] = tri.map(|i| vertex_ids[i]);
         for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-            *edge_incidence.entry(edge_key(a, b)).or_default() += 1;
+            let (incident_faces, net) = edge_incidence.entry(edge_key(a, b)).or_default();
+            *incident_faces += 1;
+            *net += if a.index() < b.index() { 1 } else { -1 };
         }
     }
 
-    if let Some(((start, end), incident_faces)) = edge_incidence
-        .into_iter()
-        .filter(|(_, incident_faces)| *incident_faces > 2)
-        .min_by_key(|(edge, _)| *edge)
+    if let Some(((start, end), (incident_faces, _))) = edge_incidence
+        .iter()
+        .filter(|(_, (incident_faces, _))| *incident_faces > 2)
+        .min_by_key(|(edge, _)| **edge)
     {
         return Err(IoError::InvalidTopology {
             reason: format!(
@@ -159,7 +253,10 @@ fn validate_triangle_edge_incidence(
         });
     }
 
-    Ok(())
+    Ok(!edge_incidence.is_empty()
+        && edge_incidence
+            .values()
+            .all(|&(incident_faces, net)| incident_faces == 2 && net == 0))
 }
 
 /// Validate mesh data before allocating any topology entities.
@@ -210,46 +307,53 @@ fn validate_mesh(mesh: &TriangleMesh, tolerance: f64) -> Result<(), IoError> {
 }
 
 /// Build vertex IDs, merging coincident positions.
+fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -> Vec<VertexId> {
+    weld_positions(positions, tolerance, |pos| {
+        topo.add_vertex(Vertex::new(pos, tolerance))
+    })
+    .0
+}
+
+/// Weld `positions` within `tolerance`, calling `add_vertex` for each new
+/// vertex. Returns the vertex of every position and the number of candidate
+/// distance checks made, which the regression tests bound.
 ///
-/// Candidates are found through a uniform spatial hash whose cell edge is the
-/// weld tolerance, so a scan is bounded by the 27 cells that can hold a point
-/// within tolerance rather than by every vertex seen so far. A mesh scan
-/// arrives with almost every position distinct, which is the linear search's
-/// worst case: it made import quadratic in vertex count.
+/// Candidates are found through a uniform spatial hash, so a scan is bounded
+/// by the 27 cells around a point rather than by every vertex seen so far. A
+/// mesh scan arrives with almost every position distinct, which is the
+/// linear search's worst case: it made import quadratic in vertex count.
 ///
 /// Cell membership alone never decides a merge — two points in one cell can
 /// still be up to a diagonal apart, and two points a hair either side of a
 /// cell boundary are neighbours. Every candidate is distance-checked, and the
 /// 27-cell probe is what stops a boundary-straddling pair from being missed.
-fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -> Vec<VertexId> {
+fn weld_positions(
+    positions: &[Point3],
+    tolerance: f64,
+    mut add_vertex: impl FnMut(Point3) -> VertexId,
+) -> (Vec<VertexId>, usize) {
     let tol_sq = tolerance * tolerance;
-    let mut buckets: HashMap<(i64, i64, i64), Vec<(Point3, VertexId)>> = HashMap::new();
+    let grid = WeldGrid::new(tolerance);
+    let mut buckets: HashMap<[u64; 3], Vec<(Point3, VertexId)>> = HashMap::new();
     let mut map = Vec::with_capacity(positions.len());
-
-    // `as i64` saturates rather than wrapping, so an extreme
-    // coordinate-to-tolerance ratio degrades to larger buckets, never to a
-    // wrong cell.
-    let cell = |v: f64| -> i64 { (v / tolerance).floor() as i64 };
+    let mut checks = 0_usize;
 
     for &pos in positions {
-        let (cx, cy, cz) = (cell(pos.x()), cell(pos.y()), cell(pos.z()));
+        let cells = [grid.axis(pos.x()), grid.axis(pos.y()), grid.axis(pos.z())];
 
         // Among every candidate within tolerance, take the earliest-created
         // vertex. Insertion order decided the winner in the linear scan this
         // replaces, and vertex ids are allocated in order, so picking the
         // smallest id keeps welding deterministic and order-independent.
         let mut best: Option<VertexId> = None;
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let key = (
-                        cx.saturating_add(dx),
-                        cy.saturating_add(dy),
-                        cz.saturating_add(dz),
-                    );
+        for &dx in cells[0].offsets() {
+            for &dy in cells[1].offsets() {
+                for &dz in cells[2].offsets() {
+                    let key = [cells[0].key(dx), cells[1].key(dy), cells[2].key(dz)];
                     let Some(bucket) = buckets.get(&key) else {
                         continue;
                     };
+                    checks += bucket.len();
                     for &(p, vid) in bucket {
                         let ex = p.x() - pos.x();
                         let ey = p.y() - pos.y();
@@ -267,13 +371,100 @@ fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -
         if let Some(vid) = best {
             map.push(vid);
         } else {
-            let vid = topo.add_vertex(Vertex::new(pos, tolerance));
-            buckets.entry((cx, cy, cz)).or_default().push((pos, vid));
+            let vid = add_vertex(pos);
+            let key = [cells[0].key(0.0), cells[1].key(0.0), cells[2].key(0.0)];
+            buckets.entry(key).or_default().push((pos, vid));
             map.push(vid);
         }
     }
 
-    map
+    (map, checks)
+}
+
+/// The weld hash's cell geometry.
+///
+/// Keying by `(coordinate / tolerance).floor() as i64` saturated once the
+/// ratio passed 2^63 (x = 1e12 at the 1e-7 default), so every vertex of a
+/// far-placed part shared one bucket and the weld went quadratic. Cells are
+/// keyed by the bits of the floored `f64` index instead, which never
+/// saturates, and the cell edge is the smallest power of two at least twice
+/// the tolerance, so the index is the coordinate scaled exactly: a pair
+/// within tolerance is under half a cell apart and its indices differ by at
+/// most one, with no rounding to widen that. Keys depend only on the point
+/// itself, so an outlier vertex cannot coarsen the cells of the rest.
+struct WeldGrid {
+    /// `1 / cell` as two exact power-of-two factors, so neither overflows
+    /// when the tolerance is subnormal.
+    scale: [f64; 2],
+}
+
+/// One axis of a point's cell.
+#[derive(Clone, Copy)]
+enum AxisCell {
+    /// The floored, exactly scaled index, below 2^53 in magnitude: integer
+    /// neighbours are exact, and a partner within tolerance is at most one
+    /// cell away.
+    Index(f64),
+    /// The index reached 2^53 (or overflowed): the coordinate's float
+    /// spacing is already more than twice the tolerance, so only an
+    /// identical coordinate is within tolerance and the cell needs no
+    /// neighbours. The key is the coordinate's own bits.
+    Exact(u64),
+}
+
+impl WeldGrid {
+    fn new(tolerance: f64) -> Self {
+        // Smallest k with 2^k >= 2 * tol, clamped to the f64 exponent range.
+        let target = 2.0 * tolerance;
+        #[allow(clippy::cast_possible_truncation)]
+        let mut k = target.log2().ceil().clamp(-1074.0, 1023.0) as i32;
+        while k < 1023 && pow2(k) < target {
+            k += 1;
+        }
+        while k > -1074 && pow2(k - 1) >= target {
+            k -= 1;
+        }
+        let first = -k / 2;
+        Self {
+            scale: [pow2(first), pow2(-k - first)],
+        }
+    }
+
+    fn axis(&self, coordinate: f64) -> AxisCell {
+        const EXACT_LIMIT: f64 = 9_007_199_254_740_992.0; // 2^53
+        let scaled = coordinate * self.scale[0] * self.scale[1];
+        if scaled.is_finite() && scaled.abs() < EXACT_LIMIT {
+            AxisCell::Index(scaled.floor())
+        } else {
+            // `+ 0.0` folds -0.0 onto 0.0 so equal coordinates share a key.
+            AxisCell::Exact((coordinate + 0.0).to_bits())
+        }
+    }
+}
+
+/// Exactly 2^k for k in [-1074, 1023], subnormals included.
+fn pow2(k: i32) -> f64 {
+    if k >= -1022 {
+        f64::from_bits(u64::from(k.wrapping_add(1023).unsigned_abs()) << 52)
+    } else {
+        f64::from_bits(1_u64 << k.wrapping_add(1074).unsigned_abs())
+    }
+}
+
+impl AxisCell {
+    fn offsets(self) -> &'static [f64] {
+        match self {
+            Self::Index(_) => &[-1.0, 0.0, 1.0],
+            Self::Exact(_) => &[0.0],
+        }
+    }
+
+    fn key(self, offset: f64) -> u64 {
+        match self {
+            Self::Index(index) => (index + offset + 0.0).to_bits(),
+            Self::Exact(bits) => bits,
+        }
+    }
 }
 
 /// Return the shared edge between `a` and `b`, creating it on first use.
@@ -361,6 +552,123 @@ mod tests {
 
     use super::*;
     use crate::stl::reader::read_stl;
+
+    /// The orientation test measures welded positions, not the raw copies:
+    /// here the raw copies of one corner sit far enough apart to turn an
+    /// outward tetrahedron's volume negative, but all weld to one vertex.
+    #[test]
+    fn orientation_uses_welded_positions() {
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
+        ];
+        // Outward tetrahedron; the slanted face uses a second copy of the
+        // apex, pushed below the base, that still welds to the apex.
+        let triangles = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 4]];
+        let mut positions = corners.to_vec();
+        positions.push(Point3::new(0.0, 0.0, -10.0));
+        let mut topo = Topology::new();
+        let ids: Vec<VertexId> = corners
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        let vertex_ids = [ids[0], ids[1], ids[2], ids[3], ids[3]];
+        assert!(
+            closed_components_inward(&positions, &vertex_ids, &triangles) != Some(false),
+            "raw copies alone must not read as outward for this test to matter"
+        );
+        assert_eq!(
+            closed_components_inward(
+                &welded_positions(&positions, &vertex_ids),
+                &vertex_ids,
+                &triangles
+            ),
+            Some(false)
+        );
+    }
+    /// The weld's definition, quadratic: each position takes the
+    /// earliest-created vertex strictly within `tolerance`, else creates one.
+    fn reference_weld(positions: &[Point3], tolerance: f64) -> Vec<usize> {
+        let tol_sq = tolerance * tolerance;
+        let mut created: Vec<Point3> = Vec::new();
+        positions
+            .iter()
+            .map(|&pos| {
+                let near = created.iter().position(|p| {
+                    let (ex, ey, ez) = (p.x() - pos.x(), p.y() - pos.y(), p.z() - pos.z());
+                    ex.mul_add(ex, ey.mul_add(ey, ez * ez)) < tol_sq
+                });
+                near.unwrap_or_else(|| {
+                    created.push(pos);
+                    created.len() - 1
+                })
+            })
+            .collect()
+    }
+
+    fn grid_weld(positions: &[Point3], tolerance: f64) -> Vec<usize> {
+        let mut topo = Topology::new();
+        let ids = build_vertex_map(&mut topo, positions, tolerance);
+        let mut order: HashMap<VertexId, usize> = HashMap::new();
+        ids.into_iter()
+            .map(|id| {
+                let next = order.len();
+                *order.entry(id).or_insert(next)
+            })
+            .collect()
+    }
+
+    /// Coordinates clustered within a few tolerances (or a few ulps) of
+    /// `base`, which ranges over the origin, both sides of the near-field
+    /// limit, and far coordinates of either sign.
+    fn clustered(base: f64, tolerance: f64, steps: &[(i8, i8, i8)], ulps: bool) -> Vec<Point3> {
+        let along = |b: f64, k: i8| {
+            if ulps {
+                let mut v = b;
+                for _ in 0..k.unsigned_abs() {
+                    v = if k > 0 { v.next_up() } else { v.next_down() };
+                }
+                v
+            } else {
+                b + f64::from(k) * 0.35 * tolerance
+            }
+        };
+        steps
+            .iter()
+            .map(|&(i, j, k)| Point3::new(along(base, i), along(-base, j), along(base, k)))
+            .collect()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn grid_weld_matches_the_quadratic_definition_at_every_magnitude(
+            base_index in 0_usize..8,
+            tolerance_exp in -12_i32..2,
+            ulps in proptest::bool::ANY,
+            steps in proptest::collection::vec((-6_i8..6, -6_i8..6, -6_i8..6), 1..60),
+        ) {
+            let tolerance = 10_f64.powi(tolerance_exp);
+            let limit = tolerance * 1_125_899_906_842_624.0;
+            let base = [
+                0.0,
+                1.0,
+                limit,
+                limit.next_down(),
+                limit - 0.6 * tolerance,
+                -limit,
+                1e12,
+                -3e300,
+            ][base_index];
+            let positions = clustered(base, tolerance, &steps, ulps);
+            proptest::prop_assert_eq!(
+                grid_weld(&positions, tolerance),
+                reference_weld(&positions, tolerance)
+            );
+        }
+    }
+
     use crate::stl::writer::{self, StlFormat};
 
     #[test]
@@ -567,6 +875,128 @@ mod tests {
 
         // Should have 4 unique vertices, not 6.
         assert_eq!(topo.vertices().len(), 4);
+    }
+
+    /// A strip of `count` distinct positions spaced one unit apart along x
+    /// from `x0`, each listed twice the way STL repeats shared corners.
+    fn doubled_strip(x0: f64, count: usize) -> Vec<Point3> {
+        (0..count)
+            .flat_map(|i| {
+                let p = Point3::new(x0 + i as f64, 0.25 * (i % 2) as f64, 0.0);
+                [p, p]
+            })
+            .collect()
+    }
+
+    fn weld(positions: &[Point3], tolerance: f64) -> (Vec<VertexId>, usize) {
+        let mut topo = Topology::new();
+        weld_positions(positions, tolerance, |p| {
+            topo.add_vertex(Vertex::new(p, tolerance))
+        })
+    }
+
+    /// IO-2 (kernel review 2026-10-14): at x = 1e12 the old absolute key
+    /// `(x / 1e-7).floor() as i64` saturated to `i64::MAX` for every vertex,
+    /// so all of them shared one bucket and each insertion distance-checked
+    /// every earlier vertex: 4,000,000 checks for this strip instead of a
+    /// handful per vertex. Far-from-origin parts must weld as cheaply as
+    /// parts at the origin.
+    #[test]
+    fn far_from_origin_weld_stays_linear() {
+        let count = 2000;
+        for x0 in [0.0, 1e12, -3e13, -3e15] {
+            let positions = doubled_strip(x0, count);
+            let (map, checks) = weld(&positions, 1e-7);
+            let mut unique = map.clone();
+            unique.dedup();
+            assert_eq!(unique.len(), count, "x0 = {x0}: every pair must weld");
+            assert!(
+                checks <= 4 * positions.len(),
+                "x0 = {x0}: {checks} distance checks for {} positions",
+                positions.len()
+            );
+        }
+    }
+
+    /// One far vertex must not coarsen the cells of every other vertex, as a
+    /// grid sized from the bounding box would (a strip at the origin plus an
+    /// unused vertex at 1e308).
+    #[test]
+    fn far_outlier_vertex_does_not_coarsen_the_other_cells() {
+        let count = 2000;
+        let mut positions = doubled_strip(0.0, count);
+        positions.push(Point3::new(1e308, -1e308, 1e308));
+        let (map, checks) = weld(&positions, 1e-7);
+        let mut unique = map;
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), count + 1);
+        assert!(checks <= 4 * positions.len(), "{checks} distance checks");
+    }
+
+    #[test]
+    fn overflowing_cell_indices_weld_only_identical_coordinates() {
+        // At 1e-150 the scaled index of 1e160 overflows and that of 1.0 is
+        // past 2^53, so both use exact-coordinate keys.
+        let tolerance = 1e-150;
+        let positions = [
+            Point3::new(1.0, 2.0, 3.0),
+            Point3::new(1e160, -0.0, 7.0),
+            Point3::new(1.0, 2.0, 3.0),
+            Point3::new(1e160, 0.0, 7.0),
+            Point3::new(1e160 * (1.0 + f64::EPSILON), 0.0, 7.0),
+        ];
+        let (map, _) = weld(&positions, tolerance);
+        assert_eq!(map[0], map[2]);
+        assert_eq!(map[1], map[3], "-0.0 and 0.0 are the same coordinate");
+        assert_ne!(map[3], map[4]);
+        assert_ne!(map[0], map[1]);
+    }
+
+    #[test]
+    fn power_of_two_cells_bracket_twice_the_tolerance() {
+        for tolerance in [1e-320, 5e-324, 1e-300, 1e-7, 0.5, 1.0, 3.0, 1e300, f64::MAX] {
+            let grid = WeldGrid::new(tolerance);
+            let cell = (1.0 / grid.scale[0]) * (1.0 / grid.scale[1]);
+            assert!(grid.scale.iter().all(|s| s.is_finite() && *s > 0.0));
+            if (2.0 * tolerance).is_finite() && cell.is_finite() {
+                assert!(cell >= 2.0 * tolerance, "tol {tolerance}: cell {cell}");
+                assert!(cell < 4.0 * tolerance, "tol {tolerance}: cell {cell}");
+            }
+        }
+    }
+
+    #[test]
+    fn weld_over_the_full_f64_range_keys_finite_cells() {
+        let positions = [
+            Point3::new(-1e308, 0.0, 0.0),
+            Point3::new(1e308, 0.0, 0.0),
+            Point3::new(1e308, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(5e-8, 0.0, 0.0),
+        ];
+        let (map, _) = weld(&positions, 1e-7);
+        assert_eq!(map[1], map[2]);
+        assert_eq!(map[3], map[4]);
+        assert_ne!(map[0], map[1]);
+        assert_ne!(map[0], map[3]);
+    }
+
+    #[test]
+    fn pairs_just_inside_tolerance_weld_across_cell_boundaries() {
+        // Straddle cell boundaries at several offsets: a pair 0.99 tol apart
+        // must weld wherever the boundary falls.
+        let tolerance = 1e-3;
+        for step in 0..40 {
+            let x = 1.0 + f64::from(step) * 0.37 * tolerance;
+            let positions = [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(x, x, -x),
+                Point3::new(x + 0.99 * tolerance, x, -x),
+            ];
+            let (map, _) = weld(&positions, tolerance);
+            assert_eq!(map[1], map[2], "x = {x}");
+        }
     }
 
     #[test]

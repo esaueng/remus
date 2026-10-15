@@ -2106,7 +2106,68 @@ fn ray_crossings_nurbs_with_trim(
         .iter()
         .map(|&(t, u, v)| (origin + direction * t, u, v))
         .collect();
+    // A near-tangent intersection is a valid math contact, but its parity
+    // is unresolved at the root's residual floor. Abstain from this ray,
+    // retaining all mathematical hits and letting another direction decide.
+    for &(point, u, v) in &points {
+        if nurbs_contact_parity_uncertain(surface, point, direction, u, v)
+            && count_nurbs_hits_with_trim(
+                topo,
+                face_id,
+                Some(trim_data),
+                cache,
+                surface,
+                &[(point, u, v)],
+            )? > 0
+        {
+            return Err(CheckError::ClassificationFailed(
+                super::NURBS_RAY_GRAZE.into(),
+            ));
+        }
+    }
     count_nurbs_hits_with_trim(topo, face_id, Some(trim_data), cache, surface, &points)
+}
+
+/// Whether the root's positional rounding can hide a stationary contact.
+/// Scale by local curvature rather than a fixed angle: a shallow crossing
+/// of a flat patch remains usable, while a tightly curved tangent root may
+/// have a noticeable derivative merely because its parameters round.
+fn nurbs_contact_parity_uncertain(
+    surface: &NurbsSurface,
+    point: Point3,
+    direction: Vec3,
+    u: f64,
+    v: f64,
+) -> bool {
+    use remus_math::traits::ParametricSurface;
+    let (su, sv) = (surface.partial_u(u, v), surface.partial_v(u, v));
+    let normal = su.cross(sv);
+    let norm = normal.length();
+    let speed = direction.length();
+    if norm == 0.0 || speed == 0.0 {
+        return true;
+    }
+    let normal = normal * (1.0 / norm);
+    let direction = direction * (1.0 / speed);
+    let slope = normal.dot(direction).abs();
+    if slope >= 1e-3 {
+        return false;
+    }
+    let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
+    let determinant = e * g - f * f;
+    if determinant <= 0.0 || !determinant.is_finite() {
+        return true;
+    }
+    let (a, b) = (su.dot(direction), sv.dot(direction));
+    let (du, dv) = ((g * a - f * b) / determinant, (e * b - f * a) / determinant);
+    let derivatives = surface.derivatives(u, v, 2);
+    let acceleration = derivatives[2][0] * (du * du)
+        + derivatives[1][1] * (2.0 * du * dv)
+        + derivatives[0][2] * (dv * dv);
+    let curvature = normal.dot(acceleration).abs();
+    let magnitude = point.0.iter().fold(1.0_f64, |m, x| m.max(x.abs()));
+    let rounding = 256.0 * f64::EPSILON;
+    slope * slope <= 4.0 * rounding * magnitude * curvature + rounding * rounding
 }
 
 /// Certify a complete NURBS cap bounded by one planar periodic rim.
@@ -2333,6 +2394,9 @@ pub fn surface_point_in_face(
     };
     Ok(count > 0)
 }
+
+#[cfg(test)]
+mod nurbs_bump_ray_tests;
 
 #[cfg(test)]
 mod spherical_triangle_tests {
