@@ -31,10 +31,6 @@ use remus_topology::pcurve::PCurve;
 /// anisotropy sits many orders above.
 const CIRCLE_ROUNDOFF_REL: f64 = 64.0 * f64::EPSILON;
 
-/// Radians below which a frame rotation is the roundoff of normalizing a
-/// moved unit axis, not a turn.
-const ANGLE_ROUNDOFF: f64 = 16.0 * f64::EPSILON;
-
 /// How one face's UV chart changed under a transform.
 #[derive(Debug, Clone, Copy)]
 pub enum ChartMap {
@@ -75,7 +71,15 @@ impl UvAffine {
     /// is negative when the map reflects the frame (a carrier rebuilt
     /// right-handed then sweeps `u` the other way). `v_scale` is the
     /// similarity's scale for an axial or slant `v`, `1` for an angle.
-    pub fn revolved(matrix: &Mat4, old: (Vec3, Vec3), new: (Vec3, Vec3), v_scale: f64) -> Self {
+    /// `carried` says the new frame was built from the moved `old.x`, so
+    /// `φ = 0` by construction rather than by a roundoff test.
+    pub fn revolved(
+        matrix: &Mat4,
+        old: (Vec3, Vec3),
+        new: (Vec3, Vec3),
+        v_scale: f64,
+        carried: bool,
+    ) -> Self {
         let in_new = |d: Vec3| {
             let image = linear(matrix, d);
             Vec2::new(image.dot(new.0), image.dot(new.1))
@@ -86,14 +90,7 @@ impl UvAffine {
         } else {
             1.0
         };
-        let phi = x.y().atan2(x.x());
-        // A frame carried exactly (sphere, torus) lands on `φ = 0` up to the
-        // roundoff of normalizing the moved axes.
-        let phi = if phi.abs() <= ANGLE_ROUNDOFF {
-            0.0
-        } else {
-            phi
-        };
+        let phi = if carried { 0.0 } else { x.y().atan2(x.x()) };
         Self {
             origin: Point2::new(phi, 0.0),
             u_image: Vec2::new(sign, 0.0),
