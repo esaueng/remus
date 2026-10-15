@@ -60,6 +60,9 @@ jobs:
           - curve_intersection
           - offset
           - gcs
+          - step_bodies
+          - mesh_import
+          - persistent_ref
     permissions:
       contents: read
       pull-requests: read
