@@ -1567,18 +1567,17 @@ pub(crate) fn transform_face_surface_recorded(
                     transform_direction(matrix, sph_clone.z_axis())?,
                     transform_direction(matrix, sph_clone.x_axis())?,
                 )?;
-                // The frame follows the map, so only a reflection (which
-                // leaves it right-handed by reversing `u`) moves the chart.
-                // The latitude `v` is unchanged.
-                let chart = UvAffine::about_axis(
-                    matrix,
-                    (sph_clone.x_axis(), sph_clone.y_axis()),
-                    (new_sph.x_axis(), new_sph.y_axis()),
-                    1.0,
-                );
+                // The frame is the mapped frame, so the chart is unchanged
+                // unless a reflection made it left-handed: `with_frame`
+                // rebuilds it right-handed, which reverses `u` only.
+                let chart = if recorder.orientation_reversing {
+                    FaceChartMap::Affine(UvAffine::reversed_u())
+                } else {
+                    FaceChartMap::Unchanged
+                };
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
-                FaceChartMap::Affine(chart)
+                chart
             } else {
                 let inverse = matrix.inverse()?;
                 let sph_clone = sph.clone();
@@ -1649,14 +1648,13 @@ pub(crate) fn transform_face_surface_recorded(
                     transform_direction(matrix, tor_clone.x_axis())?,
                 )?;
                 // As for the sphere; the tube angle `v` is unchanged.
-                let chart = UvAffine::about_axis(
-                    matrix,
-                    (tor_clone.x_axis(), tor_clone.y_axis()),
-                    (new_tor.x_axis(), new_tor.y_axis()),
-                    1.0,
-                );
+                let chart = if recorder.orientation_reversing {
+                    FaceChartMap::Affine(UvAffine::reversed_u())
+                } else {
+                    FaceChartMap::Unchanged
+                };
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
-                FaceChartMap::Affine(chart)
+                chart
             } else {
                 let tor_clone = tor.clone();
                 let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
