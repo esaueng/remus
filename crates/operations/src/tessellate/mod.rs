@@ -58,7 +58,9 @@ pub use solid::{
     tessellate_solid, tessellate_solid_for_analysis, tessellate_solid_for_boolean,
     tessellate_solid_grouped_with_tolerance, tessellate_solid_with_tolerance,
 };
-pub(crate) use solid::{tessellate_closed_face_set, tessellate_solid_for_measurement};
+pub(crate) use solid::{
+    tessellate_closed_face_set, tessellate_face_for_measurement, tessellate_solid_for_measurement,
+};
 
 /// Merge-grid cell size for tolerance-based vertex deduplication.
 ///

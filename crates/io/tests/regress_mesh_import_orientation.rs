@@ -1,4 +1,4 @@
-//! Kernel review 2026-10-14, IO-6 (B91): an inside-out mesh must import
+//! Kernel review 2026-10-14, IO-6 (B126): an inside-out mesh must import
 //! outward.
 //!
 //! `import_mesh` flipped a closed mesh by its signed volume only when the mesh
