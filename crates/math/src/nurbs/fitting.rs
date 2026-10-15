@@ -30,8 +30,14 @@ pub const MAX_DENSE_FIT_ENTRIES: usize = 1 << 22;
 /// Largest banded or per-point basis storage, in `f64` entries (128 MiB).
 ///
 /// Covers interpolation's band `n·(3p + 1)` and LSPIA's basis table
-/// `n·(p + 1)`. A cubic fit through `MAX_FIT_POINTS` points stays inside it.
+/// `n·(p + 1 + 6)`, which counts each point's separately allocated row at
+/// six entries of overhead. A cubic fit through `MAX_FIT_POINTS` points
+/// stays inside it.
 pub const MAX_SPARSE_FIT_ENTRIES: usize = 1 << 24;
+
+/// Retained overhead of one LSPIA basis row, in `f64` entries: its span
+/// index, `Vec` header and allocator header (48 bytes).
+const LSPIA_ROW_OVERHEAD: usize = 6;
 
 fn check_sparse_entries(entries: usize) -> Result<(), MathError> {
     if entries > MAX_SPARSE_FIT_ENTRIES {
@@ -994,7 +1000,7 @@ pub fn approximate_lspia(
     check_fit_points(n)?;
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
-    check_sparse_entries(n.saturating_mul(p + 1))?;
+    check_sparse_entries(n.saturating_mul(p + 1 + LSPIA_ROW_OVERHEAD))?;
     check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
@@ -1128,7 +1134,7 @@ pub(crate) fn approximate_lspia_weighted(
     check_fit_points(n)?;
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
-    check_sparse_entries(n.saturating_mul(p + 1))?;
+    check_sparse_entries(n.saturating_mul(p + 1 + LSPIA_ROW_OVERHEAD))?;
     check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
