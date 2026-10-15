@@ -4075,7 +4075,7 @@ impl SignedTriangle {
     /// fan over its polygon wound against the face's triangle, so its area
     /// subtracts, and an island nested inside a hole one wound with it. Reading the outer triangle alone credited the removed
     /// patch, and with the hole's edges missing the directed edges could not
-    /// cancel, so the sum also moved with the body (B92). The winding comes
+    /// cancel, so the sum also moved with the body (B126). The winding comes
     /// from the triangle's own normal rather than the hole wire's stored
     /// direction, which no caller guarantees. The fan's diagonals cancel
     /// among themselves, leaving the hole's own edges to cancel against the
@@ -5609,7 +5609,7 @@ mod notch_patch_qualification_tests {
     }
 }
 
-/// B92: nested inner loops on a pierced triangle face alternate: a hole
+/// B126: nested inner loops on a pierced triangle face alternate: a hole
 /// subtracts, an island inside it adds back.
 #[cfg(test)]
 mod nested_inner_loop_tests {
