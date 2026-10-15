@@ -138,12 +138,13 @@ Run one target locally with nightly Rust and `cargo-fuzz`:
 cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 ```
 
-PR CI compiles every target. The scheduled `Fuzz Smoke` workflow runs the
+CI's `Fuzz Targets Compile` job compiles every target on main pushes, merge
+groups and PRs labelled `ci:full`. The scheduled `Fuzz Smoke` workflow runs the
 public model-reader, boolean-tree, modifier, NURBS-surface,
 topology-mutation, arena-roundtrip, tessellation, curve-intersection,
 offset and GCS campaigns for two minutes each and retains crash artifacts.
 `arena_reader`, `wasm_batch`, `step_bodies`, `mesh_import` and
-`persistent_ref` currently compile in PR CI but are not scheduled. The
+`persistent_ref` are compiled by that job but are not scheduled. The
 schedule's `fuzz.yml` pins `fleet-fuzz.yml` to a commit on `main`, so adding a
 target to its matrix takes two changes: the matrix edit lands first, then the
 pin moves to that commit. All four B19 engine slices (tessellation,
