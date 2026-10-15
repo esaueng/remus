@@ -73,6 +73,20 @@ impl Fnv {
         self.u64(s.len() as u64);
         self.bytes(s.as_bytes());
     }
+    /// Hashes a `Debug` rendering with each lazily filled cache
+    /// (`OnceLock(..)`, such as a NURBS weight cache) reduced to `OnceLock`,
+    /// so evaluation history alone cannot change a digest.
+    fn debug(&mut self, s: &str) {
+        let mut stable = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("OnceLock(") {
+            let open = i + "OnceLock".len();
+            stable.push_str(&rest[..open]);
+            rest = rest[open..].find(')').map_or("", |j| &rest[open + j + 1..]);
+        }
+        stable.push_str(rest);
+        self.str(&stable);
+    }
 }
 
 /// Hash of one oriented edge use: direction, end vertex bits and curve.
@@ -108,7 +122,7 @@ fn oriented_edge_hash(
         edge.tolerance()
     )
     .unwrap();
-    h.str(scratch);
+    h.debug(scratch);
     // The use's own authority: its stored pcurve and periodic winding.
     scratch.clear();
     match coedge.map(|id| topo.coedge(id).unwrap()) {
@@ -138,7 +152,7 @@ fn oriented_edge_hash(
         }
         None => scratch.push_str("no-coedge"),
     }
-    h.str(scratch);
+    h.debug(scratch);
     h.0
 }
 
@@ -214,7 +228,7 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
             let mut head = Fnv::new();
             scratch.clear();
             write!(scratch, "{:?}", face.surface()).unwrap();
-            head.str(&scratch);
+            head.debug(&scratch);
             head.u64(u64::from(face.is_reversed()));
             head.u64(face.inner_wires().len() as u64);
             strict.u64(head.0);
@@ -315,7 +329,7 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
             edge.tolerance()
         )
         .unwrap();
-        l.str(&scratch);
+        l.debug(&scratch);
         for (f, forward) in incident {
             l.u64(f);
             l.u64(u64::from(forward));
