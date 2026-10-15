@@ -200,3 +200,69 @@ fn narrow_bump_crossings_match_graph_oracle() {
         "{checked} rays, {crossings} crossings"
     );
 }
+
+/// A unit patch far from the origin: a line one unit off it is no crossing.
+/// The completion thresholds once scaled with the largest coordinate, so at
+/// `x = 1e12` they reached 1000 and accepted the one-unit miss as a root.
+#[test]
+fn far_translated_patch_reports_no_near_miss() {
+    let x0 = 1e12;
+    let corner = |x: f64, y: f64| Point3::new(x0 + x, y, 0.0);
+    let surface = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![corner(0.0, 0.0), corner(0.0, 1.0)],
+            vec![corner(1.0, 0.0), corner(1.0, 1.0)],
+        ],
+        vec![vec![1.0; 2]; 2],
+    )
+    .unwrap();
+    // Parallel to the patch, one unit above it.
+    let above = intersect_line_nurbs(
+        &surface,
+        Point3::new(x0 - 1.0, 0.5, 1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        20,
+    )
+    .unwrap();
+    assert!(above.is_empty(), "{above:?}");
+    // A transversal line still crosses it once, at its aim point.
+    let target = Point3::new(x0 + 0.5, 0.5, 0.0);
+    let dir = Vec3::new(0.3, 0.2, 1.0);
+    let hits = intersect_line_nurbs(&surface, target - dir * 2.0, dir, 20).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!((hits[0].point - target).length() < 1e-3, "{hits:?}");
+}
+
+/// A common weight factor leaves the surface unchanged, so it leaves its
+/// crossings unchanged, even near the top of the `f64` range.
+#[test]
+fn common_weight_factor_keeps_narrow_bump_crossings() {
+    let plain = bump_graph(30, &[(13, 13, 1.5)]);
+    let heavy = NurbsSurface::new(
+        2,
+        2,
+        plain.knots_u().to_vec(),
+        plain.knots_v().to_vec(),
+        plain.control_points().to_vec(),
+        vec![vec![1.5e308; 30]; 30],
+    )
+    .unwrap();
+    let peak = 12.5 / 28.0;
+    let origin = Point3::new(peak, peak, 1.1);
+    let dir = Vec3::new(
+        0.573_576_436_351_046,
+        0.740_535_693_464_567_5,
+        0.350_889_803_483_932_2,
+    );
+    let expected = oracle_crossings(&plain, origin, dir);
+    let hits = intersect_line_nurbs(&heavy, origin, dir, 20).unwrap();
+    assert_matches_oracle(
+        &line_parameters(origin, dir, &hits),
+        &expected,
+        "heavy weights",
+    );
+}

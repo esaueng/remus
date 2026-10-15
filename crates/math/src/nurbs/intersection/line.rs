@@ -22,8 +22,9 @@ mod bump_oracle_tests;
 /// Bézier subdivision of the surface against the line and appends any the
 /// grid missed (a crossing whose Newton basin holds no grid seed, such as
 /// the far flank of a bump narrower than about two grid cells). It accepts
-/// only residuals below `1e-9` relative to the surface's coordinate scale,
-/// so it adds genuine crossings, never near-misses.
+/// only residuals below `1e-9` of the surface's extent plus a round-off
+/// allowance for its distance from the origin, so it adds genuine crossings,
+/// never near-misses, wherever the surface sits.
 ///
 /// # Parameters
 ///
