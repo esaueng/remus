@@ -3774,22 +3774,24 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();
-    let eps = (u_range.1 - u_range.0).abs() * 1e-12;
     let (mut cuts, mut spans) = (Vec::new(), Vec::new());
     // Gauss lines integrated so far, each one `v` sub-cell at one `u`
     // abscissa: `order` of them make one tensor cell.
     let mut lines = 0usize;
-    // A whole knot span is integrated however narrow it is: an import that
-    // writes a multiple knot as two nearly equal ones still puts geometry
-    // between them. Only slivers next to a trim break are dropped.
-    let knot_end = |u: f64| {
-        u.to_bits() == u_range.0.to_bits()
-            || u.to_bits() == u_range.1.to_bits()
-            || knots_u.binary_search_by(|k| k.total_cmp(&u)).is_ok()
+    // An interval is dropped as a sliver only against the knot span that
+    // holds it, not the window: the parameter speed scales with the span, so
+    // an import that writes a multiple knot as two nearly equal ones still
+    // puts geometry between them, and so does any piece a trim break or knot
+    // crossing cuts out of that narrow span.
+    let span_of = |u: f64| {
+        let next = knots_u.partition_point(|&k| k <= u);
+        let lo = next.checked_sub(1).map_or(u_range.0, |i| knots_u[i]);
+        let hi = knots_u.get(next).copied().unwrap_or(u_range.1);
+        hi - lo
     };
     for w in breaks.windows(2) {
         let (u0, u1) = (w[0], w[1]);
-        if u1 - u0 <= eps && !(knot_end(u0) && knot_end(u1)) {
+        if u1 - u0 <= span_of(f64::midpoint(u0, u1)).abs() * 1e-12 {
             continue;
         }
         let nu = knot_aligned_cells(u1 - u0, cell_u);
@@ -5081,5 +5083,50 @@ mod tests {
         .expect("aligned")
         .area;
         assert!((area - 2.0).abs() <= 1e-12, "{area}");
+    }
+
+    #[test]
+    fn knot_aligned_rule_integrates_trim_pieces_of_a_narrow_knot_span() {
+        // A trim vertex inside the 1e-13-wide span cuts it into two pieces,
+        // neither bounded by knots on both ends; both are still integrated.
+        let inside = 0.5 + NarrowSpan::NARROW / 2.0;
+        let outer = UvLoop::new(
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(inside, 0.0),
+                Point2::new(1.0, 0.0),
+                Point2::new(1.0, 1.0),
+                Point2::new(0.0, 1.0),
+            ],
+            false,
+            false,
+        );
+        let trim = UvTrim::new(Some(&outer), &[], &[], false);
+        let knots_u = [0.5, 0.5 + NarrowSpan::NARROW];
+        let knots = (&knots_u[..], &[][..]);
+        let rule = IntegrationRule {
+            order: 2,
+            adaptive: None,
+            knots: Some(knots),
+            reference: Point3::new(0.0, 0.0, 0.0),
+            volume_only: false,
+            flux: None,
+        };
+        let area = integrate_knot_aligned::<_, true>(
+            &NarrowSpan,
+            (0.0, 1.0),
+            (0.0, 1.0),
+            rule,
+            1.0,
+            &trim,
+            PatchScale::ANGULAR,
+            knots,
+        )
+        .expect("within the cap")
+        .expect("aligned")
+        .area;
+        let width = (0.5 + NarrowSpan::NARROW) - 0.5;
+        let expected = 1.0 - width + width * NarrowSpan::STEEP;
+        assert!((area - expected).abs() <= 1e-12, "{area} vs {expected}");
     }
 }
