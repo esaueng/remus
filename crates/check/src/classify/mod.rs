@@ -1155,6 +1155,22 @@ mod tests {
         }
     }
 
+    /// A ray cast from far away (1e9) at a unit cube's corner rounds at the
+    /// origin's scale: the edge boxes, axis-aligned and thin, must be widened
+    /// by the same per-query margin as the distance test.
+    #[test]
+    fn rays_from_a_distant_origin_graze_thin_edge_boxes() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let skeleton = graze::BoundarySkeleton::build(&topo, &faces).unwrap();
+        let origin = Point3::new(1e9, 0.7e9, 0.3e9);
+        // 1.4e-6 off the vertical edge at x = y = 1: far inside the query's
+        // ~5.7e-5 roundoff margin, far outside the build-time box padding.
+        let target = Point3::new(1.0 + 1e-6, 1.0 + 1e-6, 0.5);
+        assert!(skeleton.grazed_by(&topo, origin, target - origin).unwrap());
+    }
+
     #[test]
     fn skeleton_flags_exactly_the_rays_through_vertices() {
         let origin = Point3::new(0.0, -0.2, 0.3);

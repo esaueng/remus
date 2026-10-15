@@ -220,7 +220,10 @@ impl BoundarySkeleton {
                 .iter()
                 .any(|&(a, b)| ray_segment_distance_sq(origin, direction, a, b) <= margin_sq))
         };
-        if let Some(bvh) = &self.bvh {
+        // The boxes were padded with the build margin; a wider query margin
+        // (a distant origin) scans them all, each widened to match.
+        let widen = margin - self.margin;
+        if let Some(bvh) = self.bvh.as_ref().filter(|_| widen <= 0.0) {
             for i in bvh.query_ray(origin, direction) {
                 if near(&self.edges[i])? {
                     return Ok(true);
@@ -233,7 +236,12 @@ impl BoundarySkeleton {
                 1.0 / direction.z(),
             );
             for edge in &self.edges {
-                if edge.padded.ray_intersects(origin, inv) && near(edge)? {
+                let padded = if widen > 0.0 {
+                    edge.padded.expanded(widen)
+                } else {
+                    edge.padded
+                };
+                if padded.ray_intersects(origin, inv) && near(edge)? {
                     return Ok(true);
                 }
             }
@@ -377,50 +385,53 @@ fn segment_box(a: Point3, b: Point3) -> Aabb3 {
 /// Squared distance between the half-line `origin + t·direction` (`t ≥ 0`)
 /// and the segment `[a, b]`.
 ///
-/// Closest points of the two supporting lines, each parameter clamped to its
-/// range and the other re-solved against the clamp (the standard
-/// segment–segment construction with the ray's upper bound removed).
+/// Projected onto the plane across the ray, the segment's closest point to
+/// the ray's line is a planar point-to-segment problem with no division by a
+/// near-parallel determinant, so a segment crossing a nearly parallel ray
+/// still reads 0. That point decides when it lies ahead of the origin;
+/// otherwise the half-line's own end (the origin) or a segment end does, and
+/// distance to a half-line is convex along the segment, so these candidates
+/// are complete.
 fn ray_segment_distance_sq(origin: Point3, direction: Vec3, a: Point3, b: Point3) -> f64 {
-    let ab = b - a;
-    let w = origin - a;
-    let dd = direction.dot(direction);
-    let ee = ab.dot(ab);
-    let de = direction.dot(ab);
-    let dw = direction.dot(w);
-    let ew = ab.dot(w);
-
     let point_to_segment = |p: Point3| -> f64 {
+        let ab = b - a;
+        let ee = ab.dot(ab);
         let s = if ee > 0.0 {
             ((p - a).dot(ab) / ee).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let q = a + ab * s;
-        (p - q).length_squared()
+        (p - (a + ab * s)).length_squared()
     };
+    let dd = direction.dot(direction);
     let point_to_ray = |p: Point3| -> f64 {
         let t = if dd > 0.0 {
             ((p - origin).dot(direction) / dd).max(0.0)
         } else {
             0.0
         };
-        let q = origin + direction * t;
-        (p - q).length_squared()
+        (p - (origin + direction * t)).length_squared()
     };
 
-    let denom = dd * ee - de * de;
-    // Interior candidate of the two supporting lines, when they are not
-    // parallel; the boundary candidates cover every clamped case.
     let mut best = point_to_segment(origin)
         .min(point_to_ray(a))
         .min(point_to_ray(b));
-    if denom > f64::EPSILON * dd * ee {
-        let t = (de * ew - ee * dw) / denom;
-        let s = (dd * ew - de * dw) / denom;
-        if t >= 0.0 && (0.0..=1.0).contains(&s) {
-            let p = origin + direction * t;
-            let q = a + ab * s;
-            best = best.min((p - q).length_squared());
+    if dd > 0.0 {
+        let across = |p: Point3| {
+            let w = p - origin;
+            w - direction * (w.dot(direction) / dd)
+        };
+        let (pa, pb) = (across(a), across(b));
+        let span = pb - pa;
+        let span_sq = span.dot(span);
+        let s = if span_sq > 0.0 {
+            (-pa.dot(span) / span_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let closest = a + (b - a) * s;
+        if (closest - origin).dot(direction) >= 0.0 {
+            best = best.min((pa + span * s).length_squared());
         }
     }
     best
@@ -509,6 +520,15 @@ mod tests {
         let d =
             ray_segment_distance_sq(o, x, Point3::new(4.0, 0.0, 0.0), Point3::new(4.0, 3.0, 2.0));
         assert!(d.abs() < 1e-30, "{d}");
+        // Nearly parallel and crossing: a determinant test reads it as
+        // parallel and misses the crossing at x = 2.
+        let d = ray_segment_distance_sq(
+            o,
+            x,
+            Point3::new(1.0, -1e-8, 0.0),
+            Point3::new(3.0, 1e-8, 0.0),
+        );
+        assert!(d < 1e-30, "{d}");
         // Skew: nearest points interior to both, distance 2.
         let d = ray_segment_distance_sq(
             o,
