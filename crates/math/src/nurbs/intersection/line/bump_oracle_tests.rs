@@ -336,3 +336,34 @@ fn elongated_patch_reports_no_near_miss() {
     assert_eq!(hits.len(), 1, "{hits:?}");
     assert!((hits[0].point - target).length() < 1e-6, "{hits:?}");
 }
+
+/// A unit patch at `x = 1e15`, where one ulp of `x` is 0.125: a line one
+/// unit above it, along `x`, is no crossing. The perpendicular distance of
+/// an `x`-directed line rounds only through `y` and `z`, so the huge `x`
+/// must not loosen its test (a single allowance of 256 ulps of the largest
+/// coordinate, ~57 here, accepted it).
+#[test]
+fn patch_at_1e15_rejects_unit_miss_along_large_axis() {
+    let x0 = 1e15;
+    let corner = |x: f64, y: f64| Point3::new(x0 + x, y, 0.0);
+    let surface = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![corner(0.0, 0.0), corner(0.0, 1.0)],
+            vec![corner(1.0, 0.0), corner(1.0, 1.0)],
+        ],
+        vec![vec![1.0; 2]; 2],
+    )
+    .unwrap();
+    let hits = intersect_line_nurbs(
+        &surface,
+        Point3::new(x0 - 1.0, 0.5, 1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        20,
+    )
+    .unwrap();
+    assert!(hits.is_empty(), "{hits:?}");
+}
