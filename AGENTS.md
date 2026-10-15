@@ -488,6 +488,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Signed native vector-area qualification for a hemisphere chart | `tessellate/nonplanar/sphere_chart_orientation.rs` |
 | Independent spherical-patch geometry and shared-boundary oracles | `tessellate/nonplanar/sphere_chart_tests.rs` |
+| Pre-cache band emitter kept verbatim as a bit-identity oracle for its per-vertex outward reference (tests) | `tessellate/nonplanar/band_emit_oracle_tests.rs` |
 | Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Per-vertex analytic grid kept verbatim as a bit-identity oracle for the trig-table `tessellate_analytic` (tests) | `tessellate/tests/analytic_grid_oracle.rs` |
