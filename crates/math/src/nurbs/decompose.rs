@@ -63,24 +63,19 @@ fn check_first_span(knots: &[f64], p: usize) -> Result<(), MathError> {
     Ok(())
 }
 
-/// The factor the clamping paths divide all weights by first. A common
-/// weight factor leaves a rational curve unchanged, but knot insertion forms
-/// `w·P` and blends `α·w`, which underflow or overflow at extreme weights:
-/// a common scale of 1e-300, or the smallest subnormal weight beside 2.0.
-///
-/// Weights inside [2⁻⁵⁰⁰, 2⁵⁰⁰] are left as they are (factor 1). Otherwise
-/// the factor is the power of two nearest the geometric mean of the
-/// smallest and largest weight, so the division is exact and both ends land
-/// near 2^±537 at worst, far from either limit. If even that cannot keep
-/// both ends normal and finite, the weights are kept as they are.
+/// The factor the clamping paths divide all weights by first: the power of
+/// two nearest the geometric mean of the smallest and largest weight. A
+/// common weight factor leaves a rational curve unchanged, but knot
+/// insertion forms `w·P` and blends `α·w`; centring the weights on 1 keeps
+/// `w·P` at the magnitude of `P` itself (weights of 2⁻⁵⁰⁰ with coordinates
+/// near 2⁻⁶⁰⁰ underflowed before) and keeps both weight extremes normal even
+/// when they lie further apart than the `f64` range. The division is exact,
+/// and ordinary weights (geometric mean within √2 of 1) are left unchanged.
+/// If even centring cannot keep both ends normal, the weights are kept.
 fn weight_scale(weights: impl Iterator<Item = f64>) -> f64 {
-    const SAFE: f64 = 3.273_390_607_896_142e150; // 2^500
     let (min, max) = weights.fold((f64::INFINITY, 0.0_f64), |(lo, hi), w| {
         (lo.min(w), hi.max(w))
     });
-    if min >= 1.0 / SAFE && max <= SAFE {
-        return 1.0;
-    }
     #[allow(clippy::cast_possible_truncation)]
     // `log2(f64::MAX)` rounds to 1024; keep the power of two finite and normal.
     let exponent = ((0.5 * (min.log2() + max.log2())).round() as i32).clamp(-1022, 1023);
