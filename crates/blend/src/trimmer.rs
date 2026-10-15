@@ -1647,8 +1647,8 @@ mod tests {
     }
 
     /// Two bodies that touch (or an in-place copy and its original) must not
-    /// share the vertices a trim mints: the contact split may only reuse the
-    /// split edge's own endpoints, never a coincident vertex of other topology.
+    /// share the vertices a trim mints: the contact split may only reuse
+    /// vertices of its own body, never a coincident vertex of another one.
     #[test]
     fn trim_does_not_reuse_coincident_vertices_of_unrelated_topology() {
         let mut topo = Topology::new();
