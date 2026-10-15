@@ -8,6 +8,7 @@
 
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use remus_blend::BlendResult;
 use remus_blend::fillet_builder::FilletBuilder;
@@ -15,6 +16,7 @@ use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::adjacency::AdjacencyIndex;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::journal::EntityKey;
@@ -679,7 +681,7 @@ fn tangent_across(
         first.index().max(second.index()),
     );
     if let Some(identity) = identity {
-        let hit = TANGENCY_MEMO.with(|memo| {
+        let hit = DISCOVERY_MEMO.with(|memo| {
             memo.borrow()
                 .as_ref()
                 .filter(|memo| memo.identity == Some(identity))
@@ -692,52 +694,96 @@ fn tangent_across(
     let pair = HashSet::from([first, second]);
     let tangent = crate::query::edge_is_tangent(topo, edge, &pair)?;
     if let Some(identity) = identity {
-        TANGENCY_MEMO.with(|memo| {
+        DISCOVERY_MEMO.with(|memo| {
             if let Some(memo) = memo.borrow_mut().as_mut() {
-                if memo.identity != Some(identity) {
-                    memo.identity = Some(identity);
-                    memo.verdicts.clear();
-                }
-                memo.verdicts.insert(key, tangent);
+                memo.current(identity).verdicts.insert(key, tangent);
             }
         });
     }
     Ok(tangent)
 }
 
-/// Edge tangency verdicts kept for the duration of one blend-aware move.
+/// The solid's adjacency index, shared while the topology is unchanged
+/// inside a [`DiscoveryMemoScope`] and built afresh otherwise.
+fn solid_adjacency(topo: &Topology, solid: SolidId) -> Result<Rc<AdjacencyIndex>, OperationsError> {
+    let identity = (!topo.is_cache_poisoned()).then(|| topo.cache_identity());
+    if let Some(identity) = identity {
+        let hit = DISCOVERY_MEMO.with(|memo| {
+            memo.borrow()
+                .as_ref()
+                .filter(|memo| memo.identity == Some(identity))
+                .and_then(|memo| {
+                    memo.adjacency
+                        .iter()
+                        .find(|(indexed, _)| *indexed == solid)
+                        .map(|(_, adjacency)| Rc::clone(adjacency))
+                })
+        });
+        if let Some(adjacency) = hit {
+            return Ok(adjacency);
+        }
+    }
+    let adjacency = Rc::new(topo.build_adjacency(solid)?);
+    if let Some(identity) = identity {
+        DISCOVERY_MEMO.with(|memo| {
+            if let Some(memo) = memo.borrow_mut().as_mut() {
+                memo.current(identity)
+                    .adjacency
+                    .push((solid, Rc::clone(&adjacency)));
+            }
+        });
+    }
+    Ok(adjacency)
+}
+
+/// Blend discovery state kept for the duration of one blend-aware move.
 ///
-/// Blend discovery asks the same (edge, face pair) question many times per
-/// move: the guard, the seed loop and every candidate band re-walk the same
-/// edges, and each answer projects edge samples onto both faces. The verdict
-/// is a pure function of the topology, so the entries are tagged with its
-/// cache identity and dropped as soon as any mutation or rewind changes it.
-struct TangencyMemo {
+/// Discovery asks the same (edge, face pair) question many times per move:
+/// the guard, the seed loop and every candidate band re-walk the same edges,
+/// and each answer projects edge samples onto both faces. Each of those
+/// helpers also indexed the solid's adjacency on its own. Both are pure
+/// functions of the topology, so the entries are tagged with its cache
+/// identity and dropped as soon as any mutation or rewind changes it.
+struct DiscoveryMemo {
     identity: Option<remus_topology::CacheIdentity>,
     verdicts: remus_math::det_hash::DetLookupHashMap<(usize, usize, usize), bool>,
+    adjacency: Vec<(SolidId, Rc<AdjacencyIndex>)>,
+}
+
+impl DiscoveryMemo {
+    /// This memo with every entry of another topology state dropped.
+    fn current(&mut self, identity: remus_topology::CacheIdentity) -> &mut Self {
+        if self.identity != Some(identity) {
+            self.identity = Some(identity);
+            self.verdicts.clear();
+            self.adjacency.clear();
+        }
+        self
+    }
 }
 
 thread_local! {
-    static TANGENCY_MEMO: std::cell::RefCell<Option<TangencyMemo>> =
+    static DISCOVERY_MEMO: std::cell::RefCell<Option<DiscoveryMemo>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Enables [`TANGENCY_MEMO`] until dropped. A nested scope leaves the
+/// Enables [`DISCOVERY_MEMO`] until dropped. A nested scope leaves the
 /// enclosing one in charge.
-struct TangencyMemoScope {
+struct DiscoveryMemoScope {
     owner: bool,
 }
 
-impl TangencyMemoScope {
+impl DiscoveryMemoScope {
     fn enter() -> Self {
-        let owner = TANGENCY_MEMO.with(|memo| {
+        let owner = DISCOVERY_MEMO.with(|memo| {
             let mut memo = memo.borrow_mut();
             if memo.is_some() {
                 return false;
             }
-            *memo = Some(TangencyMemo {
+            *memo = Some(DiscoveryMemo {
                 identity: None,
                 verdicts: remus_math::det_hash::DetLookupHashMap::default(),
+                adjacency: Vec::new(),
             });
             true
         });
@@ -745,10 +791,10 @@ impl TangencyMemoScope {
     }
 }
 
-impl Drop for TangencyMemoScope {
+impl Drop for DiscoveryMemoScope {
     fn drop(&mut self) {
         if self.owner {
-            TANGENCY_MEMO.with(|memo| memo.borrow_mut().take());
+            DISCOVERY_MEMO.with(|memo| memo.borrow_mut().take());
         }
     }
 }
@@ -785,7 +831,7 @@ pub fn blend_region(
         .into());
     };
     let tol = Tolerance::new();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut band = HashSet::from([seed]);
     let mut queue = VecDeque::from([seed]);
 
@@ -828,7 +874,7 @@ fn blend_region_supports(
     solid: SolidId,
     faces: &[FaceId],
 ) -> Result<Vec<FaceId>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let band: HashSet<FaceId> = faces.iter().copied().collect();
     let mut supports = HashSet::new();
     for &band_face in faces {
@@ -974,7 +1020,7 @@ pub(crate) fn move_planar_faces_with_blends(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<Option<BlendMoveEntities>, OperationsError> {
-    let _tangency_memo = TangencyMemoScope::enter();
+    let _discovery_memo = DiscoveryMemoScope::enter();
     if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
         return Ok(None);
     }
@@ -1379,7 +1425,7 @@ fn adjacent_blend_seed(
     selected_faces: &[FaceId],
 ) -> Result<Option<FaceId>, OperationsError> {
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
     ordered.sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
@@ -1409,7 +1455,7 @@ fn adjacent_analytic_blend_seed(
     selected_faces: &[FaceId],
 ) -> Result<Option<FaceId>, OperationsError> {
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
     ordered.sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
@@ -1499,7 +1545,7 @@ fn translation_invariant_blend_region(
     direction: Vec3,
 ) -> Result<BlendTranslationRegion, OperationsError> {
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut region = HashSet::new();
     let mut queue = VecDeque::new();
 
@@ -2080,7 +2126,7 @@ fn describe_band_face_lineage(
         .map(|(&source, current)| (current.index(), source))
         .collect();
     let support_set: HashSet<FaceId> = band.supports.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut exact = true;
     let mut lineages = Vec::new();
     for &band_face in &band.faces {
@@ -2260,7 +2306,7 @@ fn support_pairs_for_edges(
     edges: &[EdgeId],
     supports: &[FaceId],
 ) -> Result<Vec<SupportPair>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let support_set: HashSet<FaceId> = supports.iter().copied().collect();
     let mut pairs: BTreeMap<(usize, usize), (FaceId, FaceId, usize)> = BTreeMap::new();
     for &edge in edges {
@@ -2896,7 +2942,7 @@ fn heal_cylinder_plane_strip(
             return Ok(None);
         }
     }
-    let adjacency = topo.build_adjacency(copy)?;
+    let adjacency = solid_adjacency(topo, copy)?;
     // A cross edge ending on curved geometry outside the transverse-cylinder
     // compound scope names the missing construction precisely and refuses: no
     // fallback healer owns curved-carrier sharp terminations either. A single
@@ -4131,7 +4177,7 @@ fn heal_planar_band(
                 })
         })
         .collect::<Result<_, _>>()?;
-    let adjacency = topo.build_adjacency(outcome.solid)?;
+    let adjacency = solid_adjacency(topo, outcome.solid)?;
     let mut edges = Vec::new();
     for edge in remus_topology::explorer::solid_edges(topo, outcome.solid)? {
         let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
@@ -4161,7 +4207,7 @@ fn shared_edges(
     first: FaceId,
     second: FaceId,
 ) -> Result<Vec<EdgeId>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut edges = Vec::new();
     for edge in face_edges(topo, first)? {
         let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
@@ -5783,6 +5829,56 @@ mod tests {
             .effective_plane_normal()
             .unwrap();
         (topo, solid, support, band, direction)
+    }
+
+    /// Inside a discovery scope the adjacency index is shared while the
+    /// topology is unchanged and indexes exactly what a fresh build does;
+    /// any mutation, and leaving the scope, builds afresh. Discovery answers
+    /// are the same with and without the scope.
+    #[test]
+    fn discovery_memo_shares_adjacency_only_within_one_topology_state() {
+        let (mut topo, solid, support, band, direction) = filleted_cube_support_and_band();
+        let discover = |topo: &Topology| {
+            let region = blend_region(topo, solid, band).unwrap();
+            let described = describe_band(topo, solid, band).unwrap();
+            let seed = adjacent_blend_seed(topo, solid, &[support]).unwrap();
+            let analytic = adjacent_analytic_blend_seed(topo, solid, &[support]).unwrap();
+            let translated =
+                translation_invariant_blend_region(topo, solid, &[support], direction).unwrap();
+            let sorted =
+                |set: &HashSet<FaceId>| canonical_faces(&set.iter().copied().collect::<Vec<_>>());
+            (
+                region,
+                described.faces,
+                described.supports,
+                seed,
+                analytic,
+                sorted(&translated.translated_faces),
+                sorted(&translated.translated_nurbs_supports),
+            )
+        };
+        let unscoped = discover(&topo);
+        let fresh = topo.build_adjacency(solid).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+        {
+            let _scope = DiscoveryMemoScope::enter();
+            assert_eq!(discover(&topo), unscoped);
+            let shared = solid_adjacency(&topo, solid).unwrap();
+            assert!(Rc::ptr_eq(&shared, &solid_adjacency(&topo, solid).unwrap()));
+            for &edge in &edges {
+                assert_eq!(shared.faces_for_edge(edge), fresh.faces_for_edge(edge));
+            }
+            let vertex = topo.edge(edges[0]).unwrap().start();
+            let point = topo.vertex(vertex).unwrap().point();
+            topo.vertex_mut(vertex).unwrap().set_point(point);
+            assert!(!Rc::ptr_eq(
+                &shared,
+                &solid_adjacency(&topo, solid).unwrap()
+            ));
+            assert_eq!(discover(&topo), unscoped);
+        }
+        let first = solid_adjacency(&topo, solid).unwrap();
+        assert!(!Rc::ptr_eq(&first, &solid_adjacency(&topo, solid).unwrap()));
     }
 
     /// Closed form with a translated blend face: the band's shadow along the
