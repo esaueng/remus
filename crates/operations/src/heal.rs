@@ -626,9 +626,13 @@ fn merge_shell_coincident_vertices(
 /// Remove degenerate edges (shorter than tolerance) from a solid.
 ///
 /// An edge whose start and end vertices are within `tolerance` of each
-/// other is considered degenerate. Such edges are collapsed: their
-/// references in wires are removed, and the wire is rebuilt without them.
-/// Every boundary loop of every face is visited, cavities and holes included.
+/// other is considered degenerate. Such edges are collapsed: their two
+/// vertices are fused into the start vertex (every edge of the solid using
+/// the end vertex is re-pointed), so the loops stay connected, and their
+/// references in wires are removed, each wire rebuilt without them. Every
+/// boundary loop of every face is visited, cavities and holes included. A
+/// loop whose every edge is degenerate has nothing to rebuild and is left
+/// whole, its edges with it.
 ///
 /// Returns the number of degenerate edges removed.
 ///
@@ -639,6 +643,8 @@ pub fn remove_degenerate_edges(
     solid: SolidId,
     tolerance: f64,
 ) -> Result<usize, crate::OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+
     let tol = if tolerance > 0.0 {
         tolerance
     } else {
@@ -647,55 +653,100 @@ pub fn remove_degenerate_edges(
     let tol_sq = tol * tol;
 
     let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
-
-    let mut removed_count = 0;
-
+    let mut loops: Vec<(FaceId, WireId)> = Vec::new();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
-        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
-            .chain(face.inner_wires().iter().copied())
-            .collect();
-        for wire_id in wire_ids {
-            removed_count += remove_degenerate_edges_from_wire(topo, fid, wire_id, tol_sq)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            loops.push((fid, wid));
         }
     }
 
+    let mut drop: BTreeSet<EdgeId> = BTreeSet::new();
+    let mut keep: BTreeSet<EdgeId> = BTreeSet::new();
+    for &(_, wid) in &loops {
+        let mut short = Vec::new();
+        let wire = topo.wire(wid)?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start_pos = topo.vertex(edge.start())?.point();
+            let end_pos = topo.vertex(edge.end())?.point();
+            if (end_pos - start_pos).length_squared() < tol_sq && edge.start() != edge.end() {
+                short.push(oe.edge());
+            }
+        }
+        if short.len() == wire.edges().len() {
+            keep.extend(short);
+        } else {
+            drop.extend(short);
+        }
+    }
+    drop.retain(|edge| !keep.contains(edge));
+    if drop.is_empty() {
+        return Ok(0);
+    }
+
+    // Fuse each dropped edge's end vertex into its start, transitively.
+    let mut parent: BTreeMap<VertexId, VertexId> = BTreeMap::new();
+    let find = |parent: &BTreeMap<VertexId, VertexId>, mut v: VertexId| {
+        while let Some(&p) = parent.get(&v) {
+            v = p;
+        }
+        v
+    };
+    for &eid in &drop {
+        let edge = topo.edge(eid)?;
+        let (a, b) = (find(&parent, edge.start()), find(&parent, edge.end()));
+        if a != b {
+            parent.insert(b, a);
+        }
+    }
+    let mut solid_edges: Vec<EdgeId> = Vec::new();
+    for &(_, wid) in &loops {
+        solid_edges.extend(topo.wire(wid)?.edges().iter().map(OrientedEdge::edge));
+    }
+    solid_edges.compact_sort_by_key(|e| e.index());
+    solid_edges.dedup_by_key(|e| e.index());
+    for eid in solid_edges {
+        let (start, end) = {
+            let edge = topo.edge(eid)?;
+            (edge.start(), edge.end())
+        };
+        let (new_start, new_end) = (find(&parent, start), find(&parent, end));
+        if (new_start, new_end) != (start, end) {
+            // In place, as in `merge_coincident_vertices`: the curve and its
+            // trim are unchanged by a fusion within tolerance.
+            let edge = topo.edge_mut(eid)?;
+            edge.set_start(new_start);
+            edge.set_end(new_end);
+        }
+    }
+
+    let mut removed_count = 0;
+    for (fid, wid) in loops {
+        removed_count += remove_edges_from_wire(topo, fid, wid, &drop)?;
+    }
     Ok(removed_count)
 }
 
-/// Drop the degenerate edges of one boundary loop of `fid`, rebuilding the
-/// loop as a new wire; returns the number of edges dropped.
-fn remove_degenerate_edges_from_wire(
+/// Drop the uses of `drop` from one boundary loop of `fid`, rebuilding the
+/// loop as a new wire; returns the number of uses dropped.
+fn remove_edges_from_wire(
     topo: &mut Topology,
     fid: FaceId,
     wire_id: WireId,
-    tol_sq: f64,
+    drop: &std::collections::BTreeSet<EdgeId>,
 ) -> Result<usize, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let is_closed = wire.is_closed();
+    let new_edges: Vec<OrientedEdge> = wire
+        .edges()
+        .iter()
+        .filter(|oe| !drop.contains(&oe.edge()))
+        .copied()
+        .collect();
+    let removed_count = wire.edges().len() - new_edges.len();
 
-    let mut new_edges = Vec::new();
-    let mut removed_count = 0;
-
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge())?;
-        let start_pos = topo.vertex(edge.start())?.point();
-        let end_pos = topo.vertex(edge.end())?.point();
-        let len_sq = (end_pos - start_pos).length_squared();
-
-        if len_sq < tol_sq && edge.start() != edge.end() {
-            removed_count += 1;
-        } else {
-            new_edges.push(*oe);
-        }
-    }
-
-    if new_edges.is_empty() {
-        // Every edge of the loop is degenerate: there is no loop left to
-        // rebuild, so nothing is removed and nothing is reported.
-        return Ok(0);
-    }
-    if removed_count > 0 {
+    if removed_count > 0 && !new_edges.is_empty() {
         // Create a NEW wire instead of modifying in-place. In-place
         // modification via wire_mut corrupts other solids that share
         // the same wire ID (analytic_boolean shares edges/wires across
@@ -714,9 +765,9 @@ fn remove_degenerate_edges_from_wire(
             .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
             .collect();
         topo.set_face_boundary_wires(fid, outer, inner)?;
+        return Ok(removed_count);
     }
-
-    Ok(removed_count)
+    Ok(0)
 }
 
 /// Remove out-and-back spurs from face wires.
