@@ -26,10 +26,13 @@ their numbers.
   each, which faces each edge and vertex bounds, and which vertices each edge
   ends at. A face whose loops break authority (loop count, owner, closure,
   coedge count, parent or edge), or that shares a wire with another face,
-  changes the digest and is counted. Lazily filled caches in a `Debug`
-  rendering (the NURBS weight `OnceLock`s) are left out. A `canonical` digest
-  of the same content ignores face order, cavity order and the start of each
-  closed wire. Mesh workloads digest position bits, normal bits and indices.
+  changes the digest and is counted. Both digests also carry the verdict of
+  the kernel's `validate_boundary_authority` on the whole topology, which
+  checks the pcurve index too; it is `ok` on every workload. Lazily filled
+  caches in a `Debug` rendering (the NURBS weight `OnceLock`s) are left out. A
+  `canonical` digest of the same content ignores face order, cavity order and
+  the start of each closed wire. Mesh workloads digest position bits, normal
+  bits and indices.
 - glibc selects libm variants by CPU feature, so digests are compared native
   with native and valgrind with valgrind.
 

@@ -11,11 +11,13 @@
 //! bounds, and which vertices each edge ends at. Any face whose loops break
 //! authority (loop count, owner, closure, coedge count, parent or edge) or
 //! that shares a wire with another boundary changes both digests and is
-//! counted in `loop_anomalies`. Tessellation workloads digest position bits
-//! and indices. Two builds whose digests match produced bit-identical output.
-//! Solids also print a `canonical` digest of the same content that ignores
-//! face order, cavity order and closed-wire start, for workloads whose order
-//! varies run to run.
+//! counted in `loop_anomalies`. Each line also carries the kernel's own
+//! `validate_boundary_authority` verdict on the whole topology, which covers
+//! the pcurve index, and both digests include it. Tessellation workloads
+//! digest position bits and indices. Two builds whose digests match produced
+//! bit-identical output. Solids also print a `canonical` digest of the same
+//! content that ignores face order, cavity order and closed-wire start, for
+//! workloads whose order varies run to run.
 //!
 //! glibc selects libm variants by CPU feature, and valgrind's virtual CPU
 //! reports fewer features, so digests compare native with native and
