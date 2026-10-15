@@ -31,6 +31,10 @@ use remus_topology::pcurve::PCurve;
 /// anisotropy sits many orders above.
 const CIRCLE_ROUNDOFF_REL: f64 = 64.0 * f64::EPSILON;
 
+/// Radians below which a frame rotation is the roundoff of normalizing a
+/// moved unit axis, not a turn.
+const ANGLE_ROUNDOFF: f64 = 16.0 * f64::EPSILON;
+
 /// How one face's UV chart changed under a transform.
 #[derive(Debug, Clone, Copy)]
 pub enum ChartMap {
@@ -54,10 +58,45 @@ pub struct UvAffine {
 
 impl UvAffine {
     /// `(u, v) ↦ (u_scale·u, v_scale·v)`.
+    #[cfg(test)]
     pub const fn diagonal(u_scale: f64, v_scale: f64) -> Self {
         Self {
             origin: Point2::new(0.0, 0.0),
             u_image: Vec2::new(u_scale, 0.0),
+            v_image: Vec2::new(0.0, v_scale),
+        }
+    }
+
+    /// The map for a revolved carrier (cylinder, cone, sphere, torus) whose
+    /// angular frame `(x, y)` went from `old` to the rebuilt `new`:
+    /// `(u, v) ↦ (±u + φ, v_scale·v)`.
+    ///
+    /// `φ` is the angle of the moved `old.x` in the new frame, and the sign
+    /// is negative when the map reflects the frame (a carrier rebuilt
+    /// right-handed then sweeps `u` the other way). `v_scale` is the
+    /// similarity's scale for an axial or slant `v`, `1` for an angle.
+    pub fn revolved(matrix: &Mat4, old: (Vec3, Vec3), new: (Vec3, Vec3), v_scale: f64) -> Self {
+        let in_new = |d: Vec3| {
+            let image = linear(matrix, d);
+            Vec2::new(image.dot(new.0), image.dot(new.1))
+        };
+        let (x, y) = (in_new(old.0), in_new(old.1));
+        let sign = if x.x().mul_add(y.y(), -(x.y() * y.x())) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let phi = x.y().atan2(x.x());
+        // A frame carried exactly (sphere, torus) lands on `φ = 0` up to the
+        // roundoff of normalizing the moved axes.
+        let phi = if phi.abs() <= ANGLE_ROUNDOFF {
+            0.0
+        } else {
+            phi
+        };
+        Self {
+            origin: Point2::new(phi, 0.0),
+            u_image: Vec2::new(sign, 0.0),
             v_image: Vec2::new(0.0, v_scale),
         }
     }

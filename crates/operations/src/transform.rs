@@ -1478,28 +1478,24 @@ pub(crate) fn transform_face_surface_recorded(
             if is_uniform_scale(matrix) {
                 let cyl_clone = cyl.clone();
                 let new_origin = matrix.mul_point(cyl_clone.origin());
-                let mut new_axis = transform_direction(matrix, cyl_clone.axis())?;
+                let new_axis = transform_direction(matrix, cyl_clone.axis())?;
                 let new_radius = scaled_radius(matrix, cyl_clone.axis(), cyl_clone.radius());
-                // Carry the frame instead of rebuilding it canonically, so
-                // `u` keeps its zero direction. A reflection would leave
-                // (x, y, axis) left-handed: flip the axis instead of `u`,
-                // so only the axial coordinate changes sign.
-                let v_scale = axial_scale(matrix, cyl_clone.axis());
-                let v_scale = if recorder.orientation_reversing {
-                    new_axis = -new_axis;
-                    -v_scale
-                } else {
-                    v_scale
-                };
-                let new_cyl = remus_math::surfaces::CylindricalSurface::with_ref_dir(
-                    new_origin,
-                    new_axis,
-                    new_radius,
-                    linear(matrix, cyl_clone.x_axis()),
+                let new_cyl = remus_math::surfaces::CylindricalSurface::new(
+                    new_origin, new_axis, new_radius,
                 )?;
+                // The frame is rebuilt canonically from the axis (booleans
+                // are tuned on where that puts the seam), so `u` turns by
+                // the angle between the moved and the rebuilt zero
+                // direction.
+                let chart = UvAffine::revolved(
+                    matrix,
+                    (cyl_clone.x_axis(), cyl_clone.y_axis()),
+                    (new_cyl.x_axis(), new_cyl.y_axis()),
+                    axial_scale(matrix, cyl_clone.axis()),
+                );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Cylinder(new_cyl));
-                ChartMap::Affine(UvAffine::diagonal(1.0, v_scale))
+                ChartMap::Affine(chart)
             } else {
                 // Same reasoning as the sibling arm above: an anisotropic
                 // scale makes the cylinder elliptic, so convert to NURBS
@@ -1530,22 +1526,21 @@ pub(crate) fn transform_face_surface_recorded(
                 let cone_clone = cone.clone();
                 let new_apex = matrix.mul_point(cone_clone.apex());
                 let new_axis = transform_direction(matrix, cone_clone.axis())?;
-                // Carry the frame (see the cylinder arm). The axis cannot
-                // flip here — it orients the half-angle — so a reflection
-                // negates `u`.
-                let new_cone = remus_math::surfaces::ConicalSurface::with_ref_dir(
+                let new_cone = remus_math::surfaces::ConicalSurface::new(
                     new_apex,
                     new_axis,
                     cone_clone.half_angle(),
-                    linear(matrix, cone_clone.x_axis()),
                 )?;
+                // Canonical frame, as for the cylinder; `v` is the slant
+                // distance from the apex and scales with the map.
+                let chart = UvAffine::revolved(
+                    matrix,
+                    (cone_clone.x_axis(), cone_clone.y_axis()),
+                    (new_cone.x_axis(), new_cone.y_axis()),
+                    axial_scale(matrix, cone_clone.axis()),
+                );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
-                let v_scale = axial_scale(matrix, cone_clone.axis());
-                ChartMap::Affine(if recorder.orientation_reversing {
-                    UvAffine::diagonal(-1.0, v_scale)
-                } else {
-                    UvAffine::diagonal(1.0, v_scale)
-                })
+                ChartMap::Affine(chart)
             } else {
                 let inverse = matrix.inverse()?;
                 let v_range = analytic_face_v_range(topo, fid, |pt| {
@@ -1572,26 +1567,23 @@ pub(crate) fn transform_face_surface_recorded(
                 let new_center = matrix.mul_point(sph_clone.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                // A reflection flips the polar axis instead of `u`: the
-                // frame stays right-handed and only the latitude changes
-                // sign.
-                let mut z_axis = transform_direction(matrix, sph_clone.z_axis())?;
-                if recorder.orientation_reversing {
-                    z_axis = -z_axis;
-                }
                 let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
                     new_center,
                     sph_clone.radius() * sx,
-                    z_axis,
+                    transform_direction(matrix, sph_clone.z_axis())?,
                     transform_direction(matrix, sph_clone.x_axis())?,
                 )?;
+                // The moved frame is kept, so only a reflection (which
+                // rebuilds `y = z × x` on the other side) negates `u`.
+                let chart = UvAffine::revolved(
+                    matrix,
+                    (sph_clone.x_axis(), sph_clone.y_axis()),
+                    (new_sph.x_axis(), new_sph.y_axis()),
+                    1.0,
+                );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
-                if recorder.orientation_reversing {
-                    ChartMap::Affine(UvAffine::diagonal(1.0, -1.0))
-                } else {
-                    ChartMap::Unchanged
-                }
+                ChartMap::Affine(chart)
             } else {
                 let inverse = matrix.inverse()?;
                 let sph_clone = sph.clone();
@@ -1654,25 +1646,23 @@ pub(crate) fn transform_face_surface_recorded(
                 let new_center = matrix.mul_point(tor_clone.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                // As for the sphere, a reflection flips the axis and negates
-                // the tube angle.
-                let mut z_axis = transform_direction(matrix, tor_clone.z_axis())?;
-                if recorder.orientation_reversing {
-                    z_axis = -z_axis;
-                }
                 let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     new_center,
                     tor_clone.major_radius() * sx,
                     tor_clone.minor_radius() * sx,
-                    z_axis,
+                    transform_direction(matrix, tor_clone.z_axis())?,
                     transform_direction(matrix, tor_clone.x_axis())?,
                 )?;
+                // As for the sphere: the tube angle `v` is measured against
+                // the moved axis and never changes.
+                let chart = UvAffine::revolved(
+                    matrix,
+                    (tor_clone.x_axis(), tor_clone.y_axis()),
+                    (new_tor.x_axis(), new_tor.y_axis()),
+                    1.0,
+                );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
-                if recorder.orientation_reversing {
-                    ChartMap::Affine(UvAffine::diagonal(1.0, -1.0))
-                } else {
-                    ChartMap::Unchanged
-                }
+                ChartMap::Affine(chart)
             } else {
                 let tor_clone = tor.clone();
                 let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)

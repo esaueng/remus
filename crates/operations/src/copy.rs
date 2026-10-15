@@ -1887,11 +1887,10 @@ mod tests {
             PeriodicWinding::new(3, -2)
         );
         let on_plane = |face: FaceId, uv: Point2| {
-            let (normal, d) = match source.face(face).unwrap().surface() {
-                FaceSurface::Plane { normal, d } => Some((*normal, *d)),
-                _ => None,
-            }
-            .unwrap();
+            // A non-planar face lifts to NaN and fails the comparison below.
+            let FaceSurface::Plane { normal, d } = *source.face(face).unwrap().surface() else {
+                return remus_math::vec::Point3::new(f64::NAN, f64::NAN, f64::NAN);
+            };
             let foot = normal * d;
             let chart = remus_math::frame::Frame3::from_normal(
                 remus_math::vec::Point3::new(foot.x(), foot.y(), foot.z()),
