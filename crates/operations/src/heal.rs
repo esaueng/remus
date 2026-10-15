@@ -690,7 +690,12 @@ fn remove_degenerate_edges_from_wire(
         }
     }
 
-    if removed_count > 0 && !new_edges.is_empty() {
+    if new_edges.is_empty() {
+        // Every edge of the loop is degenerate: there is no loop left to
+        // rebuild, so nothing is removed and nothing is reported.
+        return Ok(0);
+    }
+    if removed_count > 0 {
         // Create a NEW wire instead of modifying in-place. In-place
         // modification via wire_mut corrupts other solids that share
         // the same wire ID (analytic_boolean shares edges/wires across
