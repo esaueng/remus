@@ -1,19 +1,23 @@
 //! Differential oracle for the knot-span box prefilter of the NURBS arc
 //! refinement in `split_arc_edges_at_collinear_vertices`: every vertex the
-//! prefilter rejects is one the unchanged sampled search rejects too, so the
-//! accepted cuts are the same with and without it.
+//! prefilter (`ArcRefineSkip`, the test the refinement itself runs) rejects
+//! is one the unchanged sampled search rejects too, so the accepted cuts are
+//! the same with and without it.
 //!
 //! The corpus is random clamped NURBS curves (degrees 1 to 5, rational and
 //! polynomial, repeated interior knots, three coordinate scales) with forward,
 //! partial and reversed trims, probed at points on the curve, at offsets that
 //! straddle the snap distance and the prefilter's `2 snap` threshold, at the
-//! control points and anywhere in the curve's box.
+//! control points and anywhere in the curve's box. On a trim with a
+//! non-finite end or length the search evaluates NaN parameters (a debug
+//! assertion in curve evaluation, NaN points that accept every vertex in a
+//! release build), so there the prefilter must skip nothing.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
 
 use remus_math::nurbs::curve::NurbsCurve;
 
-use super::{EdgeCurve, Point3, Vec3, box_distance, nurbs_cut_at, nurbs_span_boxes};
+use super::{ArcRefineSkip, EdgeCurve, Point3, Vec3, box_distance, nurbs_cut_at, nurbs_span_boxes};
 
 /// The refinement's snap distance (ten merge tolerances).
 const SNAP: f64 = 1e-6;
@@ -102,6 +106,7 @@ fn span_box_prefilter_rejects_only_vertices_the_search_rejects() {
                 ((b - a).mul_add(0.2, a), (b - a).mul_add(0.7, a)),
                 (b, a),
             ] {
+                let skip = ArcRefineSkip::new(&curve, (t0, t1));
                 let span = t1 - t0;
                 let (sp, ep) = (nurbs.evaluate(t0), nurbs.evaluate(t1));
                 let samples: Vec<Point3> = (0..=32_usize)
@@ -141,8 +146,7 @@ fn span_box_prefilter_rejects_only_vertices_the_search_rejects() {
                 for p in candidates {
                     probes += 1;
                     let reference = nurbs_cut_at(&curve, (sp, ep), (t0, span), &samples, p, SNAP);
-                    let skip = boxes.iter().all(|aabb| box_distance(p, aabb) > 2.0 * SNAP);
-                    if skip {
+                    if skip.skips(p, SNAP) {
                         rejected += 1;
                         assert_eq!(
                             reference, None,
@@ -161,11 +165,38 @@ fn span_box_prefilter_rejects_only_vertices_the_search_rejects() {
             }
         }
     }
-    // Both outcomes occur often, including accepted cuts outside every box.
+    // Both outcomes occur often, including accepted cuts just outside every
+    // box, which a skip threshold under `snap` would drop.
     assert!(
         rejected * 6 > probes && accepted > 1000 && accepted_near_threshold > 0,
         "{rejected} rejected, {accepted} accepted ({accepted_near_threshold} near) of {probes}"
     );
+}
+
+/// A trim with a non-finite end or a length that overflows skips no vertex,
+/// however far, while the finite trim of the same curve skips far ones.
+#[test]
+fn non_finite_trims_skip_nothing() {
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut far_skips = 0;
+    for _ in 0..200 {
+        let nurbs = random_curve(&mut rng, 1.0);
+        let (a, b) = nurbs.domain();
+        let curve = EdgeCurve::NurbsCurve(nurbs);
+        let far = Point3::new(1e4, -1e4, 1e4);
+        far_skips += usize::from(ArcRefineSkip::new(&curve, (a, b)).skips(far, SNAP));
+        for trim in [
+            (f64::NAN, b),
+            (a, f64::NAN),
+            (f64::NEG_INFINITY, b),
+            (a, f64::INFINITY),
+            (-f64::MAX, f64::MAX),
+        ] {
+            let skip = ArcRefineSkip::new(&curve, trim);
+            assert!(!skip.skips(far, SNAP), "skipped {far:?} on trim {trim:?}");
+        }
+    }
+    assert_eq!(far_skips, 200);
 }
 
 #[test]

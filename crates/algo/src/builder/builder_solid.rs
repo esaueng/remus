@@ -3495,6 +3495,41 @@ fn nurbs_span_boxes(curve: &remus_math::nurbs::curve::NurbsCurve) -> Option<Vec<
     Some(boxes)
 }
 
+/// Which vertices the NURBS arc refinement in
+/// [`split_arc_edges_at_collinear_vertices`] may skip on one edge: only ones
+/// its search ([`nurbs_cut_at`]) would reject.
+struct ArcRefineSkip(Option<Vec<(Point3, Point3)>>);
+
+impl ArcRefineSkip {
+    /// The skip test for `curve` trimmed to `(t0, t1)`. Only a NURBS edge
+    /// with a finite trim gets span boxes: that keeps every searched
+    /// parameter finite, so the boxes cover every point the search evaluates.
+    /// Any other edge skips nothing.
+    fn new(curve: &EdgeCurve, (t0, t1): (f64, f64)) -> Self {
+        let span = t1 - t0;
+        Self(
+            if let EdgeCurve::NurbsCurve(nurbs) = curve
+                && t0.is_finite()
+                && t1.is_finite()
+                && span.is_finite()
+            {
+                nurbs_span_boxes(nurbs)
+            } else {
+                None
+            },
+        )
+    }
+
+    /// Whether the search would reject `p` for a cut within `snap`: farther
+    /// than `2 snap` from every span box, `p` is farther than `snap` from
+    /// every point the search can evaluate.
+    fn skips(&self, p: Point3, snap: f64) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|boxes| boxes.iter().all(|aabb| box_distance(p, aabb) > 2.0 * snap))
+    }
+}
+
 /// Distance from `p` to the box `(lo, hi)`; zero inside, and zero for a NaN
 /// coordinate, which keeps such a point.
 fn box_distance(p: Point3, (lo, hi): &(Point3, Point3)) -> f64 {
@@ -3681,29 +3716,14 @@ fn split_arc_edges_at_collinear_vertices(
                     amax.z().max(q.z()),
                 );
             }
-            // A finite trim keeps every searched parameter finite, so the span
-            // boxes cover every point the search evaluates.
-            let span_boxes = if let EdgeCurve::NurbsCurve(nurbs) = &curve
-                && t0.is_finite()
-                && t1.is_finite()
-                && span.is_finite()
-            {
-                nurbs_span_boxes(nurbs)
-            } else {
-                None
-            };
+            let skip = ArcRefineSkip::new(&curve, (t0, t1));
             let mut cuts: Vec<(f64, f64, VertexId)> = Vec::new();
             for ci in grid.box_candidates(amin, amax, snap * 2.0) {
                 let (vid, p) = verts[ci];
                 if (p - sp).length() < snap || (p - ep).length() < snap {
                     continue;
                 }
-                // Farther than `2 snap` from every box, `p` is farther than
-                // `snap` from every point the search can evaluate, so the
-                // search would reject it.
-                if span_boxes.as_ref().is_some_and(|boxes| {
-                    boxes.iter().all(|aabb| box_distance(p, aabb) > 2.0 * snap)
-                }) {
+                if skip.skips(p, snap) {
                     continue;
                 }
                 if let Some((fraction, parameter)) =
