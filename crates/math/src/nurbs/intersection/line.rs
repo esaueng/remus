@@ -7,9 +7,23 @@ use crate::vec::{Point3, Vec3};
 use super::{IntersectionPoint, MAX_NEWTON_ITER};
 use crate::fma::FusedMulAdd;
 
+mod subdivision;
+
+#[cfg(test)]
+mod bump_oracle_tests;
+
 /// Intersect a line (ray) with a NURBS surface.
 ///
-/// Returns all intersection points along the ray.
+/// Returns all intersection points along the ray (the whole line, behind
+/// the origin too).
+///
+/// Newton refines seeds from an `n × n` sample grid first; those roots come
+/// first, in grid order. A completion pass then isolates crossings by
+/// Bézier subdivision of the surface against the line and appends any the
+/// grid missed (a crossing whose Newton basin holds no grid seed, such as
+/// the far flank of a bump narrower than about two grid cells). It accepts
+/// only residuals below `1e-9` relative to the surface's coordinate scale,
+/// so it adds genuine crossings, never near-misses.
 ///
 /// # Parameters
 ///
@@ -46,7 +60,8 @@ pub fn intersect_line_nurbs(
 /// [`intersect_line_nurbs_with_grid`], which then costs `n²` distance
 /// comparisons plus the Newton refinements — the same answer, bit for bit,
 /// because it is the same grid, scanned in the same order, with the same
-/// spacing thresholds.
+/// spacing thresholds. It also holds the completion pass's per-surface
+/// span-block bounds, about `2·⌈S/16⌉` boxes for `S` knot spans.
 #[derive(Debug, Clone)]
 pub struct LineSurfaceSeedGrid {
     /// Resolution per direction (`samples.max(10)`).
@@ -57,6 +72,8 @@ pub struct LineSurfaceSeedGrid {
     v_step: f64,
     /// `(S(u_i, v_j), local spacing)` in row-major `(i, j)` order.
     nodes: Vec<(Point3, f64)>,
+    /// Span-hull data of the completion pass ([`subdivision`]).
+    hull: subdivision::SpanHull,
 }
 
 impl LineSurfaceSeedGrid {
@@ -134,6 +151,7 @@ impl LineSurfaceSeedGrid {
             v_min,
             v_step,
             nodes,
+            hull: subdivision::SpanHull::for_surface(surface),
         }
     }
 }
@@ -202,6 +220,9 @@ pub fn intersect_line_nurbs_with_grid(
         direction: ray_dir,
         dir_len_sq,
     };
+    let (u_min, u_max) = surface.domain_u();
+    let (v_min, v_max) = surface.domain_v();
+    let domain = [u_min, u_max, v_min, v_max];
     let mut results: Vec<IntersectionPoint> = Vec::new();
     for &(u_guess, v_guess, seed_point) in &candidates {
         if let Some(pt) = refine_line_surface_point(
@@ -209,6 +230,8 @@ pub fn intersect_line_nurbs_with_grid(
             line,
             (u_guess, v_guess),
             seed_point,
+            domain,
+            GRID_ROOT_TOLERANCE,
             &mut workspace,
         ) {
             // Deduplicate: skip if close to an existing result.
@@ -221,8 +244,15 @@ pub fn intersect_line_nurbs_with_grid(
         }
     }
 
+    // Roots whose Newton basin no grid seed reached (a narrow bump's far
+    // flank). Appended after the grid roots, which keep their bits and order.
+    subdivision::complete_line_roots(surface, &grid.hull, line, &mut workspace, &mut results);
+
     Ok(results)
 }
+
+/// Final-check residual of a grid-seeded refinement.
+const GRID_ROOT_TOLERANCE: f64 = 1e-5;
 
 #[derive(Clone, Copy)]
 struct LineQuery {
@@ -393,11 +423,17 @@ const fn budget_end_index(first: usize, updates: usize) -> usize {
 /// state the iteration budget would end on is the cycle member at the same
 /// phase. The loop jumps there and goes straight to the final check, which
 /// then sees exactly the `(u, v)` exhausting the budget would have left.
+///
+/// Iterates stay within `bounds` (`[u_min, u_max, v_min, v_max]`); a point
+/// that has not converged within the budget is accepted when its distance to
+/// the line is below `final_tolerance`.
 fn refine_line_surface_point(
     surface: &NurbsSurface,
     line: LineQuery,
     guess: (f64, f64),
     seed_point: Point3,
+    bounds: [f64; 4],
+    final_tolerance: f64,
     workspace: &mut NewtonWorkspace,
 ) -> Option<IntersectionPoint> {
     let LineQuery {
@@ -407,8 +443,7 @@ fn refine_line_surface_point(
     } = line;
     let (mut u, mut v) = guess;
     workspace.seed_point(u, v, seed_point);
-    let (u_min, u_max) = surface.domain_u();
-    let (v_min, v_max) = surface.domain_v();
+    let [u_min, u_max, v_min, v_max] = bounds;
     // `visited[k]`: the `(u, v)` bits after `k` updates.
     let mut visited = [(0_u64, 0_u64); MAX_NEWTON_ITER + 1];
     visited[0] = (u.to_bits(), v.to_bits());
@@ -525,7 +560,7 @@ fn refine_line_surface_point(
         ray_dir.z().fma(t, ray_origin.z()),
     );
 
-    if (pt - ray_pt).length() < 1e-5 {
+    if (pt - ray_pt).length() < final_tolerance {
         Some(IntersectionPoint {
             point: pt,
             param1: (u, v),
@@ -955,11 +990,23 @@ mod tests {
         };
         let guess = (1.2, 1.8);
         let seed = surface.evaluate(guess.0, guess.1);
+        let (u0, u1) = surface.domain_u();
+        let (v0, v1) = surface.domain_v();
+        let refine = |workspace: &mut NewtonWorkspace| {
+            refine_line_surface_point(
+                &surface,
+                line,
+                guess,
+                seed,
+                [u0, u1, v0, v1],
+                GRID_ROOT_TOLERANCE,
+                workspace,
+            )
+        };
         let mut workspace = NewtonWorkspace::default();
-        let first = refine_line_surface_point(&surface, line, guess, seed, &mut workspace).unwrap();
+        let first = refine(&mut workspace).unwrap();
         let evaluations = workspace.stats.point_evaluations + workspace.stats.partial_evaluations;
-        let second =
-            refine_line_surface_point(&surface, line, guess, seed, &mut workspace).unwrap();
+        let second = refine(&mut workspace).unwrap();
         assert_eq!(bits(&[first]), bits(&[second]));
         assert!(workspace.stats.point_hits > 0);
         assert!(workspace.stats.partial_hits > 0);
@@ -981,7 +1028,7 @@ mod tests {
 
         // A new surface/ray call starts with no retained evaluations.
         let mut fresh = NewtonWorkspace::default();
-        let actual = refine_line_surface_point(&surface, line, guess, seed, &mut fresh).unwrap();
+        let actual = refine(&mut fresh).unwrap();
         assert_eq!(bits(&[actual]), bits(&[expected]));
         assert_eq!(fresh.stats.point_hits, 0);
         assert_eq!(fresh.stats.partial_hits, 0);
