@@ -310,3 +310,29 @@ fn grid_from_another_surface_does_not_panic() {
         assert!(intersect_line_nurbs_with_grid(&small, &grid, origin, dir).is_ok());
     }
 }
+
+/// An elongated patch: a tolerance scaled by the surface's size (once the
+/// control box diagonal, ~1e12 here) accepted a line one unit off it.
+#[test]
+fn elongated_patch_reports_no_near_miss() {
+    let surface = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1e12, 0.0, 0.0), Point3::new(1e12, 1.0, 0.0)],
+        ],
+        vec![vec![1.0; 2]; 2],
+    )
+    .unwrap();
+    let along = Vec3::new(1.0, 0.0, 0.0);
+    let above = intersect_line_nurbs(&surface, Point3::new(0.0, 0.5, 1.0), along, 20).unwrap();
+    assert!(above.is_empty(), "{above:?}");
+    let target = Point3::new(3.0, 0.5, 0.0);
+    let dir = Vec3::new(0.3, 0.2, 1.0);
+    let hits = intersect_line_nurbs(&surface, target - dir * 2.0, dir, 20).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!((hits[0].point - target).length() < 1e-6, "{hits:?}");
+}
