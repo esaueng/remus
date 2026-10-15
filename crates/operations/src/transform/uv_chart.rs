@@ -187,7 +187,13 @@ impl UvAffine {
                 // length and scales with the direction's image.
                 let direction = self.vector(line.direction());
                 let scale = direction.length();
-                let line = Line2D::new(self.point(line.origin()), direction).ok()?;
+                if !(scale.is_finite() && scale > 0.0) {
+                    return None;
+                }
+                // Normalized here: `Line2D::new` refuses directions shorter
+                // than 1e-15, which a valid tiny-scale map produces.
+                let unit = Vec2::new(direction.x() / scale, direction.y() / scale);
+                let line = Line2D::new(self.point(line.origin()), unit).ok()?;
                 (Curve2D::Line(line), t0 * scale, t1 * scale)
             }
             Curve2D::Circle(circle) => {
@@ -622,6 +628,34 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn line_pcurves_survive_maps_below_the_line_direction_floor() {
+        // A valid similarity that normalizes a model of size ~1e16 to unit
+        // size: the direction's image is shorter than `Line2D`'s 1e-15 floor.
+        let scale = 1e-16;
+        let (sin, cos) = 0.3_f64.sin_cos();
+        let map = UvAffine {
+            a: [[scale * cos, -scale * sin], [scale * sin, scale * cos]],
+            b: Vec2::new(0.0, 0.0),
+        };
+        let line = PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(2.0e16, -1.0e16), Vec2::new(0.6, 0.8)).unwrap()),
+            -3.0e16,
+            5.0e16,
+        );
+        let image = map.map_pcurve(&line).expect("tiny-scale line image");
+        for k in 0..=8 {
+            let f = f64::from(k) / 8.0;
+            let expected =
+                map.point(line.evaluate(line.t_start() + f * (line.t_end() - line.t_start())));
+            let actual = image.evaluate(image.t_start() + f * (image.t_end() - image.t_start()));
+            assert!(
+                (actual - expected).length() < 1e-12,
+                "sample {k}: {actual:?} != {expected:?}"
+            );
         }
     }
 
