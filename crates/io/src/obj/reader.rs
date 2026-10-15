@@ -70,18 +70,23 @@ pub fn read_obj_with_limits(
                 // v0-v2-v3, ...), budgeting each triangle before it is stored:
                 // a single N-gon yields N-2 triangles, and nothing of a hostile
                 // face line is parsed or held past the budget.
-                let mut face = parts.map(|token| parse_face_corner(token, line));
+                // The budget is checked before each third-or-later token is
+                // even parsed, so a malformed token past the budget cannot
+                // turn the refusal into a parse error that copies the line.
+                let mut tokens = parts;
                 let mut triangles = 0_usize;
-                if let (Some(v0), Some(mut previous)) =
-                    (face.next().transpose()?, face.next().transpose()?)
-                {
-                    for corner in face {
-                        let corner = corner?;
+                let corner = |token: Option<&str>| token.map(|t| parse_face_corner(t, line));
+                if let (Some(v0), Some(mut previous)) = (
+                    corner(tokens.next()).transpose()?,
+                    corner(tokens.next()).transpose()?,
+                ) {
+                    for token in tokens {
                         ensure_limit(
                             "OBJ triangles",
                             corners.len() / 3 + 1,
                             limits.max_model_entities,
                         )?;
+                        let corner = parse_face_corner(token, line)?;
                         corners.extend([v0, previous, corner]);
                         previous = corner;
                         triangles += 1;
