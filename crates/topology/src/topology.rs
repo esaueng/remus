@@ -1635,6 +1635,11 @@ impl Topology {
             }
             targets.push(face_id);
         }
+        // Nothing to reverse is no mutation: counting one would put a
+        // spurious unjournaled-mutation barrier in front of the next op.
+        if targets.is_empty() {
+            return Ok(());
+        }
         for (face_id, face) in self.faces.iter() {
             if seen_faces.contains(&face_id) {
                 continue;
