@@ -150,7 +150,7 @@ Quick reference — find the right file for any task:
 | Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
 | NURBS surface evaluation | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
-| Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve and the allocation-free `normal` against their verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
+| Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal` and the fused `evaluate_and_partials_from`/`point_and_normal(_with)` against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |

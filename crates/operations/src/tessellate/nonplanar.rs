@@ -3241,8 +3241,10 @@ pub(super) fn tessellate_nonplanar_cdt(
         } else {
             pu_raw
         };
-        let pt3 = eval_surface_point(surface, pu, pv);
-        let base_nrm = chart_surface.normal(pu, pv);
+        // `eval_surface_point(surface, ..)` and `chart_surface.normal(..)`,
+        // bit for bit, from one basis solve where the carriers share knots.
+        let (pt3, base_nrm) = surface.point_and_normal_in(chart_surface, pu, pv);
+        let pt3 = pt3.unwrap_or(Point3::new(0.0, 0.0, 0.0));
         // A GFA band face on a recognized wall evaluates its interior
         // grid through the EXACT chart too: the unwrapped CDT rectangle
         // straddles the knot-domain seam (u in [0.75, 1.75] on a [0, 1]
@@ -5735,8 +5737,8 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
         for iu in 0..n_u {
             let fraction = iu as f64 / n_u as f64;
             let u = fraction.mul_add(u_max - u_min, u_min);
-            let point = surface.evaluate(u, v);
-            let normal = surface.normal(u, v)?;
+            let (point, normal) = surface.point_and_normal(u, v);
+            let normal = normal?;
             let key = point_merge_key(point, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
                 let index = merged.positions.len() as u32;

@@ -29,7 +29,7 @@
 )]
 // The `simd` feature keeps the general 4-lane solve, which these scalar
 // oracles do not describe; only the `evaluate` comparisons run there.
-#![cfg_attr(feature = "simd", allow(dead_code))]
+#![cfg_attr(feature = "simd", allow(dead_code, unused_variables))]
 
 use super::*;
 
@@ -583,4 +583,159 @@ fn degenerate_normals_match_pre_contraction_bits() {
     }
     // Every fixture is degenerate along a row or everywhere.
     assert!(fallbacks > 100, "only {fallbacks} fallback points");
+}
+
+/// The same net moved by a fixed offset: equal degrees, knots and weights,
+/// different control points, as a tessellation chart frame builds it.
+fn moved(s: &NurbsSurface, offset: Vec3) -> NurbsSurface {
+    NurbsSurface::new(
+        s.degree_u(),
+        s.degree_v(),
+        s.knots_u().to_vec(),
+        s.knots_v().to_vec(),
+        s.control_points()
+            .iter()
+            .map(|row| row.iter().map(|&p| p + offset).collect())
+            .collect(),
+        s.weights().to_vec(),
+    )
+    .expect("moved net")
+}
+
+/// The fused position-and-partials solve against the separate pre-change
+/// `evaluate` and first-order solve, through one scratch walked along each
+/// surface's grid (span hints and u memo hitting and missing) and handed
+/// from surface to surface.
+#[test]
+fn evaluate_and_partials_match_the_separate_pre_change_solves() {
+    let mut shared = DerivativeScratch::new();
+    let mut compared = 0usize;
+    for (label, s) in corpus() {
+        let us = parameters(s.domain_u(), s.knots_u());
+        let vs = parameters(s.domain_v(), s.knots_v());
+        let mut own = DerivativeScratch::new();
+        for &u in &us {
+            for &v in &vs {
+                let point = point_bits(s.evaluate_pre_contraction(u, v));
+                let (du, dv) = if cfg!(feature = "simd") {
+                    let d = s.derivatives(u, v, 1);
+                    (d[1][0], d[0][1])
+                } else {
+                    s.partials_pre_contraction(u, v)
+                };
+                for scratch in [&mut own, &mut shared] {
+                    let (p, du2, dv2) = scratch.evaluate_and_partials_from(&s, u, v);
+                    assert_eq!(
+                        (point_bits(p), vec_bits(du2), vec_bits(dv2)),
+                        (point, vec_bits(du), vec_bits(dv)),
+                        "{label} at ({u:e}, {v:e})"
+                    );
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 150_000, "compared only {compared}");
+}
+
+/// `point_and_normal` and `point_and_normal_with` against the pre-change
+/// `evaluate` and `normal`: on the surface itself, on a moved copy of its
+/// net (shared bases), and on carriers whose knots differ (separate calls).
+#[test]
+fn point_and_normal_match_the_separate_pre_change_calls() {
+    let normal_of = |s: &NurbsSurface, u: f64, v: f64| {
+        if cfg!(feature = "simd") {
+            normal_bits(&DerivativeScratch::new().normal_from(s, u, v))
+        } else {
+            normal_bits(&s.normal_pre_contraction(u, v))
+        }
+    };
+    let mut compared = 0usize;
+    for (label, s) in corpus() {
+        let chart = moved(&s, Vec3::new(-3.25, 0.5, 1e3));
+        let us = parameters(s.domain_u(), s.knots_u());
+        let vs = parameters(s.domain_v(), s.knots_v());
+        for &u in &us {
+            for &v in &vs {
+                let point = point_bits(s.evaluate_pre_contraction(u, v));
+                let (p, n) = s.point_and_normal(u, v);
+                assert_eq!(
+                    (point_bits(p), normal_bits(&n)),
+                    (point, normal_of(&s, u, v)),
+                    "{label} at ({u:e}, {v:e})"
+                );
+                let (p, n) = s.point_and_normal_with(&chart, u, v);
+                assert_eq!(
+                    (point_bits(p), normal_bits(&n)),
+                    (point, normal_of(&chart, u, v)),
+                    "{label} with a moved chart at ({u:e}, {v:e})"
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 150_000, "compared only {compared}");
+
+    // Degenerate patches: the perturbation fallback runs on the carrier.
+    for (label, s) in degenerate_corpus() {
+        let chart = moved(&s, Vec3::new(0.5, -2.0, 7.0));
+        for &u in &parameters(s.domain_u(), s.knots_u()) {
+            for &v in &parameters(s.domain_v(), s.knots_v()) {
+                let point = point_bits(s.evaluate_pre_contraction(u, v));
+                let (p, n) = s.point_and_normal(u, v);
+                assert_eq!(
+                    (point_bits(p), normal_bits(&n)),
+                    (point, normal_of(&s, u, v)),
+                    "{label} at ({u:e}, {v:e})"
+                );
+                let (p, n) = s.point_and_normal_with(&chart, u, v);
+                assert_eq!(
+                    (point_bits(p), normal_bits(&n)),
+                    (point, normal_of(&chart, u, v)),
+                    "{label} with a moved chart at ({u:e}, {v:e})"
+                );
+            }
+        }
+    }
+
+    // Carriers that do not share the bases: other interior knots, another
+    // degree, and a knot vector differing only in the sign of a zero.
+    let a = surface(3, 2, Knots::Repeated, Knots::Uniform, Weights::Rational);
+    let other_knots = surface(3, 2, Knots::Uniform, Knots::Uniform, Weights::Rational);
+    let other_degree = surface(2, 2, Knots::Repeated, Knots::Uniform, Weights::Rational);
+    let signed_zero = {
+        let mut knots_u = a.knots_u().to_vec();
+        for k in &mut knots_u {
+            if k.to_bits() == 0.0f64.to_bits() {
+                *k = -0.0;
+            }
+        }
+        assert!(knots_u.iter().any(|k| k.to_bits() == (-0.0f64).to_bits()));
+        NurbsSurface::new(
+            3,
+            2,
+            knots_u,
+            a.knots_v().to_vec(),
+            a.control_points().to_vec(),
+            a.weights().to_vec(),
+        )
+        .expect("signed-zero knots")
+    };
+    for carrier in [&other_knots, &other_degree, &signed_zero] {
+        #[cfg(not(feature = "simd"))]
+        assert!(!a.shares_bases_with(carrier));
+        for &u in &parameters(a.domain_u(), a.knots_u()) {
+            for &v in &parameters(a.domain_v(), a.knots_v()) {
+                let (p, n) = a.point_and_normal_with(carrier, u, v);
+                assert_eq!(
+                    (point_bits(p), normal_bits(&n)),
+                    (
+                        point_bits(a.evaluate_pre_contraction(u, v)),
+                        normal_of(carrier, u, v)
+                    ),
+                    "unshared carrier at ({u:e}, {v:e})"
+                );
+            }
+        }
+    }
 }

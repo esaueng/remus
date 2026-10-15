@@ -265,7 +265,9 @@ impl SurfaceEvaluation {
 
 /// Reusable surface-position/first-partial evaluations for the refinements.
 /// Position and partials retain their separate arithmetic: the derivative
-/// solve's position does not have the same bits as `surface.evaluate`.
+/// solve's position does not have the same bits as `surface.evaluate`, so a
+/// position solve computes `evaluate`'s own bits and the partials from one
+/// shared basis ([`DerivativeScratch::evaluate_and_partials_from`]).
 struct NewtonWorkspace {
     scratch: DerivativeScratch,
     evaluations: [SurfaceEvaluation; EVALUATION_CACHE_SIZE],
@@ -328,8 +330,19 @@ impl NewtonWorkspace {
             }
             return cached.point;
         }
-        let point = surface.evaluate(u, v);
-        self.store_point(index, u, v, point);
+        // A missed position is nearly always followed by the partials at the
+        // same UV (every iteration that does not converge), so solve both
+        // from one basis and keep both.
+        let (point, su, sv) = self.scratch.evaluate_and_partials_from(surface, u, v);
+        self.evaluations[index] = SurfaceEvaluation {
+            u_bits: u.to_bits(),
+            v_bits: v.to_bits(),
+            occupied: true,
+            has_partials: true,
+            point,
+            su,
+            sv,
+        };
         #[cfg(test)]
         {
             self.stats.point_evaluations += 1;
@@ -367,7 +380,9 @@ impl NewtonWorkspace {
 #[derive(Default)]
 struct EvaluationStats {
     seed_points: usize,
+    /// Position solves; each also yields the partials at its UV.
     point_evaluations: usize,
+    /// Partial-only solves (at a UV whose position came from the seed grid).
     partial_evaluations: usize,
     point_hits: usize,
     partial_hits: usize,
@@ -910,10 +925,12 @@ mod tests {
             assert_eq!(vector_bits(su), vector_bits(expected_partials[1][0]));
             assert_eq!(vector_bits(sv), vector_bits(expected_partials[0][1]));
         }
+        // The position solve also kept the partials, so both partial reads
+        // hit.
         assert_eq!(workspace.stats.point_evaluations, 1);
-        assert_eq!(workspace.stats.partial_evaluations, 1);
+        assert_eq!(workspace.stats.partial_evaluations, 0);
         assert_eq!(workspace.stats.point_hits, 1);
-        assert_eq!(workspace.stats.partial_hits, 1);
+        assert_eq!(workspace.stats.partial_hits, 2);
 
         // A distinct native UV forced into the same slot must run the actual
         // surface solves, including after returning to the evicted first UV.
@@ -936,7 +953,20 @@ mod tests {
             assert_eq!(vector_bits(sv), vector_bits(expected_partials[0][1]));
         }
         assert_eq!(workspace.stats.point_evaluations, 3);
-        assert_eq!(workspace.stats.partial_evaluations, 3);
+        assert_eq!(workspace.stats.partial_evaluations, 0);
+
+        // A seed point carries no partials: they take their own solve, then
+        // hit.
+        let seed = (0.35_f64, 0.95_f64);
+        workspace.seed_point(seed.0, seed.1, surface.evaluate(seed.0, seed.1));
+        let expected_partials = surface.derivatives(seed.0, seed.1, 1);
+        for _ in 0..2 {
+            let (su, sv) = workspace.partials(&surface, seed.0, seed.1);
+            assert_eq!(vector_bits(su), vector_bits(expected_partials[1][0]));
+            assert_eq!(vector_bits(sv), vector_bits(expected_partials[0][1]));
+        }
+        assert_eq!(workspace.stats.partial_evaluations, 1);
+        assert_eq!(workspace.stats.point_evaluations, 3);
         let mut entry = SurfaceEvaluation::EMPTY;
         entry.occupied = true;
         assert!(entry.matches(0.0, 0.0));
@@ -958,11 +988,14 @@ mod tests {
         let mut workspace = NewtonWorkspace::default();
         let first = refine_line_surface_point(&surface, line, guess, seed, &mut workspace).unwrap();
         let evaluations = workspace.stats.point_evaluations + workspace.stats.partial_evaluations;
+        // Within one refinement, partial reads hit the partials each position
+        // solve kept; the second refinement also hits the first one's values.
+        let first_hits = (workspace.stats.point_hits, workspace.stats.partial_hits);
         let second =
             refine_line_surface_point(&surface, line, guess, seed, &mut workspace).unwrap();
         assert_eq!(bits(&[first]), bits(&[second]));
-        assert!(workspace.stats.point_hits > 0);
-        assert!(workspace.stats.partial_hits > 0);
+        assert!(workspace.stats.point_hits > first_hits.0);
+        assert!(workspace.stats.partial_hits > first_hits.1);
         assert!(
             workspace.stats.point_evaluations + workspace.stats.partial_evaluations
                 < 2 * evaluations
@@ -983,8 +1016,10 @@ mod tests {
         let mut fresh = NewtonWorkspace::default();
         let actual = refine_line_surface_point(&surface, line, guess, seed, &mut fresh).unwrap();
         assert_eq!(bits(&[actual]), bits(&[expected]));
-        assert_eq!(fresh.stats.point_hits, 0);
-        assert_eq!(fresh.stats.partial_hits, 0);
+        assert_eq!(
+            (fresh.stats.point_hits, fresh.stats.partial_hits),
+            first_hits
+        );
         assert_eq!(
             fresh.stats.point_evaluations + fresh.stats.partial_evaluations,
             evaluations

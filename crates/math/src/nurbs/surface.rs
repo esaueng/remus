@@ -355,6 +355,53 @@ impl DerivativeScratch {
         (out[1][0], out[0][1])
     }
 
+    /// [`NurbsSurface::evaluate`] and [`Self::partials_from`] at one
+    /// `(u, v)` from one span lookup and one first-order basis per axis:
+    /// returns `(S, ∂S/∂u, ∂S/∂v)`.
+    ///
+    /// The position is bit-identical to `surface.evaluate(u, v)`: the same
+    /// clamp and span, row 0 of the first-order basis (bit-identical to
+    /// [`basis::basis_funs_into`]), and `evaluate`'s own scaled contraction
+    /// and perspective divide — not the derivative solve's position, which
+    /// rounds differently. The partials are bit-identical to
+    /// [`Self::partials_from`]. Above the u memo bound, and under the `simd`
+    /// feature, this runs the two separate solves. Callers must use one
+    /// scratch per surface and must not share one across threads.
+    #[doc(hidden)]
+    pub fn evaluate_and_partials_from(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> (Point3, Vec3, Vec3) {
+        #[cfg(not(feature = "simd"))]
+        if surface.degree_u <= MEMO_MAX_DEGREE {
+            let (pu, pv) = (surface.degree_u, surface.degree_v);
+            let (span_u, _) = surface.find_span_hinted_u(u, self.last_span_u.unwrap_or(usize::MAX));
+            let (span_v, _) = surface.find_span_hinted_v(v, self.last_span_v.unwrap_or(usize::MAX));
+            self.last_span_u = Some(span_u);
+            self.last_span_v = Some(span_v);
+            // The u basis is solved directly rather than through the u memo:
+            // a Newton walk rarely repeats `u`, and the memo holds exactly
+            // this routine's output for these inputs, so either way gives
+            // the same bits.
+            self.ensure_basis_for(surface, 1);
+            let (ders_u, rest) = self.basis.split_at_mut(2 * (pu + 1));
+            let ders_v = &mut rest[..2 * (pv + 1)];
+            let n_rows = surface.control_points.len();
+            let n_cols = surface.control_points[0].len();
+            let u = u.clamp(surface.knots_u[pu], surface.knots_u[n_rows]);
+            let v = v.clamp(surface.knots_v[pv], surface.knots_v[n_cols]);
+            basis::ders_basis_funs_first_into(span_u, u, pu, &surface.knots_u, ders_u);
+            basis::ders_basis_funs_first_into(span_v, v, pv, &surface.knots_v, ders_v);
+            let point = surface.contract_position(span_u, span_v, ders_u, ders_v);
+            let (_, du, dv) = surface.contract_first_order(span_u, span_v, ders_u, ders_v);
+            return (point, du, dv);
+        }
+        let (du, dv) = self.partials_from(surface, u, v);
+        (surface.evaluate(u, v), du, dv)
+    }
+
     /// [`NurbsSurface::normal`] plus both first partials in one base solve:
     /// returns `(normal, ∂S/∂u, ∂S/∂v)` at `(u, v)`.
     ///
@@ -1313,6 +1360,67 @@ impl NurbsSurface {
             });
         }
         DerivativeScratch::new().normal_from(self, u, v)
+    }
+
+    /// `(self.evaluate(u, v), self.normal(u, v))` from one span search and
+    /// one first-order basis per axis; see [`Self::point_and_normal_with`].
+    pub fn point_and_normal(&self, u: f64, v: f64) -> (Point3, Result<Vec3, MathError>) {
+        self.point_and_normal_with(self, u, v)
+    }
+
+    /// `(self.evaluate(u, v), carrier.normal(u, v))`, bit for bit, from one
+    /// span search and one first-order basis per axis when `carrier` has
+    /// the same degrees and knot bits as `self` (the same surface, or one
+    /// whose control net was moved, as a tessellation chart frame does).
+    ///
+    /// The bases depend on the knots, the degrees and the clamped
+    /// parameters alone, so both carriers would compute identical ones. The
+    /// position then takes `evaluate`'s scaled contraction over `self`'s
+    /// net (row 0 of the first-order basis is bit-identical to
+    /// [`basis::basis_funs_into`]), and the normal the first-order
+    /// contraction over `carrier`'s net, followed by `normal`'s degenerate
+    /// fallback. Carriers with other knots, degrees beyond the stack bounds
+    /// and the `simd` feature run the two separate calls.
+    ///
+    /// The normal's error is the one [`Self::normal`] returns.
+    pub fn point_and_normal_with(
+        &self,
+        carrier: &Self,
+        u: f64,
+        v: f64,
+    ) -> (Point3, Result<Vec3, MathError>) {
+        #[cfg(not(feature = "simd"))]
+        if carrier.has_stack_first_order() && self.shares_bases_with(carrier) {
+            let bases = self.stack_first_order_bases(u, v);
+            let point =
+                self.contract_position(bases.span_u, bases.span_v, &bases.ders_u, &bases.ders_v);
+            let (_, du, dv) = carrier.contract_first_order(
+                bases.span_u,
+                bases.span_v,
+                &bases.ders_u,
+                &bases.ders_v,
+            );
+            let normal = normal_from_partials_with(carrier, u, v, du, dv, &mut |pu, pv| {
+                carrier.stack_partials(pu, pv)
+            });
+            return (point, normal);
+        }
+        (self.evaluate(u, v), carrier.normal(u, v))
+    }
+
+    /// Whether `other` computes the same spans and bases as `self` at every
+    /// parameter: the same surface, or equal degrees and knot vectors equal
+    /// bit for bit (signed zeros included).
+    #[cfg(not(feature = "simd"))]
+    fn shares_bases_with(&self, other: &Self) -> bool {
+        let same_bits = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        std::ptr::eq(self, other)
+            || (self.degree_u == other.degree_u
+                && self.degree_v == other.degree_v
+                && same_bits(&self.knots_u, &other.knots_u)
+                && same_bits(&self.knots_v, &other.knots_v))
     }
 
     /// Whether [`Self::stack_first_order_bases`] serves this surface: a u
