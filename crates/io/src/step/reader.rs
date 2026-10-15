@@ -5196,12 +5196,22 @@ impl<'a> StepBuilder<'a> {
             periodic_axes(surface),
             |point| Self::surface_uv(surface, point).ok(),
         );
+        let leaving = use_start_uv_direction(
+            surface,
+            edge,
+            (
+                self.topo.vertex(edge.start())?.point(),
+                self.topo.vertex(edge.end())?.point(),
+            ),
+            coedge.is_forward(),
+            principal_start,
+        );
         let (expected_start, expected_end) = lift_pcurve_endpoint_branches(
             surface,
             &curve,
-            principal_start,
-            principal_end,
+            (principal_start, principal_end),
             principal_trace.as_deref(),
+            leaving,
         );
         let range = match declared_range {
             Some(range) => match select_full_turn_cylinder_pcurve_range(
@@ -8628,22 +8638,71 @@ fn open_edge_use_trace(
     Some(trace)
 }
 
+/// The UV direction in which a use leaves its start: the edge's analytic
+/// tangent there, resolved against the surface's partial derivatives at the
+/// start's principal UV. `None` where the surface chart degenerates (a pole
+/// or apex) or the edge has no strict domain.
+fn use_start_uv_direction(
+    surface: &FaceSurface,
+    edge: &Edge,
+    (start, end): (Point3, Point3),
+    forward: bool,
+    at: Point2,
+) -> Option<Vec2> {
+    /// Central-difference step on the analytic chart; its truncation error
+    /// is far below what a direction sign needs.
+    const H: f64 = 1e-6;
+    let (t, sense) = if matches!(edge.curve(), EdgeCurve::Line) {
+        (if forward { 0.0 } else { 1.0 }, 1.0)
+    } else {
+        let (t0, t1) = edge.strict_domain().ok()?;
+        (if forward { t0 } else { t1 }, (t1 - t0).signum())
+    };
+    let travel =
+        edge.curve().tangent_with_endpoints(t, start, end) * if forward { sense } else { -sense };
+    let point = |u: f64, v: f64| surface.evaluate(u, v);
+    let su = (point(at.x() + H, at.y())? - point(at.x() - H, at.y())?) * (0.5 / H);
+    let sv = (point(at.x(), at.y() + H)? - point(at.x(), at.y() - H)?) * (0.5 / H);
+    // Least squares `travel ≈ a·su + b·sv` on the tangent plane.
+    let (uu, uv, vv) = (su.dot(su), su.dot(sv), sv.dot(sv));
+    let determinant = uu.mul_add(vv, -(uv * uv));
+    if !(determinant.is_finite() && determinant > f64::EPSILON * uu * vv) {
+        return None;
+    }
+    let (tu, tv) = (travel.dot(su), travel.dot(sv));
+    let direction = Vec2::new(
+        vv.mul_add(tu, -(uv * tv)) / determinant,
+        uu.mul_add(tv, -(uv * tu)) / determinant,
+    );
+    direction
+        .0
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(direction)
+}
+
 /// Lifts the principal UV of a use's endpoints onto one periodic branch.
 ///
-/// Without `trace` both endpoints are lifted next to the 2D curve's
-/// reference point. With `trace` (principal UVs of an open edge's interior
-/// samples, in use order) the start is lifted next to the reference and each
-/// following sample, then the end, next to the one before it: the lifts
-/// unwrap the edge's own sweep. Lifting the end independently ties at exactly
-/// half a period from the reference (a quarter-cylinder band whose LINE
-/// pcurve origin sits a half turn from one end) and could pick the far
-/// branch, tracing three quarters of the cylinder instead of one.
+/// A LINE pcurve settles the branch geometrically. Each endpoint's lift
+/// must lie on the line. When the line is oblique to a periodic axis only
+/// one lift of the end does. When it runs along one (an isoparametric arc,
+/// whose periodic coordinate is monotone and sweeps less than a turn on an
+/// open edge), the end is the first on-line lift in the direction the use
+/// leaves its start (`leaving`, from the edge's analytic tangent).
+///
+/// Everything else falls back to `trace` (principal UVs of an open edge's
+/// interior samples, in use order): the start is lifted next to the curve's
+/// reference and each sample, then the end, next to the one before it. That
+/// unwrap is a bounded refinement, not a certificate. Without a trace both
+/// ends are lifted next to the reference, which ties when an end sits
+/// exactly half a period from it (a quarter-cylinder band whose LINE origin
+/// sits a half turn from one end lands three quarters of a turn away).
 fn lift_pcurve_endpoint_branches(
     surface: &FaceSurface,
     curve: &Curve2D,
-    start: Point2,
-    end: Point2,
+    (start, end): (Point2, Point2),
     trace: Option<&[Point2]>,
+    leaving: Option<Vec2>,
 ) -> (Point2, Point2) {
     let reference = match curve {
         Curve2D::Line(line) => line.origin(),
@@ -8655,11 +8714,10 @@ fn lift_pcurve_endpoint_branches(
             .copied()
             .unwrap_or(Point2::new(0.0, 0.0)),
     };
-    let (u_periodic, v_periodic) = match surface {
-        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => (true, false),
-        FaceSurface::Torus(_) => (true, true),
-        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => return (start, end),
-    };
+    let periodic = periodic_axes(surface);
+    if !periodic.0 && !periodic.1 {
+        return (start, end);
+    }
     let lift = |value: Point2, target: Point2| {
         let axis = |value: f64, target: f64, periodic: bool| {
             if periodic {
@@ -8669,10 +8727,21 @@ fn lift_pcurve_endpoint_branches(
             }
         };
         Point2::new(
-            axis(value.x(), target.x(), u_periodic),
-            axis(value.y(), target.y(), v_periodic),
+            axis(value.x(), target.x(), periodic.0),
+            axis(value.y(), target.y(), periodic.1),
         )
     };
+    if let Curve2D::Line(line) = curve
+        && let Some(lifted) = lift_onto_line(
+            line,
+            (start, end),
+            periodic,
+            leaving,
+            lift(start, reference),
+        )
+    {
+        return lifted;
+    }
     let start = lift(start, reference);
     let anchor = trace.map_or(reference, |trace| {
         trace
@@ -8680,6 +8749,65 @@ fn lift_pcurve_endpoint_branches(
             .fold(start, |previous, &sample| lift(sample, previous))
     });
     (start, lift(end, anchor))
+}
+
+/// [`lift_pcurve_endpoint_branches`] for a LINE pcurve: the lifts of both
+/// ends that lie on the line, the end chosen by `leaving` when the line runs
+/// along a periodic axis. `None` when an end has no on-line lift, or the
+/// choice needs `leaving` and it is unknown or tangent to the axis.
+fn lift_onto_line(
+    line: &Line2D,
+    (start, end): (Point2, Point2),
+    periodic: (bool, bool),
+    leaving: Option<Vec2>,
+    near_reference: Point2,
+) -> Option<(Point2, Point2)> {
+    use std::f64::consts::TAU;
+    /// Whole periods tried on each periodic axis.
+    const TURNS: i32 = 2;
+    let tolerance = 1e-6 * near_reference.0.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let on_line = |point: Point2| -> Vec<Point2> {
+        let mut lifts = Vec::new();
+        let range = |periodic: bool| if periodic { -TURNS..=TURNS } else { 0..=0 };
+        for ku in range(periodic.0) {
+            for kv in range(periodic.1) {
+                let candidate = Point2::new(
+                    f64::from(ku).mul_add(TAU, point.x()),
+                    f64::from(kv).mul_add(TAU, point.y()),
+                );
+                if line.distance_to_point(candidate) <= tolerance {
+                    lifts.push(candidate);
+                }
+            }
+        }
+        lifts
+    };
+    // Any on-line start will do; keep the one nearest the old choice.
+    let start = on_line(start).into_iter().min_by(|a, b| {
+        (*a - near_reference)
+            .length()
+            .total_cmp(&(*b - near_reference).length())
+    })?;
+    let ends = on_line(end);
+    let end = match ends.as_slice() {
+        [] => return None,
+        [only] => *only,
+        _ => {
+            let sense = leaving?.dot(line.direction());
+            if sense.abs() <= f64::EPSILON {
+                return None;
+            }
+            let from = line.project(start);
+            ends.into_iter()
+                .filter(|candidate| (line.project(*candidate) - from) * sense > tolerance)
+                .min_by(|a, b| {
+                    (line.project(*a) - from)
+                        .abs()
+                        .total_cmp(&(line.project(*b) - from).abs())
+                })?
+        }
+    };
+    Some((start, end))
 }
 
 fn pcurve_winding(
@@ -11342,14 +11470,111 @@ mod tests {
             .unwrap(),
         );
         let curve = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        // No tangent direction: the line runs along the periodic axis, so the
+        // refined trace decides.
         let (_, end) = lift_pcurve_endpoint_branches(
             &surface,
             &curve,
-            Point2::new(0.0, 0.0),
-            Point2::new(4.7, 0.0),
+            (Point2::new(0.0, 0.0), Point2::new(4.7, 0.0)),
             Some(&trace),
+            None,
         );
         assert_eq!(end.x().to_bits(), 4.7_f64.to_bits());
+    }
+
+    /// A LINE pcurve settles the branch without sampling: along the periodic
+    /// axis the use's leaving direction picks the first on-line lift, and an
+    /// oblique line admits only one lift of each end.
+    #[test]
+    fn line_pcurve_lifts_follow_the_line_and_the_leaving_direction() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let surface = FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0,
+            )
+            .unwrap(),
+        );
+        let along_u =
+            Curve2D::Line(Line2D::new(Point2::new(-FRAC_PI_2, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let ends = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
+        let (_, up) = lift_pcurve_endpoint_branches(
+            &surface,
+            &along_u,
+            ends,
+            None,
+            Some(Vec2::new(1.0, 0.0)),
+        );
+        assert!((up.x() - FRAC_PI_2).abs() < 1e-12, "{up:?}");
+        let (_, down) = lift_pcurve_endpoint_branches(
+            &surface,
+            &along_u,
+            ends,
+            None,
+            Some(Vec2::new(-1.0, 0.0)),
+        );
+        assert!((down.x() - (FRAC_PI_2 - TAU)).abs() < 1e-12, "{down:?}");
+
+        // u = v: the end at v = 2π + 1 can only be u = 2π + 1.
+        let oblique =
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 1.0)).unwrap());
+        let (_, end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &oblique,
+            (Point2::new(0.0, 0.0), Point2::new(1.0, TAU + 1.0)),
+            None,
+            None,
+        );
+        assert!((end.x() - (TAU + 1.0)).abs() < 1e-12, "{end:?}");
+    }
+
+    /// The leaving direction comes from the edge's analytic tangent: a
+    /// quarter arc on a cylinder rim, traversed both ways.
+    #[test]
+    fn use_start_uv_direction_reads_the_edge_tangent() {
+        use std::f64::consts::FRAC_PI_2;
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+        )
+        .unwrap();
+        let (x, y) = (cylinder.x_axis(), cylinder.y_axis());
+        let circle = remus_math::curves::Circle3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            x,
+            y,
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            cylinder.evaluate(0.0, 0.0),
+            1e-7,
+        ));
+        let b = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            cylinder.evaluate(FRAC_PI_2, 0.0),
+            1e-7,
+        ));
+        let mut edge = Edge::new(a, b, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, FRAC_PI_2)));
+        let surface = FaceSurface::Cylinder(cylinder.clone());
+        let ends = (
+            cylinder.evaluate(0.0, 0.0),
+            cylinder.evaluate(FRAC_PI_2, 0.0),
+        );
+        let forward =
+            use_start_uv_direction(&surface, &edge, ends, true, Point2::new(0.0, 0.0)).unwrap();
+        assert!(forward.x() > 0.0 && forward.y().abs() < 1e-6, "{forward:?}");
+        let reversed =
+            use_start_uv_direction(&surface, &edge, ends, false, Point2::new(FRAC_PI_2, 0.0))
+                .unwrap();
+        assert!(
+            reversed.x() < 0.0 && reversed.y().abs() < 1e-6,
+            "{reversed:?}"
+        );
     }
 
     /// A declared range is the pcurve's own trace: its ends may sit a whole
@@ -11387,7 +11612,8 @@ mod tests {
         );
         let (start, end) = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
 
-        let (_, independent) = lift_pcurve_endpoint_branches(&surface, &curve, start, end, None);
+        let (_, independent) =
+            lift_pcurve_endpoint_branches(&surface, &curve, (start, end), None, None);
         assert!(
             (independent.x() + 3.0 * FRAC_PI_2).abs() < 1e-12,
             "{independent:?}"
@@ -11397,7 +11623,7 @@ mod tests {
             .map(|k| Point2::new(FRAC_PI_2 * f64::from(k) / 4.0, 0.0))
             .collect();
         let (lifted_start, lifted_end) =
-            lift_pcurve_endpoint_branches(&surface, &curve, start, end, Some(&quarter));
+            lift_pcurve_endpoint_branches(&surface, &curve, (start, end), Some(&quarter), None);
         assert_eq!(lifted_start.x().to_bits(), 0.0_f64.to_bits());
         assert_eq!(lifted_end.x().to_bits(), FRAC_PI_2.to_bits());
 
@@ -11408,8 +11634,13 @@ mod tests {
             .into_iter()
             .map(|u| Point2::new(u, 0.0))
             .collect();
-        let (_, lifted_end) =
-            lift_pcurve_endpoint_branches(&surface, &curve, start, three_quarters, Some(&crowded));
+        let (_, lifted_end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &curve,
+            (start, three_quarters),
+            Some(&crowded),
+            None,
+        );
         assert_eq!(lifted_end.x().to_bits(), three_quarters.x().to_bits());
     }
 
