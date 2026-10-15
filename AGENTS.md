@@ -532,6 +532,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct push/pull face editing | `push_pull.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
+| Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
