@@ -315,31 +315,41 @@ fn positive_winding_loops(path: &[Point2], tol: f64) -> Vec<Vec<Point2>> {
         }
     }
 
-    let slabs = SlabIndex::new(&segs);
+    // Each piece casts its ray across itself, never along it: a ray run along
+    // a near-horizontal piece meets the segments at its ends on whichever
+    // side their rounded crossing nodes fell. Pieces nearer horizontal are
+    // classified in the quarter-turned frame (x, y) -> (y, -x), an exact
+    // rotation that keeps winding signs and sides.
+    let turned: Vec<(Point2, Point2)> = segs
+        .iter()
+        .map(|&(a, b)| (quarter_turn(a), quarter_turn(b)))
+        .collect();
+    let frames = [
+        (&segs, SlabIndex::new(&segs)),
+        (&turned, SlabIndex::new(&turned)),
+    ];
     let mut edges = Vec::new();
     for piece in &pieces {
         let (a, b) = (nodes.pos[piece.from], nodes.pos[piece.to]);
-        // Direction and height come from the segment the piece lies on: a
-        // crossing node is rounded off that segment, so a piece of a
-        // horizontal segment can read as sloped from its end nodes.
+        // The direction comes from the segment the piece lies on: its end
+        // nodes may be crossings rounded off that segment.
         let (s0, forward0) = piece.along[0];
         let (sa, sb) = segs[s0];
-        let horizontal = sb.y() - sa.y() == 0.0;
-        let mid = Point2::new(
-            f64::midpoint(a.x(), b.x()),
-            if horizontal {
-                sa.y()
-            } else {
-                f64::midpoint(a.y(), b.y())
-            },
-        );
+        let way = if forward0 { 1.0 } else { -1.0 };
+        let (dx, dy) = (way * (sb.x() - sa.x()), way * (sb.y() - sa.y()));
+        let mid = Point2::new(f64::midpoint(a.x(), b.x()), f64::midpoint(a.y(), b.y()));
+        let (frame, mid, dy) = if dy.abs() >= dx.abs() {
+            (&frames[0], mid, dy)
+        } else {
+            (&frames[1], quarter_turn(mid), -dx)
+        };
         // With the piece's own segments left out, the crossing number at
-        // `mid` is the winding on the piece's +x side, or just above it when
-        // the piece is horizontal (vertex heights resolve upward).
+        // `mid` is the winding on the piece's +x side in its frame.
+        let (frame_segs, slabs) = frame;
         let mut wind = 0;
         for &s in slabs.at(mid.y()) {
             if !piece.along.iter().any(|&(t, _)| t == s) {
-                wind += crossing(segs[s], mid);
+                wind += crossing(frame_segs[s], mid);
             }
         }
         let step: i32 = piece
@@ -347,9 +357,9 @@ fn positive_winding_loops(path: &[Point2], tol: f64) -> Vec<Vec<Point2>> {
             .iter()
             .map(|&(_, forward)| if forward { 1 } else { -1 })
             .sum();
-        let way = if forward0 { 1.0 } else { -1.0 };
-        let (dx, dy) = (way * (sb.x() - sa.x()), way * (sb.y() - sa.y()));
-        let (left, right) = if dy > 0.0 || (dy == 0.0 && dx < 0.0) {
+        // `dy` is nonzero: it is the larger component of a segment longer
+        // than `tol`.
+        let (left, right) = if dy > 0.0 {
             (wind + step, wind)
         } else {
             (wind, wind - step)
@@ -559,6 +569,11 @@ fn crossing((a, b): (Point2, Point2), p: Point2) -> i32 {
     }
 }
 
+/// `p` turned a quarter clockwise about the origin; exact in floating point.
+fn quarter_turn(p: Point2) -> Point2 {
+    Point2::new(p.y(), -p.x())
+}
+
 /// Signed angle from `incoming` to `outgoing`, counter-clockwise positive.
 fn turn_angle(incoming: Vec2, outgoing: Vec2) -> f64 {
     let cross = incoming.x() * outgoing.y() - incoming.y() * outgoing.x();
@@ -619,11 +634,15 @@ fn lerp(a: Point2, b: Point2, t: f64) -> Point2 {
 ///
 /// Positive for CCW winding, negative for CW.
 fn signed_area_2x(vertices: &[Point2]) -> f64 {
-    let n = vertices.len();
+    // Relative to the first vertex, so the sum does not cancel far from the
+    // origin.
+    let Some(&o) = vertices.first() else {
+        return 0.0;
+    };
     let mut acc = 0.0;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        acc += vertices[i].x() * vertices[j].y() - vertices[j].x() * vertices[i].y();
+    for w in vertices.windows(2) {
+        let (p, q) = (w[0] - o, w[1] - o);
+        acc += p.x() * q.y() - q.x() * p.y();
     }
     acc
 }
@@ -922,9 +941,10 @@ mod tests {
     }
 
     /// Just past the 1-wide bridge's collapse the two bridge offsets lie a
-    /// hair apart, and crossing nodes on the squares' horizontal edges are
-    /// rounded off them. Those edges must still be classified as horizontal,
-    /// or the larger square drops out for some overshoots.
+    /// hair apart, and crossing nodes on the squares' edges are rounded off
+    /// them. Near-horizontal edges (exactly horizontal, or a 90° turn's
+    /// `cos` away from it) must still take the right sides, or the larger
+    /// square drops out for some overshoots.
     #[test]
     fn inset_just_past_a_bridge_collapse_keeps_the_larger_piece() {
         let base = [
@@ -941,10 +961,23 @@ mod tests {
             (6.0, 6.0),
             (0.0, 6.0),
         ];
-        for (ox, oy, scale) in [(0.0, 0.0, 1.0), (37.3, -91.7, 1.0), (0.0, 0.0, 1e3)] {
+        let placements = [
+            (0.0, 0.0, 1.0, 0.0),
+            (37.3, -91.7, 1.0, 0.0),
+            (0.0, 0.0, 1e3, 0.0),
+            (0.0, 0.0, 1.0, 90.0),
+            (5.0, -3.0, 1.0, 180.0),
+            (0.0, 0.0, 1.0, 270.0),
+            (0.0, 0.0, 1.0, 33.0),
+        ];
+        for (ox, oy, scale, degrees) in placements {
+            let (sin, cos) = f64::to_radians(degrees).sin_cos();
             let placed: Vec<(f64, f64)> = base
                 .iter()
-                .map(|&(x, y)| (ox + scale * x, oy + scale * y))
+                .map(|&(x, y)| {
+                    let (x, y) = (cos * x - sin * y, sin * x + cos * y);
+                    (ox + scale * x, oy + scale * y)
+                })
                 .collect();
             let poly = pts(&placed);
             for m in 0..=100 {
