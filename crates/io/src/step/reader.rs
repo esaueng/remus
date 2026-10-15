@@ -5494,10 +5494,12 @@ impl<'a> StepBuilder<'a> {
             .iter()
             .map(|&reference| self.build_cartesian_point2(reference))
             .collect::<Result<_, _>>()?;
-        let knots = expand_knots(&multiplicities, &knot_values).ok_or(IoError::LimitExceeded {
-            resource: "STEP 2D B_SPLINE_CURVE knot count",
-            limit: MAX_EXPANDED_KNOTS,
-            actual: usize::MAX,
+        let knots = expand_knots(&multiplicities, &knot_values).map_err(|error| {
+            error.into_io_error(
+                "2D B_SPLINE_CURVE",
+                curve_ref,
+                "STEP 2D B_SPLINE_CURVE knot count",
+            )
         })?;
         let weights = if rational {
             extract_rational_curve_weights(attrs, control_points.len(), curve_ref)?
@@ -6988,10 +6990,12 @@ impl<'a> StepBuilder<'a> {
             control_points.push(self.build_cartesian_point(cp_ref)?);
         }
 
-        let knots = expand_knots(&mults, &knot_vals).ok_or(IoError::LimitExceeded {
-            resource: "STEP B_SPLINE_CURVE knot count",
-            limit: MAX_EXPANDED_KNOTS,
-            actual: usize::MAX,
+        let knots = expand_knots(&mults, &knot_vals).map_err(|error| {
+            error.into_io_error(
+                "B_SPLINE_CURVE",
+                curve_ref,
+                "STEP B_SPLINE_CURVE knot count",
+            )
         })?;
 
         // Extract weights from RATIONAL_B_SPLINE section if present.
@@ -7072,15 +7076,19 @@ impl<'a> StepBuilder<'a> {
             cp_grid.push(row);
         }
 
-        let knots_u = expand_knots(&u_mults, &u_knots).ok_or(IoError::LimitExceeded {
-            resource: "STEP B_SPLINE_SURFACE U knot count",
-            limit: MAX_EXPANDED_KNOTS,
-            actual: usize::MAX,
+        let knots_u = expand_knots(&u_mults, &u_knots).map_err(|error| {
+            error.into_io_error(
+                "B_SPLINE_SURFACE",
+                surface_ref,
+                "STEP B_SPLINE_SURFACE U knot count",
+            )
         })?;
-        let knots_v = expand_knots(&v_mults, &v_knots).ok_or(IoError::LimitExceeded {
-            resource: "STEP B_SPLINE_SURFACE V knot count",
-            limit: MAX_EXPANDED_KNOTS,
-            actual: usize::MAX,
+        let knots_v = expand_knots(&v_mults, &v_knots).map_err(|error| {
+            error.into_io_error(
+                "B_SPLINE_SURFACE",
+                surface_ref,
+                "STEP B_SPLINE_SURFACE V knot count",
+            )
         })?;
 
         let n_rows = cp_grid.len();
@@ -10890,44 +10898,7 @@ fn parse_bspline_surface_attrs(
     // structures. The format has a specific sequence of tokens.
 
     // 1. Parse degrees: skip the name string, find the first two bare integers.
-    let mut tokens = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    let mut groups: Vec<String> = Vec::new();
-
-    for ch in attrs.chars() {
-        match ch {
-            '(' => {
-                if depth == 0 && !current.trim().is_empty() {
-                    tokens.push(current.trim().to_string());
-                    current.clear();
-                }
-                depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                current.push(ch);
-                depth -= 1;
-                if depth == 0 {
-                    groups.push(current.clone());
-                    current.clear();
-                }
-            }
-            ',' if depth == 0 => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    tokens.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        tokens.push(current.trim().to_string());
-    }
+    let (tokens, groups) = split_bspline_attrs(attrs);
 
     // tokens: bare values between top-level commas (name, degrees, enums)
     // groups: parenthesized structures at depth 0 (cp grid, mult lists, knot lists)
@@ -11036,37 +11007,78 @@ fn expanded_knot_count(mults: &[u32]) -> Option<usize> {
         .try_fold(0_usize, |sum, &mult| sum.checked_add(mult as usize))
 }
 
-fn expand_knots(mults: &[u32], vals: &[f64]) -> Option<Vec<f64>> {
-    let total = mults.iter().try_fold(0usize, |acc, &m| {
-        #[allow(clippy::cast_possible_truncation)]
-        acc.checked_add(m as usize)
-    })?;
+/// Why [`expand_knots`] refused a knot specification.
+#[derive(Debug, PartialEq, Eq)]
+enum KnotExpansionError {
+    /// The expansion would exceed [`MAX_EXPANDED_KNOTS`].
+    TooMany,
+    /// ISO 10303-42 pairs each distinct knot with one multiplicity; lists of
+    /// different lengths name no knot vector.
+    LengthMismatch { multiplicities: usize, knots: usize },
+}
+
+impl KnotExpansionError {
+    fn into_io_error(self, entity_type: &str, entity_ref: u64, resource: &'static str) -> IoError {
+        match self {
+            Self::TooMany => IoError::LimitExceeded {
+                resource,
+                limit: MAX_EXPANDED_KNOTS,
+                actual: usize::MAX,
+            },
+            Self::LengthMismatch {
+                multiplicities,
+                knots,
+            } => IoError::ParseError {
+                reason: format!(
+                    "{entity_type} #{entity_ref} declares {multiplicities} knot multiplicities \
+                     for {knots} knots"
+                ),
+            },
+        }
+    }
+}
+
+fn expand_knots(mults: &[u32], vals: &[f64]) -> Result<Vec<f64>, KnotExpansionError> {
+    let total = expanded_knot_count(mults).ok_or(KnotExpansionError::TooMany)?;
     if total > MAX_EXPANDED_KNOTS {
-        return None;
+        return Err(KnotExpansionError::TooMany);
+    }
+    if mults.len() != vals.len() {
+        return Err(KnotExpansionError::LengthMismatch {
+            multiplicities: mults.len(),
+            knots: vals.len(),
+        });
     }
 
     let mut knots = Vec::with_capacity(total);
-    for (&m, &v) in mults.iter().zip(vals.iter()) {
+    for (&m, &v) in mults.iter().zip(vals) {
         for _ in 0..m {
             knots.push(v);
         }
     }
-    Some(knots)
+    Ok(knots)
 }
 
-/// Parse a B_SPLINE_CURVE_WITH_KNOTS attribute string.
-///
-/// Format: `'', degree, (#cp, ...), .XXX., .F., (mults), (knots), .XXX.`
-///
-/// Returns: `(degree, cp_refs, mults, knots)`
-#[allow(clippy::type_complexity)]
-fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, Vec<f64>)> {
+/// Split B-spline attributes into top-level scalar tokens and top-level
+/// parenthesized groups, in order. STEP strings are opaque: an entity named
+/// `'Curve (1)'` holds no group and no separator.
+fn split_bspline_attrs(attrs: &str) -> (Vec<String>, Vec<String>) {
     let mut tokens = Vec::new();
+    let mut groups = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
-    let mut groups: Vec<String> = Vec::new();
+    // `''` inside a string toggles out and straight back in, which is
+    // exactly its meaning: an escaped quote.
+    let mut in_string = false;
 
     for ch in attrs.chars() {
+        if in_string || ch == '\'' {
+            if ch == '\'' {
+                in_string = !in_string;
+            }
+            current.push(ch);
+            continue;
+        }
         match ch {
             '(' => {
                 if depth == 0 && !current.trim().is_empty() {
@@ -11091,14 +11103,23 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
                 }
                 current.clear();
             }
-            _ => {
-                current.push(ch);
-            }
+            _ => current.push(ch),
         }
     }
     if !current.trim().is_empty() {
         tokens.push(current.trim().to_string());
     }
+    (tokens, groups)
+}
+
+/// Parse a B_SPLINE_CURVE_WITH_KNOTS attribute string.
+///
+/// Format: `'', degree, (#cp, ...), .XXX., .F., (mults), (knots), .XXX.`
+///
+/// Returns: `(degree, cp_refs, mults, knots)`
+#[allow(clippy::type_complexity)]
+fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, Vec<f64>)> {
+    let (tokens, groups) = split_bspline_attrs(attrs);
 
     let mut degree = None;
     for tok in &tokens {
@@ -14123,7 +14144,7 @@ mod tests {
         let flat = expand_knots(&mults, &vals);
         assert_eq!(
             flat.as_deref(),
-            Some([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0].as_slice())
+            Ok([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0].as_slice())
         );
     }
 
@@ -14133,7 +14154,34 @@ mod tests {
         // instead of attempting a multi-billion-element expansion.
         let mults = [u32::MAX];
         let vals = [0.5];
-        assert!(expand_knots(&mults, &vals).is_none());
+        assert_eq!(
+            expand_knots(&mults, &vals),
+            Err(KnotExpansionError::TooMany)
+        );
+    }
+
+    #[test]
+    fn expand_knots_refuses_lists_of_different_lengths() {
+        for (mults, vals) in [
+            (&[2_u32, 2][..], &[0.0, 1.0, 2.0][..]),
+            (&[2, 2, 1], &[0.0, 1.0]),
+        ] {
+            assert_eq!(
+                expand_knots(mults, vals),
+                Err(KnotExpansionError::LengthMismatch {
+                    multiplicities: mults.len(),
+                    knots: vals.len(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn split_bspline_attrs_keeps_strings_opaque() {
+        let (tokens, groups) = split_bspline_attrs("'a, (b''s) (', 3, (#1, #2), .F., (2, 2)");
+        assert_eq!(tokens, ["'a, (b''s) ('", "3", ".F."]);
+        let groups: Vec<&str> = groups.iter().map(|group| group.trim()).collect();
+        assert_eq!(groups, ["(#1, #2)", "(2, 2)"]);
     }
 
     #[test]
@@ -14141,7 +14189,10 @@ mod tests {
         // Many large multiplicities whose sum overflows usize.
         let mults = [u32::MAX; 8];
         let vals = [0.25, 0.5];
-        assert!(expand_knots(&mults, &vals).is_none());
+        assert_eq!(
+            expand_knots(&mults, &vals),
+            Err(KnotExpansionError::TooMany)
+        );
     }
 
     #[test]
