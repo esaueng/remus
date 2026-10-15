@@ -283,3 +283,20 @@ fn uniformly_scaled_weights_give_the_unit_weight_answer() {
         assert_eq!(removed.control_points().len(), 2);
     }
 }
+
+#[test]
+fn chord_position_comes_from_the_stored_knot_not_the_query() {
+    // Review follow-up: x = 0, 5e14, 1e15 has its middle point exactly on
+    // the chord at the stored knot 0.5. A query seven ulps away still matches
+    // that knot (within the knot epsilon) but shifted α by ~7e-16, which over
+    // a 1e15 chord read as a deviation of ~0.75.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [5e14, 0.0, 0.0], [1e15, 0.0, 0.0]],
+        vec![1.0; 3],
+    );
+    let u = 0.5 + 7.0 * f64::EPSILON / 2.0;
+    assert!(u > 0.5 && u - 0.5 < 1e-15, "premise: query {u} matches 0.5");
+    let removed = curve_knot_remove(&curve, u, 1e-6).expect("exactly removable");
+    assert_eq!(removed.knots(), &[0.0, 0.0, 1.0, 1.0]);
+}
