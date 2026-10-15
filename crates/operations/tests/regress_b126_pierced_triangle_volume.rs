@@ -1,4 +1,4 @@
-//! B92: the all-planar-triangle volume and centroid routes must subtract the
+//! B126: the all-planar-triangle volume and centroid routes must subtract the
 //! holes of a pierced face, wherever the body sits.
 //!
 //! `solid_volume_from_faces` (and through it `solid_volume`) and the
@@ -151,7 +151,7 @@ fn pierced_tetrahedron(
 }
 
 #[test]
-fn b92_pierced_tetrahedron_volume_subtracts_the_tunnel() {
+fn b126_pierced_tetrahedron_volume_subtracts_the_tunnel() {
     let (unit_volume, _) = oracle();
     assert!((unit_volume - 261.0).abs() <= 1e-12, "oracle {unit_volume}");
     for scale in SCALES {
@@ -183,7 +183,7 @@ fn b92_pierced_tetrahedron_volume_subtracts_the_tunnel() {
 }
 
 #[test]
-fn b92_pierced_tetrahedron_centroid_subtracts_the_tunnel() {
+fn b126_pierced_tetrahedron_centroid_subtracts_the_tunnel() {
     let (_, unit_centroid) = oracle();
     for scale in SCALES {
         let offset = Vec3::new(OFFSET[0], OFFSET[1], OFFSET[2]);
@@ -203,7 +203,7 @@ fn b92_pierced_tetrahedron_centroid_subtracts_the_tunnel() {
 /// The body is what the oracle says it is: the tunnel is a void and the
 /// material beside it is solid.
 #[test]
-fn b92_pierced_tetrahedron_tunnel_is_empty() {
+fn b126_pierced_tetrahedron_tunnel_is_empty() {
     let mut topo = Topology::new();
     let solid = pierced_tetrahedron(&mut topo, 1.0, Vec3::new(0.0, 0.0, 0.0), false);
     let probe = |p: Point3| classify_point(&topo, solid, p, 0.01, 1e-7).unwrap();
