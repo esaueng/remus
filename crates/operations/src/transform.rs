@@ -1492,6 +1492,7 @@ pub(crate) fn transform_face_surface_recorded(
                     (cyl_clone.x_axis(), cyl_clone.y_axis()),
                     (new_cyl.x_axis(), new_cyl.y_axis()),
                     axial_scale(matrix, cyl_clone.axis()),
+                    false,
                 );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Cylinder(new_cyl));
@@ -1538,6 +1539,7 @@ pub(crate) fn transform_face_surface_recorded(
                     (cone_clone.x_axis(), cone_clone.y_axis()),
                     (new_cone.x_axis(), new_cone.y_axis()),
                     axial_scale(matrix, cone_clone.axis()),
+                    false,
                 );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
                 ChartMap::Affine(chart)
@@ -1580,6 +1582,7 @@ pub(crate) fn transform_face_surface_recorded(
                     (sph_clone.x_axis(), sph_clone.y_axis()),
                     (new_sph.x_axis(), new_sph.y_axis()),
                     1.0,
+                    true,
                 );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
@@ -1660,6 +1663,7 @@ pub(crate) fn transform_face_surface_recorded(
                     (tor_clone.x_axis(), tor_clone.y_axis()),
                     (new_tor.x_axis(), new_tor.y_axis()),
                     1.0,
+                    true,
                 );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
                 ChartMap::Affine(chart)
@@ -1682,15 +1686,12 @@ pub(crate) fn transform_face_surface_recorded(
     Ok(chart)
 }
 
-/// The length a similarity gives the unit direction `d`, snapped to exactly
-/// `1` within analytic roundoff so rigid motions leave pcurves bit-exact.
+/// The length a similarity gives the direction `d`, relative to its own.
+///
+/// Never snapped to `1`: a deliberate near-unit scale must still move a far
+/// `v` with its vertex.
 fn axial_scale(matrix: &Mat4, d: Vec3) -> f64 {
-    let scale = linear(matrix, d).length() / d.length();
-    if equal_within_analytic_roundoff(scale, 1.0) {
-        1.0
-    } else {
-        scale
-    }
+    linear(matrix, d).length() / d.length()
 }
 
 /// Carry orientation across an orientation-reversing map for NURBS carriers.
