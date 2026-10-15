@@ -835,7 +835,7 @@ impl StepWriteContext {
         let on_surface = |uv: Point2| -> Result<Point3, IoError> {
             match face.surface() {
                 FaceSurface::Plane { normal, d } => {
-                    let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                    let origin = super::plane_chart_origin(*normal, *d);
                     let frame = Frame3::from_normal_and_ref(
                         origin,
                         *normal,
@@ -1300,7 +1300,7 @@ impl StepWriteContext {
     fn write_face_surface(&mut self, surface: &FaceSurface) -> Result<u64, IoError> {
         let id = match surface {
             FaceSurface::Plane { normal, d } => {
-                let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                let origin = super::plane_chart_origin(*normal, *d);
                 let ref_dir = compute_ref_direction(*normal);
                 let axis = self.write_axis2_placement(origin, *normal, ref_dir);
                 let plane = self.next_id();
