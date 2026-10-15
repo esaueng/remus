@@ -665,23 +665,24 @@ pub fn remove_degenerate_edges(
     Ok(removed_count)
 }
 
-/// Whether `edge_id` is shorter than `sqrt(tol_sq)` along its curve.
+/// Whether `edge_id` is certainly shorter than `sqrt(tol_sq)` along its
+/// curve.
 ///
 /// The chord is a lower bound on the length, so a long chord decides at once.
 /// A short-chord Line is as long as its chord, which includes the zero-length
 /// self-loop left when its two ends were fused. A closed curve (one vertex at
 /// both ends) is never degenerate here: a rim it bounds alone keeps it, so
 /// dropping it from its other wires would unpair it. An open short-chord
-/// curve is measured over its parameter authority: a circle arc exactly, an
-/// ellipse arc by an upper bound, and any other curve by a 16-chord sum
-/// (approximate: a lower bound on the length); without an authority it keeps
-/// the endpoint verdict it always had.
+/// curve is degenerate only when its length is bounded below the tolerance
+/// over its parameter authority: a circle, parabola or hyperbola arc by its
+/// arc length, an ellipse arc by semi-major times span, a polynomial NURBS by
+/// its control polygon. A rational NURBS has no such cheap bound and is kept;
+/// so is a curve without an authority it would otherwise be judged by.
 fn edge_is_degenerate(
     topo: &Topology,
     edge_id: EdgeId,
     tol_sq: f64,
 ) -> Result<bool, crate::OperationsError> {
-    const LENGTH_SAMPLES: usize = 16;
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
@@ -697,29 +698,23 @@ fn edge_is_degenerate(
     let Ok((t0, t1)) = edge.strict_domain() else {
         return Ok(true);
     };
-    let tol = tol_sq.sqrt();
     let span = (t1 - t0).abs();
-    let length = match edge.curve() {
+    let upper_bound = match edge.curve() {
         EdgeCurve::Circle(circle) => circle.radius() * span,
         EdgeCurve::Ellipse(ellipse) => ellipse.semi_major().max(ellipse.semi_minor()) * span,
-        EdgeCurve::Line
-        | EdgeCurve::NurbsCurve(_)
-        | EdgeCurve::Parabola(_)
-        | EdgeCurve::Hyperbola(_) => {
-            let mut length = 0.0;
-            let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
-            for i in 1..=LENGTH_SAMPLES {
-                #[allow(clippy::cast_precision_loss)]
-                let t = t0 + (t1 - t0) * (i as f64 / LENGTH_SAMPLES as f64);
-                let point = edge.curve().evaluate_with_endpoints(t, start, end);
-                length += (point - previous).length();
-                previous = point;
-            }
-            length
-        }
+        EdgeCurve::Parabola(parabola) => parabola.arc_length(t0, t1),
+        EdgeCurve::Hyperbola(hyperbola) => hyperbola.arc_length(t0, t1),
+        // A polynomial B-spline is no longer than its control polygon, and
+        // any span of it no longer than the whole.
+        EdgeCurve::NurbsCurve(curve) if !curve.is_rational() => curve
+            .control_points()
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).length())
+            .sum(),
+        EdgeCurve::NurbsCurve(_) | EdgeCurve::Line => return Ok(false),
     };
-    // A NaN length is unmeasurable, not empty.
-    Ok(length < tol)
+    // A NaN bound is unmeasurable, not short.
+    Ok(upper_bound < tol_sq.sqrt())
 }
 
 /// Remove out-and-back spurs from face wires.
