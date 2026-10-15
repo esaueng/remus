@@ -337,6 +337,62 @@ fn degenerate_edge_test_measures_along_the_curve() {
     assert!(!edge_is_degenerate(&topo, full, tol_sq).unwrap());
 }
 
+/// The bound must not undershoot the length: a parabola arc over `[-1, 1]`
+/// with focal length 0.1 is 5.5615 long (16 chords read 5.5551), and a
+/// polynomial NURBS is judged by its control polygon.
+#[test]
+fn degenerate_edge_test_never_undershoots_the_length() {
+    use remus_math::curves::Parabola3D;
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let parabola =
+        Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.1).unwrap();
+    let a = topo.add_vertex(Vertex::new(parabola.evaluate(-1.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(parabola.evaluate(1.0), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Parabola(parabola));
+    arc.set_trim(Some((-1.0, 1.0)));
+    let arc = topo.add_edge(arc);
+    assert!(!edge_is_degenerate(&topo, arc, 5.558 * 5.558).unwrap());
+    assert!(edge_is_degenerate(&topo, arc, 5.6 * 5.6).unwrap());
+
+    // A quadratic out-and-back hump: chord 1, polygon 1 + 2 * sqrt(1.25).
+    let points = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.5, 1.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+    ];
+    let polygon = 2.0 * 1.25_f64.sqrt();
+    let curve = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        points.clone(),
+        vec![1.0; 3],
+    )
+    .unwrap();
+    let c = topo.add_vertex(Vertex::new(points[0], 1e-7));
+    let d = topo.add_vertex(Vertex::new(points[2], 1e-7));
+    let mut hump = Edge::new(c, d, EdgeCurve::NurbsCurve(curve));
+    hump.set_trim(Some((0.0, 1.0)));
+    let hump = topo.add_edge(hump);
+    assert!(!edge_is_degenerate(&topo, hump, polygon * polygon * 0.99).unwrap());
+    assert!(edge_is_degenerate(&topo, hump, polygon * polygon * 1.01).unwrap());
+
+    // Rational: kept whatever the tolerance.
+    let rational = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        points,
+        vec![1.0, 0.5, 1.0],
+    )
+    .unwrap();
+    let mut bump = Edge::new(c, d, EdgeCurve::NurbsCurve(rational));
+    bump.set_trim(Some((0.0, 1.0)));
+    let bump = topo.add_edge(bump);
+    assert!(!edge_is_degenerate(&topo, bump, 100.0).unwrap());
+}
+
 /// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
 /// bounds its cap alone, so dropping it from the lateral wire would unpair it.
 #[test]
