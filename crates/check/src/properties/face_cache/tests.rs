@@ -431,6 +431,9 @@ fn key_reads_every_geometry_field() {
     const F: usize = size_of::<f64>();
     const LOCK_F64: usize = size_of::<std::sync::OnceLock<f64>>();
     const LOCK_BOOL: usize = size_of::<std::sync::OnceLock<bool>>();
+    const LOCK_GRID: usize = size_of::<
+        std::sync::OnceLock<std::sync::Arc<remus_math::nurbs::projection::SurfaceSeedGrid>>,
+    >();
     assert_eq!(size_of::<CylindricalSurface>(), 13 * F);
     assert_eq!(size_of::<ConicalSurface>(), 13 * F);
     assert_eq!(size_of::<SphericalSurface>(), 13 * F);
@@ -444,9 +447,6 @@ fn key_reads_every_geometry_field() {
     // (8 bytes on macOS, a 4-byte futex on Linux), so they are pinned by type
     // rather than by number: a new field still fails here, a new platform
     // does not. The projection seed grid is derived from the fields above.
-    const LOCK_GRID: usize = size_of::<
-        std::sync::OnceLock<std::sync::Arc<remus_math::nurbs::projection::SurfaceSeedGrid>>,
-    >();
     assert_eq!(
         size_of::<NurbsSurface>(),
         2 * F + 4 * size_of::<std::sync::Arc<Vec<f64>>>() + LOCK_F64 + LOCK_BOOL + LOCK_GRID
