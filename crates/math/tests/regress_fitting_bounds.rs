@@ -114,6 +114,15 @@ fn degree_zero_is_refused_by_every_entry_point() {
         approximate(&points, 0, 8),
         Err(MathError::InvalidDegree { degree: 0, .. })
     ));
+    // Review follow-up: with no control points either, the degree is still
+    // what is reported, not the control-point count.
+    assert!(matches!(
+        approximate(&points, 0, 0),
+        Err(MathError::InvalidDegree {
+            degree: 0,
+            control_points: 0
+        })
+    ));
     assert!(matches!(
         approximate_lspia(&points, 0, 8, 1e-6, 10),
         Err(MathError::InvalidDegree { degree: 0, .. })
@@ -292,4 +301,25 @@ fn lspia_scan_fallback_is_budgeted_for_overflowed_parameters() {
         limit(approximate_lspia(&points, p, m, 0.0, 0)),
         ("fit_work", MAX_FIT_WORK, n * (p + 1) * (3 + 40) + n * m)
     );
+}
+
+#[test]
+fn overflowed_chord_parameters_are_refused_before_assembly() {
+    // Review follow-up: finite points alternating between 0 and 1e200
+    // overflow the chord lengths, so every chord-length parameter is NaN.
+    // NaN passed the "does not increase" test (every comparison is false)
+    // and 2048 points reached the 2048² dense fallback before a late
+    // `SingularMatrix`. A non-finite parameter is now refused up front.
+    for n in [4, 2048] {
+        let points: Vec<Point3> = (0..n)
+            .map(|i| Point3::new(if i % 2 == 0 { 0.0 } else { 1e200 }, 0.0, 0.0))
+            .collect();
+        match interpolate(&points, 3) {
+            Err(MathError::ParameterOutOfRange { value, min, max }) => {
+                assert!(value.is_nan(), "parameter {value}");
+                assert_eq!((min, max), (0.0, 1.0));
+            }
+            other => panic!("n = {n}: expected ParameterOutOfRange, got {other:?}"),
+        }
+    }
 }
