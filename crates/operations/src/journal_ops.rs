@@ -118,13 +118,17 @@ pub fn begin_scoped(
 /// Issue 12): there is no approximate fallback here, because a mesh
 /// fallback has no construction records to journal — a caller accepting
 /// approximate results journals that operation as a barrier instead. Like
-/// the underlying entry point, identical operands are not special-cased.
+/// the underlying entry point, identical operands are not special-cased; the
+/// result passes the same exact-result gate as
+/// [`crate::boolean::boolean_with_entity_evolution`] before it is journaled.
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the boolean fails or its evolution record is
-/// malformed. Scope creation, geometry export and history recording share one
-/// transaction, so refusal restores topology and unpublished history together.
+/// Returns [`OperationsError`] if the boolean fails, its result fails the
+/// exact-result gate ([`OperationsError::ExactOnlyUnattainable`]), or its
+/// evolution record is malformed. Scope creation, geometry export and history
+/// recording share one transaction, so refusal restores topology and
+/// unpublished history together.
 pub fn boolean_journaled(
     topo: &mut Topology,
     op: BooleanOp,
@@ -138,6 +142,12 @@ pub fn boolean_journaled(
         // deletions) severs instead of resolving to a retired handle.
         let pending = begin_scoped(topo, boolean_kind(op), &[solid_a, solid_b])?;
         let (solid, evolution) = gfa::boolean_with_entity_evolution(topo, op, solid_a, solid_b)?;
+        let gate_op = match op {
+            BooleanOp::Fuse => crate::boolean::BooleanOp::Fuse,
+            BooleanOp::Cut => crate::boolean::BooleanOp::Cut,
+            BooleanOp::Intersect => crate::boolean::BooleanOp::Intersect,
+        };
+        crate::boolean::require_exact_boolean_result(topo, gate_op, solid_a, solid_b, solid)?;
         let draft = draft_from_entity_evolution(&evolution);
         let op = topo.journal_record_evolution(pending, draft)?;
         Ok(JournaledBoolean { solid, op })
