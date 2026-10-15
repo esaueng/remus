@@ -351,6 +351,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
+ "remus-algo",
  "remus-io",
  "remus-math",
  "remus-offset",
@@ -431,6 +432,7 @@ dependencies = [
  "remus-offset",
  "remus-sketch",
  "remus-topology",
+ "serde",
  "thiserror",
 ]
 

@@ -192,6 +192,388 @@ fn close_wire_gaps_clean_box() {
     assert_eq!(count, 0, "clean box should have no wire gaps");
 }
 
+/// A 3³ block with a 1³ cavity at `(1, 1, 1)`, and a 1e-9 gap opened at one
+/// corner of the outer shell or of the cavity: the end of one edge moves to a
+/// twin vertex, so the two loops using that edge no longer chain there.
+fn hollow_block_with_corner_gap(topo: &mut Topology, in_cavity: bool) -> SolidId {
+    let outer = crate::primitives::make_box(topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let hollow =
+        crate::boolean::boolean(topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    let solid = topo.solid(hollow).unwrap();
+    assert_eq!(solid.inner_shells().len(), 1);
+    let shell = if in_cavity {
+        solid.inner_shells()[0]
+    } else {
+        solid.outer_shell()
+    };
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let wire = topo.face(face).unwrap().outer_wire();
+    let edge = topo.wire(wire).unwrap().edges()[0].edge();
+    let corner = topo.edge(edge).unwrap().end();
+    let p = topo.vertex(corner).unwrap().point();
+    let twin = topo.add_vertex(remus_topology::vertex::Vertex::new(
+        Point3::new(p.x() + 1e-9, p.y(), p.z()),
+        1e-7,
+    ));
+    topo.edge_mut(edge).unwrap().set_end(twin);
+    hollow
+}
+
+#[test]
+fn heal_closes_the_same_corner_gap_in_the_cavity_as_on_the_outer_shell() {
+    for in_cavity in [false, true] {
+        let mut topo = Topology::new();
+        let solid = hollow_block_with_corner_gap(&mut topo, in_cavity);
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .error_count()
+                > 0,
+            "in_cavity = {in_cavity}: the opened gap must be a validation error"
+        );
+
+        let report = heal_solid(&mut topo, solid, 1e-7)
+            .unwrap_or_else(|e| panic!("in_cavity = {in_cavity}: heal refused: {e}"));
+
+        assert_eq!(report.wire_gaps_closed, 1, "in_cavity = {in_cavity}");
+        let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!(
+            (volume - 26.0).abs() < 1e-6,
+            "in_cavity = {in_cavity}: volume {volume}"
+        );
+    }
+}
+
+#[test]
+fn an_all_degenerate_loop_is_left_whole_and_not_counted() {
+    // A one-face "solid" whose only loop is a 1e-9 triangle: every edge is
+    // degenerate, so there is no loop to rebuild and nothing to report.
+    use remus_topology::face::Face;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let v: Vec<_> = [(0.0, 0.0), (1e-9, 0.0), (0.0, 1e-9)]
+        .iter()
+        .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+        .collect();
+    let edges: Vec<_> = (0..3)
+        .map(|i| {
+            let edge = Edge::new(v[i], v[(i + 1) % 3], EdgeCurve::Line);
+            OrientedEdge::new(topo.add_edge(edge), true)
+        })
+        .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 0);
+    assert_eq!(topo.face(face).unwrap().outer_wire(), wire);
+}
+
+/// Splits an edge of `hollow_block_with_corner_gap`'s first outer- or
+/// cavity-shell face 1e-9 short of its end, threading the short piece into
+/// every loop that uses the edge; returns the short edge.
+fn split_off_a_short_edge(topo: &mut Topology, solid: SolidId, in_cavity: bool) -> EdgeId {
+    let data = topo.solid(solid).unwrap();
+    let shell = if in_cavity {
+        data.inner_shells()[0]
+    } else {
+        data.outer_shell()
+    };
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let wire = topo.face(face).unwrap().outer_wire();
+    let long = topo.wire(wire).unwrap().edges()[0].edge();
+    let corner = topo.edge(long).unwrap().end();
+    let p = topo.vertex(corner).unwrap().point();
+    let start = topo
+        .vertex(topo.edge(long).unwrap().start())
+        .unwrap()
+        .point();
+    let toward = (start - p).normalize().unwrap() * 1e-9;
+    let w = topo.add_vertex(remus_topology::vertex::Vertex::new(p + toward, 1e-7));
+    topo.edge_mut(long).unwrap().set_end(w);
+    let short = topo.add_edge(Edge::new(w, corner, EdgeCurve::Line));
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        let face = topo.face(fid).unwrap();
+        let (outer, inner) = (face.outer_wire(), face.inner_wires().to_vec());
+        let mut rebuilt = Vec::new();
+        for wid in std::iter::once(outer).chain(inner.iter().copied()) {
+            let old = topo.wire(wid).unwrap();
+            let mut uses = Vec::new();
+            for oe in old.edges() {
+                if oe.edge() != long {
+                    uses.push(*oe);
+                } else if oe.is_forward() {
+                    uses.extend([*oe, OrientedEdge::new(short, true)]);
+                } else {
+                    uses.extend([OrientedEdge::new(short, false), *oe]);
+                }
+            }
+            let closed = old.is_closed();
+            rebuilt.push(topo.add_wire(Wire::new(uses, closed).unwrap()));
+        }
+        topo.set_face_boundary_wires(fid, rebuilt[0], rebuilt[1..].to_vec())
+            .unwrap();
+    }
+    short
+}
+
+/// Dropping a short edge with two distinct vertices fuses them, so every
+/// loop that used it stays connected, on the outer shell and in the cavity.
+#[test]
+fn dropping_a_short_edge_keeps_every_loop_connected() {
+    for in_cavity in [false, true] {
+        let mut topo = Topology::new();
+        let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+        let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            void,
+            &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        )
+        .unwrap();
+        let solid = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, void)
+            .unwrap();
+        let short = split_off_a_short_edge(&mut topo, solid, in_cavity);
+
+        let removed = remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap();
+        assert_eq!(removed, 2, "in_cavity = {in_cavity}: one use per face");
+        for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let uses = topo.wire(wid).unwrap().edges().to_vec();
+                assert!(uses.iter().all(|oe| oe.edge() != short));
+                for (k, oe) in uses.iter().enumerate() {
+                    let next = uses[(k + 1) % uses.len()];
+                    let end = oe.oriented_end(topo.edge(oe.edge()).unwrap());
+                    let start = next.oriented_start(topo.edge(next.edge()).unwrap());
+                    assert_eq!(end, start, "in_cavity = {in_cavity}: face {fid:?} use {k}");
+                }
+            }
+        }
+        assert_eq!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .error_count(),
+            0,
+            "in_cavity = {in_cavity}"
+        );
+        let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!(
+            (volume - 26.0).abs() < 1e-6,
+            "in_cavity = {in_cavity}: {volume}"
+        );
+    }
+}
+
+/// A second solid sharing a face boundary with the healed one keeps its
+/// edges: the fusion copies a shared edge for the healed solid instead of
+/// re-pointing it in place.
+#[test]
+fn fusing_a_short_edge_leaves_a_sharing_solid_alone() {
+    use remus_topology::face::Face;
+    use remus_topology::solid::Solid;
+
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    let short = split_off_a_short_edge(&mut topo, solid, false);
+    let corner = topo.edge(short).unwrap().end();
+
+    // A face of the solid that meets the corner without using the short
+    // edge, shared (wire and all) by a one-face solid.
+    let shared_face = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&fid| {
+            let uses = topo
+                .wire(topo.face(fid).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .to_vec();
+            uses.iter().all(|oe| oe.edge() != short)
+                && uses.iter().any(|oe| {
+                    let e = topo.edge(oe.edge()).unwrap();
+                    e.start() == corner || e.end() == corner
+                })
+        })
+        .unwrap();
+    let (wire, surface) = {
+        let face = topo.face(shared_face).unwrap();
+        (face.outer_wire(), face.surface().clone())
+    };
+    let twin = topo.add_face(Face::new(wire, vec![], surface));
+    let shell = topo.add_shell(Shell::new(vec![twin]).unwrap());
+    let other = topo.add_solid(Solid::new(shell, vec![]));
+    let ends = |topo: &Topology| -> Vec<(VertexId, VertexId)> {
+        remus_topology::explorer::solid_faces(topo, other)
+            .unwrap()
+            .into_iter()
+            .flat_map(|fid| {
+                topo.wire(topo.face(fid).unwrap().outer_wire())
+                    .unwrap()
+                    .edges()
+                    .to_vec()
+            })
+            .map(|oe| {
+                let e = topo.edge(oe.edge()).unwrap();
+                (e.start(), e.end())
+            })
+            .collect()
+    };
+    let before = ends(&topo);
+    assert!(before.iter().any(|&(a, b)| a == corner || b == corner));
+    // Every use of the shared face carries a pcurve, which a copied edge
+    // must keep.
+    let uses = topo.wire(wire).unwrap().edges().to_vec();
+    for oe in &uses {
+        let line = remus_math::curves2d::Line2D::new(
+            remus_math::vec::Point2::new(0.0, 0.0),
+            remus_math::vec::Vec2::new(1.0, 0.0),
+        )
+        .unwrap();
+        topo.set_pcurve_oriented(
+            oe.edge(),
+            shared_face,
+            oe.is_forward(),
+            remus_topology::pcurve::PCurve::new(
+                remus_math::curves2d::Curve2D::Line(line),
+                0.0,
+                1.0,
+            ),
+        )
+        .unwrap();
+        let coedge = use_coedge(&topo, oe.edge(), shared_face, oe.is_forward()).unwrap();
+        topo.set_coedge_periodic_winding(
+            coedge,
+            remus_topology::coedge::PeriodicWinding::new(1, 0),
+        )
+        .unwrap();
+    }
+
+    assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 2);
+    assert_eq!(ends(&topo), before, "the sharing solid's edges moved");
+    let rebuilt = topo.face(shared_face).unwrap().outer_wire();
+    assert_ne!(rebuilt, wire, "a moved shared edge must be copied");
+    for oe in topo.wire(rebuilt).unwrap().edges() {
+        assert!(
+            topo.pcurve_oriented(oe.edge(), shared_face, oe.is_forward())
+                .is_some(),
+            "use of {:?} lost its pcurve",
+            oe.edge()
+        );
+        let coedge = use_coedge(&topo, oe.edge(), shared_face, oe.is_forward()).unwrap();
+        assert_eq!(
+            topo.coedge(coedge).unwrap().periodic_winding(),
+            remus_topology::coedge::PeriodicWinding::new(1, 0),
+            "use of {:?} lost its winding",
+            oe.edge()
+        );
+    }
+    assert_eq!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .error_count(),
+        0
+    );
+    let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((volume - 26.0).abs() < 1e-6, "{volume}");
+}
+
+/// A standalone wire (no face owns it) that reuses an edge at the fused
+/// corner keeps that edge: the fusion copies it for the healed solid.
+#[test]
+fn fusing_a_short_edge_leaves_a_standalone_wire_alone() {
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    let short = split_off_a_short_edge(&mut topo, solid, false);
+    let corner = topo.edge(short).unwrap().end();
+    let at_corner = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .flat_map(|fid| {
+            topo.wire(topo.face(fid).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .to_vec()
+        })
+        .map(|oe| oe.edge())
+        .find(|&eid| {
+            let e = topo.edge(eid).unwrap();
+            eid != short && (e.start() == corner || e.end() == corner)
+        })
+        .unwrap();
+    topo.add_wire(Wire::new(vec![OrientedEdge::new(at_corner, true)], false).unwrap());
+    let before = {
+        let e = topo.edge(at_corner).unwrap();
+        (e.start(), e.end())
+    };
+
+    assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 2);
+    let e = topo.edge(at_corner).unwrap();
+    assert_eq!(
+        (e.start(), e.end()),
+        before,
+        "the standalone wire's edge moved"
+    );
+    assert_eq!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .error_count(),
+        0
+    );
+}
+
+#[test]
+fn merge_coincident_vertices_reaches_the_cavity() {
+    let mut topo = Topology::new();
+    let solid = hollow_block_with_corner_gap(&mut topo, true);
+    assert_eq!(
+        merge_coincident_vertices(&mut topo, solid, 1e-7).unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .error_count(),
+        0
+    );
+}
+
 // ── Small face removal tests ────────────────────────
 
 #[test]
@@ -1617,5 +1999,525 @@ fn unify_still_reverts_a_merge_that_breaks_a_valid_input() {
     assert!(
         reverts > 0,
         "the forged plans must exercise the revert rule"
+    );
+}
+
+#[test]
+fn fusing_short_edge_preserves_a_standalone_wire() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let short = split_off_a_short_edge(&mut topo, solid, false);
+    let corner = topo.edge(short).unwrap().end();
+    let neighbor = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .flat_map(|f| {
+            topo.wire(topo.face(f).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .to_vec()
+        })
+        .map(|o| o.edge())
+        .find(|&e| {
+            e != short && {
+                let e = topo.edge(e).unwrap();
+                e.start() == corner || e.end() == corner
+            }
+        })
+        .unwrap();
+    let free = topo.add_wire(Wire::new(vec![OrientedEdge::new(neighbor, true)], false).unwrap());
+    let ends = |topo: &Topology| {
+        let e = topo
+            .edge(topo.wire(free).unwrap().edges()[0].edge())
+            .unwrap();
+        (e.start(), e.end())
+    };
+    let before = ends(&topo);
+    remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap();
+    assert_eq!(
+        ends(&topo),
+        before,
+        "healing selected body changed an unrelated standalone wire"
+    );
+}
+
+fn cavity_repair_preserves_foreign_face(merge: bool, alias: u8) {
+    let mut topo = Topology::new();
+    let solid = hollow_block_with_corner_gap(&mut topo, true);
+    let shell = topo.solid(solid).unwrap().inner_shells()[0];
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let original = topo.face(face).unwrap().clone();
+    let foreign = if alias == 0 {
+        topo.add_face(original)
+    } else {
+        face
+    };
+    let shell = if alias == 2 {
+        shell
+    } else {
+        topo.add_shell(Shell::new(vec![foreign]).unwrap())
+    };
+    let _other = topo.add_solid(remus_topology::solid::Solid::new(shell, vec![]));
+    let ends = |topo: &Topology| {
+        topo.wire(topo.face(foreign).unwrap().outer_wire())
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|o| {
+                let e = topo.edge(o.edge()).unwrap();
+                (e.start(), e.end())
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = ends(&topo);
+    let changed = if merge {
+        merge_coincident_vertices(&mut topo, solid, 1e-7)
+    } else {
+        close_wire_gaps(&mut topo, solid, 1e-7)
+    }
+    .unwrap();
+    assert!(changed > 0);
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    assert_eq!(
+        ends(&topo),
+        before,
+        "cavity repair mutated a face belonging to another body"
+    );
+}
+#[test]
+fn merge_cavity_vertices_preserves_other_body() {
+    for alias in 0..3 {
+        cavity_repair_preserves_foreign_face(true, alias);
+    }
+}
+#[test]
+fn close_cavity_gaps_preserves_other_body() {
+    for alias in 0..3 {
+        cavity_repair_preserves_foreign_face(false, alias);
+    }
+}
+
+/// The unit cube with its corner `(1, 1, 1)` split in two: the vertical edge
+/// from `(1, 1, 0)` stops `gap` short of the corner, and a `gap`-long edge
+/// climbs the rest of the way, shared by the `x = 1` and `y = 1` faces.
+fn unit_cube_with_short_edge(topo: &mut Topology, gap: f64) -> SolidId {
+    use remus_topology::face::Face;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let p = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (0.0, 1.0, 1.0),
+        (1.0, 1.0, 1.0 - gap),
+    ];
+    let v: Vec<_> = p
+        .iter()
+        .map(|&(x, y, z)| topo.add_vertex(Vertex::new(Point3::new(x, y, z), 1e-7)))
+        .collect();
+    let mut line = |a: usize, b: usize| topo.add_edge(Edge::new(v[a], v[b], EdgeCurve::Line));
+    let [b0, b1, b2, b3] = [line(0, 1), line(1, 2), line(2, 3), line(3, 0)];
+    let [t0, t1, t2, t3] = [line(4, 5), line(5, 6), line(6, 7), line(7, 4)];
+    let [v0, v1, v2, v3] = [line(0, 4), line(1, 5), line(2, 8), line(3, 7)];
+    let short = line(8, 6);
+    let mut face = |uses: &[(EdgeId, bool)], normal: (f64, f64, f64), d: f64| {
+        let wire = Wire::new(
+            uses.iter().map(|&(e, f)| OrientedEdge::new(e, f)).collect(),
+            true,
+        )
+        .unwrap();
+        let wire = topo.add_wire(wire);
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(normal.0, normal.1, normal.2),
+                d,
+            },
+        ))
+    };
+    let faces = vec![
+        face(
+            &[(b0, false), (b3, false), (b2, false), (b1, false)],
+            (0.0, 0.0, -1.0),
+            0.0,
+        ),
+        face(
+            &[(t0, true), (t1, true), (t2, true), (t3, true)],
+            (0.0, 0.0, 1.0),
+            1.0,
+        ),
+        face(
+            &[(b0, true), (v1, true), (t0, false), (v0, false)],
+            (0.0, -1.0, 0.0),
+            0.0,
+        ),
+        face(
+            &[
+                (b2, true),
+                (v3, true),
+                (t2, false),
+                (short, false),
+                (v2, false),
+            ],
+            (0.0, 1.0, 0.0),
+            1.0,
+        ),
+        face(
+            &[(b3, true), (v0, true), (t3, false), (v3, false)],
+            (-1.0, 0.0, 0.0),
+            0.0,
+        ),
+        face(
+            &[
+                (b1, true),
+                (v2, true),
+                (short, true),
+                (t1, false),
+                (v1, false),
+            ],
+            (1.0, 0.0, 0.0),
+            1.0,
+        ),
+    ];
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+#[test]
+fn heal_removes_a_short_edge_its_vertex_merge_collapses() {
+    let mut topo = Topology::new();
+    let solid = unit_cube_with_short_edge(&mut topo, 1e-9);
+
+    let report = heal_solid(&mut topo, solid, 1e-7)
+        .unwrap_or_else(|e| panic!("a box with a 1e-9 edge must heal: {e}"));
+
+    assert_eq!(report.vertices_merged, 1);
+    assert_eq!(report.degenerate_edges_removed, 2, "one per face using it");
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    for face in faces {
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        assert_eq!(wire.edges().len(), 4, "face {face:?}");
+    }
+    let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((volume - 1.0).abs() < 1e-9, "volume {volume}");
+}
+
+#[test]
+fn degenerate_edge_test_measures_along_the_curve() {
+    // A full circle is closed and long; its collapsed line twin is closed and
+    // empty; a 1e-9 chord can still span almost the whole circle.
+    use remus_math::curves::Circle3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let near = topo.add_vertex(Vertex::new(circle.evaluate(-1e-9), 1e-7));
+    let mut full = Edge::new(seam, seam, EdgeCurve::Circle(circle.clone()));
+    full.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let mut almost = Edge::new(seam, near, EdgeCurve::Circle(circle));
+    almost.set_trim(Some((0.0, std::f64::consts::TAU - 1e-9)));
+    let full = topo.add_edge(full);
+    let almost = topo.add_edge(almost);
+    let collapsed = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Line));
+    let short = topo.add_edge(Edge::new(seam, near, EdgeCurve::Line));
+
+    let tol_sq = 1e-14;
+    assert!(!edge_is_degenerate(&topo, full, tol_sq).unwrap());
+    assert!(!edge_is_degenerate(&topo, almost, tol_sq).unwrap());
+    assert!(edge_is_degenerate(&topo, collapsed, tol_sq).unwrap());
+    assert!(edge_is_degenerate(&topo, short, tol_sq).unwrap());
+
+    // At tolerance 6.25 the near-full unit arc (length 2*pi - 1e-9 = 6.2832)
+    // is still long, though a 16-chord sum reads 6.243; and a closed circle
+    // shorter than tolerance is not degenerate either.
+    let tol_sq = 6.25 * 6.25;
+    assert!(!edge_is_degenerate(&topo, almost, tol_sq).unwrap());
+    assert!(!edge_is_degenerate(&topo, full, tol_sq).unwrap());
+}
+
+/// The bound must not undershoot the length: a parabola arc over `[-1, 1]`
+/// with focal length 0.1 is 5.5615 long (16 chords read 5.5551), and a
+/// polynomial NURBS is judged by its control polygon.
+#[test]
+fn degenerate_edge_test_never_undershoots_the_length() {
+    use remus_math::curves::Parabola3D;
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let parabola =
+        Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.1).unwrap();
+    let a = topo.add_vertex(Vertex::new(parabola.evaluate(-1.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(parabola.evaluate(1.0), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Parabola(parabola));
+    arc.set_trim(Some((-1.0, 1.0)));
+    let arc = topo.add_edge(arc);
+    assert!(!edge_is_degenerate(&topo, arc, 5.558 * 5.558).unwrap());
+    assert!(edge_is_degenerate(&topo, arc, 5.6 * 5.6).unwrap());
+
+    // A quadratic out-and-back hump: chord 1, polygon 1 + 2 * sqrt(1.25).
+    let points = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.5, 1.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+    ];
+    let polygon = 2.0 * 1.25_f64.sqrt();
+    let curve = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        points.clone(),
+        vec![1.0; 3],
+    )
+    .unwrap();
+    let c = topo.add_vertex(Vertex::new(points[0], 1e-7));
+    let d = topo.add_vertex(Vertex::new(points[2], 1e-7));
+    let mut hump = Edge::new(c, d, EdgeCurve::NurbsCurve(curve));
+    hump.set_trim(Some((0.0, 1.0)));
+    let hump = topo.add_edge(hump);
+    assert!(!edge_is_degenerate(&topo, hump, polygon * polygon * 0.99).unwrap());
+    assert!(edge_is_degenerate(&topo, hump, polygon * polygon * 1.01).unwrap());
+
+    // Rational: kept whatever the tolerance.
+    let rational = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        points,
+        vec![1.0, 0.5, 1.0],
+    )
+    .unwrap();
+    let mut bump = Edge::new(c, d, EdgeCurve::NurbsCurve(rational));
+    bump.set_trim(Some((0.0, 1.0)));
+    let bump = topo.add_edge(bump);
+    assert!(!edge_is_degenerate(&topo, bump, 100.0).unwrap());
+}
+
+/// A hairpin hyperbola arc over `[-0.269, 0.231]` (b = 1e-12) is 0.063199
+/// long, but the chunked 20-point quadrature reads 0.062960 across the kink
+/// at t = 0. The bound must stay above the true length.
+#[test]
+fn hyperbola_hairpin_is_measured_by_an_upper_bound() {
+    use remus_math::curves::Hyperbola3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let hyperbola = Hyperbola3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+        1e-12,
+    )
+    .unwrap();
+    let (t0, t1): (f64, f64) = (-0.269, 0.231);
+    let length = (t0.cosh() - 1.0) + (t1.cosh() - 1.0);
+    let a = topo.add_vertex(Vertex::new(hyperbola.evaluate(t0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(hyperbola.evaluate(t1), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Hyperbola(hyperbola));
+    arc.set_trim(Some((t0, t1)));
+    let arc = topo.add_edge(arc);
+
+    let tol = 0.0631;
+    assert!(length > tol, "true length {length}");
+    assert!(!edge_is_degenerate(&topo, arc, tol * tol).unwrap());
+    assert!(edge_is_degenerate(&topo, arc, 0.0633 * 0.0633).unwrap());
+}
+
+/// A curved edge without a stored trim has no parameter authority: its
+/// extent is unknown, so a short chord does not make it degenerate.
+#[test]
+fn untrimmed_curved_edge_is_never_degenerate() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(1e-9), 1e-7));
+    let edge = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle)));
+    assert!(topo.edge(edge).unwrap().strict_domain().is_err());
+    assert!(!edge_is_degenerate(&topo, edge, 1e-14).unwrap());
+}
+
+/// A short arc or parabola whose two ends vertex merging fused is a sliver,
+/// not a rim: its length bound decides, while a full circle on one vertex
+/// stays.
+#[test]
+fn collapsed_curved_slivers_are_degenerate() {
+    use remus_math::curves::{Circle3D, Parabola3D};
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let mut arc = Edge::new(v, v, EdgeCurve::Circle(circle.clone()));
+    arc.set_trim(Some((0.0, 1e-9)));
+    let arc = topo.add_edge(arc);
+    let mut rim = Edge::new(v, v, EdgeCurve::Circle(circle));
+    rim.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let rim = topo.add_edge(rim);
+
+    let parabola =
+        Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.1).unwrap();
+    let w = topo.add_vertex(Vertex::new(parabola.evaluate(0.0), 1e-7));
+    let mut sliver = Edge::new(w, w, EdgeCurve::Parabola(parabola));
+    sliver.set_trim(Some((0.0, 1e-9)));
+    let sliver = topo.add_edge(sliver);
+
+    let tol_sq = 1e-14;
+    assert!(edge_is_degenerate(&topo, arc, tol_sq).unwrap());
+    assert!(edge_is_degenerate(&topo, sliver, tol_sq).unwrap());
+    assert!(!edge_is_degenerate(&topo, rim, tol_sq).unwrap());
+}
+
+/// An unmeasurable line (a NaN end) and a closed rim whose stored trim is
+/// empty are kept: neither proves the edge short.
+#[test]
+fn unmeasurable_edges_are_kept() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(Point3::new(f64::NAN, 0.0, 0.0), 1e-7));
+    let line = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let mut rim = Edge::new(v, v, EdgeCurve::Circle(circle));
+    rim.set_trim(Some((0.0, 0.0)));
+    let rim = topo.add_edge(rim);
+
+    assert!(!edge_is_degenerate(&topo, rim, 1e-14).unwrap());
+    assert!(!edge_is_degenerate(&topo, line, 1e-14).unwrap());
+}
+
+/// A far-out parabola arc whose closed-form length cancels in rounding:
+/// 5.533589865e-5 computed, 5.533590670e-5 exact, chord 5.533590501e-5. At a
+/// tolerance between the computed and exact lengths the edge must stay.
+#[test]
+fn parabola_bound_survives_cancellation() {
+    use remus_math::curves::Parabola3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let parabola = Parabola3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        6.642_779_282_578_782,
+    )
+    .unwrap();
+    let (t0, t1) = (-1_192.586_040_766_271_3, -1_192.586_040_149_860_5);
+    let a = topo.add_vertex(Vertex::new(parabola.evaluate(t0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(parabola.evaluate(t1), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Parabola(parabola.clone()));
+    arc.set_trim(Some((t0, t1)));
+    let arc = topo.add_edge(arc);
+
+    let tol = 5.533_590_58e-5;
+    assert!(
+        parabola.arc_length(t0, t1) < tol,
+        "the cancellation this pins"
+    );
+    assert!(!edge_is_degenerate(&topo, arc, tol * tol).unwrap());
+}
+
+/// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
+/// bounds its cap alone, so dropping it from the lateral wire would unpair it.
+#[test]
+fn rims_shorter_than_tolerance_stay_in_every_wire() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 0.1, 1.0).unwrap();
+    let before = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+
+    let removed = remove_degenerate_edges(&mut topo, solid, 1.0).unwrap();
+    assert_eq!(removed, 0);
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert_eq!(report.error_count(), 0, "{report:?}");
+    let after = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((after - before).abs() < 1e-12, "{before} -> {after}");
+}
+
+#[test]
+fn collapsed_edge_is_removed_from_hole_and_lateral_together() {
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 1.0, 6.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &remus_math::mat::Mat4::translation(2.0, 2.0, -1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, bx, tool).unwrap();
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let cap = faces
+        .iter()
+        .copied()
+        .find(|&f| !topo.face(f).unwrap().inner_wires().is_empty())
+        .unwrap();
+    let hole = topo.face(cap).unwrap().inner_wires()[0];
+    let rim = topo.wire(hole).unwrap().edges()[0].edge();
+    let vertex = topo.edge(rim).unwrap().start();
+    let collapsed = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Line));
+    let mut inserted = 0;
+    for &f in &faces {
+        let face = topo.face(f).unwrap();
+        let (outer, inner) = (face.outer_wire(), face.inner_wires().to_vec());
+        let mut wires = Vec::new();
+        for w in std::iter::once(outer).chain(inner.iter().copied()) {
+            let old = topo.wire(w).unwrap();
+            let mut uses = old.edges().to_vec();
+            if let Some(i) = uses.iter().position(|o| o.edge() == rim) {
+                uses.insert(i, OrientedEdge::new(collapsed, true));
+                inserted += 1;
+                wires.push(topo.add_wire(Wire::new(uses, old.is_closed()).unwrap()));
+            } else {
+                wires.push(w);
+            }
+        }
+        topo.set_face_boundary_wires(f, wires[0], wires[1..].to_vec())
+            .unwrap();
+    }
+    assert_eq!(inserted, 2);
+    let count = |t: &Topology| {
+        faces
+            .iter()
+            .flat_map(|&f| {
+                let f = t.face(f).unwrap();
+                std::iter::once(f.outer_wire())
+                    .chain(f.inner_wires().iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .flat_map(|w| t.wire(w).unwrap().edges().to_vec())
+            .filter(|o| o.edge() == collapsed)
+            .count()
+    };
+    assert_eq!(count(&topo), 2);
+    remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap();
+    assert_eq!(
+        count(&topo),
+        0,
+        "collapsed shared edge remained on a hole after its lateral use was deleted"
+    );
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
     );
 }

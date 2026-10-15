@@ -7,7 +7,7 @@
 //! interior.
 
 use remus_math::aabb::Aabb3;
-use remus_math::det_hash::DetHashSet;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -27,13 +27,103 @@ use super::helpers::find_nearby_pave_vertex;
 /// # Errors
 ///
 /// Returns [`AlgoError`] if any topology lookup fails.
-#[allow(clippy::too_many_lines)]
 pub fn perform(
     topo: &mut Topology,
     solid_a: SolidId,
     solid_b: SolidId,
     tol: Tolerance,
     arena: &mut GfaArena,
+) -> Result<(), AlgoError> {
+    perform_indexed(
+        topo,
+        solid_a,
+        solid_b,
+        tol,
+        arena,
+        &mut ArenaFaceIndex::default(),
+    )
+}
+
+/// The faces each `arena.curves` entry names and the face pairs
+/// `arena.interference.ff` records, for the coplanar phase's existence
+/// checks.
+///
+/// Each check asks whether ANY curve (or FF record) of one face pair
+/// qualifies, so visiting only that pair's entries, in any order, answers it
+/// the same as scanning the whole arena; the scan grew with every pair
+/// already intersected and ran per boundary segment. Both lists only grow by
+/// push while this phase runs, so the index catches up by reading what was
+/// appended since its last look. One index serves a whole N-way coplanar
+/// pass, which nothing else writes while it runs.
+#[derive(Default)]
+pub(super) struct ArenaFaceIndex {
+    curves_seen: usize,
+    curves_by_face: DetHashMap<FaceId, Vec<usize>>,
+    ff_seen: usize,
+    ff_pairs: DetHashSet<(FaceId, FaceId)>,
+}
+
+impl ArenaFaceIndex {
+    fn sync(&mut self, arena: &GfaArena) {
+        debug_assert!(arena.curves.len() >= self.curves_seen);
+        debug_assert!(arena.interference.ff.len() >= self.ff_seen);
+        for (index, curve) in arena.curves.iter().enumerate().skip(self.curves_seen) {
+            self.curves_by_face
+                .entry(curve.face_a)
+                .or_default()
+                .push(index);
+            if curve.face_b != curve.face_a {
+                self.curves_by_face
+                    .entry(curve.face_b)
+                    .or_default()
+                    .push(index);
+            }
+        }
+        self.curves_seen = arena.curves.len();
+        for interf in arena.interference.ff.iter().skip(self.ff_seen) {
+            if let Interference::FF { f1, f2, .. } = *interf {
+                self.ff_pairs.insert((f1.min(f2), f1.max(f2)));
+            }
+        }
+        self.ff_seen = arena.interference.ff.len();
+    }
+
+    /// Every `arena.curves` entry naming `a` or `b`; one naming both comes
+    /// twice, which an existence check does not mind.
+    fn curves_of<'a>(
+        &'a mut self,
+        arena: &'a GfaArena,
+        a: FaceId,
+        b: FaceId,
+    ) -> impl Iterator<Item = &'a IntersectionCurveDS> + 'a {
+        self.sync(arena);
+        let this = &*self;
+        [a, b]
+            .into_iter()
+            .filter_map(move |face| this.curves_by_face.get(&face))
+            .flatten()
+            .map(move |&index| {
+                crate::perf::bump_coplanar_section_probe();
+                &arena.curves[index]
+            })
+    }
+
+    /// Whether an FF interference records the pair `fa`, `fb` either way.
+    fn has_ff_pair(&mut self, arena: &GfaArena, fa: FaceId, fb: FaceId) -> bool {
+        self.sync(arena);
+        self.ff_pairs.contains(&(fa.min(fb), fa.max(fb)))
+    }
+}
+
+/// [`perform`] reading the arena's existing sections through `index`.
+#[allow(clippy::too_many_lines)]
+pub(super) fn perform_indexed(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    tol: Tolerance,
+    arena: &mut GfaArena,
+    index: &mut ArenaFaceIndex,
 ) -> Result<(), AlgoError> {
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
@@ -80,11 +170,11 @@ pub fn perform(
                 continue;
             }
 
-            if has_existing_ff_interference(arena, fa, fb) {
+            if index.has_ff_pair(arena, fa, fb) {
                 continue;
             }
 
-            process_coplanar_pair(topo, fa, na, fb, tol, arena, &qualified_splines)?;
+            process_coplanar_pair(topo, fa, na, fb, tol, arena, &qualified_splines, index)?;
         }
     }
 
@@ -194,19 +284,20 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId) -> Result<Aabb3, AlgoErro
 
 /// Check if a section curve already exists at this position for either face.
 ///
-/// Searches `arena.curves` for any existing intersection curve involving
+/// Searches `sections` (the arena's curves, or just those naming either
+/// face) for any existing intersection curve involving
 /// `face_a` or `face_b` whose endpoints match `p_start`/`p_end` within
 /// tolerance. This prevents the coplanar phase from creating duplicate
 /// section edges that already exist from the regular FF phase.
-fn has_existing_section_at(
-    arena: &GfaArena,
+fn has_existing_section_at<'s>(
+    sections: impl Iterator<Item = &'s IntersectionCurveDS>,
     face_a: FaceId,
     face_b: FaceId,
     p_start: Point3,
     p_end: Point3,
     tol: Tolerance,
 ) -> bool {
-    for curve in &arena.curves {
+    for curve in sections {
         if curve.face_a != face_a
             && curve.face_a != face_b
             && curve.face_b != face_a
@@ -256,18 +347,9 @@ fn has_existing_section_at(
     false
 }
 
-/// Check if an FF interference already exists for this face pair.
-fn has_existing_ff_interference(arena: &GfaArena, fa: FaceId, fb: FaceId) -> bool {
-    arena.interference.ff.iter().any(|interf| {
-        matches!(interf,
-            Interference::FF { f1, f2, .. } if (*f1 == fa && *f2 == fb) || (*f1 == fb && *f2 == fa)
-        )
-    })
-}
-
 /// Process a single coplanar face pair: project boundary edges of each face
 /// into the other and create section edges for edges that lie inside.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn process_coplanar_pair(
     topo: &mut Topology,
     face_a: FaceId,
@@ -276,6 +358,7 @@ fn process_coplanar_pair(
     tol: Tolerance,
     arena: &mut GfaArena,
     qualified_splines: &DetHashSet<remus_topology::edge::EdgeId>,
+    index: &mut ArenaFaceIndex,
 ) -> Result<(), AlgoError> {
     let origin = first_wire_vertex(topo, face_a)?;
     let frame = PlaneFrame2D::new(normal, origin);
@@ -316,6 +399,7 @@ fn process_coplanar_pair(
         },
         tol,
         qualified_splines,
+        index,
     )?;
     create_boundary_sections(
         topo,
@@ -329,6 +413,7 @@ fn process_coplanar_pair(
         },
         tol,
         qualified_splines,
+        index,
     )?;
 
     // For each boundary edge of face_b that coincides with a boundary edge
@@ -362,6 +447,7 @@ struct CoplanarTarget<'a> {
 }
 
 #[cfg_attr(target_arch = "wasm32", inline(never))]
+#[allow(clippy::too_many_arguments)]
 fn create_boundary_sections(
     topo: &mut Topology,
     arena: &mut GfaArena,
@@ -370,6 +456,7 @@ fn create_boundary_sections(
     target: CoplanarTarget<'_>,
     tol: Tolerance,
     qualified_splines: &DetHashSet<remus_topology::edge::EdgeId>,
+    index: &mut ArenaFaceIndex,
 ) -> Result<(), AlgoError> {
     let (face_a, face_b) = faces;
     for &(eid, p2d_start, p2d_end, p3d_start, p3d_end) in edges {
@@ -377,7 +464,7 @@ fn create_boundary_sections(
             || spline_hull_disjoint_from_line_face(topo, eid, target.face, tol)?
             || matching_boundary_section_exists(
                 topo,
-                arena,
+                index.curves_of(arena, face_a, face_b),
                 face_a,
                 face_b,
                 eid,
@@ -396,7 +483,14 @@ fn create_boundary_sections(
                 target.polygon,
                 tol.linear,
             ) {
-                if !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol) {
+                if !has_existing_section_at(
+                    index.curves_of(arena, face_a, face_b),
+                    face_a,
+                    face_b,
+                    c_start,
+                    c_end,
+                    tol,
+                ) {
                     create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
                 }
             }
@@ -665,9 +759,9 @@ fn point_in_line_polygon_exact(point: Point2, polygon: &[Point2]) -> bool {
 /// boundary edges always return `false`; a co-endpoint line/arc pair can be a
 /// genuine lens with material between the two (the in-tube torus-box case) and
 /// must keep both curves.
-fn matching_boundary_section_exists(
+fn matching_boundary_section_exists<'s>(
     topo: &Topology,
-    arena: &GfaArena,
+    mut sections: impl Iterator<Item = &'s IntersectionCurveDS>,
     face_a: FaceId,
     face_b: FaceId,
     eid: remus_topology::edge::EdgeId,
@@ -678,7 +772,7 @@ fn matching_boundary_section_exists(
     if let EdgeCurve::NurbsCurve(boundary) = edge.curve() {
         let domain =
             super::helpers::authoritative_edge_domain(edge, eid, "coplanar spline section")?;
-        let matched = arena.curves.iter().any(|section| {
+        let matched = sections.any(|section| {
             (section.face_a == face_a
                 || section.face_a == face_b
                 || section.face_b == face_a
@@ -708,7 +802,7 @@ fn matching_boundary_section_exists(
         .curve()
         .evaluate_with_endpoints(0.5 * (d0 + d1), p_start, p_end);
     let close = |a: Point3, b: Point3| (a - b).length() < tol.linear * 10.0;
-    Ok(arena.curves.iter().any(|c| {
+    Ok(sections.any(|c| {
         let EdgeCurve::Circle(existing) = &c.curve else {
             return false;
         };
@@ -1206,6 +1300,7 @@ mod tests {
             Tolerance::new(),
             &mut arena,
             &DetHashSet::default(),
+            &mut ArenaFaceIndex::default(),
         )
         .unwrap();
         let a = Point3::new(0., 0., 0.);
@@ -1322,7 +1417,7 @@ mod tests {
             assert!(
                 matching_boundary_section_exists(
                     &topo,
-                    &no_sections,
+                    no_sections.curves.iter(),
                     face,
                     face,
                     edge,
@@ -1382,7 +1477,7 @@ mod tests {
         assert!(
             matching_boundary_section_exists(
                 &topo,
-                &arena,
+                arena.curves.iter(),
                 face,
                 face,
                 eid,
@@ -1402,7 +1497,7 @@ mod tests {
         assert!(
             matching_boundary_section_exists(
                 &topo,
-                &arena,
+                arena.curves.iter(),
                 face,
                 face,
                 eid,
@@ -1417,7 +1512,7 @@ mod tests {
         assert!(
             matching_boundary_section_exists(
                 &topo,
-                &arena,
+                arena.curves.iter(),
                 face,
                 face,
                 eid,
@@ -1431,7 +1526,7 @@ mod tests {
         assert!(
             matching_boundary_section_exists(
                 &topo,
-                &arena,
+                arena.curves.iter(),
                 face,
                 face,
                 eid,
@@ -1444,7 +1539,7 @@ mod tests {
         assert!(
             matching_boundary_section_exists(
                 &topo,
-                &arena,
+                arena.curves.iter(),
                 face,
                 face,
                 eid,
@@ -1457,7 +1552,7 @@ mod tests {
         assert!(
             matching_boundary_section_exists(
                 &topo,
-                &arena,
+                arena.curves.iter(),
                 face,
                 face,
                 eid,

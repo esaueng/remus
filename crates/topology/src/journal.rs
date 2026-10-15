@@ -834,6 +834,66 @@ pub struct JournalSnapshot {
     pub entries: Vec<EntrySnapshot>,
 }
 
+impl JournalEntry {
+    /// Every ordinal the entry mentions: an evolution's scope (a superset of
+    /// what its events mention) or a barrier's targets. A global barrier
+    /// mentions none.
+    fn mentions(&self) -> &[JournalOrdinal] {
+        match &self.payload {
+            EntryPayload::Evolution { scope, .. } => scope,
+            EntryPayload::Barrier { affected } => affected,
+            EntryPayload::GlobalBarrier => &[],
+        }
+    }
+
+    fn snapshot(&self) -> EntrySnapshot {
+        EntrySnapshot {
+            op: self.op.value(),
+            kind: self.kind.clone(),
+            payload: match &self.payload {
+                EntryPayload::Evolution {
+                    origin,
+                    scope,
+                    events,
+                } => PayloadSnapshot::Evolution {
+                    construction: *origin == RecordedOrigin::Construction,
+                    scope: scope.iter().map(|o| o.value()).collect(),
+                    events: events
+                        .iter()
+                        .map(|(subject, event)| {
+                            let event = match event {
+                                EntityEvent::Preserved { from } => {
+                                    EventSnapshot::Preserved { from: from.value() }
+                                }
+                                EntityEvent::Modified { from } => {
+                                    EventSnapshot::Modified { from: from.value() }
+                                }
+                                EntityEvent::Generated { sources } => EventSnapshot::Generated {
+                                    sources: sources.iter().map(|o| o.value()).collect(),
+                                },
+                                EntityEvent::Merged { from } => EventSnapshot::Merged {
+                                    from: from.iter().map(|o| o.value()).collect(),
+                                },
+                                EntityEvent::Deleted => EventSnapshot::Deleted,
+                                EntityEvent::Unresolved { candidates } => {
+                                    EventSnapshot::Unresolved {
+                                        candidates: candidates.iter().map(|o| o.value()).collect(),
+                                    }
+                                }
+                            };
+                            (subject.value(), event)
+                        })
+                        .collect(),
+                },
+                EntryPayload::Barrier { affected } => PayloadSnapshot::Barrier {
+                    affected: affected.iter().map(|o| o.value()).collect(),
+                },
+                EntryPayload::GlobalBarrier => PayloadSnapshot::GlobalBarrier,
+            },
+        }
+    }
+}
+
 impl Journal {
     /// Captures the journal's full state as plain data.
     #[must_use]
@@ -844,59 +904,106 @@ impl Journal {
             .map(|(&ordinal, &key)| (ordinal, key))
             .collect();
         index.sort_unstable_by_key(|(ordinal, _)| *ordinal);
-        let entries = self
-            .entries
+        let entries = self.entries.iter().map(JournalEntry::snapshot).collect();
+        JournalSnapshot {
+            next_op: self.next_op,
+            next_ordinal: self.next_ordinal,
+            index,
+            entries,
+        }
+    }
+
+    /// Captures only the history that the entities selected by `contains`
+    /// depend on, as plain data (the arena document's journal).
+    ///
+    /// An entry is kept when it shares an ordinal with a selected entity,
+    /// directly or through other entries: the selection's connected
+    /// components in the entry–ordinal incidence graph, following
+    /// descendants as well as ancestors. Global barriers recorded after the
+    /// earliest kept entry are kept too, since their scope is unknown. The
+    /// index holds exactly the ordinals the kept entries mention, and the
+    /// high-water counters stay the full journal's, so a session loaded
+    /// from the closure never reissues an identifier this journal issued.
+    ///
+    /// The closure is exact for resolution. A chase from a kept anchor only
+    /// ever holds ordinals of the kept components, and an omitted entry's
+    /// scope is disjoint from them, so every reference anchored at a kept
+    /// operation resolves identically against the closure and the full
+    /// journal. Descendants matter: a barrier over a split's other piece
+    /// severs the whole lineage, including the selected piece. A reference
+    /// that binds a selected entity is always anchored at a kept operation;
+    /// one anchored elsewhere resolves as an unknown operation.
+    ///
+    /// History unrelated to the selection (other bodies, barriers over
+    /// nothing) is omitted, and a selection no entry mentions yields no
+    /// entries at all.
+    #[must_use]
+    pub fn lineage_snapshot(&self, contains: impl Fn(EntityKey) -> bool) -> JournalSnapshot {
+        // Dense union-find nodes over every live-index and mentioned ordinal
+        // (the same set in a valid journal). Ordinals are sparse after
+        // appends and restores, so they are ranked, not used as indices.
+        let mut nodes: Vec<u64> = self.key_by_ordinal.keys().copied().collect();
+        for entry in &self.entries {
+            nodes.extend(entry.mentions().iter().map(|ordinal| ordinal.0));
+        }
+        nodes.sort_unstable();
+        nodes.dedup();
+        let node = |ordinal: u64| nodes.partition_point(|&candidate| candidate < ordinal);
+        let mut parent: Vec<usize> = (0..nodes.len()).collect();
+        let find = |parent: &mut [usize], mut x: usize| {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        };
+
+        let mut first_mention: Vec<Option<usize>> = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let mentions = entry.mentions();
+            let first = mentions.first().map(|ordinal| node(ordinal.0));
+            if let Some(first) = first {
+                for ordinal in mentions.iter().skip(1) {
+                    let root = find(&mut parent, first);
+                    let other = find(&mut parent, node(ordinal.0));
+                    parent[other] = root;
+                }
+            }
+            first_mention.push(first);
+        }
+
+        let mut selected = vec![false; nodes.len()];
+        for (&ordinal, &key) in &self.key_by_ordinal {
+            if key.index != EntityKey::UNMAPPED && contains(key) {
+                let root = find(&mut parent, node(ordinal));
+                selected[root] = true;
+            }
+        }
+        let mut kept: Vec<bool> = first_mention
             .iter()
-            .map(|entry| EntrySnapshot {
-                op: entry.op.value(),
-                kind: entry.kind.clone(),
-                payload: match &entry.payload {
-                    EntryPayload::Evolution {
-                        origin,
-                        scope,
-                        events,
-                    } => PayloadSnapshot::Evolution {
-                        construction: *origin == RecordedOrigin::Construction,
-                        scope: scope.iter().map(|o| o.value()).collect(),
-                        events: events
-                            .iter()
-                            .map(|(subject, event)| {
-                                let event = match event {
-                                    EntityEvent::Preserved { from } => {
-                                        EventSnapshot::Preserved { from: from.value() }
-                                    }
-                                    EntityEvent::Modified { from } => {
-                                        EventSnapshot::Modified { from: from.value() }
-                                    }
-                                    EntityEvent::Generated { sources } => {
-                                        EventSnapshot::Generated {
-                                            sources: sources.iter().map(|o| o.value()).collect(),
-                                        }
-                                    }
-                                    EntityEvent::Merged { from } => EventSnapshot::Merged {
-                                        from: from.iter().map(|o| o.value()).collect(),
-                                    },
-                                    EntityEvent::Deleted => EventSnapshot::Deleted,
-                                    EntityEvent::Unresolved { candidates } => {
-                                        EventSnapshot::Unresolved {
-                                            candidates: candidates
-                                                .iter()
-                                                .map(|o| o.value())
-                                                .collect(),
-                                        }
-                                    }
-                                };
-                                (subject.value(), event)
-                            })
-                            .collect(),
-                    },
-                    EntryPayload::Barrier { affected } => PayloadSnapshot::Barrier {
-                        affected: affected.iter().map(|o| o.value()).collect(),
-                    },
-                    EntryPayload::GlobalBarrier => PayloadSnapshot::GlobalBarrier,
-                },
-            })
+            .map(|first| first.is_some_and(|first| selected[find(&mut parent, first)]))
             .collect();
+        if let Some(earliest) = kept.iter().position(|&keep| keep) {
+            for (keep, entry) in kept.iter_mut().zip(&self.entries).skip(earliest + 1) {
+                *keep |= matches!(entry.payload, EntryPayload::GlobalBarrier);
+            }
+        }
+
+        let mut mentioned = vec![false; nodes.len()];
+        let mut entries = Vec::new();
+        for (entry, _) in self.entries.iter().zip(&kept).filter(|(_, keep)| **keep) {
+            for ordinal in entry.mentions() {
+                mentioned[node(ordinal.0)] = true;
+            }
+            entries.push(entry.snapshot());
+        }
+        let mut index: Vec<(u64, EntityKey)> = self
+            .key_by_ordinal
+            .iter()
+            .filter(|(ordinal, _)| mentioned[node(**ordinal)])
+            .map(|(&ordinal, &key)| (ordinal, key))
+            .collect();
+        index.sort_unstable_by_key(|(ordinal, _)| *ordinal);
         JournalSnapshot {
             next_op: self.next_op,
             next_ordinal: self.next_ordinal,
@@ -1892,5 +1999,120 @@ mod tests {
         let pending = barriers_only.journal_begin("offset_solid");
         barriers_only.journal_record_barrier(pending, Vec::new());
         assert!(!barriers_only.journal().is_empty());
+    }
+
+    // ── Lineage closure (arena documents) ───────────────────────────────
+
+    fn record_events(
+        topo: &mut Topology,
+        kind: &str,
+        events: Vec<(EntityKey, EventDraft)>,
+    ) -> OpId {
+        let pending = topo.journal_begin(kind);
+        let mut draft = EvolutionDraft::construction();
+        draft.events = events;
+        topo.journal_record_evolution(pending, draft).unwrap()
+    }
+
+    fn generated(face: usize) -> (EntityKey, EventDraft) {
+        (
+            EntityKey::face(face),
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        )
+    }
+
+    fn modified(from: usize, to: usize) -> (EntityKey, EventDraft) {
+        (
+            EntityKey::face(to),
+            EventDraft::Modified {
+                from: EntityKey::face(from),
+            },
+        )
+    }
+
+    /// Body A: face 1 splits into face 2 (selected) and face 3 (another
+    /// body), and a barrier then severs face 3. Body B is unrelated.
+    #[test]
+    fn lineage_snapshot_keeps_ancestors_and_sibling_descendants_only() {
+        use crate::naming::{PersistentRef, Resolution, resolve};
+
+        let mut topo = Topology::new();
+        let make_a = record_events(&mut topo, "make_a", vec![generated(1)]);
+        let make_b = record_events(&mut topo, "make_b", vec![generated(10)]);
+        let split = record_events(&mut topo, "split", vec![modified(1, 2), modified(1, 3)]);
+        let edit_b = record_events(&mut topo, "edit_b", vec![modified(10, 11)]);
+        let pending = topo.journal_begin("edit_sibling");
+        let sever = topo.journal_record_barrier(pending, vec![EntityKey::face(3)]);
+        let pending = topo.journal_begin("touch_nothing");
+        let empty = topo.journal_record_barrier(pending, Vec::new());
+
+        let journal = topo.journal();
+        let closure = journal.lineage_snapshot(|key| key == EntityKey::face(2));
+        let ops: Vec<u64> = closure.entries.iter().map(|entry| entry.op).collect();
+        assert_eq!(ops, vec![make_a.value(), split.value(), sever.value()]);
+        let full = journal.snapshot();
+        assert_eq!(
+            (closure.next_op, closure.next_ordinal),
+            (full.next_op, full.next_ordinal),
+            "the closure keeps the full high-water counters"
+        );
+        let expected_index: Vec<(u64, EntityKey)> = [1, 2, 3]
+            .map(|face| {
+                let key = EntityKey::face(face);
+                (journal.ordinal_of(key).unwrap().value(), key)
+            })
+            .to_vec();
+        assert_eq!(closure.index, expected_index);
+
+        // Exact for resolution: kept anchors resolve identically, including
+        // face 1's lineage, which only the sibling's barrier severs; omitted
+        // anchors are unknown operations.
+        let mut loaded = topo.clone();
+        loaded.load_journal(Journal::from_snapshot(closure).unwrap());
+        assert!(matches!(
+            resolve(&topo, &PersistentRef::operation_output(make_a, EntityKind::Face, 0)),
+            Resolution::UnresolvedAcrossOperation { op, .. } if op == sever
+        ));
+        for op in [make_a, make_b, split, edit_b, sever, empty] {
+            for index in 0..3 {
+                let reference = PersistentRef::operation_output(op, EntityKind::Face, index);
+                let expected = if [make_a, split, sever].contains(&op) {
+                    resolve(&topo, &reference)
+                } else {
+                    Resolution::UnknownOperation { op }
+                };
+                assert_eq!(resolve(&loaded, &reference), expected, "{op:?}#{index}");
+            }
+        }
+    }
+
+    #[test]
+    fn lineage_snapshot_keeps_global_barriers_after_its_history_only() {
+        let mut topo = Topology::new();
+        let make_b = record_events(&mut topo, "make_b", vec![generated(10)]);
+        topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let make_a = record_events(&mut topo, "make_a", vec![generated(1)]);
+        topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edit_b = record_events(&mut topo, "edit_b", vec![modified(10, 11)]);
+        let ops = |closure: JournalSnapshot| -> Vec<u64> {
+            closure.entries.iter().map(|entry| entry.op).collect()
+        };
+        let journal = topo.journal();
+        assert_eq!(make_a.value(), make_b.value() + 2);
+        assert_eq!(edit_b.value(), make_a.value() + 2);
+
+        // The gap before body A's first entry cannot reach its history.
+        assert_eq!(
+            ops(journal.lineage_snapshot(|key| key == EntityKey::face(1))),
+            vec![make_a.value(), make_a.value() + 1]
+        );
+        assert_eq!(
+            ops(journal.lineage_snapshot(|key| key == EntityKey::face(11))),
+            vec![0, 1, 3, 4]
+        );
+        let none = journal.lineage_snapshot(|key| key == EntityKey::face(99));
+        assert!(none.entries.is_empty() && none.index.is_empty());
     }
 }

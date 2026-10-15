@@ -8962,12 +8962,10 @@ fn plane_closed_loops_separate(
     true
 }
 
-/// Whether two closed planar line segments cross, touch, or overlap.
+/// Whether two planar line segments cross strictly inside both spans.
 /// Only predicate signs are needed: computing an intersection point would
 /// introduce a denominator cutoff that can miss small proper crossings.
-fn plane_segments_touch(a0: Point2, a1: Point2, b0: Point2, b1: Point2) -> bool {
-    use remus_math::predicates::{Orientation, orientation2d};
-
+fn plane_segments_cross(a0: Point2, a1: Point2, b0: Point2, b1: Point2) -> bool {
     if a0.x().max(a1.x()) < b0.x().min(b1.x())
         || b0.x().max(b1.x()) < a0.x().min(a1.x())
         || a0.y().max(a1.y()) < b0.y().min(b1.y())
@@ -8975,30 +8973,38 @@ fn plane_segments_touch(a0: Point2, a1: Point2, b0: Point2, b1: Point2) -> bool 
     {
         return false;
     }
-    let side = [
-        orientation2d(a0, a1, b0),
-        orientation2d(a0, a1, b1),
-        orientation2d(b0, b1, a0),
-        orientation2d(b0, b1, a1),
-    ];
-    let opposite = |a, b| {
-        matches!(
-            (a, b),
-            (Orientation::Clockwise, Orientation::CounterClockwise)
-                | (Orientation::CounterClockwise, Orientation::Clockwise)
-        )
-    };
-    let on = |p: Point2, a: Point2, b: Point2| {
-        p.x() >= a.x().min(b.x())
-            && p.x() <= a.x().max(b.x())
-            && p.y() >= a.y().min(b.y())
-            && p.y() <= a.y().max(b.y())
-    };
-    (opposite(side[0], side[1]) && opposite(side[2], side[3]))
-        || (side[0] == Orientation::Collinear && on(b0, a0, a1))
-        || (side[1] == Orientation::Collinear && on(b1, a0, a1))
-        || (side[2] == Orientation::Collinear && on(a0, b0, b1))
-        || (side[3] == Orientation::Collinear && on(a1, b0, b1))
+    plane_points_on_opposite_sides(a0, a1, b0, b1) && plane_points_on_opposite_sides(b0, b1, a0, a1)
+}
+
+fn plane_points_on_opposite_sides(a0: Point2, a1: Point2, b0: Point2, b1: Point2) -> bool {
+    use remus_math::predicates::{Orientation, orientation2d};
+    matches!(
+        (orientation2d(a0, a1, b0), orientation2d(a0, a1, b1)),
+        (Orientation::Clockwise, Orientation::CounterClockwise)
+            | (Orientation::CounterClockwise, Orientation::Clockwise)
+    )
+}
+
+/// A boundary vertex crosses a segment only when its incident edges continue
+/// on opposite sides. Same-side incidence is a tangency; a collinear incident
+/// edge is a shared-span contact. The vertex must be inside the segment so
+/// the downstream hole weave can split at least one of the two boundaries.
+fn plane_segment_crosses_vertex(
+    a0: Point2,
+    a1: Point2,
+    vertex: Point2,
+    before: Point2,
+    after: Point2,
+) -> bool {
+    use remus_math::predicates::{Orientation, orientation2d};
+    vertex.x() >= a0.x().min(a1.x())
+        && vertex.x() <= a0.x().max(a1.x())
+        && vertex.y() >= a0.y().min(a1.y())
+        && vertex.y() <= a0.y().max(a1.y())
+        && ((vertex.x() > a0.x().min(a1.x()) && vertex.x() < a0.x().max(a1.x()))
+            || (vertex.y() > a0.y().min(a1.y()) && vertex.y() < a0.y().max(a1.y())))
+        && orientation2d(a0, a1, vertex) == Orientation::Collinear
+        && plane_points_on_opposite_sides(a0, a1, before, after)
 }
 
 /// Detect section edges (lines, open arcs, and open NURBS conics) forming
@@ -9214,29 +9220,50 @@ fn plane_internal_line_loops(
     // inner wire: the two boundaries must be partitioned together by the
     // generic wire builder. Qualify only the all-Line domain here. Project
     // the authoritative 3D endpoints; stored hole pcurves can use another
-    // plane frame. Disjoint and nested outlines retain the shortcut.
+    // plane frame. Only transverse crossings take that route: the downstream
+    // `integrate_holes_plane` cannot weave collinear spans or shared endpoints
+    // without an interior crossing. Contact-only loops retain the established
+    // internal-loop path, which can union a shared span with the existing hole.
+    // Disjoint and nested outlines also retain the shortcut.
     if !inner_wires.is_empty()
         && deduped
             .iter()
             .all(|section| matches!(section.curve_3d, EdgeCurve::Line))
     {
-        let hole_segments: Vec<_> = inner_wires
+        let section_segments: Vec<_> = deduped
             .iter()
-            .filter(|wire| {
-                wire.iter()
-                    .all(|edge| matches!(edge.curve_3d, EdgeCurve::Line))
-            })
-            .flatten()
-            .map(|edge| (frame.project(edge.start_3d), frame.project(edge.end_3d)))
+            .map(|section| (frame.project(section.start), frame.project(section.end)))
             .collect();
-        if deduped.iter().any(|section| {
-            let start = frame.project(section.start);
-            let end = frame.project(section.end);
-            hole_segments
-                .iter()
-                .any(|&(a, b)| plane_segments_touch(start, end, a, b))
+        let mut incident: DetHashMap<QPt, (Point2, Vec<Point2>)> = DetHashMap::default();
+        for section in &deduped {
+            for (vertex, other) in [(section.start, section.end), (section.end, section.start)] {
+                incident
+                    .entry(quant(vertex))
+                    .or_insert_with(|| (frame.project(vertex), Vec::new()))
+                    .1
+                    .push(frame.project(other));
+            }
+        }
+        for wire in inner_wires.iter().filter(|wire| {
+            wire.iter()
+                .all(|edge| matches!(edge.curve_3d, EdgeCurve::Line))
         }) {
-            return None;
+            for (i, edge) in wire.iter().enumerate() {
+                let start = frame.project(edge.start_3d);
+                let end = frame.project(edge.end_3d);
+                let before = frame.project(wire[(i + wire.len() - 1) % wire.len()].start_3d);
+                if section_segments.iter().any(|&(a, b)| {
+                    plane_segments_cross(a, b, start, end)
+                        || plane_segment_crosses_vertex(a, b, start, before, end)
+                }) || incident.values().any(|(vertex, neighbors)| {
+                    let [before, after] = neighbors.as_slice() else {
+                        return false;
+                    };
+                    plane_segment_crosses_vertex(start, end, *vertex, *before, *after)
+                }) {
+                    return None;
+                }
+            }
         }
     }
     Some(deduped)
@@ -9907,7 +9934,7 @@ mod tests {
     }
 
     #[test]
-    fn b79_internal_line_loops_partition_crossing_and_touching_holes_only() {
+    fn b79_internal_line_loops_partition_crossing_holes_and_retain_contacts() {
         let square = [(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
         let outer = [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)];
         let cases = [
@@ -9915,9 +9942,27 @@ mod tests {
                 vec![(-4.0, -0.5), (4.0, -0.5), (4.0, 0.5), (-4.0, 0.5)],
                 true,
             ),
-            (vec![(2.0, -1.0), (4.0, -1.0), (4.0, 1.0), (2.0, 1.0)], true),
-            (vec![(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0)], true),
-            (vec![(2.0, 0.0), (3.0, -1.0), (3.0, 1.0)], true),
+            // Subdividing a hole edge at a transverse crossing must not turn
+            // that crossing into a tangency for dispatch.
+            (
+                vec![
+                    (-4.0, -0.5),
+                    (-2.0, -0.5),
+                    (2.0, -0.5),
+                    (4.0, -0.5),
+                    (4.0, 0.5),
+                    (2.0, 0.5),
+                    (-2.0, 0.5),
+                    (-4.0, 0.5),
+                ],
+                true,
+            ),
+            (
+                vec![(2.0, -1.0), (4.0, -1.0), (4.0, 1.0), (2.0, 1.0)],
+                false,
+            ),
+            (vec![(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0)], false),
+            (vec![(2.0, 0.0), (3.0, -1.0), (3.0, 1.0)], false),
             (
                 vec![(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)],
                 false,
@@ -9965,6 +10010,33 @@ mod tests {
                         "scale={scale} origin={origin:?} hole={hole:?}"
                     );
                 }
+                // The same crossing can instead be a section vertex inside
+                // an unsplit hole edge. Its incident sections still cross.
+                let split_square = [
+                    (-2.0, -2.0),
+                    (2.0, -2.0),
+                    (2.0, -0.5),
+                    (2.0, 0.5),
+                    (2.0, 2.0),
+                    (-2.0, 2.0),
+                    (-2.0, 0.5),
+                    (-2.0, -0.5),
+                ];
+                let split_sections = wire(&split_square)
+                    .into_iter()
+                    .map(|e| line_section(e.start_3d, e.end_3d))
+                    .collect::<Vec<_>>();
+                assert!(
+                    plane_internal_line_loops(
+                        &split_sections,
+                        &frame,
+                        &wire(&outer),
+                        &[wire(&cases[0].0)],
+                        1e-7 * scale,
+                    )
+                    .is_none(),
+                    "subdivided section crossing at scale={scale} origin={origin:?}"
+                );
                 // The boxes overlap, but these triangles are separated by x+y.
                 let triangle = [(-2.0, -2.0), (2.0, -2.0), (-2.0, 2.0)];
                 let hole = [(2.0, 2.0), (2.0, 0.5), (0.5, 2.0)];

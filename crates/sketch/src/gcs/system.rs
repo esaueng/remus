@@ -9,8 +9,8 @@ use super::components::{
     refresh_subset_radii, refresh_subset_snapshot, subset_snapshot,
 };
 use super::constraint::{
-    Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, eval_jacobian,
-    eval_residuals, residual_count,
+    Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, ellipse_axes_usable,
+    eval_jacobian, eval_residuals, residual_count,
 };
 use super::diagnostics::{ConstraintResidual, SolveDiagnostics, classify as classify_solve};
 use super::dof::{self, DofAnalysis};
@@ -665,6 +665,96 @@ impl GcsSystem {
     /// which is the only write to the system — mirroring the dense path's
     /// single write-back.
     fn solve_with_decomposition(
+        &mut self,
+        decomp: &Decomposition,
+        max_iterations: usize,
+        tolerance: f64,
+        capture_final: bool,
+    ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
+        // Only sketches with ellipses pay for the extra parameter snapshot.
+        let before = (!self.ellipses.is_empty()).then(|| {
+            let usable: Vec<(bool, bool)> = self
+                .ellipses
+                .iter()
+                .map(|(_, e)| (semiaxis_usable(e.a), semiaxis_usable(e.b)))
+                .collect();
+            (self.extract_params(), usable)
+        });
+        let (mut result, eval, mut stats) =
+            self.solve_with_decomposition_raw(decomp, max_iterations, tolerance, capture_final)?;
+        if let Some((params, usable)) = before {
+            self.publish_positive_ellipse_axes(
+                &params,
+                &usable,
+                &mut result,
+                &mut stats,
+                tolerance,
+            )?;
+        }
+        Ok((result, eval, stats))
+    }
+
+    /// Enforce the [`EllipseData`] contract (finite, strictly positive
+    /// semiaxes) on the state a solve publishes.
+    ///
+    /// Semiaxes are free solver parameters and the implicit-form residuals
+    /// read them only through `a²`/`b²`, so the solver can converge on
+    /// `a = −1` as readily as on `a = 1`. That is the same point set, so a
+    /// negative semiaxis is published as its magnitude. The swap never raises
+    /// any residual: the implicit forms are even in each semiaxis, and for
+    /// `EllipseAxisA/B` (positive target) and `EqualEllipseRadii`,
+    /// `||a| − t| ≤ |a − t|` and `||a₁| − |a₂|| ≤ |a₁ − a₂|`. When a sign
+    /// changes, `max_residual` and `converged` are re-read at the published
+    /// state, and that residual pass is counted in `stats` (PERF-S06).
+    ///
+    /// A semiaxis that ends below the usable magnitude
+    /// ([`ellipse_axes_usable`]) is a collapsed ellipse whose implicit-form
+    /// residuals read zero by contract, so convergence there means nothing:
+    /// the pre-solve parameters are restored and the solve is refused. Only a
+    /// semiaxis the solve drove there counts: `add_ellipse` accepts any
+    /// positive semiaxis, so one that was already below the threshold
+    /// (its flag in `usable_before[i]` false, `(a, b)` in arena order) is
+    /// left as it is. Each semiaxis is judged on its own: a tiny `a` does not
+    /// exempt a `b` the solve collapsed.
+    fn publish_positive_ellipse_axes(
+        &mut self,
+        before: &[f64],
+        usable_before: &[(bool, bool)],
+        result: &mut SolveResult,
+        stats: &mut SolveStats,
+        tolerance: f64,
+    ) -> Result<(), SketchError> {
+        let mut flipped = false;
+        let mut collapsed = false;
+        for ((_, ellipse), &(a_was, b_was)) in self.ellipses.iter_mut().zip(usable_before) {
+            let (a, b) = (ellipse.a, ellipse.b);
+            let lost = (a_was && !semiaxis_usable(a)) || (b_was && !semiaxis_usable(b));
+            if a.is_finite() && b.is_finite() && lost {
+                collapsed = true;
+                continue;
+            }
+            for axis in [&mut ellipse.a, &mut ellipse.b] {
+                if *axis < 0.0 {
+                    *axis = -*axis;
+                    flipped = true;
+                }
+            }
+        }
+        if collapsed {
+            self.write_params(before);
+            return Err(SketchError::DegenerateEllipse);
+        }
+        if flipped {
+            stats.residual_evals += 1;
+            result.max_residual = self.current_max_residual();
+            result.converged = result.max_residual < tolerance;
+        }
+        Ok(())
+    }
+
+    /// [`Self::solve_with_decomposition`] without the ellipse publication
+    /// check.
+    fn solve_with_decomposition_raw(
         &mut self,
         decomp: &Decomposition,
         max_iterations: usize,
@@ -2408,6 +2498,11 @@ fn constraint_references_ellipse(c: &Constraint, id: EllipseId) -> bool {
         | Constraint::TangentLineCircle(_, _)
         | Constraint::SymmetricAboutPoint(_, _, _) => false,
     }
+}
+
+/// One semiaxis against the [`ellipse_axes_usable`] magnitude threshold.
+fn semiaxis_usable(axis: f64) -> bool {
+    ellipse_axes_usable(axis, axis)
 }
 
 #[cfg(test)]

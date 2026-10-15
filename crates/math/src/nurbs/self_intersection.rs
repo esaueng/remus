@@ -203,7 +203,7 @@ pub fn detect_self_intersection(
     let degree = 3.min(points_3d.len() - 1);
     let curve = if points_3d.len() > 50 {
         let num_cps = (points_3d.len() / 3).max(degree + 1).min(points_3d.len());
-        crate::nurbs::fitting::approximate_lspia(&points_3d, degree, num_cps, 1e-6, 100)?
+        crate::nurbs::fitting::approximate_lspia(&points_3d, degree, num_cps, 1e-6, 100)?.curve
     } else {
         crate::nurbs::interpolate(&points_3d, degree)?
     };

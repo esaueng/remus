@@ -41,6 +41,7 @@ use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 
+use super::PointMergeMap;
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
 
 /// Upper bound on the number of boundary-refinement points reconciled into
@@ -201,7 +202,7 @@ pub(super) struct BoundaryPlan {
     /// Merged vertex pool (positions/normals grow as Steiner points lift).
     pub(super) merged: TriangleMesh,
     /// Merge-grid key to global vertex id.
-    pub(super) point_to_global: DetHashMap<(i64, i64, i64), u32>,
+    pub(super) point_to_global: PointMergeMap,
     /// Shared sample chains as global vertex ids.
     pub(super) edge_chains: DetHashMap<usize, Vec<u32>>,
     /// Sorted edge indices for deterministic iteration.
@@ -277,7 +278,7 @@ impl BoundaryPlan {
             edge_params,
             authorities,
             merged: TriangleMesh::default(),
-            point_to_global: DetHashMap::default(),
+            point_to_global: PointMergeMap::default(),
             edge_chains: DetHashMap::default(),
             edge_order,
             metrics: PlanMetrics {
@@ -298,7 +299,7 @@ impl BoundaryPlan {
     /// wins identically on every run, thread count, and platform.
     fn rebuild_pool(&mut self) {
         self.merged = TriangleMesh::default();
-        self.point_to_global = DetHashMap::default();
+        self.point_to_global = PointMergeMap::default();
         self.edge_chains = DetHashMap::default();
         for &edge_idx in &self.edge_order {
             let Some(points) = self.edge_points.get(&edge_idx) else {
@@ -591,7 +592,7 @@ mod tests {
             edge_params: DetHashMap::default(),
             authorities: DetHashMap::default(),
             merged: TriangleMesh::default(),
-            point_to_global: DetHashMap::default(),
+            point_to_global: PointMergeMap::default(),
             edge_chains: DetHashMap::default(),
             edge_order: vec![7],
             metrics: PlanMetrics::default(),

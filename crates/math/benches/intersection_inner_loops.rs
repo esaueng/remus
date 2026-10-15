@@ -15,7 +15,8 @@ use remus_math::context::{OperationContext, WorkBudgets};
 use remus_math::nurbs::bezier_clip::curve_curve_intersect_full;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::intersection::{
-    LineSurfaceSeedGrid, intersect_line_nurbs_with_grid, intersect_nurbs_nurbs_with_context,
+    IntersectionPoint, LineSurfaceSeedGrid, intersect_line_nurbs_with_grid,
+    intersect_nurbs_nurbs_with_context,
 };
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::ToroidalSurface;
@@ -173,6 +174,117 @@ fn marching_context() -> OperationContext {
             .with_segments(6)
             .with_subdivision_depth(5),
     )
+}
+
+/// Degree-`p` graph over `[0, extent]²` with `n × n` control points at the
+/// Greville abscissae of uniform clamped knots, heights from `height`.
+fn graph_surface(
+    n: usize,
+    p: usize,
+    extent: f64,
+    height: impl Fn(usize, usize) -> f64,
+) -> NurbsSurface {
+    let spans = n - p;
+    let mut knots = vec![0.0; p + 1];
+    knots.extend((1..spans).map(|k| k as f64 / spans as f64));
+    knots.extend(vec![1.0; p + 1]);
+    let greville: Vec<f64> = (0..n)
+        .map(|i| knots[i + 1..=i + p].iter().sum::<f64>() / p as f64)
+        .collect();
+    let control_points = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| Point3::new(extent * greville[i], extent * greville[j], height(i, j)))
+                .collect()
+        })
+        .collect();
+    NurbsSurface::new(
+        p,
+        p,
+        knots.clone(),
+        knots,
+        control_points,
+        vec![vec![1.0; n]; n],
+    )
+    .expect("graph benchmark fixture must build")
+}
+
+fn on_line(hits: &[IntersectionPoint], origin: Point3, direction: Vec3) -> bool {
+    hits.iter().all(|hit| {
+        let t = (hit.point - origin).dot(direction) / direction.dot(direction);
+        (hit.point - (origin + direction * t)).length() < 1e-8
+    })
+}
+
+/// Rays the seed grid alone answers wrongly or at scale: the narrow-bump
+/// far-flank crossing the completion pass recovers, and a 120×120 bicubic
+/// (117² Bézier spans) where the span-hull tree must prune.
+fn bench_ray_completion(c: &mut Criterion) {
+    let bump = graph_surface(
+        30,
+        2,
+        1.0,
+        |i, j| if i == 13 && j == 13 { 1.5 } else { 1.0 },
+    );
+    let large = graph_surface(120, 3, 10.0, |i, j| {
+        0.2 * (0.13 * i as f64).sin() * (0.09 * j as f64).cos()
+    });
+    let peak = 12.5 / 28.0;
+    let mut rays = c.benchmark_group("nurbs_ray_completion");
+    rays.throughput(Throughput::Elements(1));
+    for (name, surface, origin, direction, roots) in [
+        (
+            "narrow_bump_flank",
+            &bump,
+            Point3::new(peak, peak, 1.1),
+            Vec3::new(
+                0.573_576_436_351_046,
+                0.740_535_693_464_567_5,
+                0.350_889_803_483_932_2,
+            ),
+            3,
+        ),
+        (
+            "large_bicubic_hit",
+            &large,
+            Point3::new(4.3, 5.1, 2.0),
+            Vec3::new(0.21, -0.17, -1.0),
+            1,
+        ),
+        (
+            "large_bicubic_miss",
+            &large,
+            Point3::new(-1.0, 4.9, 0.5),
+            Vec3::new(1.0, 0.07, 0.0),
+            0,
+        ),
+    ] {
+        let grid = LineSurfaceSeedGrid::for_surface(surface, 20);
+        let hits = intersect_line_nurbs_with_grid(surface, &grid, origin, direction)
+            .expect("ray benchmark fixture must evaluate");
+        assert_eq!(hits.len(), roots, "{name} root count");
+        assert!(
+            on_line(&hits, origin, direction),
+            "{name} roots lie on the line"
+        );
+        rays.bench_function(name, |bencher| {
+            bencher.iter(|| {
+                black_box(
+                    intersect_line_nurbs_with_grid(
+                        black_box(surface),
+                        black_box(&grid),
+                        black_box(origin),
+                        black_box(direction),
+                    )
+                    .expect("ray benchmark must evaluate"),
+                )
+            });
+        });
+    }
+    rays.bench_function("large_bicubic_grid_build", |bencher| {
+        bencher.iter(|| black_box(LineSurfaceSeedGrid::for_surface(black_box(&large), 20)));
+    });
+    rays.finish();
 }
 
 fn bench_intersections(c: &mut Criterion) {
@@ -359,6 +471,6 @@ fn criterion_config() -> Criterion {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = bench_intersections
+    targets = bench_intersections, bench_ray_completion
 }
 criterion_main!(benches);

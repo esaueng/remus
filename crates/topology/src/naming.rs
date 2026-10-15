@@ -228,6 +228,17 @@ pub enum Resolution {
         /// What eliminated the candidates.
         reason: String,
     },
+    /// The model has moved past what the journal describes, so the history
+    /// cannot vouch for a binding: mutations after the newest entry that no
+    /// entry accounts for (the next journaled operation records them as a
+    /// global barrier), or a lineage ending on an entity that is no longer
+    /// live (a checkpoint restore keeps retirements the journal rolls
+    /// back). Fails closed rather than binding a retired or unvouched
+    /// entity.
+    Stale {
+        /// What the journal does not account for.
+        reason: String,
+    },
 }
 
 impl Resolution {
@@ -239,7 +250,8 @@ impl Resolution {
     ///
     /// [`TopologyError`](crate::TopologyError) variants `RefAmbiguous`,
     /// `RefDangling`, `RefUnresolvedAcrossOperation`,
-    /// `RefUnknownOperation`, `RefNoMatch` — one per non-binding state.
+    /// `RefUnknownOperation`, `RefNoMatch`, `RefStale` — one per
+    /// non-binding state.
     pub fn into_entities(self) -> Result<(Vec<EntityKey>, Provenance), crate::TopologyError> {
         match self {
             Self::Bound { entity, provenance } => Ok((vec![entity], provenance)),
@@ -264,6 +276,7 @@ impl Resolution {
                 Err(crate::TopologyError::RefUnknownOperation { op: op.value() })
             }
             Self::NoMatch { reason } => Err(crate::TopologyError::RefNoMatch { reason }),
+            Self::Stale { reason } => Err(crate::TopologyError::RefStale { reason }),
         }
     }
 }
@@ -285,7 +298,7 @@ impl Resolution {
 ///
 /// The [`Resolution::into_entities`] errors: `RefAmbiguous`,
 /// `RefDangling`, `RefUnresolvedAcrossOperation`, `RefUnknownOperation`,
-/// `RefNoMatch`.
+/// `RefNoMatch`, `RefStale`.
 pub fn resolve_face_attributes<'t>(
     topo: &'t Topology,
     reference: &PersistentRef,
@@ -313,6 +326,10 @@ pub fn resolve_face_attributes<'t>(
 /// discriminators filter the surviving entities; the final set maps
 /// through the live index to current arena keys. Deterministic: identical
 /// history plus identical reference resolves identically.
+///
+/// A journal-anchored chase that reaches the present fails closed
+/// ([`Resolution::Stale`]) when mutations since the newest entry are
+/// unjournaled, or when a bound entity is no longer live.
 #[must_use]
 pub fn resolve(topo: &Topology, reference: &PersistentRef) -> Resolution {
     let journal = topo.journal();
@@ -425,7 +442,21 @@ pub fn resolve(topo: &Topology, reference: &PersistentRef) -> Resolution {
         }
     }
 
-    // 3. Live index → current arena keys. Keys with the
+    // 3. Mutations after the newest entry are the global barrier the next
+    // `journal_begin` records: of unknown scope, so they sever every
+    // lineage that reaches the present.
+    if let Some(last) = entries.last()
+        && last.ticks_after() != topo.mutation_ticks()
+    {
+        return Resolution::Stale {
+            reason: format!(
+                "unjournaled mutations after operation {}",
+                last.op().value()
+            ),
+        };
+    }
+
+    // 4. Live index → current arena keys. Keys with the
     // [`EntityKey::UNMAPPED`] placeholder describe entities that are not
     // present in this session (not exported to, or restored from, the
     // document) — they are filtered here so a reference to one reports
@@ -437,11 +468,29 @@ pub fn resolve(topo: &Topology, reference: &PersistentRef) -> Resolution {
         .collect();
     entities.sort_unstable();
 
-    // 4. Discriminators.
+    // 5. A mapped key the history calls current must name a live entity.
+    // A checkpoint restore keeps retirements while the journal and the
+    // tick count roll back, so one dead piece leaves the history unable
+    // to vouch for the set: fail closed rather than bind the survivors.
+    if let Some(dead) = entities.iter().find(|key| !is_live(topo, **key)) {
+        return Resolution::Stale {
+            reason: format!("{} {} is not live", dead.kind.as_str(), dead.index),
+        };
+    }
+
+    // 6. Discriminators.
     if let Some(no_match) = apply_discriminators(topo, &reference.discriminators, &mut entities) {
         return no_match;
     }
     bind(entities, provenance)
+}
+
+fn is_live(topo: &Topology, key: EntityKey) -> bool {
+    match key.kind {
+        EntityKind::Vertex => topo.vertex_id_from_index(key.index).is_some(),
+        EntityKind::Edge => topo.edge_id_from_index(key.index).is_some(),
+        EntityKind::Face => topo.face_id_from_index(key.index).is_some(),
+    }
 }
 
 fn bind(entities: Vec<EntityKey>, provenance: Provenance) -> Resolution {
@@ -1072,6 +1121,37 @@ mod tests {
 
     use super::*;
 
+    /// A topology in which the synthetic keys these tests journal (faces,
+    /// edges and vertices `0..64`) are live, allocated before any entry so
+    /// the journal has no unjournaled tail. Every face is a plane.
+    fn live_synthetic() -> Topology {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::face::{Face, FaceSurface};
+        use crate::vertex::Vertex;
+        use crate::wire::{OrientedEdge, Wire};
+        use remus_math::vec::{Point3, Vec3};
+
+        let mut topo = Topology::new();
+        let vertex = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        for _ in 1..64 {
+            topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        }
+        for _ in 0..64 {
+            let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Line));
+            let wire =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+            topo.add_face(Face::new(
+                wire,
+                Vec::new(),
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+        }
+        topo
+    }
+
     /// Records one construction entry and returns its op id.
     fn record(
         topo: &mut Topology,
@@ -1097,7 +1177,7 @@ mod tests {
 
     #[test]
     fn operation_output_addresses_the_kth_output_of_the_kind() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "boolean_fuse",
@@ -1170,7 +1250,7 @@ mod tests {
 
     #[test]
     fn lineage_follows_modified_chains_to_the_present() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",
@@ -1200,7 +1280,7 @@ mod tests {
 
     #[test]
     fn a_split_resolves_bound_many_over_all_pieces() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",
@@ -1234,7 +1314,7 @@ mod tests {
 
     #[test]
     fn a_merge_resolves_every_input_to_the_merged_entity() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",
@@ -1351,7 +1431,7 @@ mod tests {
 
     #[test]
     fn entities_outside_an_entry_scope_carry_through_unchanged() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",
@@ -1469,7 +1549,7 @@ mod tests {
 
     #[test]
     fn a_geometry_origin_hop_downgrades_provenance_to_inferred() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",
@@ -1603,6 +1683,150 @@ mod tests {
         );
     }
 
+    /// A journaled triangle solid: the reference to its face, the face and
+    /// the solid.
+    fn journaled_triangle_solid(
+        topo: &mut Topology,
+    ) -> (PersistentRef, crate::face::FaceId, crate::solid::SolidId) {
+        let (face, _) = triangle_face(topo);
+        let shell = topo.add_shell(crate::shell::Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(crate::solid::Solid::new(shell, Vec::new()));
+        let op = record(
+            topo,
+            "op_a",
+            vec![(
+                EntityKey::face(face.index()),
+                EventDraft::Generated {
+                    sources: Vec::new(),
+                },
+            )],
+            Vec::new(),
+        );
+        let reference = PersistentRef::operation_output(op, EntityKind::Face, 0);
+        assert_eq!(
+            resolve(topo, &reference),
+            Resolution::Bound {
+                entity: EntityKey::face(face.index()),
+                provenance: Provenance::Construction
+            }
+        );
+        (reference, face, solid)
+    }
+
+    /// TOPO-2: mutations after the newest entry are the global barrier the
+    /// next `journal_begin` records. Resolution must sever on them already,
+    /// never bind the face an unjournaled delete retired.
+    #[test]
+    fn an_unjournaled_tail_fails_closed() {
+        let mut topo = Topology::new();
+        let (reference, face, solid) = journaled_triangle_solid(&mut topo);
+        topo.delete_solid(solid).unwrap();
+        assert!(topo.face(face).is_err());
+        let r = resolve(&topo, &reference);
+        assert!(
+            matches!(r, Resolution::Stale { ref reason } if reason.contains("unjournaled")),
+            "{r:?}"
+        );
+        assert!(matches!(
+            r.into_entities(),
+            Err(TopologyError::RefStale { .. })
+        ));
+
+        // Once journaled, the same gap is the global barrier it always was.
+        record(&mut topo, "op_b", vec![modified(90, 91)], Vec::new());
+        assert!(matches!(
+            resolve(&topo, &reference),
+            Resolution::UnresolvedAcrossOperation { ref kind, .. } if kind == UNJOURNALED_MUTATIONS
+        ));
+    }
+
+    /// TOPO-2: a tail fails closed whatever it touched — its scope is
+    /// unknown, exactly like the global barrier it becomes.
+    #[test]
+    fn an_unjournaled_tail_severs_untouched_entities_too() {
+        let mut topo = Topology::new();
+        let (reference, face, _) = journaled_triangle_solid(&mut topo);
+        topo.add_vertex(crate::vertex::Vertex::new(
+            remus_math::vec::Point3::new(5.0, 5.0, 5.0),
+            1e-7,
+        ));
+        assert!(topo.face(face).is_ok());
+        let r = resolve(&topo, &reference);
+        assert!(matches!(r, Resolution::Stale { .. }), "{r:?}");
+    }
+
+    /// TOPO-2: a checkpoint restore keeps a retirement made after the
+    /// checkpoint while the journal and the tick count roll back with it,
+    /// so the history describes a face the model no longer has. There is
+    /// no tail; liveness alone must refuse the binding.
+    #[test]
+    fn a_lineage_ending_on_a_retired_entity_fails_closed() {
+        let mut topo = Topology::new();
+        let (reference, face, solid) = journaled_triangle_solid(&mut topo);
+        let checkpoint = topo.clone();
+        topo.delete_solid(solid).unwrap();
+        topo.restore_preserving_handle_slots(&checkpoint);
+        assert!(
+            topo.face(face).is_err(),
+            "checkpoint retirements are sticky"
+        );
+        assert_eq!(
+            topo.journal().entries().last().unwrap().ticks_after(),
+            topo.mutation_ticks(),
+            "no unjournaled tail"
+        );
+        let stale = Resolution::Stale {
+            reason: format!("face {} is not live", face.index()),
+        };
+        assert_eq!(resolve(&topo, &reference), stale);
+        assert_eq!(
+            resolve(&topo, &PersistentRef::lineage_of(reference)),
+            stale,
+            "wrapping the reference changes nothing"
+        );
+    }
+
+    /// TOPO-2: one retired piece of a split leaves the history unable to
+    /// vouch for the set, so the reference fails closed instead of binding
+    /// the surviving piece alone.
+    #[test]
+    fn a_split_with_a_retired_piece_fails_closed() {
+        let mut topo = live_synthetic();
+        let piece = topo.face_id_from_index(8).unwrap();
+        let shell = topo.add_shell(crate::shell::Shell::new(vec![piece]).unwrap());
+        let solid = topo.add_solid(crate::solid::Solid::new(shell, Vec::new()));
+        let op = record(
+            &mut topo,
+            "op_a",
+            vec![(
+                EntityKey::face(1),
+                EventDraft::Generated {
+                    sources: Vec::new(),
+                },
+            )],
+            Vec::new(),
+        );
+        record(
+            &mut topo,
+            "boolean_cut",
+            vec![modified(1, 7), modified(1, 8)],
+            Vec::new(),
+        );
+        let checkpoint = topo.clone();
+        topo.delete_solid(solid).unwrap();
+        topo.restore_preserving_handle_slots(&checkpoint);
+        assert!(topo.face(piece).is_err());
+        assert_eq!(
+            resolve(
+                &topo,
+                &PersistentRef::operation_output(op, EntityKind::Face, 0)
+            ),
+            Resolution::Stale {
+                reason: "face 8 is not live".to_owned()
+            }
+        );
+    }
+
     // ── Signature tier (Stage 3) ────────────────────────────────────────
 
     const QUANTUM: f64 = 1e-7;
@@ -1722,7 +1946,7 @@ mod tests {
 
     #[test]
     fn a_discriminator_that_empties_the_set_reports_itself() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",
@@ -1734,13 +1958,12 @@ mod tests {
             )],
             Vec::new(),
         );
-        // Face index 1 has no live arena face in this synthetic topology,
-        // so any surface-type filter eliminates it.
+        // Face 1 is a plane, so a cylinder filter eliminates it.
         let reference = PersistentRef::operation_output(op, EntityKind::Face, 0)
-            .with_discriminator(Discriminator::SurfaceType("plane".into()));
+            .with_discriminator(Discriminator::SurfaceType("cylinder".into()));
         let r = resolve(&topo, &reference);
         assert!(
-            matches!(r, Resolution::NoMatch { ref reason } if reason.contains("surface_type:plane")),
+            matches!(r, Resolution::NoMatch { ref reason } if reason.contains("surface_type:cylinder")),
             "{r:?}"
         );
         let err = r.into_entities().unwrap_err();
@@ -1751,7 +1974,7 @@ mod tests {
 
     #[test]
     fn sibling_claims_in_one_entry_do_not_leak_into_this_lineage() {
-        let mut topo = Topology::new();
+        let mut topo = live_synthetic();
         let op = record(
             &mut topo,
             "op_a",

@@ -160,6 +160,17 @@ impl<'a> ChamferBuilder<'a> {
                 entity: "chamfer edge set",
             }));
         }
+        // Each distance (and the angle's, through its tangent) must be a finite
+        // positive length: a NaN passed every downstream comparison and built
+        // contact points at NaN.
+        if let Some(&(_, d1, d2)) = all_edges
+            .iter()
+            .find(|(_, d1, d2)| !d1.is_finite() || !d2.is_finite() || *d1 <= 0.0 || *d2 <= 0.0)
+        {
+            return Err(BlendError::InvalidInput {
+                reason: format!("chamfer distances must be finite and positive, got {d1}, {d2}"),
+            });
+        }
 
         let topo = self.topo;
 
@@ -171,7 +182,7 @@ impl<'a> ChamferBuilder<'a> {
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
         // The result shares every face it does not rebuild with the input, so
         // boundary rewrites go copy-on-write through this scope.
-        let scope = EditScope::new(topo, original_faces.iter().copied())?;
+        let mut scope = EditScope::new(topo, original_faces.iter().copied())?;
 
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
 

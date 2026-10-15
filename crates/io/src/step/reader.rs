@@ -1186,6 +1186,39 @@ struct UnitScale {
     angle: f64,
 }
 
+impl UnitScale {
+    /// A length from the file, in millimetres.
+    ///
+    /// Every real is checked finite as it is parsed, but the conversion can
+    /// still overflow one: `1E306` metres is `1E309` millimetres. The product
+    /// is checked again so no length leaves the reader infinite.
+    fn length_mm(
+        self,
+        value: f64,
+        entity_type: &str,
+        entity_ref: u64,
+        label: &str,
+    ) -> Result<f64, IoError> {
+        let scaled = value * self.length;
+        if scaled.is_finite() {
+            Ok(scaled)
+        } else {
+            Err(IoError::ParseError {
+                reason: format!(
+                    "{entity_type} #{entity_ref} has a {label} of {value} file units, which is \
+                     non-finite in millimetres"
+                ),
+            })
+        }
+    }
+
+    /// [`Self::length_mm`] for each coordinate of a `CARTESIAN_POINT`.
+    fn point_mm(self, [x, y, z]: [f64; 3], entity_ref: u64) -> Result<Point3, IoError> {
+        let coordinate = |value| self.length_mm(value, "CARTESIAN_POINT", entity_ref, "coordinate");
+        Ok(Point3::new(coordinate(x)?, coordinate(y)?, coordinate(z)?))
+    }
+}
+
 /// Maximum depth of `CONVERSION_BASED_UNIT` → `MEASURE_WITH_UNIT` → unit
 /// indirection followed before the file is rejected as cyclic.
 const MAX_UNIT_INDIRECTION: u32 = 8;
@@ -1587,6 +1620,53 @@ fn resolve_unit_scale(
     }))
 }
 
+/// Whether every number a surface carries is finite.
+fn surface_is_finite(surface: &FaceSurface) -> bool {
+    let point = |point: Point3| point.0.iter().all(|value| value.is_finite());
+    let vector = |vector: Vec3| vector.0.iter().all(|value| value.is_finite());
+    match surface {
+        FaceSurface::Plane { normal, d } => vector(*normal) && d.is_finite(),
+        FaceSurface::Nurbs(nurbs) => {
+            nurbs.control_points().iter().flatten().all(|&p| point(p))
+                && nurbs.weights().iter().flatten().all(|w| w.is_finite())
+                && nurbs
+                    .knots_u()
+                    .iter()
+                    .chain(nurbs.knots_v())
+                    .all(|k| k.is_finite())
+        }
+        FaceSurface::Cylinder(cylinder) => {
+            point(cylinder.origin())
+                && cylinder.radius().is_finite()
+                && [cylinder.axis(), cylinder.x_axis(), cylinder.y_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+        FaceSurface::Cone(cone) => {
+            point(cone.apex())
+                && cone.half_angle().is_finite()
+                && [cone.axis(), cone.x_axis(), cone.y_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+        FaceSurface::Sphere(sphere) => {
+            point(sphere.center())
+                && sphere.radius().is_finite()
+                && [sphere.x_axis(), sphere.y_axis(), sphere.z_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+        FaceSurface::Torus(torus) => {
+            point(torus.center())
+                && torus.major_radius().is_finite()
+                && torus.minor_radius().is_finite()
+                && [torus.x_axis(), torus.y_axis(), torus.z_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+    }
+}
+
 /// Compare two unit conversion factors for practical equality.
 fn approx_same_factor(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
@@ -1986,10 +2066,10 @@ fn parse_validation_representation(
                         format!("centroid CARTESIAN_POINT #{item_ref} must have three coordinates"),
                     ));
                 };
-                if centroid
-                    .replace([x * units.length, y * units.length, z * units.length])
-                    .is_some()
-                {
+                let scaled = units.point_mm([*x, *y, *z], item_ref).map_err(|error| {
+                    invalid_validation("step_validation_invalid_centroid", error.to_string())
+                })?;
+                if centroid.replace(scaled.0).is_some() {
                     return Err(invalid_validation(
                         "step_validation_duplicate_value",
                         format!("validation REPRESENTATION #{representation} repeats centroid"),
@@ -2974,12 +3054,18 @@ impl<'a> StepBuilder<'a> {
                 reason: format!("{kind} #{surface_ref}: {e}"),
             };
             let axis = axis.normalize().map_err(invalid)?;
-            let major =
-                required_real_attribute(kind, surface_ref, &torus_slots, 2, "major_radius")?
-                    * self.units.length;
-            let minor =
-                required_real_attribute(kind, surface_ref, &torus_slots, 3, "minor_radius")?
-                    * self.units.length;
+            let major = self.units.length_mm(
+                required_real_attribute(kind, surface_ref, &torus_slots, 2, "major_radius")?,
+                kind,
+                surface_ref,
+                "major_radius",
+            )?;
+            let minor = self.units.length_mm(
+                required_real_attribute(kind, surface_ref, &torus_slots, 3, "minor_radius")?,
+                kind,
+                surface_ref,
+                "minor_radius",
+            )?;
             let outer = matches!(torus_slots.get(4), Some(AttrSlot::Enum(".T." | ".TRUE.")));
             // Start the rational carrier on the explicit periodic seam. This
             // keeps the face's full-turn trim inside one [0, 1] U domain.
@@ -4263,7 +4349,27 @@ impl<'a> StepBuilder<'a> {
         Ok(points)
     }
 
+    /// Build a surface entity, refusing one that carries a non-finite number.
+    ///
+    /// Every real is checked finite as it is parsed and again after unit
+    /// scaling, but a quantity derived from several of them can still
+    /// overflow: a plane's offset `n·origin`, a swept patch's translated
+    /// control points.
     fn build_surface(&self, surface_ref: u64) -> Result<FaceSurface, IoError> {
+        let surface = self.build_surface_geometry(surface_ref)?;
+        if surface_is_finite(&surface) {
+            Ok(surface)
+        } else {
+            Err(IoError::ParseError {
+                reason: format!(
+                    "{} #{surface_ref} has non-finite geometry in millimetres",
+                    diagnostic_entity_type(self.get_entity(surface_ref)?)
+                ),
+            })
+        }
+    }
+
+    fn build_surface_geometry(&self, surface_ref: u64) -> Result<FaceSurface, IoError> {
         let entity = self.get_entity(surface_ref)?;
         let entity_type = entity.kind;
         let attrs = entity.attrs.clone();
@@ -4274,6 +4380,27 @@ impl<'a> StepBuilder<'a> {
                 let axis_ref =
                     required_reference_attribute("PLANE", surface_ref, &slots, 1, "position")?;
                 let (origin, normal, _ref_dir) = self.build_axis2_placement(axis_ref)?;
+                // ISO 10303-42 direction ratios need not be unit, but `d` is a
+                // signed distance only along a unit normal, and the arena
+                // refuses any other. Rescaling names the same plane; a normal
+                // already unit to roundoff keeps its bits, and a zero one is
+                // kept as written (see `build_axis2_placement`). Dividing by
+                // the largest component first keeps the squared length from
+                // overflowing or underflowing for ratios like `1E200`; dividing, not
+                // multiplying by the reciprocal, keeps subnormal ratios finite too.
+                let largest = normal.x().abs().max(normal.y().abs()).max(normal.z().abs());
+                let normal = if (normal.length() - 1.0).abs() > 4.0 * f64::EPSILON && largest > 0.0
+                {
+                    Vec3::new(
+                        normal.x() / largest,
+                        normal.y() / largest,
+                        normal.z() / largest,
+                    )
+                    .normalize()
+                    .unwrap_or(normal)
+                } else {
+                    normal
+                };
                 let d = normal.dot(Vec3::new(origin.x(), origin.y(), origin.z()));
                 Ok(FaceSurface::Plane { normal, d })
             }
@@ -4293,7 +4420,9 @@ impl<'a> StepBuilder<'a> {
                     2,
                     "radius",
                 )?;
-                let radius = radius * self.units.length;
+                let radius =
+                    self.units
+                        .length_mm(radius, "CYLINDRICAL_SURFACE", surface_ref, "radius")?;
                 let (origin, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let cyl = remus_math::surfaces::CylindricalSurface::with_ref_dir(
                     origin, axis, radius, ref_dir,
@@ -4324,13 +4453,18 @@ impl<'a> StepBuilder<'a> {
                 // the angle its author actually meant.
                 let (base_radius, semi_angle_slot) = if slots.get(3).is_some() {
                     (
-                        required_real_attribute(
+                        self.units.length_mm(
+                            required_real_attribute(
+                                "CONICAL_SURFACE",
+                                surface_ref,
+                                &slots,
+                                2,
+                                "radius",
+                            )?,
                             "CONICAL_SURFACE",
                             surface_ref,
-                            &slots,
-                            2,
                             "radius",
-                        )? * self.units.length,
+                        )?,
                         3,
                     )
                 } else {
@@ -4367,7 +4501,9 @@ impl<'a> StepBuilder<'a> {
                 )?;
                 let radius =
                     required_real_attribute("SPHERICAL_SURFACE", surface_ref, &slots, 2, "radius")?;
-                let radius = radius * self.units.length;
+                let radius =
+                    self.units
+                        .length_mm(radius, "SPHERICAL_SURFACE", surface_ref, "radius")?;
                 let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 // Preserve the historical compatibility behavior for an
                 // explicitly degenerate placement. It has no usable UV frame;
@@ -4389,10 +4525,18 @@ impl<'a> StepBuilder<'a> {
                 let kind = "DEGENERATE_TOROIDAL_SURFACE";
                 let axis_ref =
                     required_reference_attribute(kind, surface_ref, &slots, 1, "position")?;
-                let major = required_real_attribute(kind, surface_ref, &slots, 2, "major_radius")?
-                    * self.units.length;
-                let minor = required_real_attribute(kind, surface_ref, &slots, 3, "minor_radius")?
-                    * self.units.length;
+                let major = self.units.length_mm(
+                    required_real_attribute(kind, surface_ref, &slots, 2, "major_radius")?,
+                    kind,
+                    surface_ref,
+                    "major_radius",
+                )?;
+                let minor = self.units.length_mm(
+                    required_real_attribute(kind, surface_ref, &slots, 3, "minor_radius")?,
+                    kind,
+                    surface_ref,
+                    "minor_radius",
+                )?;
                 let outer = match slots.get(4) {
                     Some(AttrSlot::Enum(".T." | ".TRUE.")) => true,
                     Some(AttrSlot::Enum(".F." | ".FALSE.")) => false,
@@ -4441,8 +4585,18 @@ impl<'a> StepBuilder<'a> {
                     3,
                     "minor_radius",
                 )?;
-                let major_r = major_r * self.units.length;
-                let minor_r = minor_r * self.units.length;
+                let major_r = self.units.length_mm(
+                    major_r,
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    "major_radius",
+                )?;
+                let minor_r = self.units.length_mm(
+                    minor_r,
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    "minor_radius",
+                )?;
                 let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let torus = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     center, major_r, minor_r, axis, ref_dir,
@@ -4572,8 +4726,12 @@ impl<'a> StepBuilder<'a> {
         let slots = split_attr_slots(&attrs);
         let dir_ref = required_reference_attribute("VECTOR", vector_ref, &slots, 1, "orientation")?;
         let direction = self.build_direction(dir_ref)?;
-        let magnitude = required_real_attribute("VECTOR", vector_ref, &slots, 2, "magnitude")?
-            * self.units.length;
+        let magnitude = self.units.length_mm(
+            required_real_attribute("VECTOR", vector_ref, &slots, 2, "magnitude")?,
+            "VECTOR",
+            vector_ref,
+            "magnitude",
+        )?;
         Ok((direction, magnitude))
     }
 
@@ -5186,8 +5344,33 @@ impl<'a> StepBuilder<'a> {
         let surface = self.topo.face(face_id)?.surface();
         let principal_start = Self::surface_uv(surface, start_point)?;
         let principal_end = Self::surface_uv(surface, end_point)?;
-        let (expected_start, expected_end) =
-            lift_pcurve_endpoint_branches(surface, &curve, principal_start, principal_end);
+        let principal_trace = open_edge_use_trace(
+            edge,
+            (
+                self.topo.vertex(edge.start())?.point(),
+                self.topo.vertex(edge.end())?.point(),
+            ),
+            coedge.is_forward(),
+            periodic_axes(surface),
+            |point| Self::surface_uv(surface, point).ok(),
+        );
+        let leaving = use_start_uv_direction(
+            surface,
+            edge,
+            (
+                self.topo.vertex(edge.start())?.point(),
+                self.topo.vertex(edge.end())?.point(),
+            ),
+            coedge.is_forward(),
+            principal_start,
+        );
+        let (expected_start, expected_end) = lift_pcurve_endpoint_branches(
+            surface,
+            &curve,
+            (principal_start, principal_end),
+            principal_trace.as_deref(),
+            leaving,
+        );
         let range = match declared_range {
             Some(range) => match select_full_turn_cylinder_pcurve_range(
                 surface,
@@ -5197,9 +5380,16 @@ impl<'a> StepBuilder<'a> {
                 range,
             ) {
                 Some(qualified) => qualified,
-                None => {
-                    select_pcurve_range(&curve, range, expected_start, expected_end, pcurve_ref)?
-                }
+                // The declared range is the pcurve's own trace: it may sit on
+                // any periodic branch, so its ends only have to hit the
+                // oriented vertices modulo the period.
+                None => select_pcurve_range(
+                    &curve,
+                    range,
+                    (expected_start, expected_end),
+                    periodic_axes(surface),
+                    pcurve_ref,
+                )?,
             },
             None => derive_pcurve_range(
                 &curve,
@@ -5484,6 +5674,12 @@ impl<'a> StepBuilder<'a> {
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("2D B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
             })?;
+        check_knot_pairing(
+            "2D B_SPLINE_CURVE",
+            curve_ref,
+            &multiplicities,
+            &knot_values,
+        )?;
         self.reserve_geometry(
             cp_refs.len(),
             std::mem::size_of::<Point2>(),
@@ -6620,8 +6816,12 @@ impl<'a> StepBuilder<'a> {
                 let slots = split_attr_slots(&attrs);
                 let axis_ref =
                     required_reference_attribute("CIRCLE", curve_ref, &slots, 1, "position")?;
-                let radius = required_real_attribute("CIRCLE", curve_ref, &slots, 2, "radius")?
-                    * self.units.length;
+                let radius = self.units.length_mm(
+                    required_real_attribute("CIRCLE", curve_ref, &slots, 2, "radius")?,
+                    "CIRCLE",
+                    curve_ref,
+                    "radius",
+                )?;
                 // Parameter-authoritative TRIMMED_CURVEs depend on the
                 // placement's ref_direction, not merely on the circle's point
                 // set. Retain that frame so a stored parameter still names the
@@ -6658,8 +6858,10 @@ impl<'a> StepBuilder<'a> {
                 let ellipse = remus_math::curves::Ellipse3D::new_with_ref(
                     center,
                     normal,
-                    semi_major * self.units.length,
-                    semi_minor * self.units.length,
+                    self.units
+                        .length_mm(semi_major, "ELLIPSE", curve_ref, "semi_axis_1")?,
+                    self.units
+                        .length_mm(semi_minor, "ELLIPSE", curve_ref, "semi_axis_2")?,
                     u_axis,
                 )
                 .map_err(|e| IoError::ParseError {
@@ -6687,8 +6889,14 @@ impl<'a> StepBuilder<'a> {
                     center,
                     normal,
                     u_axis,
-                    semi_axis * self.units.length,
-                    imaginary_semi_axis * self.units.length,
+                    self.units
+                        .length_mm(semi_axis, "HYPERBOLA", curve_ref, "semi_axis")?,
+                    self.units.length_mm(
+                        imaginary_semi_axis,
+                        "HYPERBOLA",
+                        curve_ref,
+                        "semi_imag_axis",
+                    )?,
                 )
                 .map_err(|e| IoError::ParseError {
                     reason: format!("HYPERBOLA #{curve_ref}: {e}"),
@@ -6707,9 +6915,12 @@ impl<'a> StepBuilder<'a> {
                 let slots = split_attr_slots(&attrs);
                 let axis_ref =
                     required_reference_attribute("PARABOLA", curve_ref, &slots, 1, "position")?;
-                let focal =
-                    required_real_attribute("PARABOLA", curve_ref, &slots, 2, "focal_dist")?
-                        * self.units.length;
+                let focal = self.units.length_mm(
+                    required_real_attribute("PARABOLA", curve_ref, &slots, 2, "focal_dist")?,
+                    "PARABOLA",
+                    curve_ref,
+                    "focal_dist",
+                )?;
                 let (vertex, normal, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 // ISO's `first_proj_axis(z, ref_direction)` — ref_direction
                 // with its component along the normal removed — has to be
@@ -6976,6 +7187,7 @@ impl<'a> StepBuilder<'a> {
             reason: format!("B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
         })?;
         let (degree, cp_refs, mults, knot_vals) = parsed;
+        check_knot_pairing("B_SPLINE_CURVE", curve_ref, &mults, &knot_vals)?;
         self.reserve_geometry(
             cp_refs.len(),
             std::mem::size_of::<Point3>(),
@@ -7041,6 +7253,8 @@ impl<'a> StepBuilder<'a> {
             reason: format!("B_SPLINE_SURFACE #{surface_ref} could not parse attributes"),
         })?;
         let (degree_u, degree_v, cp_grid_refs, u_mults, v_mults, u_knots, v_knots) = parsed;
+        check_knot_pairing("B_SPLINE_SURFACE", surface_ref, &u_mults, &u_knots)?;
+        check_knot_pairing("B_SPLINE_SURFACE", surface_ref, &v_mults, &v_knots)?;
         let columns = cp_grid_refs.first().map_or(0, Vec::len);
         if columns == 0 || cp_grid_refs.iter().any(|row| row.len() != columns) {
             return Err(IoError::ParseError {
@@ -7126,9 +7340,8 @@ impl<'a> StepBuilder<'a> {
 
     fn build_cartesian_point(&self, cp_ref: u64) -> Result<Point3, IoError> {
         let attrs = &self.get_entity(cp_ref)?.attrs;
-        if let Some([x, y, z]) = real_triple_attribute(attrs) {
-            let s = self.units.length;
-            return Ok(Point3::new(x * s, y * s, z * s));
+        if let Some(coordinates) = real_triple_attribute(attrs) {
+            return self.units.point_mm(coordinates, cp_ref);
         }
         let slots = split_attr_slots(attrs);
         let coords =
@@ -7141,8 +7354,8 @@ impl<'a> StepBuilder<'a> {
                 ),
             });
         }
-        let s = self.units.length;
-        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
+        self.units
+            .point_mm([coords[0], coords[1], coords[2]], cp_ref)
     }
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
@@ -8328,22 +8541,61 @@ fn select_full_turn_cylinder_pcurve_range(
     })
 }
 
+/// Which UV coordinates of `surface` are periodic (period 2π).
+const fn periodic_axes(surface: &FaceSurface) -> (bool, bool) {
+    match surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => (true, false),
+        FaceSurface::Torus(_) => (true, true),
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => (false, false),
+    }
+}
+
+/// `a − b`, with each periodic coordinate reduced to its nearest lift.
+fn periodic_difference(a: Point2, b: Point2, periodic: (bool, bool)) -> Vec2 {
+    let reduce = |d: f64, periodic: bool| {
+        if periodic {
+            d - (d / std::f64::consts::TAU).round() * std::f64::consts::TAU
+        } else {
+            d
+        }
+    };
+    Vec2::new(
+        reduce(a.x() - b.x(), periodic.0),
+        reduce(a.y() - b.y(), periodic.1),
+    )
+}
+
 fn select_pcurve_range(
     curve: &Curve2D,
     range: (f64, f64),
-    expected_start: Point2,
-    expected_end: Point2,
+    (expected_start, expected_end): (Point2, Point2),
+    periodic: (bool, bool),
     pcurve_ref: u64,
 ) -> Result<(f64, f64), IoError> {
     let tolerance = pcurve_uv_tolerance(&[expected_start, expected_end]);
-    let direct = (curve.evaluate(range.0) - expected_start).length() <= tolerance
-        && (curve.evaluate(range.1) - expected_end).length() <= tolerance;
-    if direct {
+    let hits = |parameter: f64, expected: Point2| {
+        periodic_difference(curve.evaluate(parameter), expected, periodic).length() <= tolerance
+    };
+    // Whole periods between an end and its lifted vertex. Both ends must sit
+    // the same number of periods away, so the declared trace sweeps the same
+    // turns as the edge rather than adding revolutions it never traverses.
+    let turns = |parameter: f64, expected: Point2| {
+        (curve.evaluate(parameter) - expected) * (1.0 / std::f64::consts::TAU)
+    };
+    let same_turns = |a: (f64, Point2), b: (f64, Point2)| {
+        let (ta, tb) = (turns(a.0, a.1), turns(b.0, b.1));
+        (ta.x().round() - tb.x().round()).abs() < 0.5
+            && (ta.y().round() - tb.y().round()).abs() < 0.5
+    };
+    let matches = |start: f64, end: f64| {
+        hits(start, expected_start)
+            && hits(end, expected_end)
+            && same_turns((start, expected_start), (end, expected_end))
+    };
+    if matches(range.0, range.1) {
         return Ok(range);
     }
-    let reversed = (curve.evaluate(range.1) - expected_start).length() <= tolerance
-        && (curve.evaluate(range.0) - expected_end).length() <= tolerance;
-    if reversed {
+    if matches(range.1, range.0) {
         return Ok((range.1, range.0));
     }
     let actual_start = curve.evaluate(range.0);
@@ -8431,7 +8683,13 @@ fn derive_pcurve_range(
             }
         }
     };
-    select_pcurve_range(curve, range, expected_start, expected_end, pcurve_ref)
+    select_pcurve_range(
+        curve,
+        range,
+        (expected_start, expected_end),
+        (false, false),
+        pcurve_ref,
+    )
 }
 
 fn project_nurbs2d(
@@ -8483,11 +8741,163 @@ fn project_ellipse2d(ellipse: &Ellipse2D, point: Point2) -> f64 {
         .rem_euclid(std::f64::consts::TAU)
 }
 
+/// Principal UVs of interior samples of an open edge, ordered along the use
+/// (`forward` keeps the edge's own direction): the trace that ties both
+/// pcurve endpoint lifts to the branch the edge actually sweeps.
+///
+/// The 3D parameterization need not advance uniformly with the periodic UV
+/// coordinate, so the samples are a uniform grid plus every interior NURBS
+/// knot, bisected wherever one step jumps more than a quarter period (a
+/// bounded refinement, not a certificate). `None` for closed edges (their
+/// full-turn ranges are resolved separately), for edges without a strict
+/// domain, when a sample does not project, or past the sample budget.
+fn open_edge_use_trace(
+    edge: &Edge,
+    (start, end): (Point3, Point3),
+    forward: bool,
+    periodic: (bool, bool),
+    project: impl Fn(Point3) -> Option<Point2>,
+) -> Option<Vec<Point2>> {
+    const SEGMENTS: u32 = 16;
+    const MAX_DEPTH: u32 = 12;
+    const MAX_SAMPLES: usize = 4096;
+    if edge.start() == edge.end() {
+        return None;
+    }
+    let (t0, t1) = if matches!(edge.curve(), EdgeCurve::Line) {
+        (0.0, 1.0)
+    } else {
+        edge.strict_domain().ok()?
+    };
+    let at = |t: f64| -> Option<Point2> {
+        let point = if matches!(edge.curve(), EdgeCurve::Line) {
+            start + (end - start) * t
+        } else {
+            edge.curve().evaluate_with_endpoints(t, start, end)
+        };
+        point
+            .0
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(point)
+            .and_then(&project)
+    };
+    // Grid fractions of the edge domain, knots included, in edge order.
+    let mut fractions: Vec<f64> = (0..=SEGMENTS)
+        .map(|k| f64::from(k) / f64::from(SEGMENTS))
+        .collect();
+    if let EdgeCurve::NurbsCurve(nurbs) = edge.curve()
+        && (t1 - t0).abs() > 0.0
+    {
+        fractions.extend(
+            nurbs
+                .knots()
+                .iter()
+                .map(|knot| (knot - t0) / (t1 - t0))
+                .filter(|fraction| *fraction > 0.0 && *fraction < 1.0),
+        );
+    }
+    fractions.sort_by(f64::total_cmp);
+    fractions.dedup();
+    let jumps = |a: Point2, b: Point2| {
+        let step = periodic_difference(b, a, periodic);
+        let limit = std::f64::consts::FRAC_PI_2;
+        (periodic.0 && step.x().abs() > limit) || (periodic.1 && step.y().abs() > limit)
+    };
+    let parameter = |fraction: f64| t0 + fraction * (t1 - t0);
+    let mut trace = vec![at(parameter(0.0))?];
+    for pair in fractions.windows(2) {
+        // Depth-first bisection of one grid step, emitted in edge order.
+        let mut pending = vec![(pair[1], at(parameter(pair[1]))?, 0)];
+        let mut left = pair[0];
+        while let Some(&(right, uv, depth)) = pending.last() {
+            let previous = *trace.last()?;
+            if depth < MAX_DEPTH && jumps(previous, uv) {
+                let mid = 0.5 * (left + right);
+                pending.push((mid, at(parameter(mid))?, depth + 1));
+            } else {
+                pending.pop();
+                trace.push(uv);
+                left = right;
+            }
+            if trace.len() + pending.len() > MAX_SAMPLES {
+                return None;
+            }
+        }
+    }
+    trace.pop();
+    trace.remove(0);
+    if !forward {
+        trace.reverse();
+    }
+    Some(trace)
+}
+
+/// The UV direction in which a use leaves its start: the edge's analytic
+/// tangent there, resolved against the surface's partial derivatives at the
+/// start's principal UV. `None` where the surface chart degenerates (a pole
+/// or apex) or the edge has no strict domain.
+fn use_start_uv_direction(
+    surface: &FaceSurface,
+    edge: &Edge,
+    (start, end): (Point3, Point3),
+    forward: bool,
+    at: Point2,
+) -> Option<Vec2> {
+    /// Central-difference step on the analytic chart; its truncation error
+    /// is far below what a direction sign needs.
+    const H: f64 = 1e-6;
+    let (t, sense) = if matches!(edge.curve(), EdgeCurve::Line) {
+        (if forward { 0.0 } else { 1.0 }, 1.0)
+    } else {
+        let (t0, t1) = edge.strict_domain().ok()?;
+        (if forward { t0 } else { t1 }, (t1 - t0).signum())
+    };
+    let travel =
+        edge.curve().tangent_with_endpoints(t, start, end) * if forward { sense } else { -sense };
+    let point = |u: f64, v: f64| surface.evaluate(u, v);
+    let su = (point(at.x() + H, at.y())? - point(at.x() - H, at.y())?) * (0.5 / H);
+    let sv = (point(at.x(), at.y() + H)? - point(at.x(), at.y() - H)?) * (0.5 / H);
+    // Least squares `travel ≈ a·su + b·sv` on the tangent plane.
+    let (uu, uv, vv) = (su.dot(su), su.dot(sv), sv.dot(sv));
+    let determinant = uu.mul_add(vv, -(uv * uv));
+    if !(determinant.is_finite() && determinant > f64::EPSILON * uu * vv) {
+        return None;
+    }
+    let (tu, tv) = (travel.dot(su), travel.dot(sv));
+    let direction = Vec2::new(
+        vv.mul_add(tu, -(uv * tv)) / determinant,
+        uu.mul_add(tv, -(uv * tu)) / determinant,
+    );
+    direction
+        .0
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(direction)
+}
+
+/// Lifts the principal UV of a use's endpoints onto one periodic branch.
+///
+/// A LINE pcurve settles the branch geometrically. Each endpoint's lift
+/// must lie on the line. When the line is oblique to a periodic axis only
+/// one lift of the end does. When it runs along one (an isoparametric arc,
+/// whose periodic coordinate is monotone and sweeps less than a turn on an
+/// open edge), the end is the first on-line lift in the direction the use
+/// leaves its start (`leaving`, from the edge's analytic tangent).
+///
+/// Everything else falls back to `trace` (principal UVs of an open edge's
+/// interior samples, in use order): the start is lifted next to the curve's
+/// reference and each sample, then the end, next to the one before it. That
+/// unwrap is a bounded refinement, not a certificate. Without a trace both
+/// ends are lifted next to the reference, which ties when an end sits
+/// exactly half a period from it (a quarter-cylinder band whose LINE origin
+/// sits a half turn from one end lands three quarters of a turn away).
 fn lift_pcurve_endpoint_branches(
     surface: &FaceSurface,
     curve: &Curve2D,
-    mut start: Point2,
-    mut end: Point2,
+    (start, end): (Point2, Point2),
+    trace: Option<&[Point2]>,
+    leaving: Option<Vec2>,
 ) -> (Point2, Point2) {
     let reference = match curve {
         Curve2D::Line(line) => line.origin(),
@@ -8499,24 +8909,100 @@ fn lift_pcurve_endpoint_branches(
             .copied()
             .unwrap_or(Point2::new(0.0, 0.0)),
     };
-    let lift = |value: f64, target: f64| {
-        value + ((target - value) / std::f64::consts::TAU).round() * std::f64::consts::TAU
-    };
-    match surface {
-        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
-            start = Point2::new(lift(start.x(), reference.x()), start.y());
-            end = Point2::new(lift(end.x(), reference.x()), end.y());
-        }
-        FaceSurface::Torus(_) => {
-            start = Point2::new(
-                lift(start.x(), reference.x()),
-                lift(start.y(), reference.y()),
-            );
-            end = Point2::new(lift(end.x(), reference.x()), lift(end.y(), reference.y()));
-        }
-        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
+    let periodic = periodic_axes(surface);
+    if !periodic.0 && !periodic.1 {
+        return (start, end);
     }
-    (start, end)
+    let lift = |value: Point2, target: Point2| {
+        let axis = |value: f64, target: f64, periodic: bool| {
+            if periodic {
+                value + ((target - value) / std::f64::consts::TAU).round() * std::f64::consts::TAU
+            } else {
+                value
+            }
+        };
+        Point2::new(
+            axis(value.x(), target.x(), periodic.0),
+            axis(value.y(), target.y(), periodic.1),
+        )
+    };
+    if let Curve2D::Line(line) = curve
+        && let Some(lifted) = lift_onto_line(
+            line,
+            (start, end),
+            periodic,
+            leaving,
+            lift(start, reference),
+        )
+    {
+        return lifted;
+    }
+    let start = lift(start, reference);
+    let anchor = trace.map_or(reference, |trace| {
+        trace
+            .iter()
+            .fold(start, |previous, &sample| lift(sample, previous))
+    });
+    (start, lift(end, anchor))
+}
+
+/// [`lift_pcurve_endpoint_branches`] for a LINE pcurve: the lifts of both
+/// ends that lie on the line, the end chosen by `leaving` when the line runs
+/// along a periodic axis. `None` when an end has no on-line lift, or the
+/// choice needs `leaving` and it is unknown or tangent to the axis.
+fn lift_onto_line(
+    line: &Line2D,
+    (start, end): (Point2, Point2),
+    periodic: (bool, bool),
+    leaving: Option<Vec2>,
+    near_reference: Point2,
+) -> Option<(Point2, Point2)> {
+    use std::f64::consts::TAU;
+    /// Whole periods tried on each periodic axis.
+    const TURNS: i32 = 2;
+    let tolerance = 1e-6 * near_reference.0.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let on_line = |point: Point2| -> Vec<Point2> {
+        let mut lifts = Vec::new();
+        let range = |periodic: bool| if periodic { -TURNS..=TURNS } else { 0..=0 };
+        for ku in range(periodic.0) {
+            for kv in range(periodic.1) {
+                let candidate = Point2::new(
+                    f64::from(ku).mul_add(TAU, point.x()),
+                    f64::from(kv).mul_add(TAU, point.y()),
+                );
+                if line.distance_to_point(candidate) <= tolerance {
+                    lifts.push(candidate);
+                }
+            }
+        }
+        lifts
+    };
+    // Any on-line start will do; keep the one nearest the old choice.
+    let start = on_line(start).into_iter().min_by(|a, b| {
+        (*a - near_reference)
+            .length()
+            .total_cmp(&(*b - near_reference).length())
+    })?;
+    let ends = on_line(end);
+    let end = match ends.as_slice() {
+        [] => return None,
+        [only] => *only,
+        _ => {
+            let sense = leaving?.dot(line.direction());
+            if sense.abs() <= f64::EPSILON {
+                return None;
+            }
+            let from = line.project(start);
+            ends.into_iter()
+                .filter(|candidate| (line.project(*candidate) - from) * sense > tolerance)
+                .min_by(|a, b| {
+                    (line.project(*a) - from)
+                        .abs()
+                        .total_cmp(&(line.project(*b) - from).abs())
+                })?
+        }
+    };
+    Some((start, end))
 }
 
 fn pcurve_winding(
@@ -10744,16 +11230,124 @@ fn find_exact_composite_component<'a>(attrs: &'a str, name: &str) -> Option<&'a 
     None
 }
 
-/// Parse integers from a parenthesized list like `(4, 4)`.
-fn parse_ints_in_parens(s: &str) -> Vec<u32> {
-    let mut result = Vec::new();
-    for part in s.split(',') {
-        let trimmed = part.trim().trim_matches('(').trim_matches(')').trim();
-        if let Ok(v) = trimmed.parse::<u32>() {
-            result.push(v);
+/// Parse a knot-multiplicity aggregate like `(4, 4)`.
+///
+/// Every member must be an integer: dropping a malformed member silently
+/// shifted every later multiplicity onto the wrong knot.
+fn parse_multiplicities(group: &str) -> Option<Vec<u32>> {
+    let inner = group.trim().strip_prefix('(')?.strip_suffix(')')?;
+    inner
+        .split(',')
+        .map(|member| member.trim().parse::<u32>().ok())
+        .collect()
+}
+
+/// Parse a knot-value aggregate like `(0., 0.5, 1.)`.
+///
+/// Every member must be a finite real. `parse_floats` skips members that do
+/// not parse, so a malformed knot whose survivors happened to match the
+/// multiplicity count passed the pairing check as a different knot vector;
+/// here any skipped member refuses the list.
+fn parse_knot_values(group: &str) -> Option<Vec<f64>> {
+    let members = group
+        .trim()
+        .strip_prefix('(')?
+        .strip_suffix(')')?
+        .split(',')
+        .count();
+    let values = parse_floats(group).ok()?;
+    (values.len() == members).then_some(values)
+}
+
+/// Split B-spline attributes into top-level bare tokens (name, degrees,
+/// enums) and top-level parenthesized groups (control points,
+/// multiplicities, knots), in order.
+///
+/// String literals are opaque: a `(`, `)` or `,` inside a name such as
+/// `'Curve (1)'` used to open a phantom group and shift every aggregate
+/// after it. `''` inside a string is an escaped quote.
+///
+/// An unmatched `)` is accepted only as the entity's own closing parenthesis,
+/// with nothing after it; anywhere else it means an aggregate lost its `(`,
+/// and the layout is refused rather than read as a shifted group.
+fn bspline_attr_layout(attrs: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let mut tokens = Vec::new();
+    let mut groups = Vec::new();
+    let mut depth = 0_usize;
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut chars = attrs.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            current.push(ch);
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    current.extend(chars.next());
+                } else {
+                    in_string = false;
+                }
+            }
+            continue;
+        }
+        match ch {
+            '\'' => {
+                in_string = true;
+                current.push(ch);
+            }
+            '(' => {
+                if depth == 0 && !current.trim().is_empty() {
+                    tokens.push(current.trim().to_string());
+                    current.clear();
+                }
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                if depth == 0 && chars.clone().any(|rest| !rest.is_whitespace()) {
+                    return None;
+                }
+                current.push(ch);
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    groups.push(std::mem::take(&mut current));
+                }
+            }
+            ',' if depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    tokens.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
         }
     }
-    result
+    if !current.trim().is_empty() {
+        tokens.push(current.trim().to_string());
+    }
+    Some((tokens, groups))
+}
+
+/// Refuse a knot list whose multiplicity aggregate does not pair one-to-one
+/// with its knot values. Expansion zips the two, so a mismatch silently
+/// dropped the unmatched tail instead of refusing the curve.
+fn check_knot_pairing(
+    entity: &str,
+    entity_ref: u64,
+    multiplicities: &[u32],
+    knots: &[f64],
+) -> Result<(), IoError> {
+    if multiplicities.len() == knots.len() {
+        return Ok(());
+    }
+    Err(IoError::ParseError {
+        reason: format!(
+            "{entity} #{entity_ref} declares {} knot multiplicities for {} knot values",
+            multiplicities.len(),
+            knots.len()
+        ),
+    })
 }
 
 /// Return the one weight aggregate declared by a rational B-spline component.
@@ -10892,48 +11486,7 @@ fn parse_bspline_surface_attrs(
     Vec<f64>,
     Vec<f64>,
 )> {
-    // Strategy: parse the attribute string by finding the nested parenthesized
-    // structures. The format has a specific sequence of tokens.
-
-    // 1. Parse degrees: skip the name string, find the first two bare integers.
-    let mut tokens = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    let mut groups: Vec<String> = Vec::new();
-
-    for ch in attrs.chars() {
-        match ch {
-            '(' => {
-                if depth == 0 && !current.trim().is_empty() {
-                    tokens.push(current.trim().to_string());
-                    current.clear();
-                }
-                depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                current.push(ch);
-                depth -= 1;
-                if depth == 0 {
-                    groups.push(current.clone());
-                    current.clear();
-                }
-            }
-            ',' if depth == 0 => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    tokens.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        tokens.push(current.trim().to_string());
-    }
+    let (tokens, groups) = bspline_attr_layout(attrs)?;
 
     // tokens: bare values between top-level commas (name, degrees, enums)
     // groups: parenthesized structures at depth 0 (cp grid, mult lists, knot lists)
@@ -10968,11 +11521,11 @@ fn parse_bspline_surface_attrs(
     // Parse control point grid: nested ((#1, #2), (#3, #4))
     let cp_grid = parse_nested_refs(&groups[0]);
 
-    let u_mults = parse_ints_in_parens(&groups[1]);
-    let v_mults = parse_ints_in_parens(&groups[2]);
+    let u_mults = parse_multiplicities(&groups[1])?;
+    let v_mults = parse_multiplicities(&groups[2])?;
 
-    let u_knots = parse_floats(&groups[3]).ok()?;
-    let v_knots = parse_floats(&groups[4]).ok()?;
+    let u_knots = parse_knot_values(&groups[3])?;
+    let v_knots = parse_knot_values(&groups[4])?;
 
     Some((
         degree_u, degree_v, cp_grid, u_mults, v_mults, u_knots, v_knots,
@@ -11067,45 +11620,7 @@ fn expand_knots(mults: &[u32], vals: &[f64]) -> Option<Vec<f64>> {
 /// Returns: `(degree, cp_refs, mults, knots)`
 #[allow(clippy::type_complexity)]
 fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, Vec<f64>)> {
-    let mut tokens = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    let mut groups: Vec<String> = Vec::new();
-
-    for ch in attrs.chars() {
-        match ch {
-            '(' => {
-                if depth == 0 && !current.trim().is_empty() {
-                    tokens.push(current.trim().to_string());
-                    current.clear();
-                }
-                depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                current.push(ch);
-                depth -= 1;
-                if depth == 0 {
-                    groups.push(current.clone());
-                    current.clear();
-                }
-            }
-            ',' if depth == 0 => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    tokens.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => {
-                current.push(ch);
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        tokens.push(current.trim().to_string());
-    }
-
+    let (tokens, groups) = bspline_attr_layout(attrs)?;
     let mut degree = None;
     for tok in &tokens {
         if tok.starts_with('\'') || tok.starts_with('.') {
@@ -11124,8 +11639,8 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
     }
 
     let cp_refs = parse_refs(&groups[0]);
-    let mults = parse_ints_in_parens(&groups[1]);
-    let knots = parse_floats(&groups[2]).ok()?;
+    let mults = parse_multiplicities(&groups[1])?;
+    let knots = parse_knot_values(&groups[2])?;
 
     Some((degree, cp_refs, mults, knots))
 }
@@ -11141,6 +11656,238 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    /// A quarter-band LINE pcurve whose origin sits half a turn from the
+    /// use's end: lifting each end independently ties at that half turn and
+    /// lands the end three quarters of a turn away. Unwrapping along the
+    /// edge's own trace keeps the quarter turn, and still does when the 3D
+    /// parameterization crowds most samples near one end.
+    /// A sweep packed into the last sixteenth of the edge's parameter domain
+    /// jumps more than half a turn between grid samples; the trace bisects
+    /// there until every step is under a quarter turn, so the end keeps its
+    /// branch.
+    #[test]
+    fn periodic_edge_trace_refines_a_sweep_packed_into_one_grid_step() {
+        use std::f64::consts::TAU;
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            Point3::new(0.0, 0.0, 0.0),
+            1e-7,
+        ));
+        let b = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            Point3::new(1.0, 0.0, 0.0),
+            1e-7,
+        ));
+        let edge = Edge::new(a, b, EdgeCurve::Line);
+        // u = 4.7·x⁴⁰ wrapped to the principal branch: almost all of the
+        // sweep happens in the last grid step.
+        let project = |p: Point3| Some(Point2::new((4.7 * p.x().powi(40)).rem_euclid(TAU), 0.0));
+        let trace = open_edge_use_trace(
+            &edge,
+            (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)),
+            true,
+            (true, false),
+            project,
+        )
+        .unwrap();
+        assert!(trace.len() > 15, "{}", trace.len());
+        let surface = FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+            )
+            .unwrap(),
+        );
+        let curve = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        // No tangent direction: the line runs along the periodic axis, so the
+        // refined trace decides.
+        let (_, end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &curve,
+            (Point2::new(0.0, 0.0), Point2::new(4.7, 0.0)),
+            Some(&trace),
+            None,
+        );
+        assert_eq!(end.x().to_bits(), 4.7_f64.to_bits());
+    }
+
+    /// A LINE pcurve settles the branch without sampling: along the periodic
+    /// axis the use's leaving direction picks the first on-line lift, and an
+    /// oblique line admits only one lift of each end.
+    #[test]
+    fn line_pcurve_lifts_follow_the_line_and_the_leaving_direction() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let surface = FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0,
+            )
+            .unwrap(),
+        );
+        let along_u =
+            Curve2D::Line(Line2D::new(Point2::new(-FRAC_PI_2, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let ends = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
+        let (_, up) = lift_pcurve_endpoint_branches(
+            &surface,
+            &along_u,
+            ends,
+            None,
+            Some(Vec2::new(1.0, 0.0)),
+        );
+        assert!((up.x() - FRAC_PI_2).abs() < 1e-12, "{up:?}");
+        let (_, down) = lift_pcurve_endpoint_branches(
+            &surface,
+            &along_u,
+            ends,
+            None,
+            Some(Vec2::new(-1.0, 0.0)),
+        );
+        assert!((down.x() - (FRAC_PI_2 - TAU)).abs() < 1e-12, "{down:?}");
+
+        // u = v: the end at v = 2π + 1 can only be u = 2π + 1.
+        let oblique =
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 1.0)).unwrap());
+        let (_, end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &oblique,
+            (Point2::new(0.0, 0.0), Point2::new(1.0, TAU + 1.0)),
+            None,
+            None,
+        );
+        assert!((end.x() - (TAU + 1.0)).abs() < 1e-12, "{end:?}");
+    }
+
+    /// The leaving direction comes from the edge's analytic tangent: a
+    /// quarter arc on a cylinder rim, traversed both ways.
+    #[test]
+    fn use_start_uv_direction_reads_the_edge_tangent() {
+        use std::f64::consts::FRAC_PI_2;
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+        )
+        .unwrap();
+        let (x, y) = (cylinder.x_axis(), cylinder.y_axis());
+        let circle = remus_math::curves::Circle3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            x,
+            y,
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            cylinder.evaluate(0.0, 0.0),
+            1e-7,
+        ));
+        let b = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            cylinder.evaluate(FRAC_PI_2, 0.0),
+            1e-7,
+        ));
+        let mut edge = Edge::new(a, b, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, FRAC_PI_2)));
+        let surface = FaceSurface::Cylinder(cylinder.clone());
+        let ends = (
+            cylinder.evaluate(0.0, 0.0),
+            cylinder.evaluate(FRAC_PI_2, 0.0),
+        );
+        let forward =
+            use_start_uv_direction(&surface, &edge, ends, true, Point2::new(0.0, 0.0)).unwrap();
+        assert!(forward.x() > 0.0 && forward.y().abs() < 1e-6, "{forward:?}");
+        let reversed =
+            use_start_uv_direction(&surface, &edge, ends, false, Point2::new(FRAC_PI_2, 0.0))
+                .unwrap();
+        assert!(
+            reversed.x() < 0.0 && reversed.y().abs() < 1e-6,
+            "{reversed:?}"
+        );
+    }
+
+    /// A declared range is the pcurve's own trace: its ends may sit a whole
+    /// period away from the lifted vertices and still be accepted, but only
+    /// by the same whole period at both ends, so the trace adds no turns.
+    #[test]
+    fn declared_pcurve_range_matches_its_vertices_modulo_the_period() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let curve = Curve2D::Line(Line2D::new(Point2::new(TAU, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let expected = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
+        assert_eq!(
+            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (true, false), 7).unwrap(),
+            (0.0, FRAC_PI_2)
+        );
+        assert!(
+            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (false, false), 7).is_err()
+        );
+        assert!(select_pcurve_range(&curve, (0.0, 1.0), expected, (true, false), 7).is_err());
+        // A quarter-turn edge declared with an extra revolution, either way.
+        assert!(
+            select_pcurve_range(&curve, (0.0, TAU + FRAC_PI_2), expected, (true, false), 7)
+                .is_err()
+        );
+        assert!(
+            select_pcurve_range(&curve, (TAU + FRAC_PI_2, 0.0), expected, (true, false), 7)
+                .is_err()
+        );
+        // The same trace declared end first is still accepted, reoriented.
+        assert_eq!(
+            select_pcurve_range(&curve, (FRAC_PI_2, 0.0), expected, (true, false), 7).unwrap(),
+            (0.0, FRAC_PI_2)
+        );
+    }
+
+    #[test]
+    #[allow(clippy::approx_constant)] // The file's 12-digit rounding of −π/2.
+    fn periodic_endpoint_lifts_unwrap_the_edge_trace_through_a_half_turn_tie() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let surface = FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0,
+            )
+            .unwrap(),
+        );
+        // OCCT writes the origin to 12 digits; the tie is that close to exact.
+        let curve = Curve2D::Line(
+            Line2D::new(Point2::new(-1.570_796_326_795, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+        );
+        let (start, end) = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
+
+        let (_, independent) =
+            lift_pcurve_endpoint_branches(&surface, &curve, (start, end), None, None);
+        assert!(
+            (independent.x() + 3.0 * FRAC_PI_2).abs() < 1e-12,
+            "{independent:?}"
+        );
+
+        let quarter: Vec<_> = (1..4)
+            .map(|k| Point2::new(FRAC_PI_2 * f64::from(k) / 4.0, 0.0))
+            .collect();
+        let (lifted_start, lifted_end) =
+            lift_pcurve_endpoint_branches(&surface, &curve, (start, end), Some(&quarter), None);
+        assert_eq!(lifted_start.x().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(lifted_end.x().to_bits(), FRAC_PI_2.to_bits());
+
+        // Three quarters of a turn whose samples crowd near the start: one
+        // anchor at u = 0.1 would lift the end to −π/2.
+        let three_quarters = Point2::new(3.0 * FRAC_PI_2, 0.0);
+        let crowded: Vec<_> = [0.02, 0.05, 0.1, 0.8, 2.0, PI, 4.2]
+            .into_iter()
+            .map(|u| Point2::new(u, 0.0))
+            .collect();
+        let (_, lifted_end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &curve,
+            (start, three_quarters),
+            Some(&crowded),
+            None,
+        );
+        assert_eq!(lifted_end.x().to_bits(), three_quarters.x().to_bits());
+    }
 
     #[test]
     fn step_repeated_face_names_obey_cumulative_byte_budget() {
@@ -14122,6 +14869,117 @@ mod tests {
         assert_eq!(knots, vec![0.0, 1.0]);
     }
 
+    /// IO-10 (kernel review 2026-10-14): the B-spline attribute scanner was
+    /// not string-aware, so the `(` inside `'Curve (1)'` opened a phantom
+    /// aggregate, shifted control points onto `(1)` and refused a valid
+    /// curve. Quotes inside names are escaped as `''`.
+    #[test]
+    fn bspline_names_with_parentheses_commas_and_quotes_parse() {
+        let points = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                      #2=CARTESIAN_POINT('',(1.,1.,0.));\n\
+                      #3=CARTESIAN_POINT('',(2.,1.,0.));\n\
+                      #4=CARTESIAN_POINT('',(3.,0.,0.));\n";
+        for name in ["Curve (1)", "a, (b", "it''s (x)", ")("] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('{name}',3,(#1,#2,#3,#4),\
+                 .UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);"
+            );
+            let curve = curve_geometry(&body, 5)
+                .unwrap_or_else(|error| panic!("name {name:?} refused: {error}"));
+            let EdgeCurve::NurbsCurve(curve) = curve else {
+                panic!("name {name:?} did not read as NURBS");
+            };
+            assert_eq!(curve.degree(), 3);
+            assert_eq!(curve.control_points().len(), 4);
+        }
+
+        let attrs = "'Patch (A), v2', 1, 1, ((#10, #11), (#12, #13)), .UNSPECIFIED., \
+                     .F., .F., .F., (2, 2), (2, 2), (0.0, 1.0), (0.0, 1.0), .UNSPECIFIED.";
+        let (deg_u, deg_v, grid, u_mults, v_mults, u_knots, v_knots) =
+            parse_bspline_surface_attrs(attrs).unwrap();
+        assert_eq!((deg_u, deg_v), (1, 1));
+        assert_eq!(grid, vec![vec![10, 11], vec![12, 13]]);
+        assert_eq!((u_mults, v_mults), (vec![2, 2], vec![2, 2]));
+        assert_eq!((u_knots, v_knots), (vec![0.0, 1.0], vec![0.0, 1.0]));
+    }
+
+    /// IO-10: expansion zips multiplicities with knot values, so a list of a
+    /// different length silently lost its tail. A malformed multiplicity
+    /// was dropped the same way, shifting the rest onto the wrong knots.
+    #[test]
+    fn bspline_knot_lists_must_pair_one_to_one() {
+        let points = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                      #2=CARTESIAN_POINT('',(1.,1.,0.));\n\
+                      #3=CARTESIAN_POINT('',(2.,0.,0.));\n";
+        // Either mismatch expands to a knot vector the file never declared;
+        // the refusal must name the mismatch, not a downstream symptom.
+        for (mults, knots, count) in [
+            ("(2,1,2)", "(0.,1.)", "3 knot multiplicities for 2"),
+            ("(2,2)", "(0.,0.5,1.)", "2 knot multiplicities for 3"),
+        ] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.,{mults},{knots},.UNSPECIFIED.);"
+            );
+            let error = curve_geometry(&body, 5).unwrap_err().to_string();
+            assert!(error.contains(count), "{mults} {knots}: {error}");
+        }
+        // A malformed knot member must refuse the curve, not vanish and leave
+        // survivors that happen to pair with the multiplicities.
+        for knots in ["(0.,oops,1.)", "(0.,,1.)", "(0.,1.E999,1.)", "()"] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',2,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.,(3,3),{knots},.UNSPECIFIED.);"
+            );
+            assert!(curve_geometry(&body, 5).is_err(), "{knots} must be refused");
+        }
+        let body = format!(
+            "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',2,(#1,#2,#3),\
+             .UNSPECIFIED.,.F.,.F.,(3,3),( 0. , 1.E0 ),.UNSPECIFIED.);"
+        );
+        assert!(
+            curve_geometry(&body, 5).is_ok(),
+            "spaced knot members parse"
+        );
+        // An aggregate that lost its `(` must not be read as a shifted group.
+        let body = format!(
+            "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',2,#1 #2 #3),\
+             .UNSPECIFIED.,.F.,.F.,(3,3),(0.,1.),.UNSPECIFIED.);"
+        );
+        assert!(
+            curve_geometry(&body, 5).is_err(),
+            "an unmatched `)` must be refused"
+        );
+        for mults in ["(2,1.5,2)", "(2,x,2)", "(2,-1,2)", "()"] {
+            let body = format!(
+                "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.,{mults},(0.,0.5,1.),.UNSPECIFIED.);"
+            );
+            assert!(curve_geometry(&body, 5).is_err(), "{mults} must be refused");
+        }
+
+        let surface = |u_knots: &str| {
+            format!(
+                "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                 #2=CARTESIAN_POINT('',(1.,0.,0.));\n\
+                 #3=CARTESIAN_POINT('',(0.,1.,0.));\n\
+                 #4=CARTESIAN_POINT('',(1.,1.,0.));\n\
+                 #5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#4)),\
+                 .UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),{u_knots},(0.,1.),\
+                 .UNSPECIFIED.);"
+            )
+        };
+        assert!(surface_geometry(&surface("(0.,1.)"), 5).is_ok());
+        let error = surface_geometry(&surface("(0.,1.,2.)"), 5)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 knot multiplicities for 3"), "{error}");
+        assert!(
+            surface_geometry(&surface("(0.,x,1.)"), 5).is_err(),
+            "a malformed u knot must be refused"
+        );
+    }
+
     #[test]
     fn expand_knots_basic() {
         let mults = [3, 1, 3];
@@ -16313,6 +17171,25 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let err = surface_geometry(&body, 20).unwrap_err();
         assert!(
             err.to_string().contains("sweeps no surface"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Every input of this sweep is finite, but the plane it sweeps is not:
+    /// its offset `n·p` is (1.7E308 + 1.7E308)/√2.
+    #[test]
+    fn extrusion_whose_plane_offset_overflows_is_refused() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let body = format!(
+            "{}#10 = DIRECTION('',(0.,{s:?},{s:?}));\n\
+             #11 = VECTOR('',#10,5.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#4,#11);",
+            step_line((0.0, -1.7E308, 1.7E308), (1.0, 0.0, 0.0))
+        );
+        let err = surface_geometry(&body, 20).unwrap_err();
+        assert!(
+            err.to_string().contains("SURFACE_OF_LINEAR_EXTRUSION #20")
+                && err.to_string().contains("non-finite"),
             "unexpected error: {err}"
         );
     }
@@ -18512,8 +19389,9 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
                 ),
             });
         }
-        let s = builder.units.length;
-        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
+        builder
+            .units
+            .point_mm([coords[0], coords[1], coords[2]], cp_ref)
     }
 
     fn general_direction(builder: &StepBuilder<'_>, dir_ref: u64) -> Result<Vec3, IoError> {

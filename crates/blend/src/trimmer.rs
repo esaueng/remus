@@ -1295,7 +1295,7 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1403,7 +1403,7 @@ mod tests {
         // neighbor) and e2 (unshared).
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1488,7 +1488,7 @@ mod tests {
         let (face_id, verts, edges) = make_square_face(&mut topo);
         // The scope opens before the neighbor exists, so the neighbor is the
         // build's own face: rewritten, not copied.
-        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut scope = EditScope::new(&topo, [face_id]).unwrap();
         let neighbor = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
         let neighbor_wire = topo.face(neighbor).unwrap().outer_wire();
 
@@ -1521,7 +1521,7 @@ mod tests {
         // Pre-existing but not part of the input body: another solid's face.
         let foreign = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
         let foreign_wire = topo.face(foreign).unwrap().outer_wire();
-        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut scope = EditScope::new(&topo, [face_id]).unwrap();
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
@@ -1574,7 +1574,7 @@ mod tests {
 
         let contact_3d = vec![Point3::new(0.5, -1.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, -1.0), (0.5, 1.0)];
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1620,7 +1620,7 @@ mod tests {
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         trim_face(
             &mut topo,
@@ -1646,6 +1646,59 @@ mod tests {
         );
     }
 
+    /// Two bodies that touch (or an in-place copy and its original) must not
+    /// share the vertices a trim mints: the contact split may only reuse
+    /// vertices of its own body, never a coincident vertex of another one.
+    #[test]
+    fn trim_does_not_reuse_coincident_vertices_of_unrelated_topology() {
+        let mut topo = Topology::new();
+        let (first, _, _) = make_square_face(&mut topo);
+        let (second, second_verts, _) = make_square_face(&mut topo);
+
+        let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
+        let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        // Each square is its own body, so each trim runs in its own build scope.
+        let trim = |topo: &mut Topology, face| {
+            let mut scope = EditScope::new(topo, [face]).unwrap();
+            let mut replacements = DetHashMap::default();
+            trim_face(
+                topo,
+                face,
+                &contact_3d,
+                &contact_uv,
+                TrimKeep::Side(TrimSide::Left),
+                &[],
+                &mut scope.edit(&mut replacements),
+            )
+            .expect("trim should succeed")
+        };
+        let first_result = trim(&mut topo, first);
+        let second_result = trim(&mut topo, second);
+
+        for vid in &second_result.new_vertices {
+            assert!(
+                !first_result.new_vertices.contains(vid),
+                "second trim reused {vid:?} minted for the unrelated first face"
+            );
+            assert!(
+                !second_verts.contains(vid),
+                "an interior contact split must mint its vertex, got corner {vid:?}"
+            );
+        }
+        let second_wire = topo
+            .wire(topo.face(second_result.trimmed_face).unwrap().outer_wire())
+            .unwrap();
+        for oe in second_wire.edges() {
+            let edge = topo.edge(oe.edge()).unwrap();
+            for vid in [edge.start(), edge.end()] {
+                assert!(
+                    !first_result.new_vertices.contains(&vid),
+                    "second trimmed face references first face's vertex {vid:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn trim_preserves_surface() {
         let mut topo = Topology::new();
@@ -1654,7 +1707,7 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1718,7 +1771,7 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1805,7 +1858,7 @@ mod tests {
         source.set_trim(Some((0.0, std::f64::consts::PI)));
         let source_id = topo.add_edge(source);
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let (before, after) = split_edge_at(
             &mut topo,
@@ -1842,7 +1895,7 @@ mod tests {
         let source_id = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
         let edge_count = topo.num_edges();
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         assert!(matches!(
             split_edge_at(

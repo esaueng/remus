@@ -428,7 +428,9 @@ impl BrepKernel {
 
     /// Import a 3MF file and return solid handles.
     ///
-    /// Returns handles for each object found in the 3MF archive.
+    /// Returns one handle per build item, in build order and placed by its
+    /// item transform (an object listed twice gives two solids). Without
+    /// build items, every object no component references is imported.
     /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
     /// resource budgets (see [`import_obj`](Self::import_obj)).
     ///

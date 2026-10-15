@@ -117,7 +117,9 @@ export class BrepKernel {
     /**
      * Approximate a curve through points using LSPIA (progressive iteration).
      *
-     * Returns an edge handle.
+     * Returns an edge handle. A fit that does not reach `tolerance` within
+     * `max_iterations` carries the iterate with the smallest maximum
+     * deviation; this binding does not report whether it converged.
      * @param {Float64Array} coords
      * @param {number} degree
      * @param {number} num_control_points
@@ -2519,7 +2521,12 @@ export class BrepKernel {
      *
      * # Errors
      *
-     * Returns an error if the data is invalid or reconstruction fails.
+     * Returns an error if the data is invalid or reconstruction fails. In
+     * the JSON format every vertex and edge id must be an integer in the
+     * `u32` range, declared once, and every reference (edge endpoints,
+     * outer and inner wire edges) must name a declared id; an unreadable
+     * inner-wire entry is refused rather than skipped. A refusal restores the
+     * live topology; allocated handles stay retired and are never reused.
      * @param {string} data
      * @returns {number}
      */
@@ -4015,7 +4022,8 @@ export class BrepKernel {
      * Returns a flat array of the intersection polygon coordinates,
      * or an empty array if they don't intersect.
      *
-     * Uses the Sutherland-Hodgman algorithm (convex clipper).
+     * Uses the Sutherland-Hodgman algorithm (convex clipper); either
+     * polygon may wind either way.
      * @param {Float64Array} coords_a
      * @param {Float64Array} coords_b
      * @returns {Float64Array}
@@ -5494,7 +5502,10 @@ export class BrepKernel {
      * Offset a 2D polygon by a signed distance.
      *
      * `coords` is a flat array `[x,y, x,y, ...]` of 2D points.
-     * Returns a flat array of offset polygon coordinates.
+     * Returns a flat array of offset polygon coordinates in the input's
+     * winding, or an empty array when the offset collapses the polygon.
+     * When the offset splits it or encloses a hole, only the outer boundary
+     * of the largest piece is returned.
      * @param {Float64Array} coords
      * @param {number} distance
      * @param {number} tolerance
@@ -7593,12 +7604,18 @@ export class BrepKernel {
     /**
      * Thicken a face into a solid by offsetting it by the given distance.
      *
-     * Creates a solid from a face by extruding it along its normal by
-     * `thickness`. Positive values offset outward, negative inward.
+     * Grows the face along its own outward normal (the surface normal,
+     * negated on a reversed face) by `thickness`: positive values grow
+     * outward, negative inward. A planar face extrudes; a cylinder, cone,
+     * sphere or torus face becomes the shell between it and its exact
+     * offset.
      *
      * # Errors
      *
-     * Returns an error if the face handle is invalid or thickness is zero.
+     * Returns an error if the face handle is invalid, thickness is zero or
+     * not finite, or the face has no exact offset (a curved NURBS face, a
+     * boundary edge other than a ruling or a circle whose offset is a
+     * circle, or an offset that collapses the surface).
      * @param {number} face
      * @param {number} thickness
      * @returns {number}

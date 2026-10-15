@@ -112,6 +112,11 @@ pub fn remove_folded_uniform_l_prism_region(
     tolerance: f64,
     removable_faces: &[FaceId],
 ) -> Result<SelfIntersectionRemoval, OffsetError> {
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return Err(OffsetError::InvalidInput {
+            reason: format!("tolerance must be finite and positive, got {tolerance}"),
+        });
+    }
     let solid_data = topo.solid(solid)?;
     if !solid_data.inner_shells().is_empty() {
         inspect_without_removal(topo, solid, tolerance)?;

@@ -9,6 +9,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use std::f64::consts::TAU;
 
+use super::PointMergeMap;
 use super::edge_sampling::{sample_edge, segments_for_chord_deviation_a};
 use super::rim_chain::collect_full_turn_rim_cycles;
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
@@ -852,7 +853,7 @@ pub(super) fn tessellate_torus_two_rim_band(
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     use std::f64::consts::TAU;
     let FaceSurface::Torus(torus) = face_data.surface() else {
@@ -1275,7 +1276,7 @@ pub(super) fn tessellate_torus_notch_band(
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     use std::f64::consts::{PI, TAU};
     let FaceSurface::Torus(torus) = face_data.surface() else {
@@ -1422,26 +1423,24 @@ pub(super) fn tessellate_torus_notch_band(
 
     // Interior row `s` (0 < s < 1 of the way from loop A to loop B), sorted by
     // v, of fresh vertices.
-    let build_row = |s: f64,
-                     merged: &mut TriangleMesh,
-                     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>|
-     -> LatRing {
-        let mut row: LatRing = Vec::with_capacity(n_v_cols);
-        for (&v, &d) in col_v.iter().zip(deltas.iter()) {
-            let u = (u_at(&table_a, v) + s * d).rem_euclid(TAU);
-            let p = torus.evaluate(u, v);
-            let key = point_merge_key(p, MERGE_GRID);
-            let gid = *point_to_global.entry(key).or_insert_with(|| {
-                let idx = merged.positions.len() as u32;
-                merged.positions.push(p);
-                merged.normals.push(surf_normal(u, v));
-                idx
-            });
-            row.push((v, gid));
-        }
-        row.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        row
-    };
+    let build_row =
+        |s: f64, merged: &mut TriangleMesh, point_to_global: &mut PointMergeMap| -> LatRing {
+            let mut row: LatRing = Vec::with_capacity(n_v_cols);
+            for (&v, &d) in col_v.iter().zip(deltas.iter()) {
+                let u = (u_at(&table_a, v) + s * d).rem_euclid(TAU);
+                let p = torus.evaluate(u, v);
+                let key = point_merge_key(p, MERGE_GRID);
+                let gid = *point_to_global.entry(key).or_insert_with(|| {
+                    let idx = merged.positions.len() as u32;
+                    merged.positions.push(p);
+                    merged.normals.push(surf_normal(u, v));
+                    idx
+                });
+                row.push((v, gid));
+            }
+            row.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            row
+        };
 
     let emit = make_band_emit(&project, &surf_normal);
     let idx_start = merged.indices.len();
@@ -1494,7 +1493,7 @@ pub(super) fn tessellate_latitude_band_shared(
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     if face_data.inner_wires().len() != 1 {
         return Ok(false);
@@ -2011,7 +2010,7 @@ fn build_interior_row(
     surf_eval: &dyn Fn(f64, f64) -> Point3,
     surf_normal: &dyn Fn(f64, f64) -> Vec3,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> LatRing {
     let mut row: LatRing = Vec::with_capacity(n);
     for i in 0..n {
@@ -2042,7 +2041,7 @@ fn build_collar_row(
     surf_eval: &dyn Fn(f64, f64) -> Point3,
     surf_normal: &dyn Fn(f64, f64) -> Vec3,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> LatRing {
     let mut row: LatRing = Vec::with_capacity(floor.len());
     for &(u, v_floor, _) in floor {
@@ -2060,6 +2059,9 @@ fn build_collar_row(
     row
 }
 
+/// A vertex's position bits and the outward reference taken there.
+type VertexReference = ([u64; 3], Vec3);
+
 /// Emit a default-oriented (non-reversed) triangle, mirroring the orientation
 /// convention of [`tessellate_revolution_band_shared`]: the geometric normal is
 /// flipped to match the surface outward normal. The caller applies the global
@@ -2068,6 +2070,14 @@ fn make_band_emit<'a>(
     project: &'a dyn Fn(Point3) -> (f64, f64),
     surf_normal: &'a dyn Fn(f64, f64) -> Vec3,
 ) -> impl Fn(&mut TriangleMesh, u32, u32, u32) + 'a {
+    // The outward reference at a vertex is a function of its position alone,
+    // and a band vertex is in about six triangles: keep each vertex's value,
+    // keyed by its index and checked against its position bits (a caller may
+    // truncate and refill the pool), instead of projecting it per triangle.
+    // Keyed by index in a map, not a vector over the pool: the pool is shared
+    // by every face of a solid, and each face's emitter touches only its own
+    // vertices.
+    let reference = std::cell::RefCell::new(DetHashMap::<u32, VertexReference>::default());
     move |merged: &mut TriangleMesh, a: u32, b: u32, c: u32| {
         if a == b || b == c || a == c {
             return;
@@ -2086,11 +2096,20 @@ fn make_band_emit<'a>(
         // can sit nearly tangent to the surface, where the single-vertex normal
         // makes `geo.dot(outward)` sign-unstable and flips the triangle relative
         // to its neighbours. The averaged normal is stable across the triangle.
-        let n_at = |p: Point3| -> Vec3 {
+        let mut reference = reference.borrow_mut();
+        let mut n_at = |index: u32, p: Point3| -> Vec3 {
+            let bits = [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()];
+            if let Some(&(cached, normal)) = reference.get(&index)
+                && cached == bits
+            {
+                return normal;
+            }
             let (u, v) = project(p);
-            surf_normal(u, v)
+            let normal = surf_normal(u, v);
+            reference.insert(index, (bits, normal));
+            normal
         };
-        let outward = n_at(pa) + n_at(pb) + n_at(pc);
+        let outward = n_at(a, pa) + n_at(b, pb) + n_at(c, pc);
         let mut tri = [a, b, c];
         if geo.dot(outward) < 0.0 {
             tri.swap(1, 2);
@@ -2336,7 +2355,7 @@ pub(super) fn tessellate_nurbs_blend_band_shared(
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let FaceSurface::Nurbs(surface) = face_data.surface() else {
         return Ok(false);
@@ -2632,6 +2651,14 @@ mod boundary_clearance_tests;
 #[path = "nonplanar/sphere_chart_tests.rs"]
 mod sphere_chart_tests;
 
+#[cfg(test)]
+#[path = "nonplanar/row_containment_tests.rs"]
+mod row_containment_tests;
+
+#[cfg(test)]
+#[path = "nonplanar/band_emit_oracle_tests.rs"]
+mod band_emit_oracle_tests;
+
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
 /// Projects shared edge points into (u,v) parameter space, generates interior
@@ -2647,7 +2674,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     circle_floor: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<(), crate::OperationsError> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
@@ -3238,8 +3265,10 @@ pub(super) fn tessellate_nonplanar_cdt(
         } else {
             pu_raw
         };
-        let pt3 = eval_surface_point(surface, pu, pv);
-        let base_nrm = chart_surface.normal(pu, pv);
+        // `eval_surface_point(surface, ..)` and `chart_surface.normal(..)`,
+        // bit for bit, from one basis solve where the carriers share knots.
+        let (pt3, base_nrm) = surface.point_and_normal_in(chart_surface, pu, pv);
+        let pt3 = pt3.unwrap_or(Point3::new(0.0, 0.0, 0.0));
         // A GFA band face on a recognized wall evaluates its interior
         // grid through the EXACT chart too: the unwrapped CDT rectangle
         // straddles the knot-domain seam (u in [0.75, 1.75] on a [0, 1]
@@ -3280,6 +3309,10 @@ pub(super) fn tessellate_nonplanar_cdt(
 
         (pt3, nrm)
     };
+    // The surface sample each interior point was given at the merge-cell
+    // filter, by CDT id, beside the point itself: emission reuses it when the
+    // CDT still holds that point bit for bit (the closure is pure).
+    let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
 
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) = interior_grid_resolution(chart_surface, du, dv, deflection, angular_tol);
@@ -3316,18 +3349,39 @@ pub(super) fn tessellate_nonplanar_cdt(
             topo.edge(oriented.edge())
                 .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
         });
+        // Containment of the whole grid, one row of constant v at a time
+        // (see `polygon_row_contains`): the same answers as testing every
+        // grid point against every boundary segment, without the
+        // grid-by-boundary product.
+        let grid_us: Vec<f64> = (1..n_u)
+            .map(|iu| u_min + du * (iu as f64 / n_u as f64))
+            .collect();
+        let rows = n_v.saturating_sub(1);
+        let mut grid_inside = vec![false; grid_us.len() * rows];
+        for iv in 1..n_v {
+            let v = v_min + dv * (iv as f64 / n_v as f64);
+            let mut inside = polygon_row_contains(boundary_uv_ref, &grid_us, v);
+            for hole in hole_uvs_ref {
+                for (cell, in_hole) in inside
+                    .iter_mut()
+                    .zip(polygon_row_contains(hole, &grid_us, v))
+                {
+                    *cell &= !in_hole;
+                }
+            }
+            for (iu, cell) in inside.into_iter().enumerate() {
+                grid_inside[iu * rows + (iv - 1)] = cell;
+            }
+        }
         let mut interior_pts: Vec<Point2> = (1..n_u)
             .flat_map(|iu| {
+                let grid_inside = &grid_inside;
                 (1..n_v).filter_map(move |iv| {
                     let u = u_min + du * (iu as f64 / n_u as f64);
                     let v = v_min + dv * (iv as f64 / n_v as f64);
                     let point = Point2::new(u, v);
-                    (point_in_polygon_2d(boundary_uv_ref, point)
-                        && hole_uvs_ref
-                            .iter()
-                            .all(|hole| !point_in_polygon_2d(hole, point))
-                        && !on_boundary(point))
-                    .then(|| to_cdt(u, v))
+                    (grid_inside[(iu - 1) * rows + (iv - 1)] && !on_boundary(point))
+                        .then(|| to_cdt(u, v))
                 })
             })
             .collect();
@@ -3577,8 +3631,15 @@ pub(super) fn tessellate_nonplanar_cdt(
             .chain(hole_boundaries_3d.iter().flatten())
             .map(|&(point, _, _, _)| point_merge_key(point, MERGE_GRID))
             .collect();
-        interior_pts
-            .retain(|&point| taken.insert(point_merge_key(interior_point_3d(point).0, MERGE_GRID)));
+        let mut kept_samples = Vec::with_capacity(interior_pts.len());
+        interior_pts.retain(|&point| {
+            let sample = interior_point_3d(point);
+            let kept = taken.insert(point_merge_key(sample.0, MERGE_GRID));
+            if kept {
+                kept_samples.push(sample);
+            }
+            kept
+        });
         if !interior_pts.is_empty() {
             let interior_cdt_ids = cdt
                 .insert_points_hilbert(&interior_pts)
@@ -3586,6 +3647,16 @@ pub(super) fn tessellate_nonplanar_cdt(
             let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
             if cdt_to_global.len() <= max_interior {
                 cdt_to_global.resize(max_interior + 1, None);
+            }
+            interior_samples.resize(max_interior + 1, None);
+            for ((&id, &point), &sample) in interior_cdt_ids
+                .iter()
+                .zip(&interior_pts)
+                .zip(&kept_samples)
+            {
+                if let Some(slot) = interior_samples.get_mut(id) {
+                    slot.get_or_insert((point, sample));
+                }
             }
         }
     }
@@ -3612,7 +3683,18 @@ pub(super) fn tessellate_nonplanar_cdt(
         if let Some(gid) = cdt_to_global.get(i).copied().flatten() {
             final_global_ids[i] = gid;
         } else if i >= 3 {
-            let (pt3, nrm) = interior_point_3d(cdt_verts[i]);
+            let reused = interior_samples
+                .get(i)
+                .copied()
+                .flatten()
+                .filter(|(point, _)| {
+                    point.x().to_bits() == cdt_verts[i].x().to_bits()
+                        && point.y().to_bits() == cdt_verts[i].y().to_bits()
+                });
+            #[cfg(test)]
+            let reused = interior_sample_tests::observe(reused);
+            let (pt3, nrm) =
+                reused.map_or_else(|| interior_point_3d(cdt_verts[i]), |(_, sample)| sample);
             let key = point_merge_key(pt3, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
                 let idx = merged.positions.len() as u32;
@@ -4611,7 +4693,7 @@ fn fill_sphere_latitude_cap(
     deflection: f64,
     angular_tol: f64,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> bool {
     let n = boundary.len();
     let radius = sphere.radius();
@@ -4695,6 +4777,12 @@ fn fill_sphere_latitude_cap(
     let project = |p| sphere.project_point(p);
     let emit = make_band_emit(&project, &surf_normal);
 
+    // The rows add up to `(n_v - 1) * n_u` vertices plus the pole; growing the
+    // merge map to that one rehash at a time cost more than filling it.
+    let added = (n_v - 1) * n_u + 1;
+    point_to_global.reserve(added);
+    merged.positions.reserve(added);
+    merged.normals.reserve(added);
     let mut prev = ring;
     for iv in 1..n_v {
         let t = iv as f64 / n_v as f64;
@@ -4738,7 +4826,7 @@ fn fill_sphere_cap_web(
     deflection: f64,
     angular_tol: f64,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> bool {
     let n = boundary.len();
     if n < 3 || radius <= 0.0 {
@@ -4845,9 +4933,7 @@ fn fill_sphere_cap_web(
         merged.indices.extend_from_slice(&tri);
     };
 
-    let intern = |merged: &mut TriangleMesh,
-                  point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
-                  dir: Vec3| {
+    let intern = |merged: &mut TriangleMesh, point_to_global: &mut PointMergeMap, dir: Vec3| {
         let pt = center + dir * radius;
         let key = point_merge_key(pt, MERGE_GRID);
         *point_to_global.entry(key).or_insert_with(|| {
@@ -4964,6 +5050,50 @@ fn sphere_boundary_conic(curve: &EdgeCurve) -> Option<SphereBoundaryConic> {
         | EdgeCurve::Hyperbola(_)
         | EdgeCurve::Parabola(_) => None,
     }
+}
+
+/// A complete native equator in the carrier's own chart can use the analytic
+/// hemisphere grid. Partial, tilted, holed and sampled trims must keep the
+/// shared-boundary mesher. Check native spans, not just sampled endpoints.
+/// The returned sign selects the north (+1) or south (-1) bounded hemisphere.
+pub(super) fn analytic_sphere_equator_direction(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return Ok(None);
+    };
+    let edges = topo.wire(face.outer_wire())?.edges();
+    // Keep single- and two-edge trims on the established shared-boundary path.
+    if !face.inner_wires().is_empty()
+        || edges.len() < 3
+        || !sphere_great_circle_loop(topo, sphere, edges)?
+    {
+        return Ok(None);
+    }
+    let mut turn = 0.0;
+    let mut direction = 0.0_f64;
+    for oriented in edges {
+        let edge = topo.edge(oriented.edge())?;
+        let Some(conic) = sphere_boundary_conic(edge.curve()) else {
+            return Ok(None);
+        };
+        if conic.normal.cross(sphere.z_axis()).length() > 1e-10 {
+            return Ok(None);
+        }
+        let Ok((a, b)) = edge.strict_domain() else {
+            return Ok(None);
+        };
+        let delta = (b - a)
+            * conic.u.cross(conic.v).dot(sphere.z_axis())
+            * if oriented.is_forward() { 1.0 } else { -1.0 };
+        if delta == 0.0 || !delta.is_finite() || direction * delta < 0.0 {
+            return Ok(None);
+        }
+        direction = delta;
+        turn += delta;
+    }
+    Ok(((turn.abs() - std::f64::consts::TAU).abs() <= 1e-10).then_some(turn.signum()))
 }
 
 /// The new chart selection is confined to native great-circle partitions.
@@ -5171,7 +5301,7 @@ fn fill_sphere_hemisphere_patch(
     deflection: f64,
     angular_tol: f64,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let positions_save = merged.positions.len();
     let normals_save = merged.normals.len();
@@ -5206,7 +5336,7 @@ fn fill_sphere_hemisphere_patch_impl(
     deflection: f64,
     angular_tol: f64,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
@@ -5491,7 +5621,7 @@ fn collect_boundary_loop(
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<Vec<u32>, crate::OperationsError> {
     let tol_dup = 1e-10;
     let mut boundary: Vec<u32> = Vec::new();
@@ -5565,7 +5695,7 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let FaceSurface::Nurbs(surface) = face_data.surface() else {
         return Ok(false);
@@ -5609,8 +5739,7 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
         merged,
         point_to_global,
     )?;
-    let decline = |merged: &mut TriangleMesh,
-                   point_to_global: &mut DetHashMap<(i64, i64, i64), u32>| {
+    let decline = |merged: &mut TriangleMesh, point_to_global: &mut PointMergeMap| {
         merged.positions.truncate(pos_save);
         merged.normals.truncate(nrm_save);
         merged.indices.truncate(idx_save);
@@ -5714,8 +5843,8 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
         for iu in 0..n_u {
             let fraction = iu as f64 / n_u as f64;
             let u = fraction.mul_add(u_max - u_min, u_min);
-            let point = surface.evaluate(u, v);
-            let normal = surface.normal(u, v)?;
+            let (point, normal) = surface.point_and_normal(u, v);
+            let normal = normal?;
             let key = point_merge_key(point, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
                 let index = merged.positions.len() as u32;
@@ -5795,9 +5924,10 @@ pub(super) fn tessellate_sphere_cap_shared(
     deflection: f64,
     angular_tol: f64,
     allow_latitude_cap: bool,
+    allow_analytic_hemisphere: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let FaceSurface::Sphere(sphere) = face_data.surface() else {
         return Ok(false);
@@ -5824,6 +5954,10 @@ pub(super) fn tessellate_sphere_cap_shared(
                 break;
             }
         }
+    }
+
+    if allow_analytic_hemisphere && analytic_sphere_equator_direction(topo, face_data)?.is_some() {
+        return Ok(false);
     }
 
     let pos_save = merged.positions.len();
@@ -5950,6 +6084,7 @@ pub(super) fn tessellate_sphere_cap_shared(
 ///
 /// Returns `None` when neither path produces triangles; the caller falls back
 /// to the rectangular sweep so behavior never degrades.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_trimmed_sphere_uvs(
     topo: &Topology,
     face_id: FaceId,
@@ -5958,10 +6093,11 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
     deflection: f64,
     angular_tol: f64,
     try_cdt: bool,
+    allow_analytic_hemisphere: bool,
 ) -> Option<super::TriangleMeshUV> {
     let empty_pool: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
     let mut merged = TriangleMesh::default();
-    let mut point_to_global: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();
+    let mut point_to_global = PointMergeMap::default();
 
     let web_ok = tessellate_sphere_cap_shared(
         topo,
@@ -5969,6 +6105,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
         deflection,
         angular_tol,
         false,
+        allow_analytic_hemisphere,
         &empty_pool,
         &mut merged,
         &mut point_to_global,
@@ -6010,29 +6147,74 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
 /// Check if a 2D point is inside a polygon defined by (u, v) coordinates.
 /// Uses the winding number algorithm for robustness.
 pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::Point2) -> bool {
-    let n = polygon.len();
     let mut winding = 0i32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let yi = polygon[i].1;
-        let yj = polygon[j].1;
+    let mut segment = |(xi, yi): (f64, f64), (xj, yj): (f64, f64)| {
         if yi <= pt.y() {
             if yj > pt.y() {
-                let cross = (polygon[j].0 - polygon[i].0) * (pt.y() - yi)
-                    - (pt.x() - polygon[i].0) * (yj - yi);
+                let cross = (xj - xi) * (pt.y() - yi) - (pt.x() - xi) * (yj - yi);
                 if cross > 0.0 {
                     winding += 1;
                 }
             }
         } else if yj <= pt.y() {
-            let cross =
-                (polygon[j].0 - polygon[i].0) * (pt.y() - yi) - (pt.x() - polygon[i].0) * (yj - yi);
+            let cross = (xj - xi) * (pt.y() - yi) - (pt.x() - xi) * (yj - yi);
             if cross < 0.0 {
                 winding -= 1;
             }
         }
+    };
+    // Segment k runs from vertex k to vertex k + 1, the last one back to the
+    // first: the same segments in the same order as indexing `(k + 1) % n`.
+    for pair in polygon.windows(2) {
+        segment(pair[0], pair[1]);
+    }
+    if let (Some(&last), Some(&first)) = (polygon.last(), polygon.first()) {
+        segment(last, first);
     }
     winding != 0
+}
+
+/// [`point_in_polygon_2d`] for every point `(x, y)` of one row, `xs`
+/// non-decreasing.
+///
+/// Each segment the row crosses adds its winding step to a prefix of the
+/// row: its crossing test `cross > 0` (upward) or `cross < 0` (downward)
+/// evaluates the same rounded expression as [`point_in_polygon_2d`], and that
+/// expression is monotone in `x` (IEEE subtraction and multiplication by a
+/// fixed operand are monotone), so the points that pass are a prefix found by
+/// bisection. The answers are exactly the per-point test's, at
+/// `O(segments * log(row))` per row instead of `O(segments * row)`.
+pub(super) fn polygon_row_contains(polygon: &[(f64, f64)], xs: &[f64], y: f64) -> Vec<bool> {
+    let n = polygon.len();
+    // `steps[k]` is the winding change between point k - 1 and point k.
+    let mut steps = vec![0_i32; xs.len() + 1];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (xi, yi) = polygon[i];
+        let (xj, yj) = polygon[j];
+        let cross = |x: f64| (xj - xi) * (y - yi) - (x - xi) * (yj - yi);
+        let (passes, step): (usize, i32) = if yi <= y {
+            if yj > y {
+                (xs.partition_point(|&x| cross(x) > 0.0), 1)
+            } else {
+                continue;
+            }
+        } else if yj <= y {
+            (xs.partition_point(|&x| cross(x) < 0.0), -1)
+        } else {
+            continue;
+        };
+        steps[0] += step;
+        steps[passes] -= step;
+    }
+    let mut winding = 0;
+    xs.iter()
+        .zip(&steps)
+        .map(|(_, &step)| {
+            winding += step;
+            winding != 0
+        })
+        .collect()
 }
 
 /// Containment and trim clearance of one dense-band candidate in a single
@@ -6056,31 +6238,25 @@ fn classify_dense_candidate(
     point: remus_math::vec::Point2,
     clearance: f64,
 ) -> (bool, bool) {
-    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
-    // site, so both index ranges coincide.
     let mut winding = 0i32;
     let mut clear = true;
-    for i in 0..boundary_uv.len() {
-        let j = (i + 1) % boundary_uv.len();
-        let yi = boundary_uv[i].1;
-        let yj = boundary_uv[j].1;
+    let mut segment = |(xi, yi): (f64, f64),
+                       (xj, yj): (f64, f64),
+                       a: remus_math::vec::Point2,
+                       b: remus_math::vec::Point2| {
         if yi <= v {
             if yj > v {
-                let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
-                    - (u - boundary_uv[i].0) * (yj - yi);
+                let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
                 if cross > 0.0 {
                     winding += 1;
                 }
             }
         } else if yj <= v {
-            let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
-                - (u - boundary_uv[i].0) * (yj - yi);
+            let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
             if cross < 0.0 {
                 winding -= 1;
             }
         }
-        let a = boundary_cdt[i];
-        let b = boundary_cdt[j];
         let ab = b - a;
         let length_squared = ab.dot(ab);
         let t = if length_squared > 1.0e-30 {
@@ -6090,6 +6266,19 @@ fn classify_dense_candidate(
         };
         let foot = remus_math::vec::Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
         clear = (point - foot).length() > clearance && clear;
+    };
+    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
+    // site, so both walk the same segments, in `point_in_polygon_2d`'s order.
+    for (uv, cdt) in boundary_uv.windows(2).zip(boundary_cdt.windows(2)) {
+        segment(uv[0], uv[1], cdt[0], cdt[1]);
+    }
+    if let (Some(&last), Some(&first), Some(&a), Some(&b)) = (
+        boundary_uv.last(),
+        boundary_uv.first(),
+        boundary_cdt.get(boundary_uv.len().wrapping_sub(1)),
+        boundary_cdt.first(),
+    ) {
+        segment(last, first, a, b);
     }
     (winding != 0, clear)
 }
@@ -6111,7 +6300,7 @@ pub(super) fn tessellate_nonplanar_snap(
     circle_floor: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<(), crate::OperationsError> {
     let shared_revolved = matches!(
         face_data.surface(),
@@ -6283,6 +6472,12 @@ pub(super) fn tessellate_nonplanar_snap(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod interior_sample_tests;
+
+#[cfg(test)]
+mod polygon_scan_oracle_tests;
 
 #[cfg(test)]
 mod rim_angle_tests {

@@ -43,7 +43,7 @@ pub use projection::{
     curve_newton_refine_public, project_point_to_curve, project_point_to_surface,
     project_point_to_surface_seeded, project_point_to_surface_with_grid,
 };
-pub use surface::{DerivativeScratch, NurbsSurface};
+pub use surface::{DerivativeScratch, FirstOrderAxis, NurbsSurface};
 pub use surface_fitting::interpolate_surface;
 
 /// Reject control points carrying a non-finite coordinate.
@@ -69,7 +69,7 @@ fn validate_control_point_values(
     Ok(())
 }
 
-fn validate_knot_values(knots: &[f64]) -> Result<(), crate::MathError> {
+pub(crate) fn validate_knot_values(knots: &[f64]) -> Result<(), crate::MathError> {
     let mut max_value = f64::NEG_INFINITY;
     for (index, &value) in knots.iter().enumerate() {
         if !value.is_finite() {
@@ -89,7 +89,7 @@ fn validate_knot_values(knots: &[f64]) -> Result<(), crate::MathError> {
     Ok(())
 }
 
-fn validate_knot_domain(
+pub(crate) fn validate_knot_domain(
     knots: &[f64],
     degree: usize,
     control_points: usize,

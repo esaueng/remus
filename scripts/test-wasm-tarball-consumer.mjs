@@ -24,6 +24,7 @@ import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
+import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -90,6 +91,7 @@ try {
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
   runSecurityResourceRegressions({ ...packageExports, ...ioExports });
+  runPackageQueueWitness({ ...packageExports, ...ioExports });
   runOpseqF3Packaged(packageExports);
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runProjectCurvePackaged(packageExports);

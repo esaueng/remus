@@ -18,6 +18,183 @@ use crate::nurbs::basis::basis_funs;
 use crate::nurbs::curve::NurbsCurve;
 use crate::vec::Point3;
 
+/// Most data points any curve-fitting entry point accepts.
+pub const MAX_FIT_POINTS: usize = 1 << 20;
+
+/// Highest fitted degree, the common ceiling of the exchange formats.
+pub const MAX_FIT_DEGREE: usize = 25;
+
+/// Largest dense matrix, in `f64` entries (32 MiB), a fit may allocate.
+///
+/// Least squares' `n×m` basis matrix is charged six entries of overhead per
+/// separately allocated row, so few control points through many data points
+/// count their row allocations as well as their values.
+pub const MAX_DENSE_FIT_ENTRIES: usize = 1 << 22;
+
+/// Largest banded or per-point basis storage, in `f64` entries (128 MiB).
+///
+/// Covers interpolation's band `n·(3p + 1)` and LSPIA's basis table
+/// `n·(p + 1 + 6)`, which counts each point's separately allocated row at
+/// six entries of overhead. A cubic fit through `MAX_FIT_POINTS` points
+/// stays inside it.
+pub const MAX_SPARSE_FIT_ENTRIES: usize = 1 << 24;
+
+/// Retained overhead of one separately allocated per-point row, in `f64`
+/// entries: its `Vec` header and allocator header, plus LSPIA's span index
+/// (48 bytes).
+const ROW_OVERHEAD: usize = 6;
+
+fn check_sparse_entries(entries: usize) -> Result<(), MathError> {
+    if entries > MAX_SPARSE_FIT_ENTRIES {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "sparse_fit_entries",
+            limit: MAX_SPARSE_FIT_ENTRIES,
+            actual: entries,
+        });
+    }
+    Ok(())
+}
+
+/// Most arithmetic a fit may do, about a second at full optimization.
+///
+/// Counts multiply-adds for least squares (`n·m² + m³`) and basis-value
+/// visits for LSPIA (`n·(p + 1)·(3·(max_iterations + 1) + 40)`, plus `n·m`
+/// when unsorted parameters force a linear nearest-parameter scan).
+pub const MAX_FIT_WORK: usize = 1 << 30;
+
+/// LSPIA's basis-value visits: every measured iterate evaluates each point
+/// from its basis (two passes in `point_from_basis`) and spreads the error
+/// back (one pass), and the step size takes 20 power-iteration rounds of two
+/// passes each.
+fn lspia_work(n: usize, p: usize, max_iterations: usize) -> usize {
+    n.saturating_mul(p + 1).saturating_mul(
+        max_iterations
+            .saturating_add(1)
+            .saturating_mul(3)
+            .saturating_add(40),
+    )
+}
+
+fn check_fit_work(work: usize) -> Result<(), MathError> {
+    if work > MAX_FIT_WORK {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "fit_work",
+            limit: MAX_FIT_WORK,
+            actual: work,
+        });
+    }
+    Ok(())
+}
+
+/// The first index `j` minimizing `|params[j] - t|`, exactly as a linear
+/// scan with a strict `<` finds it, in O(log n) when `params` is finite and
+/// nondecreasing (`sorted`); otherwise by that linear scan.
+///
+/// On a sorted slice the computed distance is nonincreasing below the first
+/// parameter `>= t` and nondecreasing from it (subtraction is monotone), so
+/// the earliest minimizer is either that index or the first index of the
+/// run of equal distances just below it; a tie goes to the lower one.
+fn nearest_param_index(params: &[f64], t: f64, sorted: bool) -> usize {
+    if !sorted || !t.is_finite() {
+        let mut best_idx = 0;
+        let mut best_dist = f64::INFINITY;
+        for (j, &param) in params.iter().enumerate() {
+            let d = (param - t).abs();
+            if d < best_dist {
+                best_dist = d;
+                best_idx = j;
+            }
+        }
+        return best_idx;
+    }
+    let k = params.partition_point(|&q| q < t);
+    let right = params.get(k).map(|&q| (q - t).abs());
+    let left = k.checked_sub(1).map(|j| (params[j] - t).abs());
+    match left {
+        Some(dl) if right.is_none_or(|dr| dl <= dr) => {
+            params[..k].partition_point(|&q| (q - t).abs() > dl)
+        }
+        _ => k.min(params.len().saturating_sub(1)),
+    }
+}
+
+/// Whether every parameter is finite and none decreases.
+fn params_sorted(params: &[f64]) -> bool {
+    params.iter().all(|q| q.is_finite()) && params.windows(2).all(|w| w[0] <= w[1])
+}
+
+fn check_fit_points(n: usize) -> Result<(), MathError> {
+    if n > MAX_FIT_POINTS {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "fit_points",
+            limit: MAX_FIT_POINTS,
+            actual: n,
+        });
+    }
+    Ok(())
+}
+
+/// The degree a fit actually uses — `degree` capped at `max_degree`, as the
+/// entry points have always done — held to `1..=MAX_FIT_DEGREE`.
+/// `control_points` is the fitted curve's count, reported as
+/// `NurbsCurve::new` would report it.
+fn fit_degree(degree: usize, max_degree: usize, control_points: usize) -> Result<usize, MathError> {
+    let p = degree.min(max_degree);
+    if p == 0 {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points,
+        });
+    }
+    if p > MAX_FIT_DEGREE {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "fit_degree",
+            limit: MAX_FIT_DEGREE,
+            actual: p,
+        });
+    }
+    Ok(p)
+}
+
+fn check_dense_entries(entries: usize) -> Result<(), MathError> {
+    if entries > MAX_DENSE_FIT_ENTRIES {
+        return Err(MathError::ResourceLimitExceeded {
+            resource: "dense_fit_entries",
+            limit: MAX_DENSE_FIT_ENTRIES,
+            actual: entries,
+        });
+    }
+    Ok(())
+}
+
+/// Chord-length parameters must strictly increase for interpolation: a
+/// repeated parameter makes two collocation rows identical. Points that
+/// coincide outright, or differ by less than the parameters resolve, are
+/// refused here, before any system is assembled. All points coinciding is
+/// not refused: `chord_length_params` spaces those uniformly. A non-finite
+/// parameter (finite points whose chord lengths overflow) is refused as out
+/// of range, as [`interpolate_with_params`] refuses it.
+fn check_increasing_params(params: &[f64]) -> Result<(), MathError> {
+    check_finite_params(params)?;
+    match params.windows(2).position(|w| w[1] <= w[0]) {
+        Some(i) => Err(MathError::CoincidentFitPoints { index: i + 1 }),
+        None => Ok(()),
+    }
+}
+
+/// Chord-length parameters are NaN when finite points' chord lengths
+/// overflow; refuse them before any system is assembled from them.
+fn check_finite_params(params: &[f64]) -> Result<(), MathError> {
+    if let Some(&value) = params.iter().find(|t| !t.is_finite()) {
+        return Err(MathError::ParameterOutOfRange {
+            value,
+            min: 0.0,
+            max: 1.0,
+        });
+    }
+    Ok(())
+}
+
 /// Interpolate a NURBS curve through a set of data points.
 ///
 /// Uses chord-length parameterization and a cubic (degree 3) B-spline.
@@ -39,15 +216,24 @@ use crate::vec::Point3;
 ///
 /// Returns an error if fewer than 2 points are provided or the degree
 /// is too high for the number of points.
+///
+/// Returns [`MathError::InvalidDegree`] for degree 0,
+/// [`MathError::ResourceLimitExceeded`] beyond [`MAX_FIT_POINTS`] points or
+/// a fitted degree above [`MAX_FIT_DEGREE`],
+/// [`MathError::CoincidentFitPoints`] when two consecutive points share a
+/// chord-length parameter, and [`MathError::ParameterOutOfRange`] when a
+/// chord-length parameter is not finite (chord lengths that overflow); all
+/// before any system is assembled.
 pub fn interpolate(points: &[Point3], degree: usize) -> Result<NurbsCurve, MathError> {
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
-
-    let p = degree.min(n - 1);
+    check_fit_points(n)?;
+    let p = fit_degree(degree, n - 1, n)?;
 
     let params = chord_length_params(points);
+    check_increasing_params(&params)?;
     let knots = build_interpolation_knots(&params, p, n);
     let control_points = solve_interpolation(points, &params, &knots, p)?;
 
@@ -67,7 +253,8 @@ pub fn interpolate(points: &[Point3], degree: usize) -> Result<NurbsCurve, MathE
 ///
 /// Returns an error if fewer than 2 points are provided, `params` does not
 /// match `points` in length or is not increasing on `[0, 1]`, or the
-/// interpolation system is singular.
+/// interpolation system is singular. The size and degree bounds of
+/// [`interpolate`] apply.
 pub fn interpolate_with_params(
     points: &[Point3],
     degree: usize,
@@ -76,6 +263,13 @@ pub fn interpolate_with_params(
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
+    }
+    check_fit_points(n)?;
+    if degree == 0 {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points: n,
+        });
     }
     if params.len() != n {
         return Err(MathError::InvalidControlPointGrid {
@@ -92,7 +286,7 @@ pub fn interpolate_with_params(
         });
     }
 
-    let p = degree.min(n - 1);
+    let p = fit_degree(degree, n - 1, n)?;
     let knots = build_interpolation_knots(params, p, n);
     let control_points = solve_interpolation(points, params, &knots, p)?;
 
@@ -109,7 +303,13 @@ pub fn interpolate_with_params(
 ///
 /// # Errors
 ///
-/// Returns an error if parameters are invalid.
+/// Returns an error if parameters are invalid. The size and degree bounds
+/// of [`interpolate`] apply, and the dense normal equations (`n·(m + 6) +
+/// 2·m²` entries for `n` points and `m` control points, six per row for its
+/// allocation) are held to
+/// [`MAX_DENSE_FIT_ENTRIES`]. A non-finite chord-length parameter (finite
+/// points whose chord lengths overflow) is refused as
+/// [`MathError::ParameterOutOfRange`] before anything is assembled.
 pub fn approximate(
     points: &[Point3],
     degree: usize,
@@ -119,9 +319,16 @@ pub fn approximate(
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
-    if num_control_points < degree + 1 {
+    check_fit_points(n)?;
+    if degree == 0 {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points: num_control_points,
+        });
+    }
+    if num_control_points < degree.saturating_add(1) {
         return Err(MathError::InvalidKnotVector {
-            expected: degree + 1,
+            expected: degree.saturating_add(1),
             got: num_control_points,
         });
     }
@@ -136,10 +343,23 @@ pub fn approximate(
         return interpolate(points, degree);
     }
 
-    let p = degree.min(num_control_points - 1);
+    let p = fit_degree(degree, num_control_points - 1, num_control_points)?;
     let m = num_control_points;
+    // `solve_approximation` holds the n×m basis matrix, one allocation per
+    // row, and the m×m normal matrix plus one working copy of it.
+    check_dense_entries(
+        n.saturating_mul(m + ROW_OVERHEAD)
+            .saturating_add(m.saturating_mul(m).saturating_mul(2)),
+    )?;
+    // Forming NᵀN costs n·m² multiply-adds and the three dense solves about
+    // m³ together.
+    check_fit_work(
+        n.saturating_mul(m.saturating_mul(m))
+            .saturating_add(m.saturating_mul(m).saturating_mul(m)),
+    )?;
 
     let params = chord_length_params(points);
+    check_finite_params(&params)?;
     let knots = build_approximation_knots(&params, p, m, n);
 
     // Solve least-squares: N^T * N * P = N^T * Q
@@ -289,6 +509,7 @@ fn solve_interpolation(
     if use_compact {
         let kl = bw;
         let ku = 2 * bw;
+        check_sparse_entries(n.saturating_mul(kl + ku + 1))?;
         let mut band = BandMatrix::new(n, kl, ku);
         for (i, (&t, &span)) in params.iter().zip(spans.iter()).enumerate() {
             let basis = basis_funs(span, t, degree, knots);
@@ -314,6 +535,7 @@ fn solve_interpolation(
         }
         banded_solve_multi(&mut band, &mut rhs, bw)?;
     } else {
+        check_dense_entries(n.saturating_mul(n))?;
         let mut matrix = vec![vec![0.0; n]; n];
         for (i, (&t, &span)) in params.iter().zip(spans.iter()).enumerate() {
             let basis = basis_funs(span, t, degree, knots);
@@ -749,6 +971,35 @@ fn point_from_basis(
     Point3::new(wx / ww, wy / ww, wz / ww)
 }
 
+/// Fold one data-point residual into the running maximum. `f64::max`
+/// drops a NaN operand, which would let a fit whose residuals cannot be
+/// measured report a zero error and converge; a NaN counts as infinite.
+fn fold_residual(max_err: f64, residual: f64) -> f64 {
+    if residual.is_nan() {
+        f64::INFINITY
+    } else {
+        max_err.max(residual)
+    }
+}
+
+/// The outcome of an LSPIA fit: the best iterate and how good it is.
+#[derive(Debug, Clone)]
+pub struct LspiaFit {
+    /// The iterate with the smallest maximum data-point deviation (the
+    /// first one, on a tie).
+    pub curve: NurbsCurve,
+    /// That iterate's largest distance from a data point to the curve at the
+    /// point's chord-length parameter.
+    pub max_error: f64,
+    /// Which iterate `curve` is: 0 is the initial control polygon, `i` the
+    /// polygon after `i` updates.
+    pub iteration: usize,
+    /// Whether `max_error` is below the requested tolerance. When `false`
+    /// the fit is the best of `max_iterations + 1` iterates, not a converged
+    /// one.
+    pub converged: bool,
+}
+
 /// Approximate a NURBS curve through data points using Progressive-Iterative Approximation.
 ///
 /// LSPIA iteratively adjusts control points to minimize the least-squares error,
@@ -771,13 +1022,19 @@ fn point_from_basis(
 /// 4. Iterate: compute errors at data points, distribute corrections
 ///    to CPs weighted by basis function values
 ///
+/// Every iterate, including the initial polygon and the last update, is
+/// measured. The first one whose maximum deviation is below `tolerance` is
+/// returned as converged; otherwise the iterate with the smallest maximum
+/// deviation is returned with [`LspiaFit::converged`] `false`. The
+/// least-squares residual falls monotonically but the maximum deviation
+/// need not, so the last iterate is not always the best one.
+///
 /// # Errors
 ///
-/// Returns [`MathError::EmptyInput`] if fewer than 2 points.
-/// If the iteration has not converged after `max_iterations`, the best-effort
-/// curve (lowest observed error) is returned as `Ok`; no error is raised.
-/// In debug builds (`#[cfg(debug_assertions)]`) a `log::warn!` is emitted;
-/// release builds are silent.
+/// Returns [`MathError::EmptyInput`] if fewer than 2 points. The size and
+/// degree bounds of [`interpolate`] apply.
+/// Non-convergence is not an error: it is reported by
+/// [`LspiaFit::converged`].
 #[allow(clippy::cast_precision_loss)]
 pub fn approximate_lspia(
     points: &[Point3],
@@ -785,19 +1042,28 @@ pub fn approximate_lspia(
     num_control_points: usize,
     tolerance: f64,
     max_iterations: usize,
-) -> Result<NurbsCurve, MathError> {
+) -> Result<LspiaFit, MathError> {
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
     }
-
-    let p = degree.min(n - 1);
+    check_fit_points(n)?;
+    let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
+    check_sparse_entries(n.saturating_mul(p + 1 + ROW_OVERHEAD))?;
+    check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
 
     // Initialize control points by sampling closest data points.
+    let sorted = params_sorted(&params);
+    if !sorted {
+        // The scan fallback costs n·m comparisons. Finite coordinates that
+        // overflow the chord lengths reach it too, so it is charged to the
+        // same budget as the iterations that follow it.
+        check_fit_work(lspia_work(n, p, max_iterations).saturating_add(n.saturating_mul(m)))?;
+    }
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
         let t = if m > 1 {
@@ -805,16 +1071,7 @@ pub fn approximate_lspia(
         } else {
             0.0
         };
-        let mut best_idx = 0;
-        let mut best_dist = f64::INFINITY;
-        for (j, &param) in params.iter().enumerate() {
-            let d = (param - t).abs();
-            if d < best_dist {
-                best_dist = d;
-                best_idx = j;
-            }
-        }
-        control_points.push(points[best_idx]);
+        control_points.push(points[nearest_param_index(&params, t, sorted)]);
     }
 
     let weights = vec![1.0; m];
@@ -837,8 +1094,11 @@ pub fn approximate_lspia(
     // exactly `basis_data[i]`; feed that to its post-basis tail instead.
     NurbsCurve::new(p, knots.clone(), control_points.clone(), weights.clone())?;
     let mut deltas = vec![(0.0f64, 0.0f64, 0.0f64); m];
+    let mut best: Option<(Vec<Point3>, f64, usize)> = None;
 
-    for iter in 0..max_iterations {
+    // `max_iterations` updates produce `max_iterations + 1` iterates; the
+    // last pass only measures.
+    for iter in 0..=max_iterations {
         super::validate_control_point_values(control_points.iter().copied())?;
 
         let mut max_err = 0.0f64;
@@ -850,7 +1110,7 @@ pub fn approximate_lspia(
             let err_y = points[i].y() - q.y();
             let err_z = points[i].z() - q.z();
             let err_mag = (err_x * err_x + err_y * err_y + err_z * err_z).sqrt();
-            max_err = max_err.max(err_mag);
+            max_err = fold_residual(max_err, err_mag);
 
             for (k, &nv) in n_vals.iter().enumerate() {
                 let j = span - p + k;
@@ -863,7 +1123,18 @@ pub fn approximate_lspia(
         }
 
         if max_err < tolerance {
-            return NurbsCurve::new(p, knots, control_points, weights);
+            return Ok(LspiaFit {
+                curve: NurbsCurve::new(p, knots, control_points, weights)?,
+                max_error: max_err,
+                iteration: iter,
+                converged: true,
+            });
+        }
+        if best.as_ref().is_none_or(|(_, err, _)| max_err < *err) {
+            best = Some((control_points.clone(), max_err, iter));
+        }
+        if iter == max_iterations {
+            break;
         }
 
         // Update control points: P_j += mu * delta_j
@@ -874,25 +1145,17 @@ pub fn approximate_lspia(
                 mu.mul_add(deltas[j].2, control_points[j].z()),
             );
         }
-
-        // Return best result if this is the last iteration.
-        if iter == max_iterations - 1 {
-            // LSPIA did not converge to the requested tolerance.  Warn in debug
-            // builds so callers can detect poorly fitted curves.
-            #[cfg(debug_assertions)]
-            if max_err > tolerance {
-                log::warn!(
-                    "approximate_lspia: did not converge after {max_iterations} iterations \
-                     (max_err={max_err:.2e}, tolerance={tolerance:.2e}, \
-                     num_cps={m}, degree={p})"
-                );
-            }
-            return NurbsCurve::new(p, knots, control_points, weights);
-        }
     }
 
-    // Unreachable if max_iterations > 0, but handle edge case.
-    NurbsCurve::new(p, knots, control_points, weights)
+    // The loop body runs at least once and records an iterate before any
+    // exit other than convergence.
+    let (best_points, max_error, iteration) = best.ok_or(MathError::EmptyInput)?;
+    Ok(LspiaFit {
+        curve: NurbsCurve::new(p, knots, best_points, weights)?,
+        max_error,
+        iteration,
+        converged: false,
+    })
 }
 
 /// Weighted LSPIA approximation with per-point weights.
@@ -904,7 +1167,7 @@ pub fn approximate_lspia(
 ///
 /// Returns [`MathError::EmptyInput`] if fewer than 2 points.
 /// Returns [`MathError::InvalidWeights`] if `point_weights.len()` does not match
-/// `points.len()`.
+/// `points.len()`. Iterates are selected as in [`approximate_lspia`].
 #[allow(clippy::cast_precision_loss, clippy::too_many_arguments, dead_code)]
 pub(crate) fn approximate_lspia_weighted(
     points: &[Point3],
@@ -913,7 +1176,7 @@ pub(crate) fn approximate_lspia_weighted(
     num_control_points: usize,
     tolerance: f64,
     max_iterations: usize,
-) -> Result<NurbsCurve, MathError> {
+) -> Result<LspiaFit, MathError> {
     let n = points.len();
     if n < 2 {
         return Err(MathError::EmptyInput);
@@ -924,14 +1187,23 @@ pub(crate) fn approximate_lspia_weighted(
             got: point_weights.len(),
         });
     }
-
-    let p = degree.min(n - 1);
+    check_fit_points(n)?;
+    let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
+    check_sparse_entries(n.saturating_mul(p + 1 + ROW_OVERHEAD))?;
+    check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
 
     // Initialize control points by sampling closest data points.
+    let sorted = params_sorted(&params);
+    if !sorted {
+        // The scan fallback costs n·m comparisons. Finite coordinates that
+        // overflow the chord lengths reach it too, so it is charged to the
+        // same budget as the iterations that follow it.
+        check_fit_work(lspia_work(n, p, max_iterations).saturating_add(n.saturating_mul(m)))?;
+    }
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
         let t = if m > 1 {
@@ -939,16 +1211,7 @@ pub(crate) fn approximate_lspia_weighted(
         } else {
             0.0
         };
-        let mut best_idx = 0;
-        let mut best_dist = f64::INFINITY;
-        for (j, &param) in params.iter().enumerate() {
-            let d = (param - t).abs();
-            if d < best_dist {
-                best_dist = d;
-                best_idx = j;
-            }
-        }
-        control_points.push(points[best_idx]);
+        control_points.push(points[nearest_param_index(&params, t, sorted)]);
     }
 
     let weights = vec![1.0; m];
@@ -961,8 +1224,9 @@ pub(crate) fn approximate_lspia_weighted(
     }
 
     let mu = compute_lspia_step_size_weighted(&basis_data, point_weights, p, m);
+    let mut best: Option<(Vec<Point3>, f64, usize)> = None;
 
-    for iter in 0..max_iterations {
+    for iter in 0..=max_iterations {
         let curve = NurbsCurve::new(p, knots.clone(), control_points.clone(), weights.clone())?;
 
         let mut max_err = 0.0f64;
@@ -975,7 +1239,7 @@ pub(crate) fn approximate_lspia_weighted(
             let err_y = points[i].y() - q.y();
             let err_z = points[i].z() - q.z();
             let err_mag = (err_x * err_x + err_y * err_y + err_z * err_z).sqrt();
-            max_err = max_err.max(err_mag);
+            max_err = fold_residual(max_err, err_mag);
 
             let (span, n_vals) = &basis_data[i];
             for (k, &nv) in n_vals.iter().enumerate() {
@@ -989,7 +1253,18 @@ pub(crate) fn approximate_lspia_weighted(
         }
 
         if max_err < tolerance {
-            return NurbsCurve::new(p, knots, control_points, weights);
+            return Ok(LspiaFit {
+                curve,
+                max_error: max_err,
+                iteration: iter,
+                converged: true,
+            });
+        }
+        if best.as_ref().is_none_or(|(_, err, _)| max_err < *err) {
+            best = Some((control_points.clone(), max_err, iter));
+        }
+        if iter == max_iterations {
+            break;
         }
 
         // Update control points: P_j += mu * delta_j
@@ -1000,13 +1275,15 @@ pub(crate) fn approximate_lspia_weighted(
                 mu.mul_add(deltas[j].2, control_points[j].z()),
             );
         }
-
-        if iter == max_iterations - 1 {
-            return NurbsCurve::new(p, knots, control_points, weights);
-        }
     }
 
-    NurbsCurve::new(p, knots, control_points, weights)
+    let (best_points, max_error, iteration) = best.ok_or(MathError::EmptyInput)?;
+    Ok(LspiaFit {
+        curve: NurbsCurve::new(p, knots, best_points, weights)?,
+        max_error,
+        iteration,
+        converged: false,
+    })
 }
 
 #[cfg(test)]
@@ -1020,6 +1297,118 @@ mod tests {
     use crate::vec::Point3;
 
     use super::*;
+
+    /// The linear scan `nearest_param_index` replaces, verbatim.
+    fn nearest_by_scan(params: &[f64], t: f64) -> usize {
+        let mut best_idx = 0;
+        let mut best_dist = f64::INFINITY;
+        for (j, &param) in params.iter().enumerate() {
+            let d = (param - t).abs();
+            if d < best_dist {
+                best_dist = d;
+                best_idx = j;
+            }
+        }
+        best_idx
+    }
+
+    #[test]
+    fn nearest_param_index_matches_the_linear_scan() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut cases: Vec<Vec<f64>> = vec![
+            vec![0.0],
+            vec![0.0, 1.0],
+            vec![0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0],
+            // Distinct parameters whose distances to t = 1 round equal:
+            // the scan keeps the first, so the search must too.
+            vec![0.0, 1e-20, 2e-20, 3e-20, 1.0],
+            vec![0.0, 0.25, 0.25, 0.75, 1.0],
+        ];
+        for len in [2usize, 3, 7, 40, 300] {
+            for _ in 0..20 {
+                let mut v: Vec<f64> = (0..len).map(|_| (next() * 8.0).floor() / 8.0).collect();
+                v.extend((0..len).map(|_| next()));
+                v.sort_by(f64::total_cmp);
+                cases.push(v);
+            }
+        }
+        for params in &cases {
+            let sorted = params_sorted(params);
+            assert!(sorted);
+            for m in [1usize, 2, 3, 5, 17, 64] {
+                for i in 0..m {
+                    let t = if m > 1 {
+                        i as f64 / (m - 1) as f64
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(
+                        nearest_param_index(params, t, sorted),
+                        nearest_by_scan(params, t),
+                        "params {params:?}, t {t}"
+                    );
+                }
+            }
+            for t in [-1.0, 0.125, 0.3, 0.5, 2.0] {
+                assert_eq!(
+                    nearest_param_index(params, t, sorted),
+                    nearest_by_scan(params, t)
+                );
+            }
+        }
+        // NaN parameters are not sorted and take the scan itself.
+        let nan = [0.0, f64::NAN, f64::NAN, 1.0];
+        assert!(!params_sorted(&nan));
+        for t in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                nearest_param_index(&nan, t, false),
+                nearest_by_scan(&nan, t)
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_band_interpolation_is_held_to_the_dense_budget() {
+        // Strictly increasing parameters crowded into the first span, on
+        // uniform knots, put every row's span at `degree` and fail the band
+        // check (span < row index), so the n×n dense fallback would run:
+        // 2049² entries, just past the 2048² budget.
+        let (n, p) = (2049, 3);
+        let params: Vec<f64> = (0..n).map(|i| i as f64 * 1e-9).collect();
+        let mut knots = vec![0.0; p + 1];
+        knots.extend((1..n - p).map(|i| i as f64 / (n - p) as f64));
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
+        let points: Vec<Point3> = params.iter().map(|&t| Point3::new(t, 0.0, 0.0)).collect();
+        let result = solve_interpolation(&points, &params, &knots, p);
+        assert!(
+            matches!(
+                result,
+                Err(MathError::ResourceLimitExceeded {
+                    resource: "dense_fit_entries",
+                    limit: MAX_DENSE_FIT_ENTRIES,
+                    actual,
+                }) if actual == n * n
+            ),
+            "expected the dense budget refusal, got {result:?}"
+        );
+        // At 2048 rows the same layout fits the budget exactly and reaches
+        // the dense solve, which finds the crowded system singular.
+        let n = 2048;
+        assert_eq!(n * n, MAX_DENSE_FIT_ENTRIES);
+        let mut knots = vec![0.0; p + 1];
+        knots.extend((1..n - p).map(|i| i as f64 / (n - p) as f64));
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
+        assert!(matches!(
+            solve_interpolation(&points[..n], &params[..n], &knots, p),
+            Err(MathError::SingularMatrix)
+        ));
+    }
 
     #[test]
     fn interpolate_two_points_is_line() {
@@ -1130,7 +1519,7 @@ mod tests {
                 Point3::new(t, 2.0f64.mul_add(t, 1.0), 0.0)
             })
             .collect();
-        let curve = approximate_lspia(&points, 3, 6, 1e-6, 100).unwrap();
+        let curve = approximate_lspia(&points, 3, 6, 1e-6, 100).unwrap().curve;
 
         // Check endpoints.
         let p0 = curve.evaluate(0.0);
@@ -1157,7 +1546,7 @@ mod tests {
                 Point3::new(t.cos(), t.sin(), 0.0)
             })
             .collect();
-        let curve = approximate_lspia(&points, 3, 15, 1e-4, 200).unwrap();
+        let curve = approximate_lspia(&points, 3, 15, 1e-4, 200).unwrap().curve;
 
         for i in 0..10 {
             let t = i as f64 / 9.0;
@@ -1176,7 +1565,7 @@ mod tests {
                 Point3::new(t, (t * 6.0).sin(), 0.0)
             })
             .collect();
-        let curve = approximate_lspia(&points, 3, 20, 1e-3, 100).unwrap();
+        let curve = approximate_lspia(&points, 3, 20, 1e-3, 100).unwrap().curve;
         let p = curve.evaluate(0.5);
         assert!(
             (p.x() - 0.5).abs() < 0.1,
@@ -1201,7 +1590,9 @@ mod tests {
             })
             .collect();
         let uniform_weights = vec![1.0; 20];
-        let curve = approximate_lspia_weighted(&points, &uniform_weights, 3, 8, 1e-5, 100).unwrap();
+        let curve = approximate_lspia_weighted(&points, &uniform_weights, 3, 8, 1e-5, 100)
+            .unwrap()
+            .curve;
 
         let p = curve.evaluate(0.5);
         assert!(
@@ -1381,8 +1772,9 @@ mod tests {
     #[test]
     fn perf_n01_duplicate_points_keep_typed_refusal() {
         // Coincident points collapse a chord gap to zero; the historical
-        // solver reports `SingularMatrix`. The compact path must not turn
-        // that typed refusal into NaN control points or a wrong curve.
+        // solver reported `SingularMatrix`, and the parameter check now
+        // refuses the pair before any solve. Either way the refusal must stay
+        // typed, never NaN control points or a wrong curve.
         let dup = vec![
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(0.0, 0.0, 0.0),
@@ -1392,7 +1784,7 @@ mod tests {
         ];
         assert!(matches!(
             interpolate(&dup, 3),
-            Err(crate::MathError::SingularMatrix)
+            Err(crate::MathError::CoincidentFitPoints { index: 1 })
         ));
     }
 

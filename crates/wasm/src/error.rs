@@ -36,6 +36,19 @@ pub enum WasmError {
         reason: String,
     },
 
+    /// A `fromBREP` document id that cannot name exactly one entity.
+    #[error("invalid input: fromBREP {location}: {entity} id {id} is {problem}")]
+    InvalidBrepId {
+        /// The id namespace (`"vertex"` or `"edge"`).
+        entity: &'static str,
+        /// The id as written in the document.
+        id: String,
+        /// Where in the document the id appears, e.g. `edges[3].startVertex`.
+        location: String,
+        /// Why the id is refused.
+        problem: BrepIdProblem,
+    },
+
     /// An error from a constraint solve or rank analysis.
     #[error(transparent)]
     Sketch(#[from] remus_sketch::SketchError),
@@ -55,6 +68,40 @@ pub enum WasmError {
     /// An error from a geometric check (outlining, containment, distance).
     #[error(transparent)]
     Check(#[from] remus_check::CheckError),
+}
+
+/// Why a `fromBREP` document id was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrepIdProblem {
+    /// A reference to an id that no entity in the document declares.
+    Unknown,
+    /// A second entity declaring an id already in use.
+    Duplicate,
+    /// An integer outside the `u32` id range, which would otherwise alias a
+    /// smaller id.
+    OutOfRange,
+}
+
+impl BrepIdProblem {
+    /// Stable wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Duplicate => "duplicate",
+            Self::OutOfRange => "out_of_range",
+        }
+    }
+}
+
+impl std::fmt::Display for BrepIdProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unknown => "unknown",
+            Self::Duplicate => "a duplicate",
+            Self::OutOfRange => "outside the u32 id range",
+        })
+    }
 }
 
 /// Stable machine-readable error codes used by structured WASM contracts.
@@ -358,6 +405,15 @@ impl From<WasmError> for StructuredWasmError {
                 structured
             }
             WasmError::InvalidInput { .. } => Self::invalid_argument(message, None),
+            WasmError::InvalidBrepId {
+                location, problem, ..
+            } => {
+                let mut structured = Self::invalid_argument(message, Some(&location));
+                structured
+                    .details
+                    .insert("problem".to_string(), Value::from(problem.as_str()));
+                structured
+            }
             WasmError::Operations(error) => Self::from(error),
             WasmError::Topology(error) => Self::from(error),
             WasmError::Math(error) => Self::from(error),
@@ -396,6 +452,7 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
             | remus_topology::TopologyError::RefUnresolvedAcrossOperation { .. }
             | remus_topology::TopologyError::RefUnknownOperation { .. }
             | remus_topology::TopologyError::RefNoMatch { .. }
+            | remus_topology::TopologyError::RefStale { .. }
             | remus_topology::TopologyError::JournalSnapshotInvalid { .. } => ("journal", None),
             remus_topology::TopologyError::LoopNotFound(id) => ("loop", Some(id.index())),
             remus_topology::TopologyError::CoedgeNotFound(id) => ("coedge", Some(id.index())),
@@ -436,6 +493,20 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
 
 impl From<remus_math::MathError> for StructuredWasmError {
     fn from(error: remus_math::MathError) -> Self {
+        if let remus_math::MathError::ResourceLimitExceeded {
+            resource,
+            limit,
+            actual,
+        } = error
+        {
+            return Self::resource_limit(error.to_string(), resource, limit, actual)
+                .with_kernel_diagnostic(&error);
+        }
+        if let remus_math::MathError::CoincidentFitPoints { index } = error {
+            return Self::invalid_argument(error.to_string(), None)
+                .with_kernel_diagnostic(&error)
+                .with_detail("index", index);
+        }
         let code = match &error {
             remus_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
             remus_math::MathError::Cancelled => WasmErrorCode::Cancelled,
@@ -1053,6 +1124,37 @@ mod work_limit_tests {
         );
         assert_eq!(control.code, WasmErrorCode::OperationFailed);
         assert_eq!(control.details["kernelCode"], "assembly_failed");
+    }
+
+    #[test]
+    fn math_fit_refusals_keep_their_classification() {
+        let structured =
+            super::StructuredWasmError::from(remus_math::MathError::ResourceLimitExceeded {
+                resource: "fit_points",
+                limit: 1 << 20,
+                actual: (1 << 20) + 1,
+            });
+        assert_eq!(structured.code, WasmErrorCode::ResourceLimitExceeded);
+        assert_eq!(structured.category, "resource_limit");
+        assert_eq!(structured.details["resource"], "fit_points");
+        assert_eq!(structured.details["limit"], 1 << 20);
+        assert_eq!(structured.details["actual"], (1 << 20) + 1);
+        assert_eq!(structured.details["kernelCode"], "resource_limit_exceeded");
+
+        let coincident =
+            super::StructuredWasmError::from(remus_math::MathError::CoincidentFitPoints {
+                index: 7,
+            });
+        assert_eq!(coincident.code, WasmErrorCode::InvalidArgument);
+        assert_eq!(coincident.category, "invalid_input");
+        assert_eq!(coincident.details["kernelCode"], "coincident_fit_points");
+        assert_eq!(coincident.details["index"], 7);
+        // The operations wrapper delegates and keeps the detail.
+        let wrapped = super::StructuredWasmError::from(remus_operations::OperationsError::Math(
+            remus_math::MathError::CoincidentFitPoints { index: 7 },
+        ));
+        assert_eq!(wrapped.code, WasmErrorCode::InvalidArgument);
+        assert_eq!(wrapped.details["index"], 7);
     }
 
     #[test]

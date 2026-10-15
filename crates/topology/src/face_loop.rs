@@ -52,17 +52,39 @@ impl Loop {
     pub const fn is_closed(&self) -> bool {
         self.closed
     }
+
+    /// Reverses the coedge order the way [`reverse_traversal`] reverses the
+    /// matching wire, so loop and wire stay position for position equal.
+    pub(crate) fn reverse_traversal(&mut self) {
+        reverse_traversal(&mut self.coedges, self.closed);
+    }
+}
+
+/// Reverses a boundary's use order. A closed boundary is a cycle, so it is
+/// rotated back to start at the same use: the winding flips while the
+/// anchor every deterministic walk starts from stays put.
+pub(crate) fn reverse_traversal<T>(uses: &mut [T], closed: bool) {
+    uses.reverse();
+    if closed {
+        uses.rotate_right(1);
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use remus_math::curves::Circle3D;
-    use remus_math::surfaces::CylindricalSurface;
-    use remus_math::vec::{Point3, Vec3};
+    use std::f64::consts::TAU;
 
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+
+    use super::reverse_traversal;
+    use crate::coedge::{CoedgeId, PeriodicWinding};
     use crate::edge::{Edge, EdgeCurve, EdgeId};
     use crate::face::{Face, FaceId, FaceSurface};
+    use crate::pcurve::PCurve;
     use crate::topology::Topology;
     use crate::validation::{validate_face_loops, validate_loop_connected};
     use crate::vertex::Vertex;
@@ -377,5 +399,174 @@ mod tests {
         let d = TopologyError::LoopNotConnected { face }.diagnostic();
         assert_eq!(d.category(), FailureCategory::InvalidTopology);
         assert_eq!(d.code(), "loop_not_connected");
+    }
+
+    /// Every boundary use of `face` in loop order: `(coedge, edge, forward)`.
+    fn loop_uses(topo: &Topology, face: FaceId) -> Vec<(CoedgeId, EdgeId, bool)> {
+        topo.loops_of_face(face)
+            .unwrap()
+            .iter()
+            .flat_map(|&loop_id| topo.face_loop(loop_id).unwrap().coedges().to_vec())
+            .map(|coedge_id| {
+                let coedge = topo.coedge(coedge_id).unwrap();
+                (coedge_id, coedge.edge(), coedge.is_forward())
+            })
+            .collect()
+    }
+
+    fn wire_uses(topo: &Topology, wire: WireId) -> Vec<(EdgeId, bool)> {
+        topo.wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|oriented| (oriented.edge(), oriented.is_forward()))
+            .collect()
+    }
+
+    fn seam_pcurve(u: f64) -> PCurve {
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(u, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+            0.0,
+            1.0,
+        )
+    }
+
+    #[test]
+    fn reversing_a_seam_boundary_keeps_identities_and_trades_index_keys() {
+        let mut topo = Topology::new();
+        let (seam, face) = seam_face(&mut topo);
+        let wire = topo.face(face).unwrap().outer_wire();
+        let loops = topo.loops_of_face(face).unwrap().to_vec();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU))
+            .unwrap();
+        let forward_use = topo.indexed_coedge_use(seam, face, true).unwrap();
+        let reverse_use = topo.indexed_coedge_use(seam, face, false).unwrap();
+        topo.set_coedge_periodic_winding(forward_use, PeriodicWinding::new(1, 0))
+            .unwrap();
+        let before = loop_uses(&topo, face);
+        let wire_before = wire_uses(&topo, wire);
+
+        topo.reverse_face_boundaries(&[face]).unwrap();
+
+        // The same loop and coedges, reversed in order and direction, the
+        // first use still first; the wire moved identically.
+        assert_eq!(topo.loops_of_face(face).unwrap(), loops.as_slice());
+        let mut expected: Vec<_> = before.iter().map(|&(c, e, f)| (c, e, !f)).collect();
+        reverse_traversal(&mut expected, true);
+        assert_eq!(loop_uses(&topo, face), expected);
+        assert_eq!(expected[0].0, before[0].0);
+        validate_face_loops(&topo, face).unwrap();
+        validate_loop_connected(&topo, loops[0]).unwrap();
+
+        // The seam's two uses trade index keys; their traces are cleared.
+        assert_eq!(topo.indexed_coedge_use(seam, face, true), Some(reverse_use));
+        assert_eq!(
+            topo.indexed_coedge_use(seam, face, false),
+            Some(forward_use)
+        );
+        for forward in [true, false] {
+            assert!(topo.pcurve_oriented(seam, face, forward).is_none());
+        }
+        assert_eq!(
+            topo.coedge(forward_use).unwrap().periodic_winding(),
+            PeriodicWinding::ZERO
+        );
+
+        // A second reversal restores order and direction.
+        topo.reverse_face_boundaries(&[face, face]).unwrap();
+        assert_eq!(loop_uses(&topo, face), before);
+        assert_eq!(wire_uses(&topo, wire), wire_before);
+        validate_face_loops(&topo, face).unwrap();
+    }
+
+    #[test]
+    fn enclosing_transaction_rolls_back_a_boundary_reversal_exactly() {
+        let mut topo = Topology::new();
+        let (seam, face) = seam_face(&mut topo);
+        let wire = topo.face(face).unwrap().outer_wire();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0))
+            .unwrap();
+        let forward_use = topo.indexed_coedge_use(seam, face, true).unwrap();
+        let reverse_use = topo.indexed_coedge_use(seam, face, false).unwrap();
+        let before = loop_uses(&topo, face);
+        let wire_before = wire_uses(&topo, wire);
+
+        let error = crate::transaction::run_transacted(&mut topo, |topo| {
+            topo.reverse_face_boundaries(&[face])?;
+            Err::<(), _>(TopologyError::WireNotClosed)
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, TopologyError::WireNotClosed));
+        assert_eq!(loop_uses(&topo, face), before);
+        assert_eq!(wire_uses(&topo, wire), wire_before);
+        assert_eq!(topo.indexed_coedge_use(seam, face, true), Some(forward_use));
+        assert_eq!(
+            topo.indexed_coedge_use(seam, face, false),
+            Some(reverse_use)
+        );
+        assert!(topo.pcurve_oriented(seam, face, true).is_some());
+        validate_face_loops(&topo, face).unwrap();
+    }
+
+    #[test]
+    fn boundary_reversal_refuses_a_wire_shared_outside_the_set() {
+        let mut topo = Topology::new();
+        let (face, wire) = triangle_face(&mut topo);
+        let sharer = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let before = loop_uses(&topo, face);
+        let wire_before = wire_uses(&topo, wire);
+
+        assert!(matches!(
+            topo.reverse_face_boundaries(&[face]),
+            Err(TopologyError::NonManifold { .. })
+        ));
+        assert_eq!(loop_uses(&topo, face), before);
+        assert_eq!(wire_uses(&topo, wire), wire_before);
+        validate_face_loops(&topo, sharer).unwrap();
+
+        // Reversing every owner together keeps both faces consistent.
+        topo.reverse_face_boundaries(&[face, sharer]).unwrap();
+        validate_face_loops(&topo, face).unwrap();
+        validate_face_loops(&topo, sharer).unwrap();
+    }
+
+    #[test]
+    fn empty_boundary_reversal_is_not_a_mutation() {
+        let mut topo = Topology::new();
+        let _ = triangle_face(&mut topo);
+        let generation = topo.cache_generation();
+
+        topo.reverse_face_boundaries(&[]).unwrap();
+
+        assert_eq!(topo.cache_generation(), generation);
+    }
+
+    #[test]
+    fn boundary_reversal_refuses_a_stale_face_before_writing() {
+        let mut topo = Topology::new();
+        let (face, wire) = triangle_face(&mut topo);
+        let snapshot = topo.clone();
+        let (stale, _) = triangle_face(&mut topo);
+        topo.restore_for_rollback(&snapshot);
+        let before = loop_uses(&topo, face);
+        let wire_before = wire_uses(&topo, wire);
+
+        assert!(matches!(
+            topo.reverse_face_boundaries(&[face, stale]),
+            Err(TopologyError::FaceNotFound(id)) if id == stale
+        ));
+
+        assert_eq!(loop_uses(&topo, face), before);
+        assert_eq!(wire_uses(&topo, wire), wire_before);
     }
 }
