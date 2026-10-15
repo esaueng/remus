@@ -522,8 +522,13 @@ pub fn curve_knot_remove(
 /// Upper bound on the parametric deviation caused by removing the middle
 /// control point `mid` of a degree-1 curve, `alpha` being the knot's
 /// position between its neighbours (see the derivation in
-/// [`curve_knot_remove`]). Each point is `(position, weight)`. Infinite when
-/// a weight is not positive or the bound is not representable.
+/// [`curve_knot_remove`]). Each point is `(position, weight)`.
+///
+/// `f64::MAX` stands for "no usable bound": a weight that is not positive, a
+/// weight ratio outside the normal range, or a bound that is not
+/// representable. Every finite tolerance below it refuses the removal; a
+/// caller passing `f64::MAX` itself (the certified reduction path, which
+/// certifies the candidate independently) still gets its candidate.
 ///
 /// The bound `max(|e − ε·P|) / w_k` is invariant under translation and under
 /// a common weight scale, so it is evaluated relative to `prev` and already
@@ -541,14 +546,14 @@ fn degree_one_deviation_bound(
 ) -> f64 {
     let finite_positive = |w: f64| w > 0.0 && w.is_finite();
     if !(finite_positive(prev.1) && finite_positive(mid.1) && finite_positive(next.1)) {
-        return f64::INFINITY;
+        return f64::MAX;
     }
     let (rho_prev, rho_next) = (prev.1 / mid.1, next.1 / mid.1);
     // A ratio that leaves the normal range has lost its relative precision
     // (or, at zero, a contribution ρ·dn the coordinates can still carry), so
-    // the bound would not be one: refuse.
+    // the bound would not be one.
     if !(rho_prev.is_normal() && rho_next.is_normal()) {
-        return f64::INFINITY;
+        return f64::MAX;
     }
     let dm = mid.0 - prev.0;
     let dn = next.0 - prev.0;
@@ -567,11 +572,7 @@ fn degree_one_deviation_bound(
         e[2] - eps * dn.z(),
     ]);
     let bound = at_prev.max(at_next);
-    if bound.is_finite() {
-        bound
-    } else {
-        f64::INFINITY
-    }
+    if bound.is_finite() { bound } else { f64::MAX }
 }
 
 /// Euclidean norm that neither underflows nor overflows in its squares.
