@@ -44,10 +44,25 @@ fn check_sparse_entries(entries: usize) -> Result<(), MathError> {
     Ok(())
 }
 
-/// Most arithmetic a fit may do: multiply-adds for least squares
-/// (`n·m² + m³`), basis-weighted updates for LSPIA
-/// (`n·(p + 1)·(max_iterations + 1)`). About a second at full optimization.
+/// Most arithmetic a fit may do, about a second at full optimization.
+///
+/// Counts multiply-adds for least squares (`n·m² + m³`) and basis-value
+/// visits for LSPIA (`n·(p + 1)·(3·(max_iterations + 1) + 40)`, see
+/// [`lspia_work`]).
 pub const MAX_FIT_WORK: usize = 1 << 30;
+
+/// LSPIA's basis-value visits: every measured iterate evaluates each point
+/// from its basis (two passes in `point_from_basis`) and spreads the error
+/// back (one pass), and the step size takes 20 power-iteration rounds of two
+/// passes each.
+fn lspia_work(n: usize, p: usize, max_iterations: usize) -> usize {
+    n.saturating_mul(p + 1).saturating_mul(
+        max_iterations
+            .saturating_add(1)
+            .saturating_mul(3)
+            .saturating_add(40),
+    )
+}
 
 fn check_fit_work(work: usize) -> Result<(), MathError> {
     if work > MAX_FIT_WORK {
@@ -957,10 +972,7 @@ pub fn approximate_lspia(
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
     check_sparse_entries(n.saturating_mul(p + 1))?;
-    check_fit_work(
-        n.saturating_mul(p + 1)
-            .saturating_mul(max_iterations.saturating_add(1)),
-    )?;
+    check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
@@ -1093,10 +1105,7 @@ pub(crate) fn approximate_lspia_weighted(
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
     check_sparse_entries(n.saturating_mul(p + 1))?;
-    check_fit_work(
-        n.saturating_mul(p + 1)
-            .saturating_mul(max_iterations.saturating_add(1)),
-    )?;
+    check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
     let knots = build_approximation_knots(&params, p, m, n);
