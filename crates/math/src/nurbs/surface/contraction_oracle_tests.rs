@@ -739,3 +739,49 @@ fn point_and_normal_match_the_separate_pre_change_calls() {
         }
     }
 }
+
+/// Per-axis tables against the per-point scratch solve: every pair of a
+/// u list and a v list (interior, knot, domain-end, out-of-domain and
+/// infinite parameters, in the order given and reversed), read through
+/// `first_order_at`, bit for bit.
+#[test]
+fn first_order_tables_match_the_scratch_solve() {
+    let mut compared = 0usize;
+    for (label, s) in corpus() {
+        let mut us = parameters(s.domain_u(), s.knots_u());
+        let mut vs = parameters(s.domain_v(), s.knots_v());
+        us.extend(us.clone().into_iter().rev());
+        vs.extend(vs.clone().into_iter().rev());
+        let u_axis = s.first_order_axis_u(&us);
+        let mut v_axis = s.first_order_axis_v(&vs[..1]);
+        v_axis.refill(&vs);
+        assert_eq!((u_axis.len(), v_axis.len()), (us.len(), vs.len()));
+        if !s.has_first_order_tables() {
+            assert!(
+                s.first_order_at(&u_axis, 0, &v_axis, 0).is_none(),
+                "{label}"
+            );
+            continue;
+        }
+        let mut scratch = DerivativeScratch::new();
+        for (iu, &u) in us.iter().enumerate() {
+            for (iv, &v) in vs.iter().enumerate() {
+                let (p, du, dv, _, _) = scratch.span_hinted_point_and_partials_from(&s, u, v);
+                let (tp, tdu, tdv) = s
+                    .first_order_at(&u_axis, iu, &v_axis, iv)
+                    .expect("tables built from this surface");
+                assert_eq!(
+                    [vec_bits(tp), vec_bits(tdu), vec_bits(tdv)],
+                    [vec_bits(p), vec_bits(du), vec_bits(dv)],
+                    "{label} at ({u:e}, {v:e})"
+                );
+                compared += 1;
+            }
+        }
+        assert!(s.first_order_at(&u_axis, us.len(), &v_axis, 0).is_none());
+        assert!(s.first_order_at(&v_axis, 0, &u_axis, 0).is_none());
+    }
+    if cfg!(not(feature = "simd")) {
+        assert!(compared > 400_000, "compared only {compared}");
+    }
+}

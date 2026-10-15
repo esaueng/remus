@@ -8,8 +8,8 @@
 use remus_math::compact_sort::CompactSort;
 use std::cell::Cell;
 
-use remus_math::nurbs::surface::DerivativeScratch;
-use remus_math::quadrature::gauss_legendre_points;
+use remus_math::nurbs::surface::{DerivativeScratch, FirstOrderAxis, NurbsSurface};
+use remus_math::quadrature::{GaussPoint, gauss_legendre_points};
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -21,6 +21,8 @@ use crate::CheckError;
 
 mod adaptive;
 mod loop_index;
+#[cfg(test)]
+mod nurbs_rows_oracle_tests;
 mod sphere_latitude;
 
 use loop_index::{IntervalIndex, winding_number_over};
@@ -3246,6 +3248,20 @@ impl Accumulator {
         // before trusting them, so analytic surfaces (whose default ignores
         // the hint) and NURBS faces alike get exactly the unhinted answer.
         let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
+        self.add_sample::<AREA_ONLY>(p, du, dv, w, reference);
+    }
+
+    /// [`Self::add`] for an abscissa whose position and partials are already
+    /// solved.
+    #[inline]
+    fn add_sample<const AREA_ONLY: bool>(
+        &mut self,
+        p: Point3,
+        du: Vec3,
+        dv: Vec3,
+        w: f64,
+        reference: Point3,
+    ) {
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(
             du.y() * dv.z() - du.z() * dv.y(),
@@ -3528,6 +3544,10 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
         let eps = (u_range.1 - u_range.0).abs() * 1e-12;
         // Span buffers shared by every abscissa below.
         let (mut cuts, mut spans) = (Vec::new(), Vec::new());
+        let nurbs = surface
+            .as_nurbs()
+            .filter(|nurbs| nurbs.has_first_order_tables());
+        let mut rows = nurbs.map(|nurbs| NurbsRows::new(nurbs, gauss_pts, scale.v));
         for w in breaks.windows(2) {
             let (u0, u1) = (w[0], w[1]);
             if u1 - u0 <= eps {
@@ -3541,6 +3561,22 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                 for gpu in gauss_pts {
                     let u = u_scale.fma(gpu.x, u_mid);
                     trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
+                    // `nurbs` is a constant `None` in the analytic
+                    // instantiations, which drops the row path from them;
+                    // `rows` alone lives in memory across the loop and does
+                    // not fold.
+                    if nurbs.is_some()
+                        && let Some(rows) = rows.as_mut()
+                    {
+                        rows.add_row::<AREA_ONLY>(
+                            &mut acc,
+                            (u, gpu.w, u_scale),
+                            &spans,
+                            rule.reference,
+                            &mut scratch,
+                        );
+                        continue;
+                    }
                     for &(a, b) in &spans {
                         let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
@@ -3572,6 +3608,27 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     let nv = patch_count(v_range.1 - v_range.0, scale.v);
     let dv_patch = (v_range.1 - v_range.0) / nv as f64;
     let v_scale = dv_patch / 2.0;
+    if let Some(nurbs) = surface
+        .as_nurbs()
+        .filter(|nurbs| nurbs.has_first_order_tables())
+    {
+        integrate_nurbs_grid::<AREA_ONLY>(
+            nurbs,
+            &mut acc,
+            NurbsGrid {
+                u: (u_range.0, nu, du_patch, u_scale),
+                v: (v_range.0, nv, dv_patch, v_scale),
+                gauss_pts,
+                trim,
+                reference: rule.reference,
+            },
+            &mut scratch,
+        );
+        if !AREA_ONLY {
+            rule.record_flux(acc.flux(sign));
+        }
+        return Ok(acc.finish(sign));
+    }
     for iu in 0..nu {
         let u_mid = du_patch.fma(iu as f64, u_range.0) + u_scale;
         for iv in 0..nv {
@@ -3599,6 +3656,189 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
         rule.record_flux(acc.flux(sign));
     }
     Ok(acc.finish(sign))
+}
+
+/// How many distinct v windows [`NurbsRows`] keeps tables for.
+const NURBS_ROW_WINDOWS: usize = 4;
+
+/// Fixed-rule quadrature rows of a NURBS face, with the bases solved per axis
+/// instead of per abscissa ([`NurbsSurface::first_order_at`]).
+///
+/// The trimmed loop walks one `u` abscissa at a time over the v windows its
+/// trim leaves; this solves that `u`'s basis once per row and each window's
+/// v bases once per distinct window. A window's abscissae are a function of
+/// its bounds' bits alone (the patch count, patch width and Gauss points are
+/// fixed for the face), so a repeated window — every row of a face whose
+/// boundary runs along the v-iso lines of its domain — reuses its table, and
+/// every sample computes exactly what the per-abscissa scratch solve
+/// computes.
+struct NurbsRows<'s> {
+    surface: &'s NurbsSurface,
+    gauss_pts: &'static [GaussPoint],
+    scale_v: f64,
+    u_axis: FirstOrderAxis<'s>,
+    /// `((a, b) bits, bases over (iv, gpv))` of recently used windows.
+    windows: Vec<((u64, u64), FirstOrderAxis<'s>)>,
+    /// Slot the next new window replaces once `windows` is full.
+    next: usize,
+    params: Vec<f64>,
+}
+
+impl<'s> NurbsRows<'s> {
+    fn new(surface: &'s NurbsSurface, gauss_pts: &'static [GaussPoint], scale_v: f64) -> Self {
+        Self {
+            surface,
+            gauss_pts,
+            scale_v,
+            u_axis: surface.first_order_axis_u(&[]),
+            windows: Vec::with_capacity(NURBS_ROW_WINDOWS),
+            next: 0,
+            params: Vec::new(),
+        }
+    }
+
+    /// Index into `windows` of the table for window `(a, b)`, building it
+    /// on a miss from the abscissae the trimmed loop computes for it.
+    #[allow(clippy::cast_precision_loss)]
+    fn window(&mut self, a: f64, b: f64) -> usize {
+        let key = (a.to_bits(), b.to_bits());
+        if let Some(index) = self.windows.iter().position(|(seen, _)| *seen == key) {
+            return index;
+        }
+        let nv = patch_count(b - a, self.scale_v);
+        let dv_patch = (b - a) / nv as f64;
+        let v_scale = dv_patch / 2.0;
+        self.params.clear();
+        for iv in 0..nv {
+            let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
+            self.params
+                .extend(self.gauss_pts.iter().map(|gpv| v_scale.fma(gpv.x, v_mid)));
+        }
+        if self.windows.len() < NURBS_ROW_WINDOWS {
+            let table = self.surface.first_order_axis_v(&self.params);
+            self.windows.push((key, table));
+            return self.windows.len() - 1;
+        }
+        let index = self.next;
+        self.next = (self.next + 1) % NURBS_ROW_WINDOWS;
+        self.windows[index].0 = key;
+        self.windows[index].1.refill(&self.params);
+        index
+    }
+
+    /// One `u` abscissa's samples over `spans`, in the trimmed loop's order
+    /// and with its weights: `row = (u, gpu.w, u_scale)`.
+    #[allow(clippy::cast_precision_loss)]
+    fn add_row<const AREA_ONLY: bool>(
+        &mut self,
+        acc: &mut Accumulator,
+        (u, gpu_w, u_scale): (f64, f64, f64),
+        spans: &[(f64, f64)],
+        reference: Point3,
+        scratch: &mut DerivativeScratch,
+    ) {
+        self.u_axis.refill(&[u]);
+        for &(a, b) in spans {
+            let nv = patch_count(b - a, self.scale_v);
+            let dv_patch = (b - a) / nv as f64;
+            let v_scale = dv_patch / 2.0;
+            let window = self.window(a, b);
+            let table = &self.windows[window].1;
+            let mut k = 0;
+            for iv in 0..nv {
+                for gpv in self.gauss_pts {
+                    let w = gpu_w * gpv.w * u_scale * v_scale;
+                    if let Some((p, du, dv)) =
+                        self.surface.first_order_at(&self.u_axis, 0, table, k)
+                    {
+                        acc.add_sample::<AREA_ONLY>(
+                            Point3::new(p.x(), p.y(), p.z()),
+                            du,
+                            dv,
+                            w,
+                            reference,
+                        );
+                    } else {
+                        let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
+                        let v = v_scale.fma(gpv.x, v_mid);
+                        acc.add::<_, AREA_ONLY>(self.surface, u, v, w, reference, scratch);
+                    }
+                    k += 1;
+                }
+            }
+        }
+    }
+}
+
+/// The untrimmed fixed-rule tiling of [`integrate_parametric`]: per axis
+/// `(start, patches, patch width, half width)`, the Gauss points, the trim
+/// (holes) and the reference point.
+struct NurbsGrid<'g, 't> {
+    u: (f64, usize, f64, f64),
+    v: (f64, usize, f64, f64),
+    gauss_pts: &'static [GaussPoint],
+    trim: &'g UvTrim<'t>,
+    reference: Point3,
+}
+
+/// [`integrate_parametric`]'s untrimmed loop for a NURBS surface, with each
+/// axis's abscissae solved once into a table ([`NurbsSurface::first_order_at`])
+/// instead of once per sample. The abscissae, the visiting order, the trim
+/// test and the weights are the loop's own, so every sum is bit-identical.
+#[allow(clippy::cast_precision_loss)]
+fn integrate_nurbs_grid<const AREA_ONLY: bool>(
+    nurbs: &NurbsSurface,
+    acc: &mut Accumulator,
+    grid: NurbsGrid<'_, '_>,
+    scratch: &mut DerivativeScratch,
+) {
+    let NurbsGrid {
+        u: (u0, nu, du_patch, u_scale),
+        v: (v0, nv, dv_patch, v_scale),
+        gauss_pts,
+        trim,
+        reference,
+    } = grid;
+    let abscissae = |start: f64, patches: usize, width: f64, half: f64| -> Vec<f64> {
+        (0..patches)
+            .flat_map(|i| {
+                let mid = width.fma(i as f64, start) + half;
+                gauss_pts.iter().map(move |gp| half.fma(gp.x, mid))
+            })
+            .collect()
+    };
+    let us = abscissae(u0, nu, du_patch, u_scale);
+    let vs = abscissae(v0, nv, dv_patch, v_scale);
+    let u_axis = nurbs.first_order_axis_u(&us);
+    let v_axis = nurbs.first_order_axis_v(&vs);
+    let order = gauss_pts.len();
+    for iu in 0..nu {
+        for iv in 0..nv {
+            for (ku, gpu) in gauss_pts.iter().enumerate() {
+                let i = iu * order + ku;
+                let u = us[i];
+                for (kv, gpv) in gauss_pts.iter().enumerate() {
+                    let j = iv * order + kv;
+                    let v = vs[j];
+                    if !trim.accepts(u, v) {
+                        continue;
+                    }
+                    let w = gpu.w * gpv.w * u_scale * v_scale;
+                    if let Some((p, du, dv)) = nurbs.first_order_at(&u_axis, i, &v_axis, j) {
+                        acc.add_sample::<AREA_ONLY>(
+                            Point3::new(p.x(), p.y(), p.z()),
+                            du,
+                            dv,
+                            w,
+                            reference,
+                        );
+                    } else {
+                        acc.add::<_, AREA_ONLY>(nurbs, u, v, w, reference, scratch);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Choose the UV domain a face's quadrature runs over, and how its boundary

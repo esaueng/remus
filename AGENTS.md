@@ -150,7 +150,7 @@ Quick reference — find the right file for any task:
 | Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
 | NURBS surface evaluation | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
-| Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal` and the fused `evaluate_and_partials_from`/`point_and_normal(_with)` against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
+| Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal`, the fused `evaluate_and_partials_from`/`point_and_normal(_with)` and the per-axis `first_order_at` tables against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
@@ -402,6 +402,7 @@ Quick reference — find the right file for any task:
 | Bounded sampling of native-contiguous exact equator runs | `properties/face_integrator/sphere_latitude/partition_sampling.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
 | Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
+| Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |

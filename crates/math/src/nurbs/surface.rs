@@ -96,6 +96,71 @@ impl PartialEq for NurbsSurface {
     }
 }
 
+/// Spans and first-order bases `[N; N']` of one parameter axis of a
+/// [`NurbsSurface`] at a list of parameters.
+///
+/// A tensor-product sampler (fixed-rule quadrature) reuses each axis's
+/// parameters across many samples; solving their bases once and reading them
+/// through [`NurbsSurface::first_order_at`] skips the per-sample span lookup
+/// and basis solve while computing exactly what the per-sample scratch solve
+/// computes: the same clamp, the same [`basis::find_span`] result and the same
+/// [`basis::ders_basis_funs_first_into`] values. Built by
+/// [`NurbsSurface::first_order_axis_u`] or [`NurbsSurface::first_order_axis_v`]
+/// and tied to that surface's knot vector by its lifetime.
+#[derive(Debug, Clone)]
+pub struct FirstOrderAxis<'a> {
+    knots: &'a [f64],
+    degree: usize,
+    /// Number of control points along the axis.
+    count: usize,
+    spans: Vec<usize>,
+    /// Row-major `[N; N']` per parameter, stride `2 * (degree + 1)`.
+    ders: Vec<f64>,
+}
+
+impl FirstOrderAxis<'_> {
+    /// Replace the parameters, keeping the buffers.
+    pub fn refill(&mut self, params: &[f64]) {
+        let (degree, count) = (self.degree, self.count);
+        let stride = 2 * (degree + 1);
+        self.spans.clear();
+        // Every entry is overwritten below; resizing in place only
+        // initializes growth.
+        self.ders.resize(params.len() * stride, 0.0);
+        let mut hint = usize::MAX;
+        for (&t, ders) in params.iter().zip(self.ders.chunks_exact_mut(stride)) {
+            let t = t.clamp(self.knots[degree], self.knots[count]);
+            // Abscissae mostly ascend within a span: try the previous span
+            // first, accepted only on `find_span`'s own postcondition.
+            let span = NurbsSurface::verify_span_hint(self.knots, count, degree, t, hint)
+                .unwrap_or_else(|| basis::find_span(count, degree, t, self.knots));
+            hint = span;
+            basis::ders_basis_funs_first_into(span, t, degree, self.knots, ders);
+            self.spans.push(span);
+        }
+    }
+
+    /// Number of parameters held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.spans.len()
+    }
+
+    /// Whether no parameter is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// The span and `[N; N']` rows of parameter `index`.
+    fn entry(&self, index: usize) -> Option<(usize, &[f64])> {
+        let stride = 2 * (self.degree + 1);
+        let span = *self.spans.get(index)?;
+        let ders = self.ders.get(index * stride..(index + 1) * stride)?;
+        Some((span, ders))
+    }
+}
+
 /// Reusable scratch storage for [`NurbsSurface::derivatives_into`].
 ///
 /// Holds the basis-derivative buffers and the homogeneous quotient table so a
@@ -1188,6 +1253,70 @@ impl NurbsSurface {
             (a10[2] - wu * p.z()) / w0,
         );
         (p, du, dv)
+    }
+
+    /// Whether [`Self::first_order_at`] serves this surface: the u degree is
+    /// one the scratch solve takes its first-order path for, and the `simd`
+    /// feature (whose scratch solve is the general 4-lane one) is off.
+    #[must_use]
+    pub const fn has_first_order_tables(&self) -> bool {
+        cfg!(not(feature = "simd")) && self.degree_u <= MEMO_MAX_DEGREE
+    }
+
+    /// The u axis's spans and first-order bases at `params`.
+    #[must_use]
+    pub fn first_order_axis_u(&self, params: &[f64]) -> FirstOrderAxis<'_> {
+        let mut axis = FirstOrderAxis {
+            knots: &self.knots_u,
+            degree: self.degree_u,
+            count: self.control_points.len(),
+            spans: Vec::with_capacity(params.len()),
+            ders: Vec::new(),
+        };
+        axis.refill(params);
+        axis
+    }
+
+    /// The v axis's spans and first-order bases at `params`.
+    #[must_use]
+    pub fn first_order_axis_v(&self, params: &[f64]) -> FirstOrderAxis<'_> {
+        let mut axis = FirstOrderAxis {
+            knots: &self.knots_v,
+            degree: self.degree_v,
+            count: self.control_points[0].len(),
+            spans: Vec::with_capacity(params.len()),
+            ders: Vec::new(),
+        };
+        axis.refill(params);
+        axis
+    }
+
+    /// Position and first partials `(S, ∂S/∂u, ∂S/∂v)` at the `iu`-th
+    /// parameter of `u_axis` and the `iv`-th of `v_axis`.
+    ///
+    /// Bit-identical to [`DerivativeScratch::span_hinted_point_and_partials_from`]
+    /// at those parameters: the tables hold the spans and bases that solve
+    /// computes, and the same contraction and quotient rule run on them.
+    /// `None` when [`Self::has_first_order_tables`] is false, when an axis was
+    /// not built from this surface's u (respectively v) knots, or when an
+    /// index is out of range; the caller then takes the scratch solve.
+    #[must_use]
+    pub fn first_order_at(
+        &self,
+        u_axis: &FirstOrderAxis<'_>,
+        iu: usize,
+        v_axis: &FirstOrderAxis<'_>,
+        iv: usize,
+    ) -> Option<(Vec3, Vec3, Vec3)> {
+        if !self.has_first_order_tables()
+            || !std::ptr::eq(u_axis.knots, self.knots_u.as_slice())
+            || !std::ptr::eq(v_axis.knots, self.knots_v.as_slice())
+        {
+            return None;
+        }
+        let (span_u, ders_u) = u_axis.entry(iu)?;
+        let (span_v, ders_v) = v_axis.entry(iv)?;
+        Some(self.contract_first_order(span_u, span_v, ders_u, ders_v))
     }
 
     /// [`Self::derivatives_into_with_buffers`] with pre-resolved knot spans.
