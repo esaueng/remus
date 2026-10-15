@@ -448,7 +448,9 @@ fn count_ray_crossings(
         .enumerate()
         .filter_map(|(i, &fid)| {
             crate::perf::bump_classify_face_aabb_eval();
-            crate::util::face_aabb(topo, fid).ok().map(|aabb| (i, aabb))
+            crate::util::face_ray_bound(topo, fid)
+                .ok()
+                .map(|aabb| (i, aabb))
         })
         .collect();
     let bvh = Bvh::build(&face_aabbs);
