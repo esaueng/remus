@@ -1330,10 +1330,19 @@ mod curved {
             return Ok(Vec::new());
         };
         // The samples locate the face but cannot bound it: a trim can bulge
-        // far out between them. The branch reaches a closed-form bound.
+        // far out between them, or dip to the apex and across onto the other
+        // nappe. The branch reaches a closed-form bound, and every edge's
+        // whole height range must stay clear of the apex on the sampled side.
         let mut bound = reach;
         for edge in boundary_edges(topo, face)? {
             bound = bound.max(edge.distance_bound(cone.apex())?);
+            let (low, high) = edge.height_range(cone.apex(), cone.axis())?;
+            let clear = Tolerance::new().linear;
+            if (above && low <= clear) || (!above && high >= -clear) {
+                return Err(unsupported(
+                    "conical face whose trim reaches the apex or the other nappe".into(),
+                ));
+            }
         }
         let limit = 4.0 * bound;
         let apex_offset = d - dot_normal_point(normal, cone.apex());
@@ -1485,6 +1494,96 @@ mod curved {
                         .iter()
                         .map(|&p| to(p))
                         .fold(0.0, f64::max)
+                }
+            })
+        }
+
+        /// The control points (with weights) of a NURBS edge whose basis
+        /// functions are nonzero over its range: the curve's convex hull
+        /// there, and, the functions being independent, exact for planarity.
+        fn range_hull(&self, nc: &remus_math::nurbs::curve::NurbsCurve) -> Vec<(Point3, f64)> {
+            let (t0, t1) = (
+                self.range.0.min(self.range.1),
+                self.range.0.max(self.range.1),
+            );
+            let (knots, p) = (nc.knots(), nc.degree());
+            nc.control_points()
+                .iter()
+                .zip(nc.weights())
+                .enumerate()
+                .filter(|&(i, _)| knots[i] < t1 && knots[i + p + 1] > t0)
+                .map(|(_, (&q, &w))| (q, w))
+                .collect()
+        }
+
+        /// Bounds on `axis·(p − apex)` over the whole edge: exact for a line
+        /// (its ends) and over a conic's range or full turn, the control
+        /// hull of the range for a NURBS curve.
+        fn height_range(&self, apex: Point3, axis: Vec3) -> Result<(f64, f64), OperationsError> {
+            let h = |p: Point3| axis.dot(p - apex);
+            let (t0, t1) = (
+                self.range.0.min(self.range.1),
+                self.range.0.max(self.range.1),
+            );
+            let over = |values: &[f64]| {
+                values
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                        (lo.min(v), hi.max(v))
+                    })
+            };
+            Ok(match self.edge.curve() {
+                EdgeCurve::Line => over(&[h(self.start), h(self.end)]),
+                EdgeCurve::Circle(c) => {
+                    let amp = c.radius() * axis.dot(c.u_axis()).hypot(axis.dot(c.v_axis()));
+                    (h(c.center()) - amp, h(c.center()) + amp)
+                }
+                EdgeCurve::Ellipse(e) => {
+                    let amp = (e.semi_major() * axis.dot(e.u_axis()))
+                        .hypot(e.semi_minor() * axis.dot(e.v_axis()));
+                    (h(e.center()) - amp, h(e.center()) + amp)
+                }
+                EdgeCurve::Parabola(pb) => {
+                    // h(t) = h₀ + q t² + l t, stationary at −l / 2q.
+                    let (q, l) = (
+                        axis.dot(pb.axis_dir()) / (4.0 * pb.focal_length()),
+                        axis.dot(pb.u_axis()),
+                    );
+                    let at = |t: f64| (q * t).mul_add(t, l.mul_add(t, h(pb.vertex())));
+                    let mut values = vec![at(t0), at(t1)];
+                    // q = 0 puts the stationary point at ±∞ (or NaN), outside.
+                    let t = -l / (2.0 * q);
+                    if t > t0 && t < t1 {
+                        values.push(at(t));
+                    }
+                    over(&values)
+                }
+                EdgeCurve::Hyperbola(hb) => {
+                    // h(t) = h₀ + A cosh t + B sinh t, stationary where
+                    // tanh t = −B / A.
+                    let (a, b) = (
+                        hb.semi_major() * axis.dot(hb.u_axis()),
+                        hb.semi_minor() * axis.dot(hb.v_axis()),
+                    );
+                    let at = |t: f64| a.mul_add(t.cosh(), b.mul_add(t.sinh(), h(hb.center())));
+                    let mut values = vec![at(t0), at(t1)];
+                    if b.abs() < a.abs() {
+                        let t = (-b / a).atanh();
+                        if t > t0 && t < t1 {
+                            values.push(at(t));
+                        }
+                    }
+                    over(&values)
+                }
+                EdgeCurve::NurbsCurve(nc) => {
+                    let hull = self.range_hull(nc);
+                    if !hull.iter().all(|&(_, w)| w > 0.0) {
+                        return Err(unsupported(
+                            "section of a NURBS trim without positive weights".into(),
+                        ));
+                    }
+                    let heights: Vec<f64> = hull.iter().map(|&(q, _)| h(q)).collect();
+                    over(&heights)
                 }
             })
         }
@@ -2045,23 +2144,10 @@ mod curved {
             // functions are independent there); samples alone can miss it
             // leaving the plane between them. Control points that only shape
             // the rest of a longer curve do not count.
-            if let EdgeCurve::NurbsCurve(nc) = edge.edge.curve() {
-                let (t0, t1) = (
-                    edge.range.0.min(edge.range.1),
-                    edge.range.0.max(edge.range.1),
-                );
-                let (knots, p) = (nc.knots(), nc.degree());
-                let spans = |i: usize| knots[i] < t1 && knots[i + p + 1] > t0;
-                let certified = nc
-                    .control_points()
-                    .iter()
-                    .zip(nc.weights())
-                    .enumerate()
-                    .filter(|&(i, _)| spans(i))
-                    .all(|(_, (&q, &w))| w > 0.0 && near(q));
-                if !certified {
-                    continue;
-                }
+            if let EdgeCurve::NurbsCurve(nc) = edge.edge.curve()
+                && !edge.range_hull(nc).iter().all(|&(q, w)| w > 0.0 && near(q))
+            {
+                continue;
             }
             let mut steps = 32;
             let mut chain = edge.chain(steps);
@@ -3155,6 +3241,48 @@ mod curved {
                     "point off the square: {q:?}"
                 );
             }
+        }
+
+        /// A cone face (half-angle π/4) bounded by one closed degree-1 NURBS
+        /// trim at generator distance 1.5, except for one control point at
+        /// parameter 1/64 on the opposite nappe (generator distance −0.5).
+        /// The 8 samples per edge all sit at 1.5 above the apex, so the face
+        /// looked like one nappe; its trim crosses the apex, and the section
+        /// must refuse rather than return one nappe's branch.
+        #[test]
+        fn a_cone_trim_crossing_the_apex_between_samples_is_refused() {
+            let apex = Point3::new(0.0, 0.0, 0.0);
+            let axis = Vec3::new(0.0, 0.0, 1.0);
+            let cone = remus_math::surfaces::ConicalSurface::new(apex, axis, PI / 4.0).unwrap();
+            let points: Vec<Point3> = (0..=64)
+                .map(|k| {
+                    let v = if k == 1 { -0.5 } else { 1.5 };
+                    cone.evaluate(TAU * f64::from(k % 64) / 64.0, v)
+                })
+                .collect();
+            let trim = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..64).map(|k| f64::from(k) / 64.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                points.clone(),
+                vec![1.0; 65],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(points[0], 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(trim));
+            edge.set_trim(Some((0.0, 1.0)));
+            let edge = topo.add_edge(edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone.clone())));
+            let height = cone.evaluate(0.0, 1.0).z();
+            assert!(matches!(
+                super::cone_section(&topo, face, &cone, axis, height),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
         }
 
         /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
