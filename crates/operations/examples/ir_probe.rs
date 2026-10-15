@@ -3,8 +3,8 @@
 //!
 //! Each workload runs once and prints a digest of its result: per face in
 //! solid order, the surface type and exact `Debug` geometry, orientation, and
-//! every wire's ordered traversal with vertex position bits and curve
-//! geometry. Tessellation workloads digest position bits and indices. Two
+//! every wire's ordered traversal with vertex position bits, curve geometry
+//! and each use's coedge authority (stored pcurve, periodic winding). Tessellation workloads digest position bits and indices. Two
 //! builds whose digests match produced bit-identical output. Solids also
 //! print a `canonical` digest of the same content that ignores face order
 //! and closed-wire start, for workloads whose order varies run to run.
@@ -74,6 +74,7 @@ impl Fnv {
 fn oriented_edge_hash(
     topo: &Topology,
     oe: &remus_topology::wire::OrientedEdge,
+    coedge: Option<remus_topology::coedge::CoedgeId>,
     scratch: &mut String,
 ) -> u64 {
     let mut h = Fnv::new();
@@ -95,6 +96,20 @@ fn oriented_edge_hash(
         edge.tolerance()
     )
     .unwrap();
+    h.str(scratch);
+    // The use's own authority: its stored pcurve and periodic winding.
+    scratch.clear();
+    match coedge.map(|id| topo.coedge(id).unwrap()) {
+        Some(c) => write!(
+            scratch,
+            "{}|{:?}|{:?}",
+            c.is_forward(),
+            c.pcurve(),
+            c.periodic_winding()
+        )
+        .unwrap(),
+        None => scratch.push_str("no-coedge"),
+    }
     h.str(scratch);
     h.0
 }
@@ -121,12 +136,20 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
         head.u64(face.inner_wires().len() as u64);
         strict.u64(head.0);
         let mut canon_wires = Vec::new();
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        // Loop `j` holds the coedges of wire `j`, position by position.
+        let loops = topo.loops_of_face(fid).unwrap_or(&[]);
+        let wires = std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied());
+        for (j, wid) in wires.enumerate() {
             let wire = topo.wire(wid).unwrap();
+            let coedges = loops
+                .get(j)
+                .map(|&l| topo.face_loop(l).unwrap().coedges().to_vec())
+                .unwrap_or_default();
             let uses: Vec<u64> = wire
                 .edges()
                 .iter()
-                .map(|oe| oriented_edge_hash(topo, oe, &mut scratch))
+                .enumerate()
+                .map(|(k, oe)| oriented_edge_hash(topo, oe, coedges.get(k).copied(), &mut scratch))
                 .collect();
             edges += uses.len();
             strict.u64(u64::from(wire.is_closed()));
