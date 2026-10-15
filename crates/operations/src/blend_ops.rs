@@ -1081,10 +1081,11 @@ fn independent_blend_groups(
     // What each seed actually blends: both engines expand a seed to its whole
     // G1 ridgeline first, so two distant seeds on one smooth run belong
     // together even though the seeds themselves are far apart.
+    let index = remus_blend::g1_chain::G1ChainIndex::build(topo, solid)?;
     let mut chains: Vec<Vec<EdgeId>> = Vec::with_capacity(edges.len());
     let mut outlines: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(edges.len());
     for &edge in edges {
-        let chain = remus_blend::g1_chain::expand_g1_chain(topo, solid, &[edge], tol)?;
+        let chain = remus_blend::g1_chain::expand_g1_chain_with(topo, &index, &[edge], tol)?;
         let chain = if chain.is_empty() { vec![edge] } else { chain };
         let mut outline = Vec::new();
         for &member in &chain {

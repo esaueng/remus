@@ -3,7 +3,6 @@
 # output. Remove an entry when the file migrates to remus_math::det_hash or BTreeMap.
 crates/blend/src/chamfer_builder.rs
 crates/blend/src/fillet_builder.rs
-crates/blend/src/g1_chain.rs
 crates/check/src/distance/mod.rs
 crates/check/src/validate/mod.rs
 crates/check/src/validate/shell.rs
