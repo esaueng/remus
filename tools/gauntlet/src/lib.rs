@@ -1165,7 +1165,8 @@ fn io_diagnostic(error: &IoError) -> DiagnosticRecord {
             "step_parse_error",
             error.to_string(),
         ),
-        IoError::InvalidValidationProperties { code, .. } => {
+        IoError::InvalidValidationProperties { code, .. }
+        | IoError::InvalidGeometry { code, .. } => {
             DiagnosticRecord::error(FailureCategory::InvalidInput, *code, error.to_string())
         }
         IoError::UnsupportedEntity { .. } => DiagnosticRecord::error(

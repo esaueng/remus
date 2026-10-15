@@ -2940,6 +2940,21 @@ fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), 
             validate_arena_position(ellipse.center(), subject, "ellipse center")?;
             validate_arena_positive(ellipse.semi_major(), subject, "ellipse semi-major axis")?;
             validate_arena_positive(ellipse.semi_minor(), subject, "ellipse semi-minor axis")?;
+            // The canonical constructors refuse a minor axis longer than the
+            // major one, and sampling takes a²/b as the largest curvature
+            // radius; the relative band admits a circle written as an
+            // ellipse whose equal axes differ by rounding.
+            if ellipse.semi_minor() > ellipse.semi_major() * (1.0 + ARENA_FRAME_TOLERANCE) {
+                return Err(arena_geometry_error(
+                    "semi-axis-order",
+                    subject,
+                    &format!(
+                        "ellipse semi-minor axis {} exceeds semi-major axis {}",
+                        ellipse.semi_minor(),
+                        ellipse.semi_major()
+                    ),
+                ));
+            }
             validate_arena_frame(
                 &[
                     (ellipse.normal(), "ellipse normal"),

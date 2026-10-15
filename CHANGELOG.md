@@ -111,7 +111,8 @@ historical predecessor-line records, retained for provenance. The
 
 * **io,wasm:** arena-document replay validates analytic carriers, not only
   NURBS: a zero or non-unit plane normal, a skewed or non-unit frame, a
-  non-positive radius, semi-axis or focal length, a non-finite value or a cone
+  non-positive radius, semi-axis or focal length, an ellipse minor axis longer
+  than its major axis, a non-finite value or a cone
   half-angle outside (0, π/2) is refused with the new
   `IoError::InvalidGeometry { code, reason }` (WASM: invalid argument with
   `kernelCode`) instead of decoding `Ok` (B98, review IO-7). Native callers

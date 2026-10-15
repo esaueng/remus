@@ -177,3 +177,28 @@ fn rotated_analytic_carriers_stay_within_the_frame_tolerance() {
         assert_eq!(deserialize_solids(&bytes, &mut restored).unwrap().len(), 1);
     }
 }
+
+#[test]
+fn ellipse_minor_axis_longer_than_major_is_refused() {
+    use remus_math::mat::Mat4;
+    use remus_operations::boolean::{BooleanOp, boolean};
+
+    // A tilted planar cut through a cylinder trims its wall with exact
+    // ellipse arcs.
+    let mut document = document(|topo| {
+        // The exact cut of `boolean::tests::cut_cylinder_by_tilted_slab_*`.
+        let cylinder = make_cylinder(topo, 6.0, 6.0).unwrap();
+        let slab = make_box(topo, 6.0, 1.0, 6.5).unwrap();
+        let place =
+            Mat4::translation(-4.0, -4.0, -4.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_6);
+        remus_operations::transform::transform_solid(topo, slab, &place).unwrap();
+        boolean(topo, BooleanOp::Cut, cylinder, slab).unwrap()
+    });
+    let (result, _) = decode(&document);
+    assert_eq!(result.unwrap().len(), 1);
+
+    let ellipse = curve(&mut document, "Ellipse");
+    let major = ellipse["semi_major"].as_f64().unwrap();
+    ellipse["semi_minor"] = json!(major * 1.5);
+    assert_refused(&document, "semi-axis-order");
+}
