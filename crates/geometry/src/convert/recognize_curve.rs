@@ -101,6 +101,30 @@ fn normalized_conic_discriminant(a_c: f64, b_c: f64, c_c: f64) -> Option<f64> {
     Some(disc / (4.0 * norm * norm))
 }
 
+/// The line test [`recognize_curve`] runs first, alone.
+///
+/// `Some((origin, direction))` exactly when [`recognize_curve`] returns
+/// [`RecognizedCurve::Line`] with those values, without the conic fits a
+/// curve that is not a line goes on to.
+#[must_use]
+pub fn recognize_line(curve: &NurbsCurve, tolerance: f64) -> Option<(Point3, Vec3)> {
+    try_recognize_line(&recognition_samples(curve), tolerance)
+}
+
+/// The 16 points of the curve's domain every recognizer tests.
+fn recognition_samples(curve: &NurbsCurve) -> Vec<Point3> {
+    const N: usize = 16;
+    let (t0, t1) = curve.domain();
+
+    (0..N)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * (i as f64) / ((N - 1) as f64);
+            curve.evaluate(t)
+        })
+        .collect()
+}
+
 /// Attempt to recognize a NURBS curve as an elementary analytic curve.
 ///
 /// Samples the curve at 16 points in its parameter domain and checks:
@@ -120,16 +144,7 @@ fn normalized_conic_discriminant(a_c: f64, b_c: f64, c_c: f64) -> Option<f64> {
 /// Returns the first match, or [`RecognizedCurve::NotRecognized`].
 #[must_use]
 pub fn recognize_curve(curve: &NurbsCurve, tolerance: f64) -> RecognizedCurve {
-    const N: usize = 16;
-    let (t0, t1) = curve.domain();
-
-    let samples: Vec<Point3> = (0..N)
-        .map(|i| {
-            #[allow(clippy::cast_precision_loss)]
-            let t = t0 + (t1 - t0) * (i as f64) / ((N - 1) as f64);
-            curve.evaluate(t)
-        })
-        .collect();
+    let samples = recognition_samples(curve);
 
     if let Some((origin, direction)) = try_recognize_line(&samples, tolerance) {
         return RecognizedCurve::Line { origin, direction };
@@ -2056,5 +2071,62 @@ mod tests {
         let (_, _, radius) = try_recognize_circle(&arc_only, 1e-6).expect("tail is circular");
         assert!((radius - r).abs() < 1e-6, "arc radius {radius}");
         assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::BSpline);
+    }
+
+    /// `recognize_line` answers exactly when `recognize_curve` returns a
+    /// line, with the same bits, on lines, near-lines at the tolerance,
+    /// conics and a free-form curve.
+    #[test]
+    fn recognize_line_is_recognize_curve_line_verdict() {
+        let a = Point3::new(1.0, -2.0, 0.5);
+        let b = Point3::new(4.0, 3.0, -1.5);
+        let mut curves = vec![
+            line_to_nurbs(a, b).unwrap(),
+            circle_to_nurbs(
+                &Circle3D::new(a, Vec3::new(0.3, 0.4, 0.866), 2.0).unwrap(),
+                0.0,
+                TAU,
+            )
+            .unwrap(),
+            ellipse_to_nurbs(
+                &Ellipse3D::new(a, Vec3::new(0.0, 0.0, 1.0), 3.0, 1.0).unwrap(),
+                0.2,
+                2.5,
+            )
+            .unwrap(),
+        ];
+        // A straight cubic with its middle control points pushed off the line
+        // by amounts around the tolerances below.
+        for lift in [0.0, 5e-8, 1e-7, 2e-7, 1e-3, 0.5] {
+            let off = Vec3::new(0.0, 0.6, 0.8) * lift;
+            let points = vec![
+                a,
+                a + (b - a) * (1.0 / 3.0) + off,
+                a + (b - a) * (2.0 / 3.0) - off,
+                b,
+            ];
+            curves.push(
+                NurbsCurve::new(
+                    3,
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    points,
+                    vec![1.0; 4],
+                )
+                .unwrap(),
+            );
+        }
+        let mut lines = 0;
+        for curve in &curves {
+            for tolerance in [1e-7, 1e-4, 0.05] {
+                let full = match recognize_curve(curve, tolerance) {
+                    RecognizedCurve::Line { origin, direction } => Some((origin, direction)),
+                    _ => None,
+                };
+                let first = recognize_line(curve, tolerance);
+                assert_eq!(format!("{first:?}"), format!("{full:?}"));
+                lines += usize::from(first.is_some());
+            }
+        }
+        assert!(lines >= 8, "only {lines} line verdicts");
     }
 }

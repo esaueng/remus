@@ -23,8 +23,10 @@ pub use certified_plane::{CertifiedAffinePlane, certify_affine_nurbs_plane};
 pub use curve_to_nurbs::{
     circle_to_nurbs, circle_to_nurbs_with_segments, ellipse_to_nurbs, line_to_nurbs,
 };
-pub use recognize_curve::{DetectedCurveKind, RecognizedCurve, detect_curve_kind, recognize_curve};
+pub use recognize_curve::{
+    DetectedCurveKind, RecognizedCurve, detect_curve_kind, recognize_curve, recognize_line,
+};
 pub use recognize_surface::{
-    DetectedSurfaceKind, RecognizedSurface, detect_surface_kind, recognize_surface,
+    DetectedSurfaceKind, RecognizedSurface, detect_surface_kind, recognize_plane, recognize_surface,
 };
 pub use surface_to_nurbs::{cone_to_nurbs, cylinder_to_nurbs, sphere_to_nurbs, torus_to_nurbs};
