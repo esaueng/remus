@@ -56,6 +56,9 @@ const LINEAR_SCAN_MAX: usize = 16;
 
 type Segment = (Point3, Point3);
 
+/// A vertex and its tolerance.
+type Ball = (Point3, f64);
+
 /// Boundary edges of a face set, as padded boxes over their segments.
 #[derive(Debug, Clone)]
 pub struct BoundarySkeleton {
@@ -66,11 +69,13 @@ pub struct BoundarySkeleton {
     margin: f64,
 }
 
-/// One edge, or one vertex's tolerance ball, of the skeleton.
 #[derive(Debug, Clone)]
 struct SkeletonEdge {
-    /// Contains every segment of the edge, padded by the margin.
+    /// Contains every segment of the edge and both end balls, padded by the
+    /// margin.
     padded: Aabb3,
+    /// Each end vertex and its tolerance.
+    ends: [Ball; 2],
     shape: EdgeShape,
 }
 
@@ -86,8 +91,6 @@ enum EdgeShape {
         /// before any chord is read.
         circle: Option<CircleReach>,
     },
-    /// A vertex and its tolerance.
-    Ball(Point3, f64),
 }
 
 /// A circle `(center, unit normal, radius)` and how far beyond it the
@@ -120,17 +123,18 @@ impl BoundarySkeleton {
         ids.dedup();
 
         // Unpadded boxes first: the margin scales with their union.
-        let mut boxed: Vec<(Aabb3, EdgeShape)> = Vec::with_capacity(ids.len());
-        let mut vertices = Vec::with_capacity(2 * ids.len());
+        let mut boxed: Vec<(Aabb3, [Ball; 2], EdgeShape)> = Vec::with_capacity(ids.len());
         for id in ids {
             let edge = topo.edge(id)?;
-            vertices.extend([edge.start(), edge.end()]);
             let curve = edge.curve();
-            let a = topo.vertex(edge.start())?.point();
-            let b = topo.vertex(edge.end())?.point();
+            let ends = [
+                end_ball(topo.vertex(edge.start())?),
+                end_ball(topo.vertex(edge.end())?),
+            ];
+            let (a, b) = (ends[0].0, ends[1].0);
             if matches!(curve, EdgeCurve::Line) {
                 if is_finite(a) && is_finite(b) {
-                    boxed.push((segment_box(a, b), EdgeShape::Line((a, b))));
+                    boxed.push((segment_box(a, b), ends, EdgeShape::Line((a, b))));
                 }
                 continue;
             }
@@ -158,6 +162,7 @@ impl BoundarySkeleton {
                 };
                 boxed.push((
                     aabb,
+                    ends,
                     EdgeShape::Curve {
                         id,
                         chords: OnceLock::new(),
@@ -175,6 +180,7 @@ impl BoundarySkeleton {
                 {
                     boxed.push((
                         aabb,
+                        ends,
                         EdgeShape::Curve {
                             id,
                             chords: OnceLock::from(chords),
@@ -184,23 +190,18 @@ impl BoundarySkeleton {
                 }
             }
         }
-        vertices.sort_unstable();
-        vertices.dedup();
-        for vid in vertices {
-            let vertex = topo.vertex(vid)?;
-            let (point, tolerance) = (vertex.point(), vertex.tolerance());
-            if is_finite(point) && tolerance.is_finite() {
-                let radius = tolerance.max(0.0);
-                boxed.push((
-                    segment_box(point, point).expanded(radius),
-                    EdgeShape::Ball(point, radius),
-                ));
+        // The end balls widen each box.
+        for (aabb, ends, _) in &mut boxed {
+            for &(point, radius) in ends.iter() {
+                if is_finite(point) {
+                    *aabb = aabb.union(segment_box(point, point).expanded(radius));
+                }
             }
         }
 
         let (extent, magnitude) = boxed
             .iter()
-            .map(|(aabb, _)| *aabb)
+            .map(|(aabb, _, _)| *aabb)
             .reduce(Aabb3::union)
             .map_or((0.0, 0.0), |aabb| {
                 (
@@ -211,8 +212,9 @@ impl BoundarySkeleton {
         let margin = (RELATIVE_MARGIN * extent.max(1.0)).max(ROUNDOFF_MARGIN * magnitude);
         let edges: Vec<SkeletonEdge> = boxed
             .into_iter()
-            .map(|(aabb, shape)| SkeletonEdge {
+            .map(|(aabb, ends, shape)| SkeletonEdge {
                 padded: aabb.expanded(margin),
+                ends,
                 shape,
             })
             .collect();
@@ -244,20 +246,19 @@ impl BoundarySkeleton {
         let margin = self.margin.max(ROUNDOFF_MARGIN * max_abs(origin));
         let margin_sq = margin * margin;
         let near = |edge: &SkeletonEdge| -> Result<bool, CheckError> {
-            match edge.shape {
-                EdgeShape::Ball(point, radius) => {
-                    let reach = margin + radius;
-                    return Ok(
-                        ray_segment_distance_sq(origin, direction, point, point) <= reach * reach
-                    );
+            for &(point, radius) in &edge.ends {
+                let reach = margin + radius;
+                if ray_segment_distance_sq(origin, direction, point, point) <= reach * reach {
+                    return Ok(true);
                 }
-                EdgeShape::Curve {
-                    circle: Some((circle, beyond)),
-                    ..
-                } if !circle_may_graze(circle, origin, direction, margin + beyond) => {
-                    return Ok(false);
-                }
-                EdgeShape::Line(_) | EdgeShape::Curve { .. } => {}
+            }
+            if let EdgeShape::Curve {
+                circle: Some((circle, beyond)),
+                ..
+            } = edge.shape
+                && !circle_may_graze(circle, origin, direction, margin + beyond)
+            {
+                return Ok(false);
             }
             Ok(edge_segments(topo, edge)?
                 .iter()
@@ -336,8 +337,20 @@ fn edge_segments<'s>(topo: &Topology, edge: &'s SkeletonEdge) -> Result<&'s [Seg
             let sampled = sample_chords(topo, *id)?;
             Ok(chords.get_or_init(|| sampled))
         }
-        EdgeShape::Ball(..) => Ok(&[]),
     }
+}
+
+/// A vertex and its tolerance, a non-finite tolerance read as none.
+fn end_ball(vertex: &remus_topology::vertex::Vertex) -> Ball {
+    let tolerance = vertex.tolerance();
+    (
+        vertex.point(),
+        if tolerance.is_finite() {
+            tolerance.max(0.0)
+        } else {
+            0.0
+        },
+    )
 }
 
 /// Certified box of a curved edge over its domain; `None` for a line.
