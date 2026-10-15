@@ -827,6 +827,8 @@ impl<'a> Builder<'a> {
         let curve = e.curve();
         let tolerance = e.tolerance();
         let trim = e.trim();
+        // Refuse what replay would refuse, so writer output always replays.
+        validate_arena_edge_curve(curve, &format!("edge {}", self.edges.len()))?;
         let start = self.intern_vertex(start_id)?;
         let end = self.intern_vertex(end_id)?;
         let curve = SerEdgeCurveView::from_curve(curve);
@@ -886,6 +888,7 @@ impl<'a> Builder<'a> {
         let outer_wire_id = f.outer_wire();
         let inner_wire_ids = f.inner_wires().to_vec();
         let surface = f.surface();
+        validate_arena_face_surface(surface, &format!("face {}", self.faces.len()))?;
         let reversed = f.is_reversed();
         let outer_wire = self.intern_wire(outer_wire_id)?;
         let mut inner_wires = Vec::with_capacity(inner_wire_ids.len());
@@ -2119,8 +2122,8 @@ fn replay_document_into(
         if let Some(tolerance) = e.tolerance {
             validate_arena_tolerance(tolerance, &format!("edge {index}"))?;
         }
-        validate_arena_edge_curve(&e.curve, &format!("edge {index}"))?;
         let curve = e.curve.into_curve();
+        validate_arena_edge_curve(&curve, &format!("edge {index}"))?;
         let trim = legacy_arena_edge_trim_adapter(
             index,
             &curve,
@@ -2184,8 +2187,9 @@ fn replay_document_into(
         for iw in f.inner_wires {
             inner.push(*wire_ids.get(iw).ok_or_else(|| index_err("wire", iw))?);
         }
-        validate_arena_face_surface(&f.surface, &format!("face {index}"))?;
-        let mut face = Face::new(outer, inner, f.surface.into_surface());
+        let surface = f.surface.into_surface();
+        validate_arena_face_surface(&surface, &format!("face {index}"))?;
+        let mut face = Face::new(outer, inner, surface);
         face.set_reversed(f.reversed);
         face_ids.push(topo.add_face(face));
     }
@@ -2918,13 +2922,13 @@ fn validate_arena_frame(axes: &[(Vec3, &str)], subject: &str) -> Result<(), IoEr
 /// Checks the invariants the analytic curve constructors establish. The
 /// decoder fills private fields directly, so without this a document could
 /// install a carrier no constructor would build.
-fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), IoError> {
+fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoError> {
     match curve {
-        SerEdgeCurve::Line => Ok(()),
-        SerEdgeCurve::NurbsCurve(curve) => curve.validate().map_err(|err| IoError::ParseError {
+        EdgeCurve::Line => Ok(()),
+        EdgeCurve::NurbsCurve(curve) => curve.validate().map_err(|err| IoError::ParseError {
             reason: format!("invalid arena NURBS curve: {err}"),
         }),
-        SerEdgeCurve::Circle(circle) => {
+        EdgeCurve::Circle(circle) => {
             validate_arena_position(circle.center(), subject, "circle center")?;
             validate_arena_positive(circle.radius(), subject, "circle radius")?;
             validate_arena_frame(
@@ -2936,7 +2940,7 @@ fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), 
                 subject,
             )
         }
-        SerEdgeCurve::Ellipse(ellipse) => {
+        EdgeCurve::Ellipse(ellipse) => {
             validate_arena_position(ellipse.center(), subject, "ellipse center")?;
             validate_arena_positive(ellipse.semi_major(), subject, "ellipse semi-major axis")?;
             validate_arena_positive(ellipse.semi_minor(), subject, "ellipse semi-minor axis")?;
@@ -2964,7 +2968,7 @@ fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), 
                 subject,
             )
         }
-        SerEdgeCurve::Hyperbola(hyperbola) => {
+        EdgeCurve::Hyperbola(hyperbola) => {
             validate_arena_position(hyperbola.center(), subject, "hyperbola center")?;
             validate_arena_positive(hyperbola.semi_major(), subject, "hyperbola semi-major axis")?;
             validate_arena_positive(hyperbola.semi_minor(), subject, "hyperbola semi-minor axis")?;
@@ -2977,7 +2981,7 @@ fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), 
                 subject,
             )
         }
-        SerEdgeCurve::Parabola(parabola) => {
+        EdgeCurve::Parabola(parabola) => {
             validate_arena_position(parabola.vertex(), subject, "parabola vertex")?;
             validate_arena_positive(parabola.focal_length(), subject, "parabola focal length")?;
             validate_arena_frame(
@@ -2992,16 +2996,16 @@ fn validate_arena_edge_curve(curve: &SerEdgeCurve, subject: &str) -> Result<(), 
 }
 
 /// Surface counterpart of [`validate_arena_edge_curve`].
-fn validate_arena_face_surface(surface: &SerFaceSurface, subject: &str) -> Result<(), IoError> {
+fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(), IoError> {
     match surface {
-        SerFaceSurface::Plane { normal, d } => {
+        FaceSurface::Plane { normal, d } => {
             validate_arena_unit(*normal, subject, "plane normal")?;
             validate_arena_finite(*d, subject, "plane offset")
         }
-        SerFaceSurface::Nurbs(surface) => surface.validate().map_err(|err| IoError::ParseError {
+        FaceSurface::Nurbs(surface) => surface.validate().map_err(|err| IoError::ParseError {
             reason: format!("invalid arena NURBS surface: {err}"),
         }),
-        SerFaceSurface::Cylinder(cylinder) => {
+        FaceSurface::Cylinder(cylinder) => {
             validate_arena_position(cylinder.origin(), subject, "cylinder origin")?;
             validate_arena_positive(cylinder.radius(), subject, "cylinder radius")?;
             validate_arena_frame(
@@ -3013,7 +3017,7 @@ fn validate_arena_face_surface(surface: &SerFaceSurface, subject: &str) -> Resul
                 subject,
             )
         }
-        SerFaceSurface::Cone(cone) => {
+        FaceSurface::Cone(cone) => {
             validate_arena_position(cone.apex(), subject, "cone apex")?;
             let half_angle = cone.half_angle();
             validate_arena_finite(half_angle, subject, "cone half-angle")?;
@@ -3033,7 +3037,7 @@ fn validate_arena_face_surface(surface: &SerFaceSurface, subject: &str) -> Resul
                 subject,
             )
         }
-        SerFaceSurface::Sphere(sphere) => {
+        FaceSurface::Sphere(sphere) => {
             validate_arena_position(sphere.center(), subject, "sphere center")?;
             validate_arena_positive(sphere.radius(), subject, "sphere radius")?;
             validate_arena_frame(
@@ -3045,7 +3049,7 @@ fn validate_arena_face_surface(surface: &SerFaceSurface, subject: &str) -> Resul
                 subject,
             )
         }
-        SerFaceSurface::Torus(torus) => {
+        FaceSurface::Torus(torus) => {
             validate_arena_position(torus.center(), subject, "torus center")?;
             validate_arena_positive(torus.major_radius(), subject, "torus major radius")?;
             validate_arena_positive(torus.minor_radius(), subject, "torus minor radius")?;

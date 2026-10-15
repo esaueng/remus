@@ -202,3 +202,47 @@ fn ellipse_minor_axis_longer_than_major_is_refused() {
     ellipse["semi_minor"] = json!(major * 1.5);
     assert_refused(&document, "semi-axis-order");
 }
+
+/// The writer must refuse what replay refuses, so its output always replays.
+/// `Circle3D::with_axes` checks only the radius, so a skewed frame can reach
+/// a standalone wire.
+#[test]
+fn writer_refuses_carriers_its_reader_would_refuse() {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let circle = |u_axis: Vec3| {
+        let mut topo = Topology::new();
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let circle = Circle3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            normal,
+            1.0,
+            u_axis,
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        remus_io::arena_io::serialize_wire(&topo, wire)
+    };
+
+    let bytes = circle(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    let mut restored = Topology::new();
+    assert_eq!(
+        remus_io::arena_io::deserialize_wires(&bytes, &mut restored)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let skew = std::f64::consts::FRAC_1_SQRT_2;
+    match circle(Vec3::new(skew, 0.0, skew)) {
+        Err(IoError::InvalidGeometry { code, .. }) => assert_eq!(code, "non-orthogonal-frame"),
+        other => panic!("expected the writer to refuse a skewed circle, got {other:?}"),
+    }
+}
