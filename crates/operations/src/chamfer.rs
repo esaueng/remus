@@ -239,6 +239,7 @@ fn chamfer_core(
     distances: ChamferDistances,
 ) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
     let tol = Tolerance::new();
+    crate::refuse_cavity_shells(topo, solid, OP)?;
 
     // Measured before anything is built so the closing gate can insist the
     // bevel actually took material off.
