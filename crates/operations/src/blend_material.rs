@@ -473,12 +473,13 @@ pub fn all_convex_analytic(
         return Ok(false);
     }
     let adjacency = topo.build_adjacency(solid)?;
+    let mut concavity = crate::query::ConcavityProbe::new(topo, solid);
     for &edge in edges {
         let faces = adjacency.faces_for_edge(edge);
         if faces.len() != 2 || faces[0] == faces[1] {
             return Ok(false);
         }
-        if crate::query::edge_concavity_from_faces(topo, solid, edge, faces[0], faces[1], probe)?
+        if concavity.concavity(edge, faces[0], faces[1], probe)?
             != crate::query::EdgeConcavity::Convex
         {
             return Ok(false);

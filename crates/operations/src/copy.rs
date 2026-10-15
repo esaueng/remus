@@ -472,25 +472,103 @@ fn last_visit_targets(faces: &[(usize, FaceId)]) -> Vec<FaceId> {
     targets
 }
 
-/// Whether coedge `k` of `coedges` is the one use of `(edges[k], forward)`
-/// for every snapshot `k`. Then the map-based search for each snapshot
-/// can only find the coedge at the same position.
+#[cfg(test)]
+thread_local! {
+    /// Forces every face visit through the per-snapshot search (the
+    /// reference the position match must agree with).
+    static SEARCH_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Visits offered an alignment that skips inserted coedges.
+    static ALIGNMENT_USES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Snapshots restored by the per-snapshot search, each a scan of every
+    /// coedge of its face.
+    static SNAPSHOT_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Where snapshot `k` sits among a copied face's coedges: at `k`, or past
+/// `skip` coedges inserted after the first `outer` (a splice's leading inner
+/// wires, which the source snapshots do not cover).
+#[derive(Clone, Copy)]
+struct Alignment {
+    outer: usize,
+    skip: usize,
+}
+
+impl Alignment {
+    const IDENTITY: Self = Self { outer: 0, skip: 0 };
+
+    /// The alignment to try for `coedges` against `snapshots` snapshots:
+    /// the identity when the counts agree, else the face's surplus coedges
+    /// placed right after its first loop.
+    fn of(topo: &Topology, face: FaceId, coedges: usize, snapshots: usize) -> Option<Self> {
+        if coedges == snapshots {
+            return Some(Self::IDENTITY);
+        }
+        let outer = topo
+            .face_loop(*topo.loops_of_face(face)?.first()?)
+            .ok()?
+            .coedges()
+            .len();
+        (coedges > snapshots && outer <= snapshots).then_some(Self {
+            outer,
+            skip: coedges - snapshots,
+        })
+    }
+
+    const fn position(self, k: usize) -> usize {
+        if k < self.outer { k } else { k + self.skip }
+    }
+}
+
+/// Whether the coedge `alignment` places snapshot `k` at is the one use of
+/// `(edges[k], forward)` for every snapshot `k`: the aligned coedges carry
+/// the snapshots' keys, those keys are distinct, and no skipped coedge
+/// carries one. Then the map-based search for each snapshot, which scans
+/// every coedge of the face, can only find the aligned one.
 fn matches_by_position(
     topo: &Topology,
     coedges: &[CoedgeId],
     snapshots: &[CoedgeAuthoritySnap],
     snapshot_edges: &[usize],
     edges: &[(usize, EdgeId)],
+    alignment: Alignment,
 ) -> bool {
-    if coedges.len() != snapshots.len() || snapshot_edges.len() != snapshots.len() {
+    if coedges.len() != snapshots.len() + alignment.skip || snapshot_edges.len() != snapshots.len()
+    {
         return false;
     }
-    for ((&coedge, snapshot), &edge) in coedges.iter().zip(snapshots).zip(snapshot_edges) {
-        let (Some(&(_, edge)), Ok(coedge)) = (edges.get(edge), topo.coedge(coedge)) else {
+    for (k, (snapshot, &edge)) in snapshots.iter().zip(snapshot_edges).enumerate() {
+        let (Some(&(_, edge)), Some(Ok(coedge))) = (
+            edges.get(edge),
+            coedges
+                .get(alignment.position(k))
+                .map(|&coedge| topo.coedge(coedge)),
+        ) else {
             return false;
         };
         if coedge.edge() != edge || coedge.is_forward() != snapshot.forward {
             return false;
+        }
+    }
+    if alignment.skip > 0 {
+        let mut keys: Vec<(EdgeId, bool)> = Vec::with_capacity(snapshots.len());
+        for (snapshot, &edge) in snapshots.iter().zip(snapshot_edges) {
+            let Some(&(_, edge)) = edges.get(edge) else {
+                return false;
+            };
+            keys.push((edge, snapshot.forward));
+        }
+        keys.sort_unstable();
+        let skipped = &coedges[alignment.outer..alignment.outer + alignment.skip];
+        for &coedge in skipped {
+            let Ok(coedge) = topo.coedge(coedge) else {
+                return false;
+            };
+            if keys
+                .binary_search(&(coedge.edge(), coedge.is_forward()))
+                .is_ok()
+            {
+                return false;
+            }
         }
     }
     let keys = || {
@@ -538,8 +616,17 @@ fn restore_planned_authority(
             continue;
         }
         face_coedges_into(topo, target, &mut coedges)?;
-        if matches_by_position(topo, &coedges, snapshots, snapshot_edges, edges) {
-            for (&coedge, snapshot) in coedges.iter().zip(snapshots) {
+        let alignment = Alignment::of(topo, target, coedges.len(), snapshots.len());
+        #[cfg(test)]
+        let alignment = alignment.filter(|alignment| {
+            ALIGNMENT_USES.with(|uses| uses.set(uses.get() + usize::from(alignment.skip > 0)));
+            !SEARCH_ONLY.get()
+        });
+        if let Some(alignment) = alignment
+            && matches_by_position(topo, &coedges, snapshots, snapshot_edges, edges, alignment)
+        {
+            for (k, snapshot) in snapshots.iter_mut().enumerate() {
+                let coedge = coedges[alignment.position(k)];
                 topo.set_coedge_periodic_winding(coedge, snapshot.periodic_winding)?;
                 if let Some(pcurve) = snapshot.pcurve.take() {
                     topo.set_coedge_pcurve(coedge, pcurve)?;
@@ -547,6 +634,8 @@ fn restore_planned_authority(
             }
         } else {
             for (snapshot, &edge) in snapshots.iter_mut().zip(snapshot_edges) {
+                #[cfg(test)]
+                SNAPSHOT_SEARCHES.with(|searches| searches.set(searches.get() + 1));
                 let (_, edge) = planned(edges, edge)?;
                 let snapshot = CoedgeAuthoritySnap {
                     face_index: snapshot.face_index,
@@ -1312,7 +1401,6 @@ fn copy_and_transform_solid_impl(
     normal_matrix: &remus_math::mat::Mat4,
     recorder: &mut TransformRecorder,
 ) -> Result<SolidId, crate::OperationsError> {
-    let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
     let mut transform_plan = crate::transform::plan_solid_transform(topo, solid_id, matrix)?;
     let certificates = crate::transform::translation_edge_certificates(
         topo,
@@ -1404,7 +1492,7 @@ fn copy_and_transform_solid_impl(
     let mut new_shell_ids = Vec::with_capacity(shells.len());
     let mut new_faces = Vec::new();
     let mut ranges = Vec::new();
-    let mut chart_replaced_faces = Vec::new();
+    let mut charts = Vec::new();
     for shell in shells {
         let mut new_face_ids = Vec::with_capacity(shell.len());
         for face in shell {
@@ -1414,7 +1502,6 @@ fn copy_and_transform_solid_impl(
             // and had no anisotropic-scale handling at all, so "equivalent to
             // copy_solid followed by transform_solid" was untrue for any
             // scaling matrix.
-            let source_is_nurbs = matches!(face.surface, FaceSurface::Nurbs(_));
             let new_fid = add_planned_face(
                 topo,
                 (face.outer, &face.inner),
@@ -1427,7 +1514,7 @@ fn copy_and_transform_solid_impl(
             // `transform_face_surface` expects (its non-uniform branches map
             // boundary probes back through the inverse).
             recorder.set_refusal_origin(topo.face_id_from_index(face.old_index));
-            crate::transform::transform_face_surface_recorded(
+            let chart = crate::transform::transform_face_surface_recorded(
                 topo,
                 new_fid,
                 matrix,
@@ -1435,11 +1522,7 @@ fn copy_and_transform_solid_impl(
                 recorder,
             )?;
             recorder.set_refusal_origin(None);
-            if matches!(topo.face(new_fid)?.surface(), FaceSurface::Nurbs(_))
-                && (!source_is_nurbs || chart_reversing)
-            {
-                chart_replaced_faces.push(new_fid);
-            }
+            charts.push((new_fid, chart));
             if let Some(attributes) = face.attributes {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
@@ -1459,15 +1542,13 @@ fn copy_and_transform_solid_impl(
         &authority_edges,
         &new_edges,
     )?;
-    for face in chart_replaced_faces {
-        let uses: Vec<_> = topo
-            .pcurves_for_face(face)
-            .into_iter()
-            .map(|(edge, forward, _)| (edge, forward))
-            .collect();
-        for (edge, forward) in uses {
-            topo.remove_pcurve_oriented(edge, face, forward)?;
-        }
+    // The copied pcurves are still in the source charts.
+    for (face, chart) in charts {
+        crate::transform::reexpress_face_pcurves(topo, face, &chart)?;
+    }
+    if crate::transform::linear_determinant(matrix) < 0.0 {
+        let faces: Vec<FaceId> = new_faces.iter().map(|&(_, face)| face).collect();
+        crate::transform::reverse_boundaries_for_reflection(topo, &faces)?;
     }
 
     add_planned_solid(topo, &new_shell_ids, solid_attributes)
@@ -1706,6 +1787,7 @@ mod tests {
     use super::*;
 
     mod legacy_oracle;
+    mod spliced_authority_oracle;
 
     fn assert_single_lifted_pcurve(topo: &Topology, face: FaceId) {
         let pcurves = topo.pcurves_for_face(face);
@@ -1880,7 +1962,51 @@ mod tests {
             .into_iter()
             .find(|&candidate| !source.pcurves_for_face(candidate).is_empty())
             .unwrap();
-        assert_single_lifted_pcurve(&source, transformed_face);
+        // The lift count is carried, and the pcurve is re-expressed in the
+        // moved plane's chart: its 3D image moves with the face (B130).
+        let pcurves = source.pcurves_for_face(transformed_face);
+        assert_eq!(pcurves.len(), 1, "copied face must retain one pcurve");
+        let (edge, forward, moved) = &pcurves[0];
+        let coedge = face_coedges(&source, transformed_face)
+            .unwrap()
+            .into_iter()
+            .find(|&coedge_id| {
+                source
+                    .coedge(coedge_id)
+                    .is_ok_and(|coedge| coedge.edge() == *edge && coedge.is_forward() == *forward)
+            })
+            .unwrap();
+        assert_eq!(
+            source.coedge(coedge).unwrap().periodic_winding(),
+            PeriodicWinding::new(3, -2)
+        );
+        let on_plane = |face: FaceId, uv: Point2| {
+            // A non-planar face lifts to NaN and fails the comparison below.
+            let FaceSurface::Plane { normal, d } = *source.face(face).unwrap().surface() else {
+                return remus_math::vec::Point3::new(f64::NAN, f64::NAN, f64::NAN);
+            };
+            let foot = normal * d;
+            let chart = remus_math::frame::Frame3::from_normal(
+                remus_math::vec::Point3::new(foot.x(), foot.y(), foot.z()),
+                normal,
+            )
+            .unwrap();
+            chart.origin + chart.x * uv.x() + chart.y * uv.y()
+        };
+        let original = source.pcurve_oriented(oriented.edge(), face, oriented.is_forward());
+        let original = original.unwrap();
+        for (before, after) in [
+            (original.t_start(), moved.t_start()),
+            (original.t_end(), moved.t_end()),
+        ] {
+            let expected = on_plane(face, original.evaluate(before))
+                + remus_math::vec::Vec3::new(10.0, 0.0, 0.0);
+            let actual = on_plane(transformed_face, moved.evaluate(after));
+            assert!(
+                (actual - expected).length() < 1e-12,
+                "{actual:?} != {expected:?}"
+            );
+        }
     }
 
     #[test]

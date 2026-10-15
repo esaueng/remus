@@ -204,9 +204,15 @@ fn fresh_destination_preserves_global_barrier_payload_and_roundtrip_bytes() {
 
     let mut destination = Topology::new();
     let roots = deserialize_document(&document, &mut destination).unwrap();
+    // The trailing barrier severs nothing, so it is not the document's history.
+    let source_entries = source.journal().snapshot().entries;
+    assert!(matches!(
+        &source_entries[2].payload,
+        PayloadSnapshot::Barrier { affected } if affected.is_empty()
+    ));
     assert_eq!(
         destination.journal().snapshot().entries,
-        source.journal().snapshot().entries
+        source_entries[..2]
     );
     assert_eq!(
         serialize_document(&destination, &roots.solids, &[]).unwrap(),
@@ -673,4 +679,131 @@ fn retired_empty_destination_namespace_still_budgets_expanded_barriers() {
         before.next_ordinal + 1_000_000_000_000
     );
     assert!(imported.entries.iter().all(|entry|matches!(entry.payload, PayloadSnapshot::Barrier { ref affected } if affected.len()==16)));
+}
+
+/// A pending source gap severs only imported lineage when appended, just as
+/// a recorded source global barrier does. Replaying the same bytes reserves
+/// disjoint IDs each time and never changes an existing clean selection.
+#[test]
+fn pending_source_tail_is_scoped_to_each_imported_copy() {
+    let mut source = Topology::new();
+    let (solid, source_op) = journaled_box(&mut source, 7.0);
+    remus_operations::transform::transform_solid(&mut source, solid, &Mat4::scale(-1.0, 1.0, 1.0))
+        .unwrap();
+    assert!(matches!(
+        resolve(&source, &reference(source_op)),
+        Resolution::Stale { .. }
+    ));
+    let source_history = source.journal().snapshot();
+    let source_ticks = source.mutation_ticks();
+    let bytes = serialize_document(&source, &[solid], &[]).unwrap();
+    assert_eq!(source.journal().snapshot(), source_history);
+    assert_eq!(source.mutation_ticks(), source_ticks);
+    let encoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        encoded["journal"]["next_op"].as_u64().unwrap(),
+        source_history.next_op + 1
+    );
+    assert_eq!(
+        encoded["journal"]["next_ordinal"].as_u64().unwrap(),
+        source_history.next_ordinal
+    );
+
+    let mut destination = Topology::new();
+    let (_, old_op) = journaled_box(&mut destination, 2.0);
+    let old_ref = reference(old_op);
+    let old_face = bound(&destination, &old_ref);
+    let mut imported = Vec::new();
+    for _ in 0..2 {
+        let before = destination.journal().snapshot();
+        let imported_ref = reference(OpId::from_value(before.next_op + source_op.value()));
+        deserialize_document(&bytes, &mut destination).unwrap();
+        let after = destination.journal().snapshot();
+        assert_eq!(after.next_op, before.next_op + source_history.next_op + 1);
+        assert_eq!(
+            after.next_ordinal,
+            before.next_ordinal + source_history.next_ordinal
+        );
+        assert_eq!(bound(&destination, &old_ref), old_face);
+        imported.push(imported_ref);
+        for imported_ref in &imported {
+            assert!(matches!(resolve(&destination, imported_ref),
+                Resolution::UnresolvedAcrossOperation { kind, .. } if kind == UNJOURNALED_MUTATIONS));
+        }
+    }
+}
+
+#[test]
+fn unjournaled_source_tail_with_exhausted_operation_ids_refuses_cleanly() {
+    let mut source = Topology::new();
+    let (solid, _) = journaled_box(&mut source, 7.0);
+    let mut exhausted = source.journal().snapshot();
+    exhausted.next_op = u64::MAX;
+    source.load_journal(remus_topology::journal::Journal::from_snapshot(exhausted).unwrap());
+    let face = solid_faces(&source, solid).unwrap()[0];
+    let _ = source.face_mut(face).unwrap();
+    let before = source.journal().snapshot();
+    let ticks = source.mutation_ticks();
+    assert!(matches!(serialize_document(&source, &[solid], &[]),
+        Err(IoError::InvalidTopology { reason }) if reason.contains("counter")));
+    assert_eq!(source.journal().snapshot(), before);
+    assert_eq!(source.mutation_ticks(), ticks);
+}
+
+/// The snapshot-only barrier takes the same ID a future journal_begin uses
+/// for the pending gap. Appending old and new snapshots must still rebase
+/// their namespaces independently, preserving the live source's newer anchor.
+#[test]
+fn source_future_operations_do_not_alias_an_earlier_exported_gap() {
+    use remus_topology::journal::{EventDraft, EvolutionDraft};
+
+    let mut source = Topology::new();
+    let (solid, old_op) = journaled_box(&mut source, 7.0);
+    let face = bound(&source, &reference(old_op));
+    remus_operations::transform::transform_solid(&mut source, solid, &Mat4::scale(-1.0, 1.0, 1.0))
+        .unwrap();
+    let reserved = source.journal().snapshot().next_op;
+    let earlier = serialize_document(&source, &[solid], &[]).unwrap();
+    let pending = source.journal_begin("future_face");
+    let mut draft = EvolutionDraft::construction();
+    draft.push(
+        face,
+        EventDraft::Generated {
+            sources: Vec::new(),
+        },
+    );
+    let future_op = source.journal_record_evolution(pending, draft).unwrap();
+    assert_eq!(
+        future_op.value(),
+        reserved + 1,
+        "journal_begin consumes the pending gap's ID first"
+    );
+    let future_ref = reference(future_op);
+    assert_eq!(bound(&source, &future_ref), face);
+    let later = serialize_document(&source, &[solid], &[]).unwrap();
+
+    // Append both versions into the live source session itself. Each import
+    // carries independent arena entities and receives a disjoint ID range.
+    let earlier_offset = source.journal().snapshot().next_op;
+    deserialize_document(&earlier, &mut source).unwrap();
+    let earlier_ref = reference(OpId::from_value(earlier_offset + old_op.value()));
+    assert_eq!(bound(&source, &future_ref), face);
+    assert!(matches!(resolve(&source, &earlier_ref),
+        Resolution::UnresolvedAcrossOperation { kind, .. } if kind == UNJOURNALED_MUTATIONS));
+    let later_offset = source.journal().snapshot().next_op;
+    let roots = deserialize_document(&later, &mut source).unwrap();
+    let later_ref = reference(OpId::from_value(later_offset + future_op.value()));
+    let copied_face = bound(&source, &later_ref);
+    assert_ne!(
+        copied_face, face,
+        "the newer imported reference must name its imported body"
+    );
+    assert_imported_face(&source, roots.solids[0], copied_face);
+    assert_eq!(bound(&source, &future_ref), face);
+    assert!(matches!(resolve(&source, &earlier_ref),
+        Resolution::UnresolvedAcrossOperation { kind, .. } if kind == UNJOURNALED_MUTATIONS));
+    let next_op = source.journal().snapshot().next_op;
+    let pending = source.journal_begin("after_both_imports");
+    let next = source.journal_record_barrier(pending, Vec::new());
+    assert_eq!(next.value(), next_op);
 }

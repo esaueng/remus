@@ -7,9 +7,9 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F12 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F11/F12/F16 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
-//! - open orientation findings F10/F11/F16 must show validation errors through
+//! - open orientation finding F10 must show validation errors through
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
@@ -205,9 +205,12 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-pointed-cone-fuse-orientation.json",
             signature: Signature::Probes {
-                volume_near: (4.187_30, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // A placed unit cylinder and a disjoint unit apex-down cone:
+                // pi + pi/3 exactly. The batch `volume` probe meshes this
+                // two-lump shell and reads 4.18730 (-3.6e-4).
+                volume_near: (std::f64::consts::PI * 4.0 / 3.0, 2e-3),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -244,11 +247,10 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-mirrored-box-intersect-orientation.json",
             signature: Signature::Probes {
-                // Quarter-cylinder bite reads correctly; the defect is
-                // orientation-only.
-                volume_near: (std::f64::consts::FRAC_PI_4, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // The quarter of the unit disc in x >= 0, y <= 0, one tall.
+                volume_near: (std::f64::consts::FRAC_PI_4, 1e-9),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
     ]

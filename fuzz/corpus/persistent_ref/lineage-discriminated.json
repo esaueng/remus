@@ -1,0 +1,1 @@
+{"version":1,"entity_kind":"edge","anchor":{"anchor":"LineageOf","base":{"version":1,"entity_kind":"edge","anchor":{"anchor":"OperationOutput","operation":7,"index":3},"discriminators":[{"discriminator":"CurveType","tag":"circle"}]}}}

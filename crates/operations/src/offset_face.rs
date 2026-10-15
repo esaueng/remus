@@ -120,6 +120,11 @@ pub fn offset_face_with_quality(
     approximation: Option<usize>,
 ) -> Result<FaceOffsetOutcome, OperationsError> {
     let tol = Tolerance::new();
+    if !distance.is_finite() {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("offset distance must be finite, got {distance}"),
+        });
+    }
     let face = topo.face(face_id)?;
     let reversed = face.is_reversed();
     let surface = face.surface().clone();

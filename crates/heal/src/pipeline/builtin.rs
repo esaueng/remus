@@ -13,6 +13,17 @@ use crate::context::HealContext;
 use crate::fix::FixResult;
 use crate::fix::config::FixConfig;
 
+/// The outer shell followed by every cavity shell, in solid order.
+fn solid_shells(
+    topo: &Topology,
+    solid_id: SolidId,
+) -> Result<Vec<remus_topology::shell::ShellId>, HealError> {
+    let solid = topo.solid(solid_id)?;
+    Ok(std::iter::once(solid.outer_shell())
+        .chain(solid.inner_shells().iter().copied())
+        .collect())
+}
+
 /// Register all built-in operators into a registry.
 pub fn register_builtins(registry: &mut OperatorRegistry) {
     registry.register("fix_shape", Box::new(FixShapeOp));
@@ -160,9 +171,12 @@ impl HealOperator for DirectFacesOp {
             fix_orientation: crate::fix::FixMode::On,
             ..Default::default()
         };
-        let solid_data = topo.solid(solid_id)?;
-        let shell_id = solid_data.outer_shell();
-        let result = crate::fix::shell::fix_shell(topo, shell_id, ctx, &config)?;
+        // Orientation consistency is per shell: a cavity is propagated from
+        // its own seed face, never from the outer shell's.
+        let mut result = FixResult::ok();
+        for shell_id in solid_shells(topo, solid_id)? {
+            result.merge(&crate::fix::shell::fix_shell(topo, shell_id, ctx, &config)?);
+        }
         Ok((solid_id, result))
     }
 }
@@ -186,9 +200,7 @@ impl HealOperator for SameParameterOp {
             fix_same_parameter: crate::fix::FixMode::On,
             ..Default::default()
         };
-        let solid_data = topo.solid(solid_id)?;
-        let shell = topo.shell(solid_data.outer_shell())?;
-        let face_ids: Vec<_> = shell.faces().to_vec();
+        let face_ids = remus_topology::explorer::solid_faces(topo, solid_id)?;
 
         // Call the FACE-AWARE PCurve fixer for each (edge, face) pair
         // rather than `fix_edge`. The latter dispatches to
@@ -198,12 +210,16 @@ impl HealOperator for SameParameterOp {
         let mut aggregate = FixResult::ok();
         for &fid in &face_ids {
             let face = topo.face(fid)?;
-            let wire = topo.wire(face.outer_wire())?;
-            let edge_ids: Vec<_> = wire
-                .edges()
-                .iter()
-                .map(remus_topology::wire::OrientedEdge::edge)
-                .collect();
+            let mut edge_ids = Vec::new();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                edge_ids.extend(
+                    topo.wire(wid)?
+                        .edges()
+                        .iter()
+                        .map(remus_topology::wire::OrientedEdge::edge),
+                );
+            }
             for eid in edge_ids {
                 let r = crate::fix::edge::fix_same_parameter_on_face(topo, eid, fid, ctx, &config)?;
                 aggregate.merge(&r);
@@ -358,10 +374,17 @@ impl HealOperator for SewShellsOp {
         solid_id: SolidId,
         ctx: &mut HealContext,
     ) -> Result<(SolidId, FixResult), HealError> {
-        let solid_data = topo.solid(solid_id)?;
-        let shell_id = solid_data.outer_shell();
-        let report =
-            crate::upgrade::shell_sewing::sew_shell_report(topo, shell_id, ctx.tolerance.linear)?;
+        let mut report = crate::upgrade::shell_sewing::SewReport::default();
+        for shell_id in solid_shells(topo, solid_id)? {
+            crate::shared::ensure_exclusive_shell(topo, solid_id, shell_id)?;
+            let shell_report = crate::upgrade::shell_sewing::sew_shell_report(
+                topo,
+                shell_id,
+                ctx.tolerance.linear,
+            )?;
+            report.sewn += shell_report.sewn;
+            report.declined += shell_report.declined;
+        }
 
         Ok((solid_id, Self::report_result(report, ctx)))
     }
@@ -373,26 +396,35 @@ impl HealOperator for SewShellsOp {
         ctx: &mut HealContext,
     ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
         use remus_topology::explorer::{solid_edges, solid_vertices};
-        let shell = topo.solid(solid_id)?.outer_shell();
-        let (report, history) = crate::upgrade::shell_sewing::sew_shell_with_history(
-            topo,
-            shell,
-            ctx.tolerance.linear,
-        )?;
+        let mut report = crate::upgrade::shell_sewing::SewReport::default();
+        let mut histories = Vec::new();
+        for shell in solid_shells(topo, solid_id)? {
+            crate::shared::ensure_exclusive_shell(topo, solid_id, shell)?;
+            let (shell_report, history) = crate::upgrade::shell_sewing::sew_shell_with_history(
+                topo,
+                shell,
+                ctx.tolerance.linear,
+            )?;
+            report.sewn += shell_report.sewn;
+            report.declined += shell_report.declined;
+            histories.push(history);
+        }
         let live_edges: std::collections::BTreeSet<_> =
             solid_edges(topo, solid_id)?.into_iter().collect();
         let live_vertices: std::collections::BTreeSet<_> =
             solid_vertices(topo, solid_id)?.into_iter().collect();
         let mut replacements = crate::reshape::ReShape::new();
-        // A per-shell redirect does not consume a source still used by a cavity.
-        for (source, target) in history.edges {
-            if !live_edges.contains(&source) && live_edges.contains(&target) {
-                replacements.replace_edge(source, target);
+        // A per-shell redirect does not consume a source still used by another shell.
+        for history in histories {
+            for (source, target) in history.edges {
+                if !live_edges.contains(&source) && live_edges.contains(&target) {
+                    replacements.replace_edge(source, target);
+                }
             }
-        }
-        for (source, target) in history.vertices {
-            if !live_vertices.contains(&source) && live_vertices.contains(&target) {
-                replacements.replace_vertex(source, target);
+            for (source, target) in history.vertices {
+                if !live_vertices.contains(&source) && live_vertices.contains(&target) {
+                    replacements.replace_vertex(source, target);
+                }
             }
         }
         Ok((solid_id, Self::report_result(report, ctx), replacements))
@@ -607,5 +639,144 @@ impl HealOperator for FixWireframeOp {
             }
         }
         Ok((solid_id, result, replacements))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod cavity_tests {
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::shell::{Shell, ShellId};
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    use crate::pipeline::process::HealProcess;
+    use crate::test_fixtures::{cavity_shell, hollow_block, misoriented_edges};
+
+    fn run(topo: &mut Topology, solid: remus_topology::solid::SolidId, step: &str) {
+        let mut process = HealProcess::new();
+        process.add_step(step);
+        process.execute(topo, solid).unwrap();
+    }
+
+    /// Every use of every edge in `shell` carries a pcurve on its face.
+    fn uses_without_pcurve(topo: &Topology, faces: &[FaceId]) -> usize {
+        let mut missing = 0;
+        for &fid in faces {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    missing += usize::from(
+                        topo.pcurve_oriented(oe.edge(), fid, oe.is_forward())
+                            .is_none(),
+                    );
+                }
+            }
+        }
+        missing
+    }
+
+    fn shell_faces(topo: &Topology, shell: ShellId) -> Vec<FaceId> {
+        topo.shell(shell).unwrap().faces().to_vec()
+    }
+
+    #[test]
+    fn direct_faces_orients_the_cavity_shell() {
+        let mut topo = Topology::new();
+        let solid = hollow_block(&mut topo);
+        let cavity = cavity_shell(&topo, solid);
+        let flipped = *shell_faces(&topo, cavity).last().unwrap();
+        topo.face_mut(flipped).unwrap().set_reversed(false);
+        assert_eq!(misoriented_edges(&topo, cavity), 4);
+
+        run(&mut topo, solid, "direct_faces");
+
+        let outer = topo.solid(solid).unwrap().outer_shell();
+        assert_eq!(misoriented_edges(&topo, outer), 0);
+        assert_eq!(
+            misoriented_edges(&topo, cavity),
+            0,
+            "direct_faces must propagate orientation through the cavity shell too"
+        );
+        assert!(
+            topo.face(flipped).unwrap().is_reversed(),
+            "the odd cavity face must be flipped back to match its five neighbours"
+        );
+    }
+
+    #[test]
+    fn same_parameter_builds_pcurves_on_cavity_faces() {
+        let mut topo = Topology::new();
+        let solid = hollow_block(&mut topo);
+        let outer = shell_faces(&topo, topo.solid(solid).unwrap().outer_shell());
+        let cavity = shell_faces(&topo, cavity_shell(&topo, solid));
+        assert_eq!(uses_without_pcurve(&topo, &cavity), 24);
+
+        run(&mut topo, solid, "same_parameter");
+
+        assert_eq!(uses_without_pcurve(&topo, &outer), 0);
+        assert_eq!(
+            uses_without_pcurve(&topo, &cavity),
+            0,
+            "same_parameter must reach the cavity faces"
+        );
+    }
+
+    #[test]
+    fn same_parameter_builds_pcurves_on_hole_loops() {
+        // A 4×4 square face at z = 0 with a 2×2 square hole: the hole edges
+        // appear in the face's inner loop only.
+        let mut topo = Topology::new();
+        let square = |topo: &mut Topology, lo: f64, hi: f64, forward: bool| {
+            let corners = [
+                Point3::new(lo, lo, 0.0),
+                Point3::new(hi, lo, 0.0),
+                Point3::new(hi, hi, 0.0),
+                Point3::new(lo, hi, 0.0),
+            ];
+            let vertices: Vec<_> = corners
+                .iter()
+                .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+                .collect();
+            let mut edges: Vec<_> = (0..4)
+                .map(|i| {
+                    let edge = Edge::new(vertices[i], vertices[(i + 1) % 4], EdgeCurve::Line);
+                    OrientedEdge::new(topo.add_edge(edge), true)
+                })
+                .collect();
+            if !forward {
+                edges.reverse();
+                for oe in &mut edges {
+                    *oe = OrientedEdge::new(oe.edge(), false);
+                }
+            }
+            topo.add_wire(Wire::new(edges, true).unwrap())
+        };
+        let outer_loop = square(&mut topo, 0.0, 4.0, true);
+        let hole_loop = square(&mut topo, 1.0, 3.0, false);
+        let face = topo.add_face(Face::new(
+            outer_loop,
+            vec![hole_loop],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        assert_eq!(uses_without_pcurve(&topo, &[face]), 8);
+
+        run(&mut topo, solid, "same_parameter");
+
+        assert_eq!(
+            uses_without_pcurve(&topo, &[face]),
+            0,
+            "same_parameter must reach the hole loop as well as the outer loop"
+        );
     }
 }

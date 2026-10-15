@@ -90,6 +90,14 @@ pub trait ParametricSurface {
         let (p, du, dv) = self.point_and_partials_with_scratch(u, v, scratch);
         (p, du, dv, false, false)
     }
+
+    /// The surface as a [`NurbsSurface`], when it is one: lets a generic
+    /// tensor-product sampler take the NURBS-only per-axis basis tables
+    /// ([`NurbsSurface::first_order_at`]). Every other surface returns `None`.
+    #[inline]
+    fn as_nurbs(&self) -> Option<&NurbsSurface> {
+        None
+    }
 }
 
 /// Unified interface for parametric curve evaluation.
@@ -467,6 +475,11 @@ impl ParametricSurface for NurbsSurface {
     ) -> (Point3, Vec3, Vec3, bool, bool) {
         let (p, du, dv, hit_u, hit_v) = scratch.span_hinted_point_and_partials_from(self, u, v);
         (Point3::new(p.x(), p.y(), p.z()), du, dv, hit_u, hit_v)
+    }
+
+    #[inline]
+    fn as_nurbs(&self) -> Option<&NurbsSurface> {
+        Some(self)
     }
 }
 

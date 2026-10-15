@@ -1344,6 +1344,16 @@ pub fn detect_small_features(
     area_threshold: f64,
     deflection: f64,
 ) -> Result<Vec<FaceId>, OperationsError> {
+    if !area_threshold.is_finite() || area_threshold < 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("area threshold must be finite and non-negative, got {area_threshold}"),
+        });
+    }
+    if !deflection.is_finite() || deflection <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("deflection must be finite and positive, got {deflection}"),
+        });
+    }
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
 

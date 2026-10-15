@@ -495,13 +495,16 @@ impl Model {
     ///
     /// # Errors
     ///
-    /// Returns [`OperationsError`] for invalid profile or path geometry.
+    /// Returns [`OperationsError`] for invalid profile or path geometry. A
+    /// refusal leaves the model unchanged.
     pub fn sweep(
         &mut self,
         profile: FaceId,
         path: &NurbsCurve,
     ) -> Result<SolidId, OperationsError> {
-        remus_operations::sweep::sweep(&mut self.topology, profile, path)
+        remus_topology::transaction::run_transacted(&mut self.topology, |topology| {
+            remus_operations::sweep::sweep(topology, profile, path)
+        })
     }
 
     /// Lofts through two or more profile faces.
@@ -517,14 +520,17 @@ impl Model {
     ///
     /// # Errors
     ///
-    /// Returns [`OperationsError`] for invalid profile, path, or guide geometry.
+    /// Returns [`OperationsError`] for invalid profile, path, or guide
+    /// geometry. A refusal leaves the model unchanged.
     pub fn pipe(
         &mut self,
         profile: FaceId,
         path: &NurbsCurve,
         guide: Option<&NurbsCurve>,
     ) -> Result<SolidId, OperationsError> {
-        remus_operations::pipe::pipe(&mut self.topology, profile, path, guide)
+        remus_topology::transaction::run_transacted(&mut self.topology, |topology| {
+            remus_operations::pipe::pipe(topology, profile, path, guide)
+        })
     }
 
     /// Computes a solid's volume at the requested fallback deflection.
@@ -1081,5 +1087,53 @@ mod tests {
         assert_eq!(model.topology().allocated_slot_count(), before_slots);
         assert!(model.journal().is_empty());
         assert!(model.topology().solid(solid).is_ok());
+    }
+    /// Kernel review WASM-6: a pipe whose profile edge runs along the path
+    /// fails on the side-face normal after the section rings are built; the
+    /// partial rings used to stay in the model.
+    #[test]
+    fn refused_pipe_leaves_the_model_unchanged() {
+        let mut model = Model::new();
+        let profile = model
+            .make_planar_face(&[
+                Point3::new(-1.0, -1.0, 0.0),
+                Point3::new(1.0, -1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(-1.0, 1.0, 0.0),
+            ])
+            .unwrap();
+        let counts = |model: &Model| {
+            let t = model.topology();
+            [
+                t.num_vertices(),
+                t.num_edges(),
+                t.num_wires(),
+                t.num_faces(),
+                t.num_shells(),
+                t.num_solids(),
+            ]
+        };
+        let line = |end: Point3| {
+            NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![Point3::new(0.0, 0.0, 0.0), end],
+                vec![1.0, 1.0],
+            )
+            .unwrap()
+        };
+        let before = counts(&model);
+        assert!(
+            model
+                .pipe(profile, &line(Point3::new(10.0, 0.0, 0.0)), None)
+                .is_err()
+        );
+        assert_eq!(counts(&model), before);
+
+        let along_normal = line(Point3::new(0.0, 0.0, 10.0));
+        let piped = model.pipe(profile, &along_normal, None).unwrap();
+        assert!((model.volume(piped, 0.1).unwrap() - 40.0).abs() < 1e-6);
+        let swept = model.sweep(profile, &along_normal).unwrap();
+        assert!((model.volume(swept, 0.1).unwrap() - 40.0).abs() < 1e-6);
     }
 }

@@ -469,7 +469,7 @@ const SEAM_COINCIDENT_SQ: f64 = 1e-14;
 /// Closed NURBS edges normally place their seam vertex at the curve's domain
 /// start; when they do not, sampling from the domain origin breaks phase
 /// coherence with adjacent edges, so the vertex is projected onto the curve.
-fn nurbs_seam_parameter(
+pub(crate) fn nurbs_seam_parameter(
     nc: &remus_math::nurbs::curve::NurbsCurve,
     seam_pt: Point3,
     u0: f64,
@@ -597,6 +597,30 @@ pub fn face_aabb(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> 
         );
     }
     expand_aabb_for_surface(&mut aabb, face.surface());
+    Ok(aabb)
+}
+
+/// [`face_aabb`] widened to a guaranteed bound, for the classifier's ray BVH.
+///
+/// `face_aabb` bounds a NURBS face by a 9x9 parameter grid, which can miss a
+/// bump between grid lines; a BVH box that misses part of a face prunes the
+/// face from rays that cross that part. With positive weights (enforced by
+/// `NurbsSurface::new`) the convex-hull property puts the surface inside its
+/// control net, so the net's points bound it. Measurement keeps the tighter
+/// `face_aabb`: on a rational NURBS the net bulges past the surface.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the face is missing.
+pub(crate) fn face_ray_bound(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> {
+    let mut aabb = face_aabb(topo, face_id)?;
+    if let FaceSurface::Nurbs(nurbs) = topo.face(face_id)?.surface() {
+        for row in nurbs.control_points() {
+            for &p in row {
+                aabb_include(&mut aabb, p);
+            }
+        }
+    }
     Ok(aabb)
 }
 

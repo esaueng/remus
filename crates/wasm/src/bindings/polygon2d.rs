@@ -124,7 +124,10 @@ impl BrepKernel {
     /// Offset a 2D polygon by a signed distance.
     ///
     /// `coords` is a flat array `[x,y, x,y, ...]` of 2D points.
-    /// Returns a flat array of offset polygon coordinates.
+    /// Returns a flat array of offset polygon coordinates in the input's
+    /// winding, or an empty array when the offset collapses the polygon.
+    /// When the offset splits it or encloses a hole, only the outer boundary
+    /// of the largest piece is returned.
     #[wasm_bindgen(js_name = "offsetPolygon2d")]
     #[allow(clippy::needless_pass_by_value, clippy::unused_self)]
     pub fn offset_polygon_2d(
@@ -208,7 +211,8 @@ impl BrepKernel {
     /// Returns a flat array of the intersection polygon coordinates,
     /// or an empty array if they don't intersect.
     ///
-    /// Uses the Sutherland-Hodgman algorithm (convex clipper).
+    /// Uses the Sutherland-Hodgman algorithm (convex clipper); either
+    /// polygon may wind either way.
     #[wasm_bindgen(js_name = "intersectPolygons2d")]
     #[allow(clippy::unused_self)]
     pub fn intersect_polygons_2d(
@@ -716,6 +720,58 @@ mod polygon_boolean_tests {
         // And the default behaves like the fine tolerance, not the coarse
         // one — so a hard-coded coarse constant would fail here too.
         assert_eq!(union_at(None).len(), 2);
+    }
+
+    // ── offsetPolygon2d / intersectPolygons2d / fillet2d ──────────
+
+    /// MATH-6: an inset past half the rectangle's height used to return an
+    /// inside-out loop; the collapsed offset is now an empty array.
+    #[test]
+    fn offset_polygon_2d_returns_empty_when_the_inset_collapses() {
+        let k = BrepKernel::new();
+        let rect = vec![0.0, 0.0, 4.0, 0.0, 4.0, 2.0, 0.0, 2.0];
+        for d in [-1.5, -2.5] {
+            let inset = k.offset_polygon_2d(rect.clone(), d, 1e-10).unwrap();
+            assert!(inset.is_empty(), "inset by {d} returned {inset:?}");
+        }
+        let inset = k.offset_polygon_2d(rect, -0.5, 1e-10).unwrap();
+        assert_eq!(inset, vec![0.5, 0.5, 3.5, 0.5, 3.5, 1.5, 0.5, 1.5]);
+    }
+
+    /// MATH-7b: a clockwise clip polygon used to clip everything away.
+    #[test]
+    fn intersect_polygons_2d_accepts_a_clockwise_clip() {
+        let k = BrepKernel::new();
+        let clip_cw = vec![1.0, 1.0, 1.0, 3.0, 3.0, 3.0, 3.0, 1.0];
+        let overlap = k.intersect_polygons_2d(sq(0.0, 0.0, 2.0), clip_cw).unwrap();
+        assert!((signed_area(&overlap) - 1.0).abs() < 1e-12, "{overlap:?}");
+    }
+
+    /// MATH-7a: a regular octagon of circumradius 10 filleted at 1 used to
+    /// reach |p| = 10.2346, outside its own outline.
+    #[test]
+    fn fillet_2d_stays_inside_the_outline() {
+        let octagon: Vec<f64> = (0..8)
+            .flat_map(|k| {
+                let t = f64::from(k) * std::f64::consts::FRAC_PI_4;
+                [10.0 * t.cos(), 10.0 * t.sin()]
+            })
+            .collect();
+        let rounded = run_ok(
+            "fillet2d",
+            serde_json::json!({"coords": octagon, "radius": 1.0}),
+        );
+        let coords: Vec<f64> = rounded
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let reach = coords
+            .chunks_exact(2)
+            .map(|p| p[0].hypot(p[1]))
+            .fold(0.0, f64::max);
+        assert!(reach < 10.0, "fillet reaches {reach}");
     }
 
     #[test]

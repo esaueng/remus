@@ -4,7 +4,7 @@
 //! edge crosses or touches the face surface. Records EF interferences
 //! and adds extra paves to the edge for later splitting.
 
-use remus_math::det_hash::DetHashSet;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 
 use crate::builder::classify_2d::{distance_to_polygon_boundary, point_in_polygon_2d};
 use crate::builder::plane_frame::PlaneFrame;
@@ -67,6 +67,47 @@ pub(super) fn perform_with(
     arena: &mut GfaArena,
     analytic_gates: bool,
 ) -> Result<(), AlgoError> {
+    perform_inner(
+        topo,
+        solid_a,
+        solid_b,
+        tol,
+        arena,
+        analytic_gates,
+        &mut FaceContainments::default(),
+    )
+}
+
+/// Each face's sampled containment, built on the face's first use.
+///
+/// A containment depends only on the face's boundary and the tolerance, and
+/// phase EF only adds the vertices its crossings mint, never touching a face
+/// boundary. One cache therefore serves a whole N-way EF pass, where each
+/// solid's faces were sampled again for every solid pair they are in.
+#[derive(Default)]
+pub(super) struct FaceContainments(DetHashMap<FaceId, FaceContainment>);
+
+/// [`perform`] reading face containments through `containments`.
+pub(super) fn perform_cached(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    tol: Tolerance,
+    arena: &mut GfaArena,
+    containments: &mut FaceContainments,
+) -> Result<(), AlgoError> {
+    perform_inner(topo, solid_a, solid_b, tol, arena, true, containments)
+}
+
+fn perform_inner(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    tol: Tolerance,
+    arena: &mut GfaArena,
+    analytic_gates: bool,
+    containments: &mut FaceContainments,
+) -> Result<(), AlgoError> {
     let bbox_a = crate::classifier::compute_solid_bbox(topo, solid_a)?;
     let bbox_b = crate::classifier::compute_solid_bbox(topo, solid_b)?;
     if !bbox_a
@@ -98,6 +139,7 @@ pub(super) fn perform_with(
         tol,
         arena,
         analytic_gates,
+        containments,
     )?;
     check_edge_face_pairs(
         topo,
@@ -107,6 +149,7 @@ pub(super) fn perform_with(
         tol,
         arena,
         analytic_gates,
+        containments,
     )?;
 
     Ok(())
@@ -478,7 +521,7 @@ fn build_face_containment(
 }
 
 /// Check each edge against each face.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn check_edge_face_pairs(
     topo: &mut Topology,
     edges: &[EdgeId],
@@ -487,16 +530,21 @@ fn check_edge_face_pairs(
     tol: Tolerance,
     arena: &mut GfaArena,
     analytic_gates: bool,
+    cache: &mut FaceContainments,
 ) -> Result<(), AlgoError> {
     // Surface crossings are found against INFINITE surfaces; without a bounds
     // check an edge "crosses" a face far outside its trimmed region, creating
     // spurious paves that propagate bogus edge splits. The containment test
     // bounds-checks every crossing against the face's sampled boundary (bbox
     // for all faces, in-plane outer + inner-wire polygon for planar faces).
-    let mut containments = Vec::with_capacity(faces.len());
     for &fid in faces {
-        containments.push(build_face_containment(topo, fid, tol)?);
+        if let std::collections::hash_map::Entry::Vacant(slot) = cache.0.entry(fid) {
+            slot.insert(build_face_containment(topo, fid, tol)?);
+        }
     }
+    let containments: Vec<&FaceContainment> =
+        faces.iter().filter_map(|fid| cache.0.get(fid)).collect();
+    debug_assert_eq!(containments.len(), faces.len());
 
     // Pre-expand each face's containment AABB by the linear tolerance so the
     // broad-phase reject below is conservative (never skips a real crossing,
@@ -1984,6 +2032,7 @@ mod tests {
             Tolerance::default(),
             &mut arena,
             true,
+            &mut FaceContainments::default(),
         )
         .unwrap();
         let heights: Vec<f64> = arena
