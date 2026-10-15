@@ -359,14 +359,24 @@ pub fn reexpress_face_pcurves(
         };
         let image = affine
             .map(|affine| {
-                match (
-                    topo.face(face)?.surface(),
-                    topo.edge(coedge.edge())?.curve(),
-                ) {
-                    (FaceSurface::Plane { .. }, EdgeCurve::Circle(circle)) => {
-                        affine.apply_retained_planar_circle(pcurve, circle.radius())
-                    }
-                    _ => affine.apply(pcurve),
+                let surface = topo.face(face)?.surface();
+                let curve = topo.edge(coedge.edge())?.curve();
+                match surface {
+                    FaceSurface::Plane { .. } => match curve {
+                        EdgeCurve::Circle(circle) => {
+                            affine.apply_retained_planar_circle(pcurve, circle.radius())
+                        }
+                        EdgeCurve::Line
+                        | EdgeCurve::NurbsCurve(_)
+                        | EdgeCurve::Ellipse(_)
+                        | EdgeCurve::Hyperbola(_)
+                        | EdgeCurve::Parabola(_) => affine.apply(pcurve),
+                    },
+                    FaceSurface::Nurbs(_)
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_) => affine.apply(pcurve),
                 }
             })
             .transpose()?;
