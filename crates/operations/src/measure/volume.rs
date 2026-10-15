@@ -4176,23 +4176,19 @@ impl SignedTriangle {
                 let (a, b) = plane_coords(p);
                 a >= a0 && a <= a1 && b >= b0 && b <= b1
             };
+            // A loop inside an odd number of others bounds an island within a
+            // hole, which restores material (the parity the planar tessellator
+            // applies): it winds with the face's triangle, a hole against it.
+            // As there, loops are taken smallest box first, so the first
+            // larger loop holding a probe is its immediate parent and
+            // concentric loops cost one polygon test each; a budget bounds the
+            // tests that overlapping boxes can still force. Past it, the face
+            // is left to the general route.
+            let Some(depths) = nesting_depths(&polygons, &boxes, &in_box, &outer_area) else {
+                return Ok(None);
+            };
             for (k, mut hole) in loops.into_iter().enumerate() {
-                // A loop inside an odd number of others bounds an island
-                // within a hole, which restores material (the parity the
-                // planar tessellator applies): it winds with the face's
-                // triangle, a hole against it.
-                let probe = hole[0].0;
-                let depth = (0..polygons.len())
-                    .filter(|&j| {
-                        j != k
-                            && in_box(boxes[j], probe)
-                            && crate::distance::point_in_polygon_3d(
-                                &probe,
-                                &polygons[j],
-                                &outer_area,
-                            )
-                    })
-                    .count();
+                let depth = depths[k];
                 let (h0, _) = hole[0];
                 let hole_area = hole
                     .windows(2)
@@ -4211,6 +4207,45 @@ impl SignedTriangle {
         }
         Ok(Some(triangles))
     }
+}
+
+/// Each inner loop's nesting depth among the others (0 for a hole directly
+/// in the face), or `None` when the parent search exceeds its budget.
+fn nesting_depths(
+    polygons: &[Vec<Point3>],
+    boxes: &[[f64; 4]],
+    in_box: &dyn Fn([f64; 4], Point3) -> bool,
+    normal: &Vec3,
+) -> Option<Vec<usize>> {
+    const PARENT_SEARCH_BUDGET_PER_LOOP: usize = 64;
+    let n = polygons.len();
+    if n < 2 {
+        return Some(vec![0; n]);
+    }
+    let area = |[a0, b0, a1, b1]: [f64; 4]| (a1 - a0) * (b1 - b0);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.compact_sort_by(|&a, &b| area(boxes[a]).total_cmp(&area(boxes[b])));
+    let mut budget = n.saturating_mul(PARENT_SEARCH_BUDGET_PER_LOOP);
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    for (position, &k) in order.iter().enumerate() {
+        let probe = polygons[k][0];
+        for &j in &order[position + 1..] {
+            if !in_box(boxes[j], probe) {
+                continue;
+            }
+            budget = budget.checked_sub(1)?;
+            if crate::distance::point_in_polygon_3d(&probe, &polygons[j], normal) {
+                parent[k] = Some(j);
+                break;
+            }
+        }
+    }
+    // Parents have larger boxes, so they are settled first walking down.
+    let mut depth = vec![0; n];
+    for &k in order.iter().rev() {
+        depth[k] = parent[k].map_or(0, |j| depth[j] + 1);
+    }
+    Some(depth)
 }
 
 /// The vertices of `wire` in traversal order with their indices, or `None`
@@ -5608,6 +5643,61 @@ mod nested_inner_loop_tests {
             })
             .collect();
         topo.add_wire(Wire::new(edges, true).unwrap())
+    }
+
+    /// Forty concentric squares about (3, 3), half-widths 2.5 down to 0.55:
+    /// depth alternates hole, island, hole, … so the face's signed area is
+    /// 72 − (2·2.5)² + (2·2.45)² − …, each loop found as its neighbour's
+    /// immediate parent rather than tested against every other loop.
+    #[test]
+    fn deeply_nested_loops_alternate() {
+        let mut topo = Topology::new();
+        let outer = polygon_wire(&mut topo, &[(0.0, 0.0), (12.0, 0.0), (0.0, 12.0)], 0.0);
+        let mut expected = 72.0;
+        let mut inner = Vec::new();
+        for k in 0..40 {
+            let h = 2.5 - 0.05 * f64::from(k);
+            let side = 2.0 * h;
+            expected += if k % 2 == 0 {
+                -side * side
+            } else {
+                side * side
+            };
+            inner.push(polygon_wire(
+                &mut topo,
+                &[
+                    (3.0 - h, 3.0 - h),
+                    (3.0 + h, 3.0 - h),
+                    (3.0 + h, 3.0 + h),
+                    (3.0 - h, 3.0 + h),
+                ],
+                0.0,
+            ));
+        }
+        let face = topo.add_face(Face::new(
+            outer,
+            inner,
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+        let triangles = SignedTriangle::of_solid(&topo, solid)
+            .unwrap()
+            .expect("line loops");
+        let area: f64 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.points;
+                0.5 * (b - a).cross(c - a).z() * t.orientation
+            })
+            .sum();
+        assert!(
+            (area - expected).abs() < 1e-9,
+            "signed area {area}, expected {expected}"
+        );
     }
 
     /// The triangle (0,0), (12,0), (0,12) (area 72) pierced by the square
