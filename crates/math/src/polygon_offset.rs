@@ -58,6 +58,26 @@ pub fn offset_polygon_2d(
     distance: f64,
     tolerance: f64,
 ) -> Result<Vec<Point2>, MathError> {
+    // Work relative to the first vertex: far from the origin, absolute
+    // coordinates leave too few bits for the crossing and winding tests.
+    // For a polygon small against its distance from the origin the shift
+    // in is exact (Sterbenz); only the shift back rounds.
+    let Some(&origin) = vertices.first() else {
+        return Err(MathError::EmptyInput);
+    };
+    let shift =
+        |p: Point2, sign: f64| Point2::new(p.x() + sign * origin.x(), p.y() + sign * origin.y());
+    let local: Vec<Point2> = vertices.iter().map(|&p| shift(p, -1.0)).collect();
+    let result = offset_polygon_2d_local(&local, distance, tolerance)?;
+    Ok(result.into_iter().map(|p| shift(p, 1.0)).collect())
+}
+
+/// [`offset_polygon_2d`] on a polygon already placed near the origin.
+fn offset_polygon_2d_local(
+    vertices: &[Point2],
+    distance: f64,
+    tolerance: f64,
+) -> Result<Vec<Point2>, MathError> {
     let n = vertices.len();
     if n < 3 {
         return Err(MathError::EmptyInput);
@@ -989,6 +1009,38 @@ mod tests {
                     assert_eq!(inset.len(), 4, "e = {e:e}: {inset:?}");
                     assert_area(&inset, &poly, (5.0 - 2.0 * e).powi(2) * scale * scale);
                 }
+            }
+        }
+    }
+
+    /// Far from the origin the crossing and winding tests ran out of bits:
+    /// this quad offset at (1e10, −1e10) traced no region and came back
+    /// empty, while the same rounded input near the origin gives a
+    /// five-vertex profile. The result must not depend on placement.
+    #[test]
+    fn offset_far_from_the_origin_matches_the_origin() {
+        let base = [
+            (-1.54894, 0.65272),
+            (-5.14203, 1.00189),
+            (-9.36701, 1.41817),
+            (0.17829, -0.84971),
+        ];
+        let d = 0.493_983_430_864_031_6;
+        let at = |ox: f64, oy: f64| {
+            let placed: Vec<(f64, f64)> = base.iter().map(|&(x, y)| (x + ox, y + oy)).collect();
+            offset_polygon_2d(&pts(&placed), d, 1e-7).unwrap()
+        };
+        let home = at(0.0, 0.0);
+        assert_eq!(home.len(), 5);
+        for (ox, oy) in [(1e10, -1e10), (-1e10, 1e10), (1e8, -3e8), (-1e12, 1e12)] {
+            let far = at(ox, oy);
+            assert_eq!(far.len(), home.len(), "at ({ox:e}, {oy:e}): {far:?}");
+            // Only the final shift back rounds: ulp(1e12) is about 1.2e-4.
+            for (p, q) in far.iter().zip(&home) {
+                assert!(
+                    (p.x() - ox - q.x()).abs() < 1e-3 && (p.y() - oy - q.y()).abs() < 1e-3,
+                    "at ({ox:e}, {oy:e}): {p:?} vs {q:?}"
+                );
             }
         }
     }
