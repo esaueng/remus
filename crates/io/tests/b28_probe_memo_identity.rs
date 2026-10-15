@@ -18,7 +18,10 @@
 //! and with each other bit for bit (warm and copy replay the cold pass).
 //! The signed volumes are also pinned against the values recorded before
 //! the cache and the first-order NURBS solve landed (relative 1e-12: platform
-//! `libm` may move the last bits of the analytic faces).
+//! `libm` may move the last bits of the analytic faces). The hammer holder's
+//! was re-recorded when the fixed rule was aligned to NURBS knot spans
+//! (B131): 50 245.521 289 691 05 before, 2.2e-7 off the converged adaptive
+//! volume 50 245.532 161 522 77 that it now meets to 4e-17.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -39,7 +42,7 @@ const FIXTURES: [(&str, &str, usize, f64); 4] = [
         "hammer holder",
         include_str!("data/shapr3d_hammer_holder.step"),
         160,
-        50_245.521_289_691_05,
+        50_245.532_161_524_716,
     ),
     (
         "bored plate",

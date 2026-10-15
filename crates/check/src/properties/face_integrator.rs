@@ -30,9 +30,9 @@ use remus_math::fma::FusedMulAdd;
 struct IntegrationRule<'a> {
     order: usize,
     adaptive: Option<&'a PropertiesOptions>,
-    /// A NURBS carrier's `(u, v)` knot vectors. Adaptive cells split on the
-    /// interior knots so each Gauss rule sees one polynomial piece; the fixed
-    /// rule ignores them.
+    /// A NURBS carrier's `(u, v)` knot vectors. Adaptive and fixed cells alike
+    /// split on the interior knots so each Gauss rule sees one polynomial
+    /// piece (see [`integrate_knot_aligned`]).
     knots: Option<(&'a [f64], &'a [f64])>,
     /// Point the positional integrands are taken about (B58).
     reference: Point3,
@@ -141,6 +141,9 @@ pub struct FaceContribution {
 ///   Gauss quadrature, converged to machine precision at the default order.
 /// * **Quadric faces trimmed by a UV boundary polygon** are limited by the
 ///   chording of that polygon.
+/// * **NURBS faces** keep every Gauss cell inside one knot span of the
+///   carrier (see `integrate_knot_aligned`), so they converge with the order
+///   up to the same trim chording.
 ///
 /// Inner wires ARE removed from a curved face, in the same UV domain the
 /// quadrature runs over, and the quadrature is split on their outlines so each
@@ -1679,6 +1682,53 @@ impl<'a> UvTrim<'a> {
         // hot: n up to 513, ~526k n*log2(n) work in one criterion --test + native perf pass.
         #[allow(clippy::disallowed_methods)]
         breaks.sort_by(f64::total_cmp);
+        breaks
+    }
+
+    /// The `u` values strictly inside `u_range` at which a loop segment
+    /// crosses one of `v_knots` (sorted).
+    ///
+    /// Within one `u` interval the v-cuts move affinely with `u`, so the
+    /// v-integrand's piecewise structure only changes where a cut passes a
+    /// `v` knot. That abscissa is a kink in the `u` integrand which no
+    /// splitting of the `v` spans can remove, so it has to be a `u` break.
+    fn knot_crossing_breaks(&self, u_range: (f64, f64), v_knots: &[f64]) -> Vec<f64> {
+        let tau = std::f64::consts::TAU;
+        let (lo, hi) = (u_range.0, u_range.1);
+        let shifts: &[f64] = if self.u_periodic {
+            &[0.0, tau, -tau]
+        } else {
+            &[0.0]
+        };
+        let mut breaks = Vec::new();
+        let loops = self
+            .outer
+            .into_iter()
+            .chain(self.pockets)
+            .map(|l| (l, false))
+            .chain(self.bands.iter().map(|l| (l, true)));
+        for (l, wraps) in loops {
+            if l.points.len() < 2 {
+                continue;
+            }
+            for i in 0..l.points.len() {
+                let (a, b) = l.crossing_segment(i, wraps);
+                let (v_lo, v_hi) = (a.y().min(b.y()), a.y().max(b.y()));
+                // Knots strictly between the segment's ends: one at an end is
+                // at a loop vertex, which `u_breaks` already holds.
+                let first = v_knots.partition_point(|&k| k <= v_lo);
+                let last = v_knots.partition_point(|&k| k < v_hi);
+                for &k in v_knots.get(first..last).unwrap_or(&[]) {
+                    let t = (k - a.y()) / (b.y() - a.y());
+                    let u = (b.x() - a.x()).fma(t, a.x());
+                    for &shift in shifts {
+                        if u + shift > lo && u + shift < hi {
+                            breaks.push(u + shift);
+                        }
+                    }
+                }
+            }
+        }
         breaks
     }
 
@@ -3341,9 +3391,9 @@ const MAX_PATCHES: usize = 16;
 ///   4 per span  2.2e-9    8 per span  2.1e-12
 ///
 /// identical at 1x, 1000x and 0.001x in every row. Eight is taken: it is three
-/// orders past what any consumer needs and, against `MAX_PATCHES`, costs no
-/// more than the previous worst case — a surface of two or more knot spans
-/// clamps to 16 either way, so the cost ceiling is unchanged.
+/// orders past what any consumer needs. A window holding interior knots is
+/// tiled by `integrate_knot_aligned` instead, at most one mean knot span per
+/// cell, since past [`MAX_PATCHES`] uniform patches would straddle the knots.
 const PATCHES_PER_KNOT_SPAN: usize = 8;
 
 /// The parameter-space length of one quadrature patch, per axis.
@@ -3466,7 +3516,6 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
         let inner_knots = interior_knots(knots_v, v_range);
         // With cells aligned to the knots, one Gauss rule per knot span is the
         // natural starting cell; refinement supplies any further resolution.
-        // The fixed rule's sub-span tiling exists only because it cannot align.
         #[allow(clippy::cast_precision_loss)]
         let start = if rule.knots.is_some() {
             PatchScale {
@@ -3509,6 +3558,13 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
             options,
             rule.reference,
         );
+    }
+    if let Some(knots) = rule.knots
+        && let Some(contribution) = integrate_knot_aligned::<_, AREA_ONLY>(
+            surface, u_range, v_range, rule, sign, trim, scale, knots,
+        )?
+    {
+        return Ok(contribution);
     }
     let gauss_pts = gauss_legendre_points(rule.order);
     let nu = patch_count(u_range.1 - u_range.0, scale.u);
@@ -3599,6 +3655,157 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
         rule.record_flux(acc.flux(sign));
     }
     Ok(acc.finish(sign))
+}
+
+/// Work cap for [`integrate_knot_aligned`], in tensor Gauss cells.
+///
+/// 2¹⁸ cells is a 512 × 512-span carrier integrated untrimmed, ~6.6M surface
+/// evaluations at order 5; a face past it is refused rather than integrated
+/// for seconds.
+const MAX_KNOT_ALIGNED_CELLS: usize = 1 << 18;
+
+/// The cell length a knot-aligned axis is tiled with: one mean knot span, or
+/// the fixed rule's own patch over `range` when that is finer, so alignment
+/// never coarsens a carrier of one or two spans.
+#[allow(clippy::cast_precision_loss)]
+fn knot_aligned_cell(range: (f64, f64), scale: f64) -> f64 {
+    let len = (range.1 - range.0).abs();
+    let fixed = len / patch_count(len, scale) as f64;
+    fixed.min(scale * PATCHES_PER_KNOT_SPAN as f64)
+}
+
+/// Cells of length at most `cell` an interval of length `len` is cut into.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn knot_aligned_cells(len: f64, cell: f64) -> usize {
+    if cell > 0.0 && len.is_finite() {
+        // An interval one knot span long is one cell, not two when its
+        // length rounds a hair above the mean span.
+        ((len / cell) * (1.0 - 1e-9)).ceil().max(1.0) as usize
+    } else {
+        1
+    }
+}
+
+/// The fixed rule with every Gauss cell inside one knot span of a NURBS
+/// carrier, or `None` when the integration window holds no interior knot
+/// (the fixed rule then sees one polynomial piece already, and runs as is).
+///
+/// The fixed tiling clamps each axis at [`MAX_PATCHES`] uniform patches,
+/// which on a carrier of many spans puts a continuity break inside nearly
+/// every Gauss rule: a 35 × 55-span bicubic face read its area 1e-4 off at
+/// orders 8, 12 and 16 alike. Here the `u` axis breaks at the trim's
+/// vertices ([`UvTrim::u_breaks`]), the interior `u` knots and every
+/// abscissa where a trim segment crosses an interior `v` knot
+/// ([`UvTrim::knot_crossing_breaks`]); each abscissa's accepted `v` spans
+/// are cut at the interior `v` knots. Every cell is then one smooth piece
+/// bounded by the trim polyline, so the result converges with the order.
+///
+/// # Errors
+///
+/// [`CheckError::IntegrationFailed`] past [`MAX_KNOT_ALIGNED_CELLS`].
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
+    surface: &S,
+    u_range: (f64, f64),
+    v_range: (f64, f64),
+    rule: IntegrationRule<'_>,
+    sign: f64,
+    trim: &UvTrim<'_>,
+    scale: PatchScale,
+    knots: (&[f64], &[f64]),
+) -> Result<Option<FaceContribution>, CheckError> {
+    let knots_u = interior_knots(knots.0, u_range);
+    let knots_v = interior_knots(knots.1, v_range);
+    if knots_u.is_empty() && knots_v.is_empty() {
+        return Ok(None);
+    }
+    let splits = trim.splits_domain();
+    let mut breaks = if splits {
+        trim.u_breaks(u_range)
+    } else {
+        vec![u_range.0, u_range.1]
+    };
+    breaks.extend_from_slice(&knots_u);
+    if splits {
+        breaks.extend(trim.knot_crossing_breaks(u_range, &knots_v));
+    }
+    breaks.compact_sort_by(f64::total_cmp);
+    breaks.dedup();
+
+    let cell_u = knot_aligned_cell(u_range, scale.u);
+    let cell_v = knot_aligned_cell(v_range, scale.v);
+    let gauss_pts = gauss_legendre_points(rule.order);
+    let budget = MAX_KNOT_ALIGNED_CELLS.saturating_mul(gauss_pts.len());
+    let over_budget = || {
+        CheckError::IntegrationFailed(format!(
+            "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
+        ))
+    };
+    let mut acc = Accumulator {
+        volume_only: rule.volume_only,
+        ..Accumulator::default()
+    };
+    let mut scratch = DerivativeScratch::new();
+    let eps = (u_range.1 - u_range.0).abs() * 1e-12;
+    let (mut cuts, mut spans) = (Vec::new(), Vec::new());
+    // Gauss lines integrated so far, each one `v` sub-cell at one `u`
+    // abscissa: `order` of them make one tensor cell.
+    let mut lines = 0usize;
+    for w in breaks.windows(2) {
+        let (u0, u1) = (w[0], w[1]);
+        if u1 - u0 <= eps {
+            continue;
+        }
+        let nu = knot_aligned_cells(u1 - u0, cell_u);
+        let du_patch = (u1 - u0) / nu as f64;
+        let u_scale = du_patch / 2.0;
+        for iu in 0..nu {
+            let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
+            for gpu in gauss_pts {
+                let u = u_scale.fma(gpu.x, u_mid);
+                if splits {
+                    trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
+                } else {
+                    spans.clear();
+                    spans.push((v_range.0.min(v_range.1), v_range.0.max(v_range.1)));
+                }
+                for &(a, b) in &spans {
+                    let first = knots_v.partition_point(|&k| k <= a);
+                    let last = knots_v.partition_point(|&k| k < b);
+                    let inner = knots_v.get(first..last).unwrap_or(&[]);
+                    let lows = std::iter::once(a).chain(inner.iter().copied());
+                    let highs = inner.iter().copied().chain(std::iter::once(b));
+                    for (p0, p1) in lows.zip(highs) {
+                        let nv = knot_aligned_cells(p1 - p0, cell_v);
+                        lines = lines.saturating_add(nv);
+                        if lines > budget {
+                            return Err(over_budget());
+                        }
+                        let dv_patch = (p1 - p0) / nv as f64;
+                        let v_scale = dv_patch / 2.0;
+                        for iv in 0..nv {
+                            let v_mid = dv_patch.fma(iv as f64, p0) + v_scale;
+                            for gpv in gauss_pts {
+                                let v = v_scale.fma(gpv.x, v_mid);
+                                acc.add::<_, AREA_ONLY>(
+                                    surface,
+                                    u,
+                                    v,
+                                    gpu.w * gpv.w * u_scale * v_scale,
+                                    rule.reference,
+                                    &mut scratch,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !AREA_ONLY {
+        rule.record_flux(acc.flux(sign));
+    }
+    Ok(Some(acc.finish(sign)))
 }
 
 /// Choose the UV domain a face's quadrature runs over, and how its boundary
@@ -4601,5 +4808,77 @@ mod tests {
             }
             assert!(split > 100, "the trim splits too few abscissae: {split}");
         }
+    }
+
+    #[test]
+    fn knot_crossing_breaks_land_where_segments_cross_v_knots() {
+        // (0, 0) → (4, 2) crosses v = 0.5 and 1 at u = 1 and 2; the top is
+        // level; the closing chord (0, 2) → (0, 0) crosses both at u = 0. A
+        // knot at a segment's end is a loop vertex, already a `u` break.
+        let outer = UvLoop::new(
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 2.0),
+                Point2::new(0.0, 2.0),
+            ],
+            false,
+            false,
+        );
+        let trim = UvTrim::new(Some(&outer), &[], &[], false);
+        let knots = [0.5, 1.0, 2.0];
+        assert_eq!(
+            trim.knot_crossing_breaks((-1.0, 5.0), &knots),
+            vec![1.0, 2.0, 0.0, 0.0]
+        );
+        // Only crossings strictly inside the window are breaks.
+        assert_eq!(trim.knot_crossing_breaks((0.0, 1.5), &knots), vec![1.0]);
+    }
+
+    #[test]
+    fn knot_aligned_rule_defers_without_interior_knots_and_caps_its_work() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let cylinder =
+            remus_math::surfaces::CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z, 2.0)
+                .expect("cylinder");
+        let trim = UvTrim::new(None, &[], &[], true);
+        let run = |knots: (&[f64], &[f64])| {
+            let rule = IntegrationRule {
+                order: 1,
+                adaptive: None,
+                knots: Some(knots),
+                reference: Point3::new(0.0, 0.0, 0.0),
+                volume_only: false,
+                flux: None,
+            };
+            integrate_knot_aligned::<_, false>(
+                &cylinder,
+                (0.0, 1.0),
+                (0.0, 1.0),
+                rule,
+                1.0,
+                &trim,
+                PatchScale::ANGULAR,
+                knots,
+            )
+        };
+        // Knots only at and outside the window ends: one polynomial piece,
+        // left to the fixed rule.
+        let ends = [-1.0, 0.0, 1.0, 2.0];
+        assert!(run((&ends, &ends)).expect("no work").is_none());
+
+        // Inside the cap: 400 × 400 one-point cells, area 2 · 1 · 1 up to the
+        // rounding of 160,000 summands.
+        let grid = |n: u32| -> Vec<f64> { (1..n).map(|i| f64::from(i) / f64::from(n)).collect() };
+        let fine = grid(400);
+        let inside = run((&fine, &fine))
+            .expect("within the cap")
+            .expect("aligned");
+        assert!((inside.area - 2.0).abs() <= 1e-10, "{}", inside.area);
+        // Past it, a typed refusal rather than an unbounded integration.
+        let finer = grid(600);
+        assert!(matches!(
+            run((&finer, &finer)),
+            Err(CheckError::IntegrationFailed(_))
+        ));
     }
 }
