@@ -10783,7 +10783,11 @@ fn parse_knot_values(group: &str) -> Option<Vec<f64>> {
 /// String literals are opaque: a `(`, `)` or `,` inside a name such as
 /// `'Curve (1)'` used to open a phantom group and shift every aggregate
 /// after it. `''` inside a string is an escaped quote.
-fn bspline_attr_layout(attrs: &str) -> (Vec<String>, Vec<String>) {
+///
+/// An unmatched `)` is accepted only as the entity's own closing parenthesis,
+/// with nothing after it; anywhere else it means an aggregate lost its `(`,
+/// and the layout is refused rather than read as a shifted group.
+fn bspline_attr_layout(attrs: &str) -> Option<(Vec<String>, Vec<String>)> {
     let mut tokens = Vec::new();
     let mut groups = Vec::new();
     let mut depth = 0_usize;
@@ -10817,6 +10821,9 @@ fn bspline_attr_layout(attrs: &str) -> (Vec<String>, Vec<String>) {
                 current.push(ch);
             }
             ')' => {
+                if depth == 0 && chars.clone().any(|rest| !rest.is_whitespace()) {
+                    return None;
+                }
                 current.push(ch);
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
@@ -10836,7 +10843,7 @@ fn bspline_attr_layout(attrs: &str) -> (Vec<String>, Vec<String>) {
     if !current.trim().is_empty() {
         tokens.push(current.trim().to_string());
     }
-    (tokens, groups)
+    Some((tokens, groups))
 }
 
 /// Refuse a knot list whose multiplicity aggregate does not pair one-to-one
@@ -10996,7 +11003,7 @@ fn parse_bspline_surface_attrs(
     Vec<f64>,
     Vec<f64>,
 )> {
-    let (tokens, groups) = bspline_attr_layout(attrs);
+    let (tokens, groups) = bspline_attr_layout(attrs)?;
 
     // tokens: bare values between top-level commas (name, degrees, enums)
     // groups: parenthesized structures at depth 0 (cp grid, mult lists, knot lists)
@@ -11130,7 +11137,7 @@ fn expand_knots(mults: &[u32], vals: &[f64]) -> Option<Vec<f64>> {
 /// Returns: `(degree, cp_refs, mults, knots)`
 #[allow(clippy::type_complexity)]
 fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, Vec<f64>)> {
-    let (tokens, groups) = bspline_attr_layout(attrs);
+    let (tokens, groups) = bspline_attr_layout(attrs)?;
     let mut degree = None;
     for tok in &tokens {
         if tok.starts_with('\'') || tok.starts_with('.') {
@@ -14218,6 +14225,15 @@ mod tests {
         assert!(
             curve_geometry(&body, 5).is_ok(),
             "spaced knot members parse"
+        );
+        // An aggregate that lost its `(` must not be read as a shifted group.
+        let body = format!(
+            "{points}#5=B_SPLINE_CURVE_WITH_KNOTS('',2,#1 #2 #3),\
+             .UNSPECIFIED.,.F.,.F.,(3,3),(0.,1.),.UNSPECIFIED.);"
+        );
+        assert!(
+            curve_geometry(&body, 5).is_err(),
+            "an unmatched `)` must be refused"
         );
         for mults in ["(2,1.5,2)", "(2,x,2)", "(2,-1,2)", "()"] {
             let body = format!(
