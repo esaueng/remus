@@ -183,3 +183,81 @@ fn rational_degree_one_corner_is_refused_and_inserted_knot_removed() {
     assert_eq!(removed.control_points(), segment.control_points());
     assert_eq!(removed.weights(), segment.weights());
 }
+
+/// Largest distance between `a` and `b` over `samples + 1` parameters of
+/// their shared domain.
+fn sampled_deviation(a: &NurbsCurve, b: &NurbsCurve, samples: u32) -> f64 {
+    let (lo, hi) = a.domain();
+    (0..=samples)
+        .map(|i| {
+            let t = lo + (hi - lo) * f64::from(i) / f64::from(samples);
+            (a.evaluate(t) - b.evaluate(t)).length()
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn collinear_rational_point_with_a_mismatched_weight_is_refused() {
+    // Review follow-up: x = 0, 1, 2 with weights 1, 100, 1. The knot point
+    // sits exactly on its Cartesian chord, but the weight pulls the whole
+    // first span toward x = 1. With s = 2t the old curve is
+    // x = 100s / (1 + 99s) against the chord's x = s; their gap peaks at
+    // s = 1/11 with 9/11. The previous check compared positions at the knot
+    // only and removed this at tolerance 0.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        vec![1.0, 100.0, 1.0],
+    );
+    let chord = polyline(
+        vec![0.0, 0.0, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        vec![1.0, 1.0],
+    );
+    let peak = sampled_deviation(&curve, &chord, 4400);
+    assert!((peak - 9.0 / 11.0).abs() < 1e-9, "premise: peak {peak}");
+    for tol in [0.0, 1e-6, 0.5, 0.8] {
+        assert!(
+            is_refused(&curve_knot_remove(&curve, 0.5, tol)),
+            "removed at tolerance {tol} despite a 9/11 deviation"
+        );
+    }
+    // The bound is 0.99 (|e - εP| / w_k with e = ε = 99); a tolerance
+    // above it accepts, and the result is the chord.
+    let removed = curve_knot_remove(&curve, 0.5, 1.0).expect("within tolerance 1");
+    assert!(sampled_deviation(&removed, &chord, 64) < 1e-15);
+}
+
+#[test]
+fn every_accepted_rational_removal_stays_within_its_tolerance() {
+    // Sweep weights, knot positions and an off-chord offset; whenever the
+    // removal is accepted, the sampled deviation of the result from the
+    // original must not exceed the tolerance it was accepted at.
+    let mut accepted = 0;
+    for &w_mid in &[0.2, 0.9, 1.0, 1.1, 3.0, 50.0] {
+        for &w_end in &[0.5, 1.0, 4.0] {
+            for &u in &[0.2, 0.5, 0.75] {
+                for &lift in &[0.0, 1e-3, 0.1] {
+                    for &tol in &[1e-9, 1e-3, 0.05, 0.3, 1.0] {
+                        let curve = polyline(
+                            vec![0.0, 0.0, u, 1.0, 1.0],
+                            &[[0.0, 0.0, 0.0], [3.0 * u, lift, 0.0], [3.0, 0.0, 0.0]],
+                            vec![1.0, w_mid, w_end],
+                        );
+                        if let Ok(removed) = curve_knot_remove(&curve, u, tol) {
+                            accepted += 1;
+                            let dev = sampled_deviation(&curve, &removed, 2000);
+                            assert!(
+                                dev <= tol + 1e-12,
+                                "w_mid {w_mid}, w_end {w_end}, u {u}, lift {lift}: \
+                                 accepted at {tol} with deviation {dev}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // The sweep must exercise acceptance, not only refusal.
+    assert!(accepted > 50, "only {accepted} removals accepted");
+}
