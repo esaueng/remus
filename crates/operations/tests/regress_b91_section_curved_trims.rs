@@ -290,22 +290,24 @@ fn b91_notched_torus_drops_the_removed_tube() {
     assert_area(area, 9.0 * PI, "y = 0");
 }
 
-/// A torus band between the parallels `v = ±π/3` of `R = 3, r = 1`, closed by
-/// an inner cylinder of radius 1 and two annular caps: the revolution of a
-/// profile whose outer side is the tube arc through `(4, 0)`.
-fn torus_band(topo: &mut Topology) -> SolidId {
+/// A torus band between the parallels `v = ±π/3` of major radius `major` and
+/// `r = 1`, closed by an inner cylinder of radius `major − 2` and two annular
+/// caps: the revolution of a profile whose outer side is the tube arc
+/// through `(major + 1, 0)`.
+fn torus_band(topo: &mut Topology, major: f64) -> SolidId {
     let h = (PI / 3.0).sin();
     let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
     let [a, b, c, d] = [
-        corner(1.0, -h),
-        corner(3.5, -h),
-        corner(3.5, h),
-        corner(1.0, h),
+        corner(major - 2.0, -h),
+        corner(major + 0.5, -h),
+        corner(major + 0.5, h),
+        corner(major - 2.0, h),
     ]
     .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
-    // Normal −y puts the circle's v-axis on +z, so B → C runs through (4, 0).
+    // Normal −y puts the circle's v-axis on +z, so B → C runs through
+    // (major + 1, 0).
     let tube = Circle3D::new_with_ref(
-        Point3::new(3.0, 0.0, 0.0),
+        Point3::new(major, 0.0, 0.0),
         Vec3::new(0.0, -1.0, 0.0),
         1.0,
         Vec3::new(1.0, 0.0, 0.0),
@@ -348,7 +350,7 @@ fn torus_band(topo: &mut Topology) -> SolidId {
 #[test]
 fn b91_section_flush_with_one_rim_keeps_clipping() {
     let mut topo = Topology::new();
-    let solid = torus_band(&mut topo);
+    let solid = torus_band(&mut topo, 3.0);
     let h = (PI / 3.0).sin();
     // Pappus: the rectangle 1 ≤ x ≤ 3.5, |z| ≤ h, plus the tube's segment
     // beyond its chord at x = 3.5 (angle 2π/3, centroid at
