@@ -972,7 +972,8 @@ impl Writer {
         self.exceeded
     }
 
-    /// Whether a NaN or infinite float was written (as `null`).
+    /// Whether a NaN or infinite float was written (as `null`). Floats a
+    /// spent byte budget skipped are not inspected.
     pub const fn non_finite(&self) -> bool {
         self.non_finite
     }
@@ -1035,8 +1036,8 @@ impl Writer {
     /// Writes a float like `serde_json`: `null` when not finite.
     #[inline(never)]
     pub fn f64(&mut self, value: f64) {
-        self.non_finite |= !value.is_finite();
         if !self.exceeded {
+            self.non_finite |= !value.is_finite();
             let before = self.out.len();
             push_f64(&mut self.out, value);
             self.settle(before);
@@ -1088,10 +1089,10 @@ impl Writer {
     /// Writes `[f64, ...]`.
     #[inline(never)]
     pub fn f64s(&mut self, values: &[f64]) {
-        self.non_finite |= values.iter().any(|value| !value.is_finite());
         if self.exceeded {
             return;
         }
+        self.non_finite |= values.iter().any(|value| !value.is_finite());
         let before = self.out.len();
         self.out.push(b'[');
         for (index, &value) in values.iter().enumerate() {
