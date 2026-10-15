@@ -175,6 +175,16 @@ fn check_dense_entries(entries: usize) -> Result<(), MathError> {
 /// parameter (finite points whose chord lengths overflow) is refused as out
 /// of range, as [`interpolate_with_params`] refuses it.
 fn check_increasing_params(params: &[f64]) -> Result<(), MathError> {
+    check_finite_params(params)?;
+    match params.windows(2).position(|w| w[1] <= w[0]) {
+        Some(i) => Err(MathError::CoincidentFitPoints { index: i + 1 }),
+        None => Ok(()),
+    }
+}
+
+/// Chord-length parameters are NaN when finite points' chord lengths
+/// overflow; refuse them before any system is assembled from them.
+fn check_finite_params(params: &[f64]) -> Result<(), MathError> {
     if let Some(&value) = params.iter().find(|t| !t.is_finite()) {
         return Err(MathError::ParameterOutOfRange {
             value,
@@ -182,10 +192,7 @@ fn check_increasing_params(params: &[f64]) -> Result<(), MathError> {
             max: 1.0,
         });
     }
-    match params.windows(2).position(|w| w[1] <= w[0]) {
-        Some(i) => Err(MathError::CoincidentFitPoints { index: i + 1 }),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 /// Interpolate a NURBS curve through a set of data points.
@@ -300,7 +307,9 @@ pub fn interpolate_with_params(
 /// of [`interpolate`] apply, and the dense normal equations (`n·(m + 6) +
 /// 2·m²` entries for `n` points and `m` control points, six per row for its
 /// allocation) are held to
-/// [`MAX_DENSE_FIT_ENTRIES`].
+/// [`MAX_DENSE_FIT_ENTRIES`]. A non-finite chord-length parameter (finite
+/// points whose chord lengths overflow) is refused as
+/// [`MathError::ParameterOutOfRange`] before anything is assembled.
 pub fn approximate(
     points: &[Point3],
     degree: usize,
@@ -350,6 +359,7 @@ pub fn approximate(
     )?;
 
     let params = chord_length_params(points);
+    check_finite_params(&params)?;
     let knots = build_approximation_knots(&params, p, m, n);
 
     // Solve least-squares: N^T * N * P = N^T * Q
