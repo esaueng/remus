@@ -492,6 +492,36 @@ fn unmeasurable_edges_are_kept() {
     assert!(!edge_is_degenerate(&topo, line, 1e-14).unwrap());
 }
 
+/// A far-out parabola arc whose closed-form length cancels in rounding:
+/// 5.533589865e-5 computed, 5.533590670e-5 exact, chord 5.533590501e-5. At a
+/// tolerance between the computed and exact lengths the edge must stay.
+#[test]
+fn parabola_bound_survives_cancellation() {
+    use remus_math::curves::Parabola3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let parabola = Parabola3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        6.642_779_282_578_782,
+    )
+    .unwrap();
+    let (t0, t1) = (-1_192.586_040_766_271_3, -1_192.586_040_149_860_5);
+    let a = topo.add_vertex(Vertex::new(parabola.evaluate(t0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(parabola.evaluate(t1), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Parabola(parabola.clone()));
+    arc.set_trim(Some((t0, t1)));
+    let arc = topo.add_edge(arc);
+
+    let tol = 5.533_590_58e-5;
+    assert!(
+        parabola.arc_length(t0, t1) < tol,
+        "the cancellation this pins"
+    );
+    assert!(!edge_is_degenerate(&topo, arc, tol * tol).unwrap());
+}
+
 /// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
 /// bounds its cap alone, so dropping it from the lateral wire would unpair it.
 #[test]
