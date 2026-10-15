@@ -12,6 +12,7 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = {version = "1", features = ["derive"]}
 libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
+remus-algo = {path = "../crates/algo"}
 remus-io = {path = "../crates/io"}
 remus-math = {path = "../crates/math"}
 remus-offset = {path = "../crates/offset"}
@@ -146,3 +147,24 @@ doc = false
 name = "gcs"
 path = "fuzz_targets/gcs.rs"
 test = true
+
+[[bin]]
+bench = false
+doc = false
+name = "step_bodies"
+path = "fuzz_targets/step_bodies.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "mesh_import"
+path = "fuzz_targets/mesh_import.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "persistent_ref"
+path = "fuzz_targets/persistent_ref.rs"
+test = false

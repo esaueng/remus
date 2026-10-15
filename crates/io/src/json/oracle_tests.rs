@@ -273,11 +273,15 @@ fn writer_edge_cases_match_serde_json() {
     ] {
         let mut writer = Writer::new(None);
         writer.f64(value);
+        assert_eq!(writer.non_finite(), !value.is_finite(), "{value}");
         assert_eq!(
             writer.finish(),
             serde_json::to_vec(&value).unwrap(),
             "{value}"
         );
+        let mut writer = Writer::new(None);
+        writer.f64s(&[1.0, value]);
+        assert_eq!(writer.non_finite(), !value.is_finite(), "[1, {value}]");
     }
     let mut text = String::new();
     for code in 0..=0x80_u32 {
@@ -287,6 +291,18 @@ fn writer_edge_cases_match_serde_json() {
     let mut writer = Writer::new(None);
     writer.string(&text);
     assert_eq!(writer.finish(), serde_json::to_vec(&text).unwrap());
+}
+
+/// Once the budget is spent the writer neither scans nor flags skipped
+/// floats, so a refused document stays a `LimitExceeded`.
+#[test]
+fn writer_ignores_non_finite_values_past_the_budget() {
+    let mut writer = Writer::new(Some(1));
+    writer.raw(b"12");
+    assert!(writer.exceeded());
+    writer.f64(f64::NAN);
+    writer.f64s(&[1.0, f64::INFINITY]);
+    assert!(!writer.non_finite());
 }
 
 #[test]

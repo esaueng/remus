@@ -20,11 +20,11 @@ pub(crate) const MAX_STACK_DEGREE: usize = 10;
 pub fn find_span(n: usize, degree: usize, u: f64, knots: &[f64]) -> usize {
     // Clamp to the upper end of the parameter domain.
     if u >= knots[n] {
-        return n - 1;
+        return last_nonempty_span(n, degree, knots);
     }
     // Clamp to the lower end.
     if u <= knots[degree] {
-        return degree;
+        return first_nonempty_span(n, degree, knots);
     }
 
     // Binary search for the span.
@@ -42,6 +42,30 @@ pub fn find_span(n: usize, degree: usize, u: f64, knots: &[f64]) -> usize {
     mid
 }
 
+/// The last span `[knots[i], knots[i+1])` with positive length, for a
+/// parameter clamped to the domain's upper end.
+///
+/// An end knot repeated more than `degree + 1` times leaves `knots[n-1] ==
+/// knots[n]`, and the basis functions of that empty span divide zero by zero.
+/// A clamped vector has a non-empty last span, so this is `n - 1`.
+fn last_nonempty_span(n: usize, degree: usize, knots: &[f64]) -> usize {
+    let mut span = n - 1;
+    while span > degree && knots[span] >= knots[span + 1] {
+        span -= 1;
+    }
+    span
+}
+
+/// The first span with positive length, for a parameter clamped to the
+/// domain's lower end. See [`last_nonempty_span`].
+fn first_nonempty_span(n: usize, degree: usize, knots: &[f64]) -> usize {
+    let mut span = degree;
+    while span < n - 1 && knots[span] >= knots[span + 1] {
+        span += 1;
+    }
+    span
+}
+
 /// Span lookup with an O(1) hint for uniform knot vectors.
 ///
 /// `step` is the constant spacing between internal knots (as returned by
@@ -51,10 +75,10 @@ pub fn find_span(n: usize, degree: usize, u: f64, knots: &[f64]) -> usize {
 #[must_use]
 pub fn find_span_uniform(n: usize, degree: usize, u: f64, knots: &[f64], step: f64) -> usize {
     if u >= knots[n] {
-        return n - 1;
+        return last_nonempty_span(n, degree, knots);
     }
     if u <= knots[degree] {
-        return degree;
+        return first_nonempty_span(n, degree, knots);
     }
     let span = (degree + ((u - knots[degree]) / step) as usize).min(n - 1);
     // Rounded division can put an otherwise uniform hint on the wrong side
@@ -403,17 +427,18 @@ pub fn ders_basis_funs(
         .collect()
 }
 
-/// Binomial coefficient C(n, k) via iterative multiplication.
-pub(crate) fn binomial(n: usize, k: usize) -> usize {
+/// Binomial coefficient C(n, k) in `u64`, or `None` when an intermediate
+/// product overflows (from about n = 62). Exact wherever it returns.
+pub(crate) fn checked_binomial(n: usize, k: usize) -> Option<u64> {
     if k > n {
-        return 0;
+        return Some(0);
     }
     let k = k.min(n - k);
-    let mut result = 1usize;
+    let mut result = 1u64;
     for i in 0..k {
-        result = result * (n - i) / (i + 1);
+        result = result.checked_mul((n - i) as u64)? / (i as u64 + 1);
     }
-    result
+    Some(result)
 }
 
 #[cfg(test)]

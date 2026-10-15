@@ -343,7 +343,7 @@ pub fn project_point_to_surface(
     point: Point3,
     tolerance: f64,
 ) -> Result<SurfaceProjection, MathError> {
-    let seed = surface_coarse_search(surface, point);
+    let seed = surface.seed_grid().nearest(point);
     refine_from(surface, point, tolerance, seed, MAX_ITERATIONS)
 }
 
@@ -363,15 +363,26 @@ pub fn project_point_to_surface(
 /// [`project_point_to_surface_seeded`] asks for.
 #[derive(Debug, Clone)]
 pub struct SurfaceSeedGrid {
-    /// `(u, v, S(u, v))` in the same order `surface_coarse_search` walks them,
-    /// so nearest-node ties resolve identically.
+    /// `(u, v, S(u, v))` in the order the grid is scanned, so nearest-node
+    /// ties resolve the same way on every call.
     nodes: Vec<(f64, f64, Point3)>,
+    /// `(u_min, v_min)`: the seed when no node compares closer (a NaN point
+    /// or surface), as the uncached scan always answered.
+    origin: (f64, f64),
 }
 
 impl SurfaceSeedGrid {
-    /// Evaluate the coarse grid for `surface`.
+    /// The coarse grid for `surface`.
+    ///
+    /// The grid is evaluated once per surface and kept with it, so this is a
+    /// copy of 81 nodes rather than 81 surface evaluations.
     #[must_use]
     pub fn for_surface(surface: &NurbsSurface) -> Self {
+        surface.seed_grid().clone()
+    }
+
+    /// Evaluate the coarse grid for `surface`.
+    pub(crate) fn build(surface: &NurbsSurface) -> Self {
         let (u_min, u_max, v_min, v_max) = surface_domain(surface);
         let n = SURFACE_GRID_SIZE;
         let mut nodes = Vec::with_capacity((n + 1) * (n + 1));
@@ -384,13 +395,16 @@ impl SurfaceSeedGrid {
                 nodes.push((u, v, surface.evaluate(u, v)));
             }
         }
-        Self { nodes }
+        Self {
+            nodes,
+            origin: (u_min, v_min),
+        }
     }
 
-    /// The grid node nearest `point`, matching `surface_coarse_search`'s scan
-    /// order and its strict `<` tie-break.
+    /// The grid node nearest `point`: the first node in scan order with the
+    /// smallest squared distance (strict `<` tie-break).
     fn nearest(&self, point: Point3) -> (f64, f64) {
-        let mut best = (0.0, 0.0);
+        let mut best = self.origin;
         let mut best_dist_sq = f64::INFINITY;
         for &(u, v, pt) in &self.nodes {
             let d_sq = (pt - point).length_squared();
@@ -544,6 +558,8 @@ fn surface_domain(surface: &NurbsSurface) -> (f64, f64, f64, f64) {
 /// Coarse search: evaluate surface on a uniform grid and find the closest
 /// grid point.
 #[allow(clippy::cast_precision_loss)]
+/// The uncached grid scan, kept as the oracle the cached seed grid must match.
+#[cfg(test)]
 fn surface_coarse_search(surface: &NurbsSurface, point: Point3) -> (f64, f64) {
     let (u_min, u_max, v_min, v_max) = surface_domain(surface);
 
@@ -943,6 +959,58 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_cached_grid_seeds_exactly_like_the_uncached_scan() {
+        // The surface keeps its grid after the first projection, so the seed
+        // must be the uncached scan's, bit for bit, including the fallback
+        // when no node compares closer (a NaN query).
+        let rational = NurbsSurface::new(
+            2,
+            3,
+            vec![0.0, 0.0, 0.0, 0.3, 1.0, 1.0, 1.0],
+            vec![-2.0, -2.0, -2.0, -2.0, 5.0, 5.0, 5.0, 5.0],
+            (0..4)
+                .map(|i| {
+                    (0..4)
+                        .map(|j| {
+                            let (x, y) = (f64::from(i), f64::from(j));
+                            Point3::new(x, y, (x * 0.7 - y * 0.4).sin())
+                        })
+                        .collect()
+                })
+                .collect(),
+            (0..4)
+                .map(|i| {
+                    (0..4)
+                        .map(|j| 1.0 + 0.25 * f64::from((i + j) % 3))
+                        .collect()
+                })
+                .collect(),
+        )
+        .expect("valid rational patch");
+        for s in [dome_patch(), rational] {
+            let grid = s.seed_grid();
+            for i in -2..=8 {
+                for j in -2..=8 {
+                    for h in [-3.0, 0.0, 0.4, 25.0] {
+                        let p = Point3::new(f64::from(i) * 0.45, f64::from(j) * 0.4, h);
+                        let (want, got) = (surface_coarse_search(&s, p), grid.nearest(p));
+                        assert_eq!(want.0.to_bits(), got.0.to_bits(), "u seed at {p:?}");
+                        assert_eq!(want.1.to_bits(), got.1.to_bits(), "v seed at {p:?}");
+                    }
+                }
+            }
+            let nan = Point3::new(f64::NAN, 0.0, 0.0);
+            let (want, got) = (surface_coarse_search(&s, nan), grid.nearest(nan));
+            assert_eq!(
+                (want.0.to_bits(), want.1.to_bits()),
+                (got.0.to_bits(), got.1.to_bits())
+            );
+            // Clones share the grid rather than rebuilding it.
+            assert!(std::ptr::eq(s.clone().seed_grid(), grid));
         }
     }
 

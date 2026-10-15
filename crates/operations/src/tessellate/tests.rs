@@ -627,7 +627,7 @@ fn nonplanar_cdt_survives_steiner_split_boundary() {
     // Minimal shared pool: the two endpoints of each line edge.
     let mut merged = TriangleMesh::default();
     let mut edge_global_indices = DetHashMap::default();
-    let mut point_to_global = DetHashMap::default();
+    let mut point_to_global = PointMergeMap::default();
     for &e in &edge_ids {
         let edge = topo.edge(e).unwrap();
         let mut ids = Vec::new();
@@ -4371,7 +4371,7 @@ fn b40_pole_patch_meshes_the_enclosed_pole_on_either_winding() {
             |t| 1.047 + 0.17 * (3.0 * t).sin(),
             |t| 2e-5 * (5.0 * t).cos(),
         );
-        let mut lookup = DetHashMap::default();
+        let mut lookup = super::PointMergeMap::default();
         assert!(super::sphere_pole_patch::fill_sphere_pole_winding_patch(
             &sphere,
             &ids,
@@ -4441,7 +4441,7 @@ fn b40_pole_patch_tilted_circle_matches_cap_area() {
             id
         })
         .collect();
-    let mut lookup = DetHashMap::default();
+    let mut lookup = super::PointMergeMap::default();
     assert!(super::sphere_pole_patch::fill_sphere_pole_winding_patch(
         &sphere,
         &ids,
@@ -4474,7 +4474,7 @@ fn b40_pole_patch_declines_loops_that_do_not_wind_once() {
     let fill =
         |sphere: &remus_math::surfaces::SphericalSurface, mesh: &mut TriangleMesh, ids: &[u32]| {
             let before = (mesh.positions.len(), mesh.indices.len());
-            let mut lookup = DetHashMap::default();
+            let mut lookup = super::PointMergeMap::default();
             let ok = super::sphere_pole_patch::fill_sphere_pole_winding_patch(
                 sphere,
                 ids,

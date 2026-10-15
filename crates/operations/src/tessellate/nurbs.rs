@@ -516,6 +516,16 @@ fn safe_normal(surface: &remus_math::nurbs::surface::NurbsSurface, u: f64, v: f6
     surface.normal(u, v).unwrap_or(Vec3::new(0.0, 0.0, 1.0))
 }
 
+/// `(surface.evaluate(u, v), safe_normal(surface, u, v))` from one basis solve.
+fn point_and_safe_normal(
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    u: f64,
+    v: f64,
+) -> (Point3, Vec3) {
+    let (point, normal) = surface.point_and_normal(u, v);
+    (point, normal.unwrap_or(Vec3::new(0.0, 0.0, 1.0)))
+}
+
 /// Whether a quad cell's normals turn by more than `angular_tol` across any
 /// pair of its sampled corners/center.
 ///
@@ -562,11 +572,11 @@ fn cell_refinement_error(
     let u_mid = 0.5 * (u_min + u_max);
     let v_mid = 0.5 * (v_min + v_max);
 
-    let p00 = surface.evaluate(u_min, v_min);
-    let p10 = surface.evaluate(u_max, v_min);
-    let p11 = surface.evaluate(u_max, v_max);
-    let p01 = surface.evaluate(u_min, v_max);
-    let p_mid = surface.evaluate(u_mid, v_mid);
+    let (p00, n00) = point_and_safe_normal(surface, u_min, v_min);
+    let (p10, n10) = point_and_safe_normal(surface, u_max, v_min);
+    let (p11, n11) = point_and_safe_normal(surface, u_max, v_max);
+    let (p01, n01) = point_and_safe_normal(surface, u_min, v_max);
+    let (p_mid, n_mid) = point_and_safe_normal(surface, u_mid, v_mid);
 
     let bilinear_mid = Point3::new(
         0.25 * (p00.x() + p10.x() + p11.x() + p01.x()),
@@ -575,13 +585,7 @@ fn cell_refinement_error(
     );
     let sag = (p_mid - bilinear_mid).length();
 
-    let normals = [
-        safe_normal(surface, u_min, v_min),
-        safe_normal(surface, u_max, v_min),
-        safe_normal(surface, u_max, v_max),
-        safe_normal(surface, u_min, v_max),
-        safe_normal(surface, u_mid, v_mid),
-    ];
+    let normals = [n00, n10, n11, n01, n_mid];
 
     let mut max_normal_dev = 0.0_f64;
     for i in 0..normals.len() {
@@ -923,11 +927,9 @@ pub(super) fn tessellate_nurbs(
         if let Some(&idx) = vertex_map.get(&key) {
             return idx;
         }
-        let &mut (pos, nrm) = eval_cache.entry(key).or_insert_with(|| {
-            let p = surface.evaluate(u, v);
-            let n = safe_normal(surface, u, v);
-            (p, n)
-        });
+        let &mut (pos, nrm) = eval_cache
+            .entry(key)
+            .or_insert_with(|| point_and_safe_normal(surface, u, v));
         #[allow(clippy::cast_possible_truncation)]
         let idx = positions.len() as u32;
         positions.push(pos);

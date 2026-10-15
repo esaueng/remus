@@ -1284,6 +1284,17 @@ impl std::fmt::Debug for SweepOptions {
     }
 }
 
+/// Refuse a scale law that returned a non-finite or non-positive scale: a NaN
+/// read as "no scaling" and an infinite one put the profile at infinity.
+fn validate_scales(scales: &[f64]) -> Result<(), crate::OperationsError> {
+    match scales.iter().find(|s| !s.is_finite() || **s <= 0.0) {
+        Some(scale) => Err(crate::OperationsError::InvalidInput {
+            reason: format!("sweep scale law must return finite positive scales, got {scale}"),
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Sweep a face along a path with advanced options.
 ///
 /// Supports scaling laws (tapered sweep) and multiple contact modes.
@@ -1291,8 +1302,36 @@ impl std::fmt::Debug for SweepOptions {
 /// # Errors
 ///
 /// Returns errors for invalid input (see [`sweep`]).
-#[allow(clippy::too_many_lines)]
 pub fn sweep_with_options(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &NurbsCurve,
+    options: &SweepOptions,
+) -> Result<SolidId, crate::OperationsError> {
+    // Every branch below, including the corner and closed-path builders that
+    // never evaluate the law, refuses a law that is non-finite or non-positive
+    // at the probe parameters k/64, before the profile is touched. The probe
+    // is a consistent refusal, not a certificate (no sampling certifies a
+    // closure): the scales a branch actually builds with are checked again,
+    // inside the transaction, and a branch that never evaluates the law
+    // cannot build with a non-finite scale.
+    if let Some(law) = options.scale_law.as_ref() {
+        #[allow(clippy::cast_precision_loss)]
+        let sampled: Vec<f64> = (0..=SCALE_LAW_PROBES)
+            .map(|k| law(k as f64 / SCALE_LAW_PROBES as f64))
+            .collect();
+        validate_scales(&sampled)?;
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        sweep_with_options_impl(topo, profile, path, options)
+    })
+}
+
+/// Parameters at which [`sweep_with_options`] checks a scale law up front.
+const SCALE_LAW_PROBES: usize = 64;
+
+#[allow(clippy::too_many_lines)]
+fn sweep_with_options_impl(
     topo: &mut Topology,
     profile: FaceId,
     path: &NurbsCurve,
@@ -1445,6 +1484,7 @@ pub fn sweep_with_options(
             options.scale_law.as_ref().map_or(1.0, |law| law(t))
         })
         .collect();
+    validate_scales(&scales)?;
 
     assemble_swept_solid(
         topo,
@@ -2525,6 +2565,7 @@ fn sweep_round(
     } else {
         vec![1.0; frames.len()]
     };
+    validate_scales(&scales)?;
 
     assemble_swept_solid(
         topo,

@@ -26,8 +26,10 @@ use crate::CheckError;
 ///   rectangle) always refine: each initial patch is compared with its four
 ///   quadrants until the estimator converges.
 /// * **Trimmed curved faces, NURBS faces and torus tube bands** keep the
-///   historical fixed composite rule while `adaptive_eps` and `max_depth` are
-///   both at their defaults, so default measurements do not move. Any other
+///   fixed composite rule while `adaptive_eps` and `max_depth` are both at
+///   their defaults (default measurements are not refined); on a NURBS face
+///   whose window holds interior knots that rule's cells are aligned to the
+///   knots, so it converges with `gauss_order` (B131). Any other
 ///   pair refines them as sliced domains: the outer axis is cut at every trim
 ///   vertex (or, on a torus band, every rim sample) and, on a NURBS carrier,
 ///   at every interior knot; inner spans are split at interior knots too, so

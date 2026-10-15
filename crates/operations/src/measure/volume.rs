@@ -279,23 +279,107 @@ fn torus_wire_wraps_tube(
     (winding.abs() - TAU).abs() <= 1.0e-6
 }
 
-/// Count mesh edges incident to a number of triangles other than 2 (boundary or
-/// non-manifold edges). Zero means a closed 2-manifold.
+/// The two edge censuses the whole-solid mesh route reads, from one pass over
+/// a triangle index list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EdgeCensus {
+    /// Undirected edges (a degenerate `(i, i)` edge included) used by a
+    /// number of triangles other than 2: boundary or non-manifold edges.
+    bad_edges: usize,
+    /// Whether every non-degenerate undirected edge is run as often in one
+    /// direction as in the other (see [`directed_edges_cancel`]).
+    edges_cancel: bool,
+}
+
+/// [`EdgeCensus`] of the triangles in `indices` (trailing indices short of a
+/// triangle ignored).
 ///
-/// The undirected edge keys are sorted rather than hashed: each run of equal
-/// keys is one edge and its length the edge's triangle count, so the count
-/// is the hash-map census's exactly (see the oracle in this module's tests).
-fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
-    let mut keys: Vec<(u32, u32)> = Vec::with_capacity(mesh.indices.len());
-    for tri in mesh.indices.chunks_exact(3) {
-        for &(i, j) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
-            keys.push(if i < j { (i, j) } else { (j, i) });
+/// Each edge use is bucketed under its smaller endpoint by a counting sort,
+/// then each bucket is sorted by the larger endpoint: a run of equal larger
+/// endpoints is one undirected edge, so the counts are those of sorting
+/// every `(smaller, larger)` key at once. The buckets average a handful of
+/// uses, where the whole-list sort was `O(n log n)` over three keys per
+/// triangle. The hash-map censuses this replaces are the oracle (see this
+/// module's tests).
+fn edge_census(indices: &[u32]) -> EdgeCensus {
+    let triangles = indices.chunks_exact(3);
+    let Some(vertex_count) = triangles
+        .clone()
+        .flatten()
+        .max()
+        .map(|&max| max as usize + 1)
+    else {
+        return EdgeCensus {
+            bad_edges: 0,
+            edges_cancel: true,
+        };
+    };
+    let uses = |tri: &[u32]| [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
+    let mut starts = vec![0_usize; vertex_count + 1];
+    for tri in triangles.clone() {
+        for (i, j) in uses(tri) {
+            starts[i.min(j) as usize + 1] += 1;
         }
     }
-    keys.sort_unstable();
-    keys.chunk_by(|a, b| a == b)
-        .filter(|run| run.len() != 2)
-        .count()
+    for v in 0..vertex_count {
+        starts[v + 1] += starts[v];
+    }
+    // The larger endpoint in the high bits and the direction in the low two
+    // (0 down, 1 degenerate, 2 up), so sorting a bucket groups by edge.
+    let mut fill = starts.clone();
+    let mut keyed = vec![0_u64; starts[vertex_count]];
+    for tri in triangles {
+        for (i, j) in uses(tri) {
+            let direction = match i.cmp(&j) {
+                std::cmp::Ordering::Less => 2,
+                std::cmp::Ordering::Equal => 1,
+                std::cmp::Ordering::Greater => 0,
+            };
+            let slot = &mut fill[i.min(j) as usize];
+            keyed[*slot] = (u64::from(i.max(j)) << 2) | direction;
+            *slot += 1;
+        }
+    }
+    let mut bad_edges = 0;
+    let mut edges_cancel = true;
+    for v in 0..vertex_count {
+        let bucket = &mut keyed[starts[v]..starts[v + 1]];
+        #[cfg(test)]
+        CENSUS_BUCKET_WORK.with(|work| work.set(work.get() + bucket.len() * bucket.len()));
+        bucket.sort_unstable();
+        for run in bucket.chunk_by(|a, b| a >> 2 == b >> 2) {
+            if run.len() != 2 {
+                bad_edges += 1;
+            }
+            let net: i64 = run
+                .iter()
+                .map(|&k| match k & 3 {
+                    2 => 1,
+                    0 => -1,
+                    _ => 0,
+                })
+                .sum();
+            edges_cancel &= net == 0;
+        }
+    }
+    EdgeCensus {
+        bad_edges,
+        edges_cancel,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Sum over [`edge_census`] buckets of the squared bucket length on this
+    /// thread: a bound on the bucket sorts' comparisons, independent of the
+    /// host. A single whole-list bucket would make it quadratic in the uses.
+    static CENSUS_BUCKET_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count mesh edges incident to a number of triangles other than 2 (boundary or
+/// non-manifold edges). Zero means a closed 2-manifold.
+fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
+    edge_census(&mesh.indices).bad_edges
 }
 
 /// Whether `BK_VOL_TRACE` is set, resolved once per process.
@@ -462,7 +546,39 @@ fn required_closed_mesh_volume_with(
     };
     let volume = signed_volume_from_mesh(&retried);
     vol_trace(|| format!("{why}: closed clamp mesh instead of refusing -> {volume}"));
-    Ok((volume > 1e-12).then_some(volume))
+    Ok(enclosed_mesh_volume(&retried, volume))
+}
+
+/// Below this fraction of the total magnitude of its tetrahedra, a mesh's
+/// volume is round-off of a mesh that encloses nothing, not material. The
+/// floor follows the sum's own scale: an absolute `1e-12` turned away every
+/// closed mesh of a body under about 1e-4 across, and a floor on the bounding
+/// box would turn away a slender body that fills little of its box (B127).
+const MESH_VOLUME_FLOOR: f64 = 1e-12;
+
+/// `volume`, the volume of `mesh`, when it clears [`MESH_VOLUME_FLOOR`]
+/// against the magnitudes of the mesh's tetrahedra about its own centre.
+///
+/// Only a mesh whose directed edges cancel has a volume that is the same
+/// about every point (see [`summation_point`]). One with a face wound the
+/// wrong way is summed about the world origin, so its sum grows with its
+/// distance from it and says nothing about its size; it keeps the absolute
+/// `1e-12` floor it always had.
+fn enclosed_mesh_volume(mesh: &tessellate::TriangleMesh, volume: f64) -> Option<f64> {
+    if !directed_edges_cancel(mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]])) {
+        return (volume > 1e-12).then_some(volume);
+    }
+    let reference = local_reference(mesh.indices.iter().map(|&i| mesh.positions[i as usize]))?;
+    let magnitude: f64 = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            six_tetra_volume(reference, a, b, c).abs()
+        })
+        .sum::<f64>()
+        / 6.0;
+    (volume.is_finite() && volume > MESH_VOLUME_FLOOR * magnitude).then_some(volume)
 }
 
 /// [`required_closed_mesh_volume`] on an already built whole-solid mesh.
@@ -472,10 +588,12 @@ fn closed_mesh_or_exact_volume(
     mesh: &tessellate::TriangleMesh,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    if mesh_is_closed(mesh) {
-        let volume = signed_volume_from_mesh(mesh);
+    // One census answers both the closure test and the summation point.
+    let census = edge_census(&mesh.indices);
+    if !mesh.indices.is_empty() && census.bad_edges == 0 {
+        let volume = (whole_mesh_six_volume_about(mesh, census.edges_cancel) / 6.0).abs();
         vol_trace(|| format!("{why}: closed whole-solid mesh -> {volume}"));
-        return Ok((volume > 1e-12).then_some(volume));
+        return Ok(enclosed_mesh_volume(mesh, volume));
     }
     let exact = open_mesh_exact_volume(topo, solid, why);
     vol_trace(|| format!("{why}: open whole-solid mesh -> exact fallback {exact:?}"));
@@ -2507,7 +2625,14 @@ fn solid_volume_uncached(
     let mesh = whole_solid_mesh(topo, solid, deflection)?;
     if !mesh.indices.is_empty() {
         let vol = signed_volume_from_mesh(&mesh);
-        if vol > 1e-12 {
+        // The relative floor is for closed meshes; an open one read here keeps
+        // the absolute floor that sends a near-empty sum to the per-face route.
+        let encloses = if mesh_is_closed(&mesh) {
+            enclosed_mesh_volume(&mesh, vol).is_some()
+        } else {
+            vol > 1e-12
+        };
+        if encloses {
             vol_trace(|| {
                 format!(
                     "final whole-solid mesh ({} bad edges) -> {vol}",
@@ -2633,9 +2758,14 @@ fn six_tetra_volume(reference: Point3, p0: Point3, p1: Point3, p2: Point3) -> f6
 /// Six times the signed tetrahedra sum over a whole-solid mesh, about its
 /// [`summation_point`].
 fn whole_mesh_six_volume(mesh: &tessellate::TriangleMesh) -> f64 {
+    whole_mesh_six_volume_about(mesh, edge_census(&mesh.indices).edges_cancel)
+}
+
+/// [`whole_mesh_six_volume`] given its [`EdgeCensus::edges_cancel`].
+fn whole_mesh_six_volume_about(mesh: &tessellate::TriangleMesh, edges_cancel: bool) -> f64 {
     let triangles = || mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]);
     let reference = summation_point(
-        directed_edges_cancel(triangles()),
+        edges_cancel,
         mesh.indices.iter().map(|&i| mesh.positions[i as usize]),
     );
     triangles()
@@ -3680,6 +3810,27 @@ fn analytic_torus_signed_volume(
         }
     }
 
+    // A wire of closed seams alone, each run once each way (`make_torus`, a
+    // torus thickened whole), bounds the complete torus; its single vertex
+    // gives no window, and reading it as an empty one dropped the face.
+    let whole = wire.edges().iter().all(|oe| {
+        let uses: Vec<bool> = wire
+            .edges()
+            .iter()
+            .filter(|o| o.edge() == oe.edge())
+            .map(remus_topology::wire::OrientedEdge::is_forward)
+            .collect();
+        uses.len() == 2
+            && uses[0] != uses[1]
+            && topo
+                .edge(oe.edge())
+                .is_ok_and(remus_topology::edge::Edge::is_closed)
+    });
+    if whole {
+        u_vals = vec![0.0, std::f64::consts::TAU];
+        v_vals = vec![0.0, std::f64::consts::TAU];
+    }
+
     let v_min = v_vals.iter().copied().fold(f64::INFINITY, f64::min);
     let v_max = v_vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if (v_max - v_min).abs() < 1e-15 {
@@ -3700,7 +3851,9 @@ fn analytic_torus_signed_volume(
         let mut sorted = v_vals.clone();
         sorted.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         sorted.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-        if sorted.len() < 3 {
+        if whole {
+            (v_min, v_max)
+        } else if sorted.len() < 3 {
             if (v_max - v_min) > std::f64::consts::PI + 1e-9 {
                 return Err(crate::OperationsError::InvalidInput {
                     reason:
@@ -3714,7 +3867,11 @@ fn analytic_torus_signed_volume(
         }
     };
 
-    let u_range = compute_angular_range(&mut u_vals);
+    let u_range = if whole {
+        (0.0, std::f64::consts::TAU)
+    } else {
+        compute_angular_range(&mut u_vals)
+    };
 
     let big_r = tor.major_radius();
     let small_r = tor.minor_radius();
@@ -4067,11 +4224,218 @@ impl SignedTriangle {
         }));
         summation_point(cancel, triangles.iter().flat_map(|t| t.points))
     }
+
+    /// Every face of `solid` read as signed triangles when each one is a
+    /// planar triangle of line edges, else `None`.
+    ///
+    /// A face may be pierced by holes bounded by line edges: each hole adds a
+    /// fan over its polygon wound against the face's triangle, so its area
+    /// subtracts, and an island nested inside a hole one wound with it. Reading the outer triangle alone credited the removed
+    /// patch, and with the hole's edges missing the directed edges could not
+    /// cancel, so the sum also moved with the body (B126). The winding comes
+    /// from the triangle's own normal rather than the hole wire's stored
+    /// direction, which no caller guarantees. The fan's diagonals cancel
+    /// among themselves, leaving the hole's own edges to cancel against the
+    /// walls that use them.
+    fn of_solid(
+        topo: &Topology,
+        solid: SolidId,
+    ) -> Result<Option<Vec<Self>>, crate::OperationsError> {
+        use remus_topology::face::FaceSurface;
+
+        let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+        let mut triangles: Vec<Self> = Vec::with_capacity(faces.len());
+        for fid in faces {
+            let face = topo.face(fid)?;
+            if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+                return Ok(None);
+            }
+            let Some(outer) = line_loop(topo, face.outer_wire())? else {
+                return Ok(None);
+            };
+            let [(a, ia), (b, ib), (c, ic)] = outer[..] else {
+                return Ok(None);
+            };
+
+            // Enumerating the cavity shells is not enough on its own: a
+            // cavity's faces are stored REVERSED, and the wire winding alone
+            // does not say so. Without this the void's tetrahedra add instead
+            // of subtract and a hollow triangulated body reads as the outer
+            // body PLUS the void.
+            let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
+            triangles.push(Self {
+                orientation,
+                ids: [ia, ib, ic],
+                points: [a, b, c],
+            });
+
+            let outer_area = (b - a).cross(c - a);
+            let mut loops = Vec::with_capacity(face.inner_wires().len());
+            for &inner in face.inner_wires() {
+                let Some(hole) = line_loop(topo, inner)? else {
+                    return Ok(None);
+                };
+                if hole.len() < 3 {
+                    return Ok(None);
+                }
+                loops.push(hole);
+            }
+            let polygons: Vec<Vec<Point3>> = loops
+                .iter()
+                .map(|hole| hole.iter().map(|&(p, _)| p).collect())
+                .collect();
+            // A point inside a polygon is inside its box, so the polygon test
+            // runs only on the few loops whose box holds the probe rather than
+            // on every pair. The boxes live in the projection the polygon test
+            // uses, dropping the axis the face's normal is largest along: the
+            // loops' vertices are coplanar only within tolerance, so the
+            // dropped coordinate must not gate containment.
+            let drop = {
+                let n = [
+                    outer_area.x().abs(),
+                    outer_area.y().abs(),
+                    outer_area.z().abs(),
+                ];
+                if n[2] >= n[0] && n[2] >= n[1] {
+                    2
+                } else if n[1] >= n[0] {
+                    1
+                } else {
+                    0
+                }
+            };
+            let plane_coords = |p: Point3| {
+                let c = [p.x(), p.y(), p.z()];
+                match drop {
+                    0 => (c[1], c[2]),
+                    1 => (c[0], c[2]),
+                    _ => (c[0], c[1]),
+                }
+            };
+            let boxes: Vec<[f64; 4]> = polygons
+                .iter()
+                .map(|polygon| {
+                    polygon.iter().fold(
+                        [
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::NEG_INFINITY,
+                        ],
+                        |[a0, b0, a1, b1], &p| {
+                            let (a, b) = plane_coords(p);
+                            [a0.min(a), b0.min(b), a1.max(a), b1.max(b)]
+                        },
+                    )
+                })
+                .collect();
+            let in_box = |[a0, b0, a1, b1]: [f64; 4], p: Point3| {
+                let (a, b) = plane_coords(p);
+                a >= a0 && a <= a1 && b >= b0 && b <= b1
+            };
+            // A loop inside an odd number of others bounds an island within a
+            // hole, which restores material (the parity the planar tessellator
+            // applies): it winds with the face's triangle, a hole against it.
+            // As there, loops are taken smallest box first, so the first
+            // larger loop holding a probe is its immediate parent and
+            // concentric loops cost one polygon test each; a budget bounds the
+            // tests that overlapping boxes can still force. Past it, the face
+            // is left to the general route.
+            let Some(depths) = nesting_depths(&polygons, &boxes, &in_box, &outer_area) else {
+                return Ok(None);
+            };
+            for (k, mut hole) in loops.into_iter().enumerate() {
+                let depth = depths[k];
+                let (h0, _) = hole[0];
+                let hole_area = hole
+                    .windows(2)
+                    .map(|w| (w[0].0 - h0).cross(w[1].0 - h0))
+                    .fold(Vec3::new(0.0, 0.0, 0.0), |sum, v| sum + v);
+                if (hole_area.dot(outer_area) > 0.0) == (depth % 2 == 0) {
+                    hole.reverse();
+                }
+                let (h0, i0) = hole[0];
+                triangles.extend(hole.windows(2).skip(1).map(|w| Self {
+                    orientation,
+                    ids: [i0, w[0].1, w[1].1],
+                    points: [h0, w[0].0, w[1].0],
+                }));
+            }
+        }
+        Ok(Some(triangles))
+    }
+}
+
+/// Each inner loop's nesting depth among the others (0 for a hole directly
+/// in the face), or `None` when the parent search exceeds its budget.
+fn nesting_depths(
+    polygons: &[Vec<Point3>],
+    boxes: &[[f64; 4]],
+    in_box: &dyn Fn([f64; 4], Point3) -> bool,
+    normal: &Vec3,
+) -> Option<Vec<usize>> {
+    const PARENT_SEARCH_BUDGET_PER_LOOP: usize = 64;
+    let n = polygons.len();
+    if n < 2 {
+        return Some(vec![0; n]);
+    }
+    let area = |[a0, b0, a1, b1]: [f64; 4]| (a1 - a0) * (b1 - b0);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.compact_sort_by(|&a, &b| area(boxes[a]).total_cmp(&area(boxes[b])));
+    let mut budget = n.saturating_mul(PARENT_SEARCH_BUDGET_PER_LOOP);
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    for (position, &k) in order.iter().enumerate() {
+        let probe = polygons[k][0];
+        for &j in &order[position + 1..] {
+            if !in_box(boxes[j], probe) {
+                continue;
+            }
+            budget = budget.checked_sub(1)?;
+            if crate::distance::point_in_polygon_3d(&probe, &polygons[j], normal) {
+                parent[k] = Some(j);
+                break;
+            }
+        }
+    }
+    // Parents have larger boxes, so they are settled first walking down.
+    let mut depth = vec![0; n];
+    for &k in order.iter().rev() {
+        depth[k] = parent[k].map_or(0, |j| depth[j] + 1);
+    }
+    Some(depth)
+}
+
+/// The vertices of `wire` in traversal order with their indices, or `None`
+/// when any of its edges is not a line.
+fn line_loop(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+) -> Result<Option<Vec<(Point3, usize)>>, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let wire = topo.wire(wire)?;
+    let mut points = Vec::with_capacity(wire.edges().len());
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(None);
+        }
+        let vid = if oe.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        };
+        points.push((topo.vertex(vid)?.point(), vid.index()));
+    }
+    Ok(Some(points))
 }
 
 /// Compute the volume of a solid directly from its face vertex
-/// positions, bypassing tessellation. Only valid for solids composed
-/// entirely of planar triangular faces (e.g. mesh imports).
+/// positions, bypassing tessellation.
+///
+/// Only valid for solids composed entirely of planar triangular faces
+/// (e.g. mesh imports). A face may be pierced by holes bounded by line
+/// edges, whose area subtracts.
 ///
 /// Returns an error if the solid contains non-planar or
 /// non-triangular faces.
@@ -4085,80 +4449,22 @@ pub fn solid_volume_from_faces(
     solid: SolidId,
     _deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    use remus_topology::edge::EdgeCurve;
-    use remus_topology::face::FaceSurface;
-
-    // Outer shell plus every cavity shell.
-    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-
     // Signed triangles, gathered first so the tetrahedra can be taken about
     // the body's own `summation_point` rather than the world origin (B56).
-    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
-    let mut all_planar_triangles = true;
-
-    for fid in faces {
-        let face = topo.face(fid)?;
-
-        // Only use the fast path for planar faces with exactly 3 line edges.
-        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
-            all_planar_triangles = false;
-            break;
-        }
-
-        let wire = topo.wire(face.outer_wire())?;
-        let edges = wire.edges();
-        if edges.len() != 3 {
-            all_planar_triangles = false;
-            break;
-        }
-
-        let mut pts = Vec::with_capacity(3);
-        let mut ids = Vec::with_capacity(3);
-        for oe in edges {
-            let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                all_planar_triangles = false;
-                break;
-            }
-            let vid = if oe.is_forward() {
-                edge.start()
-            } else {
-                edge.end()
-            };
-            pts.push(topo.vertex(vid)?.point());
-            ids.push(vid.index());
-        }
-        if !all_planar_triangles {
-            break;
-        }
-
-        // Enumerating the cavity shells is not enough on its own: a cavity's
-        // faces are stored REVERSED, and the wire winding alone does not say
-        // so. Without this the void's tetrahedra add instead of subtract and a
-        // hollow triangulated body reads as the outer body PLUS the void.
-        let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        triangles.push(SignedTriangle {
-            orientation,
-            ids: [ids[0], ids[1], ids[2]],
-            points: [pts[0], pts[1], pts[2]],
-        });
-    }
-
-    if all_planar_triangles {
-        let reference = SignedTriangle::summation_point(&triangles);
-        let total: f64 = triangles
-            .iter()
-            .map(|t| {
-                let [a, b, c] = t.points;
-                t.orientation * six_tetra_volume(reference, a, b, c)
-            })
-            .sum();
-        Ok((total / 6.0).abs())
-    } else {
-        Err(crate::OperationsError::InvalidInput {
+    let Some(triangles) = SignedTriangle::of_solid(topo, solid)? else {
+        return Err(crate::OperationsError::InvalidInput {
             reason: "solid contains non-planar or non-triangular faces".to_string(),
+        });
+    };
+    let reference = SignedTriangle::summation_point(&triangles);
+    let total: f64 = triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.points;
+            t.orientation * six_tetra_volume(reference, a, b, c)
         })
-    }
+        .sum();
+    Ok((total / 6.0).abs())
 }
 
 /// Compute the full mass properties of a solid, assuming uniform density.
@@ -4311,55 +4617,11 @@ fn center_of_mass_from_faces(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<Point3, crate::OperationsError> {
-    use remus_topology::edge::EdgeCurve;
-    use remus_topology::face::FaceSurface;
-
-    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-
-    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
-    for fid in faces {
-        let face = topo.face(fid)?;
-        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
-            return Err(crate::OperationsError::InvalidInput {
-                reason: "non-planar face".to_string(),
-            });
-        }
-        let wire = topo.wire(face.outer_wire())?;
-        let edges = wire.edges();
-        if edges.len() != 3 {
-            return Err(crate::OperationsError::InvalidInput {
-                reason: "non-triangular face".to_string(),
-            });
-        }
-
-        let mut pts = Vec::with_capacity(3);
-        let mut ids = Vec::with_capacity(3);
-        for oe in edges {
-            let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "non-line edge".to_string(),
-                });
-            }
-            let vid = if oe.is_forward() {
-                edge.start()
-            } else {
-                edge.end()
-            };
-            pts.push(topo.vertex(vid)?.point());
-            ids.push(vid.index());
-        }
-
-        // A face carried reversed points its wire the other way round, so its
-        // tetrahedra count with the opposite sign. Cavity shells are stored
-        // exactly that way.
-        let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        triangles.push(SignedTriangle {
-            orientation,
-            ids: [ids[0], ids[1], ids[2]],
-            points: [pts[0], pts[1], pts[2]],
+    let Some(triangles) = SignedTriangle::of_solid(topo, solid)? else {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "solid contains non-planar or non-triangular faces".to_string(),
         });
-    }
+    };
 
     // Tetrahedra about the body's `summation_point` (B56): each has its apex
     // at the reference, so its centroid is the reference plus a quarter of
@@ -5438,6 +5700,134 @@ mod regression_tests {
             );
         }
     }
+
+    /// `mesh` with every position scaled about the origin by `scale`.
+    fn scaled(mut mesh: tessellate::TriangleMesh, scale: f64) -> tessellate::TriangleMesh {
+        for p in &mut mesh.positions {
+            *p = Point3::new(p.x() * scale, p.y() * scale, p.z() * scale);
+        }
+        mesh
+    }
+
+    /// B127: the closed-mesh gates hold a mesh's volume to a floor relative to
+    /// the mesh's own size. The absolute `1e-12` floor turned away the closed
+    /// mesh of any body under about 1e-4 across, so the routes chosen for it
+    /// fell through to the ones they exist to avoid. A closed mesh flattened
+    /// onto a plane, enclosing nothing, is still turned away at every scale.
+    #[test]
+    fn closed_mesh_volume_floor_scales_with_the_mesh() {
+        let (topo, solid, clamp) = cylinder_and_clamp();
+        let mesh = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        assert!(mesh_is_closed(&mesh));
+        let unit = signed_volume_from_mesh(&mesh);
+        for scale in [1e3, 1.0, 1e-4, 1e-6] {
+            let tiny = scaled(mesh.clone(), scale);
+            let expected = unit * scale.powi(3);
+            let read = closed_mesh_or_exact_volume(&topo, solid, &tiny, "test").unwrap();
+            assert!(
+                read.is_some_and(|v| (v - expected).abs() <= 1e-12 * expected),
+                "scale {scale:e}: closed mesh read {read:?}, expected {expected:e}"
+            );
+            let mut flat = tiny;
+            for p in &mut flat.positions {
+                *p = Point3::new(p.x(), p.y(), 0.0);
+            }
+            assert_eq!(
+                closed_mesh_or_exact_volume(&topo, solid, &flat, "test").unwrap(),
+                None,
+                "scale {scale:e}: a flattened mesh encloses nothing"
+            );
+        }
+    }
+
+    /// B127: the relative floor holds only for a mesh whose directed edges
+    /// cancel. A 1e-6 tetrahedron at (1e-6, 1e-6, 1e-6) with its slanted face
+    /// wound the wrong way is still edge-closed, but sums about the world
+    /// origin to 7/6e-18, seven times its 1/6e-18. Under the absolute floor,
+    /// as before, that placement-dependent sum is not taken as material;
+    /// the consistently wound tetrahedron there measures exactly.
+    #[test]
+    fn closed_mesh_volume_floor_needs_cancelling_edges() {
+        let (topo, solid, _) = cylinder_and_clamp();
+        let (s, a) = (1e-6, 1e-6);
+        let tetra = |slanted: [u32; 3]| tessellate::TriangleMesh {
+            positions: vec![
+                Point3::new(a, a, a),
+                Point3::new(a + s, a, a),
+                Point3::new(a, a + s, a),
+                Point3::new(a, a, a + s),
+            ],
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+            indices: [[0, 2, 1], [0, 1, 3], [0, 3, 2], slanted].concat(),
+        };
+        let wound = tetra([1, 2, 3]);
+        assert!(mesh_is_closed(&wound));
+        let read = closed_mesh_or_exact_volume(&topo, solid, &wound, "test").unwrap();
+        let expected = s * s * s / 6.0;
+        assert!(
+            read.is_some_and(|v| (v - expected).abs() <= 1e-12 * expected),
+            "wound tetrahedron read {read:?}, expected {expected:e}"
+        );
+        let reversed = tetra([1, 3, 2]);
+        assert!(mesh_is_closed(&reversed));
+        assert_eq!(
+            closed_mesh_or_exact_volume(&topo, solid, &reversed, "test").unwrap(),
+            None,
+            "a face wound the wrong way has no placement-free volume"
+        );
+    }
+
+    /// B127: the floor follows the tetrahedra's own magnitude, not the bounding
+    /// box, so a closed slender body that fills little of its box still
+    /// measures: a 1000 × 4e-4 × 4e-4 box encloses 1.6e-4, which a floor of
+    /// `1e-12 · side³` (1e-3) would turn away.
+    #[test]
+    fn closed_mesh_volume_floor_admits_a_slender_body() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 1000.0, 4e-4, 4e-4).unwrap();
+        let mesh = tessellate::tessellate_solid(&topo, solid, 1e-5).unwrap();
+        assert!(mesh_is_closed(&mesh));
+        let read = closed_mesh_or_exact_volume(&topo, solid, &mesh, "test").unwrap();
+        let expected = 1000.0 * 4e-4 * 4e-4;
+        assert!(
+            read.is_some_and(|v| (v - expected).abs() <= 1e-9 * expected),
+            "slender closed mesh read {read:?}, expected {expected:e}"
+        );
+    }
+
+    /// B127 on the clamp retry: a cracked fine mesh of a body the exact
+    /// integrator declines takes the closed clamp mesh at any scale.
+    #[test]
+    fn clamp_retry_volume_floor_scales_with_the_mesh() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+        crate::transform::transform_solid(&mut topo, sp, &Mat4::translation(5.0, 5.0, 5.0))
+            .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Intersect, bx, sp)
+                .unwrap();
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        let at_clamp = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        let unit = signed_volume_from_mesh(&at_clamp);
+        for scale in [1.0, 1e-5] {
+            let mut mesher = cracking_mesher(&topo, solid, clamp, false);
+            let retried = required_closed_mesh_volume_with(
+                &topo,
+                solid,
+                clamp / 4.0,
+                "scalloped sphere collar",
+                |d| mesher(d).map(|mesh| scaled(mesh, scale)),
+            )
+            .unwrap();
+            let expected = unit * scale.powi(3);
+            assert!(
+                retried.is_some_and(|v| (v - expected).abs() <= 1e-12 * expected),
+                "scale {scale:e}: clamp mesh read {retried:?}, expected {expected:e}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5501,5 +5891,143 @@ mod notch_patch_qualification_tests {
             !torus_face_is_notch_patch(&topo, face),
             "a stored full turn must not qualify as a quarter seam"
         );
+    }
+}
+
+/// B126: nested inner loops on a pierced triangle face alternate: a hole
+/// subtracts, an island inside it adds back.
+#[cfg(test)]
+mod nested_inner_loop_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire, WireId};
+
+    use super::SignedTriangle;
+
+    fn polygon_wire(topo: &mut Topology, points: &[(f64, f64)], z: f64) -> WireId {
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, z), 1e-7)))
+            .collect();
+        let n = vertices.len();
+        let edges = (0..n)
+            .map(|i| {
+                let edge = topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % n],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        topo.add_wire(Wire::new(edges, true).unwrap())
+    }
+
+    /// Forty concentric squares about (3, 3), half-widths 2.5 down to 0.55:
+    /// depth alternates hole, island, hole, … so the face's signed area is
+    /// 72 − (2·2.5)² + (2·2.45)² − …, each loop found as its neighbour's
+    /// immediate parent rather than tested against every other loop.
+    #[test]
+    fn deeply_nested_loops_alternate() {
+        let mut topo = Topology::new();
+        let outer = polygon_wire(&mut topo, &[(0.0, 0.0), (12.0, 0.0), (0.0, 12.0)], 0.0);
+        let mut expected = 72.0;
+        let mut inner = Vec::new();
+        for k in 0..40 {
+            let h = 2.5 - 0.05 * f64::from(k);
+            let side = 2.0 * h;
+            expected += if k % 2 == 0 {
+                -side * side
+            } else {
+                side * side
+            };
+            inner.push(polygon_wire(
+                &mut topo,
+                &[
+                    (3.0 - h, 3.0 - h),
+                    (3.0 + h, 3.0 - h),
+                    (3.0 + h, 3.0 + h),
+                    (3.0 - h, 3.0 + h),
+                ],
+                0.0,
+            ));
+        }
+        let face = topo.add_face(Face::new(
+            outer,
+            inner,
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+        let triangles = SignedTriangle::of_solid(&topo, solid)
+            .unwrap()
+            .expect("line loops");
+        let area: f64 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.points;
+                0.5 * (b - a).cross(c - a).z() * t.orientation
+            })
+            .sum();
+        assert!(
+            (area - expected).abs() < 1e-9,
+            "signed area {area}, expected {expected}"
+        );
+    }
+
+    /// The triangle (0,0), (12,0), (0,12) (area 72) pierced by the square
+    /// [2, 6]² (16) holding the triangle (3,3), (5,3), (3,5) (2) as an
+    /// island: the face's signed triangles sum to 72 − 16 + 2 = 58 whichever
+    /// way the inner wires are stored, and with the island lifted 5e-8 off
+    /// the plane, coplanar only within its vertex tolerance.
+    #[test]
+    fn an_island_inside_a_hole_adds_back() {
+        let square = vec![(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)];
+        let triangle = vec![(3.0, 3.0), (5.0, 3.0), (3.0, 5.0)];
+        let reversed = |v: &Vec<(f64, f64)>| v.iter().rev().copied().collect::<Vec<_>>();
+        for (hole, island, lift) in [
+            (square.clone(), triangle.clone(), 0.0),
+            (reversed(&square), reversed(&triangle), 0.0),
+            (square.clone(), triangle.clone(), 5e-8),
+        ] {
+            let mut topo = Topology::new();
+            let outer = polygon_wire(&mut topo, &[(0.0, 0.0), (12.0, 0.0), (0.0, 12.0)], 0.0);
+            let inner = vec![
+                polygon_wire(&mut topo, &hole, 0.0),
+                polygon_wire(&mut topo, &island, lift),
+            ];
+            let face = topo.add_face(Face::new(
+                outer,
+                inner,
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+            let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+            let triangles = SignedTriangle::of_solid(&topo, solid)
+                .unwrap()
+                .expect("line loops");
+            let area: f64 = triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.points;
+                    0.5 * (b - a).cross(c - a).z() * t.orientation
+                })
+                .sum();
+            assert!((area - 58.0).abs() < 1e-12, "signed area {area}");
+        }
     }
 }

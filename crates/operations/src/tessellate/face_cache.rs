@@ -113,6 +113,7 @@ use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 
+use super::PointMergeMap;
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
 
 /// Default bound on retained face meshes.
@@ -1201,7 +1202,7 @@ impl Session {
         key: &FaceKey,
         boundary: FaceBoundary,
         merged: &mut TriangleMesh,
-        point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+        point_to_global: &mut PointMergeMap,
     ) -> Result<(), FaceBoundary> {
         let outcome = FACE_MESH_CACHE.with(|cell| {
             let mut slot = cell.borrow_mut();
@@ -1262,7 +1263,7 @@ impl Session {
     pub(super) fn capture_start(
         boundary: &FaceBoundary,
         merged: &TriangleMesh,
-        point_to_global: &DetHashMap<(i64, i64, i64), u32>,
+        point_to_global: &PointMergeMap,
     ) -> CaptureStart {
         CaptureStart {
             pos_start: merged.positions.len(),
@@ -1292,7 +1293,7 @@ impl Session {
         start: &CaptureStart,
         nurbs_frame_chart: bool,
         merged: &TriangleMesh,
-        point_to_global: &DetHashMap<(i64, i64, i64), u32>,
+        point_to_global: &PointMergeMap,
     ) {
         let pending = capture(key, &boundary, start, merged, point_to_global).map(|mut entry| {
             entry.nurbs_frame_chart = nurbs_frame_chart;
@@ -1366,7 +1367,7 @@ fn capture(
     boundary: &FaceBoundary,
     start: &CaptureStart,
     merged: &TriangleMesh,
-    point_to_global: &DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &PointMergeMap,
 ) -> Option<CachedFace> {
     // A rewritten boundary normal is a side effect on shared state.
     for (ordinal, &gid) in boundary.gids.iter().enumerate() {
@@ -1431,13 +1432,20 @@ fn replay(
     kind: KeyMatch,
     delta: Vec3,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> bool {
     use std::collections::hash_map::Entry;
 
     let pos_start = merged.positions.len();
     let shift = kind == KeyMatch::Translated;
-    let mut inserted: Vec<(i64, i64, i64)> = Vec::new();
+    // Size the pool and mesh for the whole entry up front instead of
+    // growing them vertex by vertex.
+    let interned = entry.interned.iter().filter(|&&interned| interned).count();
+    point_to_global.reserve(interned);
+    merged.positions.reserve(entry.positions.len());
+    merged.normals.reserve(entry.normals.len());
+    merged.indices.reserve(entry.corners.len());
+    let mut inserted: Vec<(i64, i64, i64)> = Vec::with_capacity(interned);
     let mut conflict = false;
     for (k, (&p, &n)) in entry.positions.iter().zip(&entry.normals).enumerate() {
         let p = if shift { p + delta } else { p };
@@ -1591,7 +1599,7 @@ mod retention_tests {
             });
 
             let mut merged = TriangleMesh::default();
-            let mut pool = DetHashMap::default();
+            let mut pool = super::super::PointMergeMap::default();
             if conflict {
                 merged.positions.push(positions[0]);
                 merged.normals.push(normals[0]);

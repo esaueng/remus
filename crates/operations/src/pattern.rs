@@ -197,9 +197,9 @@ fn linear_pattern_full_impl(
             reason: "pattern count must be at least 1".into(),
         });
     }
-    if spacing <= tol.linear {
+    if !spacing.is_finite() || spacing <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
-            reason: format!("pattern spacing must be positive, got {spacing}"),
+            reason: format!("pattern spacing must be finite and positive, got {spacing}"),
         });
     }
 
@@ -408,14 +408,14 @@ fn grid_pattern_full_impl(
             reason: "grid pattern counts must be at least 1".into(),
         });
     }
-    if spacing_x <= tol.linear {
+    if !spacing_x.is_finite() || spacing_x <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
-            reason: format!("grid spacing_x must be positive, got {spacing_x}"),
+            reason: format!("grid spacing_x must be finite and positive, got {spacing_x}"),
         });
     }
-    if spacing_y <= tol.linear {
+    if !spacing_y.is_finite() || spacing_y <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
-            reason: format!("grid spacing_y must be positive, got {spacing_y}"),
+            reason: format!("grid spacing_y must be finite and positive, got {spacing_y}"),
         });
     }
 

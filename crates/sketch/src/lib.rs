@@ -60,4 +60,11 @@ pub enum SketchError {
     /// (non-finite, or non-positive where a positive magnitude is required).
     #[error("constraint value is not finite or is outside its permitted range")]
     InvalidValue,
+
+    /// A solve drove an ellipse semiaxis to (or below) the magnitude where
+    /// the implicit-form residuals stop measuring it, so a zero residual there
+    /// would read as convergence on a collapsed ellipse. The pre-solve
+    /// geometry is restored before this is returned.
+    #[error("GCS solve collapsed an ellipse semiaxis to zero; pre-solve geometry restored")]
+    DegenerateEllipse,
 }

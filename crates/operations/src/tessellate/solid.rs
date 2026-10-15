@@ -2,6 +2,7 @@
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
+use remus_math::nurbs::projection::SurfaceSeedGrid as SeedGrid;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -10,6 +11,7 @@ use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
 use remus_topology::{BodyClass, BodyId};
 
+use super::PointMergeMap;
 use super::TriangleMesh;
 #[cfg(not(target_arch = "wasm32"))]
 use super::boundary_plan::SampledEdge;
@@ -1672,6 +1674,9 @@ fn tessellate_faces_core(
             }
 
             let mut fallback_needed = vec![false; n_verts];
+            // One coarse projection grid per NURBS face, built on its first
+            // fresh contribution, instead of one per projected vertex.
+            let mut seed_grids: DetHashMap<FaceId, Option<SeedGrid>> = DetHashMap::default();
             for i in 0..n_verts {
                 if !needs_normal[i] {
                     continue;
@@ -1695,14 +1700,17 @@ fn tessellate_faces_core(
                                 face_cache::NormalSlot::Known(normal) => normal,
                                 face_cache::NormalSlot::Unknown => {
                                     let surf = face_data.surface();
-                                    let fresh = crate::fillet::face_surface_normal_at(surf, pos)
-                                        .map(|n| {
-                                            if face_data.is_reversed() {
-                                                Vec3::new(-n.x(), -n.y(), -n.z())
-                                            } else {
-                                                n
-                                            }
-                                        });
+                                    let grid = seed_grids.entry(fid).or_default();
+                                    let fresh = crate::fillet::face_surface_normal_with_grid(
+                                        surf, pos, grid,
+                                    )
+                                    .map(|n| {
+                                        if face_data.is_reversed() {
+                                            Vec3::new(-n.x(), -n.y(), -n.z())
+                                        } else {
+                                            n
+                                        }
+                                    });
                                     if let Some(session) = cache_session.as_mut() {
                                         session.record_normal(fid, gid, fresh);
                                     }
@@ -1911,7 +1919,7 @@ pub(super) fn tessellate_face_with_shared_edges(
     allow_latitude_cap: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let mut nurbs_frame_chart = false;
     let face_data = topo.face(face_id)?;

@@ -1,4 +1,11 @@
 //! PLY file reader (ASCII and binary little-endian).
+//!
+//! The header is parsed into typed elements and properties, and the body is
+//! read by that declaration: every PLY scalar type, properties in any order,
+//! extra properties and elements skipped by their declared sizes, and list
+//! properties read with their declared count and item types.
+
+use std::collections::HashSet;
 
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use remus_math::vec::{Point3, Vec3};
@@ -8,8 +15,10 @@ use remus_topology::solid::SolidId;
 
 /// Read a PLY file from bytes and return a triangle mesh.
 ///
-/// Supports ASCII and binary little-endian formats.
-/// Reads vertex positions, optional normals, and triangle faces.
+/// Supports ASCII and binary little-endian formats. Reads vertex positions
+/// (`x`, `y`, `z`), optional normals (`nx`, `ny`, `nz`), and polygon faces
+/// (`vertex_indices` or `vertex_index`, fan-triangulated). Other properties
+/// and elements are skipped by their declared types.
 ///
 /// # Errors
 ///
@@ -19,6 +28,9 @@ pub fn read_ply(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
 }
 
 /// Read a PLY file with explicit hostile-input resource limits.
+///
+/// Every declared element count, and every list length as it is read, is
+/// bounded by `max_model_entities`.
 ///
 /// # Errors
 ///
@@ -34,18 +46,23 @@ pub fn read_ply_with_limits(
             reason: "PLY header is not valid UTF-8".into(),
         })?;
 
-    let header = parse_header(header_text)?;
-    ensure_limit(
-        "PLY vertices",
-        header.vertex_count,
-        limits.max_model_entities,
-    )?;
-    ensure_limit("PLY faces", header.face_count, limits.max_model_entities)?;
+    let header = parse_header(header_text, limits)?;
+    let layout = MeshLayout::new(&header)?;
     let body = &data[header_end..];
 
     match header.format {
-        PlyFormat::Ascii => parse_ascii_body(&header, body, limits),
-        PlyFormat::BinaryLittleEndian => parse_binary_body(&header, body, limits),
+        PlyFormat::Ascii => {
+            let text = std::str::from_utf8(body).map_err(|_| crate::IoError::ParseError {
+                reason: "PLY body is not valid UTF-8".into(),
+            })?;
+            read_body(&header, &layout, &mut AsciiValues::new(text), limits)
+        }
+        PlyFormat::BinaryLittleEndian => read_body(
+            &header,
+            &layout,
+            &mut BinaryValues { body, offset: 0 },
+            limits,
+        ),
     }
 }
 
@@ -55,12 +72,92 @@ enum PlyFormat {
     BinaryLittleEndian,
 }
 
+/// A PLY scalar type. Every one converts to `f64` exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarType {
+    Int8,
+    Uint8,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    Float32,
+    Float64,
+}
+
+impl ScalarType {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "char" | "int8" => Self::Int8,
+            "uchar" | "uint8" => Self::Uint8,
+            "short" | "int16" => Self::Int16,
+            "ushort" | "uint16" => Self::Uint16,
+            "int" | "int32" => Self::Int32,
+            "uint" | "uint32" => Self::Uint32,
+            "float" | "float32" => Self::Float32,
+            "double" | "float64" => Self::Float64,
+            _ => return None,
+        })
+    }
+
+    const fn size(self) -> usize {
+        match self {
+            Self::Int8 | Self::Uint8 => 1,
+            Self::Int16 | Self::Uint16 => 2,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 4,
+            Self::Float64 => 8,
+        }
+    }
+
+    /// Inclusive value range of an integer type; `None` for floats.
+    const fn integer_range(self) -> Option<(i64, i64)> {
+        match self {
+            Self::Int8 => Some((i8::MIN as i64, i8::MAX as i64)),
+            Self::Uint8 => Some((0, u8::MAX as i64)),
+            Self::Int16 => Some((i16::MIN as i64, i16::MAX as i64)),
+            Self::Uint16 => Some((0, u16::MAX as i64)),
+            Self::Int32 => Some((i32::MIN as i64, i32::MAX as i64)),
+            Self::Uint32 => Some((0, u32::MAX as i64)),
+            Self::Float32 | Self::Float64 => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropertyKind {
+    Scalar(ScalarType),
+    List { count: ScalarType, item: ScalarType },
+}
+
+#[derive(Debug)]
+struct Property {
+    name: String,
+    kind: PropertyKind,
+}
+
+#[derive(Debug)]
+struct Element {
+    name: String,
+    count: usize,
+    properties: Vec<Property>,
+}
+
+impl Element {
+    /// Smallest encoded size of one binary instance (every list empty).
+    fn min_binary_size(&self) -> usize {
+        self.properties
+            .iter()
+            .map(|property| match property.kind {
+                PropertyKind::Scalar(ty) | PropertyKind::List { count: ty, .. } => ty.size(),
+            })
+            .sum()
+    }
+}
+
 #[derive(Debug)]
 struct PlyHeader {
     format: PlyFormat,
-    vertex_count: usize,
-    face_count: usize,
-    has_normals: bool,
+    elements: Vec<Element>,
 }
 
 fn find_header_end(data: &[u8]) -> Result<usize, crate::IoError> {
@@ -73,269 +170,507 @@ fn find_header_end(data: &[u8]) -> Result<usize, crate::IoError> {
         })
 }
 
-fn parse_header(text: &str) -> Result<PlyHeader, crate::IoError> {
-    let mut format = None;
-    let mut vertex_count = 0;
-    let mut face_count = 0;
-    let mut has_normals = false;
-    let mut in_vertex_element = false;
+fn header_error(reason: impl Into<String>) -> crate::IoError {
+    crate::IoError::ParseError {
+        reason: reason.into(),
+    }
+}
 
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with("format ascii") {
-            format = Some(PlyFormat::Ascii);
-        } else if line.starts_with("format binary_little_endian") {
-            format = Some(PlyFormat::BinaryLittleEndian);
-        } else if line.starts_with("element vertex") {
-            vertex_count = parse_count(line)?;
-            in_vertex_element = true;
-        } else if line.starts_with("element face") {
-            face_count = parse_count(line)?;
-            in_vertex_element = false;
-        } else if in_vertex_element && line.starts_with("property") && line.contains("nx") {
-            has_normals = true;
+/// Most element and property declarations a header may hold. Real files
+/// declare a few dozen; each one is kept in memory, so the bound stops a
+/// header of millions of empty declarations from amplifying the input.
+const MAX_HEADER_DECLARATIONS: usize = 4096;
+
+fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::IoError> {
+    let mut lines = text.lines().map(str::trim);
+    if lines.next() != Some("ply") {
+        return Err(header_error("PLY header must start with 'ply'"));
+    }
+
+    let mut format = None;
+    let mut elements: Vec<Element> = Vec::new();
+    let mut skipped_instances = 0_usize;
+    // Hashed so that a header of many declarations parses in linear time.
+    let mut element_names: HashSet<&str> = HashSet::new();
+    let mut property_names: HashSet<&str> = HashSet::new();
+    // Each declaration is kept in memory, so they share one budget too.
+    let mut declarations = 0_usize;
+    for line in lines {
+        let mut tokens = line.split_whitespace();
+        let keyword = tokens.next();
+        if matches!(keyword, Some("element" | "property")) {
+            declarations = declarations.saturating_add(1);
+            ensure_limit(
+                "PLY header declarations",
+                declarations,
+                MAX_HEADER_DECLARATIONS,
+            )?;
+        }
+        match keyword {
+            None | Some("comment" | "obj_info") => {}
+            Some("end_header") => break,
+            Some("format") => {
+                format = Some(match tokens.next() {
+                    Some("ascii") => PlyFormat::Ascii,
+                    Some("binary_little_endian") => PlyFormat::BinaryLittleEndian,
+                    Some(other) => {
+                        return Err(header_error(format!("unsupported PLY format {other}")));
+                    }
+                    None => return Err(header_error("PLY format line names no format")),
+                });
+            }
+            Some("element") => {
+                let (Some(name), Some(count), None) = (tokens.next(), tokens.next(), tokens.next())
+                else {
+                    return Err(header_error(format!("invalid PLY element line: {line}")));
+                };
+                let count: usize = count
+                    .parse()
+                    .map_err(|_| header_error(format!("invalid count in: {line}")))?;
+                match name {
+                    "vertex" => ensure_limit("PLY vertices", count, limits.max_model_entities)?,
+                    "face" => ensure_limit("PLY faces", count, limits.max_model_entities)?,
+                    // Every skipped element is read instance by instance, so
+                    // they share one budget: many small declarations must not
+                    // add up past the limit.
+                    _ => {
+                        skipped_instances = skipped_instances.saturating_add(count);
+                        ensure_limit(
+                            "PLY element instances",
+                            skipped_instances,
+                            limits.max_model_entities,
+                        )?;
+                    }
+                }
+                if !element_names.insert(name) {
+                    return Err(header_error(format!("PLY element {name} declared twice")));
+                }
+                property_names.clear();
+                elements.push(Element {
+                    name: name.to_string(),
+                    count,
+                    properties: Vec::new(),
+                });
+            }
+            Some("property") => {
+                let element = elements.last_mut().ok_or_else(|| {
+                    header_error(format!("PLY property before any element: {line}"))
+                })?;
+                let (property, name) = parse_property(&mut tokens, line)?;
+                if !property_names.insert(name) {
+                    return Err(header_error(format!(
+                        "PLY element {} declares property {} twice",
+                        element.name, property.name
+                    )));
+                }
+                element.properties.push(property);
+            }
+            Some(other) => {
+                return Err(header_error(format!(
+                    "unsupported PLY header keyword {other}"
+                )));
+            }
         }
     }
 
-    let format = format.ok_or_else(|| crate::IoError::ParseError {
-        reason: "PLY format not specified".into(),
-    })?;
-
-    Ok(PlyHeader {
-        format,
-        vertex_count,
-        face_count,
-        has_normals,
-    })
+    let format = format.ok_or_else(|| header_error("PLY format not specified"))?;
+    if let Some(element) = elements
+        .iter()
+        .find(|element| element.count > 0 && element.properties.is_empty())
+    {
+        return Err(header_error(format!(
+            "PLY element {} has instances but declares no properties",
+            element.name
+        )));
+    }
+    Ok(PlyHeader { format, elements })
 }
 
-fn parse_count(line: &str) -> Result<usize, crate::IoError> {
-    line.split_whitespace()
-        .nth(2)
-        .ok_or_else(|| crate::IoError::ParseError {
-            reason: format!("missing count in: {line}"),
-        })?
-        .parse()
-        .map_err(|_| crate::IoError::ParseError {
-            reason: format!("invalid count in: {line}"),
+fn parse_property<'a>(
+    tokens: &mut std::str::SplitWhitespace<'a>,
+    line: &str,
+) -> Result<(Property, &'a str), crate::IoError> {
+    let scalar = |token: Option<&str>| {
+        token
+            .and_then(ScalarType::parse)
+            .ok_or_else(|| header_error(format!("invalid PLY property type in: {line}")))
+    };
+    let kind = match tokens.next() {
+        Some("list") => {
+            let count = scalar(tokens.next())?;
+            let item = scalar(tokens.next())?;
+            if count.integer_range().is_none() {
+                return Err(header_error(format!(
+                    "PLY list count type must be an integer: {line}"
+                )));
+            }
+            PropertyKind::List { count, item }
+        }
+        token => PropertyKind::Scalar(scalar(token)?),
+    };
+    let (Some(name), None) = (tokens.next(), tokens.next()) else {
+        return Err(header_error(format!("invalid PLY property line: {line}")));
+    };
+    Ok((
+        Property {
+            name: name.to_string(),
+            kind,
+        },
+        name,
+    ))
+}
+
+/// Where the mesh data sits in the declared elements.
+#[derive(Debug)]
+struct MeshLayout {
+    /// Positions of `x`, `y`, `z` in the vertex element's properties.
+    position: Option<[usize; 3]>,
+    /// Positions of `nx`, `ny`, `nz`, when all three are declared.
+    normal: Option<[usize; 3]>,
+    /// Position of the face element's vertex index list.
+    face_indices: Option<usize>,
+}
+
+impl MeshLayout {
+    fn new(header: &PlyHeader) -> Result<Self, crate::IoError> {
+        let mut layout = Self {
+            position: None,
+            normal: None,
+            face_indices: None,
+        };
+        let scalar_named = |element: &Element, name: &str| {
+            element
+                .properties
+                .iter()
+                .position(|p| p.name == name)
+                .map(|index| match element.properties[index].kind {
+                    PropertyKind::Scalar(_) => Ok(index),
+                    PropertyKind::List { .. } => Err(header_error(format!(
+                        "PLY vertex property {name} must be a scalar"
+                    ))),
+                })
+                .transpose()
+        };
+        for element in &header.elements {
+            match element.name.as_str() {
+                "vertex" => {
+                    let [x, y, z] = ["x", "y", "z"].map(|name| scalar_named(element, name));
+                    match (x?, y?, z?) {
+                        (Some(x), Some(y), Some(z)) => layout.position = Some([x, y, z]),
+                        _ if element.count == 0 => {}
+                        _ => {
+                            return Err(header_error(
+                                "PLY vertex element must declare x, y and z properties",
+                            ));
+                        }
+                    }
+                    let [nx, ny, nz] = ["nx", "ny", "nz"].map(|name| scalar_named(element, name));
+                    if let (Some(nx), Some(ny), Some(nz)) = (nx?, ny?, nz?) {
+                        layout.normal = Some([nx, ny, nz]);
+                    }
+                }
+                "face" => {
+                    let index = element
+                        .properties
+                        .iter()
+                        .position(|p| p.name == "vertex_indices" || p.name == "vertex_index");
+                    match index.map(|index| (index, element.properties[index].kind)) {
+                        Some((index, PropertyKind::List { item, .. }))
+                            if item.integer_range().is_some() =>
+                        {
+                            layout.face_indices = Some(index);
+                        }
+                        Some(_) => {
+                            return Err(header_error(
+                                "PLY face vertex indices must be a list of integers",
+                            ));
+                        }
+                        None if element.count == 0 => {}
+                        None => {
+                            return Err(header_error(
+                                "PLY face element must declare a vertex_indices list",
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(layout)
+    }
+}
+
+/// A source of PLY body values, read in declaration order.
+trait Values {
+    /// Start an element instance.
+    fn begin_instance(&mut self) -> Result<(), String>;
+    /// Finish an element instance.
+    fn end_instance(&mut self) -> Result<(), String>;
+    /// The next value, of declared type `ty`.
+    fn scalar(&mut self, ty: ScalarType) -> Result<f64, String>;
+    /// Skip `n` values of declared type `ty`.
+    fn skip(&mut self, ty: ScalarType, n: usize) -> Result<(), String>;
+    /// Instances of `element` worth reserving room for up front.
+    fn capacity_hint(&self, element: &Element) -> usize;
+}
+
+/// ASCII bodies hold one element instance per line.
+struct AsciiValues<'a> {
+    lines: std::str::Lines<'a>,
+    tokens: std::str::SplitWhitespace<'a>,
+}
+
+impl<'a> AsciiValues<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            lines: text.lines(),
+            tokens: "".split_whitespace(),
+        }
+    }
+}
+
+impl Values for AsciiValues<'_> {
+    fn begin_instance(&mut self) -> Result<(), String> {
+        loop {
+            let line = self.lines.next().ok_or("unexpected end of data")?;
+            if !line.trim().is_empty() {
+                self.tokens = line.split_whitespace();
+                return Ok(());
+            }
+        }
+    }
+
+    fn end_instance(&mut self) -> Result<(), String> {
+        match self.tokens.next() {
+            Some(extra) => Err(format!("more values than declared (at '{extra}')")),
+            None => Ok(()),
+        }
+    }
+
+    fn scalar(&mut self, ty: ScalarType) -> Result<f64, String> {
+        let token = self.tokens.next().ok_or("fewer values than declared")?;
+        match ty.integer_range() {
+            Some((lo, hi)) => match token.parse::<i64>() {
+                Ok(value) if (lo..=hi).contains(&value) => Ok(value as f64),
+                _ => Err(format!("invalid {ty:?} value '{token}'")),
+            },
+            // A `float` is single precision in both encodings: round it as
+            // the binary reader does, so ASCII and binary agree.
+            None if ty == ScalarType::Float32 => match token.parse::<f32>() {
+                Ok(value)
+                    if value.is_finite() || token.parse::<f64>().is_ok_and(|v| !v.is_finite()) =>
+                {
+                    Ok(f64::from(value))
+                }
+                _ => Err(format!("invalid {ty:?} value '{token}'")),
+            },
+            None => token
+                .parse::<f64>()
+                .map_err(|_| format!("invalid {ty:?} value '{token}'")),
+        }
+    }
+
+    fn skip(&mut self, ty: ScalarType, n: usize) -> Result<(), String> {
+        for _ in 0..n {
+            self.scalar(ty)?;
+        }
+        Ok(())
+    }
+
+    fn capacity_hint(&self, _element: &Element) -> usize {
+        // ASCII counts do not prove that any valid records exist. Allocate
+        // only as records are parsed.
+        0
+    }
+}
+
+/// Binary little-endian bodies pack instances back to back.
+struct BinaryValues<'a> {
+    body: &'a [u8],
+    offset: usize,
+}
+
+impl BinaryValues<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], String> {
+        let bytes = self
+            .body
+            .get(self.offset..)
+            .and_then(|rest| rest.first_chunk::<N>())
+            .ok_or("unexpected end of data")?;
+        self.offset += N;
+        Ok(*bytes)
+    }
+}
+
+impl Values for BinaryValues<'_> {
+    fn begin_instance(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn end_instance(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn scalar(&mut self, ty: ScalarType) -> Result<f64, String> {
+        Ok(match ty {
+            ScalarType::Int8 => f64::from(i8::from_le_bytes(self.take()?)),
+            ScalarType::Uint8 => f64::from(u8::from_le_bytes(self.take()?)),
+            ScalarType::Int16 => f64::from(i16::from_le_bytes(self.take()?)),
+            ScalarType::Uint16 => f64::from(u16::from_le_bytes(self.take()?)),
+            ScalarType::Int32 => f64::from(i32::from_le_bytes(self.take()?)),
+            ScalarType::Uint32 => f64::from(u32::from_le_bytes(self.take()?)),
+            ScalarType::Float32 => f64::from(f32::from_le_bytes(self.take()?)),
+            ScalarType::Float64 => f64::from_le_bytes(self.take()?),
         })
+    }
+
+    fn skip(&mut self, ty: ScalarType, n: usize) -> Result<(), String> {
+        let end = n
+            .checked_mul(ty.size())
+            .and_then(|bytes| self.offset.checked_add(bytes))
+            .filter(|&end| end <= self.body.len())
+            .ok_or("unexpected end of data")?;
+        self.offset = end;
+        Ok(())
+    }
+
+    fn capacity_hint(&self, element: &Element) -> usize {
+        // Reserve no more instances than the remaining bytes can hold.
+        let remaining = self.body.len().saturating_sub(self.offset);
+        element
+            .count
+            .min(remaining / element.min_binary_size().max(1))
+    }
 }
 
-fn parse_ascii_body(
+/// Read a list length of declared type `ty`, bounded by `limit`.
+fn list_len(
+    values: &mut impl Values,
+    ty: ScalarType,
+    resource: &'static str,
+    limit: usize,
+) -> Result<Result<usize, crate::IoError>, String> {
+    let count = values.scalar(ty)?;
+    if count < 0.0 {
+        return Err(format!("negative list length {count}"));
+    }
+    // integral, >= 0, <= u32::MAX
+    let count = count as usize;
+    Ok(ensure_limit(resource, count, limit).map(|()| count))
+}
+
+/// Read the body by the declared elements and assemble the mesh.
+fn read_body(
     header: &PlyHeader,
-    body: &[u8],
+    layout: &MeshLayout,
+    values: &mut impl Values,
     limits: ImportLimits,
 ) -> Result<TriangleMesh, crate::IoError> {
-    let text = std::str::from_utf8(body).map_err(|_| crate::IoError::ParseError {
-        reason: "PLY body is not valid UTF-8".into(),
-    })?;
-
-    let mut lines = text.lines();
-    // ASCII counts do not prove that any valid records exist. Allocate only
-    // as records are parsed, including when the body contains blank lines.
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();
+    let mut face = Vec::new();
     let mut triangle_count = 0_usize;
 
-    for _ in 0..header.vertex_count {
-        let line = lines.next().ok_or_else(|| crate::IoError::ParseError {
-            reason: "unexpected end of PLY vertex data".into(),
-        })?;
-        let vals: Vec<f64> = line
-            .split_whitespace()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        if vals.len() < 3 {
-            return Err(crate::IoError::ParseError {
-                reason: format!("PLY vertex needs at least 3 values: {line}"),
-            });
-        }
-
-        positions.push(Point3::new(vals[0], vals[1], vals[2]));
-
-        if header.has_normals && vals.len() >= 6 {
-            normals.push(Vec3::new(vals[3], vals[4], vals[5]));
-        }
-    }
-
-    for _ in 0..header.face_count {
-        let line = lines.next().ok_or_else(|| crate::IoError::ParseError {
-            reason: "unexpected end of PLY face data".into(),
-        })?;
-        let mut vals = line
-            .split_whitespace()
-            .filter_map(|s| s.parse::<u32>().ok());
-        let Some(n_verts) = vals.next().map(|count| count as usize) else {
-            continue;
+    for element in &header.elements {
+        let context = |instance: usize, reason: String| crate::IoError::ParseError {
+            reason: format!(
+                "PLY {} {instance} of {}: {reason}",
+                element.name, element.count
+            ),
         };
-        if n_verts == 0 {
-            return Err(crate::IoError::ParseError {
-                reason: format!("PLY face must contain at least one vertex: {line}"),
-            });
+        let is_vertex = element.name == "vertex";
+        let face_list = if element.name == "face" {
+            layout.face_indices
+        } else {
+            None
+        };
+        if is_vertex {
+            positions.reserve(values.capacity_hint(element));
+            if layout.normal.is_some() {
+                normals.reserve(positions.capacity());
+            }
         }
 
-        ensure_limit("PLY face vertices", n_verts, limits.max_model_entities)?;
-        triangle_count = triangle_count.saturating_add(n_verts.saturating_sub(2));
-        ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
+        let mut scalars = vec![0.0; element.properties.len()];
+        for instance in 0..element.count {
+            values
+                .begin_instance()
+                .map_err(|reason| context(instance, reason))?;
+            for (index, property) in element.properties.iter().enumerate() {
+                match property.kind {
+                    PropertyKind::Scalar(ty) => {
+                        scalars[index] = values
+                            .scalar(ty)
+                            .map_err(|reason| context(instance, reason))?;
+                    }
+                    PropertyKind::List { count, item } if face_list == Some(index) => {
+                        let n = list_len(
+                            values,
+                            count,
+                            "PLY face vertices",
+                            limits.max_model_entities,
+                        )
+                        .map_err(|reason| context(instance, reason))??;
+                        if n == 0 {
+                            return Err(context(
+                                instance,
+                                "face must contain at least one vertex".into(),
+                            ));
+                        }
+                        triangle_count = triangle_count.saturating_add(n.saturating_sub(2));
+                        ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
+                        face.clear();
+                        for _ in 0..n {
+                            let value = values
+                                .scalar(item)
+                                .map_err(|reason| context(instance, reason))?;
+                            let vertex = u32::try_from(value as i64).ok();
+                            face.push(vertex.ok_or_else(|| {
+                                context(instance, format!("invalid vertex index {value}"))
+                            })?);
+                        }
+                        // Fan triangulation for polygons: v0-v1-v2, v0-v2-v3, ...
+                        for pair in face.windows(2).skip(1) {
+                            indices.extend([face[0], pair[0], pair[1]]);
+                        }
+                    }
+                    PropertyKind::List { count, item } => {
+                        let n =
+                            list_len(values, count, "PLY list items", limits.max_model_entities)
+                                .map_err(|reason| context(instance, reason))??;
+                        values
+                            .skip(item, n)
+                            .map_err(|reason| context(instance, reason))?;
+                    }
+                }
+            }
+            values
+                .end_instance()
+                .map_err(|reason| context(instance, reason))?;
 
-        let face_indices: Vec<u32> = vals.take(n_verts).collect();
-        if face_indices.len() < n_verts {
-            return Err(crate::IoError::ParseError {
-                reason: format!("PLY face has fewer indices than declared: {line}"),
-            });
-        }
-
-        // Fan triangulation for polygons: v0-v1-v2, v0-v2-v3, ...
-        if let Some(&v0) = face_indices.first() {
-            for i in 1..n_verts.saturating_sub(1) {
-                indices.push(v0);
-                indices.push(face_indices[i]);
-                indices.push(face_indices[i + 1]);
+            if is_vertex {
+                if let Some([x, y, z]) = layout.position {
+                    positions.push(Point3::new(scalars[x], scalars[y], scalars[z]));
+                }
+                if let Some([nx, ny, nz]) = layout.normal {
+                    normals.push(Vec3::new(scalars[nx], scalars[ny], scalars[nz]));
+                }
             }
         }
     }
 
-    if normals.is_empty() {
-        normals = compute_normals(&positions, &indices);
-    }
-    normals.resize(positions.len(), Vec3::new(0.0, 0.0, 1.0));
-
-    Ok(TriangleMesh {
-        positions,
-        normals,
-        indices,
-    })
-}
-
-fn parse_binary_body(
-    header: &PlyHeader,
-    body: &[u8],
-    limits: ImportLimits,
-) -> Result<TriangleMesh, crate::IoError> {
-    let floats_per_vertex = if header.has_normals { 6 } else { 3 };
-    let vertex_bytes = header
-        .vertex_count
-        .checked_mul(floats_per_vertex * 4)
-        .ok_or_else(|| crate::IoError::ParseError {
-            reason: "PLY binary vertex byte count overflow".into(),
-        })?;
-
-    if body.len() < vertex_bytes {
+    if let Some(&index) = indices.iter().find(|&&i| i as usize >= positions.len()) {
         return Err(crate::IoError::ParseError {
-            reason: "PLY binary body too short for vertices".into(),
+            reason: format!(
+                "PLY face references vertex {index}, but the file has {} vertices",
+                positions.len()
+            ),
         });
     }
-
-    let mut positions = Vec::with_capacity(header.vertex_count);
-    let mut normals = Vec::with_capacity(header.vertex_count);
-    let mut offset = 0;
-
-    for _ in 0..header.vertex_count {
-        let x = f32::from_le_bytes([
-            body[offset],
-            body[offset + 1],
-            body[offset + 2],
-            body[offset + 3],
-        ]);
-        let y = f32::from_le_bytes([
-            body[offset + 4],
-            body[offset + 5],
-            body[offset + 6],
-            body[offset + 7],
-        ]);
-        let z = f32::from_le_bytes([
-            body[offset + 8],
-            body[offset + 9],
-            body[offset + 10],
-            body[offset + 11],
-        ]);
-        positions.push(Point3::new(f64::from(x), f64::from(y), f64::from(z)));
-        offset += 12;
-
-        if header.has_normals {
-            let nx = f32::from_le_bytes([
-                body[offset],
-                body[offset + 1],
-                body[offset + 2],
-                body[offset + 3],
-            ]);
-            let ny = f32::from_le_bytes([
-                body[offset + 4],
-                body[offset + 5],
-                body[offset + 6],
-                body[offset + 7],
-            ]);
-            let nz = f32::from_le_bytes([
-                body[offset + 8],
-                body[offset + 9],
-                body[offset + 10],
-                body[offset + 11],
-            ]);
-            normals.push(Vec3::new(f64::from(nx), f64::from(ny), f64::from(nz)));
-            offset += 12;
-        }
-    }
-
-    let mut indices = Vec::new();
-    let mut triangle_count = 0_usize;
-    for face_number in 0..header.face_count {
-        // A truncated face section used to end the mesh silently (`break`
-        // with `Ok`), handing back fewer faces than declared with no
-        // diagnostic — the ASCII path errors on short faces, and so does
-        // this one now.
-        if offset >= body.len() {
-            return Err(crate::IoError::ParseError {
-                reason: format!(
-                    "unexpected end of PLY face data at face {face_number} of {}",
-                    header.face_count
-                ),
-            });
-        }
-        let n_verts = body[offset] as usize;
-        offset += 1;
-
-        ensure_limit("PLY face vertices", n_verts, limits.max_model_entities)?;
-        triangle_count = triangle_count.saturating_add(n_verts.saturating_sub(2));
-        ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
-
-        if offset + n_verts * 4 > body.len() {
-            return Err(crate::IoError::ParseError {
-                reason: format!(
-                    "unexpected end of PLY face data at face {face_number} of {}",
-                    header.face_count
-                ),
-            });
-        }
-
-        let mut face_indices = Vec::with_capacity(n_verts);
-        for _ in 0..n_verts {
-            let idx = u32::from_le_bytes([
-                body[offset],
-                body[offset + 1],
-                body[offset + 2],
-                body[offset + 3],
-            ]);
-            face_indices.push(idx);
-            offset += 4;
-        }
-
-        // Fan triangulation
-        if face_indices.len() >= 3 {
-            let v0 = face_indices[0];
-            for i in 1..face_indices.len() - 1 {
-                indices.push(v0);
-                indices.push(face_indices[i]);
-                indices.push(face_indices[i + 1]);
-            }
-        }
-    }
-
     if normals.is_empty() {
         normals = compute_normals(&positions, &indices);
     }
-    normals.resize(positions.len(), Vec3::new(0.0, 0.0, 1.0));
 
     Ok(TriangleMesh {
         positions,
@@ -394,8 +729,9 @@ pub fn read_ply_solid(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -407,31 +743,41 @@ mod tests {
             ..ImportLimits::default()
         };
         for body in ["", "\n\n", "0 0 0\n", "\r\n"] {
+            // Declared coordinates, so the failure is the missing record and
+            // not a header refusal that would skip the allocation path.
             let ply = format!(
-                "ply\nformat ascii 1.0\nelement vertex {}\nelement face 0\nend_header\n{body}",
+                "ply\nformat ascii 1.0\nelement vertex {}\nproperty float x\nproperty float y\n\
+                 property float z\nelement face 0\nend_header\n{body}",
                 usize::MAX
             );
-            assert!(matches!(
-                read_ply_with_limits(ply.as_bytes(), limits),
-                Err(crate::IoError::ParseError { .. })
-            ));
+            match read_ply_with_limits(ply.as_bytes(), limits) {
+                Err(crate::IoError::ParseError { reason }) => assert!(
+                    reason.starts_with("PLY vertex") && reason.ends_with("unexpected end of data"),
+                    "{reason}"
+                ),
+                other => panic!("expected a missing-record error, got {other:?}"),
+            }
         }
     }
 
     #[test]
     fn binary_vertex_bytes_overflow_is_an_error() {
         let ply = format!(
-            "ply\nformat binary_little_endian 1.0\nelement vertex {}\nelement face 0\nend_header\n",
+            "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\n\
+             property float y\nproperty float z\nelement face 0\nend_header\n",
             usize::MAX
         );
         let limits = ImportLimits {
             max_model_entities: usize::MAX,
             ..ImportLimits::default()
         };
-        assert!(matches!(
-            read_ply_with_limits(ply.as_bytes(), limits),
-            Err(crate::IoError::ParseError { .. })
-        ));
+        match read_ply_with_limits(ply.as_bytes(), limits) {
+            Err(crate::IoError::ParseError { reason }) => assert!(
+                reason.starts_with("PLY vertex 0 of") && reason.ends_with("unexpected end of data"),
+                "{reason}"
+            ),
+            other => panic!("expected a missing-record error, got {other:?}"),
+        }
     }
 
     #[test]

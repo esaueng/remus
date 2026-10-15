@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
@@ -1326,6 +1326,43 @@ fn adjacent_fillet_single_edge_no_phase2d_rejection() {
         "single-edge fillet with R=0.4 should succeed: {:?}",
         result.err()
     );
+}
+
+#[test]
+fn face_surface_normal_with_grid_matches_the_per_call_projection() {
+    // A doubly curved bicubic patch, so the coarse grid seed and Newton both
+    // matter; the kept grid must give the per-call normal bit for bit.
+    let rows: Vec<Vec<Point3>> = (0..4)
+        .map(|i| {
+            (0..4)
+                .map(|j| {
+                    let (x, y) = (f64::from(i), f64::from(j));
+                    Point3::new(x, y, 0.3 * (x - 1.5).powi(2) - 0.2 * (y - 1.2).powi(2))
+                })
+                .collect()
+        })
+        .collect();
+    let srf = NurbsSurface::new(
+        3,
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        rows,
+        vec![vec![1.0, 1.2, 0.9, 1.0]; 4],
+    )
+    .expect("bicubic patch");
+    let surface = FaceSurface::Nurbs(srf.clone());
+    let mut grid = None;
+    for k in 0..40 {
+        let (u, v) = (f64::from(k % 7) / 6.0, f64::from(k % 5) / 4.0);
+        // On-surface and slightly lifted query points.
+        let point = srf.evaluate(u, v) + Vec3::new(0.0, 0.0, f64::from(k % 3) * 1e-3);
+        let kept = face_surface_normal_with_grid(&surface, point, &mut grid);
+        let fresh = face_surface_normal_at(&surface, point);
+        let bits = |n: Option<Vec3>| n.map(|n| [n.x(), n.y(), n.z()].map(f64::to_bits));
+        assert_eq!(bits(kept), bits(fresh), "query {k} at {point:?}");
+    }
+    assert!(grid.is_some(), "the grid is built on first use and kept");
 }
 
 #[test]
