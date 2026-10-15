@@ -471,7 +471,8 @@ pub fn curve_knot_remove(
         } else {
             (u - removed_knots[k]) / denom
         };
-        if degree_one_deviation_bound(pw[k - 1], pw[k], pw[k + 1], alpha) > tolerance {
+        let at = |i: usize| (cps[i], ws[i]);
+        if degree_one_deviation_bound(at(k - 1), at(k), at(k + 1), alpha) > tolerance {
             return Err(MathError::ConvergenceFailure { iterations: 0 });
         }
     }
@@ -519,19 +520,38 @@ pub fn curve_knot_remove(
 /// Upper bound on the parametric deviation caused by removing the middle
 /// control point `mid` of a degree-1 curve, `alpha` being the knot's
 /// position between its neighbours (see the derivation in
-/// [`curve_knot_remove`]). Infinite when a weight is not positive.
+/// [`curve_knot_remove`]). Each point is `(position, weight)`. Infinite when
+/// a weight is not positive and finite.
+///
+/// The bound is invariant under a common scale of the three weights, so they
+/// are divided by the largest first: weights near the ends of the `f64`
+/// range would otherwise underflow or overflow the homogeneous products.
 #[allow(clippy::suboptimal_flops)]
-fn degree_one_deviation_bound(prev: [f64; 4], mid: [f64; 4], next: [f64; 4], alpha: f64) -> f64 {
-    if !(prev[3] > 0.0 && mid[3] > 0.0 && next[3] > 0.0) {
+fn degree_one_deviation_bound(
+    prev: (Point3, f64),
+    mid: (Point3, f64),
+    next: (Point3, f64),
+    alpha: f64,
+) -> f64 {
+    let scale = prev.1.max(mid.1).max(next.1);
+    if !(prev.1 > 0.0 && mid.1 > 0.0 && next.1 > 0.0 && scale.is_finite()) {
         return f64::INFINITY;
     }
-    let e: [f64; 4] = std::array::from_fn(|i| mid[i] - (alpha * next[i] + (1.0 - alpha) * prev[i]));
-    let excess_at = |end: [f64; 4]| {
-        let (x, y, z) = (end[0] / end[3], end[1] / end[3], end[2] / end[3]);
-        let (dx, dy, dz) = (e[0] - e[3] * x, e[1] - e[3] * y, e[2] - e[3] * z);
+    let homogeneous = |(q, w): (Point3, f64)| {
+        let w = w / scale;
+        [q.x() * w, q.y() * w, q.z() * w, w]
+    };
+    let (hp, hm, hn) = (homogeneous(prev), homogeneous(mid), homogeneous(next));
+    let e: [f64; 4] = std::array::from_fn(|i| hm[i] - (alpha * hn[i] + (1.0 - alpha) * hp[i]));
+    let excess_at = |end: Point3| {
+        let (dx, dy, dz) = (
+            e[0] - e[3] * end.x(),
+            e[1] - e[3] * end.y(),
+            e[2] - e[3] * end.z(),
+        );
         (dx * dx + dy * dy + dz * dz).sqrt()
     };
-    excess_at(prev).max(excess_at(next)) / mid[3]
+    excess_at(prev.0).max(excess_at(next.0)) / hm[3]
 }
 
 /// Refine a curve by inserting multiple knots at once (A5.4).
