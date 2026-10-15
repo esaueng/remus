@@ -549,6 +549,34 @@ pub(super) fn tessellate_revolved_with_holes(
     use remus_math::vec::Point2;
 
     let outer_wire = topo.wire(face_data.outer_wire())?;
+    // A pointed cone may also carry its seam run out to the apex and back
+    // (`make_cone`'s wire, kept through booleans). Both uses sample at the
+    // same `u`, so the chart polygon degenerates; drop them and let the
+    // single-rim apex synthesis below rebuild that boundary on both sides.
+    let rim_only;
+    let outer_wire = if let Some((_, apex_point)) = apex {
+        let tol = remus_math::tolerance::Tolerance::default().linear;
+        let mut kept = Vec::with_capacity(outer_wire.edges().len());
+        for &oe in outer_wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let reaches_apex = matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+                && [edge.start(), edge.end()].into_iter().any(|vid| {
+                    topo.vertex(vid)
+                        .is_ok_and(|v| (v.point() - apex_point).length() <= tol)
+                });
+            if !reaches_apex {
+                kept.push(oe);
+            }
+        }
+        if kept.len() == outer_wire.edges().len() || kept.is_empty() {
+            outer_wire
+        } else {
+            rim_only = remus_topology::wire::Wire::new(kept, true)?;
+            &rim_only
+        }
+    } else {
+        outer_wire
+    };
     let (mut all_positions, mut outer_uvs) =
         sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol, edge_points)?;
     if outer_uvs.len() < 3 {

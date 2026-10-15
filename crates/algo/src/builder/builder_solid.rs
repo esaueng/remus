@@ -1821,12 +1821,29 @@ fn short_loop_is_degenerate(topo: &Topology, oes: &[OrientedEdge]) -> bool {
 /// Remove cyclically-adjacent (edge, +dir)/(edge, -dir) pairs from every
 /// face wire; drop short all-line polygon remnants while preserving valid
 /// one- and two-edge curved loops.
+///
+/// A cone face's seam run to its apex and back is not such a pair: its two
+/// uses are the u = 0 and u = 2π sides of the seam, turning at the apex
+/// singularity, and they bound the face in UV. Excising them leaves a pointed
+/// cone (or a split band of one that reaches the apex) bounded by its rim
+/// circle alone — a face every consumer reads differently (a box cut by a
+/// cone whose apex lies inside it came back with an open, uncarved shell).
+/// Pairs turning at the apex of the face's own cone are kept.
 fn excise_out_and_back_spurs(
     topo: &mut Topology,
     face_ids: &mut Vec<FaceId>,
     sources: &mut Vec<Option<FaceId>>,
 ) {
-    let excise = |oes: &mut Vec<OrientedEdge>| -> bool {
+    let excise = |topo: &Topology, apex: Option<Point3>, oes: &mut Vec<OrientedEdge>| -> bool {
+        // Same slack the face splitter uses to recognise the apex level.
+        let apex_tol = remus_math::tolerance::Tolerance::new().linear * 100.0;
+        let turns_at_apex = |out: OrientedEdge| {
+            apex.is_some_and(|apex| {
+                topo.edge(out.edge())
+                    .and_then(|edge| topo.vertex(out.oriented_end(edge)))
+                    .is_ok_and(|v| (v.point() - apex).length() <= apex_tol)
+            })
+        };
         let mut changed = false;
         loop {
             let n = oes.len();
@@ -1839,6 +1856,7 @@ fn excise_out_and_back_spurs(
                 if i != j
                     && oes[i].edge() == oes[j].edge()
                     && oes[i].is_forward() != oes[j].is_forward()
+                    && !turns_at_apex(oes[i])
                 {
                     let (hi, lo) = if i > j { (i, j) } else { (j, i) };
                     oes.remove(hi);
@@ -1859,12 +1877,17 @@ fn excise_out_and_back_spurs(
         let Ok(face) = topo.face(fid) else { continue };
         let outer_wid = face.outer_wire();
         let inner_wids: Vec<WireId> = face.inner_wires().to_vec();
+        let apex = if let FaceSurface::Cone(cone) = face.surface() {
+            Some(cone.apex())
+        } else {
+            None
+        };
 
         let mut outer = match topo.wire(outer_wid) {
             Ok(w) => w.edges().to_vec(),
             Err(_) => continue,
         };
-        if excise(&mut outer) {
+        if excise(topo, apex, &mut outer) {
             if short_loop_is_degenerate(topo, &outer) {
                 drop.push(fi);
                 continue;
@@ -1882,7 +1905,7 @@ fn excise_out_and_back_spurs(
                 continue;
             };
             let mut inner = inner_wire.edges().to_vec();
-            if excise(&mut inner) {
+            if excise(topo, apex, &mut inner) {
                 if short_loop_is_degenerate(topo, &inner) {
                     // The hole WAS the excursion (a zero-width slit): dropping
                     // it entirely is the only consistent outcome — writing the

@@ -680,8 +680,15 @@ pub fn remove_degenerate_edges(
 /// faces, issue #801), the notched face's wire traverses the opening edge
 /// out-and-back instead of leaving it as the clean boundary shared with the
 /// filler face. The spur makes that edge non-manifold (3+ faces) and inflates
-/// the measured volume. Stripping it is always sound — the face region is
-/// unchanged and the edge drops to its correct neighbours.
+/// the measured volume. Stripping it is sound — the face region is unchanged
+/// and the edge drops to its correct neighbours.
+///
+/// One out-and-back is NOT a spur: a cone face's seam run to its apex and
+/// back. The two uses lie on opposite sides of the seam (u = 0 and u = 2π)
+/// and turn at the apex singularity, so the pair bounds the whole face in
+/// UV. Stripping it leaves a pointed cone (or a GFA band of one that reaches
+/// the apex) bounded by its rim circle alone, which every consumer reads as
+/// a different face. Pairs turning at a cone face's apex are kept.
 ///
 /// Returns the number of oriented-edge occurrences removed (two per spur).
 ///
@@ -694,12 +701,22 @@ pub fn remove_wire_spurs(
     let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
     let mut removed = 0;
 
+    // Same slack the face splitter uses to recognise the apex level.
+    let apex_tol = Tolerance::new().linear * 100.0;
     for fid in face_ids {
-        let wire_ids: Vec<_> = {
+        let (wire_ids, apex): (Vec<_>, Option<Point3>) = {
             let face = topo.face(fid)?;
-            std::iter::once(face.outer_wire())
-                .chain(face.inner_wires().iter().copied())
-                .collect()
+            let apex = if let FaceSurface::Cone(cone) = face.surface() {
+                Some(cone.apex())
+            } else {
+                None
+            };
+            (
+                std::iter::once(face.outer_wire())
+                    .chain(face.inner_wires().iter().copied())
+                    .collect(),
+                apex,
+            )
         };
 
         for wid in wire_ids {
@@ -708,7 +725,11 @@ pub fn remove_wire_spurs(
                 (wire.edges().to_vec(), wire.is_closed())
             };
 
-            let n_removed = strip_wire_spurs(&mut oes);
+            let n_removed = strip_wire_spurs(&mut oes, |out| {
+                apex.is_some_and(|apex| {
+                    turn_vertex_point(topo, out).is_some_and(|p| (p - apex).length() <= apex_tol)
+                })
+            });
             if n_removed == 0 {
                 continue;
             }
@@ -744,13 +765,29 @@ pub fn remove_wire_spurs(
     Ok(removed)
 }
 
+/// Position of the vertex an oriented edge use ends at — where an out-and-back
+/// pair starting with this use turns around.
+fn turn_vertex_point(topo: &Topology, out: OrientedEdge) -> Option<Point3> {
+    let edge = topo.edge(out.edge()).ok()?;
+    let vid = if out.is_forward() {
+        edge.end()
+    } else {
+        edge.start()
+    };
+    topo.vertex(vid)
+        .ok()
+        .map(remus_topology::vertex::Vertex::point)
+}
+
 /// Strip consecutive same-edge opposite-orientation pairs (out-and-back spurs)
 /// from an oriented-edge loop, including pairs exposed across the wrap-around
-/// boundary. Returns the count removed.
-fn strip_wire_spurs(oes: &mut Vec<OrientedEdge>) -> usize {
-    fn is_spur(a: OrientedEdge, b: OrientedEdge) -> bool {
-        a.edge() == b.edge() && a.is_forward() != b.is_forward()
-    }
+/// boundary. A pair whose outgoing use satisfies `keep` (it turns at a
+/// singular point, see [`remove_wire_spurs`]) is left in place. Returns the
+/// count removed.
+fn strip_wire_spurs(oes: &mut Vec<OrientedEdge>, keep: impl Fn(OrientedEdge) -> bool) -> usize {
+    let is_spur = |a: OrientedEdge, b: OrientedEdge| {
+        a.edge() == b.edge() && a.is_forward() != b.is_forward() && !keep(a)
+    };
 
     let original_len = oes.len();
     let input = std::mem::take(oes);
@@ -769,10 +806,11 @@ fn strip_wire_spurs(oes: &mut Vec<OrientedEdge>) -> usize {
 
     // The wire is cyclic. Linear reduction can leave inverse pairs at its two
     // ends, so peel those pairs using indices and pop (both O(1)). Removing a
-    // boundary pair can expose another one.
+    // boundary pair can expose another one. Cyclically the last use runs
+    // into the first, so the last is the outgoing half of such a pair.
     let mut first = 0;
     while reduced.len().saturating_sub(first) >= 2
-        && is_spur(reduced[first], reduced[reduced.len() - 1])
+        && is_spur(reduced[reduced.len() - 1], reduced[first])
     {
         first += 1;
         reduced.pop();
