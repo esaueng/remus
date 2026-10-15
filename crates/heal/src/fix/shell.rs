@@ -274,6 +274,14 @@ mod tests {
             .unwrap();
         }
 
+        // Both periodic coordinates must survive a flipped use, not just
+        // the pcurve geometry. The reshape is independent of carrier type.
+        let winding = remus_topology::coedge::PeriodicWinding::new(2, -3);
+        for lid in topo.face(face).unwrap().boundary_loops().to_vec() {
+            for cid in topo.face_loop(lid).unwrap().coedges().to_vec() {
+                topo.set_coedge_periodic_winding(cid, winding).unwrap();
+            }
+        }
         let mut ctx = HealContext::new();
         let config = FixConfig {
             fix_same_parameter: crate::fix::config::FixMode::Off,
@@ -284,6 +292,11 @@ mod tests {
 
         let rebuilt = topo.face(face).unwrap().outer_wire();
         assert_ne!(rebuilt, broken);
+        for &lid in topo.face(face).unwrap().boundary_loops() {
+            for &cid in topo.face_loop(lid).unwrap().coedges() {
+                assert_eq!(topo.coedge(cid).unwrap().periodic_winding(), winding);
+            }
+        }
         for oe in topo.wire(rebuilt).unwrap().edges() {
             let pcurve = topo.pcurve_oriented(oe.edge(), face, oe.is_forward());
             assert!(pcurve.is_some(), "use of {:?} lost its pcurve", oe.edge());

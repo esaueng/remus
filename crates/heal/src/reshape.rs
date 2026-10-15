@@ -11,6 +11,7 @@ use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use remus_topology::Topology;
+use remus_topology::coedge::PeriodicWinding;
 use remus_topology::edge::EdgeId;
 use remus_topology::face::FaceId;
 use remus_topology::shell::ShellId;
@@ -80,6 +81,13 @@ pub struct ReShape {
     shells: HashMap<ShellId, ShellAction>,
 }
 
+type CarriedPCurve = (
+    EdgeId,
+    bool,
+    remus_topology::pcurve::PCurve,
+    PeriodicWinding,
+);
+
 /// A reorder can flip a use's sense, and the rebuilt boundary keeps a pcurve
 /// only for a use whose sense it still has. A use that changed sense, and has
 /// no pcurve in either sense now, takes its old one with the range reversed:
@@ -87,14 +95,14 @@ pub struct ReShape {
 fn carry_flipped_pcurves(
     topo: &mut Topology,
     face_id: FaceId,
-    before: Vec<(EdgeId, bool, remus_topology::pcurve::PCurve)>,
+    before: Vec<CarriedPCurve>,
 ) -> Result<(), HealError> {
     let mut uses: Vec<OrientedEdge> = Vec::new();
     let face = topo.face(face_id)?;
     for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         uses.extend_from_slice(topo.wire(wid)?.edges());
     }
-    for (edge, forward, pcurve) in before {
+    for (edge, forward, pcurve, winding) in before {
         let flipped = uses
             .iter()
             .any(|oe| oe.edge() == edge && oe.is_forward() != forward);
@@ -108,6 +116,16 @@ fn carry_flipped_pcurves(
                 pcurve.t_start(),
             );
             topo.set_pcurve_oriented(edge, face_id, !forward, reversed)?;
+            // Reversing traversal swaps the endpoints of the same lifted
+            // trace; it does not move that trace back to its base branch.
+            for loop_id in topo.face(face_id)?.boundary_loops().to_vec() {
+                for coedge_id in topo.face_loop(loop_id)?.coedges().to_vec() {
+                    let coedge = topo.coedge(coedge_id)?;
+                    if coedge.edge() == edge && coedge.is_forward() != forward {
+                        topo.set_coedge_periodic_winding(coedge_id, winding)?;
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -655,11 +673,20 @@ impl ReShape {
                 .collect();
 
             if new_outer != old_outer || new_inner != old_inner {
-                let before: Vec<(EdgeId, bool, remus_topology::pcurve::PCurve)> = topo
-                    .pcurves_for_face(face_id)
-                    .into_iter()
-                    .map(|(edge, forward, pcurve)| (edge, forward, pcurve.clone()))
-                    .collect();
+                let mut before = Vec::new();
+                for &loop_id in topo.face(face_id)?.boundary_loops() {
+                    for &coedge_id in topo.face_loop(loop_id)?.coedges() {
+                        let coedge = topo.coedge(coedge_id)?;
+                        if let Some(pcurve) = coedge.pcurve() {
+                            before.push((
+                                coedge.edge(),
+                                coedge.is_forward(),
+                                pcurve.clone(),
+                                coedge.periodic_winding(),
+                            ));
+                        }
+                    }
+                }
                 topo.set_face_boundary_wires(face_id, new_outer, new_inner)?;
                 carry_flipped_pcurves(topo, face_id, before)?;
             }
@@ -1185,5 +1212,72 @@ mod tests {
         assert!(!final_edges[0].is_forward());
         assert_eq!(final_edges[1].edge(), first);
         assert!(!final_edges[1].is_forward());
+    }
+    /// A quarter-circle use on a cylinder has the same nonzero lift at
+    /// both endpoints. Reversing the use swaps those endpoints and must
+    /// retain the lifted trace rather than reset its branch to zero.
+    #[test]
+    fn flipped_cylinder_use_keeps_its_lifted_trace() {
+        use remus_math::curves::Circle3D;
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::{Point2, Vec2};
+        use remus_topology::coedge::PeriodicWinding;
+        use remus_topology::pcurve::PCurve;
+        let mut topo = Topology::new();
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let circle = Circle3D::new_with_ref(origin, z, 1.0, x).unwrap();
+        let end = std::f64::consts::FRAC_PI_2;
+        let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(circle.evaluate(end), 1e-7));
+        let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((0.0, end)));
+        let arc = topo.add_edge(arc);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(arc, true)], false).unwrap());
+        let carrier =
+            FaceSurface::Cylinder(CylindricalSurface::with_ref_dir(origin, z, 1.0, x).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], carrier.clone()));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let pc = PCurve::new(
+            Curve2D::Line(
+                Line2D::new(Point2::new(std::f64::consts::TAU, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+            ),
+            0.0,
+            end,
+        );
+        topo.set_pcurve_oriented(arc, face, true, pc).unwrap();
+        let cid = topo
+            .face_loop(topo.face(face).unwrap().boundary_loops()[0])
+            .unwrap()
+            .coedges()[0];
+        topo.set_coedge_periodic_winding(cid, PeriodicWinding::new(1, 0))
+            .unwrap();
+        let reversed =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(arc, false)], false).unwrap());
+        let mut reshape = ReShape::new();
+        reshape.replace_wire(wire, reversed);
+        reshape.apply(&mut topo, solid).unwrap();
+        let cid = topo
+            .face_loop(topo.face(face).unwrap().boundary_loops()[0])
+            .unwrap()
+            .coedges()[0];
+        let c = topo.coedge(cid).unwrap();
+        assert_eq!(c.periodic_winding(), PeriodicWinding::new(1, 0));
+        let pc = c.pcurve().unwrap();
+        for (t, vertex) in [(pc.t_start(), b), (pc.t_end(), a)] {
+            let uv = pc.evaluate(t);
+            assert!(
+                (carrier.evaluate(uv.x(), uv.y()).unwrap() - topo.vertex(vertex).unwrap().point())
+                    .length()
+                    < 1e-12
+            );
+            let principal = carrier
+                .project_point(topo.vertex(vertex).unwrap().point())
+                .unwrap();
+            assert!((uv.x() - principal.0 - std::f64::consts::TAU).abs() < 1e-12);
+        }
     }
 }
