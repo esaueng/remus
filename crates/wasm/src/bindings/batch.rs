@@ -557,7 +557,12 @@ impl BrepKernel {
             // aside before the first mutation lands.
             let snapshot = Rc::clone(&self.topo);
             let result = self.dispatch_op(op, args);
-            if result.is_err() {
+            // Still the snapshot's allocation: the op never reached
+            // `topo_mut`, so there is nothing to restore. Restoring anyway
+            // made `topo_mut` copy the whole unchanged topology aside (the
+            // snapshot still shares it) and moved the cache generation,
+            // invalidating every prepared cache for a no-op.
+            if result.is_err() && !Rc::ptr_eq(&self.topo, &snapshot) {
                 self.topo_mut().restore_preserving_handle_slots(&snapshot);
             }
             result
@@ -4765,6 +4770,27 @@ mod rollback_tests {
         let out = k.execute_batch(r#"[{"op":"makeBox","args":{"width":2,"height":2,"depth":2}}]"#);
         assert!(!out.contains("error"), "seed failed: {out}");
         k
+    }
+
+    /// A read-only op that fails before touching the topology leaves the
+    /// kernel's topology allocation, mutation ticks and cache generation as
+    /// they were. Restoring it anyway copied the whole topology aside (the
+    /// rollback snapshot shared it) and invalidated every prepared cache.
+    #[test]
+    fn failing_read_only_op_neither_copies_nor_restores() {
+        let mut k = kernel_with_box();
+        let allocation = std::rc::Rc::as_ptr(&k.topo);
+        let generation = k.topo().cache_generation();
+        let ticks = k.topo().mutation_ticks();
+        let out = k.execute_batch(
+            r#"[{"op":"getSolidFaces","args":{"solid":999}},{"op":"getSolidFaces","args":{"solid":0}}]"#,
+        );
+        let response: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(response[0]["error"].is_string(), "{out}");
+        assert_eq!(response[1]["ok"].as_array().map(Vec::len), Some(6), "{out}");
+        assert!(std::ptr::eq(allocation, std::rc::Rc::as_ptr(&k.topo)));
+        assert_eq!(k.topo().cache_generation(), generation);
+        assert_eq!(k.topo().mutation_ticks(), ticks);
     }
 
     /// A `pushPullFace` far enough to consume the solid fails *after* building
