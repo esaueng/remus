@@ -319,6 +319,7 @@ Quick reference — find the right file for any task:
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
+| Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
 | Read-only analytic blend queries | `query.rs` |
@@ -483,7 +484,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
-| Bounded opt-in exact-content scalar memo for standalone NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
+| Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
