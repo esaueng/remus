@@ -710,6 +710,13 @@ impl Journal {
         op
     }
 
+    /// Entry count and identifier high-water marks: every append changes
+    /// at least one of them (records add an entry, interning issues an
+    /// ordinal, even on a refused draft).
+    pub(crate) fn append_fingerprint(&self) -> (usize, u64, u64) {
+        (self.entries.len(), self.next_op, self.next_ordinal)
+    }
+
     /// Restores the journal to `snapshot`'s entries and index while
     /// preserving the `OpId` and ordinal high-water marks, so identifiers
     /// issued by rolled-back operations are never reissued to later ones

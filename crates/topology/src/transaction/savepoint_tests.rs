@@ -321,8 +321,9 @@ fn captures_cost_no_copies_and_restore_by_marks() {
 
 #[test]
 fn clones_start_with_independent_empty_logs() {
-    // A clone never shares rollback storage with its source: it records the
-    // source's lineage (for same-lineage foreign restores) and starts empty.
+    // A clone never shares rollback storage with its source: it records
+    // where the source's log stood (for exact restores into the source) and
+    // starts empty.
     // Journal appends inside a scope are covered by journal-length marks, so
     // journal-only traffic needs no snapshot of its own.
     let (mut t, face, _, _) = fixture();
@@ -433,6 +434,201 @@ fn unrelated_restore_without_scope_rebases_inherited_clone_lineage() {
             topo.vertex(original).unwrap().point(),
             Point3::new(1.0, 0.0, 0.0)
         );
+    }
+}
+
+#[test]
+fn barrier_restore_inside_a_scope_keeps_the_outer_rollback_exact() {
+    // A same-lineage barrier restore keeps the retirements made after its
+    // snapshot (and re-derives the loops of faces that lost theirs), so it
+    // does not land on the snapshot. An enclosing scope must still rewind to
+    // its own entry state, whichever stage the retirements came from, both
+    // for a value never cloned and for one that is itself a clone (as a
+    // kernel topology is after a checkpoint and its first write).
+    for stop in 0..15 {
+        for inherited in [false, true] {
+            let (original, face, solid, _) = fixture();
+            let before = state(&original);
+            let mut t = if inherited {
+                original.clone()
+            } else {
+                original
+            };
+            let outer = RollbackSnapshot::capture(&mut t);
+            let barrier = t.clone();
+            let _ = mutate(&mut t, face, solid, stop);
+            t.restore_preserving_handle_slots(&barrier);
+            crate::validation::validate_boundary_authority(&t).unwrap();
+            // Stage 8 is the first retirement. Before it the restore lands on
+            // the snapshot and still truncates instead of copying the
+            // document. A copy of a clone carries the lineage its source
+            // inherited, opened before the scope, so it never truncates.
+            assert_eq!(
+                t.undo_record_count() == 0,
+                stop < 8 && !inherited,
+                "stop {stop}, inherited {inherited}"
+            );
+            outer.restore(&mut t);
+            crate::validation::validate_boundary_authority(&t).unwrap();
+            assert_eq!(state(&t), before, "stop {stop}, inherited {inherited}");
+            assert!(t.solid(solid).is_ok(), "stop {stop}, inherited {inherited}");
+        }
+    }
+}
+
+/// Restores `snapshot` with transaction (`rollback`) or checkpoint-barrier
+/// semantics.
+fn restore_from(t: &mut Topology, snapshot: &Topology, rollback: bool) {
+    if rollback {
+        t.restore_for_rollback(snapshot);
+    } else {
+        t.restore_preserving_handle_slots(snapshot);
+    }
+}
+
+#[test]
+fn restoring_a_clone_of_a_cloned_value_keeps_its_scope_records() {
+    // A value that is itself a clone (as a kernel topology is after a
+    // checkpoint and its first write) must cut its own log at its own
+    // clone-time position, never at the position its source stood at. The
+    // tick-free attribute write recorded before the inner copy has to
+    // survive the restore so the scope can still undo it.
+    for rollback in [false, true] {
+        let (original, face, _, _) = fixture();
+        let mut t = original.clone();
+        let outer = RollbackSnapshot::capture(&mut t);
+        let entry = state(&t);
+        t.set_face_attributes(face, attributes("staged")).unwrap();
+        let snapshot = t.clone();
+        t.set_face_attributes(face, attributes("later")).unwrap();
+        restore_from(&mut t, &snapshot, rollback);
+        assert_eq!(
+            t.attributes().face(face).unwrap().name.as_deref(),
+            Some("staged")
+        );
+        outer.restore(&mut t);
+        assert_eq!(state(&t), entry, "rollback restore: {rollback}");
+    }
+}
+
+#[test]
+fn restoring_a_snapshot_older_than_the_scope_rewinds_to_the_scope_entry() {
+    // Edits made before a scope opened are not in its log, so a snapshot
+    // taken before them cannot be reached by cutting the log: the scope
+    // must still rewind to its own entry state, not to the snapshot.
+    for stop in 0..15 {
+        for rollback in [false, true] {
+            let (mut t, face, solid, _) = fixture();
+            let snapshot = t.clone();
+            let _ = mutate(&mut t, face, solid, stop);
+            let entry = state(&t);
+            let entry_check = crate::validation::validate_boundary_authority(&t).is_ok();
+            let scope = RollbackSnapshot::capture(&mut t);
+            restore_from(&mut t, &snapshot, rollback);
+            scope.restore(&mut t);
+            assert_eq!(state(&t), entry, "stop {stop}, rollback {rollback}");
+            assert_eq!(
+                crate::validation::validate_boundary_authority(&t).is_ok(),
+                entry_check
+            );
+        }
+    }
+}
+
+#[test]
+fn restoring_a_clone_changed_without_ticks_keeps_the_outer_rollback_exact() {
+    // Attribute writes and journal appends move no mutation tick, yet they
+    // change the clone: restoring it is not a return to its copy point.
+    type Change = fn(&mut Topology, crate::FaceId);
+    let changes: [(&str, Change); 2] = [
+        ("attribute", |t, face| {
+            t.set_face_attributes(face, attributes("private")).unwrap();
+        }),
+        ("journal", |t, _| {
+            let pending = t.journal_begin("private");
+            t.journal_record_barrier(pending, vec![EntityKey::vertex(2)]);
+        }),
+    ];
+    for (name, change) in changes {
+        for rollback in [false, true] {
+            let (mut t, face, _, _) = fixture();
+            let outer = RollbackSnapshot::capture(&mut t);
+            let entry = state(&t);
+            let mut snapshot = t.clone();
+            change(&mut snapshot, face);
+            restore_from(&mut t, &snapshot, rollback);
+            outer.restore(&mut t);
+            assert_eq!(state(&t), entry, "{name}, rollback {rollback}");
+        }
+    }
+}
+
+#[test]
+fn restoring_after_the_log_was_cut_below_the_copy_point_keeps_the_rollback_exact() {
+    // A rewind cut the record the copy was taken after, and a new record
+    // took its place: the log no longer leads from the copy back to the
+    // scope entry, however long it is.
+    for rollback in [false, true] {
+        let (mut t, face, solid, _) = fixture();
+        let outer = RollbackSnapshot::capture(&mut t);
+        let entry = state(&t);
+        let inner = RollbackSnapshot::capture(&mut t);
+        t.set_face_attributes(face, attributes("inner")).unwrap();
+        let snapshot = t.clone();
+        inner.restore(&mut t);
+        t.set_solid_attributes(solid, attributes("other")).unwrap();
+        restore_from(&mut t, &snapshot, rollback);
+        outer.restore(&mut t);
+        assert_eq!(state(&t), entry, "rollback restore: {rollback}");
+    }
+}
+
+#[test]
+fn restoring_an_unchanged_copy_of_this_value_still_cuts_the_log() {
+    // The exact path survives: a copy taken inside the scope, restored
+    // twice (as a retrying caller does), keeps the log at the copy point
+    // instead of recording a document-sized inverse.
+    for rollback in [false, true] {
+        let (mut t, face, solid, _) = fixture();
+        let outer = RollbackSnapshot::capture(&mut t);
+        let entry = state(&t);
+        t.set_face_attributes(face, attributes("kept")).unwrap();
+        let snapshot = t.clone();
+        let at_copy = t.undo_record_count();
+        for _ in 0..2 {
+            let nested = RollbackSnapshot::capture(&mut t);
+            let _ = mutate(&mut t, face, solid, 7);
+            nested.restore(&mut t);
+            let _ = mutate(&mut t, face, solid, 7);
+            restore_from(&mut t, &snapshot, rollback);
+            assert_eq!(t.undo_record_count(), at_copy, "rollback {rollback}");
+        }
+        outer.restore(&mut t);
+        assert_eq!(state(&t), entry, "rollback restore: {rollback}");
+    }
+}
+
+#[test]
+fn restoring_a_copy_of_a_changed_clone_keeps_recording_a_full_inverse() {
+    // Unchanged from the lineage certificate alone: a value that is itself
+    // a clone, changed since, still carries its source's position, so a
+    // restore of its own copy inside a scope records the full inverse as it
+    // always did (and a later rewind leaves the same tombstones), although
+    // the copy's own position would now certify a cut.
+    for rollback in [false, true] {
+        let (original, face, solid, _) = fixture();
+        let mut t = original.clone();
+        let _ = mutate(&mut t, face, solid, 1);
+        let outer = RollbackSnapshot::capture(&mut t);
+        let entry = state(&t);
+        t.set_face_attributes(face, attributes("kept")).unwrap();
+        let snapshot = t.clone();
+        t.set_face_attributes(face, attributes("later")).unwrap();
+        let before = t.undo_record_count();
+        restore_from(&mut t, &snapshot, rollback);
+        assert_eq!(t.undo_record_count(), before + 1, "rollback {rollback}");
+        outer.restore(&mut t);
+        assert_eq!(state(&t), entry, "rollback restore: {rollback}");
     }
 }
 

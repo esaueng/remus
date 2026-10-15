@@ -174,11 +174,30 @@ mutation lands:
   rewinds to its mark. The former snapshot compatibility method for sticky
   checkpoint retirements is removed as described above. Foreign full restores (`restore_for_rollback`,
   `restore_preserving_handle_slots`) truncate to the clone-time log prefix
-  only when lineage identity and unchanged state certify that prefix.
-  Changed clone chains and unrelated values take one full pre-restore inverse
-  while a scope is live; that document-sized cost preserves complete outer
-  rollback, including edits made before the restore. Restoring a scope mark
-  into a different `Topology` value remains outside the snapshot contract.
+  only when lineage identity and unchanged state certify that prefix, every
+  live scope was opened before the clone (a scope opened later has an entry
+  state the snapshot does not hold; a copy of a value that is itself a clone
+  carries the clone point its source inherited, so it never truncates inside
+  a scope that value opened), and the restore lands exactly on the snapshot.
+  A barrier restore does not when it keeps retirements made after its
+  snapshot, or when the snapshot is off the restore fixed point
+  (`Topology::is_restore_fixed_point`), so that the restore's index rebuild
+  re-derives an index entry or a face boundary. While a scope is live the
+  lineage counters alone cannot certify the prefix: attribute, body-class
+  and journal writes move no tick, and a bare length cannot see records a
+  rewind replaced. So each clone also records its direct source's exact
+  position, and the cut further requires that the snapshot was cloned from
+  this very value at a position as long as the cut (its cache lineage, fresh
+  for every clone), is unchanged since (its cache generation, which every
+  write bumps, and a journal fingerprint), and that the log still holds the
+  same records up to the cut (each record carries a serial that is never
+  reissued). Every other restore inside a live scope (changed clone chains,
+  unrelated values, snapshots older than a scope, inexact restores) takes
+  one full pre-restore inverse; that document-sized cost preserves complete
+  outer rollback, including edits made before the restore. Outside any
+  scope, such a restore starts a fresh lineage instead. Restoring a scope
+  mark into a different `Topology` value remains outside the snapshot
+  contract.
 - **Handles allocated in failed scopes remain permanently stale:** rollback
   retires their slots; later allocations append above the preserved
   high-water mark; typed lookups and `id_from_index` fail for them forever,
